@@ -1,22 +1,3 @@
-/**
- * Tests for the unified admin-entity source helper (#2312).
- *
- * The helper feeds both `/admin/semantic/entities` (list) and
- * `/admin/semantic/entities/{name}` (detail) so list and detail can't
- * drift on what counts as "visible" — the bug class that birthed #2310.
- *
- * `mergeAdminEntities` is the pure merge step: given a set of DB rows
- * (already filtered by the overlay CTE / status filter at the SQL layer)
- * and a set of disk-scanned entities, produce one sorted list with the
- * DB-shadows-disk rule applied. Easier to unit-test than the orchestrator
- * because there's no I/O.
- *
- * `parseRowToAdminSummary` is the YAML→summary projector used inside the
- * merge. Pinned separately because the projection has to match the disk
- * shape (`discoverEntities`) field-for-field — any drift here re-creates
- * the conflation bug the frontend's shape-normalizer was masking.
- */
-
 import { describe, it, expect } from "bun:test";
 import {
   mergeAdminEntities,
@@ -127,6 +108,43 @@ measures:
     const row = dbRow({ name: "kpi_terms", connection_id: null, yaml_content: "table: kpi_terms\n" });
     expect(parseRowToAdminSummary(row)?.source).toBe("default");
   });
+
+  it("carries the YAML `connection:` hint independent of `connection_id`", () => {
+    // The two columns are intentionally distinct: `connection_id` is the FK
+    // the SQL whitelist routes by; `connection:` is the YAML-authored hint.
+    // Conflating them would mask cross-source joins.
+    const row = dbRow({
+      name: "orders",
+      connection_id: null,
+      yaml_content: "table: orders\nconnection: warehouse\n",
+    });
+    const summary = parseRowToAdminSummary(row);
+    expect(summary?.connection).toBe("warehouse");
+    expect(summary?.connectionId).toBeNull();
+  });
+
+  it("carries the YAML `type:` field through to the summary", () => {
+    const row = dbRow({
+      name: "mrr",
+      yaml_content: "table: subscription_events\ntype: metric\n",
+    });
+    expect(parseRowToAdminSummary(row)?.type).toBe("metric");
+  });
+
+  it("counts dimensions when authored as an array (not just an object map)", () => {
+    const row = dbRow({
+      name: "u",
+      yaml_content: `
+table: u
+dimensions:
+  - name: id
+    type: integer
+  - name: email
+    type: string
+`,
+    });
+    expect(parseRowToAdminSummary(row)?.columnCount).toBe(2);
+  });
 });
 
 describe("mergeAdminEntities", () => {
@@ -153,7 +171,7 @@ describe("mergeAdminEntities", () => {
     expect(orders?.joinCount).toBe(1);
   });
 
-  it("returns DB-row summaries when DB has rows and disk is empty", () => {
+  it("returns DB-row summaries with the full strict shape when DB has rows and disk is empty", () => {
     const result = mergeAdminEntities({
       dbRows: [
         dbRow({
@@ -167,15 +185,26 @@ describe("mergeAdminEntities", () => {
     });
 
     expect(result.entities).toHaveLength(1);
-    expect(result.entities[0]).toMatchObject({
+    // Strict equality so a future field growth on the projector trips
+    // every consumer of the shape, not just `toMatchObject` subsets.
+    expect(result.entities[0]).toEqual({
       name: "users",
+      table: "users",
       description: "From DB",
+      columnCount: 0,
+      joinCount: 0,
+      measureCount: 0,
+      connection: null,
+      type: null,
+      source: "default",
       status: "published",
       sourceKind: "db",
-    });
+      connectionId: null,
+      updatedAt: "2026-01-02",
+    } satisfies AdminEntitySummary);
   });
 
-  it("DB row shadows disk entity with the same name (the union, with DB priority)", () => {
+  it("DB row shadows disk entity when their summary `name` matches", () => {
     const result = mergeAdminEntities({
       dbRows: [
         dbRow({
@@ -194,6 +223,27 @@ describe("mergeAdminEntities", () => {
     expect(result.entities[0].sourceKind).toBe("db");
     expect(result.entities[0].status).toBe("draft");
     expect(result.entities[0].description).toBe("From DB draft");
+  });
+
+  it("dedup key is summary `name`, not DB row `name` — divergent names produce two entries", () => {
+    // A DB row with display name "user_accounts" over `table: users` and a
+    // disk entity with `table: users` are genuinely different things and
+    // should both appear. Collapsing them would hide one from the file tree.
+    const result = mergeAdminEntities({
+      dbRows: [
+        dbRow({
+          name: "user_accounts",
+          yaml_content: "table: users\nname: user_accounts\n",
+        }),
+      ],
+      diskEntities: [
+        diskSummary({ table: "users", description: "Disk users" }),
+      ],
+      diskWarnings: [],
+    });
+
+    expect(result.entities).toHaveLength(2);
+    expect(result.entities.map((e) => e.name).toSorted()).toEqual(["user_accounts", "users"]);
   });
 
   it("merges non-overlapping DB + disk rows into the same sorted list", () => {
@@ -226,7 +276,7 @@ describe("mergeAdminEntities", () => {
     expect(result.warnings).toEqual(["entities/broken.yml: missing table field"]);
   });
 
-  it("silently drops DB rows that fail YAML/shape validation (defense for the agent surface)", () => {
+  it("drops DB rows that fail YAML/shape validation (logged at warn upstream)", () => {
     const result = mergeAdminEntities({
       dbRows: [
         dbRow({ name: "ok", yaml_content: "table: ok\n" }),
@@ -239,24 +289,5 @@ describe("mergeAdminEntities", () => {
 
     expect(result.entities).toHaveLength(1);
     expect(result.entities[0].name).toBe("ok");
-  });
-
-  it("a DB tombstoned-then-republished entity at status='draft' shadows the matching disk file", () => {
-    // Simulates the developer-mode overlay where a draft row supersedes
-    // the disk-mirrored published version. Without the shadow rule, the
-    // file tree would show both the stale disk entry and the new draft.
-    const result = mergeAdminEntities({
-      dbRows: [
-        dbRow({ name: "orders", status: "draft", yaml_content: "table: orders\ndescription: Updated\n" }),
-      ],
-      diskEntities: [
-        diskSummary({ table: "orders", description: "Original" }),
-      ],
-      diskWarnings: [],
-    });
-
-    expect(result.entities).toHaveLength(1);
-    expect(result.entities[0].description).toBe("Updated");
-    expect(result.entities[0].status).toBe("draft");
   });
 });

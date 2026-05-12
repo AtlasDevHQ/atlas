@@ -132,8 +132,8 @@ curl -X DELETE https://your-atlas.com/api/v1/admin/semantic/org/entities/users \
   -H "Cookie: better-auth.session_token=<session>"
 ```
 
-<Callout type="info" title="Read endpoints unified in v0.4">
-As of v0.4, `GET /api/v1/admin/semantic/entities` and `GET /api/v1/admin/semantic/entities/{name}` are the unified read endpoints — they merge org-scoped DB rows with the disk view and apply the developer-mode overlay rules, so the admin console list and detail can't disagree on what's visible. The previous `GET /api/v1/admin/semantic/org/entities[/{name}]` routes still work for backward compatibility but are deprecated. Write operations (`PUT` / `DELETE` / `/org/import`) remain on the `/org/` path.
+<Callout type="info" title="Unified read endpoints">
+`GET /api/v1/admin/semantic/entities` and `GET /api/v1/admin/semantic/entities/{name}` are the canonical read endpoints — they merge org-scoped DB rows with the disk view and apply the developer-mode overlay rules, so the admin console list and detail can't disagree on what's visible. The previous `GET /api/v1/admin/semantic/org/entities[/{name}]` routes still work for backward compatibility but are deprecated. Write operations (`PUT` / `DELETE` / `/org/import`) remain on the `/org/` path.
 </Callout>
 
 Entity changes are written to the DB first, then synced to disk atomically (write-to-temp + rename to prevent partial reads by the explore tool).

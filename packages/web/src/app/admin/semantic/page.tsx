@@ -37,7 +37,7 @@ import {
 } from "@/ui/components/admin/semantic-file-tree";
 import { type FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyErrorOrNull } from "@/ui/lib/fetch-error";
+import { friendlyErrorOrNull, buildFetchError, extractFetchError } from "@/ui/lib/fetch-error";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { EntityVersionHistory } from "@/ui/components/admin/entity-version-history";
@@ -421,24 +421,22 @@ export default function SemanticPage() {
 
   // Fetch all semantic data.
   //
-  // `/admin/semantic/entities` is the unified DB-overlay-aware list (#2312):
-  // it merges org-scoped DB rows with disk entities, applies the developer-
-  // mode overlay + connection-visibility rules, and returns the same shape
-  // on SaaS and self-hosted. The pre-#2312 `isSaas` ternary that forked
-  // between the org and disk endpoints is gone — list and detail now read
-  // from the same source so a draft entity surfaced in the tree always
-  // resolves on click.
+  // `/admin/semantic/entities` is the unified DB-overlay-aware list: it
+  // merges org-scoped DB rows with disk entities, applies the developer-
+  // mode overlay + connection-visibility rules, and returns the same
+  // shape on SaaS and self-hosted. List and detail read from the same
+  // source so a draft entity in the tree always resolves on click.
   //
-  // Glossary / metrics / catalog stay disk-based for now: those are not yet
-  // org-scoped in the DB schema, so until the broader migration they're
-  // shared per-deployment content. Tracked separately.
+  // Glossary / metrics / catalog stay disk-based for now: those aren't
+  // yet org-scoped in the DB schema, so until the broader migration
+  // they're shared per-deployment content. Tracked separately.
   useEffect(() => {
     let cancelled = false;
 
     async function fetchAll() {
       const [entitiesRes, glossaryRes, metricsRes, catalogRes] = await Promise.allSettled([
-        fetch(`${apiUrl}/api/v1/admin/semantic/entities`, fetchOpts).then((r) => {
-          if (!r.ok) throw Object.assign(new Error(`HTTP ${r.status}`), { status: r.status });
+        fetch(`${apiUrl}/api/v1/admin/semantic/entities`, fetchOpts).then(async (r) => {
+          if (!r.ok) throw await extractFetchError(r);
           return r.json();
         }),
         fetch(`${apiUrl}/api/v1/admin/semantic/glossary`, fetchOpts).then((r) => {
@@ -467,28 +465,33 @@ export default function SemanticPage() {
         })).filter((e) => e.table.length > 0);
         const dropped = rawEntities.length - normalized.length;
         if (dropped > 0) {
-          // Silent shape-drops on this page would recreate the conflation
-          // bug we just fixed — surface it so a server-side schema regression
-          // (e.g., a renamed `name` column) is visible in dev tools instead
-          // of looking like an empty workspace.
+          // Silent shape-drops would mask a server-side `entities` schema
+          // regression (e.g. a renamed `name` column) and make a healthy
+          // workspace look empty. Surface in dev tools at minimum.
           console.debug(
             `admin/semantic: dropped ${dropped} entities with unrecognized shape from /api/v1/admin/semantic/entities`,
           );
         }
         setEntities(normalized);
 
-        // Same payload also carries `status`/`name` per entity, so the
-        // draft-accent set is derived from it — no second request to
-        // `/admin/semantic/org/entities` for what the unified endpoint
-        // already returned (#2312).
+        // Same payload carries `status`/`name` per entity, so draft
+        // accents are derived inline — no second request needed.
         const drafts = new Set<string>();
         for (const e of rawEntities as Array<{ name?: unknown; status?: unknown }>) {
           if (typeof e.name === "string" && e.status === "draft") drafts.add(e.name);
         }
         setDraftEntityNames(drafts);
       } else {
-        const err = entitiesRes.reason;
-        setError({ message: err.message, status: err.status });
+        // `extractFetchError` returns a populated `FetchError`; any other
+        // rejection (network abort, JSON parse failure inside .then) gets
+        // wrapped so the banner has a non-empty message + status.
+        const reason = entitiesRes.reason;
+        const isFetchError = reason && typeof reason === "object"
+          && typeof (reason as { message?: unknown }).message === "string"
+          && (reason as { message: string }).message.length > 0;
+        setError(isFetchError
+          ? (reason as FetchError)
+          : buildFetchError({ message: reason instanceof Error ? reason.message : String(reason) }));
       }
 
       if (glossaryRes.status === "fulfilled") {
@@ -538,17 +541,27 @@ export default function SemanticPage() {
       `${apiUrl}/api/v1/admin/semantic/entities/${encodeURIComponent(selection.name)}`,
       fetchOpts,
     )
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      .then(async (r) => {
+        // The backend's 500 response carries a tagged message + requestId
+        // (`extractFetchError` reads both). Surfacing them lets the user
+        // give support a correlation id instead of "HTTP 500".
+        if (!r.ok) throw await extractFetchError(r);
         return r.json();
       })
       .then((data) => { if (!cancelled) setSelectedEntity(data?.entity ?? data); })
       .catch((err) => {
-        if (!cancelled) {
-          setDetailError(
-            `Failed to load "${selection.name}": ${err instanceof Error ? err.message : "Network error"}`,
-          );
-        }
+        if (cancelled) return;
+        const message = err && typeof err === "object" && typeof (err as { message?: unknown }).message === "string"
+          ? (err as { message: string }).message
+          : err instanceof Error ? err.message : "Network error";
+        const requestId = err && typeof err === "object" && typeof (err as { requestId?: unknown }).requestId === "string"
+          ? (err as { requestId: string }).requestId
+          : undefined;
+        setDetailError(
+          requestId
+            ? `Failed to load "${selection.name}": ${message} (Request ID: ${requestId})`
+            : `Failed to load "${selection.name}": ${message}`,
+        );
       });
 
     return () => { cancelled = true; };

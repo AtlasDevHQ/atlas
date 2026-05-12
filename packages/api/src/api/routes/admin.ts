@@ -39,19 +39,16 @@ import {
   readYamlFile,
   discoverEntities,
 } from "@atlas/api/lib/semantic/files";
-// Org-aware filesystem root — same helper the public /semantic route uses to
-// surface per-org YAML at `semantic/.orgs/<orgId>/`. Accepts an optional orgId
-// and falls back to the base root when omitted, so it covers both the
-// self-hosted single-tenant case and the SaaS org-scoped case. The admin disk
-// endpoints historically read from the base root only, which 404'd on SaaS
-// workspaces whose entities had been DB-synced to their org subdirectory (and
-// double-bug: user-created DB-only entities were invisible to the disk
-// endpoint entirely).
+// Org-aware filesystem root — accepts an optional orgId and falls back to
+// the base root when omitted. Used by the metric/glossary/catalog handlers
+// below; the entity routes go through `admin-source.ts` instead.
 import { getSemanticRoot as resolveSemanticRoot } from "@atlas/api/lib/semantic/sync";
 import {
   listAdminEntities,
   getAdminEntity,
-  AdminEntityYamlError,
+  AdminEntityYamlParseError,
+  AdminEntityYamlShapeError,
+  type AdminEntityYamlError,
 } from "@atlas/api/lib/semantic/admin-source";
 import { runDiff } from "@atlas/api/lib/semantic/diff";
 import { adminOrgs } from "./admin-orgs";
@@ -763,21 +760,19 @@ const getSemanticDiffRoute = createRoute({
 // -- Org-scoped semantic CRUD -----------------------------------------------
 //
 // The GET routes below (`/semantic/org/entities` + `/semantic/org/entities/{name}`)
-// are kept for backward compatibility — they're documented in
-// `docs/guides/multi-tenancy.mdx` and the OpenAPI surface. As of #2312 the
-// admin UI no longer calls them: the unified `/semantic/entities[/{name}]`
-// pair feeds both list and detail from the same DB-overlay-aware source.
-// Removing these GET routes is a follow-up once the docs land + downstream
-// integrations migrate. The PUT / DELETE / import write paths below remain
-// the canonical mutation surface — they have no equivalent on the unified
-// read-only routes.
+// are deprecated. The admin UI no longer calls them; the unified
+// `/semantic/entities[/{name}]` pair feeds both list and detail from the
+// same DB-overlay-aware source. Kept for backward compatibility with
+// external integrations documented in `docs/guides/multi-tenancy.mdx`.
+// The PUT / DELETE / import write paths below remain the canonical
+// mutation surface — they have no equivalent on the unified read routes.
 
 const listOrgEntitiesRoute = createRoute({
   method: "get",
   path: "/semantic/org/entities",
   tags: ["Admin — Semantic"],
   summary: "List org semantic entities (deprecated — use /semantic/entities)",
-  description: "Lists DB-backed semantic entities for the active organization. Prefer the unified `/semantic/entities` endpoint (#2312), which merges DB + disk and applies overlay rules.",
+  description: "Lists DB-backed semantic entities for the active organization. Prefer the unified `/semantic/entities` endpoint, which merges DB + disk and applies overlay rules.",
   responses: {
     200: {
       description: "Org entity list",
@@ -797,7 +792,7 @@ const getOrgEntityRoute = createRoute({
   path: "/semantic/org/entities/{name}",
   tags: ["Admin — Semantic"],
   summary: "Get org semantic entity (deprecated — use /semantic/entities/{name})",
-  description: "Returns a single DB-backed semantic entity for the active organization. Prefer the unified `/semantic/entities/{name}` endpoint (#2312).",
+  description: "Returns a single DB-backed semantic entity for the active organization. Prefer the unified `/semantic/entities/{name}` endpoint.",
   request: {
     params: z.object({
       name: z.string().min(1).openapi({ param: { name: "name", in: "path" }, example: "users" }),
@@ -1282,27 +1277,26 @@ admin.openapi(overviewRoute, async (c) => {
 
 // -- Semantic Layer ---------------------------------------------------------
 
-// Unified entity list (#2312).
-//
-// Previously this handler scanned disk only; the org-scoped list lived at
-// `/admin/semantic/org/entities` and the frontend forked by `isSaas`. The
-// fork meant a SaaS list could surface a draft entity the disk detail
-// handler couldn't resolve — every click became HTTP 404 (#2310).
-//
-// The unified source merges org-scoped DB rows (with the overlay CTE's
-// visibility / connection-shadow rules) with the disk view, so list and
-// detail can't disagree on what's visible. See
-// `packages/api/src/lib/semantic/admin-source.ts`.
+// List + detail delegate to the unified source so they can't disagree on
+// what's visible. See `packages/api/src/lib/semantic/admin-source.ts`.
 admin.openapi(listEntitiesRoute, async (c) => {
-  const { authResult } = await adminAuthAndContext(c, "admin:semantic");
+  const { authResult, requestId } = await adminAuthAndContext(c, "admin:semantic");
   const orgId = authResult.user?.activeOrganizationId;
   const atlasMode = getAtlasMode(c);
   const mode = atlasMode === "developer" ? "developer" : "published";
-  const result = await listAdminEntities({ orgId, mode });
-  return c.json({
-    entities: result.entities,
-    ...(result.warnings.length > 0 && { warnings: result.warnings }),
-  }, 200);
+  try {
+    const result = await listAdminEntities({ orgId, mode });
+    return c.json({
+      entities: result.entities,
+      ...(result.warnings.length > 0 && { warnings: result.warnings }),
+    }, 200);
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)), orgId, mode, requestId },
+      "Failed to list admin entities",
+    );
+    return c.json({ error: "internal_error", message: "Failed to list entities.", requestId }, 500);
+  }
 });
 
 admin.openapi(getEntityRoute, async (c) => {
@@ -1318,18 +1312,8 @@ admin.openapi(getEntityRoute, async (c) => {
   try {
     result = await getAdminEntity({ name, orgId, requestId });
   } catch (err) {
-    if (err instanceof AdminEntityYamlError) {
-      // `kind` distinguishes a parser failure from a non-object projection —
-      // the response message differs so the frontend's error toast tells the
-      // operator which way the content is broken. Three failure modes
-      // intentionally stay distinct so the wrong on-call playbook can't
-      // start running.
-      const message = err.kind === "parse"
-        ? err.entitySource === "db"
-          ? `Failed to parse entity content for "${name}".`
-          : `Failed to parse entity file for "${name}".`
-        : `Entity content for "${name}" is malformed.`;
-      return c.json({ error: "internal_error", message, requestId }, 500);
+    if (err instanceof AdminEntityYamlParseError || err instanceof AdminEntityYamlShapeError) {
+      return c.json({ error: "internal_error", message: adminEntityYamlMessage(err, name), requestId }, 500);
     }
     log.error(
       { err: err instanceof Error ? err : new Error(String(err)), entityName: name, orgId, requestId },
@@ -1343,6 +1327,26 @@ admin.openapi(getEntityRoute, async (c) => {
   }
   return c.json({ entity: result.entity }, 200);
 });
+
+/**
+ * Map a tagged YAML error to a response message. Switching on `kind` means
+ * adding a new `kind` value in `admin-source.ts` produces a compile-time
+ * exhaustiveness error here, not a silent fallthrough.
+ */
+function adminEntityYamlMessage(err: AdminEntityYamlError, name: string): string {
+  switch (err.kind) {
+    case "parse":
+      return err.entitySource === "db"
+        ? `Failed to parse entity content for "${name}".`
+        : `Failed to parse entity file for "${name}".`;
+    case "shape":
+      return `Entity content for "${name}" is malformed.`;
+    default: {
+      const _exhaustive: never = err.kind;
+      return `Failed to load entity "${name}".`;
+    }
+  }
+}
 
 admin.openapi(listMetricsRoute, async (c) => {
   const { authResult } = await adminAuthAndContext(c, "admin:semantic");

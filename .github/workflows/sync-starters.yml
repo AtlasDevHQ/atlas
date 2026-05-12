@@ -25,7 +25,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
         with:

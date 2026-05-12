@@ -1,0 +1,10 @@
+[install]
+# Refuse to install package versions younger than 2 days.
+# Defends against fresh malicious publishes (Mini Shai-Hulud-style worms);
+# community scanners typically catch these within hours, so a 48h quarantine
+# is sufficient to catch nearly all known supply-chain attacks.
+minimumReleaseAge = 172800
+
+# Bypass the age gate for packages where a recent version is occasionally
+# required to compile. Keep this list tight — every entry is a hole in the gate.
+minimumReleaseAgeExcludes = ["@types/node", "@types/bun", "typescript"]

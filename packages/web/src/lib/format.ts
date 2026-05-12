@@ -47,6 +47,46 @@ export function formatDateTime(date: DateInput): string {
   });
 }
 
+const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * Parse yyyy-MM-dd at LOCAL midnight (not UTC) so the parsed date renders as
+ * the same calendar day the user typed. `new Date("2026-03-27")` parses as
+ * UTC midnight and shifts west of GMT. Also rejects overflow like "2026-02-30"
+ * via the round-trip check below — the Date constructor would silently coerce
+ * those to a different valid date.
+ */
+export function parseISODate(value: string | null | undefined): Date | undefined {
+  if (!value) return undefined;
+  const match = value.match(ISO_DATE_PATTERN);
+  if (!match) return undefined;
+  const year = Number(match[1]);
+  const month = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  const d = new Date(year, month, day);
+  if (
+    d.getFullYear() !== year ||
+    d.getMonth() !== month ||
+    d.getDate() !== day
+  ) {
+    return undefined;
+  }
+  return d;
+}
+
+/**
+ * Inverse of parseISODate — formats in LOCAL time (not UTC) so a date picked
+ * on March 27 doesn't serialize as March 26 west of GMT. Returns "" for
+ * undefined/null so the result drops straight into URL/API string state.
+ */
+export function formatISODate(date: Date | null | undefined): string {
+  if (!date) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 /** Format a number with K/M suffixes for compact display. */
 export function formatNumber(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;

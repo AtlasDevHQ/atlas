@@ -2,7 +2,9 @@
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DatePicker } from "@/components/ui/date-picker";
 import { Input } from "@/components/ui/input";
+import { formatISODate, parseISODate } from "@/lib/format";
 import {
   Select,
   SelectContent,
@@ -304,18 +306,18 @@ function ActionsPageContent() {
           </SelectContent>
         </Select>
 
-        <Input
-          type="date"
-          value={params.from}
-          onChange={(e) => setParams({ from: e.target.value, page: 1 })}
-          className="h-9 w-36"
+        <DatePicker
+          value={parseISODate(params.from)}
+          onChange={(d) => setParams({ from: formatISODate(d), page: 1 })}
+          className="w-36"
+          placeholder="From"
           aria-label="From date"
         />
-        <Input
-          type="date"
-          value={params.to}
-          onChange={(e) => setParams({ to: e.target.value, page: 1 })}
-          className="h-9 w-36"
+        <DatePicker
+          value={parseISODate(params.to)}
+          onChange={(d) => setParams({ to: formatISODate(d), page: 1 })}
+          className="w-36"
+          placeholder="To"
           aria-label="To date"
         />
 

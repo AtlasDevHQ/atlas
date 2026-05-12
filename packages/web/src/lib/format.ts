@@ -47,6 +47,43 @@ export function formatDateTime(date: DateInput): string {
   });
 }
 
+const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * Parse a yyyy-MM-dd date string into a Date at local midnight.
+ * Returns undefined for empty/invalid input. Used at the boundary between
+ * URL/API string state and the DatePicker primitives.
+ */
+export function parseISODate(value: string | null | undefined): Date | undefined {
+  if (!value) return undefined;
+  const match = value.match(ISO_DATE_PATTERN);
+  if (!match) return undefined;
+  const year = Number(match[1]);
+  const month = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  const d = new Date(year, month, day);
+  if (
+    d.getFullYear() !== year ||
+    d.getMonth() !== month ||
+    d.getDate() !== day
+  ) {
+    return undefined;
+  }
+  return d;
+}
+
+/**
+ * Format a Date as yyyy-MM-dd in local time. Returns "" for undefined/null
+ * so the result drops straight into URL/API string state.
+ */
+export function formatISODate(date: Date | null | undefined): string {
+  if (!date) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 /** Format a number with K/M suffixes for compact display. */
 export function formatNumber(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;

@@ -5,6 +5,8 @@ import {
   formatDateTime,
   formatShortDateTime,
   formatNumber,
+  parseISODate,
+  formatISODate,
 } from "./format";
 
 const EM_DASH = "\u2014";
@@ -90,6 +92,57 @@ describe("formatShortDateTime", () => {
     const result = formatShortDateTime(ISO);
     expect(result).toMatch(/\d{1,2}:\d{2}/);
     expect(result).not.toContain("2026");
+  });
+});
+
+describe("parseISODate", () => {
+  test("returns undefined for null/undefined/empty", () => {
+    expect(parseISODate(null)).toBeUndefined();
+    expect(parseISODate(undefined)).toBeUndefined();
+    expect(parseISODate("")).toBeUndefined();
+  });
+
+  test("returns undefined for malformed input", () => {
+    expect(parseISODate("2026/03/27")).toBeUndefined();
+    expect(parseISODate("2026-3-27")).toBeUndefined();
+    expect(parseISODate("not a date")).toBeUndefined();
+  });
+
+  test("returns undefined for out-of-range values (Feb 30)", () => {
+    expect(parseISODate("2026-02-30")).toBeUndefined();
+  });
+
+  test("parses yyyy-MM-dd as local midnight", () => {
+    const result = parseISODate("2026-03-27");
+    expect(result).toBeInstanceOf(Date);
+    expect(result?.getFullYear()).toBe(2026);
+    expect(result?.getMonth()).toBe(2); // March, zero-indexed
+    expect(result?.getDate()).toBe(27);
+    expect(result?.getHours()).toBe(0);
+  });
+
+  test("round-trips with formatISODate", () => {
+    const iso = "2026-05-11";
+    const parsed = parseISODate(iso);
+    expect(parsed).toBeInstanceOf(Date);
+    expect(formatISODate(parsed)).toBe(iso);
+  });
+});
+
+describe("formatISODate", () => {
+  test("returns empty string for null/undefined", () => {
+    expect(formatISODate(null)).toBe("");
+    expect(formatISODate(undefined)).toBe("");
+  });
+
+  test("formats a Date as yyyy-MM-dd in local time", () => {
+    const d = new Date(2026, 0, 5); // Jan 5, 2026 local
+    expect(formatISODate(d)).toBe("2026-01-05");
+  });
+
+  test("zero-pads month and day", () => {
+    const d = new Date(2026, 8, 9); // Sep 9
+    expect(formatISODate(d)).toBe("2026-09-09");
   });
 });
 

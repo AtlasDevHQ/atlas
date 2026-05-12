@@ -137,6 +137,24 @@
   --animate-typing-dot: typing-dot 1.2s ease-in-out infinite;
 }
 
+/* Hide the native OS scrollbar gutter on shadcn's CommandList. The
+ * registry primitive ships with raw `overflow-y-auto`, which renders the
+ * always-visible bar on Windows/Linux (macOS overlay bars are invisible
+ * until scroll, so this is a no-op there). cmdk handles keyboard nav and
+ * `scrollIntoView` itself, so the visual bar only adds noise. Mirrors
+ * the docs-only CSS on ui.shadcn.com (`.cn-command-list`).
+ *
+ * SidebarContent is intentionally NOT in this rule — it's already wrapped
+ * in Radix ScrollArea (see components/ui/sidebar.tsx), which renders its
+ * own custom thumb. */
+[data-slot="command-list"] {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+[data-slot="command-list"]::-webkit-scrollbar {
+  display: none;
+}
+
 @keyframes typing-dot {
   0%, 60%, 100% {
     opacity: 0.3;

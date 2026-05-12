@@ -154,8 +154,7 @@ Tracker: [milestone #44](https://github.com/AtlasDevHQ/atlas/milestones/44). Two
 
 ### Open
 
-- [ ] Internal `WorkspaceCredentials` discriminated union ([#2282](https://github.com/AtlasDevHQ/atlas/issues/2282)) — post-#2174 BYOT review S25.
-- [ ] Unified `ByotAdapter<Cred>` parameterized over cred shape ([#2283](https://github.com/AtlasDevHQ/atlas/issues/2283)) — post-#2174 BYOT review S26.
+- [ ] Unified BYOT credentials — `WorkspaceCredentials` union + `ByotAdapter<Cred>` ([#2282](https://github.com/AtlasDevHQ/atlas/issues/2282)) — post-#2174 BYOT review S25+S26, merged tracker; ships as one PR (#2283 folded in).
 - [ ] Scheduler-driven periodic refresh for BYOT discovery catalogs ([#2284](https://github.com/AtlasDevHQ/atlas/issues/2284)) — graduate the cron-shaped refresh into the scheduler.
 - [ ] Expose multi-workspace MCP shape in `@useatlas/sdk` ([#2196](https://github.com/AtlasDevHQ/atlas/issues/2196)) — surface the C3 cross-workspace identity shape now that #2073 landed.
 

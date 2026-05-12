@@ -2130,8 +2130,36 @@ Closed 2026-05-12. Milestone #42, 42 issues shipped. Bug-hunting and polish from
 
 ### Spawned / detached
 
-- [ ] **Detached:** Multi-environment semantic layer initiative — PRD #2336 + implementation #2338–#2347 spawned from #2329 audit. No milestone assignment yet; pending scope decision.
-- [ ] **Detached to 1.4.3:** BYOT review tail — #2282/#2283/#2284/#2285/#2286/#2287 + #2351 (Anthropic + OpenAI BYOT docs).
-- [ ] **Detached to 1.4.3:** SDK multi-workspace MCP shape — #2196 (now that C3 cross-workspace identity is in).
+- [ ] **Detached:** Multi-environment semantic layer initiative — PRD #2336 + implementation #2338–#2347 spawned from #2329 audit. Now milestone [#45](https://github.com/AtlasDevHQ/atlas/milestones/45) ("1.4.4 — Multi-environment semantic layer").
+- [x] **Closed in 1.4.3:** BYOT review tail — #2282/#2283 folded into one PR (#2376), #2284 scheduler refresh (#2378), #2285 encryption rename (#2361) + #2370 branded return types (#2374), #2286 Bedrock IAM (#2360), #2287 L1↔L2 wiring test (#2372), #2351 direct-provider picker docs (#2359).
+- [x] **Closed in 1.4.3:** SDK multi-workspace MCP shape — #2196 (#2375); published as `@useatlas/sdk@0.0.14`.
+
+---
+
+## 1.4.3 — Agent-first front door + BYOT polish — CLOSED
+
+Closed 2026-05-12. Milestone [#44](https://github.com/AtlasDevHQ/atlas/milestones/44), 12 issues shipped. Round-out release for 1.4.2 — closed the post-#2174 BYOT direct-provider review tail (S25/S26 typed-credentials refactor, scheduler-graduated catalog refresh, `encryptUrl`→`encryptSecret` rename with branded return types, L1↔L2 wiring test, Bedrock IAM + direct-provider picker docs) and shipped the SDK multi-workspace MCP shape. Two front-door items (chat-first landing #2022, unified left rail #2349) bled forward into 1.4.2's closeout and are archived under that section; they remain on the 1.4.3 milestone in GitHub because that's where the work was tracked.
+
+### Agent-first front door (carried over from 1.4.2 archive)
+
+- [x] Chat-first front door + per-user default landing ([#2022](https://github.com/AtlasDevHQ/atlas/issues/2022), [#2323](https://github.com/AtlasDevHQ/atlas/pull/2323)) — see 1.4.2 archive for full detail.
+- [x] Unified left rail across `/`, `/notebook`, `/dashboards` ([#2349](https://github.com/AtlasDevHQ/atlas/issues/2349), [#2350](https://github.com/AtlasDevHQ/atlas/pull/2350)) — see 1.4.2 archive for full detail.
+
+### BYOT review tail
+
+- [x] Rename `encryptUrl`/`decryptUrl` → `encryptSecret`/`decryptSecret` ([#2285](https://github.com/AtlasDevHQ/atlas/issues/2285), [#2361](https://github.com/AtlasDevHQ/atlas/pull/2361)) — naming aligned with post-#1832 reality where both helpers handle arbitrary secrets, not just URLs. The deprecated `encryptUrl` / `decryptUrl` aliases stay as `@deprecated` re-exports through 1.5.0 for external SDK consumers pinned pre-#2285. Spawned the #2370 branded-return-types follow-up after the rename surfaced that the two `encryptSecret` helpers share a signature but diverge on plaintext detection.
+- [x] Brand `encryptSecret` return types — `URLSecret` vs `OpaqueSecret` ([#2370](https://github.com/AtlasDevHQ/atlas/issues/2370), [#2374](https://github.com/AtlasDevHQ/atlas/pull/2374)) — type-system enforcement of the "URL-passthrough vs prefix-only" picking guide from CLAUDE.md. 11 integration credential stores under `INTEGRATION_TABLES` annotate with `OpaqueSecret`; the three URL-aware clusters (`connections.url`, `workspace_model_config.api_key_encrypted`, `sso_providers.config.clientSecret`) annotate with `URLSecret`. Architecture-wins #55.
+- [x] Unified BYOT credentials — `WorkspaceCredentials` discriminated union + `ByotAdapter<Cred>` parameterized dispatch ([#2282](https://github.com/AtlasDevHQ/atlas/issues/2282), [#2376](https://github.com/AtlasDevHQ/atlas/pull/2376)) — folded S25+S26 BYOT review threads into one PR. Bedrock joins the same typed adapter dispatch table as Anthropic and OpenAI instead of forking into a parallel inline flow; `extractCred(rawConfig)` becomes a thin lookup over the typed union. Architecture-wins #56 + #57.
+- [x] Scheduler-driven periodic refresh for BYOT discovery catalogs ([#2284](https://github.com/AtlasDevHQ/atlas/issues/2284), [#2378](https://github.com/AtlasDevHQ/atlas/pull/2378)) — graduated the cron-shaped catalog refresh into the scheduler. Daily refresh walks every encrypted credential, surfaces success/failure counts in `/admin/scheduler/tasks`, and exposes an admin-only `POST /api/v1/admin/scheduler/tasks/byot-catalog-refresh/run` for manual triggers. Runbook lives at `apps/docs/content/docs/platform-ops/byot-catalog-refresh.mdx`.
+- [x] L1↔L2 wiring integration test for BYOT catalog modules ([#2287](https://github.com/AtlasDevHQ/atlas/issues/2287), [#2372](https://github.com/AtlasDevHQ/atlas/pull/2372)) — locks in the post-#2174 cache hand-off; ensures the per-orgId L1 promise cache invalidates when Postgres L2 entries get refreshed.
+- [x] AWS Bedrock BYOT — minimum IAM policy + region selection guide ([#2286](https://github.com/AtlasDevHQ/atlas/issues/2286), [#2360](https://github.com/AtlasDevHQ/atlas/pull/2360)) — ships `apps/docs/content/docs/integrations/llm-providers/bedrock.mdx` with the minimum IAM JSON, model availability per region, and key rotation flow.
+- [x] Document Anthropic + OpenAI BYOT direct-provider model picker ([#2351](https://github.com/AtlasDevHQ/atlas/issues/2351), [#2359](https://github.com/AtlasDevHQ/atlas/pull/2359)) — reference section in `guides/model-routing.mdx` covering the direct-provider picker on top of the L1+L2 catalog cache shipped in 1.4.2.
+
+### SDK + auth surface
+
+- [x] Expose multi-workspace MCP shape in `@useatlas/sdk` ([#2196](https://github.com/AtlasDevHQ/atlas/issues/2196), [#2375](https://github.com/AtlasDevHQ/atlas/pull/2375)) — `completeConnect` surfaces the plural `workspace_ids` claim, `buildConfig` opts into the multi-workspace env-hint block when `workspaces` is non-empty, `useMcpConnect` exposes `workspaces` for picker UX. Published as `@useatlas/sdk@0.0.14`; consumer-refs bumped to `^0.0.14` in #2379 after publish completed.
+- [x] Widen `useSession()` return for `session.fields` extras ([#2334](https://github.com/AtlasDevHQ/atlas/issues/2334), [#2373](https://github.com/AtlasDevHQ/atlas/pull/2373)) — closes the #2262 `authClient`-cast-collapse arc by widening `useSession`'s inferred return at the `OrgClient` export boundary in `packages/web/src/lib/auth/client.ts`. Four callsites lose their local `as { activeOrganizationId?: string; ... }` narrows. Architecture-wins #54.
+
+Architecture-wins ledger: #54 (`useSession()` widened), #55 (`URLSecret` / `OpaqueSecret` brands), #56 + #57 (`WorkspaceCredentials` union + `ByotAdapter<Cred>` dispatch).
 
 ---

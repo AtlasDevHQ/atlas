@@ -156,12 +156,14 @@ Tracker: [milestone #44](https://github.com/AtlasDevHQ/atlas/milestones/44). Two
 - [ ] L1↔L2 wiring integration test for BYOT catalog modules ([#2287](https://github.com/AtlasDevHQ/atlas/issues/2287)) — locks in the post-#2174 cache hand-off.
 - [ ] Document Anthropic + OpenAI BYOT direct-provider model picker ([#2351](https://github.com/AtlasDevHQ/atlas/issues/2351)) — sibling section to `model-routing.mdx#gateway-model-picker`.
 - [ ] Expose multi-workspace MCP shape in `@useatlas/sdk` ([#2196](https://github.com/AtlasDevHQ/atlas/issues/2196)) — surface the C3 cross-workspace identity shape now that #2073 landed.
+- [ ] Widen `useSession()` return type for `session.fields` extras ([#2334](https://github.com/AtlasDevHQ/atlas/issues/2334)) — followup to #2262 authClient cast collapse.
 
 ---
 
 ## Closed parallel tracks
 
 - [x] **Multi-method MFA hardening** (6 issues #2082/#2090/#2091/#2092/#2093/#2094) — WebAuthn passkeys + TOTP + trusted-device 30d shipped end-to-end across enrollment, sign-in, governance, telemetry, and recovery. Full detail in `ROADMAP-archive.md`.
+- [x] **Post-1.4.2 security + polish hygiene** (PRs #2353–#2358) — npm supply-chain worm hardening (#2353), CodeQL ReDoS/sanitization/URL/shell sweep (#2355 + #2357 + #2358), rail collapse-trigger + hover scoping (#2354), dashboards-rail remount flash (#2356).
 
 ---
 

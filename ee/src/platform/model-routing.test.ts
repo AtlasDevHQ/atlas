@@ -143,16 +143,21 @@ describe("getWorkspaceModelConfigRaw", () => {
     expect(result).toBeNull();
   });
 
-  it("returns raw config with decrypted API key", async () => {
+  it("returns raw config with decrypted API key in the credentials union", async () => {
     ee.queueMockRows([makeRow()]);
     const result = await run(getWorkspaceModelConfigRaw("org-1"));
     expect(result).not.toBeNull();
     expect(result!.provider).toBe("anthropic");
     expect(result!.model).toBe("claude-opus-4-6");
-    expect(result!.apiKey).toBe("sk-ant-test1234");
+    // Post-#2282: plaintext lives on the discriminated `credentials`
+    // union — `apiKey` is no longer a flat field on the return shape.
+    expect(result!.credentials.provider).toBe("anthropic");
+    if (result!.credentials.provider === "anthropic") {
+      expect(result!.credentials.apiKey).toBe("sk-ant-test1234");
+    }
   });
 
-  it("gateway provider with NULL api_key_encrypted returns apiKey=null (platform credits)", async () => {
+  it("gateway provider with NULL api_key_encrypted yields credentials.apiKey=null (platform credits)", async () => {
     ee.queueMockRows([
       makeRow({
         provider: "gateway",
@@ -163,7 +168,56 @@ describe("getWorkspaceModelConfigRaw", () => {
     const result = await run(getWorkspaceModelConfigRaw("org-1"));
     expect(result).not.toBeNull();
     expect(result!.provider).toBe("gateway");
-    expect(result!.apiKey).toBeNull();
+    expect(result!.credentials.provider).toBe("gateway");
+    if (result!.credentials.provider === "gateway") {
+      expect(result!.credentials.apiKey).toBeNull();
+    }
+  });
+
+  it("bedrock row: credentials.bundle parses cleanly when ciphertext holds a well-formed JSON bundle", async () => {
+    const bundle = JSON.stringify({
+      accessKeyId: "AKIA-EXAMPLE-XYZW",
+      secretAccessKey: "secret-that-must-never-leak",
+    });
+    ee.queueMockRows([
+      makeRow({
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        api_key_encrypted: `encrypted:${bundle}`,
+        bedrock_region: "us-east-1",
+      }),
+    ]);
+    const result = await run(getWorkspaceModelConfigRaw("org-1"));
+    expect(result).not.toBeNull();
+    expect(result!.credentials.provider).toBe("bedrock");
+    expect(result!.bedrockRegion).toBe("us-east-1");
+    if (result!.credentials.provider === "bedrock" && result!.credentials.bundle) {
+      expect(result!.credentials.bundle.accessKeyId).toBe("AKIA-EXAMPLE-XYZW");
+      expect(result!.credentials.bundle.secretAccessKey).toBe(
+        "secret-that-must-never-leak",
+      );
+    }
+  });
+
+  it("bedrock row: malformed inner JSON surfaces credentials.bundle=null (distinct from decrypt failure)", async () => {
+    // The route's `malformed_bedrock_bundle` 422 envelope depends on
+    // this signal — `extractCred` in the adapter table reads
+    // `credentials.bundle === null` to discriminate from a thrown
+    // `ModelConfigDecryptError`. Test pins the contract.
+    ee.queueMockRows([
+      makeRow({
+        provider: "bedrock",
+        model: "anthropic.claude-opus-4-v1:0",
+        api_key_encrypted: `encrypted:${JSON.stringify({ accessKeyId: "AKIA-only" })}`,
+        bedrock_region: "us-east-1",
+      }),
+    ]);
+    const result = await run(getWorkspaceModelConfigRaw("org-1"));
+    expect(result).not.toBeNull();
+    expect(result!.credentials.provider).toBe("bedrock");
+    if (result!.credentials.provider === "bedrock") {
+      expect(result!.credentials.bundle).toBeNull();
+    }
   });
 
   it("decryption failure surfaces a ModelConfigDecryptError instead of silent null fallback", async () => {

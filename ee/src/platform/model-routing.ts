@@ -28,10 +28,13 @@ import { invalidateOpenAICatalog } from "@atlas/api/lib/openai-catalog";
 import {
   invalidateBedrockCatalog,
   getBedrockCatalog,
-  type BedrockDiscoveryCredentials,
 } from "@atlas/api/lib/bedrock-catalog";
 import { suggestModelReplacement } from "@atlas/api/lib/byot-deprecation";
-import type { BedrockRegion, GatewayCatalogModel } from "@useatlas/types";
+import type {
+  BedrockCredentialBundle,
+  BedrockRegion,
+  GatewayCatalogModel,
+} from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
   ApiKeyStatus,
@@ -75,7 +78,7 @@ interface ModelConfigRow {
   /**
    * Nullable for provider='gateway' on platform credits. For
    * provider='bedrock' this holds an encrypted JSON blob shaped as
-   * `BedrockCredentialBundle` (see `parseBedrockCredentialBundle`).
+   * `BedrockCredentialBundle`.
    */
   api_key_encrypted: string | null;
   base_url: string | null;
@@ -88,21 +91,36 @@ interface ModelConfigRow {
   [key: string]: unknown;
 }
 
+// `BedrockCredentialBundle` lives in `@useatlas/types` (single canonical
+// definition); imported above. The legacy `BedrockDiscoveryCredentials`
+// alias in `@atlas/api/lib/bedrock-catalog` now resolves to the same type.
+
 /**
- * Parse a string-encoded Bedrock credential bundle. The bundle ships on
- * the wire as JSON; we round-trip it through the URL encryption helper
- * the same way every other secret column does (the helper is a thin
- * AES-GCM wrapper that's content-agnostic). Returns null on malformed
- * input so the caller can surface a clean validation error.
+ * Discriminated union over the typed cred material a workspace row
+ * carries after `api_key_encrypted` is decrypted. Internal to the
+ * BYOT boundary — never appears on the wire.
+ *
+ * The bedrock arm's `bundle` is nullable so the post-decrypt JSON
+ * shape failure travels as data rather than as a thrown error —
+ * keeping it distinct from a true crypto failure
+ * (`ModelConfigDecryptError`), which the row mapper raises before this
+ * union is ever constructed.
  */
+export type WorkspaceCredentials =
+  | { provider: "bedrock"; bundle: BedrockCredentialBundle | null }
+  | {
+      provider: Exclude<ModelConfigProvider, "bedrock" | "gateway">;
+      apiKey: string;
+    }
+  | { provider: "gateway"; apiKey: string | null };
+
 /**
- * Parse a string-encoded Bedrock credential bundle. The route layer
- * calls this directly to keep its malformed-bundle path consistent with
- * the EE row mapper's `decrypt_failed` surfacing.
+ * Parse a string-encoded Bedrock credential bundle. Private to this
+ * module — interpreting a stored row goes through the typed
+ * `WorkspaceCredentials` union; the parser is only legal for
+ * user-supplied form input on the test-config path.
  */
-export function parseBedrockCredentialBundle(
-  raw: string,
-): { accessKeyId: string; secretAccessKey: string; sessionToken?: string } | null {
+function parseBedrockCredentialBundle(raw: string): BedrockCredentialBundle | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -347,6 +365,74 @@ export const getWorkspaceModelConfig = (
   });
 
 /**
+ * Decrypted workspace model configuration, internal shape. Returned by
+ * `getWorkspaceModelConfigRaw` for the AI Layer + admin route layer.
+ *
+ * The `credentials` field carries the typed cred material via a
+ * discriminated union, so consumers no longer re-parse the JSON bundle
+ * for bedrock or fork on `provider === "bedrock"` to read a separate
+ * `apiKey` shape — they switch on `credentials.provider` and read the
+ * matching field. The wire shape of `WorkspaceModelConfig` is
+ * unchanged (it carries a masked `apiKeyMasked` + `apiKeyStatus`).
+ */
+export interface RawWorkspaceModelConfig {
+  readonly provider: ModelConfigProvider;
+  readonly model: string;
+  readonly baseUrl: string | null;
+  readonly bedrockRegion: string | null;
+  readonly credentials: WorkspaceCredentials;
+}
+
+/**
+ * Build a `WorkspaceCredentials` value from a successfully decrypted
+ * plaintext + the row's provider. A malformed bedrock bundle carries
+ * forward as `{ provider: "bedrock", bundle: null }` so the failure
+ * mode stays distinct from a thrown decrypt error.
+ */
+function buildWorkspaceCredentials(
+  provider: ModelConfigProvider,
+  decrypted: string | null,
+  configId: string,
+): WorkspaceCredentials {
+  switch (provider) {
+    case "bedrock": {
+      const bundle = decrypted === null ? null : parseBedrockCredentialBundle(decrypted);
+      if (bundle === null) {
+        // Decryption succeeded but the inner JSON failed to parse into
+        // the expected `{accessKeyId, secretAccessKey}` shape. The
+        // route layer maps this to the `malformed_bedrock_bundle` 422
+        // envelope; the AI Layer raises a friendly re-entry error.
+        // Log here so prod monitoring sees one event per occurrence
+        // regardless of which downstream surface trips on it.
+        log.error(
+          { configId },
+          "Decrypted bedrock bundle is malformed — downstream surfaces will raise",
+        );
+      }
+      return { provider: "bedrock", bundle };
+    }
+    case "gateway":
+      return { provider: "gateway", apiKey: decrypted };
+    default:
+      if (decrypted === null) {
+        // `chk_model_provider_key` rejects this at the DB layer, so it
+        // can only fire if a migration regression weakens or drops the
+        // CHECK. Fail loudly rather than coercing to "" — a degraded
+        // downstream auth attempt against an empty key would surface
+        // upstream as a generic 401 with no Atlas-side breadcrumb.
+        log.error(
+          { configId, provider },
+          "DB CHECK constraint violated — non-gateway row has NULL api_key_encrypted",
+        );
+        throw new Error(
+          `Invariant violation: non-gateway provider "${provider}" config ${configId} has no decrypted key`,
+        );
+      }
+      return { provider, apiKey: decrypted };
+  }
+}
+
+/**
  * Get the raw (decrypted) workspace model configuration for provider resolution.
  * Returns null if no workspace config is set or its provider failed validation.
  * Fails with `ModelConfigDecryptError` when an encrypted key cannot be
@@ -354,20 +440,11 @@ export const getWorkspaceModelConfig = (
  * rather than silently falling back to the platform default (which would
  * bill the platform without consent).
  *
- * WARNING: The returned API key is in plaintext. Never expose it to clients.
+ * WARNING: The returned credentials are in plaintext. Never expose to clients.
  */
 export const getWorkspaceModelConfigRaw = (
   orgId: string,
-): Effect.Effect<
-  {
-    provider: ModelConfigProvider;
-    model: string;
-    apiKey: string | null;
-    baseUrl: string | null;
-    bedrockRegion: string | null;
-  } | null,
-  ModelConfigDecryptError | Error
-> =>
+): Effect.Effect<RawWorkspaceModelConfig | null, ModelConfigDecryptError | Error> =>
   Effect.gen(function* () {
     // Skip enterprise check for provider resolution — the enterprise gate
     // is enforced at the admin route level. If a config exists, we use it.
@@ -396,10 +473,10 @@ export const getWorkspaceModelConfigRaw = (
       return null;
     }
 
-    let apiKey: string | null = null;
+    let decrypted: string | null = null;
     if (row.api_key_encrypted !== null) {
       try {
-        apiKey = decryptSecret(row.api_key_encrypted);
+        decrypted = decryptSecret(row.api_key_encrypted);
       } catch (err) {
         const cause = err instanceof Error ? err.message : String(err);
         log.error(
@@ -413,12 +490,12 @@ export const getWorkspaceModelConfigRaw = (
     return {
       provider: row.provider,
       model: row.model,
-      apiKey,
       baseUrl: row.base_url,
       // Mirror `rowToConfig`: only bedrock rows are allowed to surface
       // a region. A stray region from a pre-migration row or a future
       // bug elsewhere doesn't leak into the AI Layer.
       bedrockRegion: row.provider === "bedrock" ? row.bedrock_region : null,
+      credentials: buildWorkspaceCredentials(row.provider, decrypted, row.id),
     };
   });
 
@@ -818,7 +895,7 @@ export const testModelConfig = (
                   // throwaway rows keyed by accessKeyId.
                   `__test:${bundle.accessKeyId}`,
                   config.bedrockRegion as BedrockRegion,
-                  bundle as BedrockDiscoveryCredentials,
+                  bundle,
                   { refresh: true, persist: false },
                 );
                 const ids = new Set(catalog.models.map((m) => m.id));

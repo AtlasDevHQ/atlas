@@ -6,9 +6,9 @@ import { tokenUsageSearchParams } from "./search-params";
 import { useAdminFetch, type FetchError } from "@/ui/hooks/use-admin-fetch";
 import { TokenSummarySchema, TrendsResponseSchema, TokenUserResponseSchema } from "@/ui/lib/admin-schemas";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
-import { formatNumber } from "@/lib/format";
+import { formatISODate, formatNumber, parseISODate } from "@/lib/format";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { DatePicker } from "@/components/ui/date-picker";
 import { Button } from "@/components/ui/button";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { LoadingState } from "@/ui/components/admin/loading-state";
@@ -109,22 +109,18 @@ export default function TokenUsagePage() {
         <CardContent className="flex flex-wrap items-end gap-3 pt-4">
           <div className="grid gap-1">
             <label htmlFor="from" className="text-xs text-muted-foreground">From</label>
-            <Input
+            <DatePicker
               id="from"
-              type="date"
-              className="h-8 w-40"
-              value={filters.from}
-              onChange={(e) => setFilters((f) => ({ ...f, from: e.target.value }))}
+              value={parseISODate(filters.from)}
+              onChange={(d) => setFilters((f) => ({ ...f, from: formatISODate(d) }))}
             />
           </div>
           <div className="grid gap-1">
             <label htmlFor="to" className="text-xs text-muted-foreground">To</label>
-            <Input
+            <DatePicker
               id="to"
-              type="date"
-              className="h-8 w-40"
-              value={filters.to}
-              onChange={(e) => setFilters((f) => ({ ...f, to: e.target.value }))}
+              value={parseISODate(filters.to)}
+              onChange={(d) => setFilters((f) => ({ ...f, to: formatISODate(d) }))}
             />
           </div>
           <Button size="sm" variant="outline" className="h-8" onClick={applyFilters}>

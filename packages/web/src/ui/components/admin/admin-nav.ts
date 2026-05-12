@@ -120,10 +120,16 @@ export const navGroups: NavGroup[] = [
   },
 ];
 
-export interface AdminBreadcrumb {
-  section?: string;
-  page?: string;
-}
+/**
+ * Discriminated union over the two legal breadcrumb states the resolver
+ * produces. The previous `{ section?: string; page?: string }` interface
+ * allowed `{ page: "X" }` (illegal) — encoding the invariant in the type
+ * lets `switch (b.kind)` prove exhaustiveness in consumers. Add a
+ * `section`-only variant if a future group-landing page needs one.
+ */
+export type AdminBreadcrumb =
+  | { kind: "overview" }
+  | { kind: "page"; section: string; page: string };
 
 /**
  * Single source of truth for nav-item matching. Sidebar active-state and
@@ -139,13 +145,15 @@ export function matchesNavItem(item: NavSubItem, pathname: string): boolean {
 
 /** Resolves a pathname to its sidebar section + page label via `matchesNavItem`. */
 export function resolveAdminBreadcrumb(pathname: string): AdminBreadcrumb {
-  if (pathname === "/admin") return {};
+  if (pathname === "/admin") return { kind: "overview" };
 
   for (const group of navGroups) {
     for (const item of group.items) {
-      if (matchesNavItem(item, pathname)) return { section: group.title, page: item.label };
+      if (matchesNavItem(item, pathname)) {
+        return { kind: "page", section: group.title, page: item.label };
+      }
     }
   }
 
-  return {};
+  return { kind: "overview" };
 }

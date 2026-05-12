@@ -27,6 +27,11 @@ import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { Effect, Duration } from "effect";
 import { normalizeError } from "@atlas/api/lib/effect/errors";
+import {
+  coalescedScopeColumn,
+  matchScopeAcrossAliases,
+  withGroupScope,
+} from "@atlas/api/lib/db/with-group-scope";
 import { getSemanticRoot } from "./files";
 import { scanEntities } from "./scanner";
 import { EntityShape } from "./shapes";
@@ -91,15 +96,16 @@ export async function upsertEntity(
   if (!hasInternalDB()) {
     throw new Error("Internal DB required for org-scoped semantic entities");
   }
+  const scope = withGroupScope(orgId, connectionId);
   await internalQuery(
     `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id, status)
      VALUES ($1, $2, $3, $4, $5, 'published')
-     ON CONFLICT (org_id, entity_type, name, COALESCE(connection_id, '__default__')) WHERE status = 'published'
+     ON CONFLICT (org_id, entity_type, name, ${coalescedScopeColumn()}) WHERE status = 'published'
      DO UPDATE SET yaml_content = EXCLUDED.yaml_content,
                    entity_type = EXCLUDED.entity_type,
                    connection_id = EXCLUDED.connection_id,
                    updated_at = now()`,
-    [orgId, entityType, name, yamlContent, connectionId ?? null],
+    [orgId, entityType, name, yamlContent, scope.param],
   );
 }
 
@@ -120,15 +126,16 @@ export async function upsertDraftEntity(
   if (!hasInternalDB()) {
     throw new Error("Internal DB required for org-scoped semantic entities");
   }
+  const scope = withGroupScope(orgId, connectionId);
   await internalQuery(
     `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id, status)
      VALUES ($1, $2, $3, $4, $5, 'draft')
-     ON CONFLICT (org_id, entity_type, name, COALESCE(connection_id, '__default__')) WHERE status = 'draft'
+     ON CONFLICT (org_id, entity_type, name, ${coalescedScopeColumn()}) WHERE status = 'draft'
      DO UPDATE SET yaml_content = EXCLUDED.yaml_content,
                    entity_type = EXCLUDED.entity_type,
                    connection_id = EXCLUDED.connection_id,
                    updated_at = now()`,
-    [orgId, entityType, name, yamlContent, connectionId ?? null],
+    [orgId, entityType, name, yamlContent, scope.param],
   );
 }
 
@@ -149,12 +156,13 @@ export async function upsertTombstone(
   if (!hasInternalDB()) {
     throw new Error("Internal DB required for org-scoped semantic entities");
   }
+  const scope = withGroupScope(orgId, connectionId);
   await internalQuery(
     `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id, status)
      VALUES ($1, $2, $3, '', $4, 'draft_delete')
-     ON CONFLICT (org_id, entity_type, name, COALESCE(connection_id, '__default__')) WHERE status = 'draft_delete'
+     ON CONFLICT (org_id, entity_type, name, ${coalescedScopeColumn()}) WHERE status = 'draft_delete'
      DO UPDATE SET updated_at = now()`,
-    [orgId, entityType, name, connectionId ?? null],
+    [orgId, entityType, name, scope.param],
   );
 }
 
@@ -171,15 +179,16 @@ export async function deleteDraftEntity(
   connectionId?: string,
 ): Promise<boolean> {
   if (!hasInternalDB()) return false;
+  const scope = withGroupScope(orgId, connectionId);
   const rows = await internalQuery<{ id: string }>(
     `DELETE FROM semantic_entities
      WHERE org_id = $1
        AND entity_type = $2
        AND name = $3
-       AND COALESCE(connection_id, '__default__') = COALESCE($4, '__default__')
+       AND ${scope.match(4)}
        AND status IN ('draft', 'draft_delete')
      RETURNING id`,
-    [orgId, entityType, name, connectionId ?? null],
+    [orgId, entityType, name, scope.param],
   );
   return rows.length > 0;
 }
@@ -829,7 +838,7 @@ export async function applyTombstones(
      WHERE p.org_id = $1 AND p.status = 'published'
        AND d.org_id = p.org_id
        AND d.name = p.name
-       AND COALESCE(d.connection_id, '__default__') = COALESCE(p.connection_id, '__default__')
+       AND ${matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "p" })}
        AND d.status = 'draft_delete'
      RETURNING p.id`,
     [orgId],
@@ -862,7 +871,7 @@ export async function promoteDraftEntities(
      WHERE p.org_id = $1 AND p.status = 'published'
        AND d.org_id = p.org_id
        AND d.name = p.name
-       AND COALESCE(d.connection_id, '__default__') = COALESCE(p.connection_id, '__default__')
+       AND ${matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "p" })}
        AND d.status = 'draft'`,
     [orgId],
   );

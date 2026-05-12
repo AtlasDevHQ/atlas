@@ -21,6 +21,7 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { internalQuery } from "@atlas/api/lib/db/internal";
+import { matchScopeAcrossAliases } from "@atlas/api/lib/db/with-group-scope";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
@@ -166,8 +167,7 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
               SELECT 1 FROM semantic_entities pub
                WHERE pub.org_id = d.org_id
                  AND pub.name = d.name
-                 AND COALESCE(pub.connection_id, '__default__')
-                     = COALESCE(d.connection_id, '__default__')
+                 AND ${matchScopeAcrossAliases({ leftAlias: "pub", rightAlias: "d" })}
                  AND pub.status = 'published'
             )
           ORDER BY d.updated_at DESC`,
@@ -180,8 +180,7 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
            INNER JOIN semantic_entities pub
              ON d.org_id = pub.org_id
             AND d.name = pub.name
-            AND COALESCE(d.connection_id, '__default__')
-                = COALESCE(pub.connection_id, '__default__')
+            AND ${matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "pub" })}
           WHERE d.org_id = $1
             AND d.status = 'draft'
             AND pub.status = 'published'

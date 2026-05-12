@@ -535,7 +535,7 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
       }
       // Reuse the shared parser so the route and EE row mapper stay
       // in lockstep. `null` is the malformed-bundle signal — distinct
-      // from a true decrypt failure (`decryptUrl` throwing), which
+      // from a true decrypt failure (`decryptSecret` throwing), which
       // would have already surfaced via `rowToConfig`'s
       // `apiKeyStatus = "decrypt_failed"` path.
       const bundle = parseBedrockCredentialBundle(rawConfig.apiKey);

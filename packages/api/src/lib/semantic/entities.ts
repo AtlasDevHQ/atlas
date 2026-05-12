@@ -1029,7 +1029,7 @@ export async function restoreSingleConnection(
   // from its workspace) carry `url = ''` as a marker — they're not real
   // archived connections. Restoring them by flipping status='published'
   // would expose the empty-string url to every read path that doesn't
-  // pre-filter `status='archived'`, and `decryptUrl('')` then crashes.
+  // pre-filter `status='archived'`, and `decryptSecret('')` then crashes.
   // The user-visible "restore" semantic on a tombstone is "un-hide" —
   // delete the per-org row so the global connection becomes visible
   // again via the connection-visibility fallback. No entity/prompt

@@ -21,7 +21,7 @@ import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { connections, detectDBType, resolveDatasourceUrl } from "@atlas/api/lib/db/connection";
 import { isAuthEmailDeliveryConfigured } from "@atlas/api/lib/email/delivery";
-import { hasInternalDB, internalQuery, queryEffect, encryptUrl } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, internalQuery, queryEffect, encryptSecret } from "@atlas/api/lib/db/internal";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
@@ -493,7 +493,7 @@ onboarding.openapi(
       // Encrypt and persist to internal DB
       let encryptedUrl: string;
       try {
-        encryptedUrl = encryptUrl(url);
+        encryptedUrl = encryptSecret(url);
       } catch (err) {
         log.error({ err: errorMessage(err), requestId }, "Failed to encrypt connection URL during onboarding");
         return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL.", requestId }, 500);
@@ -675,7 +675,7 @@ onboarding.openapi(
 
       let encryptedUrl: string;
       try {
-        encryptedUrl = encryptUrl(url);
+        encryptedUrl = encryptSecret(url);
       } catch (err) {
         log.error({ err: errorMessage(err), requestId }, "Failed to encrypt demo connection URL");
         return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL.", requestId }, 500);

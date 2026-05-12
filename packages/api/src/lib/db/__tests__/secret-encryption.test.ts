@@ -58,7 +58,7 @@ describe("secret encryption helpers", () => {
 
     it("round-trips a Telegram bot token that contains colons", () => {
       // Telegram tokens look like "1234:ABC..." — colons in the plaintext
-      // would trip up encryptUrl's colon-count heuristic. encryptSecret
+      // would trip up encryptSecret's colon-count heuristic. encryptSecret
       // uses a versioned prefix instead so this round-trips cleanly.
       const plaintext = "1234567890:ABC-DEF_ghij1234:klmnopqrstuv";
       const encrypted = encryptSecret(plaintext);

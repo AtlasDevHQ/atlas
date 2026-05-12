@@ -13,7 +13,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
-import { hasInternalDB, internalQuery, encryptUrl, decryptUrl } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, internalQuery, encryptSecret, decryptSecret } from "@atlas/api/lib/db/internal";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
@@ -691,7 +691,7 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
   // Encrypt and persist to internal DB with org_id
   let encryptedUrl: string;
   try {
-    encryptedUrl = encryptUrl(url);
+    encryptedUrl = encryptSecret(url);
   } catch (err) {
     connections.unregister(id);
     log.error({ err: errorMessage(err), connectionId: id, requestId }, "Failed to encrypt connection URL");
@@ -765,7 +765,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
 
   // Check it exists in the DB and belongs to this org. Excludes archived
   // rows so per-org delete-as-hide tombstones (whose `url = ''` placeholder
-  // would crash `decryptUrl` below) read as "not found here, did you mean
+  // would crash `decryptSecret` below) read as "not found here, did you mean
   // to restore first?" rather than a misleading "encryption key changed"
   // 500.
   const existing = await internalQuery<{ id: string; url: string; type: string; description: string | null; schema_name: string | null }>(
@@ -792,7 +792,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
 
   let currentUrl: string;
   try {
-    currentUrl = decryptUrl(current.url);
+    currentUrl = decryptSecret(current.url);
   } catch (err) {
     log.error({ connectionId: id, requestId, err: errorMessage(err) }, "Failed to decrypt stored connection URL");
     return c.json({ error: "decryption_failed", message: "Stored connection URL could not be decrypted. The encryption key may have changed.", requestId }, 500);
@@ -844,7 +844,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
   // Encrypt and update in DB — rollback registry on failure
   let encryptedNewUrl: string;
   try {
-    encryptedNewUrl = encryptUrl(newUrl);
+    encryptedNewUrl = encryptSecret(newUrl);
   } catch (err) {
     let rollbackFailed = false;
     try {
@@ -986,7 +986,7 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => runHandler(c, "dele
       // archived status alone hides it from this org's lists.
       //
       // Readers must filter by `status != 'archived'` before passing this
-      // row to `decryptUrl` or runtime registration — the empty URL is a
+      // row to `decryptSecret` or runtime registration — the empty URL is a
       // marker, not a value. Those filters live in `wizard.ts`,
       // `internal.ts::loadSavedConnections`, and the PUT/GET handlers in
       // this file.
@@ -1053,7 +1053,7 @@ adminConnections.openapi(getConnectionRoute, async (c) => runHandler(c, "get con
     try {
       // Defense-in-depth: even though visibility already filters out
       // archived rows, exclude them here too so a future visibility-layer
-      // bug can never feed the empty-string tombstone marker to decryptUrl.
+      // bug can never feed the empty-string tombstone marker to decryptSecret.
       const rows = await internalQuery<{ url: string; schema_name: string | null }>(
         "SELECT url, schema_name FROM connections WHERE id = $1 AND org_id = $2 AND status != 'archived'",
         [id, orgId],
@@ -1062,7 +1062,7 @@ adminConnections.openapi(getConnectionRoute, async (c) => runHandler(c, "get con
         managed = true;
         schema = rows[0].schema_name;
         try {
-          maskedUrl = maskConnectionUrl(decryptUrl(rows[0].url));
+          maskedUrl = maskConnectionUrl(decryptSecret(rows[0].url));
         } catch (decryptErr) {
           log.error({ connectionId: id, requestId, err: decryptErr instanceof Error ? decryptErr.message : String(decryptErr) }, "Failed to decrypt stored connection URL");
           maskedUrl = "[encrypted — decryption failed]";

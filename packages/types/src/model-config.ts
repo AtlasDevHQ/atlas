@@ -67,7 +67,7 @@ export type BedrockRegion = (typeof BEDROCK_REGIONS)[number];
 
 /**
  * Bedrock-specific credential bundle. Stored as JSON in `api_key_encrypted`
- * after `encryptUrl`; the helper round-trips a string, so callers stringify
+ * after `encryptSecret`; the helper round-trips a string, so callers stringify
  * before encrypt and parse after decrypt.
  */
 export interface BedrockCredentialBundle {

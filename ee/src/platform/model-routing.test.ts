@@ -695,7 +695,7 @@ describe("bedrock encrypt/decrypt round-trip", () => {
       q.sql.includes("INSERT INTO workspace_model_config"),
     );
     expect(upsert).toBeDefined();
-    // The mock's encryptUrl prefixes with "encrypted:" — confirms the
+    // The mock's encryptSecret prefixes with "encrypted:" — confirms the
     // bundle was passed through the encryption helper, not stored raw.
     const encryptedParam = upsert!.params[3] as string;
     expect(encryptedParam.startsWith("encrypted:")).toBe(true);

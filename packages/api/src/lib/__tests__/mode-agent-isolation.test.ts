@@ -44,8 +44,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => true,
   internalQuery: mockInternalQuery,
   internalExecute: async () => {},
-  encryptUrl: (u: string) => u,
-  decryptUrl: (u: string) => u,
+  encryptSecret: (u: string) => u,
+  decryptSecret: (u: string) => u,
 }));
 
 // ---------------------------------------------------------------------------

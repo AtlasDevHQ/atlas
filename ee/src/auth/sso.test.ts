@@ -514,7 +514,7 @@ describe("OIDC encryption round-trip", () => {
     ee.queueMockRows([sampleOidcRow]);
     const providers = await run(listSSOProviders("org-1"));
     expect(providers).toHaveLength(1);
-    // The mock decryptUrl strips "encrypted:" prefix
+    // The mock decryptSecret strips "encrypted:" prefix
     expect((providers[0].config as { clientSecret: string }).clientSecret).toBe("secret-456");
   });
 });

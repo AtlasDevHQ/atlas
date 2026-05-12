@@ -52,8 +52,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     throw new Error("not configured");
   }),
   _resetPool: mock(() => {}),
-  encryptUrl: mock((u: string) => u),
-  decryptUrl: mock((u: string) => u),
+  encryptSecret: mock((u: string) => u),
+  decryptSecret: mock((u: string) => u),
 }));
 
 // Cache-busting import so the mocked module is picked up

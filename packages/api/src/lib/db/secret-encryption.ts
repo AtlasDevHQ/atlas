@@ -1,10 +1,11 @@
 /**
  * Symmetric encryption for arbitrary secret payloads (F-41).
  *
- * Lives alongside `internal.ts`'s `encryptUrl` but covers payloads
- * `encryptUrl`'s plaintext detection can't safely handle: `encryptUrl`
- * gates plaintext detection on a URL-scheme regex (`^<scheme>://`) plus
- * a 3-colon-count check. Neither works for integration credentials —
+ * Lives alongside the same-named `encryptSecret` in `db/internal.ts`
+ * (formerly `encryptUrl`, renamed under #2285) but covers payloads the
+ * internal helper's plaintext detection can't safely handle: the
+ * internal helper gates plaintext detection on a URL-scheme regex
+ * (`^<scheme>://`) plus a 3-colon-count check. Neither works for integration credentials —
  * Telegram bot tokens like `1234:abc…` aren't URLs and don't split into
  * three parts (the plaintext would be rejected on read), and JSON blobs
  * can coincidentally produce three colon-separated parts (triggering a
@@ -99,8 +100,8 @@ function hasVersionedPrefix(stored: string): boolean {
  * Encrypts an arbitrary secret string under the active keyset entry,
  * tagged with a `enc:v<N>:` prefix so `decryptSecret` can look up the
  * right key even after a rotation (F-47). Returns the plaintext
- * unchanged if no encryption key is configured, matching encryptUrl's
- * dev-friendly semantics.
+ * unchanged if no encryption key is configured, matching the
+ * dev-friendly semantics of the URL-aware helper in `db/internal.ts`.
  */
 export function encryptSecret(plaintext: string): string {
   const keyset = getEncryptionKeyset();

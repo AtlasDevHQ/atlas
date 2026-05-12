@@ -16,8 +16,8 @@ import {
   hasInternalDB,
   internalQuery,
   getInternalDB,
-  encryptUrl,
-  decryptUrl,
+  encryptSecret,
+  decryptSecret,
 } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
@@ -79,7 +79,7 @@ function rowToProvider(row: SSOProviderRow): SSOProvider {
   const config = { ...rawConfig };
   if (row.type === "oidc" && config.clientSecret) {
     try {
-      config.clientSecret = decryptUrl(config.clientSecret as string);
+      config.clientSecret = decryptSecret(config.clientSecret as string);
     } catch (err) {
       log.error(
         { err: err instanceof Error ? err.message : String(err), providerId: row.id },
@@ -140,7 +140,7 @@ export function summarizeProvider(provider: SSOProvider): Omit<SSOProvider, "con
 function prepareConfigForStorage(type: SSOProviderType, config: Record<string, unknown>): Record<string, unknown> {
   const stored = { ...config };
   if (type === "oidc" && stored.clientSecret) {
-    const encrypted = encryptUrl(stored.clientSecret as string);
+    const encrypted = encryptSecret(stored.clientSecret as string);
     if (encrypted === stored.clientSecret) {
       log.warn("OIDC clientSecret stored without encryption — set ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET");
     }

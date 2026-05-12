@@ -4,7 +4,7 @@
  * Parses `ATLAS_ENCRYPTION_KEYS` (multi-key, versioned) or the legacy
  * single-key env vars (`ATLAS_ENCRYPTION_KEY` → `BETTER_AUTH_SECRET`)
  * into an ordered keyset and exposes the lookup API consumed by the
- * cipher helpers (`encryptUrl`/`decryptUrl`, `encryptSecret`/`decryptSecret`)
+ * cipher helpers in `db/internal.ts` and `db/secret-encryption.ts` (both pairs named `encryptSecret`/`decryptSecret` post-#2285)
  * and the re-encryption script (`scripts/rotate-encryption-key.ts`).
  *
  * See `apps/docs/content/docs/platform-ops/encryption-key-rotation.mdx`

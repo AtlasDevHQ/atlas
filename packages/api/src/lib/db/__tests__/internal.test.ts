@@ -19,8 +19,8 @@ import {
   hardDeleteWorkspace,
   _resetPool,
   _resetCircuitBreaker,
-  encryptUrl,
-  decryptUrl,
+  encryptSecret,
+  decryptSecret,
   getEncryptionKey,
   isPlaintextUrl,
   _resetEncryptionKeyCache,
@@ -808,11 +808,11 @@ describe("connection URL encryption", () => {
     });
   });
 
-  describe("encryptUrl() / decryptUrl() round-trip", () => {
+  describe("encryptSecret() / decryptSecret() round-trip", () => {
     it("encrypts and decrypts a PostgreSQL URL", () => {
       process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-round-trip-testing!";
       const url = "postgresql://admin:s3cret@db.example.com:5432/analytics";
-      const encrypted = encryptUrl(url);
+      const encrypted = encryptSecret(url);
 
       // Encrypted value should not contain the original URL
       expect(encrypted).not.toBe(url);
@@ -828,74 +828,91 @@ describe("connection URL encryption", () => {
       expect(parts.length).toBe(5);
 
       // Decrypt should return the original
-      expect(decryptUrl(encrypted)).toBe(url);
+      expect(decryptSecret(encrypted)).toBe(url);
     });
 
     it("encrypts and decrypts a MySQL URL", () => {
       process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-round-trip-testing!";
       const url = "mysql://root:password@127.0.0.1:3306/mydb";
-      const encrypted = encryptUrl(url);
-      expect(decryptUrl(encrypted)).toBe(url);
+      const encrypted = encryptSecret(url);
+      expect(decryptSecret(encrypted)).toBe(url);
     });
 
     it("handles URLs with special characters in password", () => {
       process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-round-trip-testing!";
       const url = "postgresql://user:p%40ss+word/with=equals@host:5432/db?sslmode=require&options=-c%20search_path%3Dpublic";
-      const encrypted = encryptUrl(url);
-      expect(decryptUrl(encrypted)).toBe(url);
+      const encrypted = encryptSecret(url);
+      expect(decryptSecret(encrypted)).toBe(url);
     });
 
     it("produces different ciphertexts for the same input (random IV)", () => {
       process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-round-trip-testing!";
       const url = "postgresql://user:pass@host/db";
-      const enc1 = encryptUrl(url);
-      const enc2 = encryptUrl(url);
+      const enc1 = encryptSecret(url);
+      const enc2 = encryptSecret(url);
       expect(enc1).not.toBe(enc2); // Different IVs
-      expect(decryptUrl(enc1)).toBe(url);
-      expect(decryptUrl(enc2)).toBe(url);
+      expect(decryptSecret(enc1)).toBe(url);
+      expect(decryptSecret(enc2)).toBe(url);
+    });
+  });
+
+  describe("deprecated encryptUrl / decryptUrl re-exports", () => {
+    it("encryptUrl is a re-export of encryptSecret and round-trips via decryptUrl", async () => {
+      process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-deprecated-aliases!";
+      const { encryptUrl, decryptUrl, encryptSecret: canonicalEncrypt, decryptSecret: canonicalDecrypt } = await import("../internal");
+
+      // Identity check — alias and canonical name resolve to the same function reference.
+      expect(encryptUrl).toBe(canonicalEncrypt);
+      expect(decryptUrl).toBe(canonicalDecrypt);
+
+      const url = "postgresql://user:pass@host/db";
+      const encrypted = encryptUrl(url);
+      expect(decryptUrl(encrypted)).toBe(url);
+      // Cross-alias decrypt also works — proves they're the same implementation.
+      expect(canonicalDecrypt(encrypted)).toBe(url);
     });
   });
 
   describe("plaintext migration", () => {
-    it("decryptUrl returns plaintext URLs as-is", () => {
+    it("decryptSecret returns plaintext URLs as-is", () => {
       process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-plaintext-migration";
       const url = "postgresql://user:pass@host:5432/db";
-      expect(decryptUrl(url)).toBe(url);
+      expect(decryptSecret(url)).toBe(url);
     });
 
-    it("decryptUrl handles mysql:// plaintext", () => {
+    it("decryptSecret handles mysql:// plaintext", () => {
       process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-plaintext-migration";
       const url = "mysql://user:pass@host:3306/db";
-      expect(decryptUrl(url)).toBe(url);
+      expect(decryptSecret(url)).toBe(url);
     });
   });
 
   describe("missing encryption key", () => {
-    it("encryptUrl returns plaintext when no key is available", () => {
+    it("encryptSecret returns plaintext when no key is available", () => {
       delete process.env.ATLAS_ENCRYPTION_KEY;
       delete process.env.BETTER_AUTH_SECRET;
       const url = "postgresql://user:pass@host/db";
-      expect(encryptUrl(url)).toBe(url);
+      expect(encryptSecret(url)).toBe(url);
     });
 
-    it("decryptUrl returns plaintext URLs when no key is available", () => {
+    it("decryptSecret returns plaintext URLs when no key is available", () => {
       delete process.env.ATLAS_ENCRYPTION_KEY;
       delete process.env.BETTER_AUTH_SECRET;
       const url = "postgresql://user:pass@host/db";
-      expect(decryptUrl(url)).toBe(url);
+      expect(decryptSecret(url)).toBe(url);
     });
 
-    it("decryptUrl throws when encountering encrypted data without a key", () => {
+    it("decryptSecret throws when encountering encrypted data without a key", () => {
       // Encrypt with a key first
       process.env.ATLAS_ENCRYPTION_KEY = "temp-key-for-this-test!!!!!!!!!!!";
       const url = "postgresql://user:pass@host/db";
-      const encrypted = encryptUrl(url);
+      const encrypted = encryptSecret(url);
 
-      // Now remove the key — decryptUrl should throw, not return garbage
+      // Now remove the key — decryptSecret should throw, not return garbage
       delete process.env.ATLAS_ENCRYPTION_KEY;
       delete process.env.BETTER_AUTH_SECRET;
       _resetEncryptionKeyCache();
-      expect(() => decryptUrl(encrypted)).toThrow("Cannot decrypt connection URL: no encryption key available");
+      expect(() => decryptSecret(encrypted)).toThrow("Cannot decrypt connection URL: no encryption key available");
     });
   });
 
@@ -903,44 +920,44 @@ describe("connection URL encryption", () => {
     it("throws on tampered ciphertext", () => {
       process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-corruption-testing!";
       const url = "postgresql://user:pass@host/db";
-      const encrypted = encryptUrl(url);
+      const encrypted = encryptSecret(url);
       const parts = encrypted.split(":");
       // F-47 format: enc:v1:iv:authTag:ciphertext — ciphertext is parts[4].
       parts[4] = "AAAA" + parts[4].slice(4);
       const tampered = parts.join(":");
-      expect(() => decryptUrl(tampered)).toThrow("Failed to decrypt connection URL");
+      expect(() => decryptSecret(tampered)).toThrow("Failed to decrypt connection URL");
     });
 
     it("throws on wrong encryption key", () => {
       process.env.ATLAS_ENCRYPTION_KEY = "key-one-for-encryption-testing!!";
       const url = "postgresql://user:pass@host/db";
-      const encrypted = encryptUrl(url);
+      const encrypted = encryptSecret(url);
 
       process.env.ATLAS_ENCRYPTION_KEY = "key-two-for-encryption-testing!!";
-      expect(() => decryptUrl(encrypted)).toThrow("Failed to decrypt connection URL");
+      expect(() => decryptSecret(encrypted)).toThrow("Failed to decrypt connection URL");
     });
 
     it("throws on non-base64 3-part string that is not a URL", () => {
       process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-corruption-testing!";
       // 3 colon-separated parts but not valid encrypted data
-      expect(() => decryptUrl("foo:bar:baz")).toThrow("Failed to decrypt connection URL");
+      expect(() => decryptSecret("foo:bar:baz")).toThrow("Failed to decrypt connection URL");
     });
 
     it("throws on tampered auth tag", () => {
       process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-corruption-testing!";
       const url = "postgresql://user:pass@host/db";
-      const encrypted = encryptUrl(url);
+      const encrypted = encryptSecret(url);
       const parts = encrypted.split(":");
       // F-47 format: enc:v1:iv:authTag:ciphertext — auth tag is parts[3].
       parts[3] = "AAAA" + parts[3].slice(4);
       const tampered = parts.join(":");
-      expect(() => decryptUrl(tampered)).toThrow("Failed to decrypt connection URL");
+      expect(() => decryptSecret(tampered)).toThrow("Failed to decrypt connection URL");
     });
 
     it("throws on non-3-part format when value is not a URL", () => {
       process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-corruption-testing!";
       // 2 parts — not a URL, not 3-part encrypted format
-      expect(() => decryptUrl("some:garbage")).toThrow("unrecognized format");
+      expect(() => decryptSecret("some:garbage")).toThrow("unrecognized format");
     });
   });
 
@@ -956,9 +973,9 @@ describe("connection URL encryption", () => {
       process.env.ATLAS_ENCRYPTION_KEYS = "v2:new-raw,v1:old-raw";
       _resetEncryptionKeyCache();
       const url = "postgresql://admin:pw@host:5432/db";
-      const encrypted = encryptUrl(url);
+      const encrypted = encryptSecret(url);
       expect(encrypted.startsWith("enc:v2:")).toBe(true);
-      expect(decryptUrl(encrypted)).toBe(url);
+      expect(decryptSecret(encrypted)).toBe(url);
     });
 
     it("reads ciphertext stamped with a legacy (non-active) version by looking up the key", () => {
@@ -966,26 +983,26 @@ describe("connection URL encryption", () => {
       process.env.ATLAS_ENCRYPTION_KEYS = "v1:old-raw";
       _resetEncryptionKeyCache();
       const url = "postgresql://admin:pw@host:5432/db";
-      const v1Ciphertext = encryptUrl(url);
+      const v1Ciphertext = encryptSecret(url);
       expect(v1Ciphertext.startsWith("enc:v1:")).toBe(true);
 
       // Phase B: rotate — active flips to v2, v1 preserved for reads.
       process.env.ATLAS_ENCRYPTION_KEYS = "v2:new-raw,v1:old-raw";
       _resetEncryptionKeyCache();
-      expect(decryptUrl(v1Ciphertext)).toBe(url);
+      expect(decryptSecret(v1Ciphertext)).toBe(url);
     });
 
     it("reads pre-F-47 unversioned ciphertext (iv:authTag:ciphertext) using the active key as a fallback", () => {
       process.env.ATLAS_ENCRYPTION_KEY = "legacy-raw-key";
       _resetEncryptionKeyCache();
       // Synthesize a pre-F-47 ciphertext by re-encoding the output of
-      // encryptUrl without the `enc:v1:` prefix — same key, same body.
+      // encryptSecret without the `enc:v1:` prefix — same key, same body.
       const url = "postgresql://user:pass@host/db";
-      const versioned = encryptUrl(url);
+      const versioned = encryptSecret(url);
       const legacy = versioned.replace(/^enc:v1:/, "");
       const parts = legacy.split(":");
       expect(parts.length).toBe(3);
-      expect(decryptUrl(legacy)).toBe(url);
+      expect(decryptSecret(legacy)).toBe(url);
     });
 
     it("reads pre-F-47 unversioned ciphertext after rotation via the v1 key lookup (not the new active key)", () => {
@@ -996,12 +1013,12 @@ describe("connection URL encryption", () => {
       process.env.ATLAS_ENCRYPTION_KEYS = "v1:original-key";
       _resetEncryptionKeyCache();
       const url = "postgresql://admin:pw@host/db";
-      const versioned = encryptUrl(url);
+      const versioned = encryptSecret(url);
       const unversioned = versioned.replace(/^enc:v1:/, "");
 
       process.env.ATLAS_ENCRYPTION_KEYS = "v2:new-key,v1:original-key";
       _resetEncryptionKeyCache();
-      expect(decryptUrl(unversioned)).toBe(url);
+      expect(decryptSecret(unversioned)).toBe(url);
     });
 
     it("throws clearly when un-versioned ciphertext meets a keyset with no v1 (fresh-deploy misconfig)", () => {
@@ -1015,23 +1032,23 @@ describe("connection URL encryption", () => {
       process.env.ATLAS_ENCRYPTION_KEYS = "v1:original-key";
       _resetEncryptionKeyCache();
       const url = "postgresql://admin:pw@host/db";
-      const unversioned = encryptUrl(url).replace(/^enc:v1:/, "");
+      const unversioned = encryptSecret(url).replace(/^enc:v1:/, "");
 
       // v1 dropped — active is now a totally different raw value.
       process.env.ATLAS_ENCRYPTION_KEYS = "v2:never-used-to-encrypt-this";
       _resetEncryptionKeyCache();
-      expect(() => decryptUrl(unversioned)).toThrow(/Failed to decrypt connection URL/);
+      expect(() => decryptSecret(unversioned)).toThrow(/Failed to decrypt connection URL/);
     });
 
     it("throws a configuration-specific error when the ciphertext version is missing from the keyset", () => {
       process.env.ATLAS_ENCRYPTION_KEYS = "v2:new-raw,v1:old-raw";
       _resetEncryptionKeyCache();
       const url = "postgresql://user:pass@host/db";
-      const v2Ciphertext = encryptUrl(url);
+      const v2Ciphertext = encryptSecret(url);
 
       process.env.ATLAS_ENCRYPTION_KEYS = "v1:old-raw";
       _resetEncryptionKeyCache();
-      expect(() => decryptUrl(v2Ciphertext)).toThrow(/v2|not present|missing/i);
+      expect(() => decryptSecret(v2Ciphertext)).toThrow(/v2|not present|missing/i);
     });
   });
 
@@ -1055,7 +1072,7 @@ describe("connection URL encryption", () => {
       process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-load-connections!!!";
 
       const realUrl = "postgresql://admin:secret@warehouse.example.com:5432/wh";
-      const encryptedUrl = encryptUrl(realUrl);
+      const encryptedUrl = encryptSecret(realUrl);
 
       const { pool } = createMockPool();
       pool._setResult({
@@ -1075,12 +1092,12 @@ describe("connection URL encryption", () => {
       process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-load-connections!!!";
 
       const goodUrl = "postgresql://admin:secret@warehouse.example.com:5432/wh";
-      const goodEncrypted = encryptUrl(goodUrl);
+      const goodEncrypted = encryptSecret(goodUrl);
 
       // Encrypted with a different key — will fail to decrypt
       process.env.ATLAS_ENCRYPTION_KEY = "different-key-that-wont-work!!!!";
       _resetEncryptionKeyCache();
-      const badEncrypted = encryptUrl("postgresql://host/bad");
+      const badEncrypted = encryptSecret("postgresql://host/bad");
 
       // Restore the original key
       process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-load-connections!!!";

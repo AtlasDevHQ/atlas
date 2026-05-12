@@ -7,7 +7,7 @@
  */
 
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
-import { hasInternalDB, internalQuery, encryptUrl } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, internalQuery, encryptSecret } from "@atlas/api/lib/db/internal";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import { connections, detectDBType, resolveDatasourceUrl } from "@atlas/api/lib/db/connection";
@@ -308,7 +308,7 @@ async function seedDemoData(orgId: string): Promise<void> {
 
   // Encrypt and persist connection
   try {
-    const encryptedUrl = encryptUrl(url);
+    const encryptedUrl = encryptSecret(url);
     const urlKeyVersion = activeKeyVersion();
     await internalQuery(
       `INSERT INTO connections (id, url, url_key_version, type, description, org_id)

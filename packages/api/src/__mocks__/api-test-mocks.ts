@@ -340,11 +340,11 @@ export function createApiTestMocks(
     _resetCircuitBreaker: mock(() => {}),
     isInternalCircuitOpen: () => false,
     _setInternalCircuitOpenForTests: mock(() => {}),
-    encryptUrl: (url: string) => url,
-    decryptUrl: (url: string) => url,
+    encryptSecret: (url: string) => url,
+    decryptSecret: (url: string) => url,
     getEncryptionKey: () => null,
     // F-47 keyset resolver — mocked as `null` so the passthrough contract
-    // in `encryptUrl` / `encryptSecret` still holds under
+    // in `encryptSecret` / `encryptSecret` still holds under
     // `mock.module("@atlas/api/lib/db/internal", ...)` partial mocks.
     getEncryptionKeyset: () => null,
     isPlaintextUrl: (value: string) =>

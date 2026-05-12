@@ -62,8 +62,8 @@ const mocks = createApiTestMocks({
     resolveDatasourceUrl: () => "postgresql://stub",
   },
   internal: {
-    encryptUrl: (url: string) => `encrypted:${url}`,
-    decryptUrl: (url: string) => (url as string).replace(/^encrypted:/, ""),
+    encryptSecret: (url: string) => `encrypted:${url}`,
+    decryptSecret: (url: string) => (url as string).replace(/^encrypted:/, ""),
   },
 });
 

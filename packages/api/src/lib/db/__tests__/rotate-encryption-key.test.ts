@@ -10,11 +10,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { rotateTable } from "../../../../scripts/rotate-encryption-key";
-import {
-  _resetEncryptionKeyCache,
-  encryptUrl,
-  decryptUrl,
-} from "../internal";
+import { _resetEncryptionKeyCache } from "../internal";
 import {
   encryptSecret,
   decryptSecret,
@@ -117,7 +113,7 @@ describe("rotateTable (F-47 re-encryption)", () => {
     // from a v1 write — simulates rows that predate F-47.
     process.env.ATLAS_ENCRYPTION_KEYS = "v1:old-raw";
     _resetEncryptionKeyCache();
-    const v1Ciphertext = encryptUrl("postgresql://admin:pw@host/db");
+    const v1Ciphertext = encryptSecret("postgresql://admin:pw@host/db");
     expect(v1Ciphertext.startsWith("enc:v1:")).toBe(true);
     const unversionedCiphertext = v1Ciphertext.replace(/^enc:v1:/, "");
 
@@ -139,7 +135,7 @@ describe("rotateTable (F-47 re-encryption)", () => {
     expect(result.updated).toBe(1);
     const updates = queries.filter((q) => q.sql.startsWith("UPDATE"));
     expect(String(updates[0].params![0])).toMatch(/^enc:v2:/);
-    expect(decryptUrl(String(updates[0].params![0]))).toBe("postgresql://admin:pw@host/db");
+    expect(decryptSecret(String(updates[0].params![0]))).toBe("postgresql://admin:pw@host/db");
   });
 
   it("encrypts a plaintext connection URL for the first time under the active key", async () => {

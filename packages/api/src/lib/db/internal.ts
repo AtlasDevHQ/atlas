@@ -82,13 +82,16 @@ function decryptBody(body: string, key: Buffer): string {
 }
 
 /**
- * Encrypts a connection URL using AES-256-GCM under the active keyset
- * entry. New writes carry the `enc:v<N>:` prefix so the rotation script
- * can identify rows below the active version. Returns the plaintext
- * unchanged if no encryption key is available (dev / self-hosted
- * passthrough).
+ * Encrypts an arbitrary string secret using AES-256-GCM under the
+ * active keyset entry. New writes carry the `enc:v<N>:` prefix so the
+ * rotation script can identify rows below the active version. Returns
+ * the plaintext unchanged if no encryption key is available (dev /
+ * self-hosted passthrough).
+ *
+ * Handles arbitrary string secrets — URL, API key, JSON cred bundle.
+ * The historic `Url` name is preserved as a deprecated re-export.
  */
-export function encryptUrl(plaintext: string): string {
+export function encryptSecret(plaintext: string): string {
   const keyset = getEncryptionKeyset();
   if (!keyset) return plaintext;
 
@@ -102,7 +105,7 @@ export function encryptUrl(plaintext: string): string {
 }
 
 /**
- * Decrypts a connection URL encrypted by `encryptUrl()`.
+ * Decrypts a string secret encrypted by `encryptSecret()`.
  * Read order (each case short-circuits):
  *   1. Looks like a plaintext URL (`scheme://…`) → return as-is.
  *   2. Carries `enc:v<N>:` prefix → look up key by version; fail loudly
@@ -111,7 +114,7 @@ export function encryptUrl(plaintext: string): string {
  *      format; decrypt with the active key (same as pre-F-47 behavior).
  *   4. Anything else → unrecognized format, throw.
  */
-export function decryptUrl(stored: string): string {
+export function decryptSecret(stored: string): string {
   if (isPlaintextUrl(stored)) return stored;
 
   const keyset = getEncryptionKeyset();
@@ -185,6 +188,12 @@ export function decryptUrl(stored: string): string {
     throw new Error("Failed to decrypt connection URL", { cause: err });
   }
 }
+
+/** @deprecated Use `encryptSecret`. Kept as a re-export for one minor version while external callers migrate. */
+export const encryptUrl = encryptSecret;
+
+/** @deprecated Use `decryptSecret`. Kept as a re-export for one minor version while external callers migrate. */
+export const decryptUrl = decryptSecret;
 
 /**
  * Returns true when the value looks like a plaintext URL. Rejects
@@ -853,7 +862,7 @@ export async function loadSavedConnections(): Promise<number> {
     type ConnRow = { id: string; url: string; type: string; description: string | null; schema_name: string | null };
     // Exclude `status = 'archived'` so per-org tombstone rows (the shadow
     // rows from the delete-as-hide flow in admin-connections.ts) never feed
-    // their empty-string `url` marker to `decryptUrl`. Without this filter
+    // their empty-string `url` marker to `decryptSecret`. Without this filter
     // a tombstone's newer `updated_at` would win the DISTINCT ON (id) race
     // and silently knock the canonical global row out of the in-memory
     // registry across every workspace on the next process restart.
@@ -871,7 +880,7 @@ export async function loadSavedConnections(): Promise<number> {
         continue;
       }
       try {
-        const url = decryptUrl(row.url);
+        const url = decryptSecret(row.url);
         connections.register(row.id, {
           url,
           description: row.description ?? undefined,

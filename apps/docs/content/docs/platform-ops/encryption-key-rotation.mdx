@@ -217,7 +217,7 @@ the escrow copy is a compromise target too.
 | Mistake | Symptom | Recovery |
 | --- | --- | --- |
 | Remove `v1` before running the rotation script | `decryptSecret` throws `key version v1 not present` on any unrotated row; integration reads 500 | Put `v1:OLD-KEY` back, run the rotation script, then remove |
-| Remove `v1` while un-rotated **pre-F-47 connection URLs** still exist (they carry no `enc:v<N>:` prefix) | `decryptUrl` falls through to the active key, fails auth-tag verification, throws generic `Failed to decrypt connection URL`. Logs carry the `usingActiveFallback: true` breadcrumb from `internal.ts`. | Add the original key back to `ATLAS_ENCRYPTION_KEYS` under **any** version label (legacy URLs carry no version, so any entry that decrypts is the right one), then run the rotation script to close out the un-versioned format |
+| Remove `v1` while un-rotated **pre-F-47 connection URLs** still exist (they carry no `enc:v<N>:` prefix) | `decryptSecret` falls through to the active key, fails auth-tag verification, throws generic `Failed to decrypt connection URL`. Logs carry the `usingActiveFallback: true` breadcrumb from `internal.ts`. | Add the original key back to `ATLAS_ENCRYPTION_KEYS` under **any** version label (legacy URLs carry no version, so any entry that decrypts is the right one), then run the rotation script to close out the un-versioned format |
 | Mix prefixed + bare entries (`v2:NEW,OLD`) | Startup fails: `ATLAS_ENCRYPTION_KEYS: entries mix prefixed (v<N>:raw) and bare raw values` | Use one style throughout |
 | Duplicate version labels (`v2:a,v2:b`) | Startup fails: `version v2 appears more than once` | Each version must be unique |
 | Rotate `BETTER_AUTH_SECRET` without a dedicated key | Every encrypted credential becomes unreadable; self-hosted installs without a prior `ATLAS_ENCRYPTION_KEY`/`ATLAS_ENCRYPTION_KEYS` are the worst hit | Restore the prior secret value from backup; set `ATLAS_ENCRYPTION_KEYS` going forward |
@@ -243,7 +243,7 @@ the escrow copy is a compromise target too.
   under the active key. The `enc:v<N>:` prefix keeps the ciphertext
   readable as long as the legacy key stays in `ATLAS_ENCRYPTION_KEYS`.
 - **Dev-mode rows (no key configured) stamp `_key_version = 1`.** When
-  no key is set, `encryptSecret` / `encryptUrl` pass plaintext through
+  no key is set, `encryptSecret` (and the deprecated `encryptUrl` alias) pass plaintext through
   unchanged, but the companion `_key_version` column still defaults to
   `1` via the schema-side `DEFAULT 1 NOT NULL` constraint. The
   observability consequence: a post-install audit query that counts

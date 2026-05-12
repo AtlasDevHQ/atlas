@@ -32,10 +32,10 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   // Empty stubs are enough — the byot-catalog-store doesn't reach into
   // them, and bun:test's mock.module errors loudly if a consumer in this
   // test suite ever does.
-  encryptUrl: () => "",
-  decryptUrl: () => "",
   encryptSecret: () => "",
   decryptSecret: () => "",
+  encryptUrl: () => "",
+  decryptUrl: () => "",
   getInternalDB: () => null,
   getEncryptionKey: () => null,
   getEncryptionKeyVersions: () => ({ active: 1, keys: new Map() }),

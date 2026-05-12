@@ -33,9 +33,14 @@
 
 import { Pool, type PoolClient } from "pg";
 import { createLogger } from "@atlas/api/lib/logger";
+// `internal.ts` and `secret-encryption.ts` both export `encryptSecret` /
+// `decryptSecret` post-#2285 (the internal pair is the URL-aware helper,
+// the secret-encryption pair is the versioned-prefix helper for
+// integration credentials). Alias the internal pair as `*Url` locally to
+// keep this script's two cipher paths visually distinct.
 import {
-  decryptUrl,
-  encryptUrl,
+  decryptSecret as decryptUrlSecret,
+  encryptSecret as encryptUrlSecret,
   isPlaintextUrl,
 } from "@atlas/api/lib/db/internal";
 import {
@@ -62,14 +67,14 @@ const log = createLogger("rotate-encryption-key");
  * shape extends `IntegrationTable` (the F-41 catalog) with a `kind`
  * discriminator that picks the right cipher helper pair:
  *
- *   `url`    → `encryptUrl` / `decryptUrl` (connection URL, with
- *              plaintext `postgres://…` fallback for pre-encryption
- *              rows)
- *   `secret` → `encryptSecret` / `decryptSecret` (every F-41
- *              integration column plus the workspace model-config API
- *              key, which historically used `encryptUrl` but reads
- *              identically now that both helpers share the versioned-
- *              keyset decryptor)
+ *   `url`    → `db/internal.ts` pair (aliased `encryptUrlSecret` /
+ *              `decryptUrlSecret`) — connection URL, with plaintext
+ *              `postgres://…` fallback for pre-encryption rows
+ *   `secret` → `db/secret-encryption.ts` pair (`encryptSecret` /
+ *              `decryptSecret`) — every F-41 integration column plus
+ *              the workspace model-config API key, which historically
+ *              used the URL helper but reads identically now that both
+ *              helpers share the versioned-keyset decryptor
  */
 type RotateTarget = IntegrationTable & { kind: "url" | "secret" };
 
@@ -113,10 +118,10 @@ function assertIdentifier(name: string, role: string): void {
 function rotateValue(kind: RotateTarget["kind"], stored: string): string {
   if (kind === "url") {
     if (isPlaintextUrl(stored)) {
-      return encryptUrl(stored);
+      return encryptUrlSecret(stored);
     }
-    const decoded = decryptUrl(stored);
-    return encryptUrl(decoded);
+    const decoded = decryptUrlSecret(stored);
+    return encryptUrlSecret(decoded);
   }
   const decoded = decryptSecret(stored);
   return encryptSecret(decoded);

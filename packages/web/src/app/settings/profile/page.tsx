@@ -11,11 +11,13 @@ import { authClient } from "@/lib/auth/client";
 import { SectionHeading } from "@/ui/components/admin/compact";
 import { MfaPanel } from "@/ui/components/admin/security/mfa-panel";
 import { IdentitySection } from "@/ui/components/settings/identity-section";
+import { InterfaceSection } from "@/ui/components/settings/interface-section";
 import { PasswordSection } from "@/ui/components/settings/password-section";
 import { SessionsSection } from "@/ui/components/settings/sessions-section";
 
 interface SessionUser {
   email: string;
+  role?: string;
 }
 
 export default function ProfilePage() {
@@ -44,6 +46,14 @@ export default function ProfilePage() {
       </header>
 
       <div className="space-y-10">
+        <InterfaceSection
+          isAdmin={
+            user.role === "admin" ||
+            user.role === "owner" ||
+            user.role === "platform_admin"
+          }
+        />
+
         <IdentitySection />
 
         <PasswordSection />

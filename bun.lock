@@ -266,7 +266,7 @@
       "dependencies": {
         "@radix-ui/react-slot": "^1.2.4",
         "@tanstack/react-query": "^5.96.2",
-        "@useatlas/types": "^0.0.24",
+        "@useatlas/types": "^0.0.25",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
         "radix-ui": "^1.4.3",
@@ -334,7 +334,7 @@
       "name": "@useatlas/sdk",
       "version": "0.0.13",
       "dependencies": {
-        "@useatlas/types": "^0.0.24",
+        "@useatlas/types": "^0.0.25",
       },
       "devDependencies": {
         "@atlas/oauth-helper": "workspace:*",
@@ -4225,8 +4225,6 @@
 
     "@anthropic-ai/tokenizer/@types/node": ["@types/node@18.19.130", "", { "dependencies": { "undici-types": "~5.26.4" } }, "sha512-GRaXQx6jGfL8sKfaIDD6OupbIHBr9jv7Jnaml9tB7l4v068PAOXqfcujMMo5PhbIs6ggR1XODELqahT2R8v0fg=="],
 
-    "@atlas/web/@opentelemetry/resources": ["@opentelemetry/resources@2.6.1", "", { "dependencies": { "@opentelemetry/core": "2.6.1", "@opentelemetry/semantic-conventions": "^1.29.0" }, "peerDependencies": { "@opentelemetry/api": ">=1.3.0 <1.10.0" } }, "sha512-lID/vxSuKWXM55XhAKNoYXu9Cutoq5hFdkbTdI/zDKQktXzcWBVhNsOkiZFTMU9UtEWuGRNe0HUgmsFldIdxVA=="],
-
     "@aws-crypto/crc32/@aws-sdk/types": ["@aws-sdk/types@3.973.4", "", { "dependencies": { "@smithy/types": "^4.13.0", "tslib": "^2.6.2" } }, "sha512-RW60aH26Bsc016Y9B98hC0Plx6fK5P2v/iQYwMzrSjiDh1qRMUCP6KrXHYEHe3uFvKiOC93Z9zk4BJsUi6Tj1Q=="],
 
     "@aws-crypto/crc32c/@aws-sdk/types": ["@aws-sdk/types@3.973.4", "", { "dependencies": { "@smithy/types": "^4.13.0", "tslib": "^2.6.2" } }, "sha512-RW60aH26Bsc016Y9B98hC0Plx6fK5P2v/iQYwMzrSjiDh1qRMUCP6KrXHYEHe3uFvKiOC93Z9zk4BJsUi6Tj1Q=="],
@@ -4758,10 +4756,6 @@
     "@typescript-eslint/eslint-plugin/ignore": ["ignore@7.0.5", "", {}, "sha512-Hs59xBNfUIunMFgWAbGX5cq6893IbWg4KnrjbYwX3tx0ztorVgTDA6B2sxf8ejHJ4wz8BqGUMYlnzNBer5NvGg=="],
 
     "@typespec/ts-http-runtime/https-proxy-agent": ["https-proxy-agent@7.0.6", "", { "dependencies": { "agent-base": "^7.1.2", "debug": "4" } }, "sha512-vK9P5/iUfdl95AI+JVyUuIcVtd4ofvtrOr3HNtM2yxC9bnMbEdp3x01OhQNnjb8IJYi38VlTE3mBXwcfvywuSw=="],
-
-    "@useatlas/react/@useatlas/types": ["@useatlas/types@0.0.24", "", {}, "sha512-T6XXvG6QFkI6FlE3TG01nOPKCjtzTboQw8NKNguuFRlQV8yIoKKgYr3ybm6U41pBR7S35yFkzvzZhUPy9RLHcQ=="],
-
-    "@useatlas/sdk/@useatlas/types": ["@useatlas/types@0.0.24", "", {}, "sha512-T6XXvG6QFkI6FlE3TG01nOPKCjtzTboQw8NKNguuFRlQV8yIoKKgYr3ybm6U41pBR7S35yFkzvzZhUPy9RLHcQ=="],
 
     "@vercel/sandbox/zod": ["zod@3.24.4", "", {}, "sha512-OdqJE9UDRPwWsrHjLN2F8bPxvwJBK22EHLWtanu0LSYr5YqzsaaW3RMgmjwr8Rypg5k+meEJdSPXJZXE/yqOMg=="],
 

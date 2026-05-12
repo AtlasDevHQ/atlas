@@ -769,6 +769,8 @@ export const MANAGED_AUTH_MIGRATIONS = [
   "0048_trusted_device.sql",
   // Backfill against Better Auth's "user" + "session" tables.
   "0050_backfill_email_verified_grandfathered.sql",
+  // Adds default_landing column to Better Auth's "user" table (#2022).
+  "0061_user_default_landing.sql",
 ];
 
 /**

@@ -2,9 +2,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 /**
  * Suspense fallback for `/settings/ai-agents`. Mirrors the rendered
- * shape (header + connected-agents list + prompts preview) so the
- * layout doesn't collapse-then-jump on first paint. Same treatment
- * #2260 applied to `/settings/profile`.
+ * shape so the layout doesn't collapse-then-jump on first paint.
  */
 export default function Loading() {
   return (

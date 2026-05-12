@@ -266,7 +266,7 @@
       "dependencies": {
         "@radix-ui/react-slot": "^1.2.4",
         "@tanstack/react-query": "^5.96.2",
-        "@useatlas/types": "^0.0.25",
+        "@useatlas/types": "^0.0.26",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
         "radix-ui": "^1.4.3",
@@ -334,7 +334,7 @@
       "name": "@useatlas/sdk",
       "version": "0.0.14",
       "dependencies": {
-        "@useatlas/types": "^0.0.25",
+        "@useatlas/types": "^0.0.26",
       },
       "devDependencies": {
         "@atlas/oauth-helper": "workspace:*",
@@ -342,7 +342,7 @@
     },
     "packages/types": {
       "name": "@useatlas/types",
-      "version": "0.0.25",
+      "version": "0.0.26",
     },
     "packages/web": {
       "name": "@atlas/web",

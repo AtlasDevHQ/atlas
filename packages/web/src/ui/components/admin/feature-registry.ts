@@ -58,6 +58,7 @@ export const FEATURE_NAMES = [
   "SCIM",
   "Schema Diff",
   "Scheduled Tasks",
+  "Scheduler",
   "Security Adoption",
   "Security Posture",
   "Semantic Layer",

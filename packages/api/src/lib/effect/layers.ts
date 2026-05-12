@@ -524,6 +524,26 @@ export function makeSchedulerLive(
         }),
       );
 
+      // Start BYOT catalog refresh scheduler (#2284) — daily refresh of
+      // workspace_model_catalog rows whose `fetched_at` is older than TTL.
+      // No-ops when the internal DB is unavailable; safe to start
+      // unconditionally otherwise (self-hosted installs without EE simply
+      // have no workspace configs to walk).
+      yield* Effect.tryPromise({
+        try: async () => {
+          const { startByotCatalogRefreshScheduler } = await import(
+            "@atlas/api/lib/scheduler/byot-catalog-refresh"
+          );
+          startByotCatalogRefreshScheduler();
+        },
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) => {
+          log.error({ err: errorMessage(err) }, "BYOT catalog refresh scheduler failed to start");
+          return Effect.void;
+        }),
+      );
+
       // ── Periodic fiber: OAuth state cleanup (#1273) — every 10 min ──
       const oauthTick = Effect.tryPromise({
         try: async () => {
@@ -779,6 +799,25 @@ export function makeSchedulerLive(
               }),
             );
           }
+
+          // Stop the BYOT catalog refresh scheduler (#2284) alongside the
+          // main scheduler so a Layer-scope shutdown clears its setInterval
+          // timer (clearing the timer is what releases the `unref()`'d handle
+          // from the event loop and lets the test process exit cleanly).
+          yield* Effect.tryPromise({
+            try: async () => {
+              const { stopByotCatalogRefreshScheduler } = await import(
+                "@atlas/api/lib/scheduler/byot-catalog-refresh"
+              );
+              stopByotCatalogRefreshScheduler();
+            },
+            catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+          }).pipe(
+            Effect.catchAll((err) => {
+              log.warn({ err: errorMessage(err) }, "Failed to stop BYOT catalog refresh scheduler");
+              return Effect.void;
+            }),
+          );
 
           log.info("Schedulers shut down via Effect scope");
         }),

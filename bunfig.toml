@@ -7,4 +7,21 @@ minimumReleaseAge = 172800
 
 # Bypass the age gate for packages where a recent version is occasionally
 # required to compile. Keep this list tight — every entry is a hole in the gate.
-minimumReleaseAgeExcludes = ["@types/node", "@types/bun", "typescript"]
+#
+# Our own @useatlas/* and create-atlas-* packages are excluded because publish
+# tags chain (types → sdk → react → templates) and the second link in the
+# chain otherwise fails to resolve the first link's fresh publish under the
+# 48 h quarantine. We trust our own OIDC-gated publishes; the gate exists to
+# catch third-party supply-chain attacks, not our own scoped packages.
+minimumReleaseAgeExcludes = [
+  "@types/node",
+  "@types/bun",
+  "typescript",
+  "@useatlas/types",
+  "@useatlas/sdk",
+  "@useatlas/react",
+  "@useatlas/plugin-sdk",
+  "@useatlas/schemas",
+  "create-atlas-agent",
+  "create-atlas-plugin",
+]

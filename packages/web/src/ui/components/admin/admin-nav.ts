@@ -81,6 +81,7 @@ export const navGroups: NavGroup[] = [
       { href: "/admin/token-usage", label: "Token Usage" },
       { href: "/admin/usage", label: "Usage" },
       { href: "/admin/scheduled-tasks", label: "Scheduled Tasks", prefixMatch: true },
+      { href: "/admin/scheduler/tasks", label: "Scheduler Tasks" },
     ],
   },
   {

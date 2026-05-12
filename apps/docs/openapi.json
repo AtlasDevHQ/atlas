@@ -43809,6 +43809,187 @@
         "operationId": "deleteAdminSandboxDisconnectByProvider"
       }
     },
+    "/api/v1/admin/scheduler/tasks": {
+      "get": {
+        "tags": [
+          "Admin — Scheduler"
+        ],
+        "summary": "List system scheduler tasks",
+        "description": "Returns the system-level scheduler jobs registered on this pod. Distinct from user-created scheduled tasks (see /admin/scheduled-tasks).",
+        "responses": {
+          "200": {
+            "description": "Tasks listed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tasks": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "running": {
+                            "type": "boolean"
+                          },
+                          "systemActor": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "description",
+                          "running",
+                          "systemActor"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "tasks"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminSchedulerTasks"
+      }
+    },
+    "/api/v1/admin/scheduler/tasks/byot-catalog-refresh/run": {
+      "post": {
+        "tags": [
+          "Admin — Scheduler"
+        ],
+        "summary": "Manually trigger BYOT catalog refresh cycle",
+        "description": "Runs a single refresh cycle synchronously and returns the outcome counts. Audited via the standard `model_config.catalog_refresh_cycle` action with actor `system:byot-catalog-refresh`. Returns 500 with `requestId` if the cycle failed before producing per-row counts (e.g. the stale-row query itself threw).",
+        "responses": {
+          "200": {
+            "description": "Cycle complete",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "success",
+                        "failure"
+                      ]
+                    },
+                    "inspected": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "refreshed": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "failed": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "skippedDecryptFailed": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "skippedInBackoff": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "skippedMissingKey": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "skippedEeUnavailable": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "skippedMalformedBundle": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "inspected",
+                    "refreshed",
+                    "failed",
+                    "skippedDecryptFailed",
+                    "skippedInBackoff",
+                    "skippedMissingKey",
+                    "skippedEeUnavailable",
+                    "skippedMalformedBundle"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Cycle failed before producing a result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminSchedulerTasksByotCatalogRefreshRun"
+      }
+    },
     "/api/v1/admin/residency": {
       "get": {
         "tags": [
@@ -67469,6 +67650,9 @@
     },
     {
       "name": "Admin — Sandbox"
+    },
+    {
+      "name": "Admin — Scheduler"
     },
     {
       "name": "Admin — Security"

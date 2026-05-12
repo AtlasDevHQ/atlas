@@ -18,6 +18,7 @@ import {
   getInternalDB,
   encryptSecret,
   decryptSecret,
+  type URLSecret,
 } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
@@ -140,7 +141,7 @@ export function summarizeProvider(provider: SSOProvider): Omit<SSOProvider, "con
 function prepareConfigForStorage(type: SSOProviderType, config: Record<string, unknown>): Record<string, unknown> {
   const stored = { ...config };
   if (type === "oidc" && stored.clientSecret) {
-    const encrypted = encryptSecret(stored.clientSecret as string);
+    const encrypted: URLSecret = encryptSecret(stored.clientSecret as string);
     if (encrypted === stored.clientSecret) {
       log.warn("OIDC clientSecret stored without encryption — set ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET");
     }

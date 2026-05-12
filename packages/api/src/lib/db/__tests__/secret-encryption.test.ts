@@ -18,6 +18,7 @@ import {
   encryptSecret,
   decryptSecret,
   UnknownKeyVersionError,
+  type OpaqueSecret,
 } from "../secret-encryption";
 import { _resetEncryptionKeyCache } from "../internal";
 
@@ -141,7 +142,8 @@ describe("secret encryption helpers", () => {
     });
 
     it("encryptSecret passes the value through unchanged", () => {
-      expect(encryptSecret("dev-token")).toBe("dev-token");
+      // Brand cast — `.toBe` is parameterized on the actual's branded type.
+      expect(encryptSecret("dev-token")).toBe("dev-token" as OpaqueSecret);
     });
 
     it("decryptSecret still tolerates plaintext values", () => {

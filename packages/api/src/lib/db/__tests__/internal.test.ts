@@ -26,6 +26,7 @@ import {
   getEncryptionKey,
   isPlaintextUrl,
   _resetEncryptionKeyCache,
+  type URLSecret,
 } from "../internal";
 import { connections } from "../connection";
 
@@ -889,7 +890,8 @@ describe("connection URL encryption", () => {
       delete process.env.ATLAS_ENCRYPTION_KEY;
       delete process.env.BETTER_AUTH_SECRET;
       const url = "postgresql://user:pass@host/db";
-      expect(encryptSecret(url)).toBe(url);
+      // Brand cast — `.toBe` is parameterized on the actual's branded type.
+      expect(encryptSecret(url)).toBe(url as URLSecret);
     });
 
     it("decryptSecret returns plaintext URLs when no key is available", () => {

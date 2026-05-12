@@ -7,7 +7,7 @@
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { encryptSecret, decryptSecret } from "@atlas/api/lib/db/secret-encryption";
+import { encryptSecret, decryptSecret, type OpaqueSecret } from "@atlas/api/lib/db/secret-encryption";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 
@@ -184,7 +184,7 @@ export async function saveSandboxCredential(
     throw new Error("Cannot save sandbox credentials — no internal database configured");
   }
 
-  const credentialsEncrypted = encryptSecret(JSON.stringify(credentials));
+  const credentialsEncrypted: OpaqueSecret = encryptSecret(JSON.stringify(credentials));
   const keyVersion = activeKeyVersion();
 
   try {

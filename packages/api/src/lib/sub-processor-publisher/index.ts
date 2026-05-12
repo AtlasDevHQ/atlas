@@ -70,7 +70,7 @@ import { z } from "zod";
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
-import { decryptSecret, encryptSecret } from "@atlas/api/lib/db/secret-encryption";
+import { decryptSecret, encryptSecret, type OpaqueSecret } from "@atlas/api/lib/db/secret-encryption";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { createLogger } from "@atlas/api/lib/logger";
 
@@ -393,7 +393,7 @@ export interface CreateSubscriptionInput {
 export async function createSubscription(
   input: CreateSubscriptionInput,
 ): Promise<{ id: string }> {
-  const tokenEncrypted = encryptSecret(input.token);
+  const tokenEncrypted: OpaqueSecret = encryptSecret(input.token);
   await internalQuery(
     `INSERT INTO sub_processor_subscriptions
        (id, url, token_encrypted, token_key_version, created_by_user_id, created_by_label)

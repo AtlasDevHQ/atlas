@@ -9,7 +9,7 @@
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { encryptSecret, decryptSecret } from "@atlas/api/lib/db/secret-encryption";
+import { encryptSecret, decryptSecret, type OpaqueSecret } from "@atlas/api/lib/db/secret-encryption";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { DiscordInstallation, DiscordInstallationWithSecret } from "@atlas/api/lib/integrations/types";
@@ -176,7 +176,7 @@ export async function saveDiscordInstallation(
   const orgId = opts?.orgId ?? null;
   const guildName = opts?.guildName ?? null;
   const botToken = opts?.botToken ?? null;
-  const botTokenEncrypted = botToken !== null ? encryptSecret(botToken) : null;
+  const botTokenEncrypted: OpaqueSecret | null = botToken !== null ? encryptSecret(botToken) : null;
   // Only stamp the key version when we actually wrote a ciphertext — a
   // connect call that doesn't provide a token (BYOT-less OAuth path)
   // leaves the existing column alone via COALESCE.

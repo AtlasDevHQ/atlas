@@ -19,6 +19,7 @@ import {
   encryptSecret,
   decryptSecret,
   getEncryptionKey,
+  type URLSecret,
 } from "@atlas/api/lib/db/internal";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { getGatewayCatalog } from "@atlas/api/lib/gateway-catalog";
@@ -452,7 +453,7 @@ export const setWorkspaceModelConfig = (
       }
     }
 
-    let encryptedKey: string | null = null;
+    let encryptedKey: URLSecret | null = null;
     if (config.apiKey) {
       if (!getEncryptionKey()) {
         return yield* Effect.die(

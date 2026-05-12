@@ -8,7 +8,7 @@
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { encryptSecret, decryptSecret } from "@atlas/api/lib/db/secret-encryption";
+import { encryptSecret, decryptSecret, type OpaqueSecret } from "@atlas/api/lib/db/secret-encryption";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { TeamsInstallation, TeamsInstallationWithSecret } from "@atlas/api/lib/integrations/types";
@@ -176,7 +176,7 @@ export async function saveTeamsInstallation(
   const appPassword = opts?.appPassword ?? null;
   // Encrypt only when we actually have a password to store; admin-consent
   // installs pass undefined and should leave both columns NULL.
-  const appPasswordEncrypted = appPassword !== null ? encryptSecret(appPassword) : null;
+  const appPasswordEncrypted: OpaqueSecret | null = appPassword !== null ? encryptSecret(appPassword) : null;
   // Only stamp the key version when we actually wrote a ciphertext; a
   // COALESCE on the column preserves whatever was there for OAuth-only
   // installs that never pass a password.

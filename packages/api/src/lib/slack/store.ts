@@ -10,7 +10,7 @@ import {
   internalQuery,
   getInternalDB,
 } from "@atlas/api/lib/db/internal";
-import { encryptSecret, decryptSecret } from "@atlas/api/lib/db/secret-encryption";
+import { encryptSecret, decryptSecret, type OpaqueSecret } from "@atlas/api/lib/db/secret-encryption";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { SlackInstallation, SlackInstallationWithSecret } from "@atlas/api/lib/integrations/types";
@@ -161,7 +161,7 @@ export async function saveInstallation(
   const orgId = opts?.orgId ?? null;
   const workspaceName = opts?.workspaceName ?? null;
   const pool = getInternalDB();
-  const botTokenEncrypted = encryptSecret(botToken);
+  const botTokenEncrypted: OpaqueSecret = encryptSecret(botToken);
   const keyVersion = activeKeyVersion();
 
   // Atomic upsert with hijack protection — the WHERE clause rejects rows

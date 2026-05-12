@@ -7,7 +7,7 @@
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { encryptSecret, decryptSecret } from "@atlas/api/lib/db/secret-encryption";
+import { encryptSecret, decryptSecret, type OpaqueSecret } from "@atlas/api/lib/db/secret-encryption";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { WhatsAppInstallation, WhatsAppInstallationWithSecret } from "@atlas/api/lib/integrations/types";
@@ -134,7 +134,7 @@ export async function saveWhatsAppInstallation(
 
   const orgId = opts.orgId ?? null;
   const displayPhone = opts.displayPhone ?? null;
-  const accessTokenEncrypted = encryptSecret(opts.accessToken);
+  const accessTokenEncrypted: OpaqueSecret = encryptSecret(opts.accessToken);
   const keyVersion = activeKeyVersion();
 
   try {

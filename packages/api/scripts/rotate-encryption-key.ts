@@ -36,18 +36,19 @@ import { createLogger } from "@atlas/api/lib/logger";
 // `internal.ts` and `secret-encryption.ts` both export `encryptSecret` /
 // `decryptSecret` post-#2285 (the internal pair is the URL-aware helper,
 // the secret-encryption pair is the versioned-prefix helper for
-// integration credentials). Alias the internal pair as `*UrlSecret`
-// locally to keep this script's two cipher paths visually distinct.
-//
-// DO NOT remove these aliases without first renaming one of the two
-// source helpers — the same name in both source modules would clash on
-// a single import block, and the kind:"url" path would silently bind to
-// the secret-encryption helper (which lacks plaintext-URL passthrough,
-// so legacy `postgres://…` rows would re-encrypt incorrectly).
+// integration credentials). The local aliases (`*UrlSecret`) keep the
+// two paths visually distinct in the import block; the branded return
+// types (`URLSecret` / `OpaqueSecret`, #2370) make them structurally
+// distinct so the `case "url"` arm cannot compile-time bind to the
+// opaque helper. Pre-brand, swapping the import would have silently
+// re-encrypted plaintext `postgres://…` rows through the wrong helper
+// — the opaque helper lacks the URL-passthrough that the rotation
+// script relies on for first-time encryption of legacy plaintext rows.
 import {
   decryptSecret as decryptUrlSecret,
   encryptSecret as encryptUrlSecret,
   isPlaintextUrl,
+  type URLSecret,
 } from "@atlas/api/lib/db/internal";
 import {
   activeKeyVersion,
@@ -56,6 +57,7 @@ import {
 import {
   decryptSecret,
   encryptSecret,
+  type OpaqueSecret,
 } from "@atlas/api/lib/db/secret-encryption";
 import {
   INTEGRATION_TABLES,
@@ -110,18 +112,19 @@ function assertIdentifier(name: string, role: string): void {
 
 /**
  * Decrypt the stored ciphertext (under whichever keyset entry its
- * prefix names) and re-encrypt with the active key. Always returns a
- * new ciphertext string:
- *   • secret kind — decryptSecret passthrough for un-prefixed plaintext
- *     + re-encrypt under the active key
- *   • url kind — plaintext URLs (`postgres://…`) get encrypted for the
- *     first time; versioned/unversioned ciphertext is decrypted +
- *     re-encrypted
+ * prefix names) and re-encrypt with the active key. Each arm returns
+ * the brand owned by the helper it called:
+ *   • `secret` — `db/secret-encryption.ts` pair → `OpaqueSecret`.
+ *     `decryptSecret` passthrough for un-prefixed plaintext +
+ *     re-encrypt under the active key.
+ *   • `url` — `db/internal.ts` pair → `URLSecret`. Plaintext URLs
+ *     (`postgres://…`) get encrypted for the first time;
+ *     versioned/unversioned ciphertext is decrypted + re-encrypted.
  * Rotation is a convenient moment to close out the pre-encryption
  * back-compat window, so plaintext rows land encrypted on the other
  * side. Throws on decryption failure (caller handles orphan counting).
  */
-function rotateValue(kind: RotateTarget["kind"], stored: string): string {
+function rotateValue(kind: RotateTarget["kind"], stored: string): URLSecret | OpaqueSecret {
   switch (kind) {
     case "url": {
       if (isPlaintextUrl(stored)) {

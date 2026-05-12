@@ -21,7 +21,7 @@ import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { connections, detectDBType, resolveDatasourceUrl } from "@atlas/api/lib/db/connection";
 import { isAuthEmailDeliveryConfigured } from "@atlas/api/lib/email/delivery";
-import { hasInternalDB, internalQuery, queryEffect, encryptSecret } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, internalQuery, queryEffect, encryptSecret, type URLSecret } from "@atlas/api/lib/db/internal";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
@@ -491,7 +491,7 @@ onboarding.openapi(
       }
 
       // Encrypt and persist to internal DB
-      let encryptedUrl: string;
+      let encryptedUrl: URLSecret;
       try {
         encryptedUrl = encryptSecret(url);
       } catch (err) {
@@ -673,7 +673,7 @@ onboarding.openapi(
         }, 500);
       }
 
-      let encryptedUrl: string;
+      let encryptedUrl: URLSecret;
       try {
         encryptedUrl = encryptSecret(url);
       } catch (err) {

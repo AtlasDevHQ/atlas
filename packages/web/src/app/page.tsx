@@ -11,12 +11,13 @@ import { useQueryStates } from "nuqs";
 import { chatSearchParams } from "./search-params";
 import { useConversations, transformMessages } from "@/ui/hooks/use-conversations";
 import { useDatasourceSummary } from "@/ui/hooks/use-datasource-summary";
-import { ConversationSidebar } from "@/ui/components/conversations/conversation-sidebar";
+import { AppLayout } from "@/ui/components/app-layout";
+import { ChatSidebar } from "@/ui/components/chat/chat-sidebar";
+import { SidebarTrigger } from "@/components/ui/sidebar";
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { useAtlasTransport } from "@/ui/hooks/use-atlas-transport";
 import { useDefaultLanding } from "@/ui/hooks/use-default-landing";
 import { authClient } from "@/lib/auth/client";
-import { ChatTopBar } from "@/ui/components/chat/chat-top-bar";
 import { IncidentBanner } from "@/ui/components/incident-banner";
 import { AssistantTurn } from "@/ui/components/chat/assistant-turn";
 import { ErrorBanner } from "@/ui/components/chat/error-banner";
@@ -32,13 +33,7 @@ import { parseSuggestions } from "@/ui/lib/helpers";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import { Send, TableProperties, BookOpen, Menu } from "lucide-react";
+import { Send } from "lucide-react";
 import { useUiStore } from "@/lib/stores/ui-store";
 import { useDashboardCanvasStore, type ProposedDashboardSpec } from "@/lib/stores/dashboard-canvas-store";
 import { DashboardCanvas } from "@/ui/components/dashboards/dashboard-canvas";
@@ -72,7 +67,6 @@ function ChatPage() {
 
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const setMobileSidebarOpen = useUiStore((s) => s.setMobileSidebarOpen);
   const [loadingConversation, setLoadingConversation] = useState(false);
   const schemaExplorerOpen = useUiStore((s) => s.schemaExplorerOpen);
   const setSchemaExplorerOpen = useUiStore((s) => s.setSchemaExplorerOpen);
@@ -344,7 +338,6 @@ function ChatPage() {
       lastLoadedIdRef.current = id;
       setParams({ id });
       convos.setSelectedId(id);
-      setMobileSidebarOpen(false);
     } catch (err: unknown) {
       console.warn(
         "Failed to load conversation:",
@@ -408,87 +401,47 @@ function ChatPage() {
       isAdmin={isAdmin}
       serverTrackingEnabled={isSignedIn}
     >
-      <div className="flex h-full flex-col">
-        <IncidentBanner slug={OPENSTATUS_SLUG} statusUrl={STATUS_URL} />
-        <ChatTopBar isAdmin={isAdmin} />
-        <div className="flex flex-1 overflow-hidden">
-          {convos.available && (
-            <ConversationSidebar
+      <AppLayout
+        sidebar={
+          convos.available ? (
+            <ChatSidebar
               conversations={convos.conversations}
               selectedId={conversationId ?? null}
               loading={convos.loading}
+              isAdmin={isAdmin}
               onSelect={handleSelectConversation}
               onDelete={(id) => convos.deleteConversation(id)}
               onStar={(id, starred) => convos.starConversation(id, starred)}
               onConvertToNotebook={(id) => convos.convertToNotebook(id)}
               onNewChat={handleNewChat}
+              onOpenPromptLibrary={() => setPromptLibraryOpen(true)}
+              onOpenSchemaExplorer={() => setSchemaExplorerOpen(true)}
             />
-          )}
-
-          <main
-            id="main"
+          ) : null
+        }
+      >
+        <IncidentBanner slug={OPENSTATUS_SLUG} statusUrl={STATUS_URL} />
+        <div className="flex flex-1 overflow-hidden">
+          <div
             className={cn(
               "flex flex-1 flex-col overflow-hidden",
               canvasOpen && "min-w-0",
             )}
           >
             <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col overflow-hidden px-4 pt-4">
-              {/* Toolbar */}
-              <TooltipProvider delayDuration={150}>
-                <div className="mb-3 flex items-center justify-between border-b border-zinc-100 pb-2 dark:border-zinc-800/60">
-                  <div className="flex items-center gap-2">
-                    {convos.available && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => setMobileSidebarOpen(true)}
-                        className="size-8 text-zinc-400 hover:text-zinc-700 md:hidden dark:hover:text-zinc-200"
-                        aria-label="Open conversation history"
-                      >
-                        <Menu className="size-4" />
-                      </Button>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1">
-                    {conversationId && (
-                      <ShareDialog
-                        conversationId={conversationId}
-                        onShare={handleShare}
-                        onUnshare={handleUnshare}
-                        onGetShareStatus={handleGetShareStatus}
-                      />
-                    )}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="size-8 text-zinc-500 dark:text-zinc-400"
-                          onClick={() => setPromptLibraryOpen(true)}
-                          aria-label="Prompt library"
-                        >
-                          <BookOpen className="size-4" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side="bottom">Prompt library</TooltipContent>
-                    </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="size-8 text-zinc-500 dark:text-zinc-400"
-                          onClick={() => setSchemaExplorerOpen(true)}
-                          aria-label="Open schema explorer"
-                        >
-                          <TableProperties className="size-4" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side="bottom">Schema explorer</TooltipContent>
-                    </Tooltip>
-                  </div>
+              <div className="mb-3 flex items-center justify-between border-b border-zinc-100 pb-2 dark:border-zinc-800/60">
+                {convos.available && <SidebarTrigger className="md:hidden" />}
+                <div className="ml-auto flex items-center gap-1">
+                  {conversationId && (
+                    <ShareDialog
+                      conversationId={conversationId}
+                      onShare={handleShare}
+                      onUnshare={handleUnshare}
+                      onGetShareStatus={handleGetShareStatus}
+                    />
+                  )}
                 </div>
-              </TooltipProvider>
+              </div>
 
               {/* Error bar */}
               {(error || (convos.fetchError && !fetchErrorDismissed)) && (
@@ -715,7 +668,7 @@ function ChatPage() {
                 </Button>
               </form>
             </div>
-          </main>
+          </div>
 
           <DashboardCanvas
             apiUrl={getApiUrl()}
@@ -723,7 +676,7 @@ function ChatPage() {
             getCredentials={getCredentials}
           />
         </div>
-      </div>
+      </AppLayout>
 
       {/* Modals */}
       <SchemaExplorer

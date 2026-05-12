@@ -5,7 +5,6 @@ import {
   buildNsjailSandboxPlugin,
   findNsjailBinary,
 } from "../src/index";
-import type { AtlasSandboxPlugin } from "@useatlas/plugin-sdk";
 
 // Zod defaults make timeLimitSec/memoryLimitMb required in the output type
 // but optional at runtime. Tests that rely on defaults use `as any`.

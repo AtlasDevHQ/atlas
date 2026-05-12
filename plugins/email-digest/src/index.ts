@@ -39,7 +39,7 @@ import type {
   PluginLogger,
 } from "@useatlas/plugin-sdk";
 import { EmailDigestConfigSchema } from "./config";
-import type { EmailDigestPluginConfig, MetricResult } from "./config";
+import type { EmailDigestPluginConfig } from "./config";
 
 // Re-export types for consumers
 export type { EmailDigestPluginConfig, MetricResult } from "./config";

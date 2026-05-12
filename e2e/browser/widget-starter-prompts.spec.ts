@@ -1,8 +1,5 @@
 import { test, expect } from "@playwright/test";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-declare const window: any;
-
 const API_URL = process.env.ATLAS_API_URL ?? "http://localhost:3001";
 
 /**

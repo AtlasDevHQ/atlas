@@ -11,9 +11,6 @@ import { useQueryStates } from "nuqs";
 import { chatSearchParams } from "./search-params";
 import { useConversations, transformMessages } from "@/ui/hooks/use-conversations";
 import { useDatasourceSummary } from "@/ui/hooks/use-datasource-summary";
-import { AppLayout } from "@/ui/components/app-layout";
-import { ChatSidebar } from "@/ui/components/chat/chat-sidebar";
-import { SidebarTrigger } from "@/components/ui/sidebar";
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { useAtlasTransport } from "@/ui/hooks/use-atlas-transport";
 import { useDefaultLanding } from "@/ui/hooks/use-default-landing";
@@ -25,16 +22,12 @@ import { FollowUpChips } from "@/ui/components/chat/follow-up-chips";
 import { ToolPart } from "@/ui/components/chat/tool-part";
 import { Markdown } from "@/ui/components/chat/markdown";
 import { TypingIndicator } from "@/ui/components/chat/typing-indicator";
-import { SchemaExplorer } from "@/ui/components/schema-explorer/schema-explorer";
 import { ShareDialog } from "@/ui/components/chat/share-dialog";
-import { PromptLibrary } from "@/ui/components/chat/prompt-library";
-import { CommandPalette } from "@/ui/components/chat/command-palette";
 import { parseSuggestions } from "@/ui/lib/helpers";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Send } from "lucide-react";
-import { useUiStore } from "@/lib/stores/ui-store";
 import { useDashboardCanvasStore, type ProposedDashboardSpec } from "@/lib/stores/dashboard-canvas-store";
 import { DashboardCanvas } from "@/ui/components/dashboards/dashboard-canvas";
 import { getToolResult, isToolComplete } from "@/ui/lib/helpers";
@@ -67,11 +60,6 @@ function ChatPage() {
 
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [loadingConversation, setLoadingConversation] = useState(false);
-  const schemaExplorerOpen = useUiStore((s) => s.schemaExplorerOpen);
-  const setSchemaExplorerOpen = useUiStore((s) => s.setSchemaExplorerOpen);
-  const promptLibraryOpen = useUiStore((s) => s.promptLibraryOpen);
-  const setPromptLibraryOpen = useUiStore((s) => s.setPromptLibraryOpen);
   const [fetchErrorDismissed, setFetchErrorDismissed] = useState(false);
   // Adaptive empty-chat starter surface — backend composes the ranked
   // prompt list from favorites / popular / library tiers (#1474).
@@ -276,14 +264,21 @@ function ChatPage() {
     if (isNearBottom) el.scrollTop = el.scrollHeight;
   }, [messages, status]);
 
-  // Load conversation when ID changes via URL navigation (browser back/forward, shared links).
-  // Sidebar clicks go through handleSelectConversation which sets lastLoadedIdRef to skip this.
+  // The workspace shell drives conversation selection through `?id=...`. This
+  // surface follows the URL: load on a new id, clear on an empty id after one
+  // was loaded.
   useEffect(() => {
-    if (!conversationId) return;
+    if (!conversationId) {
+      if (lastLoadedIdRef.current !== null) {
+        setMessages([]);
+        setError(null);
+        lastLoadedIdRef.current = null;
+      }
+      return;
+    }
     if (conversationId === lastLoadedIdRef.current) return;
     let cancelled = false;
     setError(null);
-    setLoadingConversation(true);
     async function load() {
       try {
         const convData = await convos.getConversationData(conversationId!);
@@ -298,8 +293,6 @@ function ChatPage() {
           );
           setError("Failed to load conversation. Please try again.");
         }
-      } finally {
-        if (!cancelled) setLoadingConversation(false);
       }
     }
     load();
@@ -324,29 +317,7 @@ function ChatPage() {
     setError(null);
     setMessages([]);
     setParams({ id: "" });
-    convos.setSelectedId(null);
     setInput("");
-  }
-
-  async function handleSelectConversation(id: string) {
-    if (loadingConversation) return;
-    setError(null);
-    setLoadingConversation(true);
-    try {
-      const convData = await convos.getConversationData(id);
-      setMessages(transformMessages(convData.messages));
-      lastLoadedIdRef.current = id;
-      setParams({ id });
-      convos.setSelectedId(id);
-    } catch (err: unknown) {
-      console.warn(
-        "Failed to load conversation:",
-        err instanceof Error ? err.message : String(err),
-      );
-      setError("Failed to load conversation. Please try again.");
-    } finally {
-      setLoadingConversation(false);
-    }
   }
 
   function handleShare(id: string, opts?: Parameters<typeof convos.shareConversation>[1]) {
@@ -401,25 +372,7 @@ function ChatPage() {
       isAdmin={isAdmin}
       serverTrackingEnabled={isSignedIn}
     >
-      <AppLayout
-        sidebar={
-          convos.available ? (
-            <ChatSidebar
-              conversations={convos.conversations}
-              selectedId={conversationId ?? null}
-              loading={convos.loading}
-              isAdmin={isAdmin}
-              onSelect={handleSelectConversation}
-              onDelete={(id) => convos.deleteConversation(id)}
-              onStar={(id, starred) => convos.starConversation(id, starred)}
-              onConvertToNotebook={(id) => convos.convertToNotebook(id)}
-              onNewChat={handleNewChat}
-              onOpenPromptLibrary={() => setPromptLibraryOpen(true)}
-              onOpenSchemaExplorer={() => setSchemaExplorerOpen(true)}
-            />
-          ) : null
-        }
-      >
+      <div className="flex h-full flex-1 flex-col overflow-hidden">
         <IncidentBanner slug={OPENSTATUS_SLUG} statusUrl={STATUS_URL} />
         <div className="flex flex-1 overflow-hidden">
           <div
@@ -429,19 +382,16 @@ function ChatPage() {
             )}
           >
             <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col overflow-hidden px-4 pt-4">
-              <div className="mb-3 flex items-center justify-between border-b border-zinc-100 pb-2 dark:border-zinc-800/60">
-                {convos.available && <SidebarTrigger className="md:hidden" />}
-                <div className="ml-auto flex items-center gap-1">
-                  {conversationId && (
-                    <ShareDialog
-                      conversationId={conversationId}
-                      onShare={handleShare}
-                      onUnshare={handleUnshare}
-                      onGetShareStatus={handleGetShareStatus}
-                    />
-                  )}
+              {conversationId && (
+                <div className="mb-3 flex items-center justify-end border-b border-zinc-100 pb-2 dark:border-zinc-800/60">
+                  <ShareDialog
+                    conversationId={conversationId}
+                    onShare={handleShare}
+                    onUnshare={handleUnshare}
+                    onGetShareStatus={handleGetShareStatus}
+                  />
                 </div>
-              </div>
+              )}
 
               {/* Error bar */}
               {(error || (convos.fetchError && !fetchErrorDismissed)) && (
@@ -676,37 +626,7 @@ function ChatPage() {
             getCredentials={getCredentials}
           />
         </div>
-      </AppLayout>
-
-      {/* Modals */}
-      <SchemaExplorer
-        open={schemaExplorerOpen}
-        onOpenChange={setSchemaExplorerOpen}
-        onInsertQuery={(text) => setInput(text)}
-        getHeaders={getHeaders}
-        getCredentials={getCredentials}
-      />
-      <PromptLibrary
-        open={promptLibraryOpen}
-        onOpenChange={setPromptLibraryOpen}
-        onSendPrompt={handleSend}
-        getHeaders={getHeaders}
-        getCredentials={getCredentials}
-      />
-      <CommandPalette
-        conversations={convos.conversations}
-        onNewChat={handleNewChat}
-        onSelectConversation={(id) => {
-          // Suppressing here only to mark the promise as handled — the inner
-          // setError surfaces any failure to the user. Adding a second log
-          // would just mirror handleSelectConversation's own catch.
-          handleSelectConversation(id).catch(() => {
-            // intentionally ignored: handleSelectConversation handles its own errors
-          });
-        }}
-        onOpenPromptLibrary={() => setPromptLibraryOpen(true)}
-        onOpenSchemaExplorer={() => setSchemaExplorerOpen(true)}
-      />
+      </div>
     </GuidedTour>
   );
 }

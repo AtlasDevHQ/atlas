@@ -2,8 +2,7 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { AppShellWithRail } from "@/ui/components/app-shell-with-rail";
-import { getApiBaseUrl } from "../shared/lib";
+import { getApiBaseUrl } from "../../shared/lib";
 import { DashboardsEmptyState } from "./empty-state";
 import { selectMostRecentDashboardId } from "./select-recent";
 import type { Dashboard } from "@/ui/lib/types";
@@ -58,21 +57,19 @@ export default async function DashboardsPage() {
   if (!result.ok) {
     if (result.reason === "auth-required") redirect("/login?redirect=/dashboards");
     return (
-      <AppShellWithRail>
-        <div className="mx-auto w-full max-w-2xl flex-1 px-4 py-16 text-center">
-          <h1 className="text-base font-medium text-zinc-900 dark:text-zinc-100">
-            Couldn&rsquo;t load your dashboards
-          </h1>
-          <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
-            {result.reason === "network-error"
-              ? "Could not reach the server. Check your connection and try again."
-              : "The server encountered an error. Try refreshing the page."}
-          </p>
-          <Button asChild size="sm" variant="outline" className="mt-6">
-            <Link href="/dashboards">Try again</Link>
-          </Button>
-        </div>
-      </AppShellWithRail>
+      <div className="mx-auto w-full max-w-2xl flex-1 px-4 py-16 text-center">
+        <h1 className="text-base font-medium text-zinc-900 dark:text-zinc-100">
+          Couldn&rsquo;t load your dashboards
+        </h1>
+        <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+          {result.reason === "network-error"
+            ? "Could not reach the server. Check your connection and try again."
+            : "The server encountered an error. Try refreshing the page."}
+        </p>
+        <Button asChild size="sm" variant="outline" className="mt-6">
+          <Link href="/dashboards">Try again</Link>
+        </Button>
+      </div>
     );
   }
 

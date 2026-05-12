@@ -266,6 +266,65 @@ describe("findMissingJoins", () => {
     expect(results.length).toBe(1);
     expect(results[0].confidence).toBe(0.6);
   });
+
+  test("recognizes simple `a.x = b.x` joins as existing", () => {
+    // Pins the join-SQL parser: a join with the exact `lhs.col = rhs.col`
+    // shape must be recognized so the same FK isn't re-suggested.
+    const ctx = makeContext({
+      profiles: [makeProfile({
+        table_name: "orders",
+        foreign_keys: [{
+          from_column: "user_id",
+          to_table: "users",
+          to_column: "id",
+          source: "constraint",
+        }],
+      })],
+      entities: [
+        makeEntity({
+          name: "orders",
+          joins: [{ name: "to_users", sql: "orders.user_id = users.id" }],
+        }),
+        makeEntity({ name: "users" }),
+      ],
+    });
+
+    const results = findMissingJoins(ctx);
+    expect(results.length).toBe(0);
+  });
+
+  test("compound `AND` join SQL is not parsed — same FK still gets suggested", () => {
+    // Behavioral contract: the join-SQL parser splits on a single `=` and
+    // anchors each side. Compound conditions like
+    // `orders.user_id = users.id AND orders.tenant = users.tenant` fall
+    // through to "" so the FK is treated as un-declared. This pins the
+    // current behavior so a future "fix" doesn't accidentally reintroduce
+    // greedy backtracking on the original unanchored regex.
+    const ctx = makeContext({
+      profiles: [makeProfile({
+        table_name: "orders",
+        foreign_keys: [{
+          from_column: "user_id",
+          to_table: "users",
+          to_column: "id",
+          source: "constraint",
+        }],
+      })],
+      entities: [
+        makeEntity({
+          name: "orders",
+          joins: [{
+            name: "to_users",
+            sql: "orders.user_id = users.id AND orders.tenant = users.tenant",
+          }],
+        }),
+        makeEntity({ name: "users" }),
+      ],
+    });
+
+    const results = findMissingJoins(ctx);
+    expect(results.length).toBe(1);
+  });
 });
 
 describe("findGlossaryGaps", () => {

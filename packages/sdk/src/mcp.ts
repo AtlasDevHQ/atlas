@@ -286,7 +286,7 @@ export interface ConnectMachineToMachineResult {
 export async function beginConnect(
   options: BeginConnectOptions,
 ): Promise<BeginConnectResult> {
-  const apiUrl = trimTrailingSlash(options.apiUrl);
+  const apiUrl = stripTrailingSlashes(options.apiUrl);
   liftHelperSync(() => validateIssuerUrl(apiUrl));
   const fetchImpl = options.fetchImpl ?? fetch;
   const randomBytesImpl = options.randomBytesImpl;
@@ -346,7 +346,7 @@ export async function completeConnect(
     );
   }
 
-  const apiUrl = trimTrailingSlash(options.apiUrl);
+  const apiUrl = stripTrailingSlashes(options.apiUrl);
   liftHelperSync(() => validateIssuerUrl(apiUrl));
   const fetchImpl = options.fetchImpl ?? fetch;
 
@@ -401,7 +401,7 @@ export async function completeConnect(
 const SERVER_NAME_DEFAULT = "atlas";
 
 export function buildConfig(options: BuildConfigOptions): McpClientConfig {
-  const apiUrl = trimTrailingSlash(options.apiUrl);
+  const apiUrl = stripTrailingSlashes(options.apiUrl);
   // workspaceId is opaque server-issued; encode it defensively so a
   // value containing path-sensitive characters can't reshape the URL.
   const url = `${apiUrl}/mcp/${encodeURIComponent(options.workspaceId)}/sse`;
@@ -479,7 +479,7 @@ export interface RevokeAgentResponse {
 
 // ── Internals ─────────────────────────────────────────────────────────
 
-function trimTrailingSlash(s: string): string {
+function stripTrailingSlashes(s: string): string {
   // Non-regex to keep the polynomial-ReDoS checker happy on `\/+$`.
   let i = s.length;
   while (i > 0 && s[i - 1] === "/") i--;

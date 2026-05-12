@@ -53,9 +53,9 @@ export function validateApiKey(req: Request): AuthResult {
   // length. SHA-256 is appropriate here — ATLAS_API_KEY is an operator-set
   // high-entropy bearer token, not a user-chosen password. A slow KDF
   // (bcrypt/scrypt/argon2) would add ~100ms to every authenticated request
-  // and provide no security benefit against random tokens. CodeQL alerts
-  // #1–#3 (js/insufficient-password-hash) are dismissed as "won't fix" for
-  // this reason — see security/code-scanning on the repo.
+  // and provide no security benefit against random tokens. The CodeQL rule
+  // `js/insufficient-password-hash` is dismissed as "won't fix" for this
+  // reason.
   const keyHash = createHash("sha256").update(key).digest();
   const expectedHash = createHash("sha256").update(expected).digest();
 

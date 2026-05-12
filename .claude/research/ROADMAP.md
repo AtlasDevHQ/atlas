@@ -152,11 +152,10 @@ Tracker: [milestone #44](https://github.com/AtlasDevHQ/atlas/milestones/44). Two
 - [x] Brand `encryptSecret` return types — `URLSecret` vs `OpaqueSecret` ([#2370](https://github.com/AtlasDevHQ/atlas/issues/2370), [#2374](https://github.com/AtlasDevHQ/atlas/pull/2374)) — type-system enforcement of the URL-passthrough vs opaque-secret split; architecture-wins #55.
 - [x] Widen `useSession()` return for `session.fields` extras ([#2334](https://github.com/AtlasDevHQ/atlas/issues/2334), [#2373](https://github.com/AtlasDevHQ/atlas/pull/2373)) — finishes the #2262 authClient cast-collapse arc; architecture-wins #54.
 - [x] Expose multi-workspace MCP shape in `@useatlas/sdk` ([#2196](https://github.com/AtlasDevHQ/atlas/issues/2196), [#2375](https://github.com/AtlasDevHQ/atlas/pull/2375)) — `completeConnect` surfaces the plural `workspace_ids` claim, `buildConfig` opts into the env-hint block, `useMcpConnect` exposes `workspaces` for picker UX. Published as `@useatlas/sdk@0.0.14`; consumer-refs bump #2379.
+- [x] Unified BYOT credentials — `WorkspaceCredentials` union + `ByotAdapter<Cred>` ([#2282](https://github.com/AtlasDevHQ/atlas/issues/2282), [#2376](https://github.com/AtlasDevHQ/atlas/pull/2376)) — post-#2174 BYOT review S25+S26 folded into one PR; bedrock joins the typed adapter dispatch table. Architecture-wins #56 + #57.
+- [x] Scheduler-driven periodic refresh for BYOT discovery catalogs ([#2284](https://github.com/AtlasDevHQ/atlas/issues/2284), [#2378](https://github.com/AtlasDevHQ/atlas/pull/2378)) — daily cron via the scheduler with admin-triggered manual run.
 
-### Open
-
-- [ ] Unified BYOT credentials — `WorkspaceCredentials` union + `ByotAdapter<Cred>` ([#2282](https://github.com/AtlasDevHQ/atlas/issues/2282)) — post-#2174 BYOT review S25+S26, merged tracker; ships as one PR (#2283 folded in).
-- [ ] Scheduler-driven periodic refresh for BYOT discovery catalogs ([#2284](https://github.com/AtlasDevHQ/atlas/issues/2284)) — graduate the cron-shaped refresh into the scheduler.
+_All 1.4.3 items shipped — milestone ready for `/closeout`._
 
 ---
 

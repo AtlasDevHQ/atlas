@@ -25,16 +25,15 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
+  SidebarTrigger,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { Button } from "@/components/ui/button";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ConversationList } from "@/ui/components/conversations/conversation-list";
-import { OrgSwitcher } from "@/ui/components/org-switcher";
-import { UserMenu } from "@/ui/components/user-menu";
+import { SidebarUserMenu } from "./sidebar-user-menu";
 import { DemoIndicatorChip } from "@/ui/components/demo-indicator-chip";
 import { PALETTE_EVENT } from "./palette-events";
 import type { Conversation } from "@/ui/lib/types";
@@ -105,53 +104,46 @@ export function ChatSidebar({
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton size="lg" asChild tooltip="Atlas home">
-              <Link href="/" aria-label="Atlas home">
-                <div className="bg-sidebar-primary text-sidebar-primary-foreground flex aspect-square size-8 items-center justify-center rounded-lg">
-                  <svg
-                    viewBox="0 0 256 256"
-                    fill="none"
-                    className="size-4"
-                    aria-hidden="true"
-                  >
-                    <path
-                      d="M128 24 L232 208 L24 208 Z"
-                      stroke="currentColor"
-                      strokeWidth="20"
+        <div className="flex items-center gap-1">
+          <SidebarMenu className="min-w-0 flex-1">
+            <SidebarMenuItem>
+              <SidebarMenuButton size="lg" asChild tooltip="Atlas home">
+                <Link href="/" aria-label="Atlas home">
+                  <div className="bg-sidebar-primary text-sidebar-primary-foreground flex aspect-square size-8 items-center justify-center rounded-lg">
+                    <svg
+                      viewBox="0 0 256 256"
                       fill="none"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                </div>
-                <div className="flex min-w-0 flex-1 flex-col gap-0.5 text-sm leading-tight">
-                  <span className="truncate font-semibold">Atlas</span>
-                </div>
-              </Link>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
-        <div className="px-1 group-data-[collapsible=icon]:hidden">
-          <OrgSwitcher variant="inline" />
+                      className="size-4"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M128 24 L232 208 L24 208 Z"
+                        stroke="currentColor"
+                        strokeWidth="20"
+                        fill="none"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </div>
+                  <div className="flex min-w-0 flex-1 flex-col gap-0.5 text-sm leading-tight">
+                    <span className="truncate font-semibold">Atlas</span>
+                  </div>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+          <SidebarTrigger
+            aria-label="Collapse sidebar"
+            className="shrink-0 group-data-[collapsible=icon]:hidden"
+          />
         </div>
       </SidebarHeader>
 
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupContent>
-            <div className="px-2 pb-1 group-data-[collapsible=icon]:hidden">
-              <Button
-                onClick={onNewChat}
-                size="sm"
-                className="h-9 w-full justify-start gap-2 font-medium"
-              >
-                <Plus className="size-4" />
-                New conversation
-              </Button>
-            </div>
             <SidebarMenu>
-              <SidebarMenuItem className="hidden group-data-[collapsible=icon]:block">
+              <SidebarMenuItem>
                 <SidebarMenuButton
                   onClick={onNewChat}
                   tooltip="New conversation"
@@ -299,9 +291,11 @@ export function ChatSidebar({
             </SidebarMenuItem>
           )}
         </SidebarMenu>
-        <div className="flex items-center gap-2 px-2 py-1.5 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
-          <UserMenu />
-        </div>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarUserMenu />
+          </SidebarMenuItem>
+        </SidebarMenu>
       </SidebarFooter>
       <SidebarRail />
     </Sidebar>

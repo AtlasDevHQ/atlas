@@ -13,6 +13,27 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "1.4.2",
+    title: "End-user shakeout",
+    date: "2026-05-12",
+    summary:
+      "Polish pass from dogfooding Atlas as an end-user. Chat-first front door for non-admins (root `/` lands on the agent, not the admin console), per-user default-landing preference for admins who live in `/admin`. Platform-admin chrome lifted to top-level `/platform/*` so URL prefix mirrors role scope. BYOT now supports direct Anthropic / OpenAI / Bedrock keys with provider-side model discovery and a Postgres L2 catalog cache. New `/settings/profile` self-serve page covers name + password + MFA + sessions. Dev mode gets a LaunchDarkly-style pending-changes pill so draft work is visible. Numbers: 42 issues across admin chrome, BYOT, profile, multi-tenant correctness, platform-admin polish, and a long bug pass.",
+    highlights: [
+      "Chat-first front door — root `/` lands non-admins on the agent; admins pick a per-user default landing (chat / notebook / dashboards / admin) in Settings → Profile",
+      "Unified left rail across `/`, `/notebook`, `/dashboards` — shadcn Sidebar shell parity with `/admin` so every surface picks up the same nav primitives",
+      "BYOT direct-provider discovery — Anthropic + OpenAI + Bedrock keys now get a searchable model picker over the live provider catalog (`/v1/models` + `ListFoundationModels`), backed by a per-orgId L1 + Postgres L2 cache and graceful unknown-model handling",
+      "Vercel AI Gateway model catalog picker — searchable picker with provider/capability filters surfaces the full gateway catalog instead of free-form model input",
+      "Platform admin nav lift — `/admin/platform/*` + `/admin/organizations` + `/admin/abuse` promoted to top-level `/platform/*` so the URL prefix mirrors role scope; `/admin/users` split into workspace + `/platform/users`",
+      "`/settings/profile` — name + password + MFA + sessions in one self-serve page (B2B-safe; org-owned email stays read-only); reached from the avatar menu in both chat and admin chrome",
+      "Persistent admin top bar — workspace breadcrumb + avatar menu carries across every admin page",
+      "Dev-mode discoverability — LaunchDarkly-style PendingChangesPill counts staged drafts across content tables; admin mutations always write drafts so Publish stays the canonical promote-to-live step",
+      "`__demo__` collapsed to one global row — onboarding INSERTs at `org_id='__global__'` with ON CONFLICT DO NOTHING; per-org archived tombstone shadows the global without mutating shared state",
+      "Shared primitives extracted — `<MfaPanel>` shared between `/admin/account-security` and `/settings/profile`, `AdminBreadcrumb` discriminated union, canonical shadcn DatePicker / DateRangePicker across every admin date selector",
+      "Boot + CI hardening — Boot Smoke path-gated to scaffold-relevant changes (doc-only PRs skip the 4-min job), `ci` lint/type/test/syncpack/template-drift fan out as parallel jobs, real-Postgres migration smoke catches SQL planning errors that mock-pool tests miss, full Dockerfile + SaaS env boot smoke with `/api/health` probe",
+    ],
+    githubMilestone: 42,
+  },
+  {
     version: "1.4.1",
     title: "MCP: Bringing It All Together",
     date: "2026-05-09",

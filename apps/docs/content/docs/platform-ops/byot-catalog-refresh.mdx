@@ -1,0 +1,93 @@
+---
+title: BYOT Catalog Refresh
+description: Daily scheduler-driven refresh of BYOT model catalogs so the AI Provider picker never shows a stale model list.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+When a workspace brings its own provider key (BYOT), Atlas fetches the upstream model catalog (Anthropic `/v1/models`, OpenAI `/v1/models`, Bedrock `ListFoundationModels`) and caches it in two layers — an in-pod L1 cache and a durable Postgres L2 cache (`workspace_model_catalog`). The L2 cache survives pod restarts so admins don't refetch on every cold start.
+
+Without periodic refresh, the catalog only updates when an admin clicks **Refresh now** or when a request finds the cache stale. For workspaces admins rarely visit, the catalog can age indefinitely — the next visitor sees yesterday's (or last month's) model list. The BYOT catalog refresh scheduler closes that gap.
+
+<Callout title="What it does">
+- Runs daily (default: 24h interval)
+- Walks `workspace_model_config` rows whose corresponding `workspace_model_catalog.fetched_at` is older than 24h (or never fetched)
+- Refreshes each `(org_id, provider, region)` sequentially via the existing per-provider fetchers
+- Skips workspaces with `decrypt_failed` keys, missing keys, or in active backoff
+- Audits every per-row outcome plus a cycle-level summary
+</Callout>
+
+## Prerequisites
+
+- Internal database configured (`DATABASE_URL`)
+- One or more workspaces with saved BYOT configs (`anthropic`, `openai`, or `bedrock`)
+
+## How it runs
+
+The scheduler is started automatically by `makeSchedulerLive` during API boot. No env var toggle is required — it no-ops cleanly when the internal DB is unavailable.
+
+The cycle:
+
+1. Queries `workspace_model_config` joined with `workspace_model_catalog` for stale rows (limit 100 per cycle to bound runtime).
+2. Iterates the result set **sequentially**, one upstream provider call at a time. This respects provider rate limits — a noisy workspace can't burn another's budget within a cycle.
+3. For each row:
+   - **In backoff?** Skip (audit log entry `model_config.catalog_refresh_skip` with `reason: in_backoff`).
+   - **Decrypt failure?** Skip (`reason: decrypt_failed`) — the workspace admin needs to re-enter the key.
+   - **Missing key / wrong provider?** Skip (`reason: missing_byot_key`).
+   - **Refresh succeeds?** Standard `model_config.catalog_refresh` audit row with `source: fresh`, `triggeredBy: scheduler`.
+   - **Refresh fails?** Failure audit row plus an in-memory backoff increment.
+
+### Backoff
+
+Consecutive failures trigger exponential backoff: 1 day, then 2, 4, 8, 16, 32 days (capped at ~32 days). A successful refresh clears the backoff state. The state is held in-process — a pod restart resets all counters. For a daily cycle this is acceptable: worst case a permanently-broken workspace gets retried a handful of extra times after a deploy.
+
+## Audit trail
+
+Every scheduler run leaves a forensic trail in `admin_action_log`:
+
+| Action type | When emitted | Metadata |
+|---|---|---|
+| `model_config.catalog_refresh_cycle` | Once per tick, even at zero rows | `{ inspected, refreshed, failed, skippedDecryptFailed, skippedInBackoff, skippedMissingKey }` |
+| `model_config.catalog_refresh` | Per successful workspace refresh | `{ provider, modelCount, source, triggeredBy: "scheduler" }` |
+| `model_config.catalog_refresh` (failure) | Per failed workspace refresh | `{ provider, error, triggeredBy: "scheduler" }` |
+| `model_config.catalog_refresh_skip` | Per skipped workspace | `{ provider, reason: "decrypt_failed" \| "missing_byot_key" \| "in_backoff" \| "malformed_bedrock_bundle" }` |
+
+The actor for every row is `system:byot-catalog-refresh`. Forensic queries scanning for "did the scheduler run today" filter on:
+
+```sql
+SELECT * FROM admin_action_log
+WHERE actor_id = 'system:byot-catalog-refresh'
+  AND action_type = 'model_config.catalog_refresh_cycle'
+  AND timestamp > now() - interval '48 hours'
+ORDER BY timestamp DESC;
+```
+
+The absence of a cycle row over a 48h window is the signal the scheduler stopped — investigate API pod health.
+
+## Manual trigger
+
+Navigate to **Monitoring > Scheduler Tasks** (`/admin/scheduler/tasks`). The page lists the registered system jobs; click **Run now** next to **BYOT catalog refresh** to execute a cycle synchronously. The response surfaces the outcome counts inline so an operator can see the result without tailing logs.
+
+The manual trigger is gated by the `admin:settings` permission. Triggering does not bypass backoff — a workspace that just failed will still be skipped on the manual run.
+
+Programmatically:
+
+```bash
+curl -X POST https://your-atlas/api/v1/admin/scheduler/tasks/byot-catalog-refresh/run \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}"
+```
+
+## Disabling
+
+Stop the scheduler at startup by overriding `startByotCatalogRefreshScheduler()`. There is currently no env var toggle — if you need to disable it (e.g., to debug an upstream provider outage), the cleanest path is:
+
+1. Remove the start call from `makeSchedulerLive` in `packages/api/src/lib/effect/layers.ts`.
+2. Redeploy.
+
+A long-term env var toggle (`ATLAS_BYOT_CATALOG_REFRESH_ENABLED`) can be added if multiple operators need the off-switch.
+
+## Known limitations
+
+- **No dormancy filter.** The issue (#2284) called for gating on `organization.last_active_at`, but that column does not exist on the Better-Auth-managed `organization` table. Adding it crosses scope; the daily TTL itself acts as a coarse dormancy gate. A follow-up issue tracks adding the column.
+- **In-memory backoff.** Lost across pod restarts. For a daily cycle this is intentional — keeping the persistent counter would require a migration.
+- **Batch size.** Capped at 100 per cycle to bound runtime. Installs with >100 stale BYOT workspaces will catch up over multiple ticks (each subsequent tick picks up the rows with `NULLS FIRST` ordering).

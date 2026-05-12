@@ -591,8 +591,22 @@ export const ADMIN_ACTIONS = {
      * the apiKey is never logged. Audited because the discovery call exercises
      * the stored credential server-side and a misconfigured key (401) is the
      * same forensic signal as a `model_config.test` failure.
+     *
+     * `catalogRefreshCycle` (#2284) — emitted once per scheduler tick by the
+     * BYOT catalog refresh job, even at zero rows. The absence of a cycle row
+     * over a retention window is the signal that the refresh scheduler stopped
+     * (same forensic invariant as `audit_log.purge_cycle`). Uses the reserved
+     * `system:byot-catalog-refresh` actor.
+     *
+     * `catalogRefreshSkip` (#2284) — emitted per workspace the refresh job
+     * skipped without contacting the upstream provider. Metadata carries
+     * `{ provider, reason: 'decrypt_failed' | 'missing_byot_key' |
+     * 'in_backoff' | 'malformed_bedrock_bundle' }` so triage can see why a
+     * workspace's catalog is aging without action.
      */
     catalogRefresh: "model_config.catalog_refresh",
+    catalogRefreshCycle: "model_config.catalog_refresh_cycle",
+    catalogRefreshSkip: "model_config.catalog_refresh_skip",
   },
   /**
    * Workspace white-label branding. Enterprise-gated. Without these entries

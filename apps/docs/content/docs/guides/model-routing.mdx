@@ -34,13 +34,14 @@ When the agent loop starts a new conversation:
 
 ### Supported Providers
 
-| Provider | Value | Description |
-|----------|-------|-------------|
-| Anthropic | `anthropic` | Claude models via `api.anthropic.com` (BYOT key) |
-| OpenAI | `openai` | GPT models via `api.openai.com` (BYOT key) |
-| Azure OpenAI | `azure-openai` | Azure-hosted OpenAI models (BYOT key + base URL) |
-| Custom | `custom` | Any OpenAI-compatible endpoint (BYOT key + base URL) |
-| Vercel AI Gateway | `gateway` | Any gateway-supported model — omit `apiKey` for **platform credits** (SaaS only) or supply one for **BYOT gateway** billing |
+| Provider | Value | Description | Discovery |
+|----------|-------|-------------|-----------|
+| Anthropic | `anthropic` | Claude models via `api.anthropic.com` (BYOT key) | Live picker over `GET /v1/models` — see [Direct-provider model picker](#direct-provider-model-picker) |
+| OpenAI | `openai` | GPT models via `api.openai.com` (BYOT key) | Live picker over `GET /v1/models` — see [Direct-provider model picker](#direct-provider-model-picker) |
+| AWS Bedrock | `bedrock` | Claude / Titan / Cohere via AWS Bedrock (BYOT IAM creds + region — IAM policy + region selection tracked in [#2286](https://github.com/AtlasDevHQ/atlas/issues/2286)) | Live picker over `ListFoundationModels` (per region) — see [Direct-provider model picker](#direct-provider-model-picker) |
+| Azure OpenAI | `azure-openai` | Azure-hosted OpenAI models (BYOT key + base URL) | Free-form — enter the deployment manually |
+| Custom | `custom` | Any OpenAI-compatible endpoint (BYOT key + base URL) | Free-form |
+| Vercel AI Gateway | `gateway` | Any gateway-supported model — omit `apiKey` for **platform credits** (SaaS only) or supply one for **BYOT gateway** billing | Live picker over the anonymous gateway catalog — see [Gateway model picker](#gateway-model-picker) |
 
 ### Gateway model picker
 
@@ -51,6 +52,54 @@ When `provider=gateway`, the admin UI swaps the free-form model input for a sear
 - Falls back to a small bundled subset if the live catalog endpoint is unreachable; the picker surfaces a "showing a curated subset" banner with a retry button
 
 The catalog is fetched server-side (`GET https://ai-gateway.vercel.sh/v1/models`) and cached in-memory for the configured TTL — see [Configuration](#configuration).
+
+### Direct-provider model picker
+
+When `provider=anthropic`, `provider=openai`, or `provider=bedrock`, the admin UI swaps the free-form model input for a searchable picker over the **live upstream catalog** for that workspace, fetched with the workspace's saved BYOT credentials:
+
+- **Anthropic** — `GET https://api.anthropic.com/v1/models` using the workspace's stored API key.
+- **OpenAI** — `GET https://api.openai.com/v1/models` using the workspace's stored API key. Server-side filtering trims the response to chat-capable models.
+- **AWS Bedrock** — `ListFoundationModels` via the AWS SDK using the workspace's stored access key / secret / session token bundle, scoped to the saved `bedrock_region`. Bedrock surfaces a different model set per region, so the cache and the picker are region-scoped. Minimum-privilege IAM policy + region selection setup is tracked separately in [#2286](https://github.com/AtlasDevHQ/atlas/issues/2286).
+
+Unlike the gateway catalog (anonymous, globally cached), direct-provider catalogs are **per-workspace** — the picker only renders entries the workspace's own credentials have access to, including any model previews or fine-tuned variants gated to that account.
+
+The same admin endpoint serves every variant:
+
+```http
+GET /api/v1/admin/model-config/catalog?provider=anthropic
+GET /api/v1/admin/model-config/catalog?provider=openai
+GET /api/v1/admin/model-config/catalog?provider=bedrock
+```
+
+Pass `?fresh=true` (admin-only) to bypass the cache and force a fresh upstream fetch — every refresh is recorded against the [admin audit log](/architecture/audit) as `model_config.catalog_refresh`.
+
+#### Two-tier cache
+
+Direct-provider catalogs are read through a two-tier cache, both keyed by `(orgId, provider, region)`. `region` is the empty string for non-region-scoped providers and the AWS region for Bedrock — keeping region in the cache key lets a workspace that migrates between regions stay correct without colliding entries.
+
+1. **L1 — in-memory, per pod.** Scopes the catalog to a single pod's request burst. Wiped on pod restart.
+2. **L2 — Postgres `workspace_model_catalog`** (migration `0058_workspace_model_catalog.sql`). Cross-pod and survives restarts. Bedrock adds a `bedrock_region` column to `workspace_model_config` in the same wave (migration `0057_workspace_model_config_bedrock.sql`).
+
+Both layers are operational caches — they never store user-surfaced content and intentionally bypass the content-mode system (no `status` column, no participation in the admin Publish flow). Reads walk L1 → L2 → upstream and write fresh entries back into both. A DB outage on L2 silently falls back to L1 + upstream — the cache is performance, not correctness, so a degraded L2 must not break a working BYOT workspace.
+
+Refresh paths:
+
+- **On admin save / key rotation** — the per-provider invalidator flushes both L1 and L2 for the affected workspace.
+- **On demand** — the `?fresh=true` query above bypasses the cache and re-fetches upstream.
+
+A single `ATLAS_BYOT_CATALOG_TTL_MS` knob (default **6 hours**) controls freshness across all three direct-provider catalogs; see [Configuration](#configuration). Lower values surface new upstream models sooner; higher values reduce upstream load and lower the chance of hitting per-key rate limits.
+
+#### Graceful unknown-model handling
+
+If a saved model disappears from the upstream catalog (provider deprecation, regional retirement, rename), the workspace's `workspace_model_config` row flips to `model_status = 'deprecated'` on the next refresh (migration `0059_workspace_model_config_deprecation.sql`). Without this, the workspace looks healthy in the admin UI right up until the next chat fails with an opaque upstream 404.
+
+Atlas computes a best-effort closest-match suggestion using a family-stem-then-edit-distance heuristic:
+
+1. **Tier 1 — same family stem, same provider.** Extract the family stem (`claude`, `gpt`, `gemini`, `anthropic.claude`, …) from the saved model ID, then pick the closest live candidate by normalized Levenshtein distance. High confidence — e.g. `claude-3-opus-20240229` → `claude-opus-4-6`.
+2. **Tier 2 — same provider, any stem.** Accepted only when the normalized edit distance is ≤ 30%.
+3. **Tier 3 — cross-provider.** Same 30% threshold. Catches bedrock-vs-direct-Anthropic patterns when a workspace switched providers without re-saving.
+
+If nothing qualifies, the suggestion is `NULL` and the admin UI surfaces a generic warning + the full picker instead of a one-click apply. Re-saving the configuration (with the suggestion, or any other model) resets the row to `('healthy', NULL)` so the warning doesn't linger.
 
 ### Security
 
@@ -65,6 +114,7 @@ The catalog is fetched server-side (`GET https://ai-gateway.vercel.sh/v1/models`
 |----------------------|---------|------------------|
 | `AI_GATEWAY_API_KEY` | none | Platform gateway key used when a workspace picks `provider=gateway` with no BYOT key. Required on SaaS deploys; self-hosted deploys can pick a single platform-wide key here or fall back to a BYOT-only model. |
 | `ATLAS_GATEWAY_CATALOG_TTL_MS` | `1800000` (30 min) | TTL on the in-memory gateway catalog cache. Lower values keep new gateway models visible sooner; higher values reduce upstream load. |
+| `ATLAS_BYOT_CATALOG_TTL_MS` | `21600000` (6 hours) | TTL on the per-workspace direct-provider catalog cache (both L1 in-memory and L2 Postgres). Shared across the Anthropic, OpenAI, and Bedrock pickers. Lower values surface new upstream models sooner; higher values reduce upstream load and lower the chance of hitting per-key rate limits. |
 
 ---
 

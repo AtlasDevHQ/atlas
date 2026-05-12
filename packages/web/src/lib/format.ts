@@ -50,9 +50,11 @@ export function formatDateTime(date: DateInput): string {
 const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 /**
- * Parse a yyyy-MM-dd date string into a Date at local midnight.
- * Returns undefined for empty/invalid input. Used at the boundary between
- * URL/API string state and the DatePicker primitives.
+ * Parse yyyy-MM-dd at LOCAL midnight (not UTC) so the parsed date renders as
+ * the same calendar day the user typed. `new Date("2026-03-27")` parses as
+ * UTC midnight and shifts west of GMT. Also rejects overflow like "2026-02-30"
+ * via the round-trip check below — the Date constructor would silently coerce
+ * those to a different valid date.
  */
 export function parseISODate(value: string | null | undefined): Date | undefined {
   if (!value) return undefined;
@@ -73,8 +75,9 @@ export function parseISODate(value: string | null | undefined): Date | undefined
 }
 
 /**
- * Format a Date as yyyy-MM-dd in local time. Returns "" for undefined/null
- * so the result drops straight into URL/API string state.
+ * Inverse of parseISODate — formats in LOCAL time (not UTC) so a date picked
+ * on March 27 doesn't serialize as March 26 west of GMT. Returns "" for
+ * undefined/null so the result drops straight into URL/API string state.
  */
 export function formatISODate(date: Date | null | undefined): string {
   if (!date) return "";

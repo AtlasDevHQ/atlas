@@ -144,6 +144,14 @@ describe("formatISODate", () => {
     const d = new Date(2026, 8, 9); // Sep 9
     expect(formatISODate(d)).toBe("2026-09-09");
   });
+
+  test("formats in local time, not UTC (Dec 31 evening stays Dec 31)", () => {
+    // The motivating bug: `toISOString().slice(0, 10)` would return "2026-01-01"
+    // for this Date in any UTC-offset west of GMT. formatISODate uses local
+    // getters so the calendar day matches what the user picked.
+    const lateLocal = new Date(2025, 11, 31, 23, 0, 0); // Dec 31 11pm local
+    expect(formatISODate(lateLocal)).toBe("2025-12-31");
+  });
 });
 
 describe("formatNumber", () => {

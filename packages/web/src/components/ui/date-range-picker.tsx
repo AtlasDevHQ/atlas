@@ -35,6 +35,21 @@ function renderRangeLabel(range: DateRange | undefined, placeholder: string) {
   return formatLongDate(range.from ?? range.to);
 }
 
+/**
+ * Swap from/to when the user picks an inverted range. Makes `to >= from` a
+ * postcondition of the component without changing the prop type — callers
+ * never see {from: dec31, to: jan1}.
+ *
+ * Exported for unit testing; not part of the component's stable API.
+ */
+export function normalizeRange(range: DateRange | undefined): DateRange | undefined {
+  if (!range?.from || !range?.to) return range;
+  if (range.from.getTime() > range.to.getTime()) {
+    return { from: range.to, to: range.from };
+  }
+  return range;
+}
+
 export function DateRangePicker({
   value,
   onChange,
@@ -74,8 +89,9 @@ export function DateRangePicker({
           mode="range"
           selected={value}
           onSelect={(range) => {
-            onChange(range);
-            if (range?.from && range?.to) setOpen(false);
+            const normalized = normalizeRange(range);
+            onChange(normalized);
+            if (normalized?.from && normalized?.to) setOpen(false);
           }}
           numberOfMonths={numberOfMonths}
         />

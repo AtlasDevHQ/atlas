@@ -23,6 +23,10 @@ export interface DatePickerProps {
   "aria-label"?: string;
 }
 
+function isValidDate(d: Date | undefined): d is Date {
+  return d instanceof Date && !Number.isNaN(d.getTime());
+}
+
 export function DatePicker({
   value,
   onChange,
@@ -33,6 +37,7 @@ export function DatePicker({
   "aria-label": ariaLabel,
 }: DatePickerProps) {
   const [open, setOpen] = React.useState(false);
+  const safeValue = isValidDate(value) ? value : undefined;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -45,13 +50,13 @@ export function DatePicker({
           data-slot="date-picker-trigger"
           className={cn(
             "h-9 w-40 justify-start text-left font-normal",
-            !value && "text-muted-foreground",
+            !safeValue && "text-muted-foreground",
             className,
           )}
         >
           <CalendarIcon className="mr-2 size-3.5 shrink-0" />
           <span className="truncate">
-            {value ? formatLongDate(value) : placeholder}
+            {safeValue ? formatLongDate(safeValue) : placeholder}
           </span>
         </Button>
       </PopoverTrigger>
@@ -60,7 +65,7 @@ export function DatePicker({
           autoFocus
           captionLayout="dropdown"
           mode="single"
-          selected={value}
+          selected={safeValue}
           onSelect={(date) => {
             onChange(date);
             if (date) setOpen(false);

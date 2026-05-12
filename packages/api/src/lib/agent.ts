@@ -536,7 +536,7 @@ export async function runAgent({
     model = injectedAiModel.model;
     providerType = injectedAiModel.providerType;
   } else {
-    let workspaceConfig: { provider: import("@useatlas/types").ModelConfigProvider; model: string; apiKey: string | null; baseUrl: string | null; bedrockRegion: string | null } | null = null;
+    let workspaceConfig: import("@atlas/ee/platform/model-routing").RawWorkspaceModelConfig | null = null;
     if (orgId && hasInternalDB()) {
       const { Effect } = await import("effect");
       const { getWorkspaceModelConfigRaw, ModelConfigDecryptError } =
@@ -554,9 +554,14 @@ export async function runAgent({
             { cause: err },
           );
         }
-        log.debug(
+        // log.warn — the workspace may have intended to be billed
+        // against their own BYOT key; falling back to the platform
+        // default after a non-decrypt error (DB unreachable, EE
+        // disabled, internal-query failure) bills the platform on
+        // their behalf. Quiet-debug here would hide that swap.
+        log.warn(
           { orgId, err: err instanceof Error ? err.message : String(err) },
-          "Workspace model config not available — using platform default",
+          "Workspace model config not available — falling back to platform default",
         );
       }
     }

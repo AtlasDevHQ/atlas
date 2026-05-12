@@ -70,7 +70,8 @@ export type AtlasMcpErrorCode =
   | "callback_missing_code"
   | "popup_blocked"
   | "popup_closed"
-  | "grant_not_supported";
+  | "grant_not_supported"
+  | "workspace_not_in_grant_list";
 
 /**
  * Compile-time witness that `OAuthHelperErrorCode ⊂ AtlasMcpErrorCode`.
@@ -132,6 +133,17 @@ function liftHelperSync<T>(fn: () => T): T {
 
 const DEFAULT_SCOPES: ReadonlyArray<string> = ["mcp:read", "offline_access"];
 const WORKSPACE_CLAIM = "https://atlas.useatlas.dev/workspace_id";
+/**
+ * Plural workspace-ids claim (#2073). Emitted by the Atlas Better Auth
+ * `customAccessTokenClaims` hook ONLY when the authenticating user
+ * belongs to more than one workspace. Read here for the same reason the
+ * CLI reads it: lets the embedder render a workspace picker without a
+ * follow-up `/me/workspaces` roundtrip. The runtime authorization layer
+ * at the MCP edge ignores this claim — it does a live grants-table
+ * lookup so membership revocation is immediate; the claim is purely a
+ * UX affordance.
+ */
+const WORKSPACES_CLAIM = "https://atlas.useatlas.dev/workspace_ids";
 
 // ── Public types ──────────────────────────────────────────────────────
 
@@ -153,6 +165,21 @@ export interface BeginConnectOptions {
   redirectUri: string;
   /** Defaults to `["mcp:read", "offline_access"]`. */
   scopes?: ReadonlyArray<string>;
+  /**
+   * Forward-compat slot (#2196). **No-op today.** The Atlas OAuth
+   * provider does not yet accept a workspace hint on the authorize
+   * endpoint — server-side claim issuance reads the user's session at
+   * consent time and emits the singular + (optionally) plural claims
+   * based on membership, regardless of what you pass here. Reserved so
+   * the SDK surface doesn't need to change when the provider lands
+   * the hint.
+   *
+   * Passing this option today has no observable effect — to get a
+   * multi-workspace token, just ensure the authenticating user belongs
+   * to more than one workspace. The plural claim then surfaces on
+   * `completeConnect`'s result as `workspaces`.
+   */
+  workspaceId?: string;
   /** Test seam — defaults to global `fetch`. */
   fetchImpl?: typeof fetch;
   /** Test seam — defaults to `crypto.getRandomValues`. */
@@ -223,6 +250,26 @@ export interface CompleteConnectResult {
   expiresAt: number;
   /** `https://atlas.useatlas.dev/workspace_id` claim from the JWT. */
   workspaceId: string;
+  /**
+   * `https://atlas.useatlas.dev/workspace_ids` plural claim (#2196) — the
+   * complete set of workspaces this token grants access to, in the order
+   * the server emitted them. Empty array when the token was minted for
+   * a user belonging to exactly one workspace (the server omits the
+   * plural claim in that case). Always a stable type so embedders
+   * rendering a workspace picker don't need to null-check.
+   *
+   * Typed `ReadonlyArray<string>` so consumers can't mutate the
+   * SDK-owned array in place (the value is held in `useState` inside
+   * `useMcpConnect`; an in-place `.sort()` would silently mutate React
+   * state). Pipes cleanly into `buildConfig({ workspaces })` whose
+   * input shape is the same.
+   *
+   * The runtime authorization layer at the MCP edge does NOT rely on
+   * this list — membership is re-checked against the live grants table
+   * on every request so revocation is immediate. Treat the array as a
+   * UX affordance, not a security boundary.
+   */
+  workspaces: ReadonlyArray<string>;
 }
 
 export type McpClientId =
@@ -236,14 +283,54 @@ export interface BuildConfigOptions {
   client: McpClientId;
   apiUrl: string;
   accessToken: string;
+  /**
+   * Workspace pinned in the connection URL. Even for multi-workspace
+   * tokens this is required — the hosted MCP edge mounts at
+   * `/mcp/{workspace_id}/sse`. For multi-workspace setups pass the
+   * default-workspace id (typically the singular claim from
+   * `completeConnect`); per-request overrides happen via the
+   * `X-Atlas-Workspace` header.
+   */
   workspaceId: string;
   /** Override the `mcpServers["..."]` key. Defaults to `"atlas"`. */
   serverName?: string;
+  /**
+   * Multi-workspace opt-in (#2196). Pass the full list of workspaces
+   * this token grants access to (the `workspaces` field from
+   * `completeConnect`'s result). When non-empty, the emitted block
+   * gains an `env: { ATLAS_DEFAULT_WORKSPACE: <workspaceId> }` slot so
+   * future MCP-client framework wrappers can bridge it into the
+   * `X-Atlas-Default-Workspace` header (priority 2 in the edge's
+   * resolution chain). Output matches the CLI's hosted-config writer
+   * so SDK and CLI emit identical config blocks for the same token.
+   *
+   * **Wire-shape note.** [#2073's recommendation A](https://github.com/AtlasDevHQ/atlas/issues/2073)
+   * sketched `url: "https://mcp.useatlas.dev/sse"` without a workspace
+   * in the path, but the implemented hosted MCP endpoint mounts at
+   * `/mcp/{workspace_id}/sse` and resolves per-request overrides via
+   * the `X-Atlas-Workspace` header. The SDK emits the implemented
+   * shape — a single config block, one default workspace in the
+   * path, and the env hint for per-request overrides.
+   *
+   * Omit (or pass an empty array) for the legacy single-workspace
+   * shape — backward-compatible with every caller pre-#2196.
+   */
+  workspaces?: ReadonlyArray<string>;
 }
 
 export interface McpHttpServer {
   url: string;
   headers: { Authorization: string };
+  /**
+   * Multi-workspace hint block (#2196). Present only when `buildConfig`
+   * was called with a non-empty `workspaces` array — the legacy
+   * single-workspace shape omits the field entirely so the
+   * JSON-serialized server block is byte-identical to pre-#2196
+   * output. (The outer `McpClientConfig` carries a `kind` discriminator
+   * intended to be dropped before JSON output; see `stripKind` in the
+   * worked example for the standard call-site pattern.)
+   */
+  env?: { ATLAS_DEFAULT_WORKSPACE: string };
 }
 
 /**
@@ -381,6 +468,7 @@ export async function completeConnect(
     const claims = decodeJwtPayload(tokenResponse.access_token);
     enforceIssuer(claims, issuer);
     const workspaceId = extractWorkspaceClaim(claims);
+    const workspaces = extractWorkspacesClaim(claims);
 
     const expiresIn =
       typeof tokenResponse.expires_in === "number" && tokenResponse.expires_in > 0
@@ -392,6 +480,7 @@ export async function completeConnect(
       refreshToken: tokenResponse.refresh_token ?? null,
       expiresAt: Date.now() + expiresIn * 1000,
       workspaceId,
+      workspaces,
     };
   });
 }
@@ -405,10 +494,29 @@ export function buildConfig(options: BuildConfigOptions): McpClientConfig {
   // workspaceId is opaque server-issued; encode it defensively so a
   // value containing path-sensitive characters can't reshape the URL.
   const url = `${apiUrl}/mcp/${encodeURIComponent(options.workspaceId)}/sse`;
-  const block: McpHttpServer = {
-    url,
-    headers: { Authorization: `Bearer ${options.accessToken}` },
-  };
+  // Multi-workspace opt-in (#2196): non-empty `workspaces` emits the
+  // env hint. Empty / omitted preserves the legacy single-workspace
+  // shape. Loudly reject the embedder-error case where the picked
+  // default isn't in the granted set — silently encoding a stale id
+  // into the URL would surface as a generic 403 cross_workspace_denied
+  // at runtime with no hint that the picker had a bad value.
+  const isMultiWorkspace = (options.workspaces?.length ?? 0) > 0;
+  if (isMultiWorkspace && !options.workspaces!.includes(options.workspaceId)) {
+    throw new AtlasMcpError(
+      `buildConfig: workspaceId \`${options.workspaceId}\` is not in the granted workspaces list — pass a default that is one of: ${options.workspaces!.join(", ")}.`,
+      "workspace_not_in_grant_list",
+    );
+  }
+  const block: McpHttpServer = isMultiWorkspace
+    ? {
+        url,
+        headers: { Authorization: `Bearer ${options.accessToken}` },
+        env: { ATLAS_DEFAULT_WORKSPACE: options.workspaceId },
+      }
+    : {
+        url,
+        headers: { Authorization: `Bearer ${options.accessToken}` },
+      };
   const name = options.serverName ?? SERVER_NAME_DEFAULT;
 
   // Exhaustive switch on the discriminator — adding a new client to
@@ -417,7 +525,14 @@ export function buildConfig(options: BuildConfigOptions): McpClientConfig {
   // branch with the wrong shape.
   switch (options.client) {
     case "generic":
-      return { kind: "bare", url: block.url, headers: block.headers };
+      return isMultiWorkspace
+        ? {
+            kind: "bare",
+            url: block.url,
+            headers: block.headers,
+            env: block.env,
+          }
+        : { kind: "bare", url: block.url, headers: block.headers };
     case "claude-desktop":
     case "cursor":
     case "continue":
@@ -495,4 +610,42 @@ function extractWorkspaceClaim(payload: Record<string, unknown>): string {
     );
   }
   return claim;
+}
+
+/**
+ * Extract the optional plural workspaces claim (#2196). Returns an
+ * empty array when the claim is missing (single-workspace tokens omit
+ * it) OR when the claim is present but malformed. Never throws — the
+ * plural claim is informational, not a security boundary; falling back
+ * to the singular workspace is always safe.
+ *
+ * Diagnostics: the missing-claim path is the documented common case for
+ * single-workspace tokens and stays silent. The malformed paths
+ * (non-array shape, or array with non-string entries) emit a
+ * `console.warn` so a misconfigured self-hosted issuer that ships a
+ * broken plural shape on every token surfaces in operator logs rather
+ * than silently downgrading every user to single-workspace forever.
+ * The matching CLI helper (`plugins/mcp/src/init/hosted.ts`) emits the
+ * same diagnostics via its own logger seam — parity prevents the SDK
+ * and CLI from diverging on which malformed inputs produce a signal.
+ */
+function extractWorkspacesClaim(payload: Record<string, unknown>): string[] {
+  const raw = payload[WORKSPACES_CLAIM];
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    console.warn(
+      `[@useatlas/sdk] ${WORKSPACES_CLAIM} claim was present but not an array (got ${typeof raw}); falling back to single-workspace.`,
+    );
+    return [];
+  }
+  const filtered = raw.filter(
+    (entry): entry is string => typeof entry === "string" && entry.length > 0,
+  );
+  if (filtered.length !== raw.length) {
+    const dropped = raw.length - filtered.length;
+    console.warn(
+      `[@useatlas/sdk] ${WORKSPACES_CLAIM} claim contained ${dropped} non-string or empty entr${dropped === 1 ? "y" : "ies"}; using only the ${filtered.length} valid entr${filtered.length === 1 ? "y" : "ies"}.`,
+    );
+  }
+  return filtered;
 }

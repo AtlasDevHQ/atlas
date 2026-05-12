@@ -165,9 +165,9 @@ export const AtlasAiModelLive: Layer.Layer<AtlasAiModel, Error> = Layer.effect(
 export function makeWorkspaceAiModelLayer(config: {
   provider: import("@useatlas/types").ModelConfigProvider;
   model: string;
-  apiKey: string;
   baseUrl: string | null;
-  bedrockRegion?: string | null;
+  bedrockRegion: string | null;
+  credentials: import("@atlas/ee/platform/model-routing").WorkspaceCredentials;
 }): Layer.Layer<AtlasAiModel, Error> {
   return Layer.effect(
     AtlasAiModel,

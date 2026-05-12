@@ -99,29 +99,70 @@ const mockReconcileModelDeprecation: Mock<(...args: unknown[]) => unknown> = moc
   () => Effect.succeed({ status: "healthy" as const, suggestion: null }),
 );
 
-// Match the real exported parser shape — used by the route's malformed-
-// bundle path. Returns the parsed bundle or null on shape mismatch.
-function mockParseBedrockCredentialBundle(raw: string) {
-  try {
-    const parsed = JSON.parse(raw);
-    if (
-      !parsed ||
-      typeof parsed !== "object" ||
-      typeof parsed.accessKeyId !== "string" ||
-      typeof parsed.secretAccessKey !== "string"
-    ) {
-      return null;
+// Build a `RawWorkspaceModelConfig` from the legacy
+// `{ provider, apiKey, bedrockRegion?, baseUrl }` test shape. The
+// post-#2282 route consumes the typed `credentials` union — tests still
+// describe the row in the old terms for readability, and this helper
+// is the single place the union gets constructed for fixtures. For
+// bedrock the bundle parses up-front; a malformed JSON apiKey yields
+// `bundle: null`, which `extractCred` maps to `malformed_bedrock_bundle`.
+function rawConfigFromLegacy(legacy: {
+  provider: string;
+  model: string;
+  apiKey: string | null;
+  baseUrl?: string | null;
+  bedrockRegion?: string | null;
+}) {
+  const baseUrl = legacy.baseUrl ?? null;
+  const bedrockRegion = legacy.bedrockRegion ?? null;
+  if (legacy.provider === "bedrock") {
+    let bundle: { accessKeyId: string; secretAccessKey: string; sessionToken?: string } | null =
+      null;
+    if (legacy.apiKey !== null) {
+      try {
+        const parsed = JSON.parse(legacy.apiKey) as Record<string, unknown>;
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          typeof parsed.accessKeyId === "string" &&
+          typeof parsed.secretAccessKey === "string"
+        ) {
+          bundle = {
+            accessKeyId: parsed.accessKeyId,
+            secretAccessKey: parsed.secretAccessKey,
+            ...(typeof parsed.sessionToken === "string" && parsed.sessionToken.length > 0
+              ? { sessionToken: parsed.sessionToken }
+              : {}),
+          };
+        }
+      } catch {
+        bundle = null;
+      }
     }
     return {
-      accessKeyId: parsed.accessKeyId,
-      secretAccessKey: parsed.secretAccessKey,
-      ...(typeof parsed.sessionToken === "string" && parsed.sessionToken.length > 0
-        ? { sessionToken: parsed.sessionToken }
-        : {}),
+      provider: "bedrock" as const,
+      model: legacy.model,
+      baseUrl,
+      bedrockRegion,
+      credentials: { provider: "bedrock" as const, bundle },
     };
-  } catch {
-    return null;
   }
+  if (legacy.provider === "gateway") {
+    return {
+      provider: "gateway" as const,
+      model: legacy.model,
+      baseUrl,
+      bedrockRegion,
+      credentials: { provider: "gateway" as const, apiKey: legacy.apiKey },
+    };
+  }
+  return {
+    provider: legacy.provider,
+    model: legacy.model,
+    baseUrl,
+    bedrockRegion,
+    credentials: { provider: legacy.provider, apiKey: legacy.apiKey ?? "" },
+  };
 }
 
 mock.module("@atlas/ee/platform/model-routing", () => ({
@@ -131,7 +172,6 @@ mock.module("@atlas/ee/platform/model-routing", () => ({
   deleteWorkspaceModelConfig: mockDeleteWorkspaceModelConfig,
   testModelConfig: mockTestModelConfig,
   reconcileModelDeprecation: mockReconcileModelDeprecation,
-  parseBedrockCredentialBundle: mockParseBedrockCredentialBundle,
   ModelConfigError: MockModelConfigError,
   ModelConfigDecryptError: MockModelConfigDecryptError,
 }));
@@ -798,12 +838,12 @@ describe("audit emission — POST /api/v1/admin/model-config/test", () => {
 describe("GET /api/v1/admin/model-config/catalog?provider=anthropic", () => {
   it("returns the workspace's anthropic catalog using the stored BYOT key", async () => {
     mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
-      Effect.succeed({
+      Effect.succeed(rawConfigFromLegacy({
         provider: "anthropic",
         model: "claude-opus-4-6",
         apiKey: "sk-ant-stored-key",
         baseUrl: null,
-      }),
+      })),
     );
     const res = await app.fetch(
       adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=anthropic"),
@@ -830,12 +870,12 @@ describe("GET /api/v1/admin/model-config/catalog?provider=anthropic", () => {
 
   it("passes ?refresh=1 through to bypass the cache", async () => {
     mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
-      Effect.succeed({
+      Effect.succeed(rawConfigFromLegacy({
         provider: "anthropic",
         model: "claude-opus-4-6",
         apiKey: "sk-ant-stored-key",
         baseUrl: null,
-      }),
+      })),
     );
     const res = await app.fetch(
       adminRequest(
@@ -867,12 +907,12 @@ describe("GET /api/v1/admin/model-config/catalog?provider=anthropic", () => {
 
   it("returns 400 missing_byot_key when saved provider is not anthropic", async () => {
     mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
-      Effect.succeed({
+      Effect.succeed(rawConfigFromLegacy({
         provider: "openai",
         model: "gpt-4o",
         apiKey: "sk-openai-stored",
         baseUrl: null,
-      }),
+      })),
     );
     const res = await app.fetch(
       adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=anthropic"),
@@ -907,12 +947,12 @@ describe("GET /api/v1/admin/model-config/catalog?provider=anthropic", () => {
 
   it("returns 401 byot_key_invalid when Anthropic rejects the key", async () => {
     mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
-      Effect.succeed({
+      Effect.succeed(rawConfigFromLegacy({
         provider: "anthropic",
         model: "claude-opus-4-6",
         apiKey: "sk-ant-rotten",
         baseUrl: null,
-      }),
+      })),
     );
     mockGetAnthropicCatalog.mockImplementation(() => {
       throw new MockAnthropicCatalogUnauthorized("rejected by anthropic");
@@ -935,12 +975,12 @@ describe("GET /api/v1/admin/model-config/catalog?provider=anthropic", () => {
 
   it("returns 429 with Retry-After when Anthropic rate-limits the workspace", async () => {
     mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
-      Effect.succeed({
+      Effect.succeed(rawConfigFromLegacy({
         provider: "anthropic",
         model: "claude-opus-4-6",
         apiKey: "sk-ant-stored",
         baseUrl: null,
-      }),
+      })),
     );
     mockGetAnthropicCatalog.mockImplementation(() => {
       throw new MockAnthropicCatalogRateLimited("slow down", 45);
@@ -956,12 +996,12 @@ describe("GET /api/v1/admin/model-config/catalog?provider=anthropic", () => {
 
   it("returns 503 byot_provider_unavailable on upstream outage", async () => {
     mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
-      Effect.succeed({
+      Effect.succeed(rawConfigFromLegacy({
         provider: "anthropic",
         model: "claude-opus-4-6",
         apiKey: "sk-ant-stored",
         baseUrl: null,
-      }),
+      })),
     );
     mockGetAnthropicCatalog.mockImplementation(() => {
       throw new MockAnthropicCatalogUnavailable("anthropic returned 503");
@@ -976,12 +1016,12 @@ describe("GET /api/v1/admin/model-config/catalog?provider=anthropic", () => {
 
   it("emits model_config.catalog_refresh on success with provider + modelCount + source", async () => {
     mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
-      Effect.succeed({
+      Effect.succeed(rawConfigFromLegacy({
         provider: "anthropic",
         model: "claude-opus-4-6",
         apiKey: "sk-ant-stored",
         baseUrl: null,
-      }),
+      })),
     );
     const res = await app.fetch(
       adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=anthropic"),
@@ -1024,12 +1064,12 @@ describe("GET /api/v1/admin/model-config/catalog?provider=anthropic", () => {
 describe("GET /api/v1/admin/model-config/catalog?provider=openai", () => {
   it("returns the workspace's openai catalog using the stored BYOT key", async () => {
     mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
-      Effect.succeed({
+      Effect.succeed(rawConfigFromLegacy({
         provider: "openai",
         model: "gpt-4o",
         apiKey: "sk-oai-stored",
         baseUrl: null,
-      }),
+      })),
     );
     const res = await app.fetch(
       adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=openai"),
@@ -1054,12 +1094,12 @@ describe("GET /api/v1/admin/model-config/catalog?provider=openai", () => {
 
   it("returns 400 missing_byot_key when saved provider is not openai", async () => {
     mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
-      Effect.succeed({
+      Effect.succeed(rawConfigFromLegacy({
         provider: "anthropic",
         model: "claude-opus-4-6",
         apiKey: "sk-ant-stored",
         baseUrl: null,
-      }),
+      })),
     );
     const res = await app.fetch(
       adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=openai"),
@@ -1070,14 +1110,38 @@ describe("GET /api/v1/admin/model-config/catalog?provider=openai", () => {
     expect(body.message).toMatch(/openai/i);
   });
 
+  it("returns 422 decrypt_failed when the stored openai key cannot be decrypted", async () => {
+    // Parallel pin to the bedrock + anthropic decrypt-failure tests —
+    // shared route path, easy to regress if only one provider
+    // exercises it.
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.fail(
+        new MockModelConfigDecryptError({
+          configId: "cfg-openai-1",
+          cause: "wrong key version",
+        }),
+      ),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=openai"),
+    );
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("decrypt_failed");
+    expect(lastAuditCall().metadata).toMatchObject({
+      provider: "openai",
+      error: "decrypt_failed",
+    });
+  });
+
   it("returns 401 byot_key_invalid when OpenAI rejects the key", async () => {
     mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
-      Effect.succeed({
+      Effect.succeed(rawConfigFromLegacy({
         provider: "openai",
         model: "gpt-4o",
         apiKey: "sk-oai-rotten",
         baseUrl: null,
-      }),
+      })),
     );
     mockGetOpenAICatalog.mockImplementation(() => {
       throw new MockOpenAICatalogUnauthorized("rejected by openai");
@@ -1096,12 +1160,12 @@ describe("GET /api/v1/admin/model-config/catalog?provider=openai", () => {
 
   it("returns 429 with Retry-After when OpenAI rate-limits the workspace", async () => {
     mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
-      Effect.succeed({
+      Effect.succeed(rawConfigFromLegacy({
         provider: "openai",
         model: "gpt-4o",
         apiKey: "sk-oai-stored",
         baseUrl: null,
-      }),
+      })),
     );
     mockGetOpenAICatalog.mockImplementation(() => {
       throw new MockOpenAICatalogRateLimited("slow down", 90);
@@ -1117,12 +1181,12 @@ describe("GET /api/v1/admin/model-config/catalog?provider=openai", () => {
 
   it("returns 503 byot_provider_unavailable on upstream outage", async () => {
     mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
-      Effect.succeed({
+      Effect.succeed(rawConfigFromLegacy({
         provider: "openai",
         model: "gpt-4o",
         apiKey: "sk-oai-stored",
         baseUrl: null,
-      }),
+      })),
     );
     mockGetOpenAICatalog.mockImplementation(() => {
       throw new MockOpenAICatalogUnavailable("openai returned 503");
@@ -1137,12 +1201,12 @@ describe("GET /api/v1/admin/model-config/catalog?provider=openai", () => {
 
   it("emits model_config.catalog_refresh with provider:'openai' on success", async () => {
     mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
-      Effect.succeed({
+      Effect.succeed(rawConfigFromLegacy({
         provider: "openai",
         model: "gpt-4o",
         apiKey: "sk-oai-stored",
         baseUrl: null,
-      }),
+      })),
     );
     const res = await app.fetch(
       adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=openai"),
@@ -1171,13 +1235,13 @@ const BEDROCK_BUNDLE = JSON.stringify({
 describe("GET /api/v1/admin/model-config/catalog?provider=bedrock", () => {
   it("returns the workspace's bedrock catalog using the stored IAM bundle + region", async () => {
     mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
-      Effect.succeed({
+      Effect.succeed(rawConfigFromLegacy({
         provider: "bedrock",
         model: "anthropic.claude-opus-4-v1:0",
         apiKey: BEDROCK_BUNDLE,
         baseUrl: null,
         bedrockRegion: "us-east-1",
-      }),
+      })),
     );
     const res = await app.fetch(
       adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=bedrock"),
@@ -1214,13 +1278,13 @@ describe("GET /api/v1/admin/model-config/catalog?provider=bedrock", () => {
 
   it("returns 400 missing_byot_key when region is missing on saved config", async () => {
     mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
-      Effect.succeed({
+      Effect.succeed(rawConfigFromLegacy({
         provider: "bedrock",
         model: "anthropic.claude-opus-4-v1:0",
         apiKey: BEDROCK_BUNDLE,
         baseUrl: null,
         bedrockRegion: null,
-      }),
+      })),
     );
     const res = await app.fetch(
       adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=bedrock"),
@@ -1232,13 +1296,13 @@ describe("GET /api/v1/admin/model-config/catalog?provider=bedrock", () => {
 
   it("returns 422 decrypt_failed when stored bundle is malformed JSON", async () => {
     mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
-      Effect.succeed({
+      Effect.succeed(rawConfigFromLegacy({
         provider: "bedrock",
         model: "anthropic.claude-opus-4-v1:0",
         apiKey: "not-json",
         baseUrl: null,
         bedrockRegion: "us-east-1",
-      }),
+      })),
     );
     const res = await app.fetch(
       adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=bedrock"),
@@ -1251,15 +1315,45 @@ describe("GET /api/v1/admin/model-config/catalog?provider=bedrock", () => {
     expect(body.error).toBe("malformed_bedrock_bundle");
   });
 
+  it("returns 422 decrypt_failed when the stored bedrock key cannot be decrypted (distinct from malformed_bedrock_bundle)", async () => {
+    // The bedrock catalog path shares the upstream decrypt-failure
+    // handler with anthropic/openai (route lines around the
+    // `Effect.catchTag("ModelConfigDecryptError", …)` pipe). Without a
+    // bedrock-specific test, a regression that re-mapped bedrock
+    // decrypt failures to `malformed_bedrock_bundle` would land
+    // silently because the anthropic path is the only one that pins
+    // `decrypt_failed`.
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.fail(
+        new MockModelConfigDecryptError({
+          configId: "cfg-bedrock-1",
+          cause: "wrong key version",
+        }),
+      ),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=bedrock"),
+    );
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("decrypt_failed");
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    expect(lastAuditCall().status).toBe("failure");
+    expect(lastAuditCall().metadata).toMatchObject({
+      provider: "bedrock",
+      error: "decrypt_failed",
+    });
+  });
+
   it("returns 401 byot_key_invalid when AWS rejects the IAM creds", async () => {
     mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
-      Effect.succeed({
+      Effect.succeed(rawConfigFromLegacy({
         provider: "bedrock",
         model: "anthropic.claude-opus-4-v1:0",
         apiKey: BEDROCK_BUNDLE,
         baseUrl: null,
         bedrockRegion: "us-east-1",
-      }),
+      })),
     );
     mockGetBedrockCatalog.mockImplementation(() => {
       throw new MockBedrockCatalogUnauthorized("AccessDeniedException");
@@ -1276,13 +1370,13 @@ describe("GET /api/v1/admin/model-config/catalog?provider=bedrock", () => {
 
   it("returns 503 byot_provider_unavailable on AWS outage", async () => {
     mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
-      Effect.succeed({
+      Effect.succeed(rawConfigFromLegacy({
         provider: "bedrock",
         model: "anthropic.claude-opus-4-v1:0",
         apiKey: BEDROCK_BUNDLE,
         baseUrl: null,
         bedrockRegion: "us-east-1",
-      }),
+      })),
     );
     mockGetBedrockCatalog.mockImplementation(() => {
       throw new MockBedrockCatalogUnavailable("aws region unreachable");
@@ -1297,13 +1391,13 @@ describe("GET /api/v1/admin/model-config/catalog?provider=bedrock", () => {
 
   it("emits model_config.catalog_refresh with provider:'bedrock' on success", async () => {
     mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
-      Effect.succeed({
+      Effect.succeed(rawConfigFromLegacy({
         provider: "bedrock",
         model: "anthropic.claude-opus-4-v1:0",
         apiKey: BEDROCK_BUNDLE,
         baseUrl: null,
         bedrockRegion: "us-east-1",
-      }),
+      })),
     );
     const res = await app.fetch(
       adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=bedrock"),

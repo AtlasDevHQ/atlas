@@ -121,18 +121,27 @@ function hasVersionedPrefix(stored: string): boolean {
  * legacy 3-part unversioned format, neither of which is right for
  * opaque integration tokens. See #2370 / #2285.
  *
+ * What the brand fences: "this string flowed through this module's
+ * `encryptSecret`." It does **not** guarantee the string is
+ * ciphertext — the keyless-dev passthrough at the top of
+ * `encryptSecret` returns plaintext stamped as `OpaqueSecret`. The
+ * brand's job is routing between the two helpers, not asserting an
+ * encryption property of the value.
+ *
  * Pair this with `RawSecret` (re-exported from `db/internal.ts`) on
  * `decryptSecret` so plain pg row strings flow through without manual
  * casts while still rejecting the sibling brand at the type level.
  */
 export type OpaqueSecret = string & { readonly __brand: "OpaqueSecret" };
 
-// Re-export `RawSecret` so callers in this module's vicinity can pull
-// both the brand and the "unbranded raw string" companion from a
-// single import surface. The type itself is structural — same shape
-// whichever module re-exports it.
-export type { RawSecret } from "@atlas/api/lib/db/internal";
+// `RawSecret` is owned by `db/internal.ts`; we both re-export it (so
+// callers in this module's vicinity can pull `OpaqueSecret` and
+// `RawSecret` from one surface) **and** import it locally to use in
+// `decryptSecret`'s signature below. The local `import type` is not
+// redundant with the `export type` — re-export doesn't bring the
+// symbol into module scope.
 import type { RawSecret } from "@atlas/api/lib/db/internal";
+export type { RawSecret };
 
 /**
  * Encrypts an arbitrary secret string under the active keyset entry,
@@ -167,8 +176,12 @@ export function encryptSecret(plaintext: string): OpaqueSecret {
  * from pg) keep round-tripping without a manual cast. `RawSecret` is
  * plain string with `__brand?: never`, which a property-less string
  * trivially satisfies but the sibling brand (`URLSecret`) does not —
- * so a `URLSecret` value can never be fed here, surfacing the misroute
- * as a TS error rather than a silent runtime divergence on read.
+ * so a statically-typed `URLSecret` value can never be fed here. The
+ * brand catches the dominant cross-helper write/read divergence (an
+ * opaque token written via the URL helper would re-emerge as garbled
+ * AES blocks because the opaque-helper read path expects a different
+ * prefix). Enforcement is static-only — see `RawSecret`'s JSDoc in
+ * `db/internal.ts` for the widening trade-off.
  *
  * Throws when:
  *   • the value carries `enc:v<N>:` but `N` isn't in the current

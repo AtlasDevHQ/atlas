@@ -142,8 +142,7 @@ describe("secret encryption helpers", () => {
     });
 
     it("encryptSecret passes the value through unchanged", () => {
-      // String literal cast to the brand — the keyless passthrough is
-      // a runtime equality, the brand only constrains the call site.
+      // Brand cast — `.toBe` is parameterized on the actual's branded type.
       expect(encryptSecret("dev-token")).toBe("dev-token" as OpaqueSecret);
     });
 

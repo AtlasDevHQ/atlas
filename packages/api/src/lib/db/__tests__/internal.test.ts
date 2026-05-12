@@ -890,8 +890,7 @@ describe("connection URL encryption", () => {
       delete process.env.ATLAS_ENCRYPTION_KEY;
       delete process.env.BETTER_AUTH_SECRET;
       const url = "postgresql://user:pass@host/db";
-      // Cast to the brand — the keyless passthrough is a runtime equality,
-      // the brand only constrains the call site.
+      // Brand cast — `.toBe` is parameterized on the actual's branded type.
       expect(encryptSecret(url)).toBe(url as URLSecret);
     });
 

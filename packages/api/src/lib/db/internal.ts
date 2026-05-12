@@ -94,6 +94,13 @@ function decryptBody(body: string, key: Buffer): string {
  * opaque helper only short-circuits on absence of the `enc:v<N>:`
  * prefix. See the issue trail in #2370 / #2285.
  *
+ * What the brand fences: "this string flowed through this module's
+ * `encryptSecret`." It does **not** guarantee the string is
+ * ciphertext — the keyless-dev passthrough at the top of
+ * `encryptSecret` returns plaintext stamped as `URLSecret`. The
+ * brand's job is routing between the two helpers, not asserting an
+ * encryption property of the value.
+ *
  * Pair this with `RawSecret` on `decryptSecret` to keep plain pg row
  * strings flowing through without manual casts while still rejecting
  * the sibling brand at the type level.
@@ -107,6 +114,13 @@ export type URLSecret = string & { readonly __brand: "URLSecret" };
  * `__brand?: never` is satisfied by absence of the property (plain
  * `string` has none) but **not** by a value whose `__brand` carries a
  * literal string (URLSecret/OpaqueSecret both fail the `never` check).
+ *
+ * Enforcement is purely static: an `as string` widen, an `unknown`
+ * boundary, a `JSON.parse` result, or a template literal `${branded}`
+ * all erase the brand back to plain `string`, which then satisfies
+ * `RawSecret` and routes through either decryptor. The brand catches
+ * the direct typed-call-site misroute (the dominant IDE-auto-import
+ * bug class). It is **not** a runtime guarantee about provenance.
  */
 export type RawSecret = string & { readonly __brand?: never };
 
@@ -154,9 +168,14 @@ export function encryptSecret(plaintext: string): URLSecret {
  * Accepts `URLSecret | RawSecret` so raw DB row values (`string` from
  * pg) keep round-tripping without a manual cast. `RawSecret` is plain
  * string with `__brand?: never`, which a property-less string trivially
- * satisfies but the sibling brand (`OpaqueSecret`) does not — so an
- * `OpaqueSecret` value can never be fed here, surfacing the misroute
- * as a TS error rather than a silent runtime divergence on read.
+ * satisfies but the sibling brand (`OpaqueSecret`) does not — so a
+ * statically-typed `OpaqueSecret` value can never be fed here. The
+ * brand catches the dominant cross-helper write/read divergence (a
+ * URL written via the opaque helper would round-trip as plaintext on
+ * the URL-helper read path). Enforcement is static-only: a value
+ * widened back to `string` (e.g. via `JSON.parse`, an `unknown`
+ * boundary, or an explicit `as string`) loses the brand and routes
+ * through `RawSecret`. See `RawSecret`'s JSDoc for the trade-off.
  */
 export function decryptSecret(stored: URLSecret | RawSecret): string {
   if (isPlaintextUrl(stored)) return stored;

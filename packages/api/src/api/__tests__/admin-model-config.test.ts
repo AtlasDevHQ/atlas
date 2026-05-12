@@ -1110,6 +1110,30 @@ describe("GET /api/v1/admin/model-config/catalog?provider=openai", () => {
     expect(body.message).toMatch(/openai/i);
   });
 
+  it("returns 422 decrypt_failed when the stored openai key cannot be decrypted", async () => {
+    // Parallel pin to the bedrock + anthropic decrypt-failure tests —
+    // shared route path, easy to regress if only one provider
+    // exercises it.
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.fail(
+        new MockModelConfigDecryptError({
+          configId: "cfg-openai-1",
+          cause: "wrong key version",
+        }),
+      ),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=openai"),
+    );
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("decrypt_failed");
+    expect(lastAuditCall().metadata).toMatchObject({
+      provider: "openai",
+      error: "decrypt_failed",
+    });
+  });
+
   it("returns 401 byot_key_invalid when OpenAI rejects the key", async () => {
     mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
       Effect.succeed(rawConfigFromLegacy({
@@ -1289,6 +1313,36 @@ describe("GET /api/v1/admin/model-config/catalog?provider=bedrock", () => {
     // failures (which surface earlier via rowToConfig's apiKeyStatus =
     // 'decrypt_failed'). Bundle-shape failures map to `malformed_bedrock_bundle`.
     expect(body.error).toBe("malformed_bedrock_bundle");
+  });
+
+  it("returns 422 decrypt_failed when the stored bedrock key cannot be decrypted (distinct from malformed_bedrock_bundle)", async () => {
+    // The bedrock catalog path shares the upstream decrypt-failure
+    // handler with anthropic/openai (route lines around the
+    // `Effect.catchTag("ModelConfigDecryptError", …)` pipe). Without a
+    // bedrock-specific test, a regression that re-mapped bedrock
+    // decrypt failures to `malformed_bedrock_bundle` would land
+    // silently because the anthropic path is the only one that pins
+    // `decrypt_failed`.
+    mockGetWorkspaceModelConfigRaw.mockImplementation(() =>
+      Effect.fail(
+        new MockModelConfigDecryptError({
+          configId: "cfg-bedrock-1",
+          cause: "wrong key version",
+        }),
+      ),
+    );
+    const res = await app.fetch(
+      adminRequest("GET", "/api/v1/admin/model-config/catalog?provider=bedrock"),
+    );
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("decrypt_failed");
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    expect(lastAuditCall().status).toBe("failure");
+    expect(lastAuditCall().metadata).toMatchObject({
+      provider: "bedrock",
+      error: "decrypt_failed",
+    });
   });
 
   it("returns 401 byot_key_invalid when AWS rejects the IAM creds", async () => {

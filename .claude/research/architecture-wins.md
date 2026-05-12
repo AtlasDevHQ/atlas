@@ -1545,7 +1545,7 @@ A new `boot-smoke` job in `.github/workflows/deploy-validation.yml` builds `depl
 
 ---
 
-## 56. `WorkspaceCredentials` discriminated union — typed BYOT cred boundary (#2282 Phase 1)
+## 56. `WorkspaceCredentials` discriminated union — typed BYOT cred boundary (#2282)
 
 **Date:** 2026-05-12
 **Issue:** #2282 (merged tracker — folded #2283)
@@ -1574,7 +1574,7 @@ A new `boot-smoke` job in `.github/workflows/deploy-validation.yml` builds `depl
 
 ---
 
-## 57. `ByotAdapter<Cred>` parameterized dispatch — bedrock joins the table (#2282 Phase 2)
+## 57. `ByotAdapter<Cred>` parameterized dispatch — bedrock joins the table (#2282)
 
 **Date:** 2026-05-12
 **Issue:** #2282 (merged tracker — folded #2283)

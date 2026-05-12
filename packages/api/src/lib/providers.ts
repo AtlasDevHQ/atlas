@@ -240,10 +240,11 @@ function workspaceProviderType(provider: ModelConfigProvider): ProviderType {
  * Create a LanguageModel from a workspace-level model configuration.
  * Uses the provider's SDK with the workspace's own API key and settings.
  *
- * Consumes the typed `WorkspaceCredentials` union built by the EE row
- * mapper — no inline JSON.parse on the bedrock bundle. A `null`
- * bedrock `bundle` is the union's malformed-bundle signal and surfaces
- * the same actionable error the AI Layer used to raise inline.
+ * Consumes the typed `WorkspaceCredentials` union — no inline parsing
+ * on the bedrock bundle. A `null` bedrock `bundle` is the union's
+ * malformed-bundle signal, surfaced here as the same actionable
+ * re-entry error the catalog refresh's `malformed_bedrock_bundle`
+ * envelope points at.
  */
 export function getModelFromWorkspaceConfig(config: {
   model: string;
@@ -264,20 +265,12 @@ export function getModelFromWorkspaceConfig(config: {
       return client(config.model);
     }
 
-    case "azure-openai": {
-      if (!config.baseUrl) {
-        throw new Error("Base URL is required for the azure-openai provider.");
-      }
-      const client = createOpenAI({
-        apiKey: credentials.apiKey,
-        baseURL: config.baseUrl,
-      });
-      return client(config.model);
-    }
-
+    case "azure-openai":
     case "custom": {
       if (!config.baseUrl) {
-        throw new Error("Base URL is required for the custom provider.");
+        throw new Error(
+          `Base URL is required for the ${credentials.provider} provider.`,
+        );
       }
       const client = createOpenAI({
         apiKey: credentials.apiKey,
@@ -302,13 +295,17 @@ export function getModelFromWorkspaceConfig(config: {
 
     case "bedrock": {
       if (!credentials.bundle) {
-        // The union carries `bundle: null` when the decrypted row had a
-        // malformed JSON shape. The user-facing message is generic
-        // because the AI Layer is mid-flight on a chat request and
-        // the admin's only actionable fix is re-entry — the same
-        // resolution the catalog refresh's `malformed_bedrock_bundle`
-        // 422 envelope points at.
-        log.warn({}, "Workspace bedrock bundle is null — re-entry required");
+        // The union carries `bundle: null` when the decrypted row's
+        // inner JSON failed to parse. User-facing message stays
+        // generic — the admin's only fix is re-entry, which is what
+        // the catalog refresh's `malformed_bedrock_bundle` 422
+        // envelope already points at. The EE row mapper logs the
+        // configId-scoped event; this log marks the AI-Layer surface
+        // that tripped on it.
+        log.warn(
+          { provider: "bedrock", model: config.model },
+          "Workspace bedrock bundle is null — re-entry required",
+        );
         throw new Error(
           "Workspace bedrock credentials are malformed — re-enter the access key / secret on the AI Provider page.",
         );

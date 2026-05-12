@@ -24,8 +24,11 @@ import {
   BedrockClient,
   ListFoundationModelsCommand,
 } from "@aws-sdk/client-bedrock";
-import type { GatewayCatalogModel } from "@useatlas/types";
-import type { BedrockRegion } from "@useatlas/types";
+import type {
+  BedrockCredentialBundle,
+  BedrockRegion,
+  GatewayCatalogModel,
+} from "@useatlas/types";
 import {
   deleteFromDB,
   isFresh,
@@ -54,11 +57,11 @@ const RECOMMENDED_MODEL_IDS: ReadonlySet<string> = new Set([
   "anthropic.claude-haiku-4-5",
 ]);
 
-export interface BedrockDiscoveryCredentials {
-  accessKeyId: string;
-  secretAccessKey: string;
-  sessionToken?: string;
-}
+/**
+ * @deprecated Use `BedrockCredentialBundle` from `@useatlas/types`. Alias
+ * kept to avoid touching every internal cred-typed signature in one PR.
+ */
+export type BedrockDiscoveryCredentials = BedrockCredentialBundle;
 
 export class BedrockCatalogUnauthorized extends Error {
   readonly _tag = "BedrockCatalogUnauthorized";

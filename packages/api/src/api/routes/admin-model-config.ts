@@ -18,7 +18,6 @@ import {
   testModelConfig,
   reconcileModelDeprecation,
   ModelConfigError,
-  type BedrockCredentialBundle,
   type RawWorkspaceModelConfig,
 } from "@atlas/ee/platform/model-routing";
 import { WorkspaceModelConfigSchema as ModelConfigSchema } from "@useatlas/schemas";
@@ -42,7 +41,12 @@ import {
   BedrockCatalogUnavailable,
   getBedrockCatalog,
 } from "@atlas/api/lib/bedrock-catalog";
-import { BEDROCK_REGIONS, type BedrockRegion, type GatewayCatalogModel } from "@useatlas/types";
+import {
+  BEDROCK_REGIONS,
+  type BedrockCredentialBundle,
+  type BedrockRegion,
+  type GatewayCatalogModel,
+} from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requirePermission } from "./admin-router";
@@ -465,8 +469,8 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
     //      envelopes: 401 / 429 / 503.
     //
     // Each provider plugs in as a `ByotAdapter<Cred>` entry; bedrock's
-    // cred shape (`{ region, bundle }`) joins the same table as the
-    // string-apiKey shape, so the inline bedrock branch deletes.
+    // `{ region, bundle }` cred shape joins the same table as the
+    // string-apiKey shape via the generic `Cred` parameter.
     if (!orgId) {
       return c.json(
         { error: "bad_request", message: "No active organization. Set an active org first.", requestId },

@@ -30,6 +30,14 @@ mock.module("@/ui/components/user-menu", () => ({
   UserMenu: () => React.createElement("div", { "data-testid": "user-menu" }),
 }));
 
+// PendingChangesPill pulls in useAtlasConfig + use-mode-status; stub it out
+// here so the breadcrumb test stays focused on path resolution. The pill has
+// its own coverage in pending-changes-pill.test.tsx.
+mock.module("@/ui/components/admin/pending-changes-pill", () => ({
+  PendingChangesPill: () =>
+    React.createElement("div", { "data-testid": "pending-changes-pill" }),
+}));
+
 import { render, cleanup } from "@testing-library/react";
 import { AdminTopBar } from "../admin-top-bar";
 

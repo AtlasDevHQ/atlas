@@ -532,7 +532,7 @@ adminPrompts.openapi(listCollectionsRoute, async (c) => {
 // POST / — create collection
 adminPrompts.openapi(createCollectionRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    const { requestId, atlasMode } = yield* RequestContext;
+    const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
 
     const bodyResult = yield* Effect.tryPromise({
@@ -548,9 +548,11 @@ adminPrompts.openapi(createCollectionRoute, async (c) => {
     if (!name || typeof name !== "string") return c.json({ error: "bad_request", message: "name is required and must be a string." }, 400);
     if (!industry || typeof industry !== "string") return c.json({ error: "bad_request", message: "industry is required and must be a string." }, 400);
 
-    // Mode-aware status: developer-mode collections are staged as drafts
-    // until the admin publishes; published mode creates them live.
-    const status = atlasMode === "developer" ? "draft" : "published";
+    // All new collections stamp `status = 'draft'` regardless of the
+    // caller's `atlasMode` header (#2177). The pending-changes pill in the
+    // admin top bar surfaces the draft count; the admin publishes via
+    // `/api/v1/admin/publish` instead of flipping a mode toggle first.
+    const status = "draft";
 
     // Map the new `prompt_collections_org_name_uniq` violation (#2169)
     // to a 409 with a name-collision message. Without this catch the

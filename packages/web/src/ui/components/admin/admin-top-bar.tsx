@@ -15,6 +15,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import { OrgSwitcher } from "@/ui/components/org-switcher";
 import { UserMenu } from "@/ui/components/user-menu";
 import { resolveAdminBreadcrumb } from "@/ui/components/admin/admin-nav";
+import { PendingChangesPill } from "@/ui/components/admin/pending-changes-pill";
 
 /** Org switcher anchors the breadcrumb root so workspace context heads every admin page. */
 export function AdminTopBar() {
@@ -69,7 +70,10 @@ export function AdminTopBar() {
         </Breadcrumb>
       </div>
 
-      <UserMenu />
+      <div className="flex shrink-0 items-center gap-2">
+        <PendingChangesPill />
+        <UserMenu />
+      </div>
     </header>
   );
 }

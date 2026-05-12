@@ -49,6 +49,7 @@ function status(
     demoConnectionActive: false,
     hasDrafts: draftCounts !== null,
     draftCounts,
+    draftActivity: null,
     ...overrides,
   };
 }

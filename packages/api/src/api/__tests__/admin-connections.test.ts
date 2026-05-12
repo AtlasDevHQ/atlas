@@ -694,7 +694,7 @@ describe("admin connections — org scoping", () => {
       setOrgAdmin("org-alpha");
     });
 
-    it("published mode inserts status='published'", async () => {
+    it("published mode (default) inserts status='draft' (#2177)", async () => {
       mocks.mockInternalQuery.mockResolvedValue([]);
       const res = await app.fetch(
         adminRequest("/api/v1/admin/connections", "POST", {
@@ -711,12 +711,13 @@ describe("admin connections — org scoping", () => {
       expect(sql).toContain("status");
       expect(sql).toContain("url_key_version");
       // F-47: status is now at index 6 (was last, pushed by url_key_version at index 7).
-      expect((params as unknown[])[6]).toBe("published");
+      // Post-#2177: status is always 'draft' regardless of `atlas-mode` header.
+      expect((params as unknown[])[6]).toBe("draft");
       // url_key_version is the active keyset version (1 for dev/no-key deployments).
       expect((params as unknown[])[7]).toBe(1);
     });
 
-    it("developer mode inserts status='draft'", async () => {
+    it("developer mode also inserts status='draft' (#2177 — header is irrelevant)", async () => {
       mocks.mockInternalQuery.mockResolvedValue([]);
       const res = await app.fetch(
         adminRequest(
@@ -733,7 +734,6 @@ describe("admin connections — org scoping", () => {
       expect(insertCall).toBeDefined();
       const [sql, params] = insertCall!;
       expect(sql).toContain("status");
-      // F-47 shifted status from last → index 6.
       expect((params as unknown[])[6]).toBe("draft");
     });
 
@@ -768,8 +768,8 @@ describe("admin connections — org scoping", () => {
       expect(updateCall![0] as string).toContain("WHERE id =");
       expect(updateCall![0] as string).toContain("org_id");
       const updateParams = updateCall![1] as unknown[];
-      // status revives to 'published' (default mode), then id, then orgId
-      expect(updateParams).toContain("published");
+      // Post-#2177 status revives to 'draft' regardless of `atlas-mode` header.
+      expect(updateParams).toContain("draft");
       expect(updateParams).toContain("analytics");
       expect(updateParams).toContain("org-alpha");
       const staleInsert = mocks.mockInternalQuery.mock.calls.find(
@@ -836,21 +836,24 @@ describe("admin connections — org scoping", () => {
     });
   });
 
-  describe("PUT /connections/__demo__ — demo gating", () => {
-    it("rejects demo writes in published mode with 403 and descriptive message", async () => {
+  describe("PUT /connections/__demo__ — no demo-readonly gate post-#2177", () => {
+    it("accepts demo edits in published mode (no 403 — drafts handle staging)", async () => {
+      // Pre-#2177 this 403'd in published mode. Post-#2177 every write is a
+      // draft regardless of mode, so the demo carve-out is gone; the
+      // org_id scoping in the row lookup prevents mutating the `__global__`
+      // canonical row, so a workspace admin's edit returns 404 (no per-org
+      // row exists) instead of leaking into shared state.
       setOrgAdmin("org-alpha");
+      mocks.mockInternalQuery.mockResolvedValue([]);
       const res = await app.fetch(
         adminRequest("/api/v1/admin/connections/__demo__", "PUT", { description: "tampered" }),
       );
-      expect(res.status).toBe(403);
-      const body = (await res.json()) as Record<string, unknown>;
-      expect(body.error).toBe("demo_readonly");
-      expect(String(body.message)).toMatch(/developer mode/i);
+      // 404 — no per-org `__demo__` exists. The point is: NOT 403.
+      expect(res.status).toBe(404);
     });
 
-    it("allows demo writes in developer mode (hits the DB select)", async () => {
+    it("accepts demo edits with developer-mode cookie too (no special branch)", async () => {
       setOrgAdmin("org-alpha");
-      // The select returns empty — we only care that the demo gate doesn't fire first
       mocks.mockInternalQuery.mockResolvedValue([]);
       const res = await app.fetch(
         adminRequest(
@@ -860,8 +863,6 @@ describe("admin connections — org scoping", () => {
           "atlas-mode=developer",
         ),
       );
-      // Returns 404 because we haven't seeded the row in the mock, but the demo
-      // gate didn't fire — that's what we're verifying
       expect(res.status).toBe(404);
     });
   });

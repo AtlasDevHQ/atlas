@@ -39,6 +39,38 @@ const MAX_CONCURRENT = 10;
 const PYTHON_DEFAULT_TIMEOUT_MS = 30_000;
 const PYTHON_MAX_TIMEOUT_MS = 120_000;
 
+/**
+ * Resolve bash to an absolute path at boot. Every /exec passes a hand-crafted
+ * `env: { PATH }` to the spawned subprocess, and posix_spawnp uses *that* PATH
+ * to look up the argv[0] binary — not the parent's PATH. If the base image
+ * happens to install bash in `/usr/local/bin` (some Bun image variants do)
+ * and our hand-crafted PATH is `/bin:/usr/bin`, every spawn fails with
+ * `ENOENT: posix_spawn 'bash'` while the /health probe (which inherits the
+ * container's full PATH) still finds bash and reports green — exactly the
+ * failure mode that took the dogfood sandbox offline.
+ *
+ * Resolve once using the inherited PATH, cache the absolute path, and use it
+ * for every spawn. Falls back to `/bin/bash` if `which` fails so the server
+ * still boots in degraded mode (the /health probe will surface the failure).
+ */
+const BASH_PATH = resolveBashPath();
+
+function resolveBashPath(): string {
+  for (const candidate of ["/bin/bash", "/usr/bin/bash", "/usr/local/bin/bash"]) {
+    try {
+      const probe = Bun.spawnSync([candidate, "-c", "exit 0"]);
+      if (probe.exitCode === 0) return candidate;
+    } catch {
+      // intentionally ignored: trying the next candidate
+    }
+  }
+  // Last resort — let the /health probe surface the failure rather than
+  // refusing to boot. The /exec calls will return 500 with a clear error.
+  console.error("[sandbox-sidecar] bash not found at any of /bin /usr/bin /usr/local/bin — falling back to /bin/bash; /exec will fail until the image is rebuilt");
+  return "/bin/bash";
+}
+console.log(`[sandbox-sidecar] bash resolved to ${BASH_PATH}`);
+
 /** Read up to `max` bytes from a ReadableStream. */
 async function readLimited(stream: ReadableStream, max: number): Promise<string> {
   const reader = stream.getReader();
@@ -123,10 +155,15 @@ async function handleExec(req: Request): Promise<Response> {
   try {
     await mkdir(tmpDir, { recursive: true });
 
-    const proc = Bun.spawn(["bash", "-c", body.command], {
+    const proc = Bun.spawn([BASH_PATH, "-c", body.command], {
       cwd,
       env: {
-        PATH: "/bin:/usr/bin",
+        // PATH must include every directory where the base image keeps the
+        // utilities the explore tool uses (ls, cat, grep, find, tree). Some
+        // Bun image variants install coreutils to /usr/local/bin; missing
+        // them from PATH manifests as misleading "command not found" errors
+        // inside the spawned shell even when bash itself launched fine.
+        PATH: "/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin",
         HOME: tmpDir,
         LANG: "C.UTF-8",
         TMPDIR: tmpDir,
@@ -733,10 +770,15 @@ function handleHealth(): Response {
   try {
     const entries = readdirSync(SEMANTIC_DIR);
 
-    // Check bash availability (required for explore commands)
+    // Check bash availability (required for explore commands). Probe through
+    // the SAME constrained PATH that /exec uses — not the inherited container
+    // PATH — so this catches the failure mode where bash lives outside our
+    // hand-crafted PATH (the very bug this catch was added for). Using the
+    // resolved absolute BASH_PATH would just verify the boot-time resolution
+    // and hide a runtime divergence.
     let bashAvailable = false;
     try {
-      const proc = Bun.spawnSync(["bash", "--version"]);
+      const proc = Bun.spawnSync([BASH_PATH, "-c", "exit 0"]);
       bashAvailable = proc.exitCode === 0;
     } catch {
       // intentionally ignored: bash availability check
@@ -756,8 +798,9 @@ function handleHealth(): Response {
       semanticDir: SEMANTIC_DIR,
       fileCount: entries.length,
       bashAvailable,
+      bashPath: BASH_PATH,
       pythonAvailable,
-      ...(!bashAvailable && { warning: "bash not found — explore commands will fail. Rebuild the sidecar image." }),
+      ...(!bashAvailable && { warning: `bash not found at ${BASH_PATH} — explore commands will fail. Rebuild the sidecar image.` }),
     };
 
     // Fail Railway healthcheck when bash is missing so the service doesn't

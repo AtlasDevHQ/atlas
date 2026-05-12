@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { Loader2, NotebookPen, Star, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import type { Conversation } from "../../lib/types";
 import { DeleteConfirmation } from "./delete-confirmation";
 
@@ -77,39 +78,52 @@ export function ConversationItem({
     );
   }
 
+  const convertToNotebook =
+    onConvertToNotebook && conversation.surface !== "notebook" ? onConvertToNotebook : null;
+  // Title fades on its right edge to make room for absolutely-positioned action buttons.
+  // Width is set via CSS var (Tailwind's JIT can't see interpolated arbitrary values).
+  // Hover reveals trash + optional convert (~4.75rem / ~7rem); starred adds the always-on star.
+  const hoverMaskW = convertToNotebook ? "7rem" : "4.75rem";
+
   return (
     <div
-      className={`group flex w-full items-center rounded-lg transition-colors ${
+      className={`group relative w-full rounded-lg transition-colors ${
         isActive
           ? "bg-primary/10 ring-1 ring-inset ring-primary/30 dark:bg-primary/15 dark:ring-primary/40"
           : "hover:bg-zinc-100 dark:hover:bg-zinc-800"
       }`}
     >
-      <div className="min-w-0 flex-1">
-        <button
-          type="button"
-          onClick={onSelect}
-          aria-current={isActive ? "page" : undefined}
-          className={`block w-full cursor-pointer rounded-l-lg px-3 py-2.5 text-left text-sm focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${
-            isActive
-              ? "text-zinc-900 dark:text-zinc-100"
-              : "text-zinc-700 dark:text-zinc-300"
-          }`}
+      <button
+        type="button"
+        onClick={onSelect}
+        aria-current={isActive ? "page" : undefined}
+        className={`block w-full cursor-pointer rounded-lg px-3 py-2.5 text-left text-sm focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${
+          isActive
+            ? "text-zinc-900 dark:text-zinc-100"
+            : "text-zinc-700 dark:text-zinc-300"
+        }`}
+      >
+        <span
+          style={{ "--mask-w": hoverMaskW } as CSSProperties}
+          className={cn(
+            "block truncate text-sm font-medium",
+            conversation.starred &&
+              "[mask-image:linear-gradient(to_right,black_calc(100%-2.25rem),transparent)]",
+            "group-hover:[mask-image:linear-gradient(to_right,black_calc(100%-var(--mask-w)),transparent)]",
+          )}
         >
-          <span className="block truncate text-sm font-medium">
-            {conversation.title || "New conversation"}
-          </span>
-          <span className="block text-xs text-zinc-600 dark:text-zinc-400">
-            {relativeTime(conversation.updatedAt)}
-          </span>
-        </button>
-        {error && (
-          <p role="alert" className="px-3 pb-2 text-xs text-red-600 dark:text-red-400">
-            {error}
-          </p>
-        )}
-      </div>
-      <div className="flex shrink-0 items-center gap-0.5">
+          {conversation.title || "New conversation"}
+        </span>
+        <span className="block text-xs text-zinc-600 dark:text-zinc-400">
+          {relativeTime(conversation.updatedAt)}
+        </span>
+      </button>
+      {error && (
+        <p role="alert" className="px-3 pb-2 text-xs text-red-600 dark:text-red-400">
+          {error}
+        </p>
+      )}
+      <div className="absolute right-1 top-1 flex items-center gap-0.5">
         <Button
           variant="ghost"
           size="icon"
@@ -140,7 +154,7 @@ export function ConversationItem({
             <Star className="h-3.5 w-3.5" fill={conversation.starred ? "currentColor" : "none"} />
           )}
         </Button>
-        {onConvertToNotebook && conversation.surface !== "notebook" && (
+        {convertToNotebook && (
           <Button
             variant="ghost"
             size="icon"
@@ -148,7 +162,7 @@ export function ConversationItem({
               if (converting) return;
               setConverting(true);
               try {
-                const { id } = await onConvertToNotebook();
+                const { id } = await convertToNotebook();
                 router.push(`/notebook?id=${id}`);
               } catch (err: unknown) {
                 console.warn("Failed to convert to notebook:", err instanceof Error ? err.message : String(err));

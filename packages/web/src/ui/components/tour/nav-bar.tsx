@@ -53,7 +53,7 @@ export function NavBar({ isAdmin }: NavBarProps) {
     : [...navItems, { href: "/admin/semantic" as const, label: "Semantic" as const, icon: Database, tourId: "semantic" as const }];
 
   return (
-    <nav className="flex h-10 shrink-0 items-center justify-between border-b border-zinc-200 bg-zinc-50 px-4 dark:border-zinc-800 dark:bg-zinc-950">
+    <nav className="flex h-12 shrink-0 items-center justify-between border-b border-zinc-200 bg-white px-4 dark:border-zinc-800 dark:bg-zinc-900">
       <div className="flex items-center gap-1">
         {allItems.map((item) => {
           const isActive = item.href === "/"
@@ -66,13 +66,13 @@ export function NavBar({ isAdmin }: NavBarProps) {
               href={item.href}
               data-tour={item.tourId}
               className={cn(
-                "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors",
+                "inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
                 isActive
-                  ? "bg-zinc-200 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100"
-                  : "text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-300",
+                  ? "bg-primary/10 text-primary dark:bg-primary/15"
+                  : "text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100",
               )}
             >
-              <Icon className="size-3.5" />
+              <Icon className="size-4" />
               <span className="hidden sm:inline">{item.label}</span>
             </Link>
           );
@@ -85,14 +85,33 @@ export function NavBar({ isAdmin }: NavBarProps) {
           <DropdownMenuTrigger asChild>
             <Button
               variant="ghost"
-              size="icon-xs"
-              className="text-zinc-400 hover:text-zinc-600 dark:text-zinc-500 dark:hover:text-zinc-300"
+              size="icon"
+              className="size-8 text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100"
               aria-label="Help menu"
             >
               <CircleHelp className="size-4" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
+          <DropdownMenuContent align="end" className="w-56">
+            <DropdownMenuItem asChild>
+              <a
+                href="https://docs.useatlas.dev"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Documentation
+              </a>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => {
+                window.dispatchEvent(new CustomEvent("atlas:open-shortcuts"));
+              }}
+            >
+              <span className="flex-1">Keyboard shortcuts</span>
+              <kbd className="ml-2 rounded border border-zinc-200 px-1.5 py-0.5 text-[10px] font-mono text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
+                ?
+              </kbd>
+            </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() => tourContext?.startTour()}
               disabled={!tourContext}

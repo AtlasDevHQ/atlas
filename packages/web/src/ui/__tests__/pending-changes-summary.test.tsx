@@ -25,6 +25,7 @@ function statusWith(counts: ModeDraftCounts | null): ModeStatusResponse {
     demoConnectionActive: false,
     hasDrafts: counts !== null,
     draftCounts: counts,
+    draftActivity: null,
   };
 }
 

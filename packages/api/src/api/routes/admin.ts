@@ -88,6 +88,7 @@ import { adminCache } from "./admin-cache";
 import { adminActions } from "./admin-actions";
 import { adminSecurityMetrics } from "./admin-security-metrics";
 import { adminPublish } from "./admin-publish";
+import { adminPublishPreview } from "./admin-publish-preview";
 import { adminArchive, adminRestore } from "./admin-archive";
 import { registerSemanticEditorRoutes } from "./admin-semantic";
 import { ErrorSchema, AuthErrorSchema, parsePagination, OrgRoleSchema, ORG_ROLE_ERROR_MESSAGE, SCIMManagedResponse } from "./shared-schemas";
@@ -309,6 +310,8 @@ admin.route("/connections", adminConnections);
 admin.route("/connections/", adminConnections);
 admin.route("/publish", adminPublish);
 admin.route("/publish/", adminPublish);
+admin.route("/publish-preview", adminPublishPreview);
+admin.route("/publish-preview/", adminPublishPreview);
 admin.route("/archive-connection", adminArchive);
 admin.route("/archive-connection/", adminArchive);
 admin.route("/restore-connection", adminRestore);
@@ -1636,10 +1639,11 @@ admin.openapi(putOrgEntityRoute, async (c) => runHandler(c, "save org semantic e
     return c.json({ error: "bad_request", message: `Invalid YAML: ${err instanceof Error ? err.message : String(err)}` }, 400);
   }
 
-  const { upsertEntity } = await import("@atlas/api/lib/semantic/entities");
+  const { upsertDraftEntity } = await import("@atlas/api/lib/semantic/entities");
   const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
   const { syncEntityToDisk } = await import("@atlas/api/lib/semantic/sync");
-  await upsertEntity(orgId, entityType, name, body.yamlContent, body.connectionId);
+  // All YAML uploads stage as drafts regardless of `atlasMode` (#2177).
+  await upsertDraftEntity(orgId, entityType, name, body.yamlContent, body.connectionId);
   invalidateOrgWhitelist(orgId);
   await syncEntityToDisk(orgId, name, entityType, body.yamlContent);
 
@@ -1680,10 +1684,25 @@ admin.openapi(deleteOrgEntityRoute, async (c) => runHandler(c, "delete org seman
   if (!entityType) {
     return c.json({ error: "bad_request", message: `Invalid type. Must be one of: ${[...VALID_ENTITY_TYPES].join(", ")}` }, 400);
   }
-  const { deleteEntity } = await import("@atlas/api/lib/semantic/entities");
+  const { getEntity, deleteDraftEntity, upsertTombstone } = await import("@atlas/api/lib/semantic/entities");
   const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
   const { syncEntityDeleteFromDisk } = await import("@atlas/api/lib/semantic/sync");
-  const deleted = await deleteEntity(orgId, entityType, name);
+
+  // All deletes stage as drafts regardless of `atlasMode` (#2177): discard
+  // a draft outright or stamp a tombstone over a published row. The
+  // existing publish flow (`/api/v1/admin/publish`) applies the tombstone
+  // and deletes the published row atomically.
+  const existing = await getEntity(orgId, entityType, name);
+  if (!existing) {
+    return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
+  }
+  let deleted: boolean;
+  if (existing.status === "draft" || existing.status === "draft_delete") {
+    deleted = await deleteDraftEntity(orgId, entityType, name, existing.connection_id ?? undefined);
+  } else {
+    await upsertTombstone(orgId, entityType, name, existing.connection_id ?? undefined);
+    deleted = true;
+  }
   if (!deleted) {
     return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
   }

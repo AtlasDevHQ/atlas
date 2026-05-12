@@ -18,7 +18,6 @@
  */
 import crypto from "node:crypto";
 import type { QuerySuggestion } from "@useatlas/types";
-import type { AtlasMode } from "@useatlas/types/auth";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   hasInternalDB,
@@ -128,20 +127,6 @@ function fingerprintText(text: string): string {
     .slice(0, 16);
 }
 
-/**
- * Resolve the mode-participating `status` value for a moderation mutation.
- *
- * Developer mode writes land as `draft` — the admin is staging changes
- * against the published surface and expects to review them via the
- * pending-changes banner before a publish. Any non-developer mode
- * (including a non-admin caller that was downgraded upstream) writes
- * straight to `published` so mutations outside the developer workflow
- * remain instantly visible.
- */
-function modeStatus(mode: AtlasMode): "draft" | "published" {
-  return mode === "developer" ? "draft" : "published";
-}
-
 // ---------------------------------------------------------------------------
 // Mutations
 // ---------------------------------------------------------------------------
@@ -152,16 +137,15 @@ function modeStatus(mode: AtlasMode): "draft" | "published" {
  * route layer does not distinguish first-approve from re-approve; both
  * surface as 200.
  *
- * The mutation also writes the mode-participating `status`: `draft` in
- * developer mode, `published` otherwise. This lets the atomic publish
- * endpoint promote approvals queued in developer mode alongside the
- * other draft content types.
+ * The mutation always writes `status = 'draft'` regardless of the
+ * caller's `atlasMode` (#2177). The pending-changes pill in the admin top
+ * bar surfaces the queued approval; the atomic publish endpoint promotes
+ * it alongside the other draft content types.
  */
 export async function approveSuggestion(input: {
   readonly id: string;
   readonly orgId: string;
   readonly userId: string;
-  readonly mode: AtlasMode;
 }): Promise<ApprovalResult> {
   if (!hasInternalDB()) {
     log.warn(
@@ -181,13 +165,13 @@ export async function approveSuggestion(input: {
   const rows = await internalQuery<QuerySuggestionRow>(
     `UPDATE query_suggestions
      SET approval_status = 'approved',
-         status = $4,
+         status = 'draft',
          approved_by = $2,
          approved_at = NOW(),
          updated_at = NOW()
      WHERE id = $1 AND org_id = $3
      RETURNING *`,
-    [input.id, input.userId, input.orgId, modeStatus(input.mode)],
+    [input.id, input.userId, input.orgId],
   );
   if (rows.length === 0) return { status: "not_found" };
   return { status: "ok", suggestion: toQuerySuggestion(rows[0]) };
@@ -198,14 +182,12 @@ export async function approveSuggestion(input: {
  * `approved_at` so the row's review history survives a hide → unhide
  * cycle (per user story 12 — hide is reversible).
  *
- * Writes `status = 'draft'` in developer mode and `'published'` otherwise
- * so the hide participates in the atomic publish flow: a dev-mode hide
- * only takes effect for non-admins after publish.
+ * Always writes `status = 'draft'` (#2177) so the hide participates in
+ * the atomic publish flow — non-admins keep seeing the row until publish.
  */
 export async function hideSuggestion(input: {
   readonly id: string;
   readonly orgId: string;
-  readonly mode: AtlasMode;
 }): Promise<ApprovalResult> {
   if (!hasInternalDB()) {
     log.warn(
@@ -221,11 +203,11 @@ export async function hideSuggestion(input: {
   const rows = await internalQuery<QuerySuggestionRow>(
     `UPDATE query_suggestions
      SET approval_status = 'hidden',
-         status = $3,
+         status = 'draft',
          updated_at = NOW()
      WHERE id = $1 AND org_id = $2
      RETURNING *`,
-    [input.id, input.orgId, modeStatus(input.mode)],
+    [input.id, input.orgId],
   );
   if (rows.length === 0) return { status: "not_found" };
   return { status: "ok", suggestion: toQuerySuggestion(rows[0]) };
@@ -237,14 +219,12 @@ export async function hideSuggestion(input: {
  * without a fresh click transition — so a hidden row stays out of sight
  * until the admin explicitly approves it again or the click count rises.
  *
- * Writes `status = 'draft'` in developer mode and `'published'` otherwise
- * so the reversal respects the publish gate. This keeps all four
- * moderation mutations symmetric with respect to mode participation.
+ * Always writes `status = 'draft'` (#2177) so the reversal respects the
+ * publish gate. Keeps all four moderation mutations symmetric.
  */
 export async function unhideSuggestion(input: {
   readonly id: string;
   readonly orgId: string;
-  readonly mode: AtlasMode;
 }): Promise<ApprovalResult> {
   if (!hasInternalDB()) {
     log.warn(
@@ -260,11 +240,11 @@ export async function unhideSuggestion(input: {
   const rows = await internalQuery<QuerySuggestionRow>(
     `UPDATE query_suggestions
      SET approval_status = 'pending',
-         status = $3,
+         status = 'draft',
          updated_at = NOW()
      WHERE id = $1 AND org_id = $2
      RETURNING *`,
-    [input.id, input.orgId, modeStatus(input.mode)],
+    [input.id, input.orgId],
   );
   if (rows.length === 0) return { status: "not_found" };
   return { status: "ok", suggestion: toQuerySuggestion(rows[0]) };
@@ -273,8 +253,8 @@ export async function unhideSuggestion(input: {
 /**
  * Admin-authored starter prompt — skips the pending queue entirely.
  * Writes `approval_status = 'approved'` (the admin IS the review) and
- * `status = 'draft'` in developer mode or `'published'` otherwise so a
- * dev-mode author only surfaces to non-admins after publish.
+ * always writes `status = 'draft'` (#2177) so the author only surfaces to
+ * non-admins after publish.
  *
  * @throws InvalidSuggestionTextError on empty / too-long text
  * @throws DuplicateSuggestionError on PG unique-violation (23505)
@@ -283,7 +263,6 @@ export async function createApprovedSuggestion(input: {
   readonly orgId: string;
   readonly userId: string;
   readonly text: string;
-  readonly mode: AtlasMode;
 }): Promise<QuerySuggestion> {
   const trimmed = input.text.trim();
   if (trimmed.length === 0) {
@@ -322,12 +301,12 @@ export async function createApprovedSuggestion(input: {
          $1, $2, '', $3,
          '[]'::jsonb, NULL,
          0, 0, 0, 0,
-         'approved', $5,
+         'approved', 'draft',
          $4, NOW(),
          NOW()
        )
        RETURNING *`,
-      [input.orgId, trimmed, hash, input.userId, modeStatus(input.mode)],
+      [input.orgId, trimmed, hash, input.userId],
     );
     if (rows.length === 0) {
       throw new Error("INSERT RETURNING returned no rows");

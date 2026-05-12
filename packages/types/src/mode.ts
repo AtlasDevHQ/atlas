@@ -27,6 +27,26 @@ export interface ModeDraftCounts {
 }
 
 /**
+ * Per-surface "when was the most recent draft edited" metadata, surfaced
+ * in the pending-changes pill popover (#2177). ISO-8601 timestamps so the
+ * frontend can render a relative time (e.g. "5 minutes ago") without
+ * parsing pg date strings.
+ *
+ * Keys map 1:1 to {@link ModeDraftCounts}. A null `lastEditedAt` means no
+ * draft rows for that surface (or — for the legacy `entityEdits` /
+ * `entityDeletes` slices that share the `semantic_entities` table — no
+ * draft of that specific shape).
+ */
+export interface ModeDraftActivity {
+  readonly connections: { readonly lastEditedAt: string | null };
+  readonly entities: { readonly lastEditedAt: string | null };
+  readonly entityEdits: { readonly lastEditedAt: string | null };
+  readonly entityDeletes: { readonly lastEditedAt: string | null };
+  readonly prompts: { readonly lastEditedAt: string | null };
+  readonly starterPrompts: { readonly lastEditedAt: string | null };
+}
+
+/**
  * Effective mode state for the current user/org.
  *
  * - `mode` is the resolved mode after the admin gate (non-admins always see `published`).
@@ -42,4 +62,10 @@ export interface ModeStatusResponse {
   readonly demoConnectionActive: boolean;
   readonly hasDrafts: boolean;
   readonly draftCounts: ModeDraftCounts | null;
+  /**
+   * Per-surface activity timestamps, populated when `hasDrafts` is true.
+   * Null when there are no drafts. The pending-changes pill popover
+   * renders these as relative times (e.g. "5 minutes ago").
+   */
+  readonly draftActivity: ModeDraftActivity | null;
 }

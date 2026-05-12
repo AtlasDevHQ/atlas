@@ -23,23 +23,6 @@ import { ErrorSchema, AuthErrorSchema, createParamSchema } from "./shared-schema
 
 const log = createLogger("admin-semantic-editor");
 
-/** Reserved ID for the onboarding demo connection. */
-const DEMO_CONNECTION_ID = "__demo__";
-
-/** Read atlasMode from Hono context. Defaults to "published" when not set. */
-function getAtlasMode(c: { get(key: string): unknown }): import("@useatlas/types/auth").AtlasMode {
-  return (c.get("atlasMode") as import("@useatlas/types/auth").AtlasMode | undefined) ?? "published";
-}
-
-/** Demo-readonly response for writes in published mode against `__demo__`. */
-function demoReadonlyResponse(requestId: string): { error: string; message: string; requestId: string } {
-  return {
-    error: "demo_readonly",
-    message: "Demo content is read-only in published mode. Switch to developer mode to manage semantic entities.",
-    requestId,
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Zod schemas — column metadata
 // ---------------------------------------------------------------------------
@@ -504,14 +487,11 @@ export function registerSemanticEditorRoutes(
         return c.json({ error: "not_available", message: "Semantic entity editor requires an internal database (DATABASE_URL).", requestId }, 501);
       }
 
-      const atlasMode = getAtlasMode(c);
-
       // Convert structured data to YAML
       const yamlContent = await entityToYaml(body);
 
       // Store in DB
       const {
-        upsertEntity,
         upsertDraftEntity,
         getEntity,
         createVersion,
@@ -522,24 +502,11 @@ export function registerSemanticEditorRoutes(
       const previousEntity = await getEntity(orgId, "entity", name);
       const oldYaml = previousEntity?.yaml_content ?? null;
 
-      // Demo entities are read-only in published mode. Check both the
-      // incoming body (new entities pointed at __demo__) and the existing
-      // row (edits that omit connectionId but target a demo-owned entity).
-      if (
-        atlasMode !== "developer" &&
-        (body.connectionId === DEMO_CONNECTION_ID ||
-          previousEntity?.connection_id === DEMO_CONNECTION_ID)
-      ) {
-        return c.json(demoReadonlyResponse(requestId), 403);
-      }
-
-      // Developer mode writes stage as drafts so the published row is
-      // preserved until publish. Published mode writes the published row directly.
-      if (atlasMode === "developer") {
-        await upsertDraftEntity(orgId, "entity", name, yamlContent, body.connectionId);
-      } else {
-        await upsertEntity(orgId, "entity", name, yamlContent, body.connectionId);
-      }
+      // All writes stage as drafts regardless of `atlasMode` (#2177). The
+      // published row is preserved until the admin publishes via
+      // `/api/v1/admin/publish`. The pending-changes pill in the top bar
+      // surfaces the draft count.
+      await upsertDraftEntity(orgId, "entity", name, yamlContent, body.connectionId);
 
       // Create version snapshot — non-fatal
       try {
@@ -602,47 +569,35 @@ export function registerSemanticEditorRoutes(
         return c.json({ error: "not_available", message: "Semantic entity editor requires an internal database (DATABASE_URL).", requestId }, 501);
       }
 
-      const atlasMode = getAtlasMode(c);
       const {
-        deleteEntity,
         getEntity,
         upsertTombstone,
         deleteDraftEntity,
       } = await import("@atlas/api/lib/semantic/entities");
 
-      let deleted = true;
-      if (atlasMode === "developer") {
-        // Developer mode: stage the deletion. Resolve the existing row so we
-        // know whether to discard a draft or stamp a tombstone over a published
-        // row. If nothing matches either state, 404.
-        const existing = await getEntity(orgId, "entity", name);
-        if (!existing) {
-          return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
-        }
-        if (existing.status === "draft" || existing.status === "draft_delete") {
-          deleted = await deleteDraftEntity(
-            orgId,
-            "entity",
-            name,
-            existing.connection_id ?? undefined,
-          );
-        } else {
-          await upsertTombstone(
-            orgId,
-            "entity",
-            name,
-            existing.connection_id ?? undefined,
-          );
-        }
+      // All deletes stage as drafts regardless of `atlasMode` (#2177).
+      // Resolve the existing row so we know whether to discard a draft
+      // outright or stamp a tombstone over a published row.
+      const existing = await getEntity(orgId, "entity", name);
+      if (!existing) {
+        return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
+      }
+      let deleted: boolean;
+      if (existing.status === "draft" || existing.status === "draft_delete") {
+        deleted = await deleteDraftEntity(
+          orgId,
+          "entity",
+          name,
+          existing.connection_id ?? undefined,
+        );
       } else {
-        // Published mode: hard delete preserves today's behavior. Check the
-        // demo gate before the destructive call — published mode cannot touch
-        // entities owned by the reserved demo connection.
-        const existing = await getEntity(orgId, "entity", name);
-        if (existing?.connection_id === DEMO_CONNECTION_ID) {
-          return c.json(demoReadonlyResponse(requestId), 403);
-        }
-        deleted = await deleteEntity(orgId, "entity", name);
+        await upsertTombstone(
+          orgId,
+          "entity",
+          name,
+          existing.connection_id ?? undefined,
+        );
+        deleted = true;
       }
 
       if (!deleted) {
@@ -849,7 +804,7 @@ export function registerSemanticEditorRoutes(
         return c.json({ error: "not_available", message: "Rollback requires an internal database (DATABASE_URL).", requestId }, 501);
       }
 
-      const { getVersion, getEntity, upsertEntity, createVersion, generateChangeSummary } = await import("@atlas/api/lib/semantic/entities");
+      const { getVersion, getEntity, upsertDraftEntity, createVersion, generateChangeSummary } = await import("@atlas/api/lib/semantic/entities");
 
       // Fetch the target version
       const targetVersion = await getVersion(versionId, orgId);
@@ -861,8 +816,10 @@ export function registerSemanticEditorRoutes(
       const currentEntity = await getEntity(orgId, "entity", name);
       const currentYaml = currentEntity?.yaml_content ?? null;
 
-      // Upsert entity with the target version's YAML
-      await upsertEntity(orgId, "entity", name, targetVersion.yaml_content, currentEntity?.connection_id ?? undefined);
+      // Rollback stages the target YAML as a draft (#2177). The admin
+      // publishes via `/api/v1/admin/publish` to materialize it as the
+      // new published row, preserving the existing publish gate.
+      await upsertDraftEntity(orgId, "entity", name, targetVersion.yaml_content, currentEntity?.connection_id ?? undefined);
 
       // Create a new version snapshot for the rollback
       let newVersionNumber = 0;

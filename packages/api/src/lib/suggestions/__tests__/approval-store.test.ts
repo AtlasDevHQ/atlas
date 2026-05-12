@@ -49,7 +49,6 @@ describe("approveSuggestion", () => {
       id: "sug-1",
       orgId: "org-1",
       userId: "admin-1",
-      mode: "published",
     });
 
     expect(result).toEqual({ status: "not_found" });
@@ -63,7 +62,6 @@ describe("approveSuggestion", () => {
       id: "missing",
       orgId: "org-1",
       userId: "admin-1",
-      mode: "published",
     });
 
     expect(result).toEqual({ status: "not_found" });
@@ -79,7 +77,6 @@ describe("approveSuggestion", () => {
       id: "sug-1",
       orgId: "org-1",
       userId: "admin-1",
-      mode: "published",
     });
 
     expect(result).toEqual({ status: "forbidden" });
@@ -119,7 +116,6 @@ describe("approveSuggestion", () => {
       id: "sug-1",
       orgId: "org-1",
       userId: "admin-1",
-      mode: "published",
     });
 
     expect(result.status).toBe("ok");
@@ -136,53 +132,10 @@ describe("approveSuggestion", () => {
     expect(sql).toContain("approved_by = ");
     expect(sql).toContain("approved_at = NOW()");
     expect(sql).toContain("WHERE id = $1 AND org_id = ");
-    // Params carry the mode-resolved status as the final slot so the
-    // mutation participates in the 1.2.0 publish flow.
-    expect(params).toEqual(["sug-1", "admin-1", "org-1", "published"]);
-  });
-
-  it("writes status='draft' when called from developer mode", async () => {
-    mockInternalQuery.mockImplementation(async (sql: string) => {
-      if (sql.includes("SELECT org_id")) return [{ org_id: "org-1" }];
-      if (sql.includes("UPDATE")) {
-        return [
-          {
-            id: "sug-1",
-            org_id: "org-1",
-            description: "Pattern",
-            pattern_sql: "SELECT 1",
-            normalized_hash: "h",
-            tables_involved: "[]",
-            primary_table: null,
-            frequency: 1,
-            clicked_count: 1,
-            distinct_user_clicks: 3,
-            score: 1,
-            approval_status: "approved",
-            status: "draft",
-            approved_by: "admin-1",
-            approved_at: "2026-04-17T00:00:00.000Z",
-            last_seen_at: "2026-04-15T00:00:00.000Z",
-            created_at: "2026-04-01T00:00:00.000Z",
-            updated_at: "2026-04-17T00:00:00.000Z",
-          },
-        ];
-      }
-      return [];
-    });
-
-    await approveSuggestion({
-      id: "sug-1",
-      orgId: "org-1",
-      userId: "admin-1",
-      mode: "developer",
-    });
-
-    const updateCall = mockInternalQuery.mock.calls.find(
-      ([sql]) => typeof sql === "string" && sql.includes("UPDATE"),
-    );
-    const [, params] = updateCall!;
-    expect((params as unknown[])[3]).toBe("draft");
+    // Post-#2177: status is hard-coded to 'draft' in the SQL itself; the
+    // param array no longer carries it. Three params total: id, userId, orgId.
+    expect(sql).toContain("status = 'draft'");
+    expect(params).toEqual(["sug-1", "admin-1", "org-1"]);
   });
 });
 
@@ -192,7 +145,7 @@ describe("hideSuggestion", () => {
   it("returns not_found when the row does not exist", async () => {
     mockInternalQuery.mockImplementation(async () => []);
 
-    const result = await hideSuggestion({ id: "missing", orgId: "org-1", mode: "published" });
+    const result = await hideSuggestion({ id: "missing", orgId: "org-1" });
 
     expect(result).toEqual({ status: "not_found" });
   });
@@ -203,7 +156,7 @@ describe("hideSuggestion", () => {
       return [];
     });
 
-    const result = await hideSuggestion({ id: "sug-1", orgId: "org-1", mode: "published" });
+    const result = await hideSuggestion({ id: "sug-1", orgId: "org-1" });
 
     expect(result).toEqual({ status: "forbidden" });
   });
@@ -238,7 +191,7 @@ describe("hideSuggestion", () => {
       return [];
     });
 
-    const result = await hideSuggestion({ id: "sug-1", orgId: "org-1", mode: "published" });
+    const result = await hideSuggestion({ id: "sug-1", orgId: "org-1" });
 
     expect(result.status).toBe("ok");
     if (result.status !== "ok") throw new Error("unreachable");
@@ -262,7 +215,7 @@ describe("unhideSuggestion", () => {
   it("returns not_found when the row does not exist", async () => {
     mockInternalQuery.mockImplementation(async () => []);
 
-    const result = await unhideSuggestion({ id: "missing", orgId: "org-1", mode: "published" });
+    const result = await unhideSuggestion({ id: "missing", orgId: "org-1" });
 
     expect(result).toEqual({ status: "not_found" });
   });
@@ -273,7 +226,7 @@ describe("unhideSuggestion", () => {
       return [];
     });
 
-    const result = await unhideSuggestion({ id: "sug-1", orgId: "org-1", mode: "published" });
+    const result = await unhideSuggestion({ id: "sug-1", orgId: "org-1" });
 
     expect(result).toEqual({ status: "forbidden" });
   });
@@ -308,7 +261,7 @@ describe("unhideSuggestion", () => {
       return [];
     });
 
-    const result = await unhideSuggestion({ id: "sug-1", orgId: "org-1", mode: "published" });
+    const result = await unhideSuggestion({ id: "sug-1", orgId: "org-1" });
 
     expect(result.status).toBe("ok");
     if (result.status !== "ok") throw new Error("unreachable");
@@ -331,7 +284,6 @@ describe("createApprovedSuggestion", () => {
         orgId: "org-1",
         userId: "admin-1",
         text: "   ",
-        mode: "published",
       }),
     ).rejects.toBeInstanceOf(InvalidSuggestionTextError);
     expect(mockInternalQuery).not.toHaveBeenCalled();
@@ -345,13 +297,12 @@ describe("createApprovedSuggestion", () => {
         orgId: "org-1",
         userId: "admin-1",
         text: tooLong,
-        mode: "published",
       }),
     ).rejects.toBeInstanceOf(InvalidSuggestionTextError);
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
 
-  it("creates a row with approval_status=approved, status=published, approved_by set", async () => {
+  it("creates a row with approval_status=approved, status='draft', approved_by set (#2177)", async () => {
     mockInternalQuery.mockImplementation(async (sql: string) => {
       if (sql.includes("INSERT INTO query_suggestions")) {
         return [
@@ -359,58 +310,6 @@ describe("createApprovedSuggestion", () => {
             id: "new-sug",
             org_id: "org-1",
             description: "Admin-authored question",
-            pattern_sql: "",
-            normalized_hash: "hash123",
-            tables_involved: "[]",
-            primary_table: null,
-            frequency: 0,
-            clicked_count: 0,
-            distinct_user_clicks: 0,
-            score: 0,
-            approval_status: "approved",
-            status: "published",
-            approved_by: "admin-1",
-            approved_at: "2026-04-17T00:00:00.000Z",
-            last_seen_at: "2026-04-17T00:00:00.000Z",
-            created_at: "2026-04-17T00:00:00.000Z",
-            updated_at: "2026-04-17T00:00:00.000Z",
-          },
-        ];
-      }
-      return [];
-    });
-
-    const suggestion = await createApprovedSuggestion({
-      orgId: "org-1",
-      userId: "admin-1",
-      text: "Admin-authored question",
-      mode: "published",
-    });
-
-    expect(suggestion.approvalStatus).toBe("approved");
-    expect(suggestion.status).toBe("published");
-    expect(suggestion.approvedBy).toBe("admin-1");
-    expect(suggestion.description).toBe("Admin-authored question");
-
-    const insertCall = mockInternalQuery.mock.calls.find(
-      ([sql]) => typeof sql === "string" && sql.includes("INSERT"),
-    );
-    expect(insertCall).toBeDefined();
-    const [sql, params] = insertCall!;
-    expect(sql).toContain("'approved'");
-    // `status` is now parameterized (mode-dependent) rather than a SQL
-    // literal — the value travels in as the 5th param.
-    expect((params as unknown[])[4]).toBe("published");
-  });
-
-  it("writes status='draft' when called from developer mode", async () => {
-    mockInternalQuery.mockImplementation(async (sql: string) => {
-      if (sql.includes("INSERT INTO query_suggestions")) {
-        return [
-          {
-            id: "new-sug",
-            org_id: "org-1",
-            description: "Drafted in dev",
             pattern_sql: "",
             normalized_hash: "hash123",
             tables_involved: "[]",
@@ -432,18 +331,27 @@ describe("createApprovedSuggestion", () => {
       return [];
     });
 
-    await createApprovedSuggestion({
+    const suggestion = await createApprovedSuggestion({
       orgId: "org-1",
       userId: "admin-1",
-      text: "Drafted in dev",
-      mode: "developer",
+      text: "Admin-authored question",
     });
+
+    expect(suggestion.approvalStatus).toBe("approved");
+    expect(suggestion.status).toBe("draft");
+    expect(suggestion.approvedBy).toBe("admin-1");
+    expect(suggestion.description).toBe("Admin-authored question");
 
     const insertCall = mockInternalQuery.mock.calls.find(
       ([sql]) => typeof sql === "string" && sql.includes("INSERT"),
     );
-    const [, params] = insertCall!;
-    expect((params as unknown[])[4]).toBe("draft");
+    expect(insertCall).toBeDefined();
+    const [sql, params] = insertCall!;
+    expect(sql).toContain("'approved'");
+    // Post-#2177: status is hard-coded to 'draft' in the SQL itself — no
+    // longer a parameterized slot. Four params total: orgId, text, hash, userId.
+    expect(sql).toContain("'approved', 'draft'");
+    expect(params as unknown[]).toHaveLength(4);
   });
 
   it("trims whitespace before insertion and uses the trimmed text", async () => {
@@ -479,7 +387,6 @@ describe("createApprovedSuggestion", () => {
       orgId: "org-1",
       userId: "admin-1",
       text: "   trimmed question   ",
-      mode: "published",
     });
 
     const insertCall = mockInternalQuery.mock.calls.find(
@@ -506,7 +413,6 @@ describe("createApprovedSuggestion", () => {
         orgId: "org-1",
         userId: "admin-1",
         text: "clashing text",
-        mode: "published",
       }),
     ).rejects.toBeInstanceOf(DuplicateSuggestionError);
   });

@@ -28,7 +28,16 @@ export default function RootLayout({
           <NuqsAdapter>
             <AuthGuard>
               <ModeBanner />
-              <div className="flex min-h-0 flex-1 flex-col">{children}</div>
+              {/*
+                `[contain:layout]` establishes a containing block so the
+                admin sidebar's `position: fixed` resolves relative to this
+                wrapper instead of the viewport. Without it, the sidebar
+                pins to `top: 0` of the viewport and covers the 32-px
+                ModeBanner above. The contain root is below the banner in
+                flex order, so the sidebar's bounds line up under it
+                (#2177).
+              */}
+              <div className="flex min-h-0 flex-1 flex-col [contain:layout]">{children}</div>
             </AuthGuard>
           </NuqsAdapter>
         </QueryProvider>

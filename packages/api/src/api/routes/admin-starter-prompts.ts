@@ -394,11 +394,10 @@ adminStarterPrompts.openapi(approveRoute, async (c) =>
     const authResult = c.get("authResult");
     const userId = authResult.user?.id ?? "unknown";
     const { orgId, requestId } = c.get("orgContext");
-    const atlasMode = c.get("atlasMode");
     const { id } = c.req.valid("param");
 
     try {
-      const outcome = await approveSuggestion({ id, orgId, userId, mode: atlasMode });
+      const outcome = await approveSuggestion({ id, orgId, userId });
       if (outcome.status === "ok") {
         logAdminAction({
           actionType: ADMIN_ACTIONS.starter_prompt.approve,
@@ -427,11 +426,10 @@ adminStarterPrompts.openapi(approveRoute, async (c) =>
 adminStarterPrompts.openapi(hideRoute, async (c) =>
   runHandler(c, "hide starter prompt", async () => {
     const { orgId, requestId } = c.get("orgContext");
-    const atlasMode = c.get("atlasMode");
     const { id } = c.req.valid("param");
 
     try {
-      const outcome = await hideSuggestion({ id, orgId, mode: atlasMode });
+      const outcome = await hideSuggestion({ id, orgId });
       if (outcome.status === "ok") {
         logAdminAction({
           actionType: ADMIN_ACTIONS.starter_prompt.hide,
@@ -460,11 +458,10 @@ adminStarterPrompts.openapi(hideRoute, async (c) =>
 adminStarterPrompts.openapi(unhideRoute, async (c) =>
   runHandler(c, "unhide starter prompt", async () => {
     const { orgId, requestId } = c.get("orgContext");
-    const atlasMode = c.get("atlasMode");
     const { id } = c.req.valid("param");
 
     try {
-      const outcome = await unhideSuggestion({ id, orgId, mode: atlasMode });
+      const outcome = await unhideSuggestion({ id, orgId });
       if (outcome.status === "ok") {
         logAdminAction({
           actionType: ADMIN_ACTIONS.starter_prompt.unhide,
@@ -495,11 +492,10 @@ adminStarterPrompts.openapi(authorRoute, async (c) =>
     const authResult = c.get("authResult");
     const userId = authResult.user?.id ?? "unknown";
     const { orgId, requestId } = c.get("orgContext");
-    const atlasMode = c.get("atlasMode");
     const { text } = c.req.valid("json");
 
     try {
-      const suggestion = await createApprovedSuggestion({ orgId, userId, text, mode: atlasMode });
+      const suggestion = await createApprovedSuggestion({ orgId, userId, text });
       logAdminAction({
         actionType: ADMIN_ACTIONS.starter_prompt.authorUpdate,
         targetType: "starter_prompt",

@@ -28,7 +28,11 @@ function relativeTime(dateStr: string): string {
 }
 
 function explainError(err: unknown): string {
+  // `fetch()` throws TypeError for network failures (DNS, offline, CORS).
+  // For any other Error, surface its message so backend detail like
+  // "Conversation locked" reaches the user instead of a generic "try again".
   if (err instanceof TypeError) return "network error";
+  if (err instanceof Error && err.message) return err.message;
   return "try again";
 }
 

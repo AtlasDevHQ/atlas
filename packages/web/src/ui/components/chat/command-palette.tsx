@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CommandDialog,
   CommandEmpty,
@@ -31,6 +31,11 @@ export function CommandPalette({
   onOpenPromptLibrary,
   onOpenSchemaExplorer,
 }: {
+  /**
+   * Full conversation list. The palette internally sorts starred-first and
+   * surfaces the top {@link MAX_RECENT_CONVERSATIONS} as quick switchers —
+   * callers should pass the unfiltered list.
+   */
   conversations: Conversation[];
   onNewChat: () => void;
   onSelectConversation: (id: string) => void;
@@ -39,6 +44,10 @@ export function CommandPalette({
 }) {
   const tour = useTourContext();
   const [open, setOpen] = useState(false);
+  // Tracks pending defer-after-close timers so they're cleared if the
+  // palette unmounts (route change) before the action fires — otherwise
+  // the action runs against an unmounted tree.
+  const pendingTimers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
   // Global Cmd/Ctrl-K to open the palette + listen for the help-menu event
   useEffect(() => {
@@ -74,6 +83,15 @@ export function CommandPalette({
     };
   }, []);
 
+  // Clear any deferred actions still in flight when the palette unmounts.
+  useEffect(() => {
+    const timers = pendingTimers.current;
+    return () => {
+      for (const id of timers) clearTimeout(id);
+      timers.clear();
+    };
+  }, []);
+
   function run(action: () => void | Promise<void>) {
     setOpen(false);
     // Defer past Radix's close cleanup so a follow-on dialog/sheet doesn't
@@ -81,7 +99,8 @@ export function CommandPalette({
     // on `<body>` for a frame after close). `Promise.resolve(...).catch`
     // guards against both synchronous throws and async rejections from the
     // user-supplied action — without this the rejection has no owner.
-    setTimeout(() => {
+    const timer = setTimeout(() => {
+      pendingTimers.current.delete(timer);
       Promise.resolve()
         .then(() => action())
         .catch((err: unknown) => {
@@ -91,6 +110,7 @@ export function CommandPalette({
           );
         });
     }, 0);
+    pendingTimers.current.add(timer);
   }
 
   const recent = [...conversations]

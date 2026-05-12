@@ -142,9 +142,14 @@ function ChatPage() {
 
   // Re-fetch conversation list when auth mode changes
   useEffect(() => {
-    // TanStack Query manages error state via convos.fetchError
-    convos.fetchList().catch(() => {
-      // intentionally ignored: TanStack Query error state handles display
+    convos.fetchList().catch((err: unknown) => {
+      // TanStack Query owns the user-visible error state via convos.fetchError;
+      // log here only so a console scrub picks up the underlying failure shape
+      // when convos.fetchError itself misbehaves.
+      console.debug(
+        "[chat] convos.fetchList rejected:",
+        err instanceof Error ? err.message : String(err),
+      );
     });
   }, [authMode, convos.fetchList]);
 
@@ -240,10 +245,16 @@ function ChatPage() {
           setStarterPrompts(data.prompts);
         }
       })
-      .catch(() => {
-        // intentionally ignored: network/parse failures are non-critical.
-        // HTTP 5xx is logged above, and an empty starter list collapses
-        // the grid back to the bare cold-start headline.
+      .catch((err: unknown) => {
+        // HTTP 5xx is logged above with requestId. Network/parse/abort
+        // failures land here — keep them at debug since an empty starter
+        // list collapses the grid back to the bare cold-start headline,
+        // but surface the shape so "why is my empty state bare?" stays
+        // debuggable.
+        console.debug(
+          "[starter-prompts] fetch failed:",
+          err instanceof Error ? err.message : String(err),
+        );
       });
     return () => { cancelled = true; };
   }, [messages.length, getHeaders]);
@@ -705,11 +716,11 @@ function ChatPage() {
         conversations={convos.conversations}
         onNewChat={handleNewChat}
         onSelectConversation={(id) => {
-          handleSelectConversation(id).catch((err: unknown) => {
-            console.warn(
-              "[chat] palette select failed:",
-              err instanceof Error ? err.message : String(err),
-            );
+          // Suppressing here only to mark the promise as handled — the inner
+          // setError surfaces any failure to the user. Adding a second log
+          // would just mirror handleSelectConversation's own catch.
+          handleSelectConversation(id).catch(() => {
+            // intentionally ignored: handleSelectConversation handles its own errors
           });
         }}
         onOpenPromptLibrary={() => setPromptLibraryOpen(true)}

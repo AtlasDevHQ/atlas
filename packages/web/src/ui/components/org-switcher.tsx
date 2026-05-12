@@ -36,13 +36,7 @@ export function OrgSwitcher({ variant = "sidebar" }: OrgSwitcherProps) {
   const [loading, setLoading] = useState(true);
   const [switchError, setSwitchError] = useState<string | null>(null);
 
-  // Better Auth's typed session covers the base shape; `activeOrganization*`
-  // are custom fields configured via `session.fields` in the auth setup, so
-  // they're not on the inferred interface — narrow them at the read.
-  const sessionExtra = session.data?.session as
-    | { activeOrganizationId?: string; activeOrganizationName?: string }
-    | undefined;
-  const activeOrgId = sessionExtra?.activeOrganizationId;
+  const activeOrgId = session.data?.session.activeOrganizationId;
 
   useEffect(() => {
     if (!session.data?.user) return;
@@ -67,7 +61,7 @@ export function OrgSwitcher({ variant = "sidebar" }: OrgSwitcherProps) {
 
   const activeOrg = orgs.find((o) => o.id === activeOrgId);
   // Fall back to session metadata for the active org name when the list hasn't loaded
-  const sessionOrgName = sessionExtra?.activeOrganizationName;
+  const sessionOrgName = session.data?.session.activeOrganizationName;
   const displayName = activeOrg?.name ?? sessionOrgName ?? "Workspace";
 
   async function switchOrg(orgId: string) {

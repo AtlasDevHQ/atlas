@@ -97,7 +97,33 @@ const _authClient = createAuthClient({
 // reference identical types.
 type OrgResult<T> = { data: T | null; error: { message: string } | null };
 
-type OrgClient = typeof _authClient & {
+// Session extras the organization plugin stamps at runtime (active-org id is
+// written by `databaseHooks.session.create.before` in
+// `packages/api/src/lib/auth/server.ts`; the active-org name comes from the
+// plugin's own `setActive` flow). The client-side `useSession()` inferred
+// return doesn't see them.
+type SessionFieldExtras = {
+  activeOrganizationId?: string;
+  activeOrganizationName?: string;
+};
+
+type BaseUseSessionReturn = ReturnType<typeof _authClient.useSession>;
+type BaseUseSessionData = NonNullable<BaseUseSessionReturn["data"]>;
+type WidenedUseSessionReturn = Omit<BaseUseSessionReturn, "data"> & {
+  data:
+    | (Omit<BaseUseSessionData, "session"> & {
+        session: BaseUseSessionData["session"] & SessionFieldExtras;
+      })
+    | null;
+};
+
+// `useSession` is the one method we replace (rather than intersection-add)
+// because we're widening its return; intersection would produce an
+// unsatisfiable overload. Every other plugin-namespace patch below stays
+// intersection-add.
+type OrgClient = Omit<typeof _authClient, "useSession"> & {
+  useSession: () => WidenedUseSessionReturn;
+
   // Better Auth core — present at runtime, lost through plugin chain.
   updateUser?: (opts: { name?: string }) => Promise<{ error?: { message?: string } | null }>;
 

@@ -119,11 +119,7 @@ export function ConnectWizard({ open, onClose }: ConnectWizardProps) {
   const [copyFailed, setCopyFailed] = useState(false);
 
   const session = authClient.useSession();
-  // Better Auth's public session type doesn't expose `activeOrganizationId`
-  // — the organization plugin contributes it at runtime. Same cast as the
-  // org-switcher.
-  const orgId = (session.data?.session as Record<string, unknown> | undefined)
-    ?.activeOrganizationId as string | undefined;
+  const orgId = session.data?.session.activeOrganizationId;
 
   // Reset step + selection when the wizard reopens so a previous session
   // doesn't leave the user on step 3 the next time they click Connect.

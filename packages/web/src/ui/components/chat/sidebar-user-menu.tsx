@@ -56,10 +56,7 @@ export function SidebarUserMenu() {
   const [signingOut, setSigningOut] = useState(false);
 
   const user = session.data?.user;
-  const sessionExtra = session.data?.session as
-    | { activeOrganizationId?: string; activeOrganizationName?: string }
-    | undefined;
-  const activeOrgId = sessionExtra?.activeOrganizationId;
+  const activeOrgId = session.data?.session.activeOrganizationId;
 
   useEffect(() => {
     if (!user) return;
@@ -86,7 +83,8 @@ export function SidebarUserMenu() {
   const email = user.email ?? null;
   const initials = deriveInitials(name, email);
   const activeOrg = orgs.find((o) => o.id === activeOrgId);
-  const orgName = activeOrg?.name ?? sessionExtra?.activeOrganizationName ?? null;
+  const orgName =
+    activeOrg?.name ?? session.data?.session.activeOrganizationName ?? null;
   const canSwitch = orgs.length > 1;
   const subtitle = orgName ?? email ?? null;
 

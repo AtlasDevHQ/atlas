@@ -88,10 +88,9 @@ function ChatPage() {
   const isAdmin = user?.role === "admin" || user?.role === "owner" || user?.role === "platform_admin";
   const isSignedIn = !!user;
 
-  // #2022 — per-user landing preference. Admins who opted into the admin
-  // console as their home get a one-time redirect; everyone else lands on
-  // chat. Only fetched once the session resolves so we don't 401 the
-  // endpoint and fall through to the safe `chat` default by accident.
+  // Wait for the session to resolve before fetching the landing preference —
+  // a 401 here silently falls through to chat and the admin opt-out never
+  // takes effect on first paint.
   const router = useRouter();
   const { defaultLanding, loading: landingLoading } = useDefaultLanding(
     isSignedIn && !session.isPending,

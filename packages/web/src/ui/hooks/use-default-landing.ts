@@ -1,22 +1,10 @@
 "use client";
 
-/**
- * Per-user default-landing preference (#2022).
- *
- * Reads `default_landing` from `/api/v1/me/preferences` so the chat page can
- * decide whether to keep the user on `/` or redirect them into the admin
- * console. The page treats `loading: true` as a "don't render yet" state so
- * the chat surface doesn't flash before the redirect lands.
- *
- * Returns `chat` when the endpoint is unavailable (404 in non-managed auth
- * modes — the migration is in MANAGED_AUTH_MIGRATIONS) so self-hosted-local
- * deployments default to the chat surface without further plumbing.
- */
-
 import { useEffect, useRef, useState } from "react";
+import { isDefaultLanding, type DefaultLanding } from "@useatlas/types";
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 
-export type DefaultLanding = "chat" | "admin";
+export type { DefaultLanding };
 
 interface UseDefaultLandingResult {
   /** Resolved preference. Until `loading` flips to false, treat as unknown. */
@@ -27,8 +15,13 @@ interface UseDefaultLandingResult {
 
 /**
  * Fetches the calling user's preference once on mount. `enabled = false`
- * skips the fetch — pass false on pages that don't need the preference,
- * or while the session is still resolving.
+ * skips the fetch — pass false while the session is still resolving so we
+ * don't 401 the endpoint and silently fall through to the chat default.
+ *
+ * 404 is intentional — non-managed deployments don't have the column. Any
+ * other HTTP failure also falls through to chat (matching the migration's
+ * NOT NULL DEFAULT 'chat'); the response body's `requestId` is logged so
+ * operators can trace it.
  */
 export function useDefaultLanding(enabled: boolean): UseDefaultLandingResult {
   const [defaultLanding, setDefaultLanding] = useState<DefaultLanding>("chat");
@@ -48,23 +41,26 @@ export function useDefaultLanding(enabled: boolean): UseDefaultLandingResult {
 
     fetch(`${getApiUrl()}/api/v1/me/preferences`, { credentials })
       .then(async (res) => {
+        if (res.status === 404) return null;
         if (!res.ok) {
-          // 404 in non-managed modes is expected — the preference column
-          // doesn't exist outside managed auth. Fall through to the chat
-          // default rather than surfacing the error.
+          const body = (await res.json().catch(() => ({}))) as { requestId?: string };
+          console.warn(
+            "[preferences] GET /me/preferences returned",
+            res.status,
+            "requestId:",
+            body.requestId,
+          );
           return null;
         }
         return (await res.json()) as { defaultLanding?: unknown };
       })
       .then((body) => {
         if (cancelled || !body) return;
-        if (body.defaultLanding === "admin" || body.defaultLanding === "chat") {
+        if (isDefaultLanding(body.defaultLanding)) {
           setDefaultLanding(body.defaultLanding);
         }
       })
       .catch((err: unknown) => {
-        // Network/parse failures fall through to chat — the same safe
-        // default the migration's NOT NULL DEFAULT 'chat' enforces.
         console.warn(
           "[preferences] failed to load defaultLanding:",
           err instanceof Error ? err.message : String(err),

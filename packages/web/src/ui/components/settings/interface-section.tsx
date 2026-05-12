@@ -1,12 +1,6 @@
 "use client";
 
 /**
- * `/settings/profile` → Interface section (#2022).
- *
- * Per-user "Default landing" toggle. The chat-first front door is the default
- * for new users — admins who lean into the admin console can flip the
- * preference here and the next visit to `/` redirects into the console.
- *
  * Self-hosted-local deployments don't expose this section: the underlying
  * column lives on Better Auth's `user` table and is in
  * MANAGED_AUTH_MIGRATIONS, so the GET endpoint 404s. The section gates on
@@ -15,6 +9,7 @@
 
 import { useEffect, useState } from "react";
 import { Loader2, Save } from "lucide-react";
+import type { DefaultLanding, UserPreferences } from "@useatlas/types";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -22,21 +17,15 @@ import { SectionHeading } from "@/ui/components/admin/compact";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 
-type DefaultLanding = "chat" | "admin";
-
-interface PreferencesResponse {
-  defaultLanding: DefaultLanding;
-}
-
 interface InterfaceSectionProps {
-  /** Whether the calling user has admin role. The radio's `admin` option is
-   *  meaningless for non-admins (the backend allows the write, but the next
-   *  visit to `/` won't redirect them) so we hide it. */
+  /** Whether the caller is admin/owner/platform-admin. The `admin` radio is
+   *  hidden for everyone else — the backend rejects the write on that path
+   *  too, so the option would just produce a 403. */
   isAdmin: boolean;
 }
 
 export function InterfaceSection({ isAdmin }: InterfaceSectionProps) {
-  const { data, loading, error, refetch } = useAdminFetch<PreferencesResponse>(
+  const { data, loading, error, refetch } = useAdminFetch<UserPreferences>(
     "/api/v1/me/preferences",
   );
 
@@ -47,7 +36,7 @@ export function InterfaceSection({ isAdmin }: InterfaceSectionProps) {
     if (data && selected == null) setSelected(data.defaultLanding);
   }, [data, selected]);
 
-  const { mutate, saving, error: saveError } = useAdminMutation<PreferencesResponse>({
+  const { mutate, saving, error: saveError } = useAdminMutation<UserPreferences>({
     path: "/api/v1/me/preferences",
     method: "PATCH",
     invalidates: refetch,

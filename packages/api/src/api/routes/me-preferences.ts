@@ -1,23 +1,24 @@
 /**
- * Per-user preferences (#2022).
+ * Per-user preferences — mounted at `/api/v1/me/preferences`.
  *
- * Mounted at `/api/v1/me/preferences`. Read + write the calling user's
- * UI-shaped preferences. Today this is just `default_landing` — which surface
- * (`chat` or `admin`) the root route resolves to after sign-in — but the
- * shape is forward-compatible: future preferences (theme override,
- * keyboard-shortcut profile, density) live on the same row and ride the
- * same GET/PATCH pair so the page doesn't fan out into one endpoint per knob.
- *
- * Auth: any signed-in user; no admin gate. The preference is per-user, not
- * per-workspace, so it survives org-switch.
+ * Read + write the calling user's UI-shaped preferences. Auth: any signed-in
+ * user; no admin gate on GET. PATCH only accepts `default_landing = 'admin'`
+ * from a workspace admin / owner / platform admin — non-admins land on a 403
+ * since the admin console would 403 them anyway after the redirect.
  *
  * Availability: requires managed auth + an internal DB. In non-managed modes
- * (`local` / `none`) the column doesn't exist (the migration is in
- * MANAGED_AUTH_MIGRATIONS) and the UI omits the Interface section.
+ * the column doesn't exist (the migration is in MANAGED_AUTH_MIGRATIONS) and
+ * the route returns 404 so the UI can omit the Interface section.
  */
 
 import { Effect } from "effect";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import {
+  ADMIN_ROLES,
+  DEFAULT_LANDINGS,
+  isDefaultLanding,
+  type AdminRole,
+} from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
@@ -28,11 +29,15 @@ import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("me-preferences");
 
+// Roles that may persist `defaultLanding = 'admin'`. This is the
+// authoritative gate; the UI mirrors the same set at `interface-section.tsx`.
+const ADMIN_ROLES_SET: ReadonlySet<AdminRole> = new Set(ADMIN_ROLES);
+
 // ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
 
-const DefaultLandingSchema = z.enum(["chat", "admin"]);
+const DefaultLandingSchema = z.enum(DEFAULT_LANDINGS);
 
 const PreferencesResponseSchema = z.object({
   defaultLanding: DefaultLandingSchema,
@@ -52,10 +57,9 @@ const getPreferencesRoute = createRoute({
   tags: ["Me — Preferences"],
   summary: "Read your UI preferences",
   description:
-    "Returns the calling user's UI preferences. Today this is just " +
-    "`defaultLanding` — the surface (`chat` or `admin`) the root route " +
-    "resolves to after sign-in. Defaults to `chat` for any user that " +
-    "hasn't flipped the toggle.",
+    "Returns the calling user's UI preferences. `defaultLanding` decides " +
+    "which surface (`chat` or `admin`) the root route resolves to after " +
+    "sign-in.",
   responses: {
     200: {
       description: "User preferences",
@@ -73,10 +77,8 @@ const updatePreferencesRoute = createRoute({
   tags: ["Me — Preferences"],
   summary: "Update your UI preferences",
   description:
-    "Persists `defaultLanding` on the calling user's row. The next time the " +
-    "user lands on `/`, the chat surface honours the choice — admins who " +
-    "set `admin` get a redirect into the admin console, everyone else " +
-    "lands on chat.",
+    "Persists `defaultLanding` on the calling user's row. Setting `admin` " +
+    "requires the caller to be an admin / owner / platform-admin.",
   request: {
     body: {
       content: { "application/json": { schema: UpdatePreferencesRequestSchema } },
@@ -88,6 +90,7 @@ const updatePreferencesRoute = createRoute({
       content: { "application/json": { schema: PreferencesResponseSchema } },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "`admin` landing requires an admin role", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Not available — requires managed auth + internal DB", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -102,10 +105,6 @@ const mePreferences = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
 mePreferences.use(standardAuth);
 mePreferences.use(requestContext);
 
-// `default_landing` is on the Better Auth `user` table — only readable when
-// the deployment runs managed auth with an internal DB. Outside that, the
-// column doesn't exist (migration is in MANAGED_AUTH_MIGRATIONS) and the
-// route returns 404 so the UI can omit the Interface section cleanly.
 function unavailableResponse(requestId: string) {
   return {
     error: "not_available" as const,
@@ -115,13 +114,10 @@ function unavailableResponse(requestId: string) {
   };
 }
 
-type DefaultLanding = z.infer<typeof DefaultLandingSchema>;
-
-function coerceLanding(raw: string | null | undefined): DefaultLanding {
-  // The CHECK constraint pins the value set, but a row from a future schema
-  // (a value we don't recognize yet) shouldn't break the page — fall back to
-  // chat, which matches the column default and the new-user experience.
-  return raw === "admin" ? "admin" : "chat";
+// Coerce DB string to the legal enum; unknown values map to `chat` so a
+// future schema-extension row doesn't 500 today's clients.
+function coerceLanding(raw: string | null | undefined) {
+  return isDefaultLanding(raw) ? raw : "chat";
 }
 
 mePreferences.openapi(getPreferencesRoute, async (c) => {
@@ -133,12 +129,15 @@ mePreferences.openapi(getPreferencesRoute, async (c) => {
       return c.json(unavailableResponse(requestId), 404);
     }
 
-    const rows = yield* Effect.promise(() =>
-      internalQuery<{ default_landing: string | null }>(
-        `SELECT default_landing FROM "user" WHERE id = $1`,
-        [user.id],
-      ),
-    );
+    const rows = yield* Effect.tryPromise({
+      try: () =>
+        internalQuery<{ default_landing: string | null }>(
+          `SELECT default_landing FROM "user" WHERE id = $1`,
+          [user.id],
+        ),
+      catch: (err) =>
+        err instanceof Error ? err : new Error(String(err)),
+    });
 
     const defaultLanding = coerceLanding(rows[0]?.default_landing ?? null);
     return c.json({ defaultLanding }, 200);
@@ -156,12 +155,33 @@ mePreferences.openapi(updatePreferencesRoute, async (c) => {
       return c.json(unavailableResponse(requestId), 404);
     }
 
-    yield* Effect.promise(() =>
-      internalQuery(
-        `UPDATE "user" SET default_landing = $1 WHERE id = $2`,
-        [body.defaultLanding, user.id],
-      ),
-    );
+    // Server-side role gate — the UI hides the `admin` option for non-admins,
+    // but a direct API call would otherwise persist a value that mis-routes
+    // the user the moment role is promoted and pollutes audit logs in the
+    // meantime.
+    if (
+      body.defaultLanding === "admin" &&
+      !ADMIN_ROLES_SET.has(user.role as AdminRole)
+    ) {
+      return c.json(
+        {
+          error: "forbidden",
+          message: "Only admins can land on the admin console.",
+          requestId,
+        },
+        403,
+      );
+    }
+
+    yield* Effect.tryPromise({
+      try: () =>
+        internalQuery(
+          `UPDATE "user" SET default_landing = $1 WHERE id = $2`,
+          [body.defaultLanding, user.id],
+        ),
+      catch: (err) =>
+        err instanceof Error ? err : new Error(String(err)),
+    });
 
     log.info(
       { userId: user.id, defaultLanding: body.defaultLanding, requestId },

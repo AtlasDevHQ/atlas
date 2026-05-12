@@ -1,16 +1,8 @@
 "use client";
 
 /**
- * Minimal top bar for the chat-first front door (#2022).
- *
- * Strips the cross-section nav (Notebook / Dashboards / Admin / Semantic) the
- * pre-1.4.3 NavBar surfaced at `/` — those links read as admin chrome to a
- * new self-hosted user and were the "first impression is Workday, not agent"
- * gap. The chat surface is the product; everything else is reachable through
- * the avatar menu or the settings gear.
- *
- * Notebook / Dashboards / etc. keep the older `<NavBar>` because they ARE
- * cross-section pages — this component is intentionally chat-only.
+ * Chat-only top bar. Cross-section pages (notebook, dashboards) use the
+ * fuller `<NavBar>` instead.
  */
 
 import Link from "next/link";

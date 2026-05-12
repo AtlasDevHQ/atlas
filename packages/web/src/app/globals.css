@@ -137,6 +137,22 @@
   --animate-typing-dot: typing-dot 1.2s ease-in-out infinite;
 }
 
+/* Hide native OS scrollbars on shadcn primitives that ship with raw
+ * `overflow-y-auto`. Mirrors the docs-only CSS on ui.shadcn.com
+ * (`.cn-command-list`, `.cn-sidebar-content`) — cmdk + sidebar handle their
+ * own keyboard/scroll behavior, so the OS gutter just adds visual noise on
+ * Windows/Linux where bars are always-visible. macOS overlay bars are
+ * already invisible; this rule is a no-op there. */
+[data-slot="command-list"],
+[data-slot="sidebar-content"] {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+[data-slot="command-list"]::-webkit-scrollbar,
+[data-slot="sidebar-content"]::-webkit-scrollbar {
+  display: none;
+}
+
 @keyframes typing-dot {
   0%, 60%, 100% {
     opacity: 0.3;

@@ -13,7 +13,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
-import { hasInternalDB, internalQuery, encryptSecret, decryptSecret } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, internalQuery, encryptSecret, decryptSecret, type URLSecret } from "@atlas/api/lib/db/internal";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
@@ -689,7 +689,7 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
   }
 
   // Encrypt and persist to internal DB with org_id
-  let encryptedUrl: string;
+  let encryptedUrl: URLSecret;
   try {
     encryptedUrl = encryptSecret(url);
   } catch (err) {
@@ -842,7 +842,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
   }
 
   // Encrypt and update in DB — rollback registry on failure
-  let encryptedNewUrl: string;
+  let encryptedNewUrl: URLSecret;
   try {
     encryptedNewUrl = encryptSecret(newUrl);
   } catch (err) {

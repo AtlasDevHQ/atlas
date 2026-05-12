@@ -6,7 +6,7 @@
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { encryptSecret, decryptSecret } from "@atlas/api/lib/db/secret-encryption";
+import { encryptSecret, decryptSecret, type OpaqueSecret } from "@atlas/api/lib/db/secret-encryption";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { LinearInstallation, LinearInstallationWithSecret } from "@atlas/api/lib/integrations/types";
@@ -135,7 +135,7 @@ export async function saveLinearInstallation(
   const orgId = opts.orgId ?? null;
   const userName = opts.userName ?? null;
   const userEmail = opts.userEmail ?? null;
-  const apiKeyEncrypted = encryptSecret(opts.apiKey);
+  const apiKeyEncrypted: OpaqueSecret = encryptSecret(opts.apiKey);
   const keyVersion = activeKeyVersion();
 
   try {

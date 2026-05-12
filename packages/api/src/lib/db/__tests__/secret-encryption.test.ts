@@ -18,6 +18,7 @@ import {
   encryptSecret,
   decryptSecret,
   UnknownKeyVersionError,
+  type OpaqueSecret,
 } from "../secret-encryption";
 import { _resetEncryptionKeyCache } from "../internal";
 
@@ -141,7 +142,9 @@ describe("secret encryption helpers", () => {
     });
 
     it("encryptSecret passes the value through unchanged", () => {
-      expect(encryptSecret("dev-token")).toBe("dev-token");
+      // String literal cast to the brand — the keyless passthrough is
+      // a runtime equality, the brand only constrains the call site.
+      expect(encryptSecret("dev-token")).toBe("dev-token" as OpaqueSecret);
     });
 
     it("decryptSecret still tolerates plaintext values", () => {

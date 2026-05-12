@@ -111,22 +111,51 @@ function hasVersionedPrefix(stored: string): boolean {
 })();
 
 /**
+ * Branded result type of this module's `encryptSecret`. Structural
+ * (zero-runtime) brand that separates `enc:v<N>:`-prefixed opaque
+ * ciphertext from the URL-aware ciphertext produced by
+ * `db/internal.ts`'s `URLSecret`. The brand exists purely so that an
+ * IDE-driven auto-import cannot silently bind an integration
+ * credential column to the URL helper — the URL helper's
+ * `decryptSecret` short-circuits on `isPlaintextUrl(...)` and on the
+ * legacy 3-part unversioned format, neither of which is right for
+ * opaque integration tokens. See #2370 / #2285.
+ *
+ * Pair this with `RawSecret` (re-exported from `db/internal.ts`) on
+ * `decryptSecret` so plain pg row strings flow through without manual
+ * casts while still rejecting the sibling brand at the type level.
+ */
+export type OpaqueSecret = string & { readonly __brand: "OpaqueSecret" };
+
+// Re-export `RawSecret` so callers in this module's vicinity can pull
+// both the brand and the "unbranded raw string" companion from a
+// single import surface. The type itself is structural — same shape
+// whichever module re-exports it.
+export type { RawSecret } from "@atlas/api/lib/db/internal";
+import type { RawSecret } from "@atlas/api/lib/db/internal";
+
+/**
  * Encrypts an arbitrary secret string under the active keyset entry,
  * tagged with a `enc:v<N>:` prefix so `decryptSecret` can look up the
  * right key even after a rotation (F-47). Returns the plaintext
  * unchanged if no encryption key is configured, matching the
  * dev-friendly semantics of the URL-aware helper in `db/internal.ts`.
+ *
+ * Returns the `OpaqueSecret` brand — `db/internal.ts::encryptSecret`
+ * returns `URLSecret`, and the two are not assignable to each other so
+ * a misrouted call site (e.g. persisting a `URLSecret` into an
+ * F-41 `*_encrypted` column) surfaces as a TS error.
  */
-export function encryptSecret(plaintext: string): string {
+export function encryptSecret(plaintext: string): OpaqueSecret {
   const keyset = getEncryptionKeyset();
-  if (!keyset) return plaintext;
+  if (!keyset) return plaintext as OpaqueSecret;
 
   const iv = crypto.randomBytes(IV_LENGTH);
   const cipher = crypto.createCipheriv(ENCRYPTION_ALGORITHM, keyset.active.key, iv, { authTagLength: AUTH_TAG_LENGTH });
   const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
   const authTag = cipher.getAuthTag();
 
-  return `enc:v${keyset.active.version}:${iv.toString("base64")}:${authTag.toString("base64")}:${encrypted.toString("base64")}`;
+  return `enc:v${keyset.active.version}:${iv.toString("base64")}:${authTag.toString("base64")}:${encrypted.toString("base64")}` as OpaqueSecret;
 }
 
 /**
@@ -134,13 +163,20 @@ export function encryptSecret(plaintext: string): string {
  * `enc:v<N>:` prefix are returned unchanged — safe on legacy rows that
  * predate dual-write and on deployments with no key set.
  *
+ * Accepts `OpaqueSecret | RawSecret` so raw DB row values (`string`
+ * from pg) keep round-tripping without a manual cast. `RawSecret` is
+ * plain string with `__brand?: never`, which a property-less string
+ * trivially satisfies but the sibling brand (`URLSecret`) does not —
+ * so a `URLSecret` value can never be fed here, surfacing the misroute
+ * as a TS error rather than a silent runtime divergence on read.
+ *
  * Throws when:
  *   • the value carries `enc:v<N>:` but `N` isn't in the current
  *     keyset (config error — operator must add the legacy key back);
  *   • the body is malformed or AES-GCM auth-tag verification fails
  *     (corruption — caller should surface a 500 with `requestId`).
  */
-export function decryptSecret(stored: string): string {
+export function decryptSecret(stored: OpaqueSecret | RawSecret): string {
   if (!hasVersionedPrefix(stored)) return stored;
 
   const keyset = getEncryptionKeyset();

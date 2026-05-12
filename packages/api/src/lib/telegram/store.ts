@@ -7,7 +7,7 @@
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { encryptSecret, decryptSecret } from "@atlas/api/lib/db/secret-encryption";
+import { encryptSecret, decryptSecret, type OpaqueSecret } from "@atlas/api/lib/db/secret-encryption";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { TelegramInstallation, TelegramInstallationWithSecret } from "@atlas/api/lib/integrations/types";
@@ -138,7 +138,7 @@ export async function saveTelegramInstallation(
 
   const orgId = opts.orgId ?? null;
   const botUsername = opts.botUsername ?? null;
-  const botTokenEncrypted = encryptSecret(opts.botToken);
+  const botTokenEncrypted: OpaqueSecret = encryptSecret(opts.botToken);
   const keyVersion = activeKeyVersion();
 
   try {

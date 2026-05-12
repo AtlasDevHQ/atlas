@@ -82,6 +82,35 @@ function decryptBody(body: string, key: Buffer): string {
 }
 
 /**
+ * Branded result type of this module's `encryptSecret`. Structural
+ * (zero-runtime) brand that separates URL-aware ciphertext from the
+ * `enc:v<N>:`-only ciphertext produced by `db/secret-encryption.ts`'s
+ * `OpaqueSecret`. The two helpers share the AES-256-GCM ciphertext
+ * format on the wire — the brand exists purely to prevent an
+ * IDE-driven auto-import from binding a URL column to the
+ * opaque-secret helper (or vice versa), since the read paths differ:
+ * this module's `decryptSecret` short-circuits on `isPlaintextUrl(...)`
+ * and tolerates the legacy 3-part unversioned format, while the
+ * opaque helper only short-circuits on absence of the `enc:v<N>:`
+ * prefix. See the issue trail in #2370 / #2285.
+ *
+ * Pair this with `RawSecret` on `decryptSecret` to keep plain pg row
+ * strings flowing through without manual casts while still rejecting
+ * the sibling brand at the type level.
+ */
+export type URLSecret = string & { readonly __brand: "URLSecret" };
+
+/**
+ * "Unbranded" pg row string — used in `decryptSecret`'s parameter so
+ * raw column reads don't need a manual cast, while still rejecting
+ * a value tagged with the sibling brand (`OpaqueSecret`). Mechanics:
+ * `__brand?: never` is satisfied by absence of the property (plain
+ * `string` has none) but **not** by a value whose `__brand` carries a
+ * literal string (URLSecret/OpaqueSecret both fail the `never` check).
+ */
+export type RawSecret = string & { readonly __brand?: never };
+
+/**
  * Encrypts an arbitrary string secret (connection URL, API key, JSON
  * cred bundle) using AES-256-GCM under the active keyset entry. New
  * writes carry the `enc:v<N>:` prefix so the rotation script can
@@ -93,14 +122,15 @@ function decryptBody(body: string, key: Buffer): string {
  * that helper is for new integration-credential columns where the
  * URL-shape passthrough in `decryptSecret` (below) would misclassify
  * inputs like Telegram tokens or JSON blobs. See its module header
- * for the picking guide.
+ * for the picking guide. The brand types (`URLSecret` here vs
+ * `OpaqueSecret` there) make a misrouted call a compile error.
  *
  * The historic name `encryptUrl` is preserved as a deprecated
  * re-export at the bottom of this file.
  */
-export function encryptSecret(plaintext: string): string {
+export function encryptSecret(plaintext: string): URLSecret {
   const keyset = getEncryptionKeyset();
-  if (!keyset) return plaintext;
+  if (!keyset) return plaintext as URLSecret;
 
   const iv = crypto.randomBytes(IV_LENGTH);
   const cipher = crypto.createCipheriv(ENCRYPTION_ALGORITHM, keyset.active.key, iv, { authTagLength: AUTH_TAG_LENGTH });
@@ -108,7 +138,7 @@ export function encryptSecret(plaintext: string): string {
   const authTag = cipher.getAuthTag();
 
   // `:` is safe as delimiter — base64 alphabet is A-Za-z0-9+/= (no colon)
-  return `enc:v${keyset.active.version}:${iv.toString("base64")}:${authTag.toString("base64")}:${encrypted.toString("base64")}`;
+  return `enc:v${keyset.active.version}:${iv.toString("base64")}:${authTag.toString("base64")}:${encrypted.toString("base64")}` as URLSecret;
 }
 
 /**
@@ -120,8 +150,15 @@ export function encryptSecret(plaintext: string): string {
  *   3. Three colon-separated base64 parts → pre-F-47 unversioned
  *      format; decrypt with the active key (same as pre-F-47 behavior).
  *   4. Anything else → unrecognized format, throw.
+ *
+ * Accepts `URLSecret | RawSecret` so raw DB row values (`string` from
+ * pg) keep round-tripping without a manual cast. `RawSecret` is plain
+ * string with `__brand?: never`, which a property-less string trivially
+ * satisfies but the sibling brand (`OpaqueSecret`) does not — so an
+ * `OpaqueSecret` value can never be fed here, surfacing the misroute
+ * as a TS error rather than a silent runtime divergence on read.
  */
-export function decryptSecret(stored: string): string {
+export function decryptSecret(stored: URLSecret | RawSecret): string {
   if (isPlaintextUrl(stored)) return stored;
 
   const keyset = getEncryptionKeyset();
@@ -202,15 +239,18 @@ export function decryptSecret(stored: string): string {
  *   versions don't break on a same-PR upgrade. **Remove in milestone
  *   1.5.0** — by then the published SDK has shipped a release that
  *   uses the canonical name. Tracked: #2285.
+ *
+ * Branding (#2370): aliases preserve `URLSecret` so callers migrating
+ * piecewise still get the misrouted-helper type errors.
  */
-export const encryptUrl = encryptSecret;
+export const encryptUrl: (plaintext: string) => URLSecret = encryptSecret;
 
 /**
  * @deprecated Use `decryptSecret`. See `encryptUrl` above for the
  *   removal trigger (milestone 1.5.0, after the SDK consumer surface
  *   migrates). Tracked: #2285.
  */
-export const decryptUrl = decryptSecret;
+export const decryptUrl: (stored: URLSecret | RawSecret) => string = decryptSecret;
 
 /**
  * Returns true when the value looks like a plaintext URL. Rejects

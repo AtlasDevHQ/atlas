@@ -7,7 +7,7 @@
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { encryptSecret, decryptSecret } from "@atlas/api/lib/db/secret-encryption";
+import { encryptSecret, decryptSecret, type OpaqueSecret } from "@atlas/api/lib/db/secret-encryption";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
@@ -226,7 +226,7 @@ export async function saveEmailInstallation(
     // diverged.
     const { provider: _provider, ...configJson } = opts.config;
     const configSerialized = JSON.stringify(configJson);
-    const configEncrypted = encryptSecret(configSerialized);
+    const configEncrypted: OpaqueSecret = encryptSecret(configSerialized);
     const keyVersion = activeKeyVersion();
     await internalQuery(
       `INSERT INTO email_installations (provider, sender_address, config_encrypted, config_key_version, org_id)

@@ -7,7 +7,7 @@
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { encryptSecret, decryptSecret } from "@atlas/api/lib/db/secret-encryption";
+import { encryptSecret, decryptSecret, type OpaqueSecret } from "@atlas/api/lib/db/secret-encryption";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { GChatInstallation, GChatInstallationWithSecret } from "@atlas/api/lib/integrations/types";
@@ -138,7 +138,7 @@ export async function saveGChatInstallation(
   }
 
   const orgId = opts.orgId ?? null;
-  const credentialsJsonEncrypted = encryptSecret(opts.credentialsJson);
+  const credentialsJsonEncrypted: OpaqueSecret = encryptSecret(opts.credentialsJson);
   const keyVersion = activeKeyVersion();
 
   try {

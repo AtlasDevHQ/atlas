@@ -139,7 +139,7 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
 
 ## Active: 1.4.3 — Agent-first front door + BYOT polish
 
-Tracker: [milestone #44](https://github.com/AtlasDevHQ/atlas/milestones/44). Two threads: (1) push the agent-first narrative — chat is the default front door for non-admins, not the admin console; (2) close the post-#2174 BYOT review tail (S25/S26 refactors, encryption rename, Bedrock IAM docs, scheduler-driven catalog refresh, L1↔L2 wiring test) plus the SDK multi-workspace MCP shape now that C3 is in.
+Tracker: [milestone #44](https://github.com/AtlasDevHQ/atlas/milestones/44). Two threads: (1) push the agent-first narrative — chat is the default front door for non-admins, not the admin console; (2) close the post-#2174 BYOT review tail (S25/S26 refactors, encryption rename, Bedrock IAM docs, scheduler-driven catalog refresh, L1↔L2 wiring test). SDK multi-workspace MCP (#2196) shipped 2026-05-12 as part of this milestone.
 
 ### Shipped
 
@@ -151,12 +151,12 @@ Tracker: [milestone #44](https://github.com/AtlasDevHQ/atlas/milestones/44). Two
 - [x] L1↔L2 wiring integration test for BYOT catalog modules ([#2287](https://github.com/AtlasDevHQ/atlas/issues/2287), [#2372](https://github.com/AtlasDevHQ/atlas/pull/2372)) — locks in the post-#2174 cache hand-off.
 - [x] Brand `encryptSecret` return types — `URLSecret` vs `OpaqueSecret` ([#2370](https://github.com/AtlasDevHQ/atlas/issues/2370), [#2374](https://github.com/AtlasDevHQ/atlas/pull/2374)) — type-system enforcement of the URL-passthrough vs opaque-secret split; architecture-wins #55.
 - [x] Widen `useSession()` return for `session.fields` extras ([#2334](https://github.com/AtlasDevHQ/atlas/issues/2334), [#2373](https://github.com/AtlasDevHQ/atlas/pull/2373)) — finishes the #2262 authClient cast-collapse arc; architecture-wins #54.
+- [x] Expose multi-workspace MCP shape in `@useatlas/sdk` ([#2196](https://github.com/AtlasDevHQ/atlas/issues/2196), [#2375](https://github.com/AtlasDevHQ/atlas/pull/2375)) — `completeConnect` surfaces the plural `workspace_ids` claim, `buildConfig` opts into the env-hint block, `useMcpConnect` exposes `workspaces` for picker UX. Published as `@useatlas/sdk@0.0.14`; consumer-refs bump #2379.
 
 ### Open
 
 - [ ] Unified BYOT credentials — `WorkspaceCredentials` union + `ByotAdapter<Cred>` ([#2282](https://github.com/AtlasDevHQ/atlas/issues/2282)) — post-#2174 BYOT review S25+S26, merged tracker; ships as one PR (#2283 folded in).
 - [ ] Scheduler-driven periodic refresh for BYOT discovery catalogs ([#2284](https://github.com/AtlasDevHQ/atlas/issues/2284)) — graduate the cron-shaped refresh into the scheduler.
-- [ ] Expose multi-workspace MCP shape in `@useatlas/sdk` ([#2196](https://github.com/AtlasDevHQ/atlas/issues/2196)) — surface the C3 cross-workspace identity shape now that #2073 landed.
 
 ---
 

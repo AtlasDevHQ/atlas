@@ -369,7 +369,30 @@ adminConnections.openapi(listConnectionsRoute, async (c) => runHandler(c, "list 
   const visible = await getVisibleConnectionIds(orgId, isPlatformAdmin, getAtlasMode(c));
   const filtered = visible ? connList.filter((conn) => visible.has(conn.id)) : connList;
 
-  return c.json({ connections: filtered }, 200);
+  // Decorate with `group_id` from the internal DB. The in-memory registry
+  // tracks runtime metadata but not group membership; merging here keeps
+  // both surfaces in lockstep without a second round-trip from the admin
+  // UI. The no-internal-DB branch (self-hosted single-tenant) and the
+  // empty-result branch both fall through with `groupId: null` on every
+  // row. Transient DB errors propagate via runHandler's classifyError —
+  // a flaky pool surfaces as a 500 here just like every other list
+  // endpoint, no silent-success fallback.
+  let groupIdByConnection = new Map<string, string | null>();
+  if (hasInternalDB() && filtered.length > 0) {
+    const ids = filtered.map((c) => c.id);
+    const rows = await internalQuery<{ id: string; group_id: string | null }>(
+      `SELECT id, group_id FROM connections WHERE org_id = $1 AND id = ANY($2::text[])`,
+      [orgId, ids],
+    );
+    groupIdByConnection = new Map(rows.map((r) => [r.id, r.group_id]));
+  }
+
+  const decorated = filtered.map((c) => ({
+    ...c,
+    groupId: groupIdByConnection.get(c.id) ?? null,
+  }));
+
+  return c.json({ connections: decorated }, 200);
 }));
 
 // GET /pool — pool metrics scoped to active org

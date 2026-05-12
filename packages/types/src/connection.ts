@@ -85,4 +85,45 @@ export interface ConnectionDetail {
   maskedUrl: string | null;
   schema: string | null;
   managed: boolean;
+  /**
+   * Connection group membership. Three states are meaningful:
+   * - `undefined` — older serializer / client predating the field.
+   * - `null` — explicitly unassigned (no group, or moved out via admin UI).
+   * - `string` — current membership.
+   * Schema + code use `group_id`; UI copy renders this as "environment".
+   */
+  groupId?: string | null;
+}
+
+/**
+ * A connection group bundles connections that share a logical schema
+ * (e.g. multi-region prod replicas). Content scoped to a group is shared
+ * across every member.
+ *
+ * Vocabulary: schema + code call this a `ConnectionGroup`; UI copy says
+ * "environment". The `name` is a mutable display label — references key
+ * off `id`, never `name`. `memberCount` is a denormalized read-side
+ * projection (snapshot at query time) — split into a dedicated summary
+ * shape once a second read site needs a different denormalization.
+ */
+export interface ConnectionGroup {
+  id: string;
+  name: string;
+  /** Number of connections currently assigned to this group. */
+  memberCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * One connection's membership in a {@link ConnectionGroup}. Returned by
+ * the group detail endpoint so the admin UI can render member chips
+ * without a second round-trip to `/admin/connections`.
+ */
+export interface ConnectionGroupMember {
+  connectionId: string;
+  /** Mirrors {@link ConnectionInfo.dbType} so member chips can show an icon. */
+  dbType: DBType | "unknown";
+  /** Optional human-readable description from the underlying connection. */
+  description: string | null;
 }

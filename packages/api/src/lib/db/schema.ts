@@ -23,6 +23,7 @@ import {
   index,
   uniqueIndex,
   check,
+  foreignKey,
   primaryKey,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -261,6 +262,30 @@ export const scheduledTaskRuns = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Connection groups — multi-environment semantic layer
+// ---------------------------------------------------------------------------
+//
+// Declared above `connections` so the composite FK on `connections.group_id`
+// can name `connectionGroups` directly; the chronological-by-introduction
+// ordering of this file is a soft convention, not a runtime requirement.
+
+export const connectionGroups = pgTable(
+  "connection_groups",
+  {
+    id: text("id").notNull(),
+    orgId: text("org_id").notNull().default("__global__"),
+    name: text("name").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.id, t.orgId] }),
+    index("idx_connection_groups_org").on(t.orgId),
+    uniqueIndex("uq_connection_groups_org_name").on(t.orgId, t.name),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // Admin-managed connections
 // ---------------------------------------------------------------------------
 
@@ -282,10 +307,27 @@ export const connections = pgTable(
     orgId: text("org_id").notNull().default("__global__"),
     // Developer/published mode status
     status: text("status").notNull().default("published"),
+    // Connection group membership (multi-environment semantic layer).
+    // Nullable during the transition; every existing row is backfilled
+    // by the introducing migration to a single-member group named after
+    // the connection.
+    groupId: text("group_id"),
   },
   (t) => [
     primaryKey({ columns: [t.id, t.orgId] }),
     index("idx_connections_org").on(t.orgId),
+    index("idx_connections_group").on(t.groupId, t.orgId),
+    // Composite FK so a connection can never reference a group in a
+    // different org. ON DELETE RESTRICT: the DELETE handler already
+    // rejects non-empty groups with a typed 409; the FK is the
+    // last-resort defence against raw-SQL or test-path bypasses. SET NULL
+    // would have been the friendlier action, but PG nulls every column
+    // in a composite FK on cascade and `connections.org_id` is NOT NULL.
+    foreignKey({
+      columns: [t.groupId, t.orgId],
+      foreignColumns: [connectionGroups.id, connectionGroups.orgId],
+      name: "fk_connections_group",
+    }).onDelete("restrict"),
     check("chk_connections_status", sql`status IN ('published', 'draft', 'archived')`),
   ],
 );

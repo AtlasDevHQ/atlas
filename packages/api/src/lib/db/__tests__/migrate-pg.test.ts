@@ -208,4 +208,161 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
     expect(rows[0]?.model_status).toBe("healthy");
   }, PG_TEST_TIMEOUT_MS);
+
+  // 0062 — connection groups. The migration creates `connection_groups`,
+  // adds a nullable `connections.group_id`, and backfills 1:1 so every
+  // existing connection lands in a single-member group named after itself.
+  // What this set of assertions guards against: a future migration that
+  // tightens group_id to NOT NULL without a backfill, breaking boot for
+  // any org that already has connection rows — the same failure mode that
+  // a prior migration introduced when it added a column to a unique index
+  // without backfilling the column first.
+  it("connection_groups: table exists with composite PK (id, org_id)", async () => {
+    const { rows } = await pool.query<{ column_name: string; is_nullable: string; data_type: string }>(
+      `SELECT column_name, is_nullable, data_type
+       FROM information_schema.columns
+       WHERE table_name = 'connection_groups'
+         AND table_schema = current_schema()
+       ORDER BY ordinal_position`,
+    );
+    const byName = Object.fromEntries(rows.map((r) => [r.column_name, r] as const));
+    expect(byName.id?.data_type).toBe("text");
+    expect(byName.id?.is_nullable).toBe("NO");
+    expect(byName.org_id?.data_type).toBe("text");
+    expect(byName.org_id?.is_nullable).toBe("NO");
+    expect(byName.name?.data_type).toBe("text");
+    expect(byName.name?.is_nullable).toBe("NO");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("connections.group_id: column exists and is nullable during transition", async () => {
+    const { rows } = await pool.query<{ is_nullable: string; data_type: string }>(
+      `SELECT is_nullable, data_type
+       FROM information_schema.columns
+       WHERE table_name = 'connections'
+         AND column_name = 'group_id'
+         AND table_schema = current_schema()`,
+    );
+    expect(rows[0]?.data_type).toBe("text");
+    // Nullable so legacy single-connection orgs that came up before 0062
+    // ran (or that have pre-migration content shapes) keep booting; non-
+    // null is enforced by the API for newly-created connections.
+    expect(rows[0]?.is_nullable).toBe("YES");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("connection_groups: 1:1 backfill creates one group per existing connection", async () => {
+    const orgId = `org-backfill-${Date.now()}`;
+    // Insert two connections pre-grouping (group_id NULL) — mimics rows
+    // that existed before 0062 ran in a real upgrade.
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status, group_id)
+       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', NULL),
+              ($3, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', NULL)`,
+      [`conn-a-${Date.now()}`, orgId, `conn-b-${Date.now()}`],
+    );
+    // Re-run the backfill block (same SQL the migration uses). Idempotent:
+    // ON CONFLICT keeps existing rows, the UPDATE clause only touches
+    // rows still missing group_id.
+    await pool.query(
+      `WITH source AS (
+         SELECT id, org_id FROM connections WHERE org_id = $1 AND group_id IS NULL
+       )
+       INSERT INTO connection_groups (id, org_id, name)
+       SELECT 'g_' || id, org_id, id FROM source
+       ON CONFLICT (id, org_id) DO NOTHING`,
+      [orgId],
+    );
+    await pool.query(
+      `UPDATE connections SET group_id = 'g_' || id
+       WHERE org_id = $1 AND group_id IS NULL`,
+      [orgId],
+    );
+
+    const groupRows = await pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM connection_groups WHERE org_id = $1`,
+      [orgId],
+    );
+    expect(groupRows.rows[0]?.count).toBe("2");
+
+    const ungrouped = await pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM connections WHERE org_id = $1 AND group_id IS NULL`,
+      [orgId],
+    );
+    expect(ungrouped.rows[0]?.count).toBe("0");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("connection_groups: unique constraint blocks duplicate names per org", async () => {
+    const orgId = `org-dup-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'prod')`,
+      [`g-first-${Date.now()}`, orgId],
+    );
+    // 23505 = unique_violation. The constraint is per-org so the same
+    // name in a different org is fine.
+    await expect(
+      pool.query(
+        `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'prod')`,
+        [`g-second-${Date.now()}`, orgId],
+      ),
+    ).rejects.toMatchObject({ code: "23505" });
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("connections.group_id: FK to (group_id, org_id) blocks cross-org membership", async () => {
+    const orgA = `org-a-${Date.now()}`;
+    const orgB = `org-b-${Date.now()}`;
+    const groupId = `g-isolation-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'shared')`,
+      [groupId, orgA],
+    );
+    // 23503 = foreign_key_violation. Pointing org B's connection at org A's
+    // group must fail at the DB layer — composite FK guarantees groups never
+    // leak across orgs even if the API layer is bypassed.
+    await expect(
+      pool.query(
+        `INSERT INTO connections (id, url, type, org_id, status, group_id)
+         VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3)`,
+        [`conn-leak-${Date.now()}`, orgB, groupId],
+      ),
+    ).rejects.toMatchObject({ code: "23503" });
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("connections.group_id: deleting a non-empty group is rejected with 23503", async () => {
+    const orgId = `org-restrict-${Date.now()}`;
+    const groupId = `g-tmp-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'temp')`,
+      [groupId, orgId],
+    );
+    const connId = `conn-restrict-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status, group_id)
+       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3)`,
+      [connId, orgId, groupId],
+    );
+    // ON DELETE RESTRICT: dropping a group with members fails loudly at
+    // the DB layer (23503 = foreign_key_violation). The route-layer
+    // DELETE handler maps the same case to a typed 409 with a member
+    // count up-front; this assertion guards the last-resort defence.
+    await expect(
+      pool.query(
+        `DELETE FROM connection_groups WHERE id = $1 AND org_id = $2`,
+        [groupId, orgId],
+      ),
+    ).rejects.toMatchObject({ code: "23503" });
+
+    // Emptying the group lets the delete proceed.
+    await pool.query(
+      `UPDATE connections SET group_id = NULL WHERE id = $1 AND org_id = $2`,
+      [connId, orgId],
+    );
+    await pool.query(
+      `DELETE FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [groupId, orgId],
+    );
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT id FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [groupId, orgId],
+    );
+    expect(rows.length).toBe(0);
+  }, PG_TEST_TIMEOUT_MS);
 });

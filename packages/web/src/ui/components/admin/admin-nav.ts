@@ -35,6 +35,7 @@ export const navGroups: NavGroup[] = [
       { href: "/admin/semantic/improve", label: "Improve Layer" },
       { href: "/admin/schema-diff", label: "Schema Diff" },
       { href: "/admin/connections", label: "Connections" },
+      { href: "/admin/connections/groups", label: "Environments" },
       { href: "/admin/cache", label: "Cache" },
     ],
   },

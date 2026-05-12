@@ -25,6 +25,8 @@ export type {
   ConnectionHealth,
   ConnectionInfo,
   ConnectionDetail,
+  ConnectionGroup,
+  ConnectionGroupMember,
   ConnectionStatus,
   PoolMetrics,
   ChatErrorCode,

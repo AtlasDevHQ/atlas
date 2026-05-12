@@ -1,0 +1,433 @@
+/**
+ * Unified admin-entity source. Both list and detail handlers read through
+ * this module so they can't disagree on what's visible.
+ *
+ * `mergeAdminEntities` + `parseRowToAdminSummary` are pure (no I/O) for
+ * unit-testability. The orchestrators `listAdminEntities` + `getAdminEntity`
+ * wire them to filesystem + DB reads.
+ *
+ * Shadow rule: when a DB row and a disk entity share a `name`, the DB row
+ * wins. DB is the source of truth; disk is a mirror that can lag (or be
+ * wiped on a container restart on ephemeral filesystems).
+ */
+
+import * as path from "path";
+import * as yaml from "js-yaml";
+import { createLogger } from "@atlas/api/lib/logger";
+import {
+  getEntity,
+  listEntitiesWithOverlay,
+  listEntityRows,
+  type SemanticEntityRow,
+} from "./entities";
+import {
+  discoverEntities,
+  findEntityFile,
+  isValidEntityName,
+  readYamlFile,
+  type EntitySummary,
+} from "./files";
+import { getSemanticRoot as resolveSemanticRoot } from "./sync";
+import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { EntityShape, type EntityShapeT } from "./shapes";
+
+const log = createLogger("semantic-admin-source");
+
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
+
+export type AdminEntitySourceKind = "db" | "disk";
+
+/**
+ * Statuses that can legitimately appear in a caller-facing summary.
+ *
+ * The DB queries upstream (`listEntitiesWithOverlay`'s outer
+ * `WHERE status != 'draft_delete'`, `listEntityRows`'s `status='published'`
+ * filter) already drop `archived` + `draft_delete`, so widening to
+ * `SemanticEntityStatus` here would let consumers branch on values that
+ * can't appear. Disk entries are always `published`.
+ */
+export type AdminEntityStatus = "published" | "draft";
+
+/**
+ * Caller-facing summary shape. Discriminated on `sourceKind` so the disk
+ * arm enforces `connectionId === null`, `updatedAt === null`, and
+ * `status === "published"` at the type level — invariants that hold by
+ * construction but used to be expressible only in comments.
+ *
+ * `name` is the display name (the YAML `name:` field if present, otherwise
+ * the table). `table` is always the SQL table. Some entities deliberately
+ * differ (e.g. a metric `name: mrr` over `table: subscription_events`).
+ * Collapsing the two was the conflation bug the frontend shape-normalizer
+ * was masking before #2312.
+ */
+interface AdminEntitySummaryShared {
+  readonly name: string;
+  readonly table: string;
+  readonly description: string;
+  readonly columnCount: number;
+  readonly joinCount: number;
+  readonly measureCount: number;
+  readonly source: string;
+  /** YAML `connection:` hint — distinct from the DB row's `connection_id`. */
+  readonly connection: string | null;
+  /** YAML `type:` field, when set. */
+  readonly type: string | null;
+}
+
+export type AdminEntitySummary =
+  | (AdminEntitySummaryShared & {
+      readonly sourceKind: "db";
+      readonly status: AdminEntityStatus;
+      readonly connectionId: string | null;
+      readonly updatedAt: string;
+    })
+  | (AdminEntitySummaryShared & {
+      readonly sourceKind: "disk";
+      readonly status: "published";
+      readonly connectionId: null;
+      readonly updatedAt: null;
+    });
+
+export interface AdminEntityListResult {
+  readonly entities: AdminEntitySummary[];
+  readonly warnings: string[];
+}
+
+export interface AdminEntityDetail {
+  /** Validated through `EntityShape` — `entity.table` is guaranteed to be a string. */
+  readonly entity: EntityShapeT;
+  readonly status: AdminEntityStatus;
+  readonly source: AdminEntitySourceKind;
+}
+
+/**
+ * Base class for admin entity YAML failures. Two subclasses below cover the
+ * `parse` vs `shape` axis exhaustively, so a `switch` on `err.kind` at the
+ * route layer can use `assertNever` for compile-time exhaustiveness.
+ */
+export abstract class AdminEntityYamlError extends Error {
+  abstract readonly kind: "parse" | "shape";
+  constructor(
+    message: string,
+    public readonly entityName: string,
+    public readonly entitySource: AdminEntitySourceKind,
+    cause?: unknown,
+  ) {
+    super(message);
+    this.name = new.target.name;
+    if (cause !== undefined) this.cause = cause;
+  }
+}
+
+/** Thrown when `js-yaml` cannot parse the YAML content. */
+export class AdminEntityYamlParseError extends AdminEntityYamlError {
+  readonly kind = "parse" as const;
+  constructor(entityName: string, entitySource: AdminEntitySourceKind, cause?: unknown) {
+    super(`Admin entity YAML parse error for "${entityName}" (source=${entitySource})`, entityName, entitySource, cause);
+  }
+}
+
+/**
+ * Thrown when the parsed YAML isn't a plain object with a `table` field —
+ * the minimum shape needed to render `<EntityDetail>`. `js-yaml` will
+ * happily return `null`, a string, a number, or an array for technically-
+ * valid YAML; this is the gate that turns garbage into a 500 instead of
+ * letting it reach the frontend.
+ */
+export class AdminEntityYamlShapeError extends AdminEntityYamlError {
+  readonly kind = "shape" as const;
+  constructor(entityName: string, entitySource: AdminEntitySourceKind) {
+    super(`Admin entity YAML shape error for "${entityName}" (source=${entitySource})`, entityName, entitySource);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pure helpers — no I/O, fully unit-testable
+// ---------------------------------------------------------------------------
+
+/** Count an entity-YAML section that can be either an array or an object map. */
+function sectionLength(value: unknown): number {
+  if (Array.isArray(value)) return value.length;
+  if (value && typeof value === "object") return Object.keys(value).length;
+  return 0;
+}
+
+/**
+ * Project a single DB row to the admin summary shape. Returns `null` for
+ * rows whose YAML is unparseable, has no `table`, or doesn't deserialize
+ * to an object — the same gate the SQL whitelist applies, so the file
+ * tree and the agent stay in lockstep on what counts as queryable.
+ *
+ * Rejections are logged at `warn` (not silently dropped): a server-side
+ * schema regression that empties the list would otherwise look identical
+ * to "user has no entities" in operator logs.
+ *
+ * `parseRowToAdminSummary` is only called from `mergeAdminEntities` where
+ * `status` is pre-filtered by the upstream SQL query — published or draft
+ * only. The narrow `AdminEntityStatus` cast is safe by construction; a
+ * future caller that bypasses the filter would need to widen.
+ */
+export function parseRowToAdminSummary(row: SemanticEntityRow): AdminEntitySummary | null {
+  let raw: unknown;
+  try {
+    raw = yaml.load(row.yaml_content);
+  } catch (err) {
+    log.warn(
+      { orgId: row.org_id, name: row.name, err: err instanceof Error ? err.message : String(err) },
+      "parseRowToAdminSummary: yaml_content unparseable — skipping row",
+    );
+    return null;
+  }
+
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    log.warn(
+      { orgId: row.org_id, name: row.name, parsedType: raw === null ? "null" : Array.isArray(raw) ? "array" : typeof raw },
+      "parseRowToAdminSummary: yaml_content did not parse to an object — skipping row",
+    );
+    return null;
+  }
+
+  const parsed = EntityShape.safeParse(raw);
+  if (!parsed.success) {
+    log.warn(
+      { orgId: row.org_id, name: row.name, issues: parsed.error.issues.map((i) => i.path.join(".")) },
+      "parseRowToAdminSummary: row failed EntityShape — skipping",
+    );
+    return null;
+  }
+  if (!parsed.data.table) {
+    log.warn(
+      { orgId: row.org_id, name: row.name },
+      "parseRowToAdminSummary: row has empty `table` — skipping",
+    );
+    return null;
+  }
+
+  const data = parsed.data as Record<string, unknown>;
+  const nameField = typeof data.name === "string" && data.name ? data.name : null;
+
+  // Status from the row is one of the four `SemanticEntityStatus` values,
+  // but the upstream SQL filters drop `archived` + `draft_delete` before
+  // this projector ever runs. Narrowing here keeps consumers honest about
+  // what they can encounter. If the upstream filter is ever changed this
+  // assertion will produce a misleading list — covered by the integration
+  // suite in `overlay-queries-integration.test.ts`.
+  const status: AdminEntityStatus = row.status === "draft" ? "draft" : "published";
+
+  return {
+    name: nameField ?? parsed.data.table,
+    table: parsed.data.table,
+    description: typeof data.description === "string" ? data.description : "",
+    columnCount: sectionLength(data.dimensions),
+    joinCount: sectionLength(data.joins),
+    measureCount: sectionLength(data.measures),
+    source: row.connection_id ?? "default",
+    connection: typeof data.connection === "string" ? data.connection : null,
+    type: typeof data.type === "string" ? data.type : null,
+    status,
+    sourceKind: "db",
+    connectionId: row.connection_id,
+    updatedAt: row.updated_at,
+  };
+}
+
+function diskToAdminSummary(e: EntitySummary): AdminEntitySummary {
+  return {
+    name: e.table,
+    table: e.table,
+    description: e.description,
+    columnCount: e.columnCount,
+    joinCount: e.joinCount,
+    measureCount: e.measureCount,
+    source: e.source,
+    connection: e.connection,
+    type: e.type,
+    status: "published",
+    sourceKind: "disk",
+    connectionId: null,
+    updatedAt: null,
+  };
+}
+
+/**
+ * Combine DB rows + disk entities into a sorted, deduplicated list. Pure —
+ * no I/O. Callers pre-filter DB rows via `listEntitiesWithOverlay`
+ * (developer mode) or `listEntityRows(..., "published")` (published mode);
+ * this helper just merges with DB-shadows-disk on `name` collision.
+ *
+ * Dedup key is the projected summary `name`, not the DB row's column —
+ * those can diverge when the YAML carries a `name:` distinct from `table`.
+ * Two entities sharing `table` but with different display names produce
+ * two list entries (correct: they're different things).
+ */
+export function mergeAdminEntities(input: {
+  readonly dbRows: readonly SemanticEntityRow[];
+  readonly diskEntities: readonly EntitySummary[];
+  readonly diskWarnings: readonly string[];
+}): AdminEntityListResult {
+  const merged: AdminEntitySummary[] = [];
+  const seen = new Set<string>();
+
+  for (const row of input.dbRows) {
+    const summary = parseRowToAdminSummary(row);
+    if (!summary) continue;
+    if (seen.has(summary.name)) continue;
+    seen.add(summary.name);
+    merged.push(summary);
+  }
+
+  for (const entry of input.diskEntities) {
+    const summary = diskToAdminSummary(entry);
+    if (seen.has(summary.name)) continue;
+    seen.add(summary.name);
+    merged.push(summary);
+  }
+
+  merged.sort((a, b) => a.name.localeCompare(b.name));
+  return { entities: merged, warnings: [...input.diskWarnings] };
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrators — wire the pure helpers to I/O
+// ---------------------------------------------------------------------------
+
+/**
+ * Load the unified admin entity list.
+ *
+ * - DB read (when `hasInternalDB()` and an `orgId` is present) uses
+ *   `listEntitiesWithOverlay` in developer mode and `listEntityRows`
+ *   with `status='published'` otherwise.
+ * - Disk read scopes to `resolveSemanticRoot(orgId)` so a SaaS request
+ *   reads `.orgs/<orgId>/`, not the API container's bundled fixture.
+ * - DB rejections propagate (a real DB outage shouldn't masquerade as an
+ *   empty workspace — the route handler maps it to a 500 with `requestId`).
+ */
+export async function listAdminEntities(opts: {
+  readonly orgId?: string;
+  readonly mode?: "developer" | "published";
+}): Promise<AdminEntityListResult> {
+  const mode = opts.mode ?? "published";
+
+  let dbRows: SemanticEntityRow[] = [];
+  if (opts.orgId && hasInternalDB()) {
+    dbRows = mode === "developer"
+      ? await listEntitiesWithOverlay(opts.orgId, "entity")
+      : await listEntityRows(opts.orgId, "entity", "published");
+  }
+
+  const root = resolveSemanticRoot(opts.orgId);
+  const { entities: diskEntities, warnings } = discoverEntities(root);
+
+  return mergeAdminEntities({ dbRows, diskEntities, diskWarnings: warnings });
+}
+
+interface GetAdminEntityOptions {
+  readonly name: string;
+  readonly orgId?: string;
+  readonly requestId?: string;
+}
+
+/**
+ * Resolve a single admin entity by name. Returns `null` when neither
+ * disk nor DB has it — the route handler maps that to a 404.
+ *
+ * Disk-first, DB-fallback: the per-source directory layout
+ * (`semantic/<source>/entities/<name>.yml`) is where self-hosted users
+ * keep authored YAML, so the local file gets a fast short-circuit. DB
+ * picks up the SaaS / draft case.
+ *
+ * Errors:
+ * - Invalid `name` (path-traversal probe) → `null` (route maps to 404
+ *   silently to avoid leaking whether the probe hit a real file; an
+ *   upstream `isValidEntityName` check in the route returns 400 first).
+ * - YAML parse failure → throws `AdminEntityYamlParseError`.
+ * - Non-object / missing `table` → throws `AdminEntityYamlShapeError`.
+ * - DB query failure → propagates the underlying Error. Don't swallow:
+ *   masking a DB outage as "not found" would make the frontend show an
+ *   empty workspace.
+ */
+export async function getAdminEntity(opts: GetAdminEntityOptions): Promise<AdminEntityDetail | null> {
+  const { name, orgId, requestId } = opts;
+
+  if (!isValidEntityName(name)) {
+    log.warn({ requestId, name }, "getAdminEntity: rejected invalid entity name");
+    return null;
+  }
+
+  // 1. Disk first
+  const diskRoot = resolveSemanticRoot(orgId);
+  const filePath = findEntityFile(diskRoot, name);
+  if (filePath) {
+    // Intentional 403→404 downgrade if the path escapes the root: don't
+    // leak whether a path-traversal probe hit a real file. The route's
+    // upstream `isValidEntityName` check returns 400 for obvious probes,
+    // so this branch is pure defense-in-depth (symlinks, future bugs in
+    // `findEntityFile`). `requestId` is preserved end-to-end via the
+    // 404 response so log correlation still works.
+    const resolved = path.resolve(filePath);
+    if (!resolved.startsWith(path.resolve(diskRoot))) {
+      log.error({ requestId, name, resolved, root: diskRoot }, "getAdminEntity: resolved path escaped semantic root");
+      return null;
+    }
+
+    const detail = parseEntityYaml(name, "disk", () => readYamlFile(filePath), requestId);
+    return { entity: detail, status: "published", source: "disk" };
+  }
+
+  // 2. DB fallback
+  if (orgId && hasInternalDB()) {
+    const row = await getEntity(orgId, "entity", name);
+    if (!row) return null;
+
+    const detail = parseEntityYaml(name, "db", () => yaml.load(row.yaml_content), requestId);
+    const status: AdminEntityStatus = row.status === "draft" ? "draft" : "published";
+    return { entity: detail, status, source: "db" };
+  }
+
+  return null;
+}
+
+/**
+ * Run a YAML-producing function and validate the result through
+ * `EntityShape`. Both detail paths (disk read + DB row parse) go through
+ * here so list and detail can't drift on what counts as a "valid enough
+ * to render" entity. Throws the appropriate tagged error on failure.
+ */
+function parseEntityYaml(
+  name: string,
+  source: AdminEntitySourceKind,
+  load: () => unknown,
+  requestId: string | undefined,
+): EntityShapeT {
+  let raw: unknown;
+  try {
+    raw = load();
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)), entityName: name, source, requestId },
+      "parseEntityYaml: YAML parse failed",
+    );
+    throw new AdminEntityYamlParseError(name, source, err);
+  }
+
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    log.error(
+      { entityName: name, source, requestId, parsedType: raw === null ? "null" : Array.isArray(raw) ? "array" : typeof raw },
+      "parseEntityYaml: YAML did not parse to an object",
+    );
+    throw new AdminEntityYamlShapeError(name, source);
+  }
+
+  const parsed = EntityShape.safeParse(raw);
+  if (!parsed.success || !parsed.data.table) {
+    log.error(
+      { entityName: name, source, requestId, issues: parsed.success ? "empty table" : parsed.error.issues.map((i) => i.path.join(".")) },
+      "parseEntityYaml: YAML failed EntityShape validation",
+    );
+    throw new AdminEntityYamlShapeError(name, source);
+  }
+
+  return parsed.data;
+}

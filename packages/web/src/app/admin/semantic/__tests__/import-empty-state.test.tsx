@@ -93,12 +93,19 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
+/**
+ * Track every URL the page fetches so tests can assert positive coverage
+ * and pin the negative invariant that the page no longer hits the
+ * deprecated `/admin/semantic/org/entities` route — the bug the #2312
+ * refactor was written to retire.
+ */
+const fetchedUrls: string[] = [];
+
 function mockSemanticApi(entities: Array<{ name: string; description?: string; columnCount?: number }>) {
+  fetchedUrls.length = 0;
   globalThis.fetch = mock((input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : input.toString();
-    if (url.includes("/api/v1/admin/semantic/org/entities")) {
-      return Promise.resolve(jsonResponse({ entities }));
-    }
+    fetchedUrls.push(url);
     if (url.includes("/api/v1/admin/semantic/entities")) {
       return Promise.resolve(jsonResponse({ entities }));
     }
@@ -164,6 +171,28 @@ describe("/admin/semantic — Import-from-disk gating", () => {
     expect(
       document.querySelector('[data-testid="semantic-empty-state"]'),
     ).toBeNull();
+  });
+
+  test("page no longer fetches the deprecated /org/entities GET route (#2312)", async () => {
+    mockSemanticApi([
+      { name: "companies", description: "", columnCount: 3 },
+    ]);
+
+    await act(async () => {
+      render(createElement(SemanticPage), { wrapper });
+    });
+
+    await waitFor(() => {
+      expect(document.querySelector('[data-testid="semantic-file-tree"]')).not.toBeNull();
+    });
+
+    // /admin/semantic/org/entities was the SaaS-only list fetch the page
+    // used to hit pre-#2312. A revert that re-introduces it would silently
+    // re-split list and detail. The negative match is scoped to
+    // `/entities` to avoid blocking the /org/import POST mutation.
+    expect(fetchedUrls.some((u) => u.includes("/admin/semantic/org/entities"))).toBe(false);
+    // Sanity: confirm the unified list was actually hit.
+    expect(fetchedUrls.some((u) => u.includes("/admin/semantic/entities"))).toBe(true);
   });
 
   test("empty workspace surfaces toolbar button + empty-state link", async () => {

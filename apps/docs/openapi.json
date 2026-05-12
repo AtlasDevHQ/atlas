@@ -55954,8 +55954,8 @@
         "tags": [
           "Admin — Semantic"
         ],
-        "summary": "List org semantic entities",
-        "description": "Lists DB-backed semantic entities for the active organization.",
+        "summary": "List org semantic entities (deprecated — use /semantic/entities)",
+        "description": "Lists DB-backed semantic entities for the active organization. Prefer the unified `/semantic/entities` endpoint, which merges DB + disk and applies overlay rules.",
         "responses": {
           "200": {
             "description": "Org entity list",
@@ -56085,8 +56085,8 @@
         "tags": [
           "Admin — Semantic"
         ],
-        "summary": "Get org semantic entity",
-        "description": "Returns a single DB-backed semantic entity for the active organization.",
+        "summary": "Get org semantic entity (deprecated — use /semantic/entities/{name})",
+        "description": "Returns a single DB-backed semantic entity for the active organization. Prefer the unified `/semantic/entities/{name}` endpoint.",
         "parameters": [
           {
             "schema": {

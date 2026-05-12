@@ -1,11 +1,14 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Star } from "lucide-react";
+import { useState } from "react";
+import { Plus, Star } from "lucide-react";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { VisuallyHidden } from "radix-ui";
 import type { Conversation } from "../../lib/types";
 import { ConversationList } from "./conversation-list";
 import { DemoIndicatorChip } from "../demo-indicator-chip";
@@ -36,16 +39,6 @@ export function ConversationSidebar({
   const mobileOpen = useUiStore((s) => s.mobileSidebarOpen);
   const setMobileOpen = useUiStore((s) => s.setMobileSidebarOpen);
 
-  // Close mobile sidebar on Escape
-  useEffect(() => {
-    if (!mobileOpen) return;
-    function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") setMobileOpen(false);
-    }
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [mobileOpen, setMobileOpen]);
-
   const starredConversations = conversations.filter((c) => c.starred);
   const filteredConversations = filter === "saved" ? starredConversations : conversations;
 
@@ -56,12 +49,17 @@ export function ConversationSidebar({
           <span className="shrink-0 text-sm font-medium text-zinc-700 dark:text-zinc-300">History</span>
           <DemoIndicatorChip />
         </div>
-        <button
+      </div>
+
+      <div className="border-b border-zinc-200 px-3 py-3 dark:border-zinc-800">
+        <Button
           onClick={onNewChat}
-          className="shrink-0 rounded-lg border border-zinc-200 px-3 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:border-zinc-400 hover:text-zinc-900 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
+          size="sm"
+          className="h-9 w-full justify-start gap-2 font-medium"
         >
-          + New
-        </button>
+          <Plus className="size-4" />
+          New conversation
+        </Button>
       </div>
 
       <div className="border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
@@ -72,10 +70,16 @@ export function ConversationSidebar({
           onValueChange={(val) => { if (val) setFilter(val as SidebarFilter); }}
           className="gap-1"
         >
-          <ToggleGroupItem value="all" className="px-2.5 text-xs">
+          <ToggleGroupItem
+            value="all"
+            className="px-2.5 text-sm data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
+          >
             All
           </ToggleGroupItem>
-          <ToggleGroupItem value="saved" className="gap-1.5 px-2.5 text-xs">
+          <ToggleGroupItem
+            value="saved"
+            className="gap-1.5 px-2.5 text-sm data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
+          >
             <Star className="h-3 w-3" fill={filter === "saved" ? "currentColor" : "none"} />
             Saved
             {starredConversations.length > 0 && (
@@ -124,18 +128,19 @@ export function ConversationSidebar({
         {sidebar}
       </div>
 
-      {/* Mobile overlay */}
-      {mobileOpen && (
-        <>
-          <div
-            className="fixed inset-0 z-40 bg-black/30 md:hidden"
-            onClick={() => setMobileOpen(false)}
-          />
-          <div className="fixed inset-y-0 left-0 z-50 w-[280px] md:hidden">
-            {sidebar}
-          </div>
-        </>
-      )}
+      {/* Mobile drawer — Sheet provides focus trap, scroll lock, and Esc out of the box */}
+      <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+        <SheetContent
+          side="left"
+          showCloseButton={false}
+          className="w-[280px] p-0 sm:max-w-[280px] md:hidden"
+        >
+          <VisuallyHidden.Root>
+            <SheetTitle>Conversation history</SheetTitle>
+          </VisuallyHidden.Root>
+          {sidebar}
+        </SheetContent>
+      </Sheet>
     </>
   );
 }

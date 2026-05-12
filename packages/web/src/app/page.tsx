@@ -10,6 +10,7 @@ import { computeSqlFailureDedup } from "@/ui/lib/sql-failure-dedup";
 import { useQueryStates } from "nuqs";
 import { chatSearchParams } from "./search-params";
 import { useConversations, transformMessages } from "@/ui/hooks/use-conversations";
+import { useDatasourceSummary } from "@/ui/hooks/use-datasource-summary";
 import { ConversationSidebar } from "@/ui/components/conversations/conversation-sidebar";
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { useAtlasTransport } from "@/ui/hooks/use-atlas-transport";
@@ -26,10 +27,17 @@ import { TypingIndicator } from "@/ui/components/chat/typing-indicator";
 import { SchemaExplorer } from "@/ui/components/schema-explorer/schema-explorer";
 import { ShareDialog } from "@/ui/components/chat/share-dialog";
 import { PromptLibrary } from "@/ui/components/chat/prompt-library";
+import { CommandPalette } from "@/ui/components/chat/command-palette";
 import { parseSuggestions } from "@/ui/lib/helpers";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Send, TableProperties, BookOpen, Menu } from "lucide-react";
 import { useUiStore } from "@/lib/stores/ui-store";
 import { useDashboardCanvasStore, type ProposedDashboardSpec } from "@/lib/stores/dashboard-canvas-store";
@@ -133,6 +141,15 @@ function ChatPage() {
     getCredentials,
   });
 
+  // Datasource summary for the empty-state transparency line. Gated until
+  // auth resolves to avoid a guaranteed-401 round trip on first paint.
+  const datasource = useDatasourceSummary({
+    apiUrl: getApiUrl(),
+    isCrossOrigin: isCrossOrigin(),
+    getHeaders,
+    enabled: authResolved && isSignedIn,
+  });
+
   const refreshConvosRef = useRef(convos.refresh);
   refreshConvosRef.current = convos.refresh;
 
@@ -141,9 +158,14 @@ function ChatPage() {
 
   // Re-fetch conversation list when auth mode changes
   useEffect(() => {
-    // TanStack Query manages error state via convos.fetchError
-    convos.fetchList().catch(() => {
-      // intentionally ignored: TanStack Query error state handles display
+    convos.fetchList().catch((err: unknown) => {
+      // TanStack Query owns the user-visible error state via convos.fetchError;
+      // log here only so a console scrub picks up the underlying failure shape
+      // when convos.fetchError itself misbehaves.
+      console.debug(
+        "[chat] convos.fetchList rejected:",
+        err instanceof Error ? err.message : String(err),
+      );
     });
   }, [authMode, convos.fetchList]);
 
@@ -239,10 +261,16 @@ function ChatPage() {
           setStarterPrompts(data.prompts);
         }
       })
-      .catch(() => {
-        // intentionally ignored: network/parse failures are non-critical.
-        // HTTP 5xx is logged above, and an empty starter list collapses
-        // the grid back to the bare cold-start headline.
+      .catch((err: unknown) => {
+        // HTTP 5xx is logged above with requestId. Network/parse/abort
+        // failures land here — keep them at debug since an empty starter
+        // list collapses the grid back to the bare cold-start headline,
+        // but surface the shape so "why is my empty state bare?" stays
+        // debuggable.
+        console.debug(
+          "[starter-prompts] fetch failed:",
+          err instanceof Error ? err.message : String(err),
+        );
       });
     return () => { cancelled = true; };
   }, [messages.length, getHeaders]);
@@ -406,49 +434,61 @@ function ChatPage() {
           >
             <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col overflow-hidden px-4 pt-4">
               {/* Toolbar */}
-              <div className="mb-3 flex items-center justify-between border-b border-zinc-100 pb-2 dark:border-zinc-800/60">
-                <div className="flex items-center gap-2">
-                  {convos.available && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => setMobileSidebarOpen(true)}
-                      className="size-8 text-zinc-400 hover:text-zinc-700 md:hidden dark:hover:text-zinc-200"
-                      aria-label="Open conversation history"
-                    >
-                      <Menu className="size-4" />
-                    </Button>
-                  )}
+              <TooltipProvider delayDuration={150}>
+                <div className="mb-3 flex items-center justify-between border-b border-zinc-100 pb-2 dark:border-zinc-800/60">
+                  <div className="flex items-center gap-2">
+                    {convos.available && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => setMobileSidebarOpen(true)}
+                        className="size-8 text-zinc-400 hover:text-zinc-700 md:hidden dark:hover:text-zinc-200"
+                        aria-label="Open conversation history"
+                      >
+                        <Menu className="size-4" />
+                      </Button>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    {conversationId && (
+                      <ShareDialog
+                        conversationId={conversationId}
+                        onShare={handleShare}
+                        onUnshare={handleUnshare}
+                        onGetShareStatus={handleGetShareStatus}
+                      />
+                    )}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-8 text-zinc-500 dark:text-zinc-400"
+                          onClick={() => setPromptLibraryOpen(true)}
+                          aria-label="Prompt library"
+                        >
+                          <BookOpen className="size-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">Prompt library</TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-8 text-zinc-500 dark:text-zinc-400"
+                          onClick={() => setSchemaExplorerOpen(true)}
+                          aria-label="Open schema explorer"
+                        >
+                          <TableProperties className="size-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">Schema explorer</TooltipContent>
+                    </Tooltip>
+                  </div>
                 </div>
-                <div className="flex items-center gap-1">
-                  {conversationId && (
-                    <ShareDialog
-                      conversationId={conversationId}
-                      onShare={handleShare}
-                      onUnshare={handleUnshare}
-                      onGetShareStatus={handleGetShareStatus}
-                    />
-                  )}
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-8 text-zinc-500 dark:text-zinc-400"
-                    onClick={() => setPromptLibraryOpen(true)}
-                    aria-label="Prompt library"
-                  >
-                    <BookOpen className="size-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-8 text-zinc-500 dark:text-zinc-400"
-                    onClick={() => setSchemaExplorerOpen(true)}
-                    aria-label="Open schema explorer"
-                  >
-                    <TableProperties className="size-4" />
-                  </Button>
-                </div>
-              </div>
+              </TooltipProvider>
 
               {/* Error bar */}
               {(error || (convos.fetchError && !fetchErrorDismissed)) && (
@@ -473,9 +513,25 @@ function ChatPage() {
                 <div className="space-y-4 pb-4 pr-3">
                   {messages.length === 0 && !chatError && (
                     <div className="flex h-full flex-col items-center justify-center gap-6">
-                      <p className="text-lg font-medium text-zinc-600 dark:text-zinc-300">
-                        What would you like to know?
-                      </p>
+                      <div className="flex flex-col items-center gap-2 text-center">
+                        <p className="text-lg font-medium text-zinc-800 dark:text-zinc-100">
+                          Ask Atlas about your data.
+                        </p>
+                        {datasource.data && datasource.data.tableCount > 0 ? (
+                          <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                            Grounded in your semantic layer —{" "}
+                            <span className="font-medium text-primary">
+                              {datasource.data.tableCount} table
+                              {datasource.data.tableCount === 1 ? "" : "s"}
+                            </span>{" "}
+                            ready to query.
+                          </p>
+                        ) : (
+                          <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                            Every answer cites the table it queried.
+                          </p>
+                        )}
+                      </div>
                       {starterPrompts.length > 0 && (
                         <div className="grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2">
                           {starterPrompts.map((prompt) => (
@@ -576,6 +632,9 @@ function ChatPage() {
                             </div>
                           </div>
                         )}
+                        {isLastAssistant && isLoading && !hasVisibleParts && (
+                          <TypingIndicator />
+                        )}
                         {isLastAssistant && !isLoading && hasVisibleParts && (
                           <FollowUpChips
                             suggestions={suggestions}
@@ -586,7 +645,15 @@ function ChatPage() {
                     );
                   })}
 
-                  {isLoading && messages.length > 0 && <TypingIndicator />}
+                  {/* Anchor the typing indicator inside an AssistantTurn so it
+                      sits in the gutter rather than floating loose below. */}
+                  {isLoading &&
+                    messages.length > 0 &&
+                    messages[messages.length - 1].role === "user" && (
+                      <AssistantTurn>
+                        <TypingIndicator />
+                      </AssistantTurn>
+                    )}
                 </div>
               </ScrollArea>
 
@@ -622,7 +689,16 @@ function ChatPage() {
                 <Input
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
-                  placeholder="Ask a question about your data..."
+                  onKeyDown={(e) => {
+                    // Cmd/Ctrl-Enter alias for users coming from tools where
+                    // Enter inserts a newline. Plain Enter still submits via
+                    // the form's default behavior.
+                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                      e.preventDefault();
+                      handleSend(input);
+                    }
+                  }}
+                  placeholder="Ask a question about your data… ⌘K for commands"
                   className="min-w-0 flex-1 py-3 text-base sm:text-sm"
                   disabled={isLoading}
                   aria-label="Chat message"
@@ -663,6 +739,20 @@ function ChatPage() {
         onSendPrompt={handleSend}
         getHeaders={getHeaders}
         getCredentials={getCredentials}
+      />
+      <CommandPalette
+        conversations={convos.conversations}
+        onNewChat={handleNewChat}
+        onSelectConversation={(id) => {
+          // Suppressing here only to mark the promise as handled — the inner
+          // setError surfaces any failure to the user. Adding a second log
+          // would just mirror handleSelectConversation's own catch.
+          handleSelectConversation(id).catch(() => {
+            // intentionally ignored: handleSelectConversation handles its own errors
+          });
+        }}
+        onOpenPromptLibrary={() => setPromptLibraryOpen(true)}
+        onOpenSchemaExplorer={() => setSchemaExplorerOpen(true)}
       />
     </GuidedTour>
   );

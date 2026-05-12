@@ -56,8 +56,7 @@ export interface TwoFactorClient {
  * catches Better Auth API drift at the boundary.
  */
 export function getTwoFactorClient(): TwoFactorClient | null {
-  const namespace = (authClient as unknown as { twoFactor?: Partial<TwoFactorClient> })
-    .twoFactor;
+  const namespace = authClient.twoFactor;
   if (
     !namespace ||
     typeof namespace.enable !== "function" ||

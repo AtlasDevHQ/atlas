@@ -17,11 +17,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SectionHeading } from "@/ui/components/admin/compact";
 
-interface UpdateUserResult {
-  data?: unknown;
-  error?: { message?: string } | null;
-}
-
 export function IdentitySection() {
   const session = authClient.useSession();
   const user = session.data?.user as
@@ -61,13 +56,11 @@ export function IdentitySection() {
     setError(null);
     setSavedAt(null);
     try {
-      // Cast: `updateUser` exists on Better Auth's client but isn't on
-      // AtlasAuthClient's duck-typed surface and the plugin-wrapped client
-      // erases the inferred shape.
-      const updateUser = (authClient as unknown as {
-        updateUser: (opts: { name: string }) => Promise<UpdateUserResult>;
-      }).updateUser;
-
+      const updateUser = authClient.updateUser;
+      if (typeof updateUser !== "function") {
+        setError("Profile updates are unavailable. Refresh the page and try again.");
+        return;
+      }
       const result = await updateUser({ name: trimmed });
       if (result.error) {
         setError(result.error.message ?? "Failed to update name.");

@@ -7,7 +7,8 @@ import { useQueryStates } from "nuqs";
 import { runHistorySearchParams } from "./search-params";
 import { useAtlasConfig } from "@/ui/context";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { DatePicker } from "@/components/ui/date-picker";
+import { formatISODate, parseISODate } from "@/lib/format";
 import {
   Select,
   SelectContent,
@@ -254,19 +255,17 @@ export default function RunHistoryPage() {
           </SelectContent>
         </Select>
 
-        <Input
-          type="date"
-          className="w-40"
+        <DatePicker
           placeholder="From"
-          value={dateFrom ?? ""}
-          onChange={(e) => setParams({ dateFrom: e.target.value || null, page: 1, expandedRun: null })}
+          aria-label="From date"
+          value={parseISODate(dateFrom)}
+          onChange={(d) => setParams({ dateFrom: formatISODate(d) || null, page: 1, expandedRun: null })}
         />
-        <Input
-          type="date"
-          className="w-40"
+        <DatePicker
           placeholder="To"
-          value={dateTo ?? ""}
-          onChange={(e) => setParams({ dateTo: e.target.value || null, page: 1, expandedRun: null })}
+          aria-label="To date"
+          value={parseISODate(dateTo)}
+          onChange={(d) => setParams({ dateTo: formatISODate(d) || null, page: 1, expandedRun: null })}
         />
 
         {hasFilters && (

@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { askQuestion, waitForSQLResult, ensureChatReady, startNewChat } from "./helpers";
+import { askQuestion, waitForSQLResult, ensureChatReady } from "./helpers";
 
 test.describe("Chat — Charts @llm", () => {
   // LLM responses take 60-120s via gateway; run serially to avoid overwhelming the API.

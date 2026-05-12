@@ -7,10 +7,9 @@
  * `defaultServeImpl` against a real Bun.serve port to pin the once-fired
  * listener guard.
  */
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import {
   chmodSync,
-  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,

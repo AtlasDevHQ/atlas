@@ -1018,7 +1018,6 @@ describe("chatPlugin Teams adapter config", () => {
 describe("createTeamsAdapter", () => {
   it("sets MultiTenant when no tenantId", async () => {
     const { createTeamsAdapter: createAdapter } = await import("./adapters/teams");
-    const { createTeamsAdapter: upstream } = await import("@chat-adapter/teams");
 
     // We can't easily inspect what was passed to the upstream, but we can
     // verify the adapter is created successfully and has the right name.

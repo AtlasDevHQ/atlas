@@ -68,19 +68,6 @@ async function queryClickHousePrimaryKeys(
   return rows.map((r) => r.name);
 }
 
-/** Map ClickHouse native types to Atlas semantic types. */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- scaffolding for ClickHouse profiler
-function mapClickHouseType(chType: string): string {
-  const t = chType
-    .replace(/Nullable\((.+)\)/, "$1")
-    .replace(/LowCardinality\((.+)\)/, "$1")
-    .toLowerCase();
-  if (/^(u?int\d+|float\d+|decimal|numeric)/.test(t)) return "number";
-  if (/^(date|datetime)/.test(t)) return "date";
-  if (t.startsWith("bool")) return "boolean";
-  return "string";
-}
-
 export async function profileClickHouse(
   connectionString: string,
   filterTables?: string[],

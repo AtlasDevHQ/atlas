@@ -132,7 +132,6 @@ function createMockCtx() {
 function createTestApp(config: SlackPluginConfig): Hono {
   const plugin = buildSlackPlugin(config);
   const app = new Hono();
-  const { ctx } = createMockCtx();
 
   // Simulate the host calling initialize + routes
   // We need to call initialize synchronously for the test setup,

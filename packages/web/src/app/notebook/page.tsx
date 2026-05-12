@@ -7,12 +7,15 @@ import { useQueryStates } from "nuqs";
 import { notebookSearchParams } from "./search-params";
 import { useNotebook } from "@/ui/components/notebook/use-notebook";
 import { NotebookShell } from "@/ui/components/notebook/notebook-shell";
-import { ConversationSidebar } from "@/ui/components/conversations/conversation-sidebar";
 import { useConversations, transformMessages } from "@/ui/hooks/use-conversations";
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { useAtlasTransport } from "@/ui/hooks/use-atlas-transport";
 import { authClient } from "@/lib/auth/client";
-import { NavBar } from "@/ui/components/tour/nav-bar";
+import { AppLayout } from "@/ui/components/app-layout";
+import { ChatSidebar } from "@/ui/components/chat/chat-sidebar";
+import { SchemaExplorer } from "@/ui/components/schema-explorer/schema-explorer";
+import { PromptLibrary } from "@/ui/components/chat/prompt-library";
+import { CommandPalette } from "@/ui/components/chat/command-palette";
 import { Button } from "@/components/ui/button";
 import type { NotebookStateWire, ForkBranchWire } from "@/ui/lib/types";
 import type { ForkInfo } from "@/ui/components/notebook/types";
@@ -43,7 +46,10 @@ function NotebookContent() {
   const focusCellId = params.cell || undefined;
 
   const [error, setError] = useState<string | null>(null);
-  const setMobileSidebarOpen = useUiStore((s) => s.setMobileSidebarOpen);
+  const schemaExplorerOpen = useUiStore((s) => s.schemaExplorerOpen);
+  const setSchemaExplorerOpen = useUiStore((s) => s.setSchemaExplorerOpen);
+  const promptLibraryOpen = useUiStore((s) => s.promptLibraryOpen);
+  const setPromptLibraryOpen = useUiStore((s) => s.setPromptLibraryOpen);
   const [loadingConversation, setLoadingConversation] = useState(false);
   const tempIdRef = useRef(`temp:${Date.now()}`);
 
@@ -264,7 +270,6 @@ function NotebookContent() {
       setMessages(transformMessages(convData.messages));
       setParams({ id, cell: "" });
       convos.setSelectedId(id);
-      setMobileSidebarOpen(false);
     } catch (err: unknown) {
       console.warn(
         "Failed to load conversation:",
@@ -306,43 +311,88 @@ function NotebookContent() {
       isAdmin={isAdmin}
       serverTrackingEnabled={isSignedIn}
     >
-      <div className="flex h-full flex-col">
-        <NavBar isAdmin={isAdmin} />
-        <div className="flex flex-1 overflow-hidden">
-          {convos.available && (
-            <ConversationSidebar
+      <AppLayout
+        sidebar={
+          convos.available ? (
+            <ChatSidebar
               conversations={convos.conversations}
               selectedId={conversationId ?? null}
               loading={convos.loading}
+              isAdmin={isAdmin}
               onSelect={handleSelectConversation}
               onDelete={(id) => convos.deleteConversation(id)}
               onStar={(id, starred) => convos.starConversation(id, starred)}
               onNewChat={handleNewChat}
+              onOpenPromptLibrary={() => setPromptLibraryOpen(true)}
+              onOpenSchemaExplorer={() => setSchemaExplorerOpen(true)}
             />
+          ) : null
+        }
+      >
+        <main className="flex h-full flex-1 flex-col overflow-hidden">
+          {(error || convos.fetchError) && (
+            <div className="mx-4 mt-4 flex items-center justify-between rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
+              <p>{error || convos.fetchError}</p>
+              <Button variant="ghost" size="sm" onClick={() => setError(null)} className="shrink-0 text-red-600 dark:text-red-400">
+                Dismiss
+              </Button>
+            </div>
           )}
-          <main id="main" className="flex-1 flex flex-col overflow-hidden">
-            {(error || convos.fetchError) && (
-              <div className="mx-4 mt-4 flex items-center justify-between rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
-                <p>{error || convos.fetchError}</p>
-                <Button variant="ghost" size="sm" onClick={() => setError(null)} className="shrink-0 text-red-600 dark:text-red-400">
-                  Dismiss
-                </Button>
-              </div>
-            )}
-            <NotebookShell
-              notebook={notebook}
-              focusCellId={focusCellId}
-              onShareAsReport={handleShareAsReport}
-              starterPrompts={{
-                apiUrl: getApiUrl(),
-                isCrossOrigin: isCrossOrigin(),
-                getHeaders,
-                enabled: authResolved,
-              }}
-            />
-          </main>
-        </div>
-      </div>
+          <NotebookShell
+            notebook={notebook}
+            focusCellId={focusCellId}
+            onShareAsReport={handleShareAsReport}
+            starterPrompts={{
+              apiUrl: getApiUrl(),
+              isCrossOrigin: isCrossOrigin(),
+              getHeaders,
+              enabled: authResolved,
+            }}
+          />
+        </main>
+      </AppLayout>
+
+      {/* Modals — same surface area as /, so Schema explorer and Prompt
+          library work from the rail on /notebook too. */}
+      <SchemaExplorer
+        open={schemaExplorerOpen}
+        onOpenChange={setSchemaExplorerOpen}
+        onInsertQuery={(text) => {
+          sendMessage({ text }).catch((err: unknown) => {
+            console.warn(
+              "[notebook] sendMessage from schema explorer failed:",
+              err instanceof Error ? err.message : String(err),
+            );
+          });
+        }}
+        getHeaders={getHeaders}
+        getCredentials={getCredentials}
+      />
+      <PromptLibrary
+        open={promptLibraryOpen}
+        onOpenChange={setPromptLibraryOpen}
+        onSendPrompt={(text) => {
+          sendMessage({ text }).catch((err: unknown) => {
+            console.warn(
+              "[notebook] sendMessage from prompt library failed:",
+              err instanceof Error ? err.message : String(err),
+            );
+          });
+        }}
+        getHeaders={getHeaders}
+        getCredentials={getCredentials}
+      />
+      <CommandPalette
+        conversations={convos.conversations}
+        onNewChat={handleNewChat}
+        onSelectConversation={(id) => {
+          handleSelectConversation(id).catch(() => {
+            // intentionally ignored: handleSelectConversation handles its own errors
+          });
+        }}
+        onOpenPromptLibrary={() => setPromptLibraryOpen(true)}
+        onOpenSchemaExplorer={() => setSchemaExplorerOpen(true)}
+      />
     </GuidedTour>
   );
 }

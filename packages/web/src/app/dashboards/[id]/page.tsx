@@ -22,8 +22,7 @@ import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { useAtlasConfig } from "@/ui/context";
 import { friendlyError } from "@/ui/lib/fetch-error";
-import { NavBar } from "@/ui/components/tour/nav-bar";
-import { authClient } from "@/lib/auth/client";
+import { AppShellWithRail } from "@/ui/components/app-shell-with-rail";
 import { DashboardShareDialog } from "./share-dialog";
 import { DashboardGrid } from "@/ui/components/dashboards/dashboard-grid";
 import { DashboardTopBar } from "@/ui/components/dashboards/dashboard-topbar";
@@ -41,10 +40,6 @@ export default function DashboardViewPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const session = authClient.useSession();
-  const user = session.data?.user as { email?: string; role?: string } | undefined;
-  const isAdmin =
-    user?.role === "admin" || user?.role === "owner" || user?.role === "platform_admin";
 
   const { data: dashboard, loading, error, refetch } = useAdminFetch<DashboardWithCards>(
     `/api/v1/dashboards/${id}`,
@@ -251,10 +246,8 @@ export default function DashboardViewPage() {
     : [];
 
   return (
-    <div className="flex min-h-screen flex-col bg-white dark:bg-zinc-950">
-      <NavBar isAdmin={isAdmin} />
-
-      <main className="flex flex-1 flex-col">
+    <AppShellWithRail>
+      <main className="flex h-full flex-1 flex-col overflow-auto">
         {loading && (
           <div className="space-y-4 px-4 py-6 sm:px-6">
             <Skeleton className="h-8 w-1/3" />
@@ -455,6 +448,6 @@ export default function DashboardViewPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </AppShellWithRail>
   );
 }

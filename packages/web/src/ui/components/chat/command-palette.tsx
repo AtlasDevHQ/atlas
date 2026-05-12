@@ -22,6 +22,7 @@ import type { Conversation } from "../../lib/types";
 import { useTourContext } from "@/ui/components/tour/guided-tour";
 
 const SHORTCUTS_EVENT = "atlas:open-shortcuts";
+const PALETTE_EVENT = "atlas:open-palette";
 const MAX_RECENT_CONVERSATIONS = 8;
 
 export function CommandPalette({
@@ -72,14 +73,16 @@ export function CommandPalette({
         setOpen(true);
       }
     }
-    function handleHelpEvent() {
+    function handleOpenEvent() {
       setOpen(true);
     }
     document.addEventListener("keydown", handleKey);
-    window.addEventListener(SHORTCUTS_EVENT, handleHelpEvent);
+    window.addEventListener(SHORTCUTS_EVENT, handleOpenEvent);
+    window.addEventListener(PALETTE_EVENT, handleOpenEvent);
     return () => {
       document.removeEventListener("keydown", handleKey);
-      window.removeEventListener(SHORTCUTS_EVENT, handleHelpEvent);
+      window.removeEventListener(SHORTCUTS_EVENT, handleOpenEvent);
+      window.removeEventListener(PALETTE_EVENT, handleOpenEvent);
     };
   }, []);
 

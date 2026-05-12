@@ -2,7 +2,7 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { NavBar } from "@/ui/components/tour/nav-bar";
+import { AppShellWithRail } from "@/ui/components/app-shell-with-rail";
 import { getApiBaseUrl } from "../shared/lib";
 import { DashboardsEmptyState } from "./empty-state";
 import { selectMostRecentDashboardId } from "./select-recent";
@@ -58,8 +58,7 @@ export default async function DashboardsPage() {
   if (!result.ok) {
     if (result.reason === "auth-required") redirect("/login?redirect=/dashboards");
     return (
-      <div className="flex min-h-screen flex-col bg-white dark:bg-zinc-950">
-        <NavBar isAdmin={false} />
+      <AppShellWithRail>
         <main className="mx-auto w-full max-w-2xl flex-1 px-4 py-16 text-center">
           <h1 className="text-base font-medium text-zinc-900 dark:text-zinc-100">
             Couldn&rsquo;t load your dashboards
@@ -73,7 +72,7 @@ export default async function DashboardsPage() {
             <Link href="/dashboards">Try again</Link>
           </Button>
         </main>
-      </div>
+      </AppShellWithRail>
     );
   }
 

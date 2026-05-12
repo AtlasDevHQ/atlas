@@ -34,30 +34,26 @@ export function AdminTopBar() {
             </BreadcrumbItem>
             <BreadcrumbSeparator className="shrink-0" />
             <BreadcrumbItem className="shrink-0">
-              {crumb.section ? (
+              {crumb.kind === "overview" ? (
+                <BreadcrumbPage>Admin Console</BreadcrumbPage>
+              ) : (
                 <BreadcrumbLink asChild>
                   <Link href="/admin">Admin</Link>
                 </BreadcrumbLink>
-              ) : (
-                <BreadcrumbPage>Admin Console</BreadcrumbPage>
               )}
             </BreadcrumbItem>
-            {/*
-              Mobile (< sm): hide the intermediate section crumb so the
-              page label has room next to the avatar. The "Admin" link
-              still gets users back to the overview, and the active
-              sidebar item supplies the section context.
-            */}
-            {crumb.section && (
+            {crumb.kind === "page" && (
               <>
+                {/*
+                  Mobile (< sm): hide the intermediate section crumb so
+                  the page label has room next to the avatar. The "Admin"
+                  link still gets users back to the overview, and the
+                  active sidebar item supplies the section context.
+                */}
                 <BreadcrumbSeparator className="hidden shrink-0 sm:flex" />
                 <BreadcrumbItem className="hidden shrink-0 sm:flex">
                   <span className="text-sm text-muted-foreground">{crumb.section}</span>
                 </BreadcrumbItem>
-              </>
-            )}
-            {crumb.page && (
-              <>
                 <BreadcrumbSeparator className="shrink-0" />
                 <BreadcrumbItem className="min-w-0">
                   <BreadcrumbPage className="block max-w-[8rem] truncate sm:max-w-[14rem]">

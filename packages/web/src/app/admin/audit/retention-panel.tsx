@@ -6,8 +6,10 @@ import { useAtlasConfig } from "@/ui/context";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { extractFetchError } from "@/ui/lib/fetch-error";
 import { Button } from "@/components/ui/button";
+import { DatePicker } from "@/components/ui/date-picker";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { formatISODate, parseISODate } from "@/lib/format";
 import {
   Select,
   SelectContent,
@@ -378,22 +380,18 @@ export function RetentionPanel() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="export-start">Start date</Label>
-              <Input
+              <DatePicker
                 id="export-start"
-                type="date"
-                value={exportStartDate}
-                onChange={(e) => setExportStartDate(e.target.value)}
-                className="w-40"
+                value={parseISODate(exportStartDate)}
+                onChange={(d) => setExportStartDate(formatISODate(d))}
               />
             </div>
             <div className="space-y-2">
               <Label htmlFor="export-end">End date</Label>
-              <Input
+              <DatePicker
                 id="export-end"
-                type="date"
-                value={exportEndDate}
-                onChange={(e) => setExportEndDate(e.target.value)}
-                className="w-40"
+                value={parseISODate(exportEndDate)}
+                onChange={(d) => setExportEndDate(formatISODate(d))}
               />
             </div>
             <Button onClick={handleExport} disabled={exporting} className="h-10">

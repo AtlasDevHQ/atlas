@@ -6,7 +6,9 @@ import { useAtlasConfig } from "@/ui/context";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DatePicker } from "@/components/ui/date-picker";
 import { Input } from "@/components/ui/input";
+import { formatISODate, parseISODate } from "@/lib/format";
 import {
   Select,
   SelectContent,
@@ -597,18 +599,18 @@ function ReportsTab() {
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">Start Date</label>
-              <Input
-                type="date"
-                value={from}
-                onChange={(e) => setParams({ from: e.target.value })}
+              <DatePicker
+                value={parseISODate(from)}
+                onChange={(d) => setParams({ from: formatISODate(d) })}
+                className="w-full"
               />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">End Date</label>
-              <Input
-                type="date"
-                value={to}
-                onChange={(e) => setParams({ to: e.target.value })}
+              <DatePicker
+                value={parseISODate(to)}
+                onChange={(d) => setParams({ to: formatISODate(d) })}
+                className="w-full"
               />
             </div>
             <div className="space-y-2">

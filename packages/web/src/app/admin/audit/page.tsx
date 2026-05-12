@@ -12,6 +12,7 @@ import { DataTableSortList } from "@/components/data-table/data-table-sort-list"
 import { useDataTable } from "@/hooks/use-data-table";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
+import { DatePicker } from "@/components/ui/date-picker";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -36,6 +37,7 @@ import {
   AuditOAuthClientsSchema,
 } from "@/ui/lib/admin-schemas";
 import { AuditFilterBar, type ActorKindFilter } from "@/ui/components/admin/audit/filter-bar";
+import { formatISODate, parseISODate } from "@/lib/format";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
@@ -328,22 +330,18 @@ export default function AuditPage() {
           <div className="flex flex-wrap items-end gap-3">
             <div className="space-y-1">
               <label htmlFor="analytics-from" className="text-xs font-medium text-muted-foreground">From</label>
-              <Input
+              <DatePicker
                 id="analytics-from"
-                type="date"
-                value={analyticsFrom}
-                onChange={(e) => setAnalyticsFrom(e.target.value)}
-                className="h-9 w-40"
+                value={parseISODate(analyticsFrom)}
+                onChange={(d) => setAnalyticsFrom(formatISODate(d))}
               />
             </div>
             <div className="space-y-1">
               <label htmlFor="analytics-to" className="text-xs font-medium text-muted-foreground">To</label>
-              <Input
+              <DatePicker
                 id="analytics-to"
-                type="date"
-                value={analyticsTo}
-                onChange={(e) => setAnalyticsTo(e.target.value)}
-                className="h-9 w-40"
+                value={parseISODate(analyticsTo)}
+                onChange={(d) => setAnalyticsTo(formatISODate(d))}
               />
             </div>
             <Button size="sm" className="h-9">
@@ -498,24 +496,20 @@ export default function AuditPage() {
               onChange={(next) => setParams(next)}
             />
 
-            <div className="space-y-0">
-              <Input
-                type="date"
-                value={from}
-                onChange={(e) => setParams({ from: e.target.value })}
-                className="h-9 w-36"
-                aria-label="From date"
-              />
-            </div>
-            <div className="space-y-0">
-              <Input
-                type="date"
-                value={to}
-                onChange={(e) => setParams({ to: e.target.value })}
-                className="h-9 w-36"
-                aria-label="To date"
-              />
-            </div>
+            <DatePicker
+              value={parseISODate(from)}
+              onChange={(d) => setParams({ from: formatISODate(d) })}
+              aria-label="From date"
+              placeholder="From"
+              className="w-36"
+            />
+            <DatePicker
+              value={parseISODate(to)}
+              onChange={(d) => setParams({ to: formatISODate(d) })}
+              aria-label="To date"
+              placeholder="To"
+              className="w-36"
+            />
 
             {hasFilters && (
               <Button variant="ghost" size="sm" className="h-9" onClick={clearFilters}>

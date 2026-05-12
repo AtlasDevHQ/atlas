@@ -21,7 +21,6 @@ import {
 } from "bun:test";
 import {
   createMockServer,
-  createRoutedMockServer,
   type MockServer,
 } from "../helpers/mock-server";
 import { createConnectionMock } from "../../packages/api/src/__mocks__/connection";

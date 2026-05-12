@@ -55,7 +55,7 @@ const tokenCache = new Map<string, { token: string; expiresAt: number }>();
 export async function getAccessToken(
   appId: string,
   appPassword: string,
-  log?: PluginLogger,
+  _log?: PluginLogger,
 ): Promise<string> {
   const cached = tokenCache.get(appId);
   if (cached && Date.now() < cached.expiresAt) {

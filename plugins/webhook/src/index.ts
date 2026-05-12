@@ -39,7 +39,7 @@ import type {
   PluginLogger,
 } from "@useatlas/plugin-sdk";
 import { WebhookConfigSchema } from "./config";
-import type { WebhookPluginConfig, WebhookChannel, WebhookQueryResult } from "./config";
+import type { WebhookPluginConfig, WebhookChannel } from "./config";
 import { createWebhookRoutes } from "./routes";
 import type { WebhookRuntimeDeps } from "./routes";
 

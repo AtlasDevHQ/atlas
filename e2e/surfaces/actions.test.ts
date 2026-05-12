@@ -745,7 +745,6 @@ describe("E2E: Action framework", () => {
     // - So the auto path in handleAction is never triggered (always falls back to "manual")
     // TODO: Test auto-approval execution in a separate file with config mocked to return
     // actions: { defaults: { approval: "auto" } }
-    // eslint-disable-next-line @typescript-eslint/no-empty-function
     it.todo("auto-approval mode executes action immediately without separate approve", () => {});
   });
 

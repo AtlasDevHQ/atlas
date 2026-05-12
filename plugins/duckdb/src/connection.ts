@@ -57,7 +57,6 @@ export function createDuckDBConnection(
   async function getConnection() {
     if (!instancePromise) {
       instancePromise = (async () => {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
         let DuckDBInstance: unknown;
         try {
           ({ DuckDBInstance } = require("@duckdb/node-api"));

@@ -12,7 +12,6 @@ import {
   expect,
   mock,
   afterEach,
-  type Mock,
 } from "bun:test";
 import { Hono } from "hono";
 import { definePlugin, isInteractionPlugin } from "@useatlas/plugin-sdk";

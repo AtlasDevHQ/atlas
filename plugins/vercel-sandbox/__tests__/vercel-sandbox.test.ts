@@ -34,7 +34,6 @@ import {
   vercelSandboxPlugin,
   buildVercelSandboxPlugin,
   sandboxErrorDetail,
-  collectSemanticFiles,
 } from "../src/index";
 
 // ---------------------------------------------------------------------------

@@ -1,11 +1,10 @@
-import { describe, test, expect, mock, beforeEach } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import { definePlugin, isSandboxPlugin } from "@useatlas/plugin-sdk";
 import {
   nsjailSandboxPlugin,
   buildNsjailSandboxPlugin,
   findNsjailBinary,
 } from "../src/index";
-import type { AtlasSandboxPlugin } from "@useatlas/plugin-sdk";
 
 // Zod defaults make timeLimitSec/memoryLimitMb required in the output type
 // but optional at runtime. Tests that rely on defaults use `as any`.

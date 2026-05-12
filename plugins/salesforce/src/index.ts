@@ -27,7 +27,7 @@ import {
   extractHost,
 } from "./connection";
 import type { SalesforceConnection } from "./connection";
-import { validateSOQLStructure, SOQL_FORBIDDEN_PATTERNS } from "./validation";
+import { validateSOQLStructure } from "./validation";
 import { createQuerySalesforceTool } from "./tool";
 
 const SalesforceConfigSchema = z.object({

@@ -56,9 +56,6 @@ export function IdentitySection() {
     setError(null);
     setSavedAt(null);
     try {
-      // `authClient.updateUser` is typed at the export boundary in
-      // `lib/auth/client.ts`; it's optional because the inferred plugin
-      // chain doesn't carry the core `updateUser` action.
       const updateUser = authClient.updateUser;
       if (typeof updateUser !== "function") {
         setError("Profile updates are unavailable. Refresh the page and try again.");

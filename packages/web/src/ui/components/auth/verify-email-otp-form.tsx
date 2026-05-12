@@ -45,9 +45,6 @@ export function VerifyEmailOTPForm({ email, onVerified }: VerifyEmailOTPFormProp
     setSubmitting(true);
     setError(null);
     try {
-      // `authClient.emailOtp` is typed at the export boundary in
-      // `lib/auth/client.ts`. Runtime presence guard catches Better Auth
-      // method renames at the boundary.
       const verifyEmail = authClient.emailOtp?.verifyEmail;
       if (typeof verifyEmail !== "function") {
         throw new Error("emailOtp.verifyEmail action not available on this client");

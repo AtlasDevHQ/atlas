@@ -37,6 +37,7 @@ import {
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { ac, owner, admin, member } from "./org-permissions";
 import { adminAccessControl, adminRole, platformAdminRole } from "./admin-permissions";
+import type { AuthApiResult, Passkey, PasskeySignIn } from "./wire-types";
 
 function getBaseURL(): string {
   const url = getApiUrl();
@@ -85,30 +86,22 @@ const _authClient = createAuthClient({
   fetchOptions: isCrossOrigin() ? { credentials: "include" as RequestCredentials } : {},
 });
 
-// TS6 fails to infer plugin types through createAuthClient — the wrapped
-// client erases each plugin's namespace contribution. The fix is a one-time
-// intersection at the export boundary so every consumer reads a typed
-// surface instead of writing `(authClient as unknown as { ... })` per call.
-//
-// Each namespace is declared `Partial`-ish (optional methods + optional
-// namespace) so the runtime presence guards in `lib/auth/{passkey,
-// two-factor}-client.ts` and `ui/components/auth/verify-email-otp-form.tsx`
-// keep surfacing Better Auth API drift as a precise null rather than
-// `TypeError: addPasskey is not a function` at click time.
-type AuthResult<T> = { data: T | null; error: { message?: string; code?: string } | null };
+// `createAuthClient` erases each plugin's namespace contribution under TS6
+// strictness. Patch the holes at this export boundary so consumers read a
+// typed surface instead of writing `(authClient as unknown as { ... })` per
+// call. Method presence stays optional so the runtime guards in
+// `lib/auth/{passkey,two-factor}-client.ts` and the OTP/consent forms
+// still surface Better Auth API drift as a precise null rather than a
+// `TypeError` at click time. Wire shapes (`AuthApiResult`, `Passkey`,
+// `PasskeySignIn`) live in `./wire-types` so the helpers and this boundary
+// reference identical types.
 type OrgResult<T> = { data: T | null; error: { message: string } | null };
-
-interface PasskeyShape {
-  id: string;
-  name?: string;
-  createdAt: Date | string;
-}
 
 type OrgClient = typeof _authClient & {
   // Better Auth core — present at runtime, lost through plugin chain.
   updateUser?: (opts: { name?: string }) => Promise<{ error?: { message?: string } | null }>;
 
-  // organizationClient — typed manually since TS6 inference loses it.
+  // organizationClient — typed manually since the chain inference loses it.
   organization: {
     create: (opts: { name: string; slug: string; logo?: string }) => Promise<OrgResult<{ id: string }>>;
     list: () => Promise<OrgResult<{ id: string; name: string; slug: string; logo?: string | null }[]>>;
@@ -121,25 +114,22 @@ type OrgClient = typeof _authClient & {
     addPasskey?: (opts?: {
       name?: string;
       authenticatorAttachment?: "platform" | "cross-platform";
-    }) => Promise<AuthResult<PasskeyShape>>;
-    listUserPasskeys?: () => Promise<AuthResult<PasskeyShape[]>>;
-    updatePasskey?: (opts: { id: string; name: string }) => Promise<AuthResult<{ passkey: PasskeyShape }>>;
-    deletePasskey?: (opts: { id: string }) => Promise<AuthResult<{ status?: boolean }>>;
+    }) => Promise<AuthApiResult<Passkey>>;
+    listUserPasskeys?: () => Promise<AuthApiResult<Passkey[]>>;
+    updatePasskey?: (opts: { id: string; name: string }) => Promise<AuthApiResult<{ passkey: Passkey }>>;
+    deletePasskey?: (opts: { id: string }) => Promise<AuthApiResult<{ status?: boolean }>>;
   };
   signIn: (typeof _authClient)["signIn"] & {
-    passkey?: (opts?: { autoFill?: boolean }) => Promise<AuthResult<{
-      session: Record<string, unknown>;
-      user: Record<string, unknown>;
-    }>>;
+    passkey?: PasskeySignIn;
   };
 
   // twoFactorClient — TOTP + backup codes.
   twoFactor?: {
-    enable?: (opts: { password: string }) => Promise<AuthResult<{ totpURI: string; backupCodes: string[] }>>;
-    disable?: (opts: { password: string }) => Promise<AuthResult<{ status?: boolean }>>;
-    verifyTotp?: (opts: { code: string; trustDevice?: boolean }) => Promise<AuthResult<{ token?: string }>>;
-    verifyBackupCode?: (opts: { code: string; trustDevice?: boolean }) => Promise<AuthResult<{ token?: string }>>;
-    generateBackupCodes?: (opts: { password: string }) => Promise<AuthResult<{ backupCodes: string[] }>>;
+    enable?: (opts: { password: string }) => Promise<AuthApiResult<{ totpURI: string; backupCodes: string[] }>>;
+    disable?: (opts: { password: string }) => Promise<AuthApiResult<{ status?: boolean }>>;
+    verifyTotp?: (opts: { code: string; trustDevice?: boolean }) => Promise<AuthApiResult<{ token?: string }>>;
+    verifyBackupCode?: (opts: { code: string; trustDevice?: boolean }) => Promise<AuthApiResult<{ token?: string }>>;
+    generateBackupCodes?: (opts: { password: string }) => Promise<AuthApiResult<{ backupCodes: string[] }>>;
   };
 
   // oauthProviderClient — `oauth2.consent` resolves the consent screen.
@@ -152,8 +142,8 @@ type OrgClient = typeof _authClient & {
 
   // emailOTPClient — verify + resend used by post-signup interstitial.
   emailOtp?: {
-    verifyEmail: (opts: { email: string; otp: string }) => Promise<AuthResult<unknown>>;
-    sendVerificationOtp: (opts: { email: string; type: "email-verification" }) => Promise<AuthResult<unknown>>;
+    verifyEmail: (opts: { email: string; otp: string }) => Promise<AuthApiResult<unknown>>;
+    sendVerificationOtp: (opts: { email: string; type: "email-verification" }) => Promise<AuthApiResult<unknown>>;
   };
 };
 export const authClient: OrgClient = _authClient as OrgClient;

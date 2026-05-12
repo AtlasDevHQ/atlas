@@ -1080,6 +1080,10 @@ export async function restoreSingleConnection(
  * Bulk upsert entities for an org. Each entity is upserted individually —
  * failures are logged and skipped (partial imports are expected).
  * Used by the import endpoint.
+ *
+ * Imports stage as drafts (#2177) so the admin reviews them via the
+ * pending-changes pill and publishes via `/api/v1/admin/publish`. The
+ * published surface is untouched until that publish runs.
  */
 export async function bulkUpsertEntities(
   orgId: string,
@@ -1093,7 +1097,7 @@ export async function bulkUpsertEntities(
   let upserted = 0;
   for (const e of entities) {
     try {
-      await upsertEntity(orgId, e.entityType, e.name, e.yamlContent, e.connectionId);
+      await upsertDraftEntity(orgId, e.entityType, e.name, e.yamlContent, e.connectionId);
       upserted++;
     } catch (err) {
       // log.error (not log.warn) because a row-level upsert failure means

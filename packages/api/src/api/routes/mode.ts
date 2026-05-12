@@ -17,7 +17,11 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { Effect, Layer } from "effect";
 import type { AtlasMode } from "@useatlas/types/auth";
-import type { ModeStatusResponse, ModeDraftCounts } from "@useatlas/types/mode";
+import type {
+  ModeStatusResponse,
+  ModeDraftCounts,
+  ModeDraftActivity,
+} from "@useatlas/types/mode";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
@@ -61,6 +65,19 @@ const DraftCountsSchema = z.object({
   starterPrompts: z.number().int().nonnegative(),
 });
 
+const DraftSurfaceActivitySchema = z.object({
+  lastEditedAt: z.string().datetime().nullable(),
+});
+
+const DraftActivitySchema = z.object({
+  connections: DraftSurfaceActivitySchema,
+  entities: DraftSurfaceActivitySchema,
+  entityEdits: DraftSurfaceActivitySchema,
+  entityDeletes: DraftSurfaceActivitySchema,
+  prompts: DraftSurfaceActivitySchema,
+  starterPrompts: DraftSurfaceActivitySchema,
+});
+
 const ModeStatusSchema = z.object({
   mode: z.enum(["developer", "published"]),
   canToggle: z.boolean(),
@@ -68,6 +85,7 @@ const ModeStatusSchema = z.object({
   demoConnectionActive: z.boolean(),
   hasDrafts: z.boolean(),
   draftCounts: DraftCountsSchema.nullable(),
+  draftActivity: DraftActivitySchema.nullable(),
 });
 
 const getModeRoute = createRoute({
@@ -129,6 +147,80 @@ function totalDrafts(counts: ModeDraftCounts): number {
   );
 }
 
+/**
+ * Per-surface `MAX(updated_at)` for draft rows. One UNION ALL query so
+ * the pending-changes pill can render a relative "Last edited 5m ago"
+ * per surface without a fan-out (#2177).
+ *
+ * Mirrors the surface keys used by {@link ModeDraftCounts}; segment
+ * semantics for `entities` / `entityEdits` / `entityDeletes` match the
+ * exotic `semantic_entities` adapter's `countSegments`. Wrapped in a
+ * single round-trip so it cost-matches the existing `countAllDrafts`.
+ */
+const DRAFT_ACTIVITY_SQL = `
+  SELECT 'connections' AS key, MAX(updated_at) AS at FROM connections
+   WHERE org_id = $1 AND status = 'draft'
+  UNION ALL
+  SELECT 'entities' AS key, MAX(updated_at) AS at FROM semantic_entities
+   WHERE org_id = $1 AND status = 'draft'
+  UNION ALL
+  SELECT 'entityEdits' AS key, MAX(d.updated_at) AS at FROM semantic_entities d
+    INNER JOIN semantic_entities pub
+      ON d.org_id = pub.org_id
+     AND d.name = pub.name
+     AND COALESCE(d.connection_id, '__default__') = COALESCE(pub.connection_id, '__default__')
+   WHERE d.org_id = $1 AND d.status = 'draft' AND pub.status = 'published'
+  UNION ALL
+  SELECT 'entityDeletes' AS key, MAX(updated_at) AS at FROM semantic_entities
+   WHERE org_id = $1 AND status = 'draft_delete'
+  UNION ALL
+  SELECT 'prompts' AS key, MAX(updated_at) AS at FROM prompt_collections
+   WHERE org_id = $1 AND status = 'draft'
+  UNION ALL
+  SELECT 'starterPrompts' AS key, MAX(updated_at) AS at FROM query_suggestions
+   WHERE org_id = $1 AND status = 'draft'
+`;
+
+/**
+ * Coerce a pg `timestamptz` value to an ISO-8601 string. `pg` returns
+ * timestamps as `Date` by default; some drivers return them as strings.
+ * Returns null for invalid or missing values so the pill popover degrades
+ * gracefully to "Pending" without a relative time.
+ */
+function toIsoOrNull(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value.toISOString() : null;
+  }
+  if (typeof value === "string") {
+    const parsed = new Date(value);
+    return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
+  }
+  return null;
+}
+
+const ACTIVITY_SURFACE_KEYS = [
+  "connections",
+  "entities",
+  "entityEdits",
+  "entityDeletes",
+  "prompts",
+  "starterPrompts",
+] as const satisfies ReadonlyArray<keyof ModeDraftActivity>;
+
+function buildDraftActivity(
+  rows: ReadonlyArray<{ key: string; at: unknown }>,
+): ModeDraftActivity {
+  const result: Record<string, { lastEditedAt: string | null }> = {};
+  for (const k of ACTIVITY_SURFACE_KEYS) result[k] = { lastEditedAt: null };
+  const allowed = new Set<string>(ACTIVITY_SURFACE_KEYS);
+  for (const row of rows) {
+    if (!allowed.has(row.key)) continue;
+    result[row.key] = { lastEditedAt: toIsoOrNull(row.at) };
+  }
+  return result as unknown as ModeDraftActivity;
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -159,19 +251,25 @@ mode.openapi(getModeRoute, async (c) => {
         demoConnectionActive: false,
         hasDrafts: false,
         draftCounts: null,
+        draftActivity: null,
       } satisfies ModeStatusResponse;
     }
 
     const demoIndustry = getSettingAuto(DEMO_INDUSTRY_SETTING, orgId) ?? null;
     const registry = yield* ContentModeRegistry;
 
-    const [demoRows, counts] = yield* Effect.all(
-      [queryEffect<{ active: boolean }>(DEMO_ACTIVE_SQL, [orgId]), registry.countAllDrafts(orgId)],
+    const [demoRows, counts, activityRows] = yield* Effect.all(
+      [
+        queryEffect<{ active: boolean }>(DEMO_ACTIVE_SQL, [orgId]),
+        registry.countAllDrafts(orgId),
+        queryEffect<{ key: string; at: unknown }>(DRAFT_ACTIVITY_SQL, [orgId]),
+      ],
       { concurrency: "unbounded" },
     );
 
     const demoConnectionActive = demoRows[0]?.active === true;
     const hasDrafts = totalDrafts(counts) > 0;
+    const activity = hasDrafts ? buildDraftActivity(activityRows) : null;
 
     return {
       mode: atlasMode satisfies AtlasMode,
@@ -180,6 +278,7 @@ mode.openapi(getModeRoute, async (c) => {
       demoConnectionActive,
       hasDrafts,
       draftCounts: hasDrafts ? counts : null,
+      draftActivity: activity,
     } satisfies ModeStatusResponse;
   }).pipe(Effect.provide(modeRouteLayer));
 

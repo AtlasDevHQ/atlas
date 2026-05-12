@@ -7865,6 +7865,112 @@
                         "prompts",
                         "starterPrompts"
                       ]
+                    },
+                    "draftActivity": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "connections": {
+                          "type": "object",
+                          "properties": {
+                            "lastEditedAt": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "format": "date-time"
+                            }
+                          },
+                          "required": [
+                            "lastEditedAt"
+                          ]
+                        },
+                        "entities": {
+                          "type": "object",
+                          "properties": {
+                            "lastEditedAt": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "format": "date-time"
+                            }
+                          },
+                          "required": [
+                            "lastEditedAt"
+                          ]
+                        },
+                        "entityEdits": {
+                          "type": "object",
+                          "properties": {
+                            "lastEditedAt": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "format": "date-time"
+                            }
+                          },
+                          "required": [
+                            "lastEditedAt"
+                          ]
+                        },
+                        "entityDeletes": {
+                          "type": "object",
+                          "properties": {
+                            "lastEditedAt": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "format": "date-time"
+                            }
+                          },
+                          "required": [
+                            "lastEditedAt"
+                          ]
+                        },
+                        "prompts": {
+                          "type": "object",
+                          "properties": {
+                            "lastEditedAt": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "format": "date-time"
+                            }
+                          },
+                          "required": [
+                            "lastEditedAt"
+                          ]
+                        },
+                        "starterPrompts": {
+                          "type": "object",
+                          "properties": {
+                            "lastEditedAt": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "format": "date-time"
+                            }
+                          },
+                          "required": [
+                            "lastEditedAt"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "connections",
+                        "entities",
+                        "entityEdits",
+                        "entityDeletes",
+                        "prompts",
+                        "starterPrompts"
+                      ]
                     }
                   },
                   "required": [
@@ -7873,7 +7979,8 @@
                     "demoIndustry",
                     "demoConnectionActive",
                     "hasDrafts",
-                    "draftCounts"
+                    "draftCounts",
+                    "draftActivity"
                   ]
                 }
               }
@@ -15729,6 +15836,226 @@
           }
         },
         "operationId": "getMeMcpUsage"
+      }
+    },
+    "/api/v1/me/preferences": {
+      "get": {
+        "tags": [
+          "Me — Preferences"
+        ],
+        "summary": "Read your UI preferences",
+        "description": "Returns the calling user's UI preferences. `defaultLanding` decides which surface (`chat` or `admin`) the root route resolves to after sign-in.",
+        "responses": {
+          "200": {
+            "description": "User preferences",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "defaultLanding": {
+                      "type": "string",
+                      "enum": [
+                        "chat",
+                        "admin"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "defaultLanding"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not available — requires managed auth + internal DB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getMePreferences"
+      },
+      "patch": {
+        "tags": [
+          "Me — Preferences"
+        ],
+        "summary": "Update your UI preferences",
+        "description": "Persists `defaultLanding` on the calling user's row. Setting `admin` requires the caller to be an admin / owner / platform-admin.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "defaultLanding": {
+                    "type": "string",
+                    "enum": [
+                      "chat",
+                      "admin"
+                    ]
+                  }
+                },
+                "required": [
+                  "defaultLanding"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Preferences updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "defaultLanding": {
+                      "type": "string",
+                      "enum": [
+                        "chat",
+                        "admin"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "defaultLanding"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`admin` landing requires an admin role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not available — requires managed auth + internal DB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "patchMePreferences"
       }
     },
     "/api/v1/admin/organizations": {
@@ -49128,6 +49455,230 @@
         "operationId": "postAdminPublish"
       }
     },
+    "/api/v1/admin/publish-preview": {
+      "get": {
+        "tags": [
+          "Admin — Mode"
+        ],
+        "summary": "List drafts that the next publish call will promote",
+        "description": "Returns the per-surface inventory of draft rows that `POST /api/v1/admin/publish` would promote on this org. Read by the Publish modal in the admin top bar so the admin can review before confirming. The shape mirrors the content-mode registry tuple.",
+        "responses": {
+          "200": {
+            "description": "Per-surface draft inventory",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "connections": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "updatedAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label",
+                          "updatedAt"
+                        ]
+                      }
+                    },
+                    "entities": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "updatedAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label",
+                          "updatedAt"
+                        ]
+                      }
+                    },
+                    "entityEdits": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "connectionId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "updatedAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label",
+                          "connectionId",
+                          "updatedAt"
+                        ]
+                      }
+                    },
+                    "entityDeletes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "updatedAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label",
+                          "updatedAt"
+                        ]
+                      }
+                    },
+                    "prompts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "updatedAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label",
+                          "updatedAt"
+                        ]
+                      }
+                    },
+                    "starterPrompts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "updatedAt": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label",
+                          "updatedAt"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "connections",
+                    "entities",
+                    "entityEdits",
+                    "entityDeletes",
+                    "prompts",
+                    "starterPrompts"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminPublishPreview"
+      }
+    },
     "/api/v1/admin/archive-connection": {
       "post": {
         "tags": [
@@ -66984,6 +67535,9 @@
     },
     {
       "name": "Me — OAuth Clients"
+    },
+    {
+      "name": "Me — Preferences"
     },
     {
       "name": "Mode"

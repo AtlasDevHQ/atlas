@@ -32,6 +32,7 @@ function status(partial: Partial<ModeStatusResponse> = {}): ModeStatusResponse {
     demoConnectionActive: false,
     hasDrafts: false,
     draftCounts: null,
+    draftActivity: null,
     ...partial,
   };
 }

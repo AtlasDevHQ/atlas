@@ -527,10 +527,12 @@ describe("admin prompt routes", () => {
       expect(body.error).toBe("bad_request");
     });
 
-    // ─── Mode-aware create (#1428) ─────────────────────────────────
+    // ─── Always-write-to-draft create (#2177, supersedes #1428) ────
 
-    it("published mode inserts status='published'", async () => {
-      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([mockCollectionRow()]));
+    it("published mode (default) inserts status='draft' (#2177)", async () => {
+      mocks.mockInternalQuery.mockImplementation(() =>
+        Promise.resolve([mockCollectionRow({ status: "draft" })]),
+      );
       const res = await adminReq("POST", "/", { name: "Test", industry: "saas" });
       expect(res.status).toBe(201);
       const insertCall = mocks.mockInternalQuery.mock.calls.find(
@@ -540,12 +542,19 @@ describe("admin prompt routes", () => {
       const [sql, params] = insertCall!;
       expect(sql).toContain("status");
       const paramList = params as unknown[];
-      expect(paramList[paramList.length - 1]).toBe("published");
+      expect(paramList[paramList.length - 1]).toBe("draft");
     });
 
-    it("developer mode inserts status='draft'", async () => {
-      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([mockCollectionRow({ status: "draft" })]));
-      const res = await adminReq("POST", "/", { name: "Test", industry: "saas" }, "atlas-mode=developer");
+    it("developer mode also inserts status='draft' (#2177 — header is irrelevant)", async () => {
+      mocks.mockInternalQuery.mockImplementation(() =>
+        Promise.resolve([mockCollectionRow({ status: "draft" })]),
+      );
+      const res = await adminReq(
+        "POST",
+        "/",
+        { name: "Test", industry: "saas" },
+        "atlas-mode=developer",
+      );
       expect(res.status).toBe(201);
       const insertCall = mocks.mockInternalQuery.mock.calls.find(
         ([sql]) => typeof sql === "string" && sql.includes("INSERT INTO prompt_collections"),

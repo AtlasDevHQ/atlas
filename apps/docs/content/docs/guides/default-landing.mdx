@@ -1,0 +1,33 @@
+---
+title: Default Landing
+description: Pick the surface Atlas opens to — chat (default) or the admin console.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+When you sign in to Atlas, the root route `/` resolves to the chat surface by default. That puts the agent front and center — ask a question, see results, no scaffolding in the way. Admins who spend most of their day in the admin console can flip a per-user preference so `/` redirects into `/admin` instead.
+
+<Callout type="info">
+Default landing is a **per-user** preference, not a workspace setting. Switching workspaces does not change which surface you land on.
+</Callout>
+
+## Change your default
+
+1. Open **Settings → Profile** (avatar menu → "Profile").
+2. In the **Interface** section, pick **Chat** or **Admin**.
+3. Save.
+
+The next time you visit `/`, Atlas honours the choice. From any surface, the avatar menu and the settings gear in the top right of the chat surface always reach the admin console — flipping the toggle changes the *default*, not the available paths.
+
+## What each option does
+
+- **Chat** (default) — `/` renders the chat surface. The agent is the first thing the user sees. The top-right has the avatar menu, the workspace switcher, and a settings gear that opens `/admin` for admins.
+- **Admin** — `/` server-redirects to `/admin`. The admin console layout (sidebar + breadcrumbs) becomes your home base. Only admin / owner / platform-admin users see this option; for non-admins the redirect would land on a 403, so the radio is hidden.
+
+## Availability
+
+The preference is stored on the Better Auth `user` table and is only available in deployments with **managed auth + an internal database**. In self-hosted local mode (auth mode `none`, no `DATABASE_URL`) the Interface section is hidden from the Settings page and the root route renders chat unconditionally.
+
+## For operators
+
+Atlas does not expose a workspace-level override for default landing. The choice is intentionally per-user — operators who want every fresh signup to land somewhere specific can wire a redirect in their reverse proxy or change the `default_landing` column directly in the internal database for an existing cohort. The migration that defines the column is `0061_user_default_landing.sql`; new rows default to `'chat'`.

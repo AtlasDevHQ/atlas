@@ -34,3 +34,4 @@ export * from "./email-provider";
 export * from "./audit-retention";
 export * from "./mcp";
 export * from "./security";
+export * from "./preferences";

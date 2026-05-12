@@ -65,6 +65,8 @@ export type {
   TestModelConfigResponse,
   GatewayCatalogModel,
   GatewayCatalogResponse,
+  ByotCatalogRefreshSkipReason,
+  ByotRefreshCycleResult,
 } from "@useatlas/types";
 export type {
   ApprovalRule,

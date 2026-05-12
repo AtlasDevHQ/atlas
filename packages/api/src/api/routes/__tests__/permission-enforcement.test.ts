@@ -239,6 +239,9 @@ const cases: MappingCase[] = [
   { name: "GET /admin/sandbox", url: "/api/v1/admin/sandbox", permission: "admin:settings" },
   { name: "GET /admin/residency", url: "/api/v1/admin/residency", permission: "admin:settings" },
   { name: "GET /admin/model-config", url: "/api/v1/admin/model-config", permission: "admin:settings" },
+
+  // admin:settings → admin-scheduler.ts (#2284 BYOT catalog refresh)
+  { name: "GET /admin/scheduler/tasks", url: "/api/v1/admin/scheduler/tasks", permission: "admin:settings" },
 ];
 
 /**

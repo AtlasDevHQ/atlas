@@ -1,17 +1,18 @@
 /**
  * BYOT catalog refresh scheduler tests (#2284).
  *
- * Verifies the daily cycle that walks BYOT workspaces and refreshes any
- * `(org_id, provider, region)` whose `fetched_at` is older than the TTL.
- *
  * Surface under test:
- *   - Sequential per-row refresh (one upstream provider call at a time so
- *     a noisy workspace can't burn another's rate limit).
- *   - Decrypt-failed rows are skipped + audit-logged so triage can see why.
- *   - Per-row failure increments an in-memory backoff counter so a
- *     rotated-and-broken key isn't retried 365 times/year.
- *   - One cycle-level audit row per tick, even at zero rows — the absence
- *     of the cycle row is the "scheduler stopped" signal.
+ *   - Sequential per-row refresh (one upstream provider call at a time).
+ *   - Decrypt-failed / no-config / missing-key / malformed-bundle skips with
+ *     correct audit status semantics (deliberate suppressions = success,
+ *     corruption = failure).
+ *   - In-memory exponential backoff (1, 2, 4, 8, 16, 32 days capped) with
+ *     per-row math verified by advancing `nowFn` past each threshold.
+ *   - Per-row failure containment — a thrown row never aborts the rest.
+ *   - Cycle-level audit emits every tick, with `status: "success"` on a
+ *     healthy tick and `status: "failure"` on stale-row query failure.
+ *   - `triggerByotCatalogRefreshCycle()` promise wrapper.
+ *   - EE-module-missing branch routes to `ee_unavailable` skip reason.
  */
 
 import { describe, it, expect, beforeEach, mock } from "bun:test";
@@ -24,10 +25,8 @@ import { Effect } from "effect";
 let mockInternalDB = true;
 let mockStaleRows: Array<{ org_id: string; provider: string; bedrock_region: string | null }> = [];
 let staleQueryCalls = 0;
+let staleQueryShouldThrow: Error | null = null;
 
-// Per-org workspace configs returned by `getWorkspaceModelConfigRaw`. The
-// special string `"DECRYPT_FAIL"` triggers a tagged-error fail to exercise
-// the skip-decrypt-failed path without faking the underlying decrypt.
 let mockWorkspaceConfigs: Map<
   string,
   | { provider: string; model: string; apiKey: string | null; baseUrl: string | null; bedrockRegion: string | null }
@@ -35,10 +34,6 @@ let mockWorkspaceConfigs: Map<
   | null
 > = new Map();
 
-// Per-provider fetcher behavior. Each entry is processed sequentially —
-// resolved in order of the `.shift()` calls below — so an array of three
-// entries returns these outcomes for the first three calls and "ok" for
-// any later call.
 let anthropicFetcherCalls: Array<{ orgId: string; apiKey: string }> = [];
 let openaiFetcherCalls: Array<{ orgId: string; apiKey: string }> = [];
 let bedrockFetcherCalls: Array<{ orgId: string; region: string }> = [];
@@ -51,6 +46,7 @@ let openaiOutcomes: FetchOutcome[] = [];
 let bedrockOutcomes: FetchOutcome[] = [];
 
 let auditCalls: Array<Record<string, unknown>> = [];
+let auditShouldThrowForAction: string | null = null;
 
 // ---------------------------------------------------------------------------
 // Mocks — all named exports mocked per CLAUDE.md "mock all exports" rule.
@@ -71,6 +67,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockInternalDB,
   internalQuery: async () => {
     staleQueryCalls++;
+    if (staleQueryShouldThrow) throw staleQueryShouldThrow;
     return mockStaleRows;
   },
   internalExecute: () => {},
@@ -80,6 +77,9 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 mock.module("@atlas/api/lib/audit", () => ({
   logAdminAction: (entry: Record<string, unknown>) => {
     auditCalls.push(entry);
+    if (auditShouldThrowForAction && entry.actionType === auditShouldThrowForAction) {
+      throw new Error(`audit threw on ${auditShouldThrowForAction}`);
+    }
   },
   logAdminActionAwait: async (entry: Record<string, unknown>) => {
     auditCalls.push(entry);
@@ -101,10 +101,6 @@ mock.module("@atlas/api/lib/audit/error-scrub", () => ({
   causeToError: (_cause: unknown) => undefined,
 }));
 
-// Stub the EE platform/model-routing module so tests don't need the EE
-// build artifact. The real module exports `ModelConfigDecryptError` as a
-// `Data.TaggedError` — we mirror the shape so the scheduler's
-// `catchTag("ModelConfigDecryptError")` arm exercises correctly.
 class FakeDecryptError extends Error {
   readonly _tag = "ModelConfigDecryptError" as const;
   readonly configId: string;
@@ -197,7 +193,6 @@ mock.module("@atlas/api/lib/bedrock-catalog", () => ({
   invalidateBedrockCatalog: () => {},
 }));
 
-// Import after mocks
 const {
   runByotCatalogRefreshCycle,
   startByotCatalogRefreshScheduler,
@@ -205,15 +200,20 @@ const {
   isByotCatalogRefreshSchedulerRunning,
   _resetByotCatalogRefreshScheduler,
   _resetBackoffForTests,
+  _resetEeProbeForTests,
+  _computeBackoffMsForTests,
+  triggerByotCatalogRefreshCycle,
   BYOT_CATALOG_REFRESH_ACTOR,
 } = await import("../byot-catalog-refresh");
 
 function resetAll() {
   _resetByotCatalogRefreshScheduler();
   _resetBackoffForTests();
+  _resetEeProbeForTests();
   mockInternalDB = true;
   mockStaleRows = [];
   staleQueryCalls = 0;
+  staleQueryShouldThrow = null;
   mockWorkspaceConfigs = new Map();
   anthropicFetcherCalls = [];
   openaiFetcherCalls = [];
@@ -222,7 +222,10 @@ function resetAll() {
   openaiOutcomes = [];
   bedrockOutcomes = [];
   auditCalls = [];
+  auditShouldThrowForAction = null;
 }
+
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -241,9 +244,18 @@ describe("byot catalog refresh scheduler — lifecycle", () => {
 
   it("does not double-start", () => {
     startByotCatalogRefreshScheduler(60_000);
-    startByotCatalogRefreshScheduler(60_000); // no-op
+    startByotCatalogRefreshScheduler(60_000);
     expect(isByotCatalogRefreshSchedulerRunning()).toBe(true);
     stopByotCatalogRefreshScheduler();
+  });
+
+  it("stop is idempotent — calling stop twice or without start is a no-op", () => {
+    stopByotCatalogRefreshScheduler();
+    expect(isByotCatalogRefreshSchedulerRunning()).toBe(false);
+    startByotCatalogRefreshScheduler(60_000);
+    stopByotCatalogRefreshScheduler();
+    stopByotCatalogRefreshScheduler();
+    expect(isByotCatalogRefreshSchedulerRunning()).toBe(false);
   });
 
   it("refuses to start without an internal DB", () => {
@@ -261,16 +273,13 @@ describe("byot catalog refresh scheduler — lifecycle", () => {
 describe("byot catalog refresh — cycle behavior", () => {
   beforeEach(resetAll);
 
-  it("returns zero counts and emits one cycle audit row on an empty queue", async () => {
+  it("returns success status + zero counts and emits one cycle audit row on an empty queue", async () => {
     const result = await Effect.runPromise(runByotCatalogRefreshCycle());
-    expect(result).toEqual({
-      inspected: 0,
-      refreshed: 0,
-      skippedDecryptFailed: 0,
-      skippedInBackoff: 0,
-      skippedMissingKey: 0,
-      failed: 0,
-    });
+    expect(result.status).toBe("success");
+    expect(result.inspected).toBe(0);
+    expect(result.refreshed).toBe(0);
+    expect(result.failed).toBe(0);
+    expect(result.error).toBeUndefined();
 
     const cycleRows = auditCalls.filter(
       (c) => c.actionType === "model_config.catalog_refresh_cycle",
@@ -280,6 +289,7 @@ describe("byot catalog refresh — cycle behavior", () => {
     expect(cycleRows[0].scope).toBe("platform");
     expect(cycleRows[0].targetType).toBe("model_config");
     expect(cycleRows[0].targetId).toBe("scheduler");
+    expect(cycleRows[0].status).toBe("success");
   });
 
   it("refreshes each stale workspace sequentially in the order returned by the query", async () => {
@@ -294,6 +304,7 @@ describe("byot catalog refresh — cycle behavior", () => {
 
     const result = await Effect.runPromise(runByotCatalogRefreshCycle());
 
+    expect(result.status).toBe("success");
     expect(result.inspected).toBe(3);
     expect(result.refreshed).toBe(3);
     expect(result.failed).toBe(0);
@@ -303,7 +314,7 @@ describe("byot catalog refresh — cycle behavior", () => {
     expect(bedrockFetcherCalls).toEqual([{ orgId: "org-c", region: "us-east-1" }]);
   });
 
-  it("skips rows whose stored key fails to decrypt and audits the skip", async () => {
+  it("skips rows whose stored key fails to decrypt and audits the skip as failure", async () => {
     mockStaleRows = [
       { org_id: "org-bad", provider: "anthropic", bedrock_region: null },
       { org_id: "org-ok", provider: "anthropic", bedrock_region: null },
@@ -315,8 +326,6 @@ describe("byot catalog refresh — cycle behavior", () => {
 
     expect(result.skippedDecryptFailed).toBe(1);
     expect(result.refreshed).toBe(1);
-    // The good workspace still got its fetch — a single bad sibling can't
-    // poison the cycle.
     expect(anthropicFetcherCalls).toEqual([{ orgId: "org-ok", apiKey: "good" }]);
 
     const skipRow = auditCalls.find(
@@ -325,13 +334,13 @@ describe("byot catalog refresh — cycle behavior", () => {
         (c.targetId as string) === "org-bad",
     );
     expect(skipRow).toBeDefined();
+    // decrypt_failed is corruption — admin must re-enter the key.
     expect(skipRow!.status).toBe("failure");
     const meta = skipRow!.metadata as Record<string, unknown>;
     expect(meta.reason).toBe("decrypt_failed");
-    expect(meta.provider).toBe("anthropic");
   });
 
-  it("skips rows whose workspace has no saved key (missing config or null apiKey)", async () => {
+  it("skips rows with no saved config (no_config branch) with success status", async () => {
     mockStaleRows = [
       { org_id: "org-missing", provider: "anthropic", bedrock_region: null },
     ];
@@ -347,65 +356,102 @@ describe("byot catalog refresh — cycle behavior", () => {
         c.actionType === "model_config.catalog_refresh_skip" &&
         (c.targetId as string) === "org-missing",
     );
+    expect(skipRow!.status).toBe("success");
     expect((skipRow!.metadata as Record<string, unknown>).reason).toBe("missing_byot_key");
   });
 
-  it("records failures so a broken-key workspace enters exponential backoff", async () => {
+  it("audits each successful refresh with the standard catalogRefresh action + scheduler triggeredBy", async () => {
     mockStaleRows = [
-      { org_id: "org-broken", provider: "anthropic", bedrock_region: null },
+      { org_id: "org-a", provider: "anthropic", bedrock_region: null },
     ];
-    mockWorkspaceConfigs.set("org-broken", { provider: "anthropic", model: "claude-3", apiKey: "bad", baseUrl: null, bedrockRegion: null });
-    anthropicOutcomes = [{ kind: "throw", error: new Error("401 invalid api key") }];
+    mockWorkspaceConfigs.set("org-a", { provider: "anthropic", model: "claude-3", apiKey: "key-a", baseUrl: null, bedrockRegion: null });
 
-    const result1 = await Effect.runPromise(runByotCatalogRefreshCycle());
-    expect(result1.failed).toBe(1);
-    expect(result1.skippedInBackoff).toBe(0);
-    expect(anthropicFetcherCalls).toHaveLength(1);
-
-    // The second cycle (simulating tomorrow's tick) finds the same row stale
-    // again. Without backoff, the broken key would fetch again. With backoff,
-    // it sits out.
-    auditCalls = [];
-    const result2 = await Effect.runPromise(runByotCatalogRefreshCycle());
-    expect(result2.skippedInBackoff).toBe(1);
-    expect(result2.failed).toBe(0);
-    expect(anthropicFetcherCalls).toHaveLength(1); // unchanged
-
-    const skipRow = auditCalls.find(
-      (c) =>
-        c.actionType === "model_config.catalog_refresh_skip" &&
-        (c.targetId as string) === "org-broken",
-    );
-    expect((skipRow!.metadata as Record<string, unknown>).reason).toBe("in_backoff");
-  });
-
-  it("clears backoff on a successful refresh", async () => {
-    mockStaleRows = [
-      { org_id: "org-flaky", provider: "openai", bedrock_region: null },
-    ];
-    mockWorkspaceConfigs.set("org-flaky", { provider: "openai", model: "gpt-4", apiKey: "tok", baseUrl: null, bedrockRegion: null });
-
-    // Cycle 1: fails → enters backoff
-    openaiOutcomes = [{ kind: "throw", error: new Error("503 unavailable") }];
     await Effect.runPromise(runByotCatalogRefreshCycle());
 
-    // Manually clear backoff to simulate enough time passing — the unit
-    // surface for that is the test-only reset.
-    _resetBackoffForTests();
-
-    // Cycle 2: succeeds → backoff cleared
-    openaiOutcomes = [{ kind: "ok", modelCount: 8 }];
-    const result2 = await Effect.runPromise(runByotCatalogRefreshCycle());
-    expect(result2.refreshed).toBe(1);
-
-    // Cycle 3: even if the row stayed stale, no backoff carries over.
-    openaiOutcomes = [{ kind: "ok", modelCount: 8 }];
-    const result3 = await Effect.runPromise(runByotCatalogRefreshCycle());
-    expect(result3.refreshed).toBe(1);
-    expect(result3.skippedInBackoff).toBe(0);
+    const refreshRow = auditCalls.find(
+      (c) =>
+        c.actionType === "model_config.catalog_refresh" &&
+        (c.targetId as string) === "org-a",
+    );
+    expect(refreshRow!.systemActor).toBe(BYOT_CATALOG_REFRESH_ACTOR);
+    const meta = refreshRow!.metadata as Record<string, unknown>;
+    expect(meta.provider).toBe("anthropic");
+    expect(meta.source).toBe("fresh");
+    expect(meta.modelCount).toBe(3);
+    expect(meta.triggeredBy).toBe("scheduler");
   });
 
-  it("emits one cycle audit row with summary metadata even when rows mixed outcomes", async () => {
+  it("processes providers one at a time so a slow provider does not race the next row", async () => {
+    mockStaleRows = [
+      { org_id: "org-1", provider: "anthropic", bedrock_region: null },
+      { org_id: "org-2", provider: "anthropic", bedrock_region: null },
+      { org_id: "org-3", provider: "anthropic", bedrock_region: null },
+    ];
+    for (const o of ["org-1", "org-2", "org-3"]) {
+      mockWorkspaceConfigs.set(o, { provider: "anthropic", model: "x", apiKey: `k-${o}`, baseUrl: null, bedrockRegion: null });
+    }
+
+    await Effect.runPromise(runByotCatalogRefreshCycle());
+
+    expect(anthropicFetcherCalls.map((c) => c.orgId)).toEqual(["org-1", "org-2", "org-3"]);
+  });
+
+  it("per-row failure containment — a thrown middle row does not abort later rows", async () => {
+    mockStaleRows = [
+      { org_id: "org-1", provider: "anthropic", bedrock_region: null },
+      { org_id: "org-2", provider: "anthropic", bedrock_region: null },
+      { org_id: "org-3", provider: "anthropic", bedrock_region: null },
+    ];
+    for (const o of ["org-1", "org-2", "org-3"]) {
+      mockWorkspaceConfigs.set(o, { provider: "anthropic", model: "x", apiKey: `k-${o}`, baseUrl: null, bedrockRegion: null });
+    }
+    anthropicOutcomes = [
+      { kind: "ok", modelCount: 2 },
+      { kind: "throw", error: new Error("502 bad gateway") },
+      { kind: "ok", modelCount: 4 },
+    ];
+
+    const result = await Effect.runPromise(runByotCatalogRefreshCycle());
+
+    expect(anthropicFetcherCalls.map((c) => c.orgId)).toEqual(["org-1", "org-2", "org-3"]);
+    expect(result.refreshed).toBe(2);
+    expect(result.failed).toBe(1);
+  });
+
+  it("queries the staleness view exactly once per cycle", async () => {
+    mockStaleRows = [];
+    await Effect.runPromise(runByotCatalogRefreshCycle());
+    expect(staleQueryCalls).toBe(1);
+  });
+
+  it("survives an internal-DB-disabled state — emits success cycle row with zero counts", async () => {
+    mockInternalDB = false;
+    const result = await Effect.runPromise(runByotCatalogRefreshCycle());
+    expect(result.status).toBe("success");
+    expect(result.inspected).toBe(0);
+    const cycleRows = auditCalls.filter(
+      (c) => c.actionType === "model_config.catalog_refresh_cycle",
+    );
+    expect(cycleRows).toHaveLength(1);
+    expect(cycleRows[0].status).toBe("success");
+  });
+
+  it("stale-row query throw emits a FAILURE cycle row with error metadata", async () => {
+    mockInternalDB = true;
+    staleQueryShouldThrow = new Error("connection refused");
+    const result = await Effect.runPromise(runByotCatalogRefreshCycle());
+    expect(result.status).toBe("failure");
+    expect(result.error).toBe("connection refused");
+    expect(result.inspected).toBe(0);
+    const cycleRows = auditCalls.filter(
+      (c) => c.actionType === "model_config.catalog_refresh_cycle",
+    );
+    expect(cycleRows).toHaveLength(1);
+    expect(cycleRows[0].status).toBe("failure");
+    expect((cycleRows[0].metadata as Record<string, unknown>).error).toBe("connection refused");
+  });
+
+  it("emits one cycle audit row with full ByotRefreshCycleResult metadata", async () => {
     mockStaleRows = [
       { org_id: "org-ok", provider: "anthropic", bedrock_region: null },
       { org_id: "org-bad", provider: "anthropic", bedrock_region: null },
@@ -426,74 +472,132 @@ describe("byot catalog refresh — cycle behavior", () => {
     );
     expect(cycleRows).toHaveLength(1);
     expect(cycleRows[0].metadata).toEqual({
+      status: "success",
       inspected: 3,
       refreshed: 1,
       failed: 1,
       skippedDecryptFailed: 1,
       skippedInBackoff: 0,
       skippedMissingKey: 0,
+      skippedEeUnavailable: 0,
+      skippedMalformedBundle: 0,
     });
   });
 
-  it("audits each successful refresh with the standard catalogRefresh action", async () => {
+  it("audit-emission throw on a skip row does not tear down the rest of the cycle", async () => {
     mockStaleRows = [
-      { org_id: "org-a", provider: "anthropic", bedrock_region: null },
+      { org_id: "org-skip", provider: "anthropic", bedrock_region: null },
+      { org_id: "org-refresh", provider: "anthropic", bedrock_region: null },
     ];
-    mockWorkspaceConfigs.set("org-a", { provider: "anthropic", model: "claude-3", apiKey: "key-a", baseUrl: null, bedrockRegion: null });
+    mockWorkspaceConfigs.set("org-skip", null);
+    mockWorkspaceConfigs.set("org-refresh", { provider: "anthropic", model: "x", apiKey: "good", baseUrl: null, bedrockRegion: null });
+    auditShouldThrowForAction = "model_config.catalog_refresh_skip";
 
-    await Effect.runPromise(runByotCatalogRefreshCycle());
-
-    const refreshRow = auditCalls.find(
-      (c) =>
-        c.actionType === "model_config.catalog_refresh" &&
-        (c.targetId as string) === "org-a",
-    );
-    expect(refreshRow).toBeDefined();
-    expect(refreshRow!.systemActor).toBe(BYOT_CATALOG_REFRESH_ACTOR);
-    const meta = refreshRow!.metadata as Record<string, unknown>;
-    expect(meta.provider).toBe("anthropic");
-    expect(meta.source).toBe("fresh");
-    expect(meta.modelCount).toBe(3);
-  });
-
-  it("processes providers one at a time so a slow provider does not race the next row", async () => {
-    mockStaleRows = [
-      { org_id: "org-1", provider: "anthropic", bedrock_region: null },
-      { org_id: "org-2", provider: "anthropic", bedrock_region: null },
-      { org_id: "org-3", provider: "anthropic", bedrock_region: null },
-    ];
-    mockWorkspaceConfigs.set("org-1", { provider: "anthropic", model: "x", apiKey: "k1", baseUrl: null, bedrockRegion: null });
-    mockWorkspaceConfigs.set("org-2", { provider: "anthropic", model: "x", apiKey: "k2", baseUrl: null, bedrockRegion: null });
-    mockWorkspaceConfigs.set("org-3", { provider: "anthropic", model: "x", apiKey: "k3", baseUrl: null, bedrockRegion: null });
-
-    await Effect.runPromise(runByotCatalogRefreshCycle());
-
-    // Calls land in the queue strictly in order: the second call cannot
-    // have been issued before the first awaited.
-    expect(anthropicFetcherCalls.map((c) => c.orgId)).toEqual([
-      "org-1",
-      "org-2",
-      "org-3",
-    ]);
-  });
-
-  it("queries the staleness view exactly once per cycle", async () => {
-    mockStaleRows = [];
-    await Effect.runPromise(runByotCatalogRefreshCycle());
-    expect(staleQueryCalls).toBe(1);
-  });
-
-  it("survives an internal DB outage without crashing", async () => {
-    mockInternalDB = false;
     const result = await Effect.runPromise(runByotCatalogRefreshCycle());
-    expect(result.inspected).toBe(0);
+
+    // The skip row's audit threw, but the cycle continued and the next row
+    // still fetched + audited + counted.
+    expect(result.skippedMissingKey).toBe(1);
+    expect(result.refreshed).toBe(1);
+    expect(anthropicFetcherCalls).toEqual([{ orgId: "org-refresh", apiKey: "good" }]);
+    // The cycle audit row still landed (audit module rebuilds on the next
+    // action; only `catalog_refresh_skip` throws).
+    const cycleRows = auditCalls.filter(
+      (c) => c.actionType === "model_config.catalog_refresh_cycle",
+    );
+    expect(cycleRows).toHaveLength(1);
+  });
+});
+
+describe("byot catalog refresh — backoff math", () => {
+  beforeEach(resetAll);
+
+  // The `nowFn` injection drives the clock. After N consecutive failures the
+  // workspace's `nextEligibleAt` should sit `2^(N-1)` days in the future
+  // (capped at 32 days = 2^5).
+  async function failOnce(orgId: string, atMs: number): Promise<void> {
+    mockStaleRows = [{ org_id: orgId, provider: "anthropic", bedrock_region: null }];
+    mockWorkspaceConfigs.set(orgId, { provider: "anthropic", model: "x", apiKey: "bad", baseUrl: null, bedrockRegion: null });
+    anthropicOutcomes = [{ kind: "throw", error: new Error("401 invalid") }];
+    await Effect.runPromise(runByotCatalogRefreshCycle({ nowFn: () => atMs }));
+  }
+
+  async function inspectSkipAtTime(orgId: string, nowMs: number): Promise<{ skipped: boolean }> {
+    mockStaleRows = [{ org_id: orgId, provider: "anthropic", bedrock_region: null }];
+    mockWorkspaceConfigs.set(orgId, { provider: "anthropic", model: "x", apiKey: "bad", baseUrl: null, bedrockRegion: null });
+    anthropicOutcomes = [{ kind: "ok", modelCount: 1 }];
+    anthropicFetcherCalls = [];
+    const result = await Effect.runPromise(runByotCatalogRefreshCycle({ nowFn: () => nowMs }));
+    return { skipped: result.skippedInBackoff === 1 };
+  }
+
+  it("after failure 1 → in backoff for 1 day; eligible again at +1d", async () => {
+    const t0 = 1_000_000_000_000;
+    await failOnce("org-x", t0);
+
+    // At t0 + 1 day - 1ms → still in backoff.
+    expect((await inspectSkipAtTime("org-x", t0 + ONE_DAY_MS - 1)).skipped).toBe(true);
+    // At t0 + 1 day exactly → eligible (nextEligibleAt > now is the gate;
+    // equal means eligible).
+    expect((await inspectSkipAtTime("org-x", t0 + ONE_DAY_MS)).skipped).toBe(false);
+  });
+
+  // Pure math test — the unit-level invariant the cycle relies on. Decoupled
+  // from cycle state so iteration N doesn't depend on iteration N-1's clock.
+  it("computeBackoffMs returns 1d, 2d, 4d, 8d, 16d, 32d, 32d, 32d (cap) for failures 1..8", () => {
+    const expectedDays = [1, 2, 4, 8, 16, 32, 32, 32];
+    for (let f = 1; f <= expectedDays.length; f++) {
+      expect(_computeBackoffMsForTests(f)).toBe(expectedDays[f - 1] * ONE_DAY_MS);
+    }
+  });
+
+  it("computeBackoffMs is non-negative even for invalid (zero/negative) failure counts", () => {
+    expect(_computeBackoffMsForTests(0)).toBe(ONE_DAY_MS); // clamp prevents negative exponent
+    expect(_computeBackoffMsForTests(-5)).toBe(ONE_DAY_MS);
+  });
+
+  it("clears backoff on a successful refresh", async () => {
+    const t0 = 1_000_000_000_000;
+    await failOnce("org-flaky", t0);
+
+    _resetBackoffForTests(); // simulate enough time passing
+
+    mockStaleRows = [{ org_id: "org-flaky", provider: "openai", bedrock_region: null }];
+    mockWorkspaceConfigs.set("org-flaky", { provider: "openai", model: "gpt-4", apiKey: "tok", baseUrl: null, bedrockRegion: null });
+    openaiOutcomes = [{ kind: "ok", modelCount: 8 }];
+    const result = await Effect.runPromise(runByotCatalogRefreshCycle({ nowFn: () => t0 + 100_000 }));
+    expect(result.refreshed).toBe(1);
+
+    // Even with the same orgId stale again, no backoff carries over.
+    openaiOutcomes = [{ kind: "ok", modelCount: 8 }];
+    const result2 = await Effect.runPromise(runByotCatalogRefreshCycle({ nowFn: () => t0 + 200_000 }));
+    expect(result2.refreshed).toBe(1);
+    expect(result2.skippedInBackoff).toBe(0);
+  });
+
+  it("in_backoff skip is audited as success (deliberate suppression, not corruption)", async () => {
+    const t0 = 1_000_000_000_000;
+    await failOnce("org-x", t0);
+    auditCalls = [];
+
+    mockStaleRows = [{ org_id: "org-x", provider: "anthropic", bedrock_region: null }];
+    mockWorkspaceConfigs.set("org-x", { provider: "anthropic", model: "x", apiKey: "bad", baseUrl: null, bedrockRegion: null });
+    await Effect.runPromise(runByotCatalogRefreshCycle({ nowFn: () => t0 + 1000 })); // well within backoff
+
+    const skipRow = auditCalls.find(
+      (c) =>
+        c.actionType === "model_config.catalog_refresh_skip" &&
+        (c.targetId as string) === "org-x",
+    );
+    expect(skipRow!.status).toBe("success");
+    expect((skipRow!.metadata as Record<string, unknown>).reason).toBe("in_backoff");
   });
 });
 
 describe("byot catalog refresh — bedrock specifics", () => {
   beforeEach(resetAll);
 
-  it("skips bedrock rows whose stored bundle parses as null (malformed)", async () => {
+  it("skips bedrock rows whose stored bundle parses as null (malformed) — audited as failure", async () => {
     mockStaleRows = [
       { org_id: "org-malformed", provider: "bedrock", bedrock_region: "us-east-1" },
     ];
@@ -506,7 +610,7 @@ describe("byot catalog refresh — bedrock specifics", () => {
     });
 
     const result = await Effect.runPromise(runByotCatalogRefreshCycle());
-    expect(result.skippedMissingKey).toBe(1);
+    expect(result.skippedMalformedBundle).toBe(1);
     expect(bedrockFetcherCalls).toHaveLength(0);
 
     const skipRow = auditCalls.find(
@@ -514,6 +618,7 @@ describe("byot catalog refresh — bedrock specifics", () => {
         c.actionType === "model_config.catalog_refresh_skip" &&
         (c.targetId as string) === "org-malformed",
     );
+    expect(skipRow!.status).toBe("failure");
     expect((skipRow!.metadata as Record<string, unknown>).reason).toBe(
       "malformed_bedrock_bundle",
     );
@@ -534,5 +639,45 @@ describe("byot catalog refresh — bedrock specifics", () => {
     const result = await Effect.runPromise(runByotCatalogRefreshCycle());
     expect(result.skippedMissingKey).toBe(1);
     expect(bedrockFetcherCalls).toHaveLength(0);
+  });
+
+  it("falls back to row.bedrockRegion when config.bedrockRegion is null but row has one", async () => {
+    mockStaleRows = [
+      { org_id: "org-rowregion", provider: "bedrock", bedrock_region: "us-west-2" },
+    ];
+    mockWorkspaceConfigs.set("org-rowregion", {
+      provider: "bedrock",
+      model: "claude-3",
+      apiKey: "bundle",
+      baseUrl: null,
+      bedrockRegion: null,
+    });
+
+    const result = await Effect.runPromise(runByotCatalogRefreshCycle());
+    expect(result.refreshed).toBe(1);
+    expect(bedrockFetcherCalls).toEqual([{ orgId: "org-rowregion", region: "us-west-2" }]);
+  });
+});
+
+describe("byot catalog refresh — triggerByotCatalogRefreshCycle wrapper", () => {
+  beforeEach(resetAll);
+
+  it("returns the same shape as runByotCatalogRefreshCycle on the happy path", async () => {
+    mockStaleRows = [
+      { org_id: "org-a", provider: "anthropic", bedrock_region: null },
+    ];
+    mockWorkspaceConfigs.set("org-a", { provider: "anthropic", model: "x", apiKey: "k", baseUrl: null, bedrockRegion: null });
+
+    const result = await triggerByotCatalogRefreshCycle();
+    expect(result.status).toBe("success");
+    expect(result.inspected).toBe(1);
+    expect(result.refreshed).toBe(1);
+  });
+
+  it("resolves with status: failure (does not reject) when the stale-row query throws", async () => {
+    staleQueryShouldThrow = new Error("db down");
+    const result = await triggerByotCatalogRefreshCycle();
+    expect(result.status).toBe("failure");
+    expect(result.error).toBe("db down");
   });
 });

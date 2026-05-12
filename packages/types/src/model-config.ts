@@ -272,3 +272,65 @@ export interface GatewayCatalogResponse {
   /** True when the live catalog fetch failed and we returned a bundled fallback. */
   fallback: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// BYOT catalog refresh scheduler (#2284) — shared wire format
+// ---------------------------------------------------------------------------
+
+/**
+ * Reasons the daily BYOT catalog refresh skipped a workspace without
+ * contacting the upstream provider. Pinned as a single literal tuple so the
+ * API audit metadata, admin route response, and UI rendering stay in lockstep.
+ *
+ * Skip categories:
+ *   - `in_backoff` — workspace recently failed; sitting out its backoff window
+ *     (deliberate suppression, audit `status: success`)
+ *   - `ee_unavailable` — install is self-hosted without `@atlas/ee`
+ *     (deliberate, audit `status: success`)
+ *   - `missing_byot_key` — workspace's config no longer carries a BYOT key
+ *     for this provider (e.g. mid-rotation; audit `status: success`)
+ *   - `decrypt_failed` — the stored ciphertext could not be decrypted
+ *     (admin must re-enter key, audit `status: failure`)
+ *   - `malformed_bedrock_bundle` — bedrock cred JSON parsed as null
+ *     (admin must re-enter creds, audit `status: failure`)
+ */
+export const BYOT_CATALOG_REFRESH_SKIP_REASONS = [
+  "in_backoff",
+  "ee_unavailable",
+  "missing_byot_key",
+  "decrypt_failed",
+  "malformed_bedrock_bundle",
+] as const;
+export type ByotCatalogRefreshSkipReason =
+  (typeof BYOT_CATALOG_REFRESH_SKIP_REASONS)[number];
+
+/**
+ * Cycle-level outcome of one BYOT catalog refresh tick.
+ *
+ * `status: "failure"` means the tick failed before producing accurate per-row
+ * counts (e.g. the stale-row query itself threw). Per-bucket numbers are zero
+ * in that case and `error` carries the message; the admin manual trigger
+ * surfaces this as HTTP 500.
+ *
+ * `status: "success"` is the normal path — every dispatched row settled into
+ * one of the buckets below, including a cycle where every row failed
+ * individually (which still produces an accurate audit trail).
+ *
+ * Invariant (success path):
+ *   refreshed + failed + skippedDecryptFailed + skippedInBackoff
+ *   + skippedMissingKey + skippedEeUnavailable + skippedMalformedBundle
+ *   === inspected
+ */
+export interface ByotRefreshCycleResult {
+  status: "success" | "failure";
+  inspected: number;
+  refreshed: number;
+  failed: number;
+  skippedDecryptFailed: number;
+  skippedInBackoff: number;
+  skippedMissingKey: number;
+  skippedEeUnavailable: number;
+  skippedMalformedBundle: number;
+  /** Present only when `status === "failure"`. */
+  error?: string;
+}

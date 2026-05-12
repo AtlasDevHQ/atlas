@@ -594,15 +594,20 @@ export const ADMIN_ACTIONS = {
      *
      * `catalogRefreshCycle` (#2284) — emitted once per scheduler tick by the
      * BYOT catalog refresh job, even at zero rows. The absence of a cycle row
-     * over a retention window is the signal that the refresh scheduler stopped
-     * (same forensic invariant as `audit_log.purge_cycle`). Uses the reserved
-     * `system:byot-catalog-refresh` actor.
+     * over a **48-hour window** is the signal the refresh scheduler stopped
+     * (one missed daily tick is noise; two is a problem). Status is `success`
+     * on a healthy cycle; `failure` if the stale-row query itself threw
+     * before producing per-row counts. Same forensic invariant as
+     * `audit_log.purge_cycle`. Uses the reserved `system:byot-catalog-refresh`
+     * actor.
      *
      * `catalogRefreshSkip` (#2284) — emitted per workspace the refresh job
      * skipped without contacting the upstream provider. Metadata carries
-     * `{ provider, reason: 'decrypt_failed' | 'missing_byot_key' |
-     * 'in_backoff' | 'malformed_bedrock_bundle' }` so triage can see why a
-     * workspace's catalog is aging without action.
+     * `{ provider, reason }` where reason ∈ `ByotCatalogRefreshSkipReason`
+     * (`@useatlas/types`). Status is `failure` for `decrypt_failed` and
+     * `malformed_bedrock_bundle` (admin must re-enter credentials);
+     * `success` for `in_backoff` / `ee_unavailable` / `missing_byot_key`
+     * (deliberate suppressions).
      */
     catalogRefresh: "model_config.catalog_refresh",
     catalogRefreshCycle: "model_config.catalog_refresh_cycle",

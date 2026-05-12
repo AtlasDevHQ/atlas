@@ -11,6 +11,7 @@ import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { CalendarClock, Play, Loader2 } from "lucide-react";
+import type { ByotRefreshCycleResult } from "@/ui/lib/types";
 
 const SchedulerTaskSchema = z.object({
   id: z.string(),
@@ -24,17 +25,8 @@ const ListTasksResponseSchema = z.object({
   tasks: z.array(SchedulerTaskSchema),
 });
 
-interface TriggerResult {
-  inspected: number;
-  refreshed: number;
-  skippedDecryptFailed: number;
-  skippedInBackoff: number;
-  skippedMissingKey: number;
-  failed: number;
-}
-
 export default function SchedulerTasksPage() {
-  const [lastRun, setLastRun] = useState<{ taskId: string; result: TriggerResult } | null>(null);
+  const [lastRun, setLastRun] = useState<ByotRefreshCycleResult | null>(null);
 
   const { data, loading, error, refetch } = useAdminFetch(
     "/api/v1/admin/scheduler/tasks",
@@ -42,18 +34,18 @@ export default function SchedulerTasksPage() {
   );
 
   const { mutate: triggerByot, saving: triggering, error: triggerError, clearError } =
-    useAdminMutation<TriggerResult>({
+    useAdminMutation<ByotRefreshCycleResult>({
       path: "/api/v1/admin/scheduler/tasks/byot-catalog-refresh/run",
       method: "POST",
       invalidates: refetch,
     });
 
-  async function handleTrigger(taskId: string) {
+  async function handleTrigger() {
     if (triggering) return;
     setLastRun(null);
     const result = await triggerByot();
     if (result.ok && result.data) {
-      setLastRun({ taskId, result: result.data });
+      setLastRun(result.data);
     }
   }
 
@@ -107,11 +99,7 @@ export default function SchedulerTasksPage() {
                       Audit actor: <code className="font-mono">{task.systemActor}</code>
                     </p>
                     {task.id === "byot-catalog-refresh" && (
-                      <Button
-                        size="sm"
-                        onClick={() => handleTrigger(task.id)}
-                        disabled={triggering}
-                      >
+                      <Button size="sm" onClick={handleTrigger} disabled={triggering}>
                         {triggering ? (
                           <Loader2 className="mr-2 size-3 animate-spin" />
                         ) : (
@@ -120,16 +108,18 @@ export default function SchedulerTasksPage() {
                         Run now
                       </Button>
                     )}
-                    {lastRun?.taskId === task.id && (
+                    {lastRun && task.id === "byot-catalog-refresh" && (
                       <div className="rounded-md border bg-muted/30 p-3 text-sm">
                         <p className="mb-1 font-medium">Last manual run:</p>
                         <ul className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-xs sm:grid-cols-3">
-                          <li>inspected: {lastRun.result.inspected}</li>
-                          <li>refreshed: {lastRun.result.refreshed}</li>
-                          <li>failed: {lastRun.result.failed}</li>
-                          <li>skipped (decrypt): {lastRun.result.skippedDecryptFailed}</li>
-                          <li>skipped (backoff): {lastRun.result.skippedInBackoff}</li>
-                          <li>skipped (missing key): {lastRun.result.skippedMissingKey}</li>
+                          <li>inspected: {lastRun.inspected}</li>
+                          <li>refreshed: {lastRun.refreshed}</li>
+                          <li>failed: {lastRun.failed}</li>
+                          <li>skipped (decrypt): {lastRun.skippedDecryptFailed}</li>
+                          <li>skipped (backoff): {lastRun.skippedInBackoff}</li>
+                          <li>skipped (missing key): {lastRun.skippedMissingKey}</li>
+                          <li>skipped (no EE): {lastRun.skippedEeUnavailable}</li>
+                          <li>skipped (malformed): {lastRun.skippedMalformedBundle}</li>
                         </ul>
                       </div>
                     )}

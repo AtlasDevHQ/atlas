@@ -10,19 +10,23 @@
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { runEffect } from "@atlas/api/lib/effect/hono";
+import { RequestContext } from "@atlas/api/lib/effect/services";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   isByotCatalogRefreshSchedulerRunning,
   triggerByotCatalogRefreshCycle,
   BYOT_CATALOG_REFRESH_ACTOR,
 } from "@atlas/api/lib/scheduler/byot-catalog-refresh";
+import type { ByotRefreshCycleResult } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requirePermission } from "./admin-router";
 
 const log = createLogger("admin-scheduler");
 
 // ---------------------------------------------------------------------------
-// Schemas
+// Schemas — TriggerResultSchema is checked against ByotRefreshCycleResult at
+// compile time via `satisfies` so the wire shape can't drift from the type
+// without breaking the build.
 // ---------------------------------------------------------------------------
 
 const SchedulerTaskSchema = z.object({
@@ -38,13 +42,17 @@ const ListTasksResponseSchema = z.object({
 });
 
 const TriggerResultSchema = z.object({
+  status: z.enum(["success", "failure"]),
   inspected: z.number().int().nonnegative(),
   refreshed: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
   skippedDecryptFailed: z.number().int().nonnegative(),
   skippedInBackoff: z.number().int().nonnegative(),
   skippedMissingKey: z.number().int().nonnegative(),
-  failed: z.number().int().nonnegative(),
-});
+  skippedEeUnavailable: z.number().int().nonnegative(),
+  skippedMalformedBundle: z.number().int().nonnegative(),
+  error: z.string().optional(),
+}) satisfies z.ZodType<ByotRefreshCycleResult>;
 
 // ---------------------------------------------------------------------------
 // Routes
@@ -78,7 +86,9 @@ const triggerByotRefreshRoute = createRoute({
   description:
     "Runs a single refresh cycle synchronously and returns the outcome counts. " +
     "Audited via the standard `model_config.catalog_refresh_cycle` action with " +
-    "actor `system:byot-catalog-refresh`.",
+    "actor `system:byot-catalog-refresh`. Returns 500 with `requestId` if the " +
+    "cycle failed before producing per-row counts (e.g. the stale-row query " +
+    "itself threw).",
   responses: {
     200: {
       description: "Cycle complete",
@@ -134,10 +144,26 @@ adminScheduler.openapi(triggerByotRefreshRoute, async (c) => {
     c,
     Effect.gen(function* () {
       log.info("Manual BYOT catalog refresh trigger");
+      const { requestId } = yield* RequestContext;
       const result = yield* Effect.tryPromise({
         try: () => triggerByotCatalogRefreshCycle(),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
+      if (result.status === "failure") {
+        // The cycle audited the failure already; the route's job is to surface
+        // it to the admin so the "Run now" button doesn't show green on a
+        // real outage.
+        return c.json(
+          {
+            error: "cycle_failed",
+            message:
+              result.error ??
+              "BYOT catalog refresh cycle failed before producing per-row counts. Check API logs.",
+            requestId,
+          },
+          500,
+        );
+      }
       return c.json(result, 200);
     }),
     { label: "trigger byot catalog refresh" },

@@ -34,23 +34,25 @@ The cycle:
    - **In backoff?** Skip (audit log entry `model_config.catalog_refresh_skip` with `reason: in_backoff`).
    - **Decrypt failure?** Skip (`reason: decrypt_failed`) — the workspace admin needs to re-enter the key.
    - **Missing key / wrong provider?** Skip (`reason: missing_byot_key`).
+   - **EE module not installed?** Skip (`reason: ee_unavailable`) — self-hosted installs without `@atlas/ee` have no workspace configs.
+   - **Malformed bedrock bundle?** Skip (`reason: malformed_bedrock_bundle`).
    - **Refresh succeeds?** Standard `model_config.catalog_refresh` audit row with `source: fresh`, `triggeredBy: scheduler`.
    - **Refresh fails?** Failure audit row plus an in-memory backoff increment.
 
 ### Backoff
 
-Consecutive failures trigger exponential backoff: 1 day, then 2, 4, 8, 16, 32 days (capped at ~32 days). A successful refresh clears the backoff state. The state is held in-process — a pod restart resets all counters. For a daily cycle this is acceptable: worst case a permanently-broken workspace gets retried a handful of extra times after a deploy.
+Consecutive failures trigger exponential backoff: 1 day, then 2, 4, 8, 16, 32 days (capped at exactly 32 days). A successful refresh clears the backoff state. The state is held in-process — a pod restart resets all counters. For a daily cycle this is acceptable: worst case a permanently-broken workspace gets retried a handful of extra times after a deploy.
 
 ## Audit trail
 
 Every scheduler run leaves a forensic trail in `admin_action_log`:
 
-| Action type | When emitted | Metadata |
-|---|---|---|
-| `model_config.catalog_refresh_cycle` | Once per tick, even at zero rows | `{ inspected, refreshed, failed, skippedDecryptFailed, skippedInBackoff, skippedMissingKey }` |
-| `model_config.catalog_refresh` | Per successful workspace refresh | `{ provider, modelCount, source, triggeredBy: "scheduler" }` |
-| `model_config.catalog_refresh` (failure) | Per failed workspace refresh | `{ provider, error, triggeredBy: "scheduler" }` |
-| `model_config.catalog_refresh_skip` | Per skipped workspace | `{ provider, reason: "decrypt_failed" \| "missing_byot_key" \| "in_backoff" \| "malformed_bedrock_bundle" }` |
+| Action type | When emitted | Status | Metadata |
+|---|---|---|---|
+| `model_config.catalog_refresh_cycle` | Once per tick, even at zero rows | `success` on a healthy cycle; `failure` if the stale-row query itself threw | full `ByotRefreshCycleResult` (every bucket count, plus `error` on failure) |
+| `model_config.catalog_refresh` | Per successful workspace refresh | `success` | `{ provider, modelCount, source, triggeredBy: "scheduler" }` |
+| `model_config.catalog_refresh` | Per failed workspace refresh | `failure` | `{ provider, error, triggeredBy: "scheduler" }` |
+| `model_config.catalog_refresh_skip` | Per skipped workspace | `success` for deliberate suppressions (`in_backoff`, `ee_unavailable`, `missing_byot_key`); `failure` for corruption needing admin action (`decrypt_failed`, `malformed_bedrock_bundle`) | `{ provider, reason }` |
 
 The actor for every row is `system:byot-catalog-refresh`. Forensic queries scanning for "did the scheduler run today" filter on:
 
@@ -62,7 +64,7 @@ WHERE actor_id = 'system:byot-catalog-refresh'
 ORDER BY timestamp DESC;
 ```
 
-The absence of a cycle row over a 48h window is the signal the scheduler stopped — investigate API pod health.
+The absence of a cycle row over a 48-hour window is the signal the scheduler stopped — investigate API pod health. The 48-hour window allows for one missed daily tick before triage (a single missed tick is noise; two is a problem).
 
 ## Manual trigger
 

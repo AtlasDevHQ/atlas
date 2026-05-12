@@ -444,6 +444,10 @@ describe("useMcpConnect reset()", () => {
       if (result.current.status === "idle") {
         expect(result.current.accessToken).toBeNull();
         expect(result.current.error).toBeNull();
+        // #2196: the new `workspaces` field must also clear on reset,
+        // or a stale post-success array would survive into the next
+        // flow and break the discriminated-union type contract.
+        expect(result.current.workspaces).toBeNull();
       }
     } finally {
       window.open = originalOpen;

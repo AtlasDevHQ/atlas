@@ -454,12 +454,71 @@ describe("completeConnect", () => {
         jsonResponse({ access_token: tokenWithBadClaim, expires_in: 3600 }),
     });
 
-    const result = await completeConnect({
-      ...baseComplete,
-      fetchImpl: fetchImpl as unknown as typeof fetch,
+    // Capture console.warn — the SDK emits a diagnostic for the
+    // malformed branch so a broken upstream issuer surfaces in operator
+    // logs rather than silently downgrading every user to single-workspace.
+    const warnCalls: unknown[][] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnCalls.push(args);
+    };
+    try {
+      const result = await completeConnect({
+        ...baseComplete,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      expect(result.workspaceId).toBe(WORKSPACE_ID);
+      expect(result.workspaces).toEqual([]);
+      // One warning fired for the non-array branch.
+      expect(warnCalls.length).toBe(1);
+      expect(String(warnCalls[0][0])).toContain("not an array");
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  test("mixed-type plural claim drops non-strings, keeps valid entries (#2196)", async () => {
+    // The realistic malformed shape: the claim IS an array but contains
+    // a mix of valid strings, null, numbers, and empty strings. A bug
+    // that dropped the filter would return the raw array — this test
+    // pins the filter as the load-bearing narrow.
+    const tokenWithMixedClaim = jwt({
+      iss: `${API_URL}/api/auth`,
+      sub: "user-1",
+      aud: `${API_URL}/mcp`,
+      azp: "client-abc",
+      exp: Math.floor(Date.now() / 1000) + 3600,
+      "https://atlas.useatlas.dev/workspace_id": WORKSPACE_ID,
+      "https://atlas.useatlas.dev/workspace_ids": [
+        "ws-1",
+        null,
+        42,
+        "",
+        "ws-2",
+      ],
     });
-    expect(result.workspaceId).toBe(WORKSPACE_ID);
-    expect(result.workspaces).toEqual([]);
+    const { fetchImpl } = captureFetch({
+      "/oauth2/token": () =>
+        jsonResponse({ access_token: tokenWithMixedClaim, expires_in: 3600 }),
+    });
+
+    const warnCalls: unknown[][] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnCalls.push(args);
+    };
+    try {
+      const result = await completeConnect({
+        ...baseComplete,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      expect(result.workspaces).toEqual(["ws-1", "ws-2"]);
+      // Partial-filter diagnostic fired.
+      expect(warnCalls.length).toBe(1);
+      expect(String(warnCalls[0][0])).toContain("3 non-string or empty");
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 
   test("double-submit of the same code surfaces the server's invalid_grant", async () => {
@@ -656,6 +715,26 @@ describe("buildConfig", () => {
       headers: { Authorization: "Bearer access-token-xyz" },
     });
     expect("env" in cfg.mcpServers.atlas).toBe(false);
+  });
+
+  test("multi-workspace: throws workspace_not_in_grant_list when workspaceId is not in workspaces (#2196)", () => {
+    // Defensive throw — silently encoding a stale picker value into the
+    // URL would surface as a generic 403 cross_workspace_denied at
+    // runtime with no hint that the embedder's picker had a bad value.
+    try {
+      buildConfig({
+        client: "claude-desktop",
+        apiUrl: API_URL,
+        accessToken: "access-token-xyz",
+        workspaceId: "ws-stale",
+        workspaces: MULTI_WORKSPACE_IDS,
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(AtlasMcpError);
+      expect((err as AtlasMcpError).code).toBe("workspace_not_in_grant_list");
+      expect((err as AtlasMcpError).message).toContain("ws-stale");
+    }
   });
 
   test("legacy: omitting workspaces still produces the single-workspace shape (#2196 backward compat)", () => {

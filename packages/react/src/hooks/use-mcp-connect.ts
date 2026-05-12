@@ -99,8 +99,13 @@ export type UseMcpConnectReturn =
        * `workspaces.length > 1` to gate a post-onboarding workspace
        * picker; `workspaceId` is always the default selection (the
        * singular claim).
+       *
+       * `ReadonlyArray<string>` to match the SDK's
+       * `CompleteConnectResult.workspaces` shape and prevent in-place
+       * mutation of `useState`-backed React state — `result.workspaces.sort()`
+       * would silently corrupt the picker's source-of-truth across renders.
        */
-      readonly workspaces: string[];
+      readonly workspaces: ReadonlyArray<string>;
       readonly expiresAt: number;
       readonly error: null;
     }
@@ -245,7 +250,7 @@ export function useMcpConnect(options: UseMcpConnectOptions): UseMcpConnectRetur
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState<string | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
-  const [workspaces, setWorkspaces] = useState<string[] | null>(null);
+  const [workspaces, setWorkspaces] = useState<ReadonlyArray<string> | null>(null);
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [error, setError] = useState<AtlasMcpError | Error | null>(null);
 
@@ -485,7 +490,10 @@ export function useMcpConnect(options: UseMcpConnectOptions): UseMcpConnectRetur
       accessToken: accessToken!,
       refreshToken,
       workspaceId: workspaceId!,
-      workspaces: workspaces ?? [],
+      // Same `!` pattern as the adjacent fields — `applyResult` writes
+      // every field together when transitioning to `success`, so the
+      // null branch is unreachable here.
+      workspaces: workspaces!,
       expiresAt: expiresAt!,
       error: null,
     };

@@ -2,7 +2,7 @@
 
 import { useMcpConnect } from "@useatlas/react/hooks";
 import { buildConfig, type McpClientConfig, type McpClientId } from "@useatlas/sdk";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 /** Drop the `kind` discriminator so the paste output is clean JSON. */
 function stripKind(cfg: McpClientConfig): Record<string, unknown> {
@@ -49,9 +49,24 @@ export default function Page() {
   // lets the user pin a different default before copying the config.
   const [selectedWorkspace, setSelectedWorkspace] = useState<string | null>(null);
 
+  // Reconnect-without-Disconnect can mint a token against a different
+  // session — the previously-picked workspace might not be in the new
+  // grant list. Clear the selection whenever the token's default
+  // workspace changes; the user re-picks from the new set.
+  const successWorkspaceId =
+    result.status === "success" ? result.workspaceId : null;
+  useEffect(() => {
+    setSelectedWorkspace(null);
+  }, [successWorkspaceId]);
+
+  // `buildConfig` throws if the picked workspace isn't in the granted
+  // set — be defensive and only honor the picker selection when it's
+  // still a valid member, otherwise fall back to the JWT default.
   const effectiveWorkspaceId =
     result.status === "success"
-      ? selectedWorkspace ?? result.workspaceId
+      ? selectedWorkspace !== null && result.workspaces.includes(selectedWorkspace)
+        ? selectedWorkspace
+        : result.workspaceId
       : null;
 
   const config =

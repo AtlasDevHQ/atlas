@@ -269,6 +269,7 @@ Every helper throws `AtlasMcpError` with a stable `code`:
 | `malformed_jwt` | The access token wasn't a 3-part JWT |
 | `missing_workspace_claim` | The token had no `https://atlas.useatlas.dev/workspace_id` claim |
 | `grant_not_supported` | `connectMachineToMachine` until [#2024](https://github.com/AtlasDevHQ/atlas/issues/2024) lands |
+| `workspace_not_in_grant_list` | `buildConfig` was called with `workspaces` non-empty and `workspaceId` not in that list. Programmer error — the picker chose a workspace the token didn't grant. |
 
 All errors include the original cause via `Error.cause` when relevant
 (network failures, JSON parse failures), so logging `err.cause` recovers

@@ -92,6 +92,8 @@ cd my-app && bun run dev
 
 The `--demo` flag seeds the canonical NovaMart e-commerce dataset (52 tables, ~480K rows) — twelve generic e-commerce KPIs ship as starter prompts inside the chat UI; the canonical 5 above drive the eval harness ([#2025](https://github.com/AtlasDevHQ/atlas/issues/2025)) and the docs/landing copy.
 
+The default landing for fresh installs is chat-first — admins can flip to admin in **Settings → Profile**. See the [Default Landing guide](https://docs.useatlas.dev/guides/default-landing) for the underlying preference.
+
 ## Embed in your app
 
 Atlas also ships an embeddable chat widget for any frontend:

@@ -312,6 +312,20 @@ try {
   );
 }
 
+// Per-user UI preferences (#2022). GET + PATCH `default_landing` — the
+// switch that decides whether `/` renders chat-first or redirects into
+// the admin console. The Settings → Profile "Interface" section is the
+// only writer; the root page is the only reader.
+try {
+  const { mePreferences } = await import("./routes/me-preferences");
+  app.route("/api/v1/me/preferences", mePreferences);
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load me-preferences routes — Settings → Profile interface preference will be unavailable",
+  );
+}
+
 // Admin routes — always available (auth-gated to admin role).
 // Wrapped in try/catch so a missing dependency (e.g. js-yaml) doesn't crash the entire server.
 try {

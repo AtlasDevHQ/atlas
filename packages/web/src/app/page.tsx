@@ -2,6 +2,7 @@
 
 import { Suspense, useState, useRef, useEffect } from "react";
 import dynamic from "next/dynamic";
+import { useRouter } from "next/navigation";
 import { useChat } from "@ai-sdk/react";
 import { isToolUIPart, getToolName } from "ai";
 import { cn } from "@/lib/utils";
@@ -12,8 +13,9 @@ import { useConversations, transformMessages } from "@/ui/hooks/use-conversation
 import { ConversationSidebar } from "@/ui/components/conversations/conversation-sidebar";
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { useAtlasTransport } from "@/ui/hooks/use-atlas-transport";
+import { useDefaultLanding } from "@/ui/hooks/use-default-landing";
 import { authClient } from "@/lib/auth/client";
-import { NavBar } from "@/ui/components/tour/nav-bar";
+import { ChatTopBar } from "@/ui/components/chat/chat-top-bar";
 import { IncidentBanner } from "@/ui/components/incident-banner";
 import { AssistantTurn } from "@/ui/components/chat/assistant-turn";
 import { ErrorBanner } from "@/ui/components/chat/error-banner";
@@ -85,6 +87,21 @@ function ChatPage() {
     | undefined;
   const isAdmin = user?.role === "admin" || user?.role === "owner" || user?.role === "platform_admin";
   const isSignedIn = !!user;
+
+  // #2022 — per-user landing preference. Admins who opted into the admin
+  // console as their home get a one-time redirect; everyone else lands on
+  // chat. Only fetched once the session resolves so we don't 401 the
+  // endpoint and fall through to the safe `chat` default by accident.
+  const router = useRouter();
+  const { defaultLanding, loading: landingLoading } = useDefaultLanding(
+    isSignedIn && !session.isPending,
+  );
+  const redirectingToAdmin = isAdmin && defaultLanding === "admin";
+  useEffect(() => {
+    if (landingLoading) return;
+    if (!redirectingToAdmin) return;
+    router.replace("/admin");
+  }, [landingLoading, redirectingToAdmin, router]);
 
   const {
     transport,
@@ -345,6 +362,18 @@ function ChatPage() {
     );
   }
 
+  // Suppress the chat render during the one-frame window between the
+  // preference fetch resolving as `admin` and the router landing on /admin.
+  // Without this, the user sees a flash of the chat surface before the
+  // redirect commits.
+  if (redirectingToAdmin) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <p className="text-sm text-zinc-500">Loading admin console...</p>
+      </div>
+    );
+  }
+
   return (
     <GuidedTour
       apiUrl={getApiUrl()}
@@ -354,7 +383,7 @@ function ChatPage() {
     >
       <div className="flex h-full flex-col">
         <IncidentBanner slug={OPENSTATUS_SLUG} statusUrl={STATUS_URL} />
-        <NavBar isAdmin={isAdmin} />
+        <ChatTopBar isAdmin={isAdmin} />
         <div className="flex flex-1 overflow-hidden">
           {convos.available && (
             <ConversationSidebar

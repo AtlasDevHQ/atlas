@@ -159,25 +159,12 @@ export default function ConsentPage() {
       // `oauth_query` back to the server via the `oauthProviderClient`
       // fetch hook. The server completes the authorization flow and
       // returns either a 302 redirect URL or a JSON envelope carrying it.
-      //
-      // The cast through `unknown` is required because `authClient` is
-      // hand-typed as `OrgClient` in packages/web/src/lib/auth/client.ts
-      // — the explicit type was added when organization plugin types
-      // failed to infer through `createAuthClient`. The same erasure
-      // hides the `oauth2.*` surface contributed by `oauthProviderClient`.
-      // Adding it to OrgClient would couple auth-client.ts to every
-      // page that touches OAuth; localizing the cast here keeps the
-      // boundary tight.
-      const res = (await (authClient as unknown as {
-        oauth2: {
-          consent: (
-            opts: { accept: boolean; scope?: string },
-          ) => Promise<{
-            data?: { redirectURI?: string };
-            error?: { message?: string };
-          } | undefined>;
-        };
-      }).oauth2.consent({ accept })) ?? undefined;
+      const consent = authClient.oauth2?.consent;
+      if (typeof consent !== "function") {
+        setError("OAuth consent client is not available. Restart the flow from your OAuth client.");
+        return;
+      }
+      const res = (await consent({ accept })) ?? undefined;
       if (res?.error) {
         setError(res.error.message ?? "Consent failed.");
         return;

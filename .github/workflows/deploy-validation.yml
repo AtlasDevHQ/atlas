@@ -253,10 +253,16 @@ jobs:
           file: deploy/api/Dockerfile
           load: true
           tags: atlas-api:boot-smoke
-          # gha cache makes warm runs 30-60s vs 3-4 min cold. Branch and
-          # main share the cache so PR builds reuse main's layers.
+          # cache-from reads intermediate layers populated by `boot-build`
+          # (which writes mode=max to the same scope). Boot Smoke writes
+          # mode=min so it only exports the final-image (runner-stage)
+          # layers — uploading intermediates here just duplicates what
+          # boot-build already pushed and was costing ~7 min per run on
+          # GHA cache writes (single layers taking ~60s each). Warm runs
+          # land in ~4-5 min — dominated by `load: true` tarball export
+          # (~2 min) and the runner-stage layer write (~1-2 min).
           cache-from: type=gha,scope=boot-smoke
-          cache-to: type=gha,scope=boot-smoke,mode=max
+          cache-to: type=gha,scope=boot-smoke,mode=min
 
       - name: Run API container
         run: |

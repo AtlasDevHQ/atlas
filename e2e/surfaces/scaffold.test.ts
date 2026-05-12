@@ -10,13 +10,18 @@
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
-import { execSync } from "child_process";
+import { execFileSync, execSync } from "child_process";
 
 // --- Constants ---
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../..");
 const CREATE_ATLAS = path.join(REPO_ROOT, "create-atlas");
 const SCAFFOLDER = path.join(CREATE_ATLAS, "index.ts");
+
+// Pin to the absolute path of the running Bun binary instead of relying on
+// PATH resolution for "bun" — CodeQL flags an unpinned command as
+// js/shell-command-injection-from-environment.
+const BUN = process.execPath;
 
 // Generous timeouts — builds can take 60s+ on slow machines
 const SCAFFOLD_TIMEOUT = 120_000;
@@ -29,10 +34,13 @@ function makeTempDir(): string {
   return fs.mkdtempSync(path.join(fs.realpathSync(process.env.TMPDIR ?? "/tmp"), "atlas-e2e-scaffold-"));
 }
 
-/** Run a shell command, re-throwing with captured stderr/stdout on failure. */
-function run(cmd: string, opts: { cwd: string; timeout: number; env?: NodeJS.ProcessEnv }): void {
+/**
+ * Run a command via execFile (no shell, explicit argv) and re-throw with
+ * captured stderr/stdout on failure.
+ */
+function run(cmd: string, args: string[], opts: { cwd: string; timeout: number; env?: NodeJS.ProcessEnv }): void {
   try {
-    execSync(cmd, { ...opts, stdio: "pipe" });
+    execFileSync(cmd, args, { ...opts, stdio: "pipe" });
   } catch (err: unknown) {
     const e = err as Error & { stderr?: Buffer; stdout?: Buffer };
     const stderr = e.stderr?.toString().trim();
@@ -52,10 +60,11 @@ function scaffold(
   tmpDir: string,
   projectName: string,
   platform: string,
-  extraFlags = "",
+  extraFlags: string[] = [],
 ): void {
   run(
-    `bun ${SCAFFOLDER} ${projectName} --defaults --platform ${platform} ${extraFlags}`.trim(),
+    BUN,
+    [SCAFFOLDER, projectName, "--defaults", "--platform", platform, ...extraFlags],
     { cwd: tmpDir, timeout: SCAFFOLD_TIMEOUT, env: { ...process.env, NO_COLOR: "1" } },
   );
 }
@@ -87,9 +96,9 @@ function readJson(filePath: string): Record<string, unknown> {
 
 beforeAll(() => {
   // Install create-atlas deps (not a workspace package — has its own node_modules)
-  run("bun install", { cwd: CREATE_ATLAS, timeout: 30_000 });
+  run(BUN, ["install"], { cwd: CREATE_ATLAS, timeout: 30_000 });
   // Run prepublishOnly to sync templates from monorepo source
-  run("bun run prepublishOnly", { cwd: CREATE_ATLAS, timeout: 60_000 });
+  run(BUN, ["run", "prepublishOnly"], { cwd: CREATE_ATLAS, timeout: 60_000 });
 });
 
 // --- Tests ---
@@ -178,7 +187,7 @@ describe.skip("E2E: Scaffold — Docker template build", () => {
   });
 
   it("builds successfully", () => {
-    run("bun run build", {
+    run(BUN, ["run", "build"], {
       cwd: targetDir,
       timeout: BUILD_TIMEOUT,
       env: { ...process.env, VERCEL: undefined },
@@ -267,7 +276,7 @@ describe.skip("E2E: Scaffold — NextJS Standalone build", () => {
   });
 
   it("builds successfully", () => {
-    run("bun run build", {
+    run(BUN, ["run", "build"], {
       cwd: targetDir,
       timeout: BUILD_TIMEOUT,
       env: { ...process.env, VERCEL: undefined },
@@ -325,7 +334,7 @@ describe("E2E: Scaffold — --demo flag", () => {
     pgAvailable = isPostgresReachable();
     tmpDir = makeTempDir();
     targetDir = path.join(tmpDir, projectName);
-    scaffold(tmpDir, projectName, "docker", "--demo");
+    scaffold(tmpDir, projectName, "docker", ["--demo"]);
   }, SCAFFOLD_TIMEOUT);
 
   afterAll(() => {
@@ -373,7 +382,7 @@ describe("E2E: Scaffold — --demo flag (legacy rejection + bare-flag invariant)
     const tmpDir = makeTempDir();
     const projectName = "e2e-demo-bare";
     try {
-      scaffold(tmpDir, projectName, "docker", "--demo");
+      scaffold(tmpDir, projectName, "docker", ["--demo"]);
       const targetDir = path.join(tmpDir, projectName);
       expect(fs.existsSync(targetDir)).toBe(true);
       const pkg = readJson(path.join(targetDir, "package.json"));
@@ -392,7 +401,8 @@ describe("E2E: Scaffold — --demo flag (legacy rejection + bare-flag invariant)
     try {
       expect(() => {
         run(
-          `bun ${SCAFFOLDER} test-legacy-demo --defaults --demo cybersec`,
+          BUN,
+          [SCAFFOLDER, "test-legacy-demo", "--defaults", "--demo", "cybersec"],
           { cwd: tmpDir, timeout: SCAFFOLD_TIMEOUT, env: { ...process.env, NO_COLOR: "1" } },
         );
       }).toThrow(/removed in 1\.4\.0/);
@@ -406,7 +416,8 @@ describe("E2E: Scaffold — --demo flag (legacy rejection + bare-flag invariant)
     try {
       expect(() => {
         run(
-          `bun ${SCAFFOLDER} test-bad-demo --defaults --demo badname`,
+          BUN,
+          [SCAFFOLDER, "test-bad-demo", "--defaults", "--demo", "badname"],
           { cwd: tmpDir, timeout: SCAFFOLD_TIMEOUT, env: { ...process.env, NO_COLOR: "1" } },
         );
       }).toThrow(/Unknown --demo value/);
@@ -422,7 +433,8 @@ describe("E2E: Scaffold — error handling", () => {
     try {
       expect(() => {
         run(
-          `bun ${SCAFFOLDER} test-unknown-flag --defaults --banana`,
+          BUN,
+          [SCAFFOLDER, "test-unknown-flag", "--defaults", "--banana"],
           { cwd: tmpDir, timeout: SCAFFOLD_TIMEOUT, env: { ...process.env, NO_COLOR: "1" } },
         );
       }).toThrow(/Unknown flag/);
@@ -439,7 +451,8 @@ describe("E2E: Scaffold — error handling", () => {
     try {
       expect(() => {
         run(
-          `bun ${SCAFFOLDER} ${projectName} --defaults`,
+          BUN,
+          [SCAFFOLDER, projectName, "--defaults"],
           { cwd: tmpDir, timeout: SCAFFOLD_TIMEOUT, env: { ...process.env, NO_COLOR: "1" } },
         );
       }).toThrow(/already exists/);

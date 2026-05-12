@@ -178,9 +178,26 @@ export const COMMANDS: Record<string, CommandSpec> = {
 
 const COMMAND_NAMES = Object.keys(COMMANDS);
 
-/** Escape a string for use inside single quotes in fish shell. */
+/**
+ * Escape a string for use inside single quotes in fish shell.
+ *
+ * In fish, single-quoted strings interpret only `\\` and `\'` — every other
+ * character is literal. Escape the backslash first so a stray `\` in the input
+ * doesn't merge with the `\'` we produce on the next pass.
+ */
 function fishEscape(s: string): string {
-  return s.replace(/'/g, "\\'");
+  return s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
+/**
+ * Escape a string for embedding inside ANSI-C `$'...'` quoting in zsh.
+ *
+ * Inside `$'...'`, `\\` → `\` and `\'` → `'` are interpreted, so we escape
+ * backslash first then single quote. This is correct for any input including
+ * one containing literal backslashes.
+ */
+function zshAnsiCEscape(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
 export function generateBashCompletions(): string {
@@ -224,8 +241,10 @@ complete -F _atlas_completions atlas
 }
 
 export function generateZshCompletions(): string {
+  // Use $'...' ANSI-C quoting so backslash and single quote can both be escaped.
+  // (Inside zsh's plain '...' quoting, escapes are not interpreted.)
   const commandDescriptions = COMMAND_NAMES.map(
-    (cmd) => `    '${cmd}:${COMMANDS[cmd].description.replace(/'/g, "\\'")}'`,
+    (cmd) => `    $'${cmd}:${zshAnsiCEscape(COMMANDS[cmd].description)}'`,
   ).join("\n");
 
   const commandCases: string[] = [];
@@ -236,7 +255,7 @@ export function generateZshCompletions(): string {
       continue;
     }
     const flagArgs = flags
-      .map(([flag, desc]) => `      '${flag}[${desc.replace(/'/g, "\\'")}]'`)
+      .map(([flag, desc]) => `      $'${flag}[${zshAnsiCEscape(desc)}]'`)
       .join(" \\\n");
     commandCases.push(`    ${cmd})\n      _arguments -s \\\n${flagArgs}\n      ;;`);
   }

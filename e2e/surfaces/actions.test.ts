@@ -240,7 +240,10 @@ function interceptResendFetch(): {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (globalThis as any).fetch = async (input: string | Request | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-    if (url.includes("api.resend.com")) {
+    // Parse hostname instead of substring match — "attacker.com/api.resend.com" must not route here.
+    let host = "";
+    try { host = new URL(url).hostname; } catch { /* fall through with empty host */ }
+    if (host === "api.resend.com") {
       resendCalls.push({ url, body: init?.body as string });
       return new Response(
         JSON.stringify({ id: mockId }),

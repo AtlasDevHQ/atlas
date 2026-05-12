@@ -233,6 +233,13 @@ async function liftHelper<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/** Drop trailing `/` characters. Non-regex to keep the polynomial-ReDoS checker happy. */
+function stripTrailingSlashes(s: string): string {
+  let i = s.length;
+  while (i > 0 && s[i - 1] === "/") i--;
+  return i === s.length ? s : s.slice(0, i);
+}
+
 function liftHelperSync<T>(fn: () => T): T {
   try {
     return fn();
@@ -271,7 +278,7 @@ const WORKSPACES_CLAIM = "https://atlas.useatlas.dev/workspace_ids";
 export async function runHostedAuthFlow(
   options: HostedFlowOptions,
 ): Promise<HostedFlowResult> {
-  const apiUrl = options.apiUrl.replace(/\/+$/, "");
+  const apiUrl = stripTrailingSlashes(options.apiUrl);
   liftHelperSync(() => validateIssuerUrl(apiUrl));
   const fetchImpl = options.fetchImpl ?? fetch;
   const serveImpl = options.serveImpl ?? defaultServeImpl;

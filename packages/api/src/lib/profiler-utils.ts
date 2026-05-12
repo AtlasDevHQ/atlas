@@ -18,7 +18,16 @@ export function isViewLike(profile: TableProfile): boolean {
 // ---------------------------------------------------------------------------
 
 export function mapSQLType(sqlType: string): string {
-  const unwrapped = sqlType.replace(/Nullable\((.+)\)/g, "$1").replace(/LowCardinality\((.+)\)/g, "$1");
+  // Peel ClickHouse wrappers inside-out. Bounded `[^()]+` capture avoids the
+  // ambiguous greedy `.+\)` match that CodeQL flagged as polynomial-ReDoS.
+  let unwrapped = sqlType;
+  for (let i = 0; i < 16; i++) {
+    const next = unwrapped
+      .replace(/Nullable\(([^()]+)\)/, "$1")
+      .replace(/LowCardinality\(([^()]+)\)/, "$1");
+    if (next === unwrapped) break;
+    unwrapped = next;
+  }
   const t = unwrapped.toLowerCase();
   if (t.includes("interval") || t.includes("money")) return "string";
   if (

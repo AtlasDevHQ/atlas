@@ -779,7 +779,10 @@ describe("runHostedAuthFlow — HTTPS-only token-endpoint guard reaches the CLI"
             headers: { "Content-Type": "application/json" },
           });
         }
-        if (url.includes("evil.example.com")) {
+        // Parse hostname so this routes purely on the URL authority.
+        let host = "";
+        try { host = new URL(url).hostname; } catch { /* fall through with empty host */ }
+        if (host === "evil.example.com") {
           tokenCalls.push(url);
           return new Response("should never reach here", { status: 200 });
         }

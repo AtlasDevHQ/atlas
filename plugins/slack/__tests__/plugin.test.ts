@@ -56,8 +56,11 @@ function mockSlackFetch(): typeof globalThis.fetch {
         { status: 200, headers: { "Content-Type": "application/json" } },
       ));
     }
-    // Slack response_url hooks
-    if (url.includes("hooks.slack.com")) {
+    // Slack response_url hooks — match by parsed host so we don't route
+    // "attacker.com/hooks.slack.com" through this branch.
+    let host = "";
+    try { host = new URL(url).hostname; } catch { /* fall through with empty host */ }
+    if (host === "hooks.slack.com") {
       return Promise.resolve(new Response(
         JSON.stringify({ ok: true }),
         { status: 200, headers: { "Content-Type": "application/json" } },

@@ -24,6 +24,7 @@ let completeConnectImpl = mock(async () => ({
   refreshToken: "rfr-abc",
   expiresAt: Date.now() + 3600 * 1000,
   workspaceId: "ws-1",
+  workspaces: [] as string[],
 }));
 
 class StubAtlasMcpError extends Error {
@@ -69,6 +70,7 @@ function resetSdkMocks() {
     refreshToken: "rfr-abc",
     expiresAt: Date.now() + 3600 * 1000,
     workspaceId: "ws-1",
+    workspaces: [] as string[],
   }));
 }
 
@@ -328,6 +330,79 @@ describe("useMcpConnect concurrent connect() calls", () => {
       });
       expect(beginConnectImpl).toHaveBeenCalledTimes(1);
       expect(result.current.status).toBe("awaiting_callback");
+    } finally {
+      window.open = originalOpen;
+    }
+  });
+});
+
+// ── multi-workspace shape (#2196) ─────────────────────────────────────
+
+describe("useMcpConnect — multi-workspace shape (#2196)", () => {
+  it("single-workspace token: workspaces is an empty array on success", async () => {
+    const fakePopup = { closed: false, close: () => {} };
+    const originalOpen = window.open;
+    (window as unknown as { open: () => unknown }).open = () => fakePopup;
+
+    try {
+      const { result } = renderHook(() => useMcpConnect(baseOptions));
+      await act(async () => {
+        await result.current.connect();
+      });
+      await act(async () => {
+        window.dispatchEvent(
+          new (window as unknown as { MessageEvent: typeof MessageEvent }).MessageEvent("message", {
+            data: { type: "atlas-mcp-callback", code: "c", state: "stub-state" },
+            origin: APP_ORIGIN,
+          }),
+        );
+      });
+      await waitFor(() => {
+        expect(result.current.status).toBe("success");
+      });
+      if (result.current.status !== "success") throw new Error("expected success");
+      // Stable: a single-workspace token surfaces an empty workspaces
+      // array so embedders never have to null-check.
+      expect(result.current.workspaces).toEqual([]);
+      expect(result.current.workspaceId).toBe("ws-1");
+    } finally {
+      window.open = originalOpen;
+    }
+  });
+
+  it("multi-workspace token: surfaces the workspaces array for picker rendering", async () => {
+    // Override `completeConnect` to return a multi-workspace result.
+    completeConnectImpl = mock(async () => ({
+      accessToken: "tok-abc",
+      refreshToken: "rfr-abc",
+      expiresAt: Date.now() + 3600 * 1000,
+      workspaceId: "ws-1",
+      workspaces: ["ws-1", "ws-2", "ws-3"],
+    }));
+
+    const fakePopup = { closed: false, close: () => {} };
+    const originalOpen = window.open;
+    (window as unknown as { open: () => unknown }).open = () => fakePopup;
+
+    try {
+      const { result } = renderHook(() => useMcpConnect(baseOptions));
+      await act(async () => {
+        await result.current.connect();
+      });
+      await act(async () => {
+        window.dispatchEvent(
+          new (window as unknown as { MessageEvent: typeof MessageEvent }).MessageEvent("message", {
+            data: { type: "atlas-mcp-callback", code: "c", state: "stub-state" },
+            origin: APP_ORIGIN,
+          }),
+        );
+      });
+      await waitFor(() => {
+        expect(result.current.status).toBe("success");
+      });
+      if (result.current.status !== "success") throw new Error("expected success");
+      expect(result.current.workspaceId).toBe("ws-1");
+      expect(result.current.workspaces).toEqual(["ws-1", "ws-2", "ws-3"]);
     } finally {
       window.open = originalOpen;
     }

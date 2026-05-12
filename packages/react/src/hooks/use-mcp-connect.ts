@@ -81,6 +81,7 @@ export type UseMcpConnectReturn =
       readonly accessToken: null;
       readonly refreshToken: null;
       readonly workspaceId: null;
+      readonly workspaces: null;
       readonly expiresAt: null;
       readonly error: null;
     }
@@ -91,6 +92,15 @@ export type UseMcpConnectReturn =
       readonly accessToken: string;
       readonly refreshToken: string | null;
       readonly workspaceId: string;
+      /**
+       * The plural workspace claim surfaced from the JWT (#2196). Empty
+       * array for single-workspace tokens, populated when the
+       * authenticating user belongs to more than one workspace. Use
+       * `workspaces.length > 1` to gate a post-onboarding workspace
+       * picker; `workspaceId` is always the default selection (the
+       * singular claim).
+       */
+      readonly workspaces: string[];
       readonly expiresAt: number;
       readonly error: null;
     }
@@ -101,6 +111,7 @@ export type UseMcpConnectReturn =
       readonly accessToken: null;
       readonly refreshToken: null;
       readonly workspaceId: null;
+      readonly workspaces: null;
       readonly expiresAt: null;
       readonly error: AtlasMcpError | Error;
     };
@@ -234,6 +245,7 @@ export function useMcpConnect(options: UseMcpConnectOptions): UseMcpConnectRetur
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState<string | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
+  const [workspaces, setWorkspaces] = useState<string[] | null>(null);
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [error, setError] = useState<AtlasMcpError | Error | null>(null);
 
@@ -251,6 +263,7 @@ export function useMcpConnect(options: UseMcpConnectOptions): UseMcpConnectRetur
     setAccessToken(result.accessToken);
     setRefreshToken(result.refreshToken);
     setWorkspaceId(result.workspaceId);
+    setWorkspaces(result.workspaces);
     setExpiresAt(result.expiresAt);
     setStatus("success");
   }
@@ -392,6 +405,7 @@ export function useMcpConnect(options: UseMcpConnectOptions): UseMcpConnectRetur
     setAccessToken(null);
     setRefreshToken(null);
     setWorkspaceId(null);
+    setWorkspaces(null);
     setExpiresAt(null);
   }
 
@@ -471,6 +485,7 @@ export function useMcpConnect(options: UseMcpConnectOptions): UseMcpConnectRetur
       accessToken: accessToken!,
       refreshToken,
       workspaceId: workspaceId!,
+      workspaces: workspaces ?? [],
       expiresAt: expiresAt!,
       error: null,
     };
@@ -482,6 +497,7 @@ export function useMcpConnect(options: UseMcpConnectOptions): UseMcpConnectRetur
       accessToken: null,
       refreshToken: null,
       workspaceId: null,
+      workspaces: null,
       expiresAt: null,
       error: error!,
     };
@@ -492,6 +508,7 @@ export function useMcpConnect(options: UseMcpConnectOptions): UseMcpConnectRetur
     accessToken: null,
     refreshToken: null,
     workspaceId: null,
+    workspaces: null,
     expiresAt: null,
     error: null,
   };

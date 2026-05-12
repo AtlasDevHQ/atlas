@@ -43,14 +43,28 @@ export default function Page() {
   const { connect, status, reset } = result;
 
   const [client, setClient] = useState<McpClientId>("claude-desktop");
+  // Default-workspace selection (#2196). For single-workspace tokens this
+  // is a no-op — the picker is hidden and we use `result.workspaceId`. For
+  // multi-workspace tokens (`result.workspaces.length > 1`), the picker
+  // lets the user pin a different default before copying the config.
+  const [selectedWorkspace, setSelectedWorkspace] = useState<string | null>(null);
+
+  const effectiveWorkspaceId =
+    result.status === "success"
+      ? selectedWorkspace ?? result.workspaceId
+      : null;
 
   const config =
-    result.status === "success"
+    result.status === "success" && effectiveWorkspaceId
       ? buildConfig({
           client,
           apiUrl: ATLAS_API_URL,
           accessToken: result.accessToken,
-          workspaceId: result.workspaceId,
+          workspaceId: effectiveWorkspaceId,
+          // Opt into the multi-workspace block when the JWT carries the
+          // plural claim. Empty array → single-workspace shape, byte-
+          // identical to the legacy block.
+          workspaces: result.workspaces,
         })
       : null;
 
@@ -92,7 +106,10 @@ export default function Page() {
 
         {status === "success" && (
           <button
-            onClick={reset}
+            onClick={() => {
+              setSelectedWorkspace(null);
+              reset();
+            }}
             style={{
               background: "transparent",
               color: "#a1a1aa",
@@ -131,8 +148,40 @@ export default function Page() {
         <section style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <h2 style={{ margin: 0, fontSize: 18 }}>Paste-ready config</h2>
           <p style={{ color: "#a1a1aa", marginTop: 0 }}>
-            Workspace ID: <code>{result.workspaceId}</code>
+            Default workspace: <code>{effectiveWorkspaceId}</code>
+            {result.workspaces.length > 1 && (
+              <> · {result.workspaces.length} total</>
+            )}
           </p>
+
+          {result.workspaces.length > 1 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <span style={{ color: "#a1a1aa", fontSize: 13 }}>
+                Pick a default workspace (per-request overrides happen via the{" "}
+                <code>X-Atlas-Workspace</code> header):
+              </span>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {result.workspaces.map((ws) => (
+                  <button
+                    key={ws}
+                    onClick={() => setSelectedWorkspace(ws)}
+                    style={{
+                      background: ws === effectiveWorkspaceId ? "#10b981" : "transparent",
+                      color: ws === effectiveWorkspaceId ? "#0a0a0a" : "#fafafa",
+                      border: "1px solid #333",
+                      borderRadius: 6,
+                      padding: "6px 12px",
+                      cursor: "pointer",
+                      fontSize: 13,
+                      fontFamily: "monospace",
+                    }}
+                  >
+                    {ws}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {MCP_CLIENTS.map((id) => (

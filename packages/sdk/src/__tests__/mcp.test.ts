@@ -53,6 +53,21 @@ const VALID_TOKEN = jwt({
   "https://atlas.useatlas.dev/workspace_id": WORKSPACE_ID,
 });
 
+// Multi-workspace token (#2196) — singular + plural claims, mirrors what
+// the server emits via `customAccessTokenClaims` in
+// `packages/api/src/lib/auth/server.ts` when the user belongs to > 1 ws.
+const MULTI_WORKSPACE_IDS = ["ws-123", "ws-456", "ws-789"];
+const MULTI_WORKSPACE_TOKEN = jwt({
+  iss: `${API_URL}/api/auth`,
+  sub: "user-1",
+  aud: `${API_URL}/mcp`,
+  azp: "client-abc",
+  exp: Math.floor(Date.now() / 1000) + 3600,
+  scope: "mcp:read offline_access",
+  "https://atlas.useatlas.dev/workspace_id": WORKSPACE_ID,
+  "https://atlas.useatlas.dev/workspace_ids": MULTI_WORKSPACE_IDS,
+});
+
 function deterministicRandom(length: number): Uint8Array {
   const bytes = new Uint8Array(length);
   for (let i = 0; i < length; i++) bytes[i] = i & 0xff;
@@ -373,6 +388,80 @@ describe("completeConnect", () => {
     }
   });
 
+  test("multi-workspace token: exposes workspaces array from the plural claim (#2196)", async () => {
+    const { fetchImpl } = captureFetch({
+      "/oauth2/token": () =>
+        jsonResponse({
+          access_token: MULTI_WORKSPACE_TOKEN,
+          refresh_token: "rfr-xyz",
+          token_type: "Bearer",
+          expires_in: 3600,
+          scope: "mcp:read offline_access",
+        }),
+    });
+
+    const result = await completeConnect({
+      ...baseComplete,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    // The singular claim is still the primary workspace; the plural claim
+    // surfaces alongside it as `workspaces`.
+    expect(result.workspaceId).toBe(WORKSPACE_ID);
+    expect(result.workspaces).toEqual(MULTI_WORKSPACE_IDS);
+  });
+
+  test("single-workspace token: workspaces array is empty when plural claim absent (#2196)", async () => {
+    // Backward compat: tokens minted for users with one workspace omit the
+    // plural claim. `workspaces` is an empty array, not undefined — the
+    // type is stable for consumers.
+    const { fetchImpl } = captureFetch({
+      "/oauth2/token": () =>
+        jsonResponse({
+          access_token: VALID_TOKEN,
+          refresh_token: "rfr-xyz",
+          token_type: "Bearer",
+          expires_in: 3600,
+          scope: "mcp:read offline_access",
+        }),
+    });
+
+    const result = await completeConnect({
+      ...baseComplete,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(result.workspaceId).toBe(WORKSPACE_ID);
+    expect(result.workspaces).toEqual([]);
+  });
+
+  test("malformed plural claim is treated as empty workspaces (#2196)", async () => {
+    // The server's `customAccessTokenClaims` always emits an array, but a
+    // misconfigured upstream issuer (custom self-hosted Better Auth fork)
+    // could emit a malformed shape. The SDK must not crash — drop to the
+    // singular-workspace path.
+    const tokenWithBadClaim = jwt({
+      iss: `${API_URL}/api/auth`,
+      sub: "user-1",
+      aud: `${API_URL}/mcp`,
+      azp: "client-abc",
+      exp: Math.floor(Date.now() / 1000) + 3600,
+      "https://atlas.useatlas.dev/workspace_id": WORKSPACE_ID,
+      "https://atlas.useatlas.dev/workspace_ids": "not-an-array",
+    });
+    const { fetchImpl } = captureFetch({
+      "/oauth2/token": () =>
+        jsonResponse({ access_token: tokenWithBadClaim, expires_in: 3600 }),
+    });
+
+    const result = await completeConnect({
+      ...baseComplete,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(result.workspaceId).toBe(WORKSPACE_ID);
+    expect(result.workspaces).toEqual([]);
+  });
+
   test("double-submit of the same code surfaces the server's invalid_grant", async () => {
     let calls = 0;
     const fetchImpl: FetchStub = async () => {
@@ -486,6 +575,134 @@ describe("buildConfig", () => {
     });
     if (cfg.kind !== "bare") throw new Error("expected bare");
     expect(cfg.url).toBe(`${API_URL}/mcp/${encodeURIComponent("a/b c")}/sse`);
+  });
+
+  // ── Multi-workspace shape (#2196) ────────────────────────────────────
+  //
+  // Passing `workspaces` (a non-empty array of granted ids) opts into the
+  // multi-workspace block — the URL still pins one workspace as the
+  // default (server still requires `/mcp/{ws}/sse`), but an `env:
+  // { ATLAS_DEFAULT_WORKSPACE }` slot is emitted alongside the headers
+  // so future MCP-client frameworks can bridge it into the
+  // `X-Atlas-Default-Workspace` header. Mirrors `buildHostedServerConfig`
+  // in `plugins/mcp/src/init/config-merge.ts` exactly.
+
+  test("multi-workspace: wrapped block carries env.ATLAS_DEFAULT_WORKSPACE (#2196)", () => {
+    const cfg = buildConfig({
+      client: "claude-desktop",
+      apiUrl: API_URL,
+      accessToken: "access-token-xyz",
+      workspaceId: WORKSPACE_ID,
+      workspaces: MULTI_WORKSPACE_IDS,
+    });
+    expect(cfg).toEqual({
+      kind: "wrapped",
+      mcpServers: {
+        atlas: {
+          url: `${API_URL}/mcp/${WORKSPACE_ID}/sse`,
+          headers: { Authorization: "Bearer access-token-xyz" },
+          env: { ATLAS_DEFAULT_WORKSPACE: WORKSPACE_ID },
+        },
+      },
+    });
+  });
+
+  test("multi-workspace: bare block carries env.ATLAS_DEFAULT_WORKSPACE (#2196)", () => {
+    const cfg = buildConfig({
+      client: "generic",
+      apiUrl: API_URL,
+      accessToken: "access-token-xyz",
+      workspaceId: WORKSPACE_ID,
+      workspaces: MULTI_WORKSPACE_IDS,
+    });
+    expect(cfg).toEqual({
+      kind: "bare",
+      url: `${API_URL}/mcp/${WORKSPACE_ID}/sse`,
+      headers: { Authorization: "Bearer access-token-xyz" },
+      env: { ATLAS_DEFAULT_WORKSPACE: WORKSPACE_ID },
+    });
+  });
+
+  test("multi-workspace: single-element workspaces array still emits env (#2196)", () => {
+    // Treat the param as the multi-scope opt-in marker. A caller passing
+    // an explicit one-element array has signalled "this client is
+    // configured against the new shape" — honor that intent rather than
+    // silently falling back to single-workspace.
+    const cfg = buildConfig({
+      client: "generic",
+      apiUrl: API_URL,
+      accessToken: "access-token-xyz",
+      workspaceId: WORKSPACE_ID,
+      workspaces: [WORKSPACE_ID],
+    });
+    if (cfg.kind !== "bare") throw new Error("expected bare");
+    expect(cfg.env).toEqual({ ATLAS_DEFAULT_WORKSPACE: WORKSPACE_ID });
+  });
+
+  test("multi-workspace: empty workspaces array falls back to single-workspace (#2196)", () => {
+    // Defensive: an empty `workspaces: []` means "no multi-scope claims
+    // present" — equivalent to a single-workspace token where the plural
+    // claim was absent. Don't emit a misleading env block.
+    const cfg = buildConfig({
+      client: "claude-desktop",
+      apiUrl: API_URL,
+      accessToken: "access-token-xyz",
+      workspaceId: WORKSPACE_ID,
+      workspaces: [],
+    });
+    if (cfg.kind !== "wrapped") throw new Error("expected wrapped");
+    expect(cfg.mcpServers.atlas).toEqual({
+      url: `${API_URL}/mcp/${WORKSPACE_ID}/sse`,
+      headers: { Authorization: "Bearer access-token-xyz" },
+    });
+    expect("env" in cfg.mcpServers.atlas).toBe(false);
+  });
+
+  test("legacy: omitting workspaces still produces the single-workspace shape (#2196 backward compat)", () => {
+    // The decisive backward-compat pin: every existing call site that
+    // doesn't pass `workspaces` must continue to emit exactly the same
+    // single-workspace block as before, byte-for-byte. No env block.
+    const cfg = buildConfig({
+      client: "claude-desktop",
+      apiUrl: API_URL,
+      accessToken: "access-token-xyz",
+      workspaceId: WORKSPACE_ID,
+    });
+    expect(cfg).toEqual({
+      kind: "wrapped",
+      mcpServers: {
+        atlas: {
+          url: `${API_URL}/mcp/${WORKSPACE_ID}/sse`,
+          headers: { Authorization: "Bearer access-token-xyz" },
+        },
+      },
+    });
+  });
+});
+
+// ── beginConnect — multi-workspace forward-compat slot (#2196) ───────
+
+describe("beginConnect — multi-workspace forward-compat", () => {
+  test("workspaceId option is accepted as a forward-compat slot (#2196)", async () => {
+    // The OAuth provider does not yet accept a workspace hint in the
+    // authorize URL — `customAccessTokenClaims` on the server reads
+    // membership from the session at consent time and emits the
+    // singular + plural claims accordingly. The SDK accepts the
+    // `workspaceId` option as a reserved slot for when the provider
+    // adds the hint; today it is informational only and must not break
+    // the existing flow.
+    const { fetchImpl } = captureFetch({
+      ".well-known/oauth-authorization-server": () => jsonResponse(DISCOVERY_BODY),
+      "/oauth2/register": () => jsonResponse({ client_id: "client-abc" }),
+    });
+    await expect(
+      beginConnect({
+        ...baseBeginOptions,
+        workspaceId: WORKSPACE_ID,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        randomBytesImpl: deterministicRandom,
+      }),
+    ).resolves.toMatchObject({ clientId: "client-abc" });
   });
 });
 

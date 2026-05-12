@@ -147,6 +147,79 @@ when you embed multiple workspaces.
 
 ---
 
+## Multi-workspace setup
+
+> **When to use multi-workspace.** Reach for the multi-workspace shape
+> when one human user belongs to more than one Atlas workspace and you
+> want them to install your MCP agent **once** rather than re-running
+> the OAuth flow per workspace. The single-workspace flow above is the
+> right default for solo accounts, dedicated team workspaces, or any
+> situation where each end user has exactly one workspace.
+
+The Atlas OAuth provider mints a multi-workspace token automatically
+when the authenticating user belongs to more than one workspace: the
+JWT carries both `https://atlas.useatlas.dev/workspace_id` (the
+singular claim — the user's primary workspace) and
+`https://atlas.useatlas.dev/workspace_ids` (the plural claim — every
+workspace this token grants access to). `completeConnect` extracts
+both:
+
+```ts
+const { accessToken, workspaceId, workspaces } = await completeConnect({
+  /* …same args as the single-workspace flow… */
+});
+
+if (workspaces.length > 1) {
+  // Multi-workspace token. Render a picker so the user can choose a
+  // default; the singular `workspaceId` is your fallback selection.
+} else {
+  // Single-workspace token — `workspaces` is an empty array.
+}
+```
+
+`buildConfig` opts into the multi-workspace block by accepting the
+`workspaces` array. The emitted config still pins one workspace in the
+URL (the hosted MCP edge mounts at `/mcp/{workspace_id}/sse`), but it
+gains an `env: { ATLAS_DEFAULT_WORKSPACE }` slot — the forward-compat
+hint MCP-client framework wrappers will bridge into the
+`X-Atlas-Default-Workspace` header. Per-request overrides happen via
+the `X-Atlas-Workspace` header (priority 1 in the edge's resolution
+chain — see [#2073](https://github.com/AtlasDevHQ/atlas/issues/2073)).
+
+```ts
+const config = buildConfig({
+  client: "claude-desktop",
+  apiUrl: "https://mcp.useatlas.dev",
+  accessToken,
+  workspaceId,           // default workspace pinned in the URL
+  workspaces,            // opt into the multi-workspace block
+});
+// config.mcpServers.atlas → {
+//   url: "https://mcp.useatlas.dev/mcp/<ws>/sse",
+//   headers: { Authorization: "Bearer <token>" },
+//   env: { ATLAS_DEFAULT_WORKSPACE: "<ws>" },
+// }
+```
+
+Omit `workspaces` (or pass an empty array) and `buildConfig` falls
+back to the byte-identical pre-#2196 single-workspace block — existing
+callers do not need to change.
+
+The React hook surfaces the plural claim on its success branch:
+
+```tsx
+const result = useMcpConnect({ apiUrl, clientName, redirectUri });
+
+if (result.status === "success" && result.workspaces.length > 1) {
+  return <WorkspacePicker default={result.workspaceId} options={result.workspaces} />;
+}
+```
+
+A worked example with the workspace picker lives at
+[`examples/embedded-mcp-onboarding/`](https://github.com/AtlasDevHQ/atlas/tree/main/examples/embedded-mcp-onboarding).
+
+---
+
 ## Listing & revoking agents
 
 Once a user is authenticated against your Atlas client:

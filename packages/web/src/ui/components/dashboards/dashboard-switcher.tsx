@@ -20,7 +20,7 @@ import {
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { friendlyError } from "@/ui/lib/fetch-error";
 import { cn } from "@/lib/utils";
-import { sortDashboardsByRecent } from "@/app/dashboards/select-recent";
+import { sortDashboardsByRecent } from "@/app/(workspace)/dashboards/select-recent";
 import { NewDashboardDialog, defaultOnDashboardCreated } from "./new-dashboard-dialog";
 import { ViewAllDashboardsModal } from "./view-all-modal";
 import type { Dashboard } from "@/ui/lib/types";

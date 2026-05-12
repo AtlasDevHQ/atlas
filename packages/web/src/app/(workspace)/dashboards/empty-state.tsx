@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { LayoutDashboard, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { AppShellWithRail } from "@/ui/components/app-shell-with-rail";
 import {
   NewDashboardDialog,
   defaultOnDashboardCreated,
@@ -16,7 +15,7 @@ export function DashboardsEmptyState() {
   const [createOpen, setCreateOpen] = useState(false);
 
   return (
-    <AppShellWithRail>
+    <>
       <div className="mx-auto w-full max-w-2xl flex-1 px-4 py-8">
         <div className="flex flex-col items-center justify-center py-24 text-center">
           <div className="mb-4 rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900">
@@ -46,6 +45,6 @@ export function DashboardsEmptyState() {
         onOpenChange={setCreateOpen}
         onCreated={defaultOnDashboardCreated(router)}
       />
-    </AppShellWithRail>
+    </>
   );
 }

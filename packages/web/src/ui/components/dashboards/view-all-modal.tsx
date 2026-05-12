@@ -28,7 +28,7 @@ import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError } from "@/ui/lib/fetch-error";
 import { cn } from "@/lib/utils";
-import { sortDashboardsByRecent } from "@/app/dashboards/select-recent";
+import { sortDashboardsByRecent } from "@/app/(workspace)/dashboards/select-recent";
 import { NewDashboardDialog } from "./new-dashboard-dialog";
 import { timeAgo } from "./time-ago";
 import type { Dashboard } from "@/ui/lib/types";

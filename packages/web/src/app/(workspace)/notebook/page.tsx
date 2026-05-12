@@ -11,16 +11,9 @@ import { useConversations, transformMessages } from "@/ui/hooks/use-conversation
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { useAtlasTransport } from "@/ui/hooks/use-atlas-transport";
 import { authClient } from "@/lib/auth/client";
-import { SidebarTrigger } from "@/components/ui/sidebar";
-import { AppLayout } from "@/ui/components/app-layout";
-import { ChatSidebar } from "@/ui/components/chat/chat-sidebar";
-import { SchemaExplorer } from "@/ui/components/schema-explorer/schema-explorer";
-import { PromptLibrary } from "@/ui/components/chat/prompt-library";
-import { CommandPalette } from "@/ui/components/chat/command-palette";
 import { Button } from "@/components/ui/button";
 import type { NotebookStateWire, ForkBranchWire } from "@/ui/lib/types";
 import type { ForkInfo } from "@/ui/components/notebook/types";
-import { useUiStore } from "@/lib/stores/ui-store";
 
 const GuidedTour = dynamic(
   () => import("@/ui/components/tour/guided-tour").then((m) => m.GuidedTour),
@@ -47,11 +40,6 @@ function NotebookContent() {
   const focusCellId = params.cell || undefined;
 
   const [error, setError] = useState<string | null>(null);
-  const schemaExplorerOpen = useUiStore((s) => s.schemaExplorerOpen);
-  const setSchemaExplorerOpen = useUiStore((s) => s.setSchemaExplorerOpen);
-  const promptLibraryOpen = useUiStore((s) => s.promptLibraryOpen);
-  const setPromptLibraryOpen = useUiStore((s) => s.setPromptLibraryOpen);
-  const [loadingConversation, setLoadingConversation] = useState(false);
   const tempIdRef = useRef(`temp:${Date.now()}`);
 
   // Auth for tour
@@ -103,7 +91,12 @@ function NotebookContent() {
 
   // Fetch conversation list after auth is resolved
   useEffect(() => {
-    convos.fetchList();
+    convos.fetchList().catch((err: unknown) => {
+      console.debug(
+        "[notebook] convos.fetchList rejected:",
+        err instanceof Error ? err.message : String(err),
+      );
+    });
   }, [authMode, convos.fetchList]);
 
   // useChat
@@ -168,9 +161,23 @@ function NotebookContent() {
     return () => { cancelled = true; };
   }, [serverNotebookState?.forkRootId, conversationId, convos.getConversationData]);
 
-  // Load conversation when ID changes
+  // The workspace shell drives selection via `?id=...`. Load on a new id, or
+  // clear notebook state when the param goes empty (shell's "New chat").
+  const lastLoadedIdRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!conversationId) return;
+    // Clear first — the page now stays mounted across sibling navigations, so
+    // a stale failure on B would otherwise persist when the user returns to A.
+    setError(null);
+    if (!conversationId) {
+      if (lastLoadedIdRef.current !== null) {
+        setMessages([]);
+        setServerNotebookState(null);
+        setForkInfo(null);
+        lastLoadedIdRef.current = null;
+      }
+      return;
+    }
+    if (conversationId === lastLoadedIdRef.current) return;
     let cancelled = false;
     async function load() {
       try {
@@ -182,6 +189,7 @@ function NotebookContent() {
         setServerNotebookState(state);
         setForkInfo(buildForkInfo(conversationId!, state));
         setMessages(transformMessages(convData.messages));
+        lastLoadedIdRef.current = conversationId!;
       } catch (err: unknown) {
         if (!cancelled) {
           console.warn(
@@ -206,8 +214,12 @@ function NotebookContent() {
 
   // Fork navigation callback
   const handleNavigateToBranch = useCallback((branchId: string) => {
-    setParams({ id: branchId, cell: "" });
-    convos.setSelectedId(branchId);
+    setParams({ id: branchId, cell: "" }).catch((err: unknown) => {
+      console.warn(
+        "[notebook] failed to set branch id param:",
+        err instanceof Error ? err.message : String(err),
+      );
+    });
     // Refresh sidebar to show new conversation
     setTimeout(() => {
       refreshConvosRef.current().catch((err: unknown) => {
@@ -217,7 +229,7 @@ function NotebookContent() {
         );
       });
     }, 500);
-  }, [setParams, convos]);
+  }, [setParams]);
 
   // useNotebook
   const notebook = useNotebook({
@@ -248,39 +260,31 @@ function NotebookContent() {
           return result.token;
         };
 
-  // New chat handler
-  function handleNewChat() {
-    setError(null);
-    setMessages([]);
-    setParams({ id: "", cell: "" });
-    convos.setSelectedId(null);
-    setServerNotebookState(null);
-    setForkInfo(null);
-  }
-
-  // Select conversation handler
-  async function handleSelectConversation(id: string) {
-    if (loadingConversation) return;
-    setError(null);
-    setLoadingConversation(true);
-    try {
-      const convData = await convos.getConversationData(id);
-      const state = convData.notebookState as NotebookStateWire | null ?? null;
-      setServerNotebookState(state);
-      setForkInfo(buildForkInfo(id, state));
-      setMessages(transformMessages(convData.messages));
-      setParams({ id, cell: "" });
-      convos.setSelectedId(id);
-    } catch (err: unknown) {
+  // Workspace shell delivers schema-explorer / prompt-library picks via the
+  // `prompt` URL param. Send the message, then clear the param so a refresh
+  // doesn't replay it. Key on the dispatched value (not a once-per-mount
+  // flag) — the page stays mounted across sibling navigations, and a second
+  // pick on the same surface must re-fire.
+  const lastDispatchedPromptRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!params.prompt) return;
+    if (params.prompt === lastDispatchedPromptRef.current) return;
+    const text = params.prompt;
+    lastDispatchedPromptRef.current = text;
+    setParams({ prompt: "" }).catch((err: unknown) => {
       console.warn(
-        "Failed to load conversation:",
+        "[notebook] failed to clear prompt param:",
         err instanceof Error ? err.message : String(err),
       );
-      setError("Failed to load conversation. Please try again.");
-    } finally {
-      setLoadingConversation(false);
-    }
-  }
+    });
+    sendMessage({ text }).catch((err: unknown) => {
+      console.warn(
+        "[notebook] sendMessage from workspace prompt failed:",
+        err instanceof Error ? err.message : String(err),
+      );
+      setError("Failed to send prompt. Please try again.");
+    });
+  }, [params.prompt, sendMessage, setParams]);
 
   // Health warning — blocks the entire page until resolved (requires reload)
   if (healthWarning) {
@@ -312,93 +316,27 @@ function NotebookContent() {
       isAdmin={isAdmin}
       serverTrackingEnabled={isSignedIn}
     >
-      <AppLayout
-        sidebar={
-          convos.available ? (
-            <ChatSidebar
-              conversations={convos.conversations}
-              selectedId={conversationId ?? null}
-              loading={convos.loading}
-              isAdmin={isAdmin}
-              onSelect={handleSelectConversation}
-              onDelete={(id) => convos.deleteConversation(id)}
-              onStar={(id, starred) => convos.starConversation(id, starred)}
-              onNewChat={handleNewChat}
-              onOpenPromptLibrary={() => setPromptLibraryOpen(true)}
-              onOpenSchemaExplorer={() => setSchemaExplorerOpen(true)}
-            />
-          ) : null
-        }
-      >
-        <div className="flex h-full flex-1 flex-col overflow-hidden">
-          {convos.available && (
-            <div className="border-b border-zinc-100 px-4 py-2 dark:border-zinc-800/60 md:hidden">
-              <SidebarTrigger />
-            </div>
-          )}
-          {(error || convos.fetchError) && (
-            <div className="mx-4 mt-4 flex items-center justify-between rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
-              <p>{error || convos.fetchError}</p>
-              <Button variant="ghost" size="sm" onClick={() => setError(null)} className="shrink-0 text-red-600 dark:text-red-400">
-                Dismiss
-              </Button>
-            </div>
-          )}
-          <NotebookShell
-            notebook={notebook}
-            focusCellId={focusCellId}
-            onShareAsReport={handleShareAsReport}
-            starterPrompts={{
-              apiUrl: getApiUrl(),
-              isCrossOrigin: isCrossOrigin(),
-              getHeaders,
-              enabled: authResolved,
-            }}
-          />
-        </div>
-      </AppLayout>
-
-      <SchemaExplorer
-        open={schemaExplorerOpen}
-        onOpenChange={setSchemaExplorerOpen}
-        onInsertQuery={(text) => {
-          sendMessage({ text }).catch((err: unknown) => {
-            console.warn(
-              "[notebook] sendMessage from schema explorer failed:",
-              err instanceof Error ? err.message : String(err),
-            );
-            setError("Failed to send query. Please try again.");
-          });
-        }}
-        getHeaders={getHeaders}
-        getCredentials={getCredentials}
-      />
-      <PromptLibrary
-        open={promptLibraryOpen}
-        onOpenChange={setPromptLibraryOpen}
-        onSendPrompt={(text) => {
-          sendMessage({ text }).catch((err: unknown) => {
-            console.warn(
-              "[notebook] sendMessage from prompt library failed:",
-              err instanceof Error ? err.message : String(err),
-            );
-            setError("Failed to send prompt. Please try again.");
-          });
-        }}
-        getHeaders={getHeaders}
-        getCredentials={getCredentials}
-      />
-      <CommandPalette
-        conversations={convos.conversations}
-        onNewChat={handleNewChat}
-        onSelectConversation={(id) => {
-          handleSelectConversation(id).catch(() => {
-            // intentionally ignored: handleSelectConversation handles its own errors
-          });
-        }}
-        onOpenPromptLibrary={() => setPromptLibraryOpen(true)}
-        onOpenSchemaExplorer={() => setSchemaExplorerOpen(true)}
-      />
+      <div className="flex h-full flex-1 flex-col overflow-hidden">
+        {(error || convos.fetchError) && (
+          <div className="mx-4 mt-4 flex items-center justify-between rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
+            <p>{error || convos.fetchError}</p>
+            <Button variant="ghost" size="sm" onClick={() => setError(null)} className="shrink-0 text-red-600 dark:text-red-400">
+              Dismiss
+            </Button>
+          </div>
+        )}
+        <NotebookShell
+          notebook={notebook}
+          focusCellId={focusCellId}
+          onShareAsReport={handleShareAsReport}
+          starterPrompts={{
+            apiUrl: getApiUrl(),
+            isCrossOrigin: isCrossOrigin(),
+            getHeaders,
+            enabled: authResolved,
+          }}
+        />
+      </div>
     </GuidedTour>
   );
 }

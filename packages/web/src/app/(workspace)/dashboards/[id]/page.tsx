@@ -22,12 +22,11 @@ import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { useAtlasConfig } from "@/ui/context";
 import { friendlyError } from "@/ui/lib/fetch-error";
-import { AppShellWithRail } from "@/ui/components/app-shell-with-rail";
 import { DashboardShareDialog } from "./share-dialog";
 import { DashboardGrid } from "@/ui/components/dashboards/dashboard-grid";
 import { DashboardTopBar } from "@/ui/components/dashboards/dashboard-topbar";
 import { nextTileLayout, withAutoLayout } from "@/ui/components/dashboards/auto-layout";
-import { selectNextAfterDelete } from "@/app/dashboards/select-recent";
+import { selectNextAfterDelete } from "../select-recent";
 import type { Density } from "@/ui/components/dashboards/grid-constants";
 import type {
   DashboardCard,
@@ -246,7 +245,7 @@ export default function DashboardViewPage() {
     : [];
 
   return (
-    <AppShellWithRail>
+    <>
       <div className="flex h-full flex-1 flex-col overflow-auto">
         {loading && (
           <div className="space-y-4 px-4 py-6 sm:px-6">
@@ -448,6 +447,6 @@ export default function DashboardViewPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </AppShellWithRail>
+    </>
   );
 }

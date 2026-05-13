@@ -155,6 +155,7 @@ Two queued milestones — next-up decision lives in `/next`.
 
 - [x] **Multi-method MFA hardening** (6 issues #2082/#2090/#2091/#2092/#2093/#2094) — WebAuthn passkeys + TOTP + trusted-device 30d shipped end-to-end across enrollment, sign-in, governance, telemetry, and recovery. Full detail in `ROADMAP-archive.md`.
 - [x] **Post-1.4.2 security + polish hygiene** (PRs #2353–#2358) — npm supply-chain worm hardening (#2353), CodeQL ReDoS/sanitization/URL/shell sweep (#2355 + #2357 + #2358), rail collapse-trigger + hover scoping (#2354), dashboards-rail remount flash (#2356).
+- [x] **SaaS sandbox = Vercel Sandbox exclusive** (#2382, #2383, #2387) — `deploy/api/atlas.config.ts` pins `["vercel-sandbox"]`; sidecar fallback removed so a Vercel outage hard-fails the explore tool rather than degrading isolation. Follow-ups in 1.4.4: token branding as `OpaqueSecret` (#2384), hard-fail error UX (#2385), tests (#2386).
 
 ---
 

@@ -98,6 +98,7 @@ const CREDENTIAL_FIELDS = [
   // F-44: expanded field coverage for webhook / OAuth / chat / header leaks.
   "cookie",
   "bearer",
+  "token",
   "refreshToken",
   "botToken",
   "signingSecret",

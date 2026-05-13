@@ -242,6 +242,33 @@ describe("per-source semantic layer loading", () => {
     expect(defaultTables).not.toBe(warehouseTables);
   });
 
+  it("quoted reserved-keyword table names (e.g. Postgres \"user\") are whitelisted unquoted", () => {
+    // Better Auth's `user` table is a Postgres reserved keyword. Importers
+    // quote it in the YAML (`table: '"user"'`) so the round-trip survives,
+    // but `node-sql-parser` strips the quotes when extracting tables from
+    // `FROM "user"`. The whitelist must store the unquoted form or every
+    // lookup misses.
+    const root = ensureDir(`quoted-${testCounter}`);
+    const defaultEntities = ensureDir(`quoted-${testCounter}/entities`);
+
+    writeEntity(defaultEntities, "user.yml", `table: '"user"'\ncolumns:\n  id:\n    type: text\n`);
+    writeEntity(defaultEntities, "events.yml", "table: '`events`'\ncolumns:\n  id:\n    type: integer\n");
+    writeEntity(
+      defaultEntities,
+      "audit.yml",
+      `table: 'public."audit_log"'\ncolumns:\n  id:\n    type: integer\n`,
+    );
+
+    const tables = getWhitelistedTables("default", undefined, root);
+    expect(tables.has("user")).toBe(true);
+    expect(tables.has("events")).toBe(true);
+    expect(tables.has("audit_log")).toBe(true);
+    expect(tables.has("public.audit_log")).toBe(true);
+    // Quoted forms must NOT survive — they'd never match parser output
+    expect(tables.has('"user"')).toBe(false);
+    expect(tables.has('public."audit_log"')).toBe(false);
+  });
+
   it("reserved directories with entities/ subfolder are still excluded", () => {
     const root = ensureDir(`reserved-strict-${testCounter}`);
     const defaultEntities = ensureDir(`reserved-strict-${testCounter}/entities`);

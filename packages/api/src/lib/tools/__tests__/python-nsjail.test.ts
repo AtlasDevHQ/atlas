@@ -30,6 +30,17 @@ mock.module("fs", () => ({
   constants: { X_OK: 1, R_OK: 4 },
 }));
 
+// Stub @vercel/sandbox so the Vercel-routing test fails fast with a
+// "sandbox"-containing error instead of making a real API call to Vercel.
+// @vercel/sandbox is a real dep of @atlas/api, so dev machines that have
+// run `vercel login` would otherwise hit the live API and time out.
+mock.module("@vercel/sandbox", () => ({
+  Sandbox: {
+    create: () =>
+      Promise.reject(new Error("Vercel sandbox stub: no real API call in tests")),
+  },
+}));
+
 // Track Bun.spawn calls
 let spawnCalls: { args: unknown[]; options: unknown }[] = [];
 let spawnResult: {

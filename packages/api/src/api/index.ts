@@ -35,6 +35,7 @@ import { widgetLoader, widgetTypesLoader } from "./routes/widget-loader";
 import { publicBranding } from "./routes/public-branding";
 import { onboardingEmails } from "./routes/onboarding-emails";
 import { mode } from "./routes/mode";
+import { meConnectionGroups } from "./routes/me-connection-groups";
 import { starterPrompts } from "./routes/starter-prompts";
 import { subProcessorSubscriptions } from "./routes/sub-processor-subscriptions";
 import { wellKnown } from "./routes/well-known";
@@ -182,6 +183,10 @@ app.route("/widget.d.ts", widgetTypesLoader);
 app.route("/api/v1/branding", publicBranding);
 app.route("/api/v1/onboarding-emails", onboardingEmails);
 app.route("/api/v1/mode", mode);
+// #2345 — non-admin listing of connection groups + members for the chat
+// env/member picker. Admin mutation routes live under
+// /api/v1/admin/connection-groups.
+app.route("/api/v1/me/connection-groups", meConnectionGroups);
 app.route("/api/v1/starter-prompts", starterPrompts);
 app.route("/api/v1/sub-processor-subscriptions", subProcessorSubscriptions);
 

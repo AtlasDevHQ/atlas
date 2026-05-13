@@ -8,7 +8,21 @@ export interface Conversation {
   userId: string | null;
   title: string | null;
   surface: Surface;
+  /**
+   * Execution target — the specific connection (replica) SQL runs
+   * against. May be overridden per-turn by the chat header without
+   * persisting back to this column.
+   */
   connectionId: string | null;
+  /**
+   * Content scope — the connection group whose semantic entities,
+   * dashboards, and approvals resolve for this conversation. Independent
+   * of `connectionId`: a multi-member "prod" group can resolve content
+   * while `connectionId` points at a single member. Nullable for legacy
+   * conversations created before the multi-environment slice (#2345);
+   * runtime falls back to single-connection behavior in that case.
+   */
+  connectionGroupId: string | null;
   starred: boolean;
   createdAt: string;
   updatedAt: string;

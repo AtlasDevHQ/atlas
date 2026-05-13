@@ -7,6 +7,7 @@
     "index",
     "yaml-format",
     "glossary-and-metrics",
+    "multi-env",
     "why-yaml"
   ]
 }

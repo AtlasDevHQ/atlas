@@ -18,6 +18,21 @@ export interface UseAtlasTransportOptions {
   getConversationId: () => string | null;
   /** Called when a new conversation ID is captured from x-conversation-id response header */
   onNewConversationId: (id: string) => void;
+  /**
+   * #2345 — per-turn execution target override. Returns the connection
+   * id selected by the chat header env/member picker, or `null` to fall
+   * back to the conversation's stored value. Called at fetch time so a
+   * user changing the picker mid-conversation reaches the agent on the
+   * next turn without rebuilding the transport.
+   */
+  getConnectionId?: () => string | null;
+  /**
+   * #2345 — content scope (connection group). Sent on conversation
+   * creation; subsequent turns omit it unless the picker is also used
+   * to change the scope (rare — defaults stay sticky to the
+   * conversation row).
+   */
+  getConnectionGroupId?: () => string | null;
 }
 
 export interface UseAtlasTransportReturn {
@@ -46,6 +61,15 @@ export function useAtlasTransport(
   // Internal ref — synced from getter every render, eagerly written on capture
   const conversationIdRef = useRef<string | null>(null);
   conversationIdRef.current = getConversationIdRef.current();
+
+  // #2345 — routing getters. Refs (not state) so the picker can swap
+  // selection without rebuilding the transport mid-stream (which would
+  // restart `useChat` and lose the in-flight response).
+  const getConnectionIdRef = useRef(opts.getConnectionId);
+  getConnectionIdRef.current = opts.getConnectionId;
+
+  const getConnectionGroupIdRef = useRef(opts.getConnectionGroupId);
+  getConnectionGroupIdRef.current = opts.getConnectionGroupId;
 
   // --- Auth state (seed from module cache to avoid flash on client-side nav) ---
   const [authMode, setAuthModeState] = useState<AuthMode | null>(_cachedAuthMode);
@@ -202,10 +226,25 @@ export function useAtlasTransport(
       api: `${apiUrl}/api/v1/chat`,
       headers,
       credentials: isCrossOrigin ? "include" : undefined,
-      body: () =>
-        conversationIdRef.current
-          ? { conversationId: conversationIdRef.current }
-          : {},
+      body: () => {
+        const body: Record<string, string> = {};
+        if (conversationIdRef.current) {
+          body.conversationId = conversationIdRef.current;
+        }
+        // #2345 — route the active env/member selection. Sent only
+        // when the picker has a value; the server falls back to the
+        // conversation's stored values (or legacy single-connection
+        // routing) when these fields are absent.
+        const connectionId = getConnectionIdRef.current?.();
+        if (connectionId) {
+          body.connectionId = connectionId;
+        }
+        const connectionGroupId = getConnectionGroupIdRef.current?.();
+        if (connectionGroupId) {
+          body.connectionGroupId = connectionGroupId;
+        }
+        return body;
+      },
       fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
         let response: Response;
         try {

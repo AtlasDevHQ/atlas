@@ -38,6 +38,7 @@ import {
   generateTitle,
   persistAssistantSteps,
   reserveConversationBudget,
+  resolveGroupForConnection,
   settleConversationSteps,
 } from "@atlas/api/lib/conversations";
 import { setStreamWriter, clearStreamWriter } from "@atlas/api/lib/tools/python-stream";
@@ -335,6 +336,25 @@ const UIMessageSchema = z.object({
 export const ChatRequestSchema = z.object({
   messages: z.array(UIMessageSchema).min(1),
   conversationId: z.string().uuid().optional(),
+  /**
+   * #2345 — per-turn execution target override. Set by the chat header's
+   * env/member picker when the user temporarily routes one question at a
+   * different replica (e.g. the conversation lives on "us-int" but the
+   * user asks "and what does the EU mirror show?"). Does not persist
+   * beyond the turn; the conversation's stored `connection_id` is
+   * unchanged. Falls back to the conversation's connection_id when
+   * omitted.
+   */
+  connectionId: z.string().optional(),
+  /**
+   * #2345 — content scope (connection group) for entity / dashboard
+   * overlays. Sent at conversation creation by the combined group +
+   * member picker; subsequent turns omit this field and inherit the
+   * value from the persisted conversation row. Per-turn overrides target
+   * execution, not content scope, so this field is rarely supplied on a
+   * follow-up turn.
+   */
+  connectionGroupId: z.string().optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -589,6 +609,12 @@ chat.openapi(chatRoute, async (c) => {
     // this nested call adds the user after inline auth completes.
     // #2072 — stamp 'chat' on the surface so chat-only approval rules
     // fire here but mcp/scheduler/slack-only rules do not.
+    //
+    // #2345 — the routing fields are resolved INSIDE this callback
+    // because they depend on the parsed body + the persisted
+    // conversation row. We re-enter `withRequestContext` once both are
+    // known so plugin tools / agent helpers see them in AsyncLocalStorage
+    // without a second middleware pass.
     return withRequestContext(
       { requestId, user: authResult.user, atlasMode, approvalSurface: "chat" },
       async () => {
@@ -663,6 +689,15 @@ chat.openapi(chatRoute, async (c) => {
         // reservation was charged (cap disabled, new conversation, or
         // fail-open path).
         let reservedStepBudget: number | null = null;
+        // #2345 — per-turn override resolves last so:
+        //   1. The conversation's stored `connection_id` is the default.
+        //   2. The body's `connectionId` (header picker) supersedes it
+        //      for this turn only — never persisted back to the row.
+        //   3. The conversation's stored `connection_group_id` is the
+        //      content scope. Persisted at conversation creation; not
+        //      changed by per-turn overrides.
+        let effectiveConnectionId: string | undefined = parsed.data.connectionId;
+        let effectiveConnectionGroupId: string | undefined = parsed.data.connectionGroupId;
 
         // Conversation persistence — Ownership verification blocks here (can 404); message writes are fire-and-forget via internalExecute.
         if (hasInternalDB()) {
@@ -671,6 +706,18 @@ chat.openapi(chatRoute, async (c) => {
             const existing = await getConversation(conversationId, authResult.user?.id, authResult.user?.activeOrganizationId);
             if (!existing.ok) {
               return c.json({ error: "not_found", message: "Conversation not found.", retryable: false, requestId }, 404);
+            }
+            // #2345 — resolve effective routing. The conversation's
+            // stored values are the default; the body override (header
+            // picker) supersedes for this turn only. `connectionGroupId`
+            // is rarely overridden per-turn (content scope is sticky to
+            // the conversation), but we still respect the body value
+            // when present for symmetry with `connectionId`.
+            if (effectiveConnectionId === undefined && existing.data.connectionId) {
+              effectiveConnectionId = existing.data.connectionId;
+            }
+            if (effectiveConnectionGroupId === undefined && existing.data.connectionGroupId) {
+              effectiveConnectionGroupId = existing.data.connectionGroupId;
             }
             // F-77 — aggregate per-conversation step ceiling. The per-request
             // caps (stepCountIs(25), 180s wall-clock) bound a single agent
@@ -750,10 +797,31 @@ chat.openapi(chatRoute, async (c) => {
                       .join(" ") ?? "",
                   )
                 : "New conversation";
+              // #2345 — when the create payload supplies a connectionId
+              // without an explicit connectionGroupId, resolve the
+              // group from the connection's 0062 1:1 mapping so the
+              // persisted row carries both columns. Best-effort: a null
+              // group_id (legacy single-connection deploy) falls back
+              // to legacy behavior — the runtime treats undefined as
+              // "no group scope" without surfacing an error.
+              if (
+                effectiveConnectionId &&
+                effectiveConnectionGroupId === undefined
+              ) {
+                const resolved = await resolveGroupForConnection(
+                  effectiveConnectionId,
+                  authResult.user?.activeOrganizationId,
+                );
+                if (resolved) {
+                  effectiveConnectionGroupId = resolved;
+                }
+              }
               const created = await createConversation({
                 userId: authResult.user?.id,
                 title,
                 surface: "web",
+                connectionId: effectiveConnectionId ?? null,
+                connectionGroupId: effectiveConnectionGroupId ?? null,
                 orgId: authResult.user?.activeOrganizationId,
               });
               if (created) {
@@ -829,13 +897,35 @@ chat.openapi(chatRoute, async (c) => {
           // caught by the outer try-catch and returned as proper JSON errors.
           // The agent stream is then merged into a UIMessageStream that supports
           // writing custom data parts (Python progress events).
-          const agentResult = await runAgent({
-            messages,
-            ...(toolRegistry && { tools: toolRegistry }),
-            conversationId,
-            ...(warnings.length > 0 && { warnings }),
-            contextWarnings,
-          });
+          //
+          // #2345 — nest the agent invocation inside a `withRequestContext`
+          // that carries the resolved `connectionId` / `connectionGroupId`
+          // so plugin tools and downstream helpers see the routing in
+          // AsyncLocalStorage. Both fields are stripped when undefined
+          // so the existing `getRequestContext()` consumers continue to
+          // see the legacy shape on conversations without group scope.
+          const agentResult = await withRequestContext(
+            {
+              requestId,
+              user: authResult.user,
+              atlasMode,
+              approvalSurface: "chat",
+              ...(effectiveConnectionId !== undefined && {
+                connectionId: effectiveConnectionId,
+              }),
+              ...(effectiveConnectionGroupId !== undefined && {
+                connectionGroupId: effectiveConnectionGroupId,
+              }),
+            },
+            () =>
+              runAgent({
+                messages,
+                ...(toolRegistry && { tools: toolRegistry }),
+                conversationId,
+                ...(warnings.length > 0 && { warnings }),
+                contextWarnings,
+              }),
+          );
   
           // Register stream writer so Python tool can send progress events.
           // The writer is set before merge() triggers tool execution reads.

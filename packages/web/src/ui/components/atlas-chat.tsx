@@ -20,6 +20,7 @@ import { Markdown } from "./chat/markdown";
 import { FollowUpChips } from "./chat/follow-up-chips";
 import { SuggestionChips } from "./chat/suggestion-chips";
 import { DeveloperChatEmptyState } from "./chat/developer-empty-state";
+import { ChatEnvPicker, useChatEnvGroups } from "./chat/env-picker";
 import { useDevModeNoDrafts } from "../hooks/use-dev-mode-no-drafts";
 import type { QuerySuggestion } from "@/ui/lib/types";
 import { ShareDialog } from "./chat/share-dialog";
@@ -116,6 +117,14 @@ export function AtlasChat() {
   // the second 409s after a visible success toast.
   const [pinningText, setPinningText] = useState<string | null>(null);
   const [relatedSuggestions, setRelatedSuggestions] = useState<QuerySuggestion[]>([]);
+  // #2345 — chat-header env/member picker state. The connection-group
+  // is the *content scope* (sticky to the conversation row across
+  // turns); the connection id is the *execution target* (a per-turn
+  // override that the agent honours for one turn only). Both default
+  // to `null` so the legacy single-connection flow continues to render
+  // without a picker.
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const {
@@ -142,11 +151,29 @@ export function AtlasChat() {
         });
       }, 500);
     },
+    // #2345 — forward the picker's selection on every chat request.
+    // Refs inside `useAtlasTransport` snapshot these at fetch time so
+    // a picker change mid-conversation reaches the agent on the very
+    // next turn without rebuilding the transport.
+    getConnectionId: () => selectedConnectionId,
+    getConnectionGroupId: () => selectedGroupId,
   });
 
   const managedSession = authClient.useSession();
   const isManaged = authMode === "managed";
   const isSignedIn = isManaged && !!managedSession.data?.user;
+
+  // #2345 — populate the env/member picker from the user-facing
+  // `/api/v1/me/connection-groups` route. Fetched only once auth has
+  // resolved; the picker hides itself when fewer than two members
+  // are available, so the legacy single-connection deploy renders
+  // the same header it always has.
+  const envGroupsQuery = useChatEnvGroups({
+    apiUrl,
+    enabled: authResolved && isSignedIn,
+    getHeaders,
+    getCredentials,
+  });
 
   const convos = useConversations({
     apiUrl,
@@ -511,6 +538,18 @@ export function AtlasChat() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
+                  {/* #2345 — env/member picker. Hides itself when only
+                      one member is configured (legacy single-connection
+                      deploy) so the header is byte-identical pre-1.4.4. */}
+                  <ChatEnvPicker
+                    groups={envGroupsQuery.groups}
+                    activeGroupId={selectedGroupId}
+                    activeConnectionId={selectedConnectionId}
+                    onSelect={({ groupId, connectionId }) => {
+                      setSelectedGroupId(groupId);
+                      setSelectedConnectionId(connectionId);
+                    }}
+                  />
                   <Button
                     variant="ghost"
                     size="icon"

@@ -236,6 +236,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   // F-77 step-cap helpers — chat.ts imports both via the shared module.
   reserveConversationBudget: mock(() => Promise.resolve({ status: "ok" as const, totalStepsBefore: 0 })),
   settleConversationSteps: mock(() => {}),
+  resolveGroupForConnection: mock(() => Promise.resolve(null)),
 }));
 
 mock.module("@atlas/api/lib/semantic", () => ({

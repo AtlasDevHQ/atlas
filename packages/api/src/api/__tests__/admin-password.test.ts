@@ -216,6 +216,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   convertToNotebook: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   deleteBranch: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   renameBranch: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
+  resolveGroupForConnection: mock(() => Promise.resolve(null)),
 }));
 
 // Mock auth/server for the password-change dynamic import

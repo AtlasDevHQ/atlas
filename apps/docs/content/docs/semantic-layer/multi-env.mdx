@@ -1,0 +1,128 @@
+---
+title: Multi-environment semantic layer
+description: Point one semantic layer at several connections (dev/staging/prod, US/EU/APAC) with group-scoped entities and per-conversation env routing.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+A workspace that ships the same product to multiple replicas (US/EU/APAC, dev/staging/prod) used to need a duplicate semantic layer per replica. Multi-environment scope (#2336) lets a single workspace point one semantic layer at several connections grouped under a logical name like `prod`.
+
+The chat surface knows which group it is talking to and which replica to execute SQL against. The two pieces are decoupled — content scope and execution target — and a per-turn override switches the execution target without losing the content scope.
+
+## Connection groups
+
+Connections live inside **connection groups**. Each group has a name (`prod`, `staging`, `eu-only`) and one or more member connections. Every existing connection automatically lands in a single-member group named after itself when you upgrade, so a single-connection deploy works exactly as before — the group is invisible until you add a second member.
+
+Manage groups under **Admin → Connections → Groups**:
+
+- **Create a group** — give it a name and add connections as members. Multiple members must share a schema (the whole point is that they're replicas).
+- **Rename a group** — names are display labels. The underlying id is the foreign key, so a rename does not ripple through your entity files.
+- **Delete a group** — the group must be empty. Move connections out (or delete them) first.
+
+<Callout type="info">
+Vocabulary: code calls these **connection groups**. The UI says **environments**. They mean the same thing.
+</Callout>
+
+## Group-scoped content
+
+Semantic entities, dashboards, scheduled tasks, approvals, and PII classifications resolve through the group, not the individual connection. A `users` entity scoped to `prod` is queryable on every member of the `prod` group. You write the YAML once; the agent serves all replicas.
+
+```yaml
+# semantic/entities/users.yml
+table: users
+connection_group: prod          # ← new, replaces `connection`
+dimensions:
+  - { name: id,   sql: id,   type: number, description: "User ID" }
+  - { name: email, sql: email, type: string, description: "Login email" }
+```
+
+A draft entity in developer mode propagates through the same machinery: the publish flow promotes it once for the whole group rather than once per replica.
+
+## Per-conversation routing
+
+Every chat conversation now carries two routing columns:
+
+- `connection_id` — the *execution target* (which replica SQL runs against).
+- `connection_group_id` — the *content scope* (which group's entities, dashboards, approvals resolve for this chat).
+
+They are deliberately decoupled. A multi-member `prod` group can resolve content while `connection_id` points at one specific replica. The agent reads entities through the group, runs SQL against the replica.
+
+## The env / member picker
+
+The chat header gains a chip next to the prompt-library and schema-explorer buttons:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ Atlas                                  [prod / us-int]   │
+└──────────────────────────────────────────────────────────┘
+```
+
+Click to expand:
+
+```
+prod
+  ✓ us-int        postgres
+    eu            postgres
+    apac          postgres
+staging
+    staging-us    postgres
+```
+
+- **Group picker** — switch the content scope. Subsequent turns inherit the new group; the conversation row updates server-side.
+- **Member picker** — switch the execution target. **Per-turn only** — the override applies to one question and the next turn returns to the conversation's stored target. Ask one question against `eu` mid-conversation, then return to `us-int` without losing context.
+
+<Callout type="info">
+The picker hides itself when only one member is configured (legacy single-connection deploy). The header is byte-identical pre-1.4.4 until you add a second member.
+</Callout>
+
+## Sending a chat with explicit routing
+
+The `/api/v1/chat` request body grew two optional fields:
+
+```jsonc
+POST /api/v1/chat
+{
+  "messages": [{ "role": "user", "parts": [{ "type": "text", "text": "How many active users?" }] }],
+  "conversationId": "550e8400-e29b-41d4-a716-446655440000",
+  // Per-turn override: route execution at "eu" for this question only.
+  "connectionId": "eu",
+  // Content scope: resolve entities through the "prod" group.
+  "connectionGroupId": "g_prod"
+}
+```
+
+Both fields are optional. When omitted, the server reads them from the persisted conversation row — chat clients that don't surface a picker continue to work unchanged.
+
+## Plugin tools see the routing
+
+A plugin MCP tool receives both fields on its `McpToolContext`:
+
+```ts
+import type { AtlasPlugin, McpToolContext } from "@useatlas/plugin-sdk";
+
+export default function dashboardSnapshot(): AtlasPlugin {
+  return {
+    id: "dashboard-snapshot",
+    mcpTools() {
+      return [{
+        name: "snapshot",
+        description: "Capture the active dashboard at the active replica.",
+        inputSchema: /* ... */,
+        async handler(args, ctx: McpToolContext) {
+          // ctx.connectionGroupId resolves dashboard scope
+          // ctx.connectionId  routes the underlying SQL
+          return queryDashboards(ctx.connectionGroupId, ctx.connectionId, args);
+        },
+      }];
+    },
+  };
+}
+```
+
+Both fields are `undefined` when the dispatch isn't chat-routed (stdio MCP, scheduler) — plugins that don't care about routing don't need to handle either.
+
+## Migration notes
+
+- The transition leaves `connection_id` on every content table and conversation row. The deprecation tail removes it once every consumer reads through `connection_group_id` (#2346 / #2347).
+- Existing chats stay routed exactly as they were. The 0064 migration backfills `conversations.connection_group_id` from the connection's group_id, so old conversations get the correct content scope automatically.
+- Self-hosted single-connection deploys are unaffected — the picker hides itself, no entity files change, and the routing columns are populated but never inspected.

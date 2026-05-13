@@ -59,6 +59,21 @@ interface RequestContext {
    * different value space — `human` / `agent` / `mcp` / `scheduler`).
    */
   approvalSurface?: import("@useatlas/types").ApprovalRequestSurface;
+  /**
+   * #2345 — group-aware chat routing.
+   *
+   * `connectionId` is the *execution target* for SQL on this request —
+   * a per-turn override that supersedes the conversation's stored
+   * `connection_id` for one turn only. Falls back to the conversation
+   * value when undefined.
+   *
+   * `connectionGroupId` is the *content scope* for entity / dashboard
+   * overlays. Decoupled from `connectionId` so a multi-member "prod"
+   * group can resolve content while a per-turn override targets a
+   * single replica (e.g. "us-int" for one question, "eu" for the next).
+   */
+  connectionId?: string;
+  connectionGroupId?: string;
 }
 
 const requestStore = new AsyncLocalStorage<RequestContext>();

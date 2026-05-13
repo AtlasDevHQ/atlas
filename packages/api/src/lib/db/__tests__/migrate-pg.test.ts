@@ -632,6 +632,111 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
   }, PG_TEST_TIMEOUT_MS);
 
+  // 0064 — conversations.connection_group_id. Adds the *content scope*
+  // column the chat-routing slice (#2345) lives on while keeping the
+  // existing `conversations.connection_id` as the *execution target*.
+  // What this set of assertions guards against:
+  //   - A future migration that flips `connection_group_id` to NOT NULL
+  //     without a backfill — legacy conversations without a connection
+  //     (rare, pre-0034 self-hosted shapes) must keep booting.
+  //   - The backfill contract — every conversation whose `connection_id`
+  //     points at a known connection must end up with the corresponding
+  //     `connection_group_id` resolved through 0062's 1:1 mapping.
+  it("conversations.connection_group_id: column exists and is nullable", async () => {
+    const { rows } = await pool.query<{ is_nullable: string; data_type: string }>(
+      `SELECT is_nullable, data_type
+       FROM information_schema.columns
+       WHERE table_name = 'conversations'
+         AND column_name = 'connection_group_id'
+         AND table_schema = current_schema()`,
+    );
+    expect(rows[0]?.data_type).toBe("text");
+    // Nullable: pre-0034 self-hosted shapes that never had a
+    // connection_id keep booting, and a workspace with zero groups
+    // (legacy single-connection deploy) doesn't gain a NOT NULL stamp
+    // on every chat row.
+    expect(rows[0]?.is_nullable).toBe("YES");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("conversations: 0064 backfill resolves connection_id → connection_group_id via 0062's 1:1 mapping", async () => {
+    // Pre-0064 conversations have `connection_id` set but no
+    // `connection_group_id`. The migration backfills by joining
+    // `connections`, so every row with a known connection lands on
+    // `g_<connId>` (the group_id 0062 created for the 1:1 backfill).
+    const orgId = `org-conv-backfill-${Date.now()}`;
+    const connId = `conn-cb-${Date.now()}`;
+    const groupId = `g_${connId}`;
+    // Seed: connection + its 1:1 group (mirrors what 0062 did at upgrade).
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, $3)`,
+      [groupId, orgId, connId],
+    );
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status, group_id)
+       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3)`,
+      [connId, orgId, groupId],
+    );
+    // Insert a conversation matching the pre-0064 shape: connection_id
+    // set, connection_group_id left NULL — same shape an upgrade row
+    // would have on the moment 0064 starts running.
+    const convRow = await pool.query<{ id: string }>(
+      `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, org_id)
+       VALUES ($1, $2, 'web', $3, NULL, $4)
+       RETURNING id`,
+      [`user-cb-${Date.now()}`, "Test backfill", connId, orgId],
+    );
+    const conversationId = convRow.rows[0]?.id;
+    expect(conversationId).toBeDefined();
+
+    // Re-run the backfill block (same SQL the migration emits).
+    // Idempotent: the WHERE clause only touches rows still missing
+    // connection_group_id.
+    await pool.query(
+      `UPDATE conversations c
+         SET connection_group_id = conn.group_id
+         FROM connections conn
+         WHERE c.org_id = $1
+           AND c.connection_id IS NOT NULL
+           AND c.connection_group_id IS NULL
+           AND conn.id = c.connection_id
+           AND (conn.org_id = c.org_id OR conn.org_id = '__global__')`,
+      [orgId],
+    );
+    const { rows } = await pool.query<{ connection_group_id: string | null }>(
+      `SELECT connection_group_id FROM conversations WHERE id = $1`,
+      [conversationId],
+    );
+    expect(rows[0]?.connection_group_id).toBe(groupId);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("conversations: connection_id and connection_group_id can hold independent values (per-turn override shape)", async () => {
+    // The slice's core invariant: a conversation can pin its content
+    // scope to a multi-member "prod" group while its execution target
+    // points at a specific replica. This test inserts a row with the
+    // two columns deliberately divergent and asserts no DB-layer guard
+    // collapses them.
+    const orgId = `org-conv-decouple-${Date.now()}`;
+    const groupId = `g-prod-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'prod')`,
+      [groupId, orgId],
+    );
+    const userId = `user-decouple-${Date.now()}`;
+    // connection_id points at "us-int"; connection_group_id at the
+    // multi-member "prod" group. The pair must coexist.
+    await pool.query(
+      `INSERT INTO conversations (user_id, title, connection_id, connection_group_id, org_id)
+       VALUES ($1, 'decoupled', 'us-int', $2, $3)`,
+      [userId, groupId, orgId],
+    );
+    const { rows } = await pool.query<{ connection_id: string; connection_group_id: string }>(
+      `SELECT connection_id, connection_group_id FROM conversations WHERE user_id = $1`,
+      [userId],
+    );
+    expect(rows[0]?.connection_id).toBe("us-int");
+    expect(rows[0]?.connection_group_id).toBe(groupId);
+  }, PG_TEST_TIMEOUT_MS);
+
   it("semantic_entities: two connections in the same group cannot duplicate the same entity", async () => {
     // Group-scoped uniqueness: a multi-member group has ONE entity row
     // per (entity_type, name) — not N per member. Attempting a second

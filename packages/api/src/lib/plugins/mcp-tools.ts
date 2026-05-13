@@ -18,7 +18,7 @@
  * the host-side projection.
  */
 
-import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { createLogger, getRequestContext, withRequestContext } from "@atlas/api/lib/logger";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { enforceClientRateLimit } from "@atlas/api/lib/rate-limit/middleware";
 import type { PluginRegistry, PluginLike } from "./registry";
@@ -69,6 +69,16 @@ export interface McpToolContextShape {
   readonly clientId?: string;
   readonly requestId: string;
   readonly pluginId: string;
+  /**
+   * #2345 — group-aware routing. See {@link McpToolContext} in the
+   * public plugin-sdk for the contract. The internal shape mirrors the
+   * public one verbatim; keeping the fields optional preserves the
+   * existing plugin contract (plugins authored before #2345 keep
+   * compiling and continue to receive a context without these fields
+   * when the dispatch is not chat-routed).
+   */
+  readonly connectionId?: string;
+  readonly connectionGroupId?: string;
   readonly logger: {
     info(obj: Record<string, unknown>, msg?: string): void;
     info(msg: string): void;
@@ -526,12 +536,24 @@ export function registerPluginMcpTools(
             (async <T,>(_ctx: unknown, fn: () => Promise<T>) => fn());
 
           const tlogger = loggerFor(tool.pluginId, tool.qualifiedName);
+          // #2345 — surface group-aware routing additively. Both fields
+          // are read from RequestContext (chat routes stamp them in
+          // AsyncLocalStorage before invoking the agent) and only
+          // attached when present so the plugin contract for legacy
+          // call sites (scheduler, stdio MCP) is byte-identical.
+          const routingCtx = getRequestContext();
           const ctx: McpToolContextShape = {
             workspaceId,
             userId: actor.id,
             ...(clientId ? { clientId } : {}),
             requestId,
             pluginId: tool.pluginId,
+            ...(routingCtx?.connectionId !== undefined && {
+              connectionId: routingCtx.connectionId,
+            }),
+            ...(routingCtx?.connectionGroupId !== undefined && {
+              connectionGroupId: routingCtx.connectionGroupId,
+            }),
             logger: tlogger,
             audit(entry) {
               try {

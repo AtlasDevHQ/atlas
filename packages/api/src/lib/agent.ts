@@ -526,6 +526,13 @@ export async function runAgent({
   const userId = reqCtx?.user?.id ?? null;
   const orgId = reqCtx?.user?.activeOrganizationId;
   const atlasMode = reqCtx?.atlasMode ?? "published";
+  // #2345 — group-aware routing. Per-turn `connectionId` overrides the
+  // conversation's stored execution target; `connectionGroupId` is the
+  // content scope (semantic-layer overlays, dashboard scope). Both are
+  // optional — when absent the agent falls back to legacy single-
+  // connection behavior, matching the prompt's acceptance criterion.
+  const connectionId = reqCtx?.connectionId;
+  const connectionGroupId = reqCtx?.connectionGroupId;
 
   // Resolve model: injected > workspace config (enterprise) > platform env vars
   let model: LanguageModel;
@@ -660,6 +667,11 @@ export async function runAgent({
       "atlas.provider": providerType,
       "atlas.model": resolvedModelId,
       "atlas.message_count": messages.length,
+      // #2345 — surface routing so traces show which env/replica the
+      // turn ran against. Empty string when absent so the span never
+      // carries a sentinel value the dashboards have to special-case.
+      "atlas.connection_id": connectionId ?? "",
+      "atlas.connection_group_id": connectionGroupId ?? "",
     },
   });
   // Make the agent span the active context so tool spans (withSpan in

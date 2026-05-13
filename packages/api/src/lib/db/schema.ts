@@ -87,6 +87,12 @@ export const conversations = pgTable(
     title: text("title"),
     surface: text("surface").default("web"),
     connectionId: text("connection_id"),
+    // 0064 — group-aware routing (#2345). `connection_id` is the
+    // execution target (which replica SQL runs against);
+    // `connection_group_id` is the content scope (which group's
+    // entities, dashboards, etc. resolve). Two columns, two purposes —
+    // they are deliberately decoupled.
+    connectionGroupId: text("connection_group_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
     // Saved/starred
@@ -116,6 +122,7 @@ export const conversations = pgTable(
     // share_mode='org' without an org_id is the F-01 bug class — see #1737 / 0034.
     check("chk_org_scoped_share", sql`share_mode <> 'org' OR org_id IS NOT NULL`),
     index("idx_conversations_org").on(t.orgId),
+    index("idx_conversations_group").on(t.connectionGroupId, t.orgId),
   ],
 );
 

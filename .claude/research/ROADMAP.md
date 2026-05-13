@@ -140,7 +140,7 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
 
 ## Active
 
-- **1.4.4 — Multi-environment semantic layer** ([milestone #45](https://github.com/AtlasDevHQ/atlas/milestones/45), 2/11 shipped) — PRD #2336 + connection-groups foundation (#2339 ✅), group-scoped semantic / PII / dashboards / scheduled-tasks / approvals (#2340–#2344), group-aware chat routing (#2345), legacy `connection_id` deprecation (#2346/#2347). Spawned from the #2329 audit; architecture prep `withGroupScope` helper (#2338, win #58) + foundation (#2339, PR #2381) shipped. Five group-scoped content slices (#2340–#2344) now parallelizable.
+- **1.4.4 — Multi-environment semantic layer** ([milestone #45](https://github.com/AtlasDevHQ/atlas/milestones/45), 3/11 shipped) — PRD #2336; foundation (#2339 ✅) + semantic-entities keystone with atomic publish + 0028-prevention smoke (#2340 ✅, PR #2392, win #59) shipped on top of `withGroupScope` (#2338, win #58). Four sibling content slices (#2341–#2344) + chat routing (#2345) + `connection_id` deprecation tail (#2346/#2347) remain; siblings are parallelizable.
 
 ## Planned
 

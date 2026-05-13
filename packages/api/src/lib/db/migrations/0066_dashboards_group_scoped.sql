@@ -41,21 +41,20 @@
 -- ── 1. connection_groups.primary_connection_id ─────────────────────
 --
 -- Composite FK on `(primary_connection_id, org_id)` so the primary
--- pointer is org-isolated by construction. ON DELETE SET NULL: when
--- a connection is removed from the org we silently clear its
--- "primary" flag rather than blocking the delete — the resolver's
--- fallback path (first member by created_at, id) keeps the card
--- rendering until an admin re-pins. Without SET NULL the FK would
--- default to NO ACTION and break dependent deletes.
+-- pointer is org-isolated by construction. `ON DELETE SET NULL
+-- (primary_connection_id)` uses the PG 15+ column-list form — without
+-- it the default action nulls EVERY column in the composite FK, and
+-- `connection_groups.org_id` is NOT NULL, so the cascade fails with
+-- 23502 on any connection delete (api-tests caught this on first push).
+-- Same gotcha 0062 documented for `connections.group_id`; the
+-- difference is that 0062 chose `ON DELETE RESTRICT` to sidestep the
+-- problem, whereas the primary pointer needs SET NULL semantics so a
+-- removed member silently demotes instead of blocking the delete.
 --
--- The "SET NULL on (primary_connection_id)" variant uses the column-
--- list form available in PG 15+ so we don't null the composite
--- `org_id` column too (org_id is NOT NULL on connection_groups, same
--- shape as the 0062 commentary). Drizzle's `onDelete` API doesn't
--- expose the column-list form, so the schema mirror in `schema.ts`
--- declares this FK manually via `foreignKey({...}).onDelete("set null")`
--- and a CHECK constraint enforces the matching action — the smoke
--- test in `migrate-pg.test.ts` keeps the two in lockstep.
+-- Drizzle's `onDelete` API doesn't expose the column-list form, so the
+-- schema mirror declares the FK without it; the migration is the
+-- source of truth and the smoke test in `migrate-pg.test.ts` pins the
+-- behaviour end-to-end so any future drift surfaces explicitly.
 ALTER TABLE connection_groups
   ADD COLUMN IF NOT EXISTS primary_connection_id TEXT;
 
@@ -70,7 +69,7 @@ DO $$ BEGIN
       ADD CONSTRAINT fk_connection_groups_primary
       FOREIGN KEY (primary_connection_id, org_id)
       REFERENCES connections (id, org_id)
-      ON DELETE SET NULL;
+      ON DELETE SET NULL (primary_connection_id);
   END IF;
 END $$;
 

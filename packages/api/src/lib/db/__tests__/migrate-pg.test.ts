@@ -709,10 +709,23 @@ describeIfPg("migrate-pg (real Postgres)", () => {
   }, PG_TEST_TIMEOUT_MS);
 
   it("pii_column_classifications: unique index is keyed on connection_group_id, not connection_id", async () => {
-    // The old `pii_column_classifications_unique` index from 0000 is
-    // dropped and recreated by 0064 to key on `connection_group_id`.
-    // `pg_indexes.indexdef` reflects the post-CREATE expression so we
-    // can assert the new keying without parsing pg_index.indkey.
+    // The baseline inline UNIQUE constraint auto-names to the 63-byte
+    // truncated `...column_name_connec` name, not `...co_key`; 0064 must
+    // drop that constraint before creating the group-keyed index.
+    const legacyConstraintName = "pii_column_classifications_org_id_table_name_column_name_connec";
+    const legacy = await pool.query<{ conname: string; constraintdef: string }>(
+      `SELECT conname, pg_get_constraintdef(oid) AS constraintdef
+       FROM pg_constraint
+       WHERE conrelid = 'pii_column_classifications'::regclass
+         AND conname = $1`,
+      [legacyConstraintName],
+    );
+    expect(legacy.rows).toEqual([]);
+
+    // The old connection-keyed uniqueness is dropped and recreated by
+    // 0064 to key on `connection_group_id`. `pg_indexes.indexdef`
+    // reflects the post-CREATE expression so we can assert the new
+    // keying without parsing pg_index.indkey.
     const { rows } = await pool.query<{ indexname: string; indexdef: string }>(
       `SELECT indexname, indexdef
        FROM pg_indexes

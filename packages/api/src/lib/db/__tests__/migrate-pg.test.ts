@@ -421,15 +421,22 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows.length).toBe(3);
     for (const row of rows) {
       // Group-keyed: the index includes COALESCE(connection_group_id, ...).
-      expect(row.indexdef).toMatch(/COALESCE\(connection_group_id, '__default__'\)/i);
+      // `pg_indexes.indexdef` is the reconstructed `CREATE INDEX` and
+      // Postgres normalises bare string literals to include an explicit
+      // `::text` cast in expression indexes — so the literal we wrote as
+      // `'__default__'` comes back as `'__default__'::text`. The
+      // optional non-capturing group accepts either form so a future
+      // PG-version output flip doesn't silently break this guard.
+      expect(row.indexdef).toMatch(/COALESCE\(connection_group_id, '__default__'(?:::text)?\)/i);
       // 0028 prevention: entity_type must be in the key. The 0028 incident
       // was the 0024/0025 indexes losing entity_type from the partial
       // unique key, breaking same-name-different-type entities.
       expect(row.indexdef).toMatch(/entity_type/i);
       // The legacy `connection_id` column must NOT appear in the new
       // index definition — drift between drop+create would leave the
-      // old index live and the new one silently absent.
-      expect(row.indexdef).not.toMatch(/COALESCE\(connection_id, /i);
+      // old index live and the new one silently absent. Same `::text`
+      // optional suffix as above.
+      expect(row.indexdef).not.toMatch(/COALESCE\(connection_id, '__default__'(?:::text)?\)/i);
     }
   }, PG_TEST_TIMEOUT_MS);
 
@@ -578,18 +585,21 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
     expect(after.rows[0]?.count).toBe("2");
 
+    // Drop the unique constraint first — the dedup CTE runs BEFORE the
+    // index is created in 0063, so it must work against a non-
+    // uniqueness-enforced table. Renaming `olderId` to collide with
+    // `newerId` would otherwise fail with 23505 against the live
+    // index before the dedup ever fires (the test would error on the
+    // UPDATE instead of asserting dedup behavior).
+    await pool.query(`DROP INDEX uq_semantic_entity_published`);
     // Now collide the two on the same name + group — force the dedup
     // to fire. Rename the older row to match the newer one. Without
-    // the dedup CTE, this would have been a 23505 at migration time;
-    // here we get to assert it picks the right winner.
+    // the dedup CTE, the next CREATE UNIQUE INDEX would fail with
+    // 23505; here we assert the CTE picks the right winner first.
     await pool.query(
       `UPDATE semantic_entities SET name = 'dedup_target' WHERE id = $1`,
       [olderId],
     );
-    // Drop the unique constraint just for this test — the dedup CTE
-    // runs BEFORE the index is created in 0063, so it must work
-    // against a non-uniqueness-enforced table.
-    await pool.query(`DROP INDEX uq_semantic_entity_published`);
     await pool.query(
       `WITH ranked AS (
          SELECT id,

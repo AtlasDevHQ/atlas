@@ -104,12 +104,19 @@ export async function createSandboxBackend(
   // credentials; on Vercel itself, OIDC handles auth automatically and these
   // are undefined.
   const access = vercelSandboxAccess();
+  const explicitAccess = access
+    ? {
+        teamId: access.teamId,
+        projectId: access.projectId,
+        token: access.token.reveal(),
+      }
+    : undefined;
   let sandbox: InstanceType<typeof Sandbox>;
   try {
     sandbox = await Sandbox.create({
       runtime: "node24",
       networkPolicy: "deny-all",
-      ...(access ?? {}),
+      ...(explicitAccess ?? {}),
     });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);

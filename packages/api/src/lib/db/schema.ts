@@ -1162,7 +1162,17 @@ export const piiColumnClassifications = pgTable(
     orgId: text("org_id").notNull(),
     tableName: text("table_name").notNull(),
     columnName: text("column_name").notNull(),
-    connectionId: text("connection_id").notNull().default("default"),
+    // Legacy connection scope. 0064 dropped `NOT NULL DEFAULT 'default'`
+    // — the natural key is `connection_group_id` now. Retained nullable
+    // for transitional dual-write; final removal lives in #2346.
+    connectionId: text("connection_id"),
+    // Group scope (#2341). One row per (org_id, table_name, column_name,
+    // group_id) — multi-member groups share the same classification
+    // (replicas inside a group share schema, so the column's PII
+    // category is the same across all members). Nullable for legacy
+    // rows whose connection_id no longer resolves to a live connection;
+    // those rows live in the COALESCE sentinel bucket.
+    connectionGroupId: text("connection_group_id"),
     category: text("category").notNull(),
     confidence: text("confidence").notNull().default("medium"),
     maskingStrategy: text("masking_strategy").notNull().default("partial"),
@@ -1172,7 +1182,15 @@ export const piiColumnClassifications = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex("pii_column_classifications_unique").on(t.orgId, t.tableName, t.columnName, t.connectionId),
+    index("idx_pii_column_classifications_group").on(t.connectionGroupId, t.orgId),
+    // IMPORTANT: placeholder stub — the real index is UNIQUE on
+    // (org_id, table_name, column_name, COALESCE(connection_group_id,
+    // '__default__')) and is managed by raw SQL in migration 0064.
+    // Drizzle can't represent COALESCE expression indexes, so this
+    // non-unique approximation exists solely to suppress drift warnings.
+    // Do NOT rely on this for constraint reasoning. Callers using `ON
+    // CONFLICT` must target the COALESCE expression, not the column.
+    index("pii_column_classifications_unique").on(t.orgId, t.tableName, t.columnName, t.connectionGroupId),
   ],
 );
 

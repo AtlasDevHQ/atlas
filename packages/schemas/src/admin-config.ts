@@ -145,7 +145,13 @@ export const PIIColumnClassificationSchema = z.object({
   orgId: z.string(),
   tableName: z.string(),
   columnName: z.string(),
-  connectionId: z.string(),
+  // Legacy connection scope. Nullable post-0064 (the migration dropped
+  // the `NOT NULL DEFAULT 'default'`). Prefer `connectionGroupId` for
+  // new callers. See PRD #2336 §"Migration sequencing".
+  connectionId: z.string().nullable(),
+  // Group scope (#2341). Optional during the wire-format transition —
+  // bundles exported by pre-1.4.4 instances omit the field.
+  connectionGroupId: z.string().nullable().optional(),
   category: z.enum(PII_CATEGORIES),
   confidence: z.enum(PII_CONFIDENCE_LEVELS),
   maskingStrategy: z.enum(MASKING_STRATEGIES),

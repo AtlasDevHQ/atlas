@@ -36117,10 +36117,20 @@
           {
             "schema": {
               "type": "string",
-              "description": "Filter by connection ID"
+              "description": "Filter by connection group (environment) ID"
             },
             "required": false,
-            "description": "Filter by connection ID",
+            "description": "Filter by connection group (environment) ID",
+            "name": "connectionGroupId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Legacy: filter by connection ID — resolved to the connection's group via 0062's 1:1 mapping. Prefer `connectionGroupId` for new callers."
+            },
+            "required": false,
+            "description": "Legacy: filter by connection ID — resolved to the connection's group via 0062's 1:1 mapping. Prefer `connectionGroupId` for new callers.",
             "name": "connectionId",
             "in": "query"
           }
@@ -36151,7 +36161,16 @@
                             "type": "string"
                           },
                           "connectionId": {
-                            "type": "string"
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "connectionGroupId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           },
                           "category": {
                             "type": "string",
@@ -36407,7 +36426,16 @@
                           "type": "string"
                         },
                         "connectionId": {
-                          "type": "string"
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "connectionGroupId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
                         },
                         "category": {
                           "type": "string",

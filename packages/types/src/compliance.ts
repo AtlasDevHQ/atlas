@@ -67,8 +67,33 @@ export interface PIIColumnClassification {
   tableName: string;
   /** Column name within the table. */
   columnName: string;
-  /** Connection ID for the datasource. */
-  connectionId: string;
+  /**
+   * Legacy connection scope. Retained for compatibility with classifications
+   * stored before #2341; new rows also populate `connectionGroupId`
+   * (additive). Final removal lives in the #2346 deprecation tail.
+   *
+   * Nullable post-0064 — the migration dropped the legacy `NOT NULL
+   * DEFAULT 'default'`. Read sites should treat NULL as "no connection
+   * scope" (a global / cross-env classification) and prefer the group
+   * column for resolution.
+   *
+   * @deprecated Prefer `connectionGroupId` when reading from 1.4.4+ instances.
+   */
+  connectionId: string | null;
+  /**
+   * Group scope (#2341). One classification row per (org, table, column,
+   * group) — multi-member groups share the same row (replicas inside a
+   * group share schema, so the column's PII category is the same across
+   * all members). Nullable for legacy rows whose `connectionId` no
+   * longer resolves to a live connection; those classifications apply
+   * globally within the org (the COALESCE sentinel bucket).
+   *
+   * Optional during the wire-format transition: instances exported
+   * before #2341 omit the field. Consumers should resolve
+   * `connectionGroupId ?? null` and fall back to `connectionId` for
+   * legacy rows.
+   */
+  connectionGroupId?: string | null;
   /** Detected or manually assigned PII category. */
   category: PIICategory;
   /** Detection confidence level. */

@@ -907,6 +907,7 @@ function executeAndAuditEffect(opts: {
                 columns: result.columns, rows: result.rows,
                 tablesAccessed: classification.tablesAccessed,
                 orgId, userRole: maskCtx?.user?.role,
+                connectionId: connId,
               }));
               maskingApplied = maskedRows !== result.rows;
             } catch (err) {
@@ -1478,6 +1479,7 @@ export const executeSQL = tool({
                       columns: cached.columns, rows: cached.rows,
                       tablesAccessed: classification.tablesAccessed,
                       orgId, userRole: ctx?.user?.role,
+                      connectionId: connId,
                     }));
                     cachedMaskingApplied = cachedRows !== cached.rows;
                   } catch (err) {

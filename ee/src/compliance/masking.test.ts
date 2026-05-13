@@ -352,6 +352,105 @@ describe("applyMasking", () => {
     // Undefined role defaults to viewer (full mask)
     expect(result[0].email).toBe("***");
   });
+
+  it("group filter (#2341): skips classifications from a different group when connectionId provided", async () => {
+    // Multi-environment org: `users.email` is classified separately in
+    // `prod` (full) and `staging` (partial). A query running on a
+    // `staging` connection sees only the staging classification — the
+    // prod row is filtered out before the lookup is built.
+    //
+    // This is the structural promise of #2341: replicas inside a group
+    // share schema, classifications live on the group, and groups
+    // don't leak across each other.
+    mockEnterpriseEnabled = true;
+    mockHasInternalDB = true;
+    mockQueryRows.push([]); // CREATE TABLE
+    mockQueryRows.push([
+      {
+        id: "cls-prod",
+        org_id: "org-1",
+        table_name: "users",
+        column_name: "email",
+        connection_id: "us-int",
+        connection_group_id: "g_prod",
+        category: "email",
+        confidence: "high",
+        masking_strategy: "full",
+        reviewed: true,
+        dismissed: false,
+        created_at: "2026-01-01",
+        updated_at: "2026-01-01",
+      },
+      {
+        id: "cls-staging",
+        org_id: "org-1",
+        table_name: "users",
+        column_name: "email",
+        connection_id: "staging-1",
+        connection_group_id: "g_staging",
+        category: "email",
+        confidence: "low",
+        masking_strategy: "redact",
+        reviewed: true,
+        dismissed: false,
+        created_at: "2026-01-01",
+        updated_at: "2026-01-01",
+      },
+    ]);
+    // resolveGroupIdForConnection lookup for the query's connection.
+    mockQueryRows.push([{ group_id: "g_staging" }]);
+
+    const result = await run(applyMasking({
+      columns: ["email"],
+      rows: [{ email: "alice@example.com" }],
+      tablesAccessed: ["users"],
+      orgId: "org-1",
+      userRole: "analyst",
+      connectionId: "staging-1",
+    }));
+
+    // Staging's `redact` wins — analyst sees `[REDACTED]`, NOT the
+    // prod `full` strategy.
+    expect(result[0].email).toBe("[REDACTED]");
+  });
+
+  it("group filter (#2341): NULL-scoped (un-grouped) classifications apply regardless of connection", async () => {
+    // Backfill leaves rows with `connection_group_id = NULL` when the
+    // source connection has been deleted. Those rows are intentionally
+    // "global within the org" — they apply to every query, regardless
+    // of which connection it ran on.
+    mockEnterpriseEnabled = true;
+    mockHasInternalDB = true;
+    mockQueryRows.push([]); // CREATE TABLE
+    mockQueryRows.push([
+      {
+        id: "cls-null",
+        org_id: "org-1",
+        table_name: "users",
+        column_name: "email",
+        connection_id: null,
+        connection_group_id: null,
+        category: "email",
+        confidence: "medium",
+        masking_strategy: "full",
+        reviewed: true,
+        dismissed: false,
+        created_at: "2026-01-01",
+        updated_at: "2026-01-01",
+      },
+    ]);
+    mockQueryRows.push([{ group_id: "g_staging" }]); // resolve
+
+    const result = await run(applyMasking({
+      columns: ["email"],
+      rows: [{ email: "alice@example.com" }],
+      tablesAccessed: ["users"],
+      orgId: "org-1",
+      userRole: "viewer",
+      connectionId: "staging-1",
+    }));
+    expect(result[0].email).toBe("***");
+  });
 });
 
 // ── ComplianceError ─────────────────────────────────────────────
@@ -387,12 +486,14 @@ describe("savePIIClassification", () => {
 
   it("saves a classification and returns it", async () => {
     mockQueryRows.push([]); // CREATE TABLE
+    mockQueryRows.push([{ group_id: "g_default" }]); // resolveGroupIdForConnection
     mockQueryRows.push([{
       id: "cls-new",
       org_id: "org-1",
       table_name: "users",
       column_name: "email",
       connection_id: "default",
+      connection_group_id: "g_default",
       category: "email",
       confidence: "high",
       masking_strategy: "partial",
@@ -408,6 +509,7 @@ describe("savePIIClassification", () => {
     expect(result.id).toBe("cls-new");
     expect(result.category).toBe("email");
     expect(result.maskingStrategy).toBe("partial");
+    expect(result.connectionGroupId).toBe("g_default");
   });
 
   it("throws on invalid category", async () => {
@@ -436,6 +538,38 @@ describe("savePIIClassification", () => {
     await expect(
       run(savePIIClassification("org-1", "t", "c", "default", "email", "high")),
     ).rejects.toThrow("Internal database not available");
+  });
+
+  it("with connectionId=null skips group resolution and writes NULL-scoped row", async () => {
+    // Callers that don't have a connection (e.g. global / cross-env
+    // classifications) pass `null`. The save path skips the
+    // resolveGroupIdForConnection lookup and writes
+    // connection_group_id = NULL — the row lives in the COALESCE
+    // sentinel bucket. The unique index treats it like any other
+    // scope, so a second NULL-scoped row for the same (org, table,
+    // column) still collides.
+    mockQueryRows.push([]); // CREATE TABLE
+    // NOTE: no resolve query — connectionId is null so it short-circuits.
+    mockQueryRows.push([{
+      id: "cls-null",
+      org_id: "org-1",
+      table_name: "users",
+      column_name: "email",
+      connection_id: null,
+      connection_group_id: null,
+      category: "email",
+      confidence: "high",
+      masking_strategy: "partial",
+      reviewed: false,
+      dismissed: false,
+      created_at: "2026-01-01",
+      updated_at: "2026-01-01",
+    }]);
+    const result = await run(savePIIClassification(
+      "org-1", "users", "email", null, "email", "high", "partial",
+    ));
+    expect(result.connectionId).toBeNull();
+    expect(result.connectionGroupId).toBeNull();
   });
 });
 

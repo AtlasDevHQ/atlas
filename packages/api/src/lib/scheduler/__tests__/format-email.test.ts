@@ -16,6 +16,7 @@ function makeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     cronExpression: "0 9 * * 1",
     deliveryChannel: "email",
     recipients: [],
+    connectionGroupId: null,
     connectionId: null,
     approvalMode: "auto",
     enabled: true,

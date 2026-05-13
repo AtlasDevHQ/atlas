@@ -13181,6 +13181,16 @@
             "description": "Filter by enabled status.",
             "name": "enabled",
             "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Filter by connection group/environment scope."
+            },
+            "required": false,
+            "description": "Filter by connection group/environment scope.",
+            "name": "connectionGroupId",
+            "in": "query"
           }
         ],
         "responses": {
@@ -13390,6 +13400,12 @@
                       ]
                     },
                     "default": []
+                  },
+                  "connectionGroupId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   },
                   "connectionId": {
                     "type": [
@@ -13996,6 +14012,12 @@
                         }
                       ]
                     }
+                  },
+                  "connectionGroupId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   },
                   "connectionId": {
                     "type": [

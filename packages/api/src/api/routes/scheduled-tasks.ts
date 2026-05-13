@@ -53,6 +53,7 @@ const CreateScheduledTaskSchema = z.object({
   cronExpression: z.string().min(1),
   deliveryChannel: z.enum(DELIVERY_CHANNELS).default("webhook"),
   recipients: z.array(RecipientSchema).default([]),
+  connectionGroupId: z.string().nullable().optional(),
   connectionId: z.string().nullable().optional(),
   approvalMode: z.enum(ACTION_APPROVAL_MODES).default("auto"),
 });
@@ -63,6 +64,7 @@ const UpdateScheduledTaskSchema = z.object({
   cronExpression: z.string().min(1).optional(),
   deliveryChannel: z.enum(DELIVERY_CHANNELS).optional(),
   recipients: z.array(RecipientSchema).optional(),
+  connectionGroupId: z.string().nullable().optional(),
   connectionId: z.string().nullable().optional(),
   approvalMode: z.enum(ACTION_APPROVAL_MODES).optional(),
   enabled: z.boolean().optional(),
@@ -110,6 +112,10 @@ const listTasksRoute = createRoute({
       enabled: z.string().optional().openapi({
         param: { name: "enabled", in: "query" },
         description: "Filter by enabled status.",
+      }),
+      connectionGroupId: z.string().optional().openapi({
+        param: { name: "connectionGroupId", in: "query" },
+        description: "Filter by connection group/environment scope.",
       }),
     }),
   },
@@ -237,10 +243,12 @@ authed.openapi(listTasksRoute, async (c) => {
     const { limit, offset } = parsePagination(c, { limit: 20, maxLimit: 100 });
     const enabledParam = c.req.query("enabled");
     const enabled = enabledParam === "true" ? true : enabledParam === "false" ? false : undefined;
+    const connectionGroupId = c.req.query("connectionGroupId") ?? undefined;
 
     const items = yield* Effect.promise(() => listScheduledTasks({
       orgId,
       enabled,
+      ...(connectionGroupId !== undefined ? { connectionGroupId } : {}),
       limit,
       offset,
     }));
@@ -267,7 +275,7 @@ authed.openapi(
         return c.json({ error: "invalid_request", message: `Invalid cron expression: ${cronCheck.error}` }, 400);
       }
 
-      const createResult = yield* Effect.promise(() => createScheduledTask({
+      const createOpts = {
         ownerId: user?.id ?? "anonymous",
         orgId,
         name: parsed.name,
@@ -277,7 +285,9 @@ authed.openapi(
         recipients: parsed.recipients,
         connectionId: parsed.connectionId ?? null,
         approvalMode: parsed.approvalMode,
-      }));
+        ...("connectionGroupId" in parsed ? { connectionGroupId: parsed.connectionGroupId ?? null } : {}),
+      };
+      const createResult = yield* Effect.promise(() => createScheduledTask(createOpts));
 
       if (!createResult.ok) {
         const fail = crudFailResponse(createResult.reason, requestId);

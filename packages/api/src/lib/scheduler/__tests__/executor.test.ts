@@ -14,6 +14,8 @@ const mockGetScheduledTask = mock(() =>
       id: "task-1",
       ownerId: "user-1",
       orgId: "org-1",
+      connectionId: "legacy-connection",
+      connectionGroupId: "group-1",
       question: "What is revenue?",
       recipients: [{ type: "webhook", url: "https://hook.example.com" }],
       deliveryChannel: "webhook",
@@ -76,6 +78,8 @@ type AgentResultLike = typeof mockAgentResult & {
 let agentResultOverride: AgentResultLike | null = null;
 type ExecuteAgentQueryOptionsLike = {
   actor?: { id: string; activeOrganizationId?: string };
+  connectionId?: string;
+  connectionGroupId?: string;
   priorMessages?: Array<{ role: "user" | "assistant"; content: string }>;
   conversationId?: string;
 };
@@ -99,6 +103,12 @@ mock.module("../delivery", () => ({
   deliverResult: mockDeliverResult,
 }));
 
+const mockResolveScheduledTaskConnection = mock(() => Promise.resolve("resolved-connection"));
+
+mock.module("../group-resolve", () => ({
+  resolveScheduledTaskConnection: mockResolveScheduledTaskConnection,
+}));
+
 const { executeScheduledTask } = await import("../executor");
 
 describe("executor", () => {
@@ -112,6 +122,8 @@ describe("executor", () => {
         id: "task-1",
         ownerId: "user-1",
         orgId: "org-1",
+        connectionId: "legacy-connection",
+        connectionGroupId: "group-1",
         question: "What is revenue?",
         recipients: [{ type: "webhook", url: "https://hook.example.com" }],
         deliveryChannel: "webhook",
@@ -136,6 +148,8 @@ describe("executor", () => {
     mockDeliverResult.mockReset();
     mockDeliverResult.mockResolvedValue({ attempted: 1, succeeded: 1, failed: 0 });
     mockUpdateRunDeliveryStatus.mockReset();
+    mockResolveScheduledTaskConnection.mockReset();
+    mockResolveScheduledTaskConnection.mockResolvedValue("resolved-connection");
   });
 
   it("executes task and returns result with delivery counts", async () => {
@@ -202,6 +216,19 @@ describe("executor", () => {
     const opts = calls[0][2] as { actor?: { id: string; activeOrganizationId?: string } } | undefined;
     expect(opts?.actor?.id).toBe("user-1");
     expect(opts?.actor?.activeOrganizationId).toBe("org-1");
+  });
+
+  it("resolves the group member once and runs the agent against that connection", async () => {
+    await executeScheduledTask("task-1", "run-1", 30_000);
+    expect(mockResolveScheduledTaskConnection).toHaveBeenCalledWith({
+      taskId: "task-1",
+      orgId: "org-1",
+      connectionGroupId: "group-1",
+      legacyConnectionId: "legacy-connection",
+    });
+    const opts = mockExecuteAgentQuery.mock.calls[0][2];
+    expect(opts?.connectionId).toBe("resolved-connection");
+    expect(opts?.connectionGroupId).toBe("group-1");
   });
 
   it("F-54: refuses to run when the task creator can't be resolved (deleted user)", async () => {

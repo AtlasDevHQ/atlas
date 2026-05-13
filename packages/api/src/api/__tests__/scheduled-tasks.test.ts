@@ -49,7 +49,9 @@ mock.module("@atlas/ee/auth/ip-allowlist", () => ({
 
 // --- CRUD mocks ---
 
-const mockCreateScheduledTask = mock((): Promise<unknown> =>
+type CreateScheduledTaskMock = (opts: Record<string, unknown>) => Promise<unknown>;
+
+const mockCreateScheduledTask: Mock<CreateScheduledTaskMock> = mock((_opts): Promise<unknown> =>
   Promise.resolve({ ok: true, data: { id: "task-123", name: "Test" } }),
 );
 const mockGetScheduledTask = mock((): Promise<unknown> =>
@@ -237,6 +239,21 @@ describe("scheduled-tasks routes", () => {
       expect(body.total).toBe(0);
     });
 
+    it("passes connectionGroupId filter through to the list resolver", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/scheduled-tasks?connectionGroupId=g_prod"),
+      );
+
+      expect(response.status).toBe(200);
+      expect(mockListScheduledTasks).toHaveBeenCalledWith({
+        orgId: "org-1",
+        enabled: undefined,
+        connectionGroupId: "g_prod",
+        limit: 20,
+        offset: 0,
+      });
+    });
+
     it("returns 404 when no internal DB", async () => {
       delete process.env.DATABASE_URL;
       const response = await app.fetch(
@@ -286,10 +303,35 @@ describe("scheduled-tasks routes", () => {
             cronExpression: "0 9 * * 1",
             deliveryChannel: "email",
             recipients: [{ type: "email", address: "test@test.com" }],
+            connectionGroupId: "g_prod",
           }),
         }),
       );
       expect(response.status).toBe(201);
+      expect(mockCreateScheduledTask).toHaveBeenCalledWith(expect.objectContaining({
+        connectionGroupId: "g_prod",
+      }));
+    });
+
+    it("omits connectionGroupId for legacy connectionId-only creates", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/scheduled-tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: "Daily Revenue",
+            question: "What was yesterday's revenue?",
+            cronExpression: "0 9 * * 1",
+            deliveryChannel: "email",
+            recipients: [{ type: "email", address: "test@test.com" }],
+            connectionId: "legacy-connection",
+          }),
+        }),
+      );
+      expect(response.status).toBe(201);
+      const opts = mockCreateScheduledTask.mock.calls[0][0] as { connectionGroupId?: string | null; connectionId?: string | null };
+      expect(opts.connectionId).toBe("legacy-connection");
+      expect("connectionGroupId" in opts).toBe(false);
     });
 
     it("returns 422 for missing name", async () => {

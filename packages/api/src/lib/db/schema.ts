@@ -210,65 +210,6 @@ export const actionLog = pgTable(
 );
 
 // ---------------------------------------------------------------------------
-// Scheduled tasks
-// ---------------------------------------------------------------------------
-
-export const scheduledTasks = pgTable(
-  "scheduled_tasks",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    ownerId: text("owner_id").notNull(),
-    name: text("name").notNull(),
-    question: text("question").notNull(),
-    cronExpression: text("cron_expression").notNull(),
-    deliveryChannel: text("delivery_channel").notNull().default("webhook"),
-    recipients: jsonb("recipients").notNull().default(sql`'[]'`),
-    connectionId: text("connection_id"),
-    approvalMode: text("approval_mode").notNull().default("auto"),
-    enabled: boolean("enabled").notNull().default(true),
-    lastRunAt: timestamp("last_run_at", { withTimezone: true }),
-    nextRunAt: timestamp("next_run_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-    // Org scoping
-    orgId: text("org_id"),
-    // Plugin ownership (#1987). NULL → user-created task. Non-NULL → matches
-    // workspace_plugins.catalog_id; uninstall scopes cleanup by (plugin_id, org_id).
-    pluginId: text("plugin_id"),
-  },
-  (t) => [
-    index("idx_scheduled_tasks_owner").on(t.ownerId),
-    index("idx_scheduled_tasks_enabled").on(t.enabled).where(sql`enabled = true`),
-    index("idx_scheduled_tasks_next_run").on(t.nextRunAt).where(sql`enabled = true`),
-    index("idx_scheduled_tasks_org").on(t.orgId),
-    index("idx_scheduled_tasks_plugin_org").on(t.pluginId, t.orgId).where(sql`plugin_id IS NOT NULL`),
-  ],
-);
-
-export const scheduledTaskRuns = pgTable(
-  "scheduled_task_runs",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    taskId: uuid("task_id").notNull().references(() => scheduledTasks.id, { onDelete: "cascade" }),
-    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
-    completedAt: timestamp("completed_at", { withTimezone: true }),
-    status: text("status").notNull().default("running"),
-    conversationId: uuid("conversation_id"),
-    actionId: uuid("action_id"),
-    error: text("error"),
-    tokensUsed: integer("tokens_used"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    // Delivery tracking
-    deliveryStatus: text("delivery_status"),
-    deliveryError: text("delivery_error"),
-  },
-  (t) => [
-    index("idx_scheduled_task_runs_task").on(t.taskId),
-    index("idx_scheduled_task_runs_status").on(t.status),
-  ],
-);
-
-// ---------------------------------------------------------------------------
 // Connection groups — multi-environment semantic layer
 // ---------------------------------------------------------------------------
 //
@@ -302,6 +243,75 @@ export const connectionGroups = pgTable(
     index("idx_connection_groups_org").on(t.orgId),
     uniqueIndex("uq_connection_groups_org_name").on(t.orgId, t.name),
     index("idx_connection_groups_primary").on(t.primaryConnectionId, t.orgId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Scheduled tasks
+// ---------------------------------------------------------------------------
+
+export const scheduledTasks = pgTable(
+  "scheduled_tasks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ownerId: text("owner_id").notNull(),
+    name: text("name").notNull(),
+    question: text("question").notNull(),
+    cronExpression: text("cron_expression").notNull(),
+    deliveryChannel: text("delivery_channel").notNull().default("webhook"),
+    recipients: jsonb("recipients").notNull().default(sql`'[]'`),
+    // 0068 — group-scoped scheduling (#2343). New rows scope to a
+    // connection group; `connection_id` stays nullable for the #2346
+    // compatibility window.
+    connectionGroupId: text("connection_group_id"),
+    connectionId: text("connection_id"),
+    approvalMode: text("approval_mode").notNull().default("auto"),
+    enabled: boolean("enabled").notNull().default(true),
+    lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+    nextRunAt: timestamp("next_run_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    // Org scoping
+    orgId: text("org_id"),
+    // Plugin ownership (#1987). NULL → user-created task. Non-NULL → matches
+    // workspace_plugins.catalog_id; uninstall scopes cleanup by (plugin_id, org_id).
+    pluginId: text("plugin_id"),
+  },
+  (t) => [
+    index("idx_scheduled_tasks_owner").on(t.ownerId),
+    index("idx_scheduled_tasks_enabled").on(t.enabled).where(sql`enabled = true`),
+    index("idx_scheduled_tasks_next_run").on(t.nextRunAt).where(sql`enabled = true`),
+    index("idx_scheduled_tasks_org").on(t.orgId),
+    index("idx_scheduled_tasks_group").on(t.orgId, t.connectionGroupId),
+    index("idx_scheduled_tasks_plugin_org").on(t.pluginId, t.orgId).where(sql`plugin_id IS NOT NULL`),
+    foreignKey({
+      columns: [t.connectionGroupId, t.orgId],
+      foreignColumns: [connectionGroups.id, connectionGroups.orgId],
+      name: "fk_scheduled_tasks_group",
+    }).onDelete("restrict"),
+  ],
+);
+
+export const scheduledTaskRuns = pgTable(
+  "scheduled_task_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    taskId: uuid("task_id").notNull().references(() => scheduledTasks.id, { onDelete: "cascade" }),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    status: text("status").notNull().default("running"),
+    conversationId: uuid("conversation_id"),
+    actionId: uuid("action_id"),
+    error: text("error"),
+    tokensUsed: integer("tokens_used"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // Delivery tracking
+    deliveryStatus: text("delivery_status"),
+    deliveryError: text("delivery_error"),
+  },
+  (t) => [
+    index("idx_scheduled_task_runs_task").on(t.taskId),
+    index("idx_scheduled_task_runs_status").on(t.status),
   ],
 );
 

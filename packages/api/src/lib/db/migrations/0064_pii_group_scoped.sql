@@ -107,15 +107,30 @@ ALTER TABLE pii_column_classifications
 
 -- ── 5. Replace the unique index with the group-keyed shape ────────────
 --
--- The baseline `pii_column_classifications_unique` index keyed on
--- `(org_id, table_name, column_name, connection_id)`. 0064 swaps it to
--- key on `COALESCE(connection_group_id, '__default__')` so multi-member
--- groups collapse to one classification row per column, matching the
--- semantic-entities shape (#2340). The index name is reused so the
--- Drizzle schema mirror stays a one-line change.
+-- The baseline keyed uniqueness on `(org_id, table_name, column_name,
+-- connection_id)` via an INLINE `UNIQUE(...)` constraint inside the
+-- baseline `CREATE TABLE`. Postgres auto-names that constraint
+-- `pii_column_classifications_org_id_table_name_column_name_co_key`
+-- (truncated to 63 chars) and backs it with an index of the same name —
+-- NOT `pii_column_classifications_unique`. A bare `DROP INDEX IF EXISTS
+-- pii_column_classifications_unique` leaves the old constraint in
+-- place, and the new group-keyed rows then collide with the old
+-- connection-keyed constraint at first insert (the api-tests (1/4) CI
+-- failure that motivated this revision).
 --
--- The drop+create is atomic inside the migration so callers querying
+-- The DROP CONSTRAINT covers the baseline case; the DROP INDEX covers
+-- self-hosted installs that hit the masking module's `ensureTable`
+-- bootstrap path before the migration ran (the bootstrap creates an
+-- index with the COALESCE-less inline UNIQUE — same column set, but
+-- explicitly named through the constraint).
+--
+-- 0064 swaps the natural key to `COALESCE(connection_group_id,
+-- '__default__')` so multi-member groups collapse to one classification
+-- row per column, matching the semantic-entities shape (#2340). The
+-- drop+create is atomic inside the migration so callers querying
 -- mid-migration never see an absent unique constraint.
+ALTER TABLE pii_column_classifications
+  DROP CONSTRAINT IF EXISTS pii_column_classifications_org_id_table_name_column_name_co_key;
 DROP INDEX IF EXISTS pii_column_classifications_unique;
 
 CREATE UNIQUE INDEX pii_column_classifications_unique

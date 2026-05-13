@@ -76,6 +76,10 @@ export interface ExecuteAgentQueryOptions {
    * case only `'any'` rules match — fail-closed).
    */
   approvalSurface?: ApprovalRequestSurface;
+  /** Execution target for this agent run. */
+  connectionId?: string;
+  /** Content scope for group-aware semantic overlays. */
+  connectionGroupId?: string;
 }
 
 /**
@@ -98,6 +102,8 @@ export async function executeAgentQuery(
   // Slack, Teams) pass this explicitly because they don't run inside a
   // route-level `withRequestContext` that would have set it.
   const surface = options?.approvalSurface ?? inheritedCtx?.approvalSurface;
+  const connectionId = options?.connectionId ?? inheritedCtx?.connectionId;
+  const connectionGroupId = options?.connectionGroupId ?? inheritedCtx?.connectionGroupId;
 
   if (!boundUser) {
     log.warn(
@@ -113,6 +119,8 @@ export async function executeAgentQuery(
       ...(boundUser ? { user: boundUser } : {}),
       ...(inheritedMode ? { atlasMode: inheritedMode } : {}),
       ...(surface ? { approvalSurface: surface } : {}),
+      ...(connectionId ? { connectionId } : {}),
+      ...(connectionGroupId ? { connectionGroupId } : {}),
     },
     async () => {
     const priorUIMessages = (options?.priorMessages ?? []).map((m, i) => ({

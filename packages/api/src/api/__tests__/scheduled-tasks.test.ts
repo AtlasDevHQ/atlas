@@ -237,6 +237,21 @@ describe("scheduled-tasks routes", () => {
       expect(body.total).toBe(0);
     });
 
+    it("passes connectionGroupId filter through to the list resolver", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/scheduled-tasks?connectionGroupId=g_prod"),
+      );
+
+      expect(response.status).toBe(200);
+      expect(mockListScheduledTasks).toHaveBeenCalledWith({
+        orgId: "org-1",
+        enabled: undefined,
+        connectionGroupId: "g_prod",
+        limit: 20,
+        offset: 0,
+      });
+    });
+
     it("returns 404 when no internal DB", async () => {
       delete process.env.DATABASE_URL;
       const response = await app.fetch(
@@ -286,10 +301,14 @@ describe("scheduled-tasks routes", () => {
             cronExpression: "0 9 * * 1",
             deliveryChannel: "email",
             recipients: [{ type: "email", address: "test@test.com" }],
+            connectionGroupId: "g_prod",
           }),
         }),
       );
       expect(response.status).toBe(201);
+      expect(mockCreateScheduledTask).toHaveBeenCalledWith(expect.objectContaining({
+        connectionGroupId: "g_prod",
+      }));
     });
 
     it("returns 422 for missing name", async () => {

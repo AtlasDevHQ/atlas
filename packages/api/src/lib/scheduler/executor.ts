@@ -25,6 +25,7 @@ import { loadActorUser } from "@atlas/api/lib/auth/actor";
 import { SchedulerTaskTimeoutError, SchedulerExecutionError } from "@atlas/api/lib/effect/errors";
 import { causeToError } from "@atlas/api/lib/audit/error-scrub";
 import { deliverResult } from "./delivery";
+import { resolveScheduledTaskConnection } from "./group-resolve";
 
 const log = createLogger("scheduler-executor");
 
@@ -105,6 +106,12 @@ export async function executeScheduledTask(
 
   const task = taskResult.data;
   const requestId = `sched-${taskId}-${runId}`;
+  const resolvedConnectionId = await resolveScheduledTaskConnection({
+    taskId,
+    orgId: task.orgId,
+    connectionGroupId: task.connectionGroupId,
+    legacyConnectionId: task.connectionId,
+  });
 
   // F-54: resolve the task creator so approval rules apply. If the user no
   // longer exists (account deleted, removed from org), fail-loud rather than
@@ -121,7 +128,15 @@ export async function executeScheduledTask(
   }
 
   log.info(
-    { taskId, runId, actorId: actor.id, orgId: task.orgId, question: task.question.slice(0, 100) },
+    {
+      taskId,
+      runId,
+      actorId: actor.id,
+      orgId: task.orgId,
+      connectionGroupId: task.connectionGroupId,
+      connectionId: resolvedConnectionId,
+      question: task.question.slice(0, 100),
+    },
     "Executing scheduled task",
   );
 
@@ -137,7 +152,12 @@ export async function executeScheduledTask(
     // the same tables unaffected. (Approval rules are additive; they
     // can only require approval, never waive it — to exempt the
     // scheduler from a broad rule, narrow that rule's surface.)
-    agentQueryEffect(task.question, requestId, taskId, timeoutMs, { actor, approvalSurface: "scheduler" }),
+    agentQueryEffect(task.question, requestId, taskId, timeoutMs, {
+      actor,
+      approvalSurface: "scheduler",
+      ...(resolvedConnectionId ? { connectionId: resolvedConnectionId } : {}),
+      ...(task.connectionGroupId ? { connectionGroupId: task.connectionGroupId } : {}),
+    }),
   );
   if (Exit.isFailure(exit)) {
     if (Cause.isInterruptedOnly(exit.cause)) {

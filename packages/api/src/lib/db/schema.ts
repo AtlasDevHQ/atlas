@@ -223,6 +223,10 @@ export const scheduledTasks = pgTable(
     cronExpression: text("cron_expression").notNull(),
     deliveryChannel: text("delivery_channel").notNull().default("webhook"),
     recipients: jsonb("recipients").notNull().default(sql`'[]'`),
+    // 0068 — group-scoped scheduling (#2343). New rows scope to a
+    // connection group; `connection_id` stays nullable for the #2346
+    // compatibility window.
+    connectionGroupId: text("connection_group_id"),
     connectionId: text("connection_id"),
     approvalMode: text("approval_mode").notNull().default("auto"),
     enabled: boolean("enabled").notNull().default(true),
@@ -241,6 +245,7 @@ export const scheduledTasks = pgTable(
     index("idx_scheduled_tasks_enabled").on(t.enabled).where(sql`enabled = true`),
     index("idx_scheduled_tasks_next_run").on(t.nextRunAt).where(sql`enabled = true`),
     index("idx_scheduled_tasks_org").on(t.orgId),
+    index("idx_scheduled_tasks_group").on(t.orgId, t.connectionGroupId),
     index("idx_scheduled_tasks_plugin_org").on(t.pluginId, t.orgId).where(sql`plugin_id IS NOT NULL`),
   ],
 );

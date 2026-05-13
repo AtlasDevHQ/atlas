@@ -60,6 +60,7 @@ function makeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     cronExpression: "0 9 * * 1",
     deliveryChannel: "webhook",
     recipients: [],
+    connectionGroupId: null,
     connectionId: null,
     approvalMode: "auto",
     enabled: true,

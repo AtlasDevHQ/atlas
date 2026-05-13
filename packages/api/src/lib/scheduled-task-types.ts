@@ -39,6 +39,7 @@ export interface ScheduledTaskRow {
   cron_expression: string;
   delivery_channel: string;
   recipients: unknown; // JSONB
+  connection_group_id: string | null;
   connection_id: string | null;
   approval_mode: string;
   enabled: boolean;

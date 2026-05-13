@@ -56,6 +56,12 @@ export interface ScheduledTask {
   deliveryChannel: DeliveryChannel;
   /** Recipients should match the deliveryChannel type (email recipients for email channel, etc). */
   recipients: Recipient[];
+  /**
+   * Environment/group scope for this task. New 1.4.4+ callers should set this
+   * instead of targeting raw connections directly.
+   */
+  connectionGroupId: string | null;
+  /** @deprecated Prefer `connectionGroupId`; retained until #2346. */
   connectionId: string | null;
   approvalMode: ActionApprovalMode;
   enabled: boolean;

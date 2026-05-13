@@ -1490,4 +1490,37 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
     expect(rows[0]?.connection_group_id).toBe(groupId);
   }, PG_TEST_TIMEOUT_MS);
+
+  // 0068 — scheduled_tasks.connection_group_id. The scheduler is now scoped
+  // to a connection group while retaining connection_id for the #2346
+  // compatibility window.
+  it("scheduled_tasks.connection_group_id: column exists and is nullable", async () => {
+    const { rows } = await pool.query<{ is_nullable: string }>(
+      `SELECT is_nullable
+         FROM information_schema.columns
+        WHERE table_name = 'scheduled_tasks'
+          AND column_name = 'connection_group_id'`,
+    );
+
+    expect(rows[0]?.is_nullable).toBe("YES");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("scheduled_tasks.connection_group_id: composite FK blocks cross-org membership", async () => {
+    const groupId = `g_sched_fk_${Date.now()}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name)
+       VALUES ($1, 'org-a', $2)`,
+      [groupId, `${groupId}-name`],
+    );
+
+    await expect(
+      pool.query(
+        `INSERT INTO scheduled_tasks
+           (owner_id, org_id, name, question, cron_expression, delivery_channel, recipients, connection_group_id)
+         VALUES
+           ('owner-1', 'org-b', 'Bad group', 'Revenue?', '0 9 * * *', 'email', '[]'::jsonb, $1)`,
+        [groupId],
+      ),
+    ).rejects.toMatchObject({ code: "23503" });
+  }, PG_TEST_TIMEOUT_MS);
 });

@@ -42,9 +42,11 @@ import type {
 
 // ── Types ─────────────────────────────────────────────────────────────
 
-interface ConnectionInfo {
+interface ConnectionGroupInfo {
   id: string;
-  type: string;
+  name: string;
+  memberCount: number;
+  resolvedConnectionId: string | null;
 }
 
 // Form state (flat, before mapping to API shape)
@@ -55,7 +57,7 @@ interface FormState {
   cronExpression: string;
   deliveryChannel: DeliveryChannel;
   approvalMode: ActionApprovalMode;
-  connectionId: string;
+  connectionGroupId: string;
   enabled: boolean;
   // Email recipients
   emailAddresses: string[];
@@ -76,7 +78,7 @@ function defaultFormState(): FormState {
     cronExpression: "0 9 * * *",
     deliveryChannel: "email",
     approvalMode: "auto",
-    connectionId: "default",
+    connectionGroupId: "",
     enabled: true,
     emailAddresses: [],
     emailInput: "",
@@ -137,7 +139,7 @@ function formStateFromTask(task: ScheduledTask): FormState {
     cronPreset: presetFromCron(task.cronExpression),
     deliveryChannel: task.deliveryChannel,
     approvalMode: task.approvalMode,
-    connectionId: task.connectionId ?? "default",
+    connectionGroupId: task.connectionGroupId ?? "",
     enabled: task.enabled,
     ...recipients,
   };
@@ -164,7 +166,7 @@ export function TaskFormDialog({
   const isEdit = task !== null;
   const [form, setForm] = useState<FormState>(defaultFormState);
   const [validationError, setValidationError] = useState<string | null>(null);
-  const [connections, setConnections] = useState<ConnectionInfo[]>([]);
+  const [groups, setGroups] = useState<ConnectionGroupInfo[]>([]);
   const [connectionError, setConnectionError] = useState<string | null>(null);
 
   const submitMutation = useAdminMutation({
@@ -180,28 +182,33 @@ export function TaskFormDialog({
     }
   }, [open, task]);
 
-  // Fetch connections
+  // Fetch environments
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    async function fetchConnections() {
+    async function fetchGroups() {
       setConnectionError(null);
       try {
-        const res = await fetch(`${apiUrl}/api/v1/admin/connections`, { credentials });
+        const res = await fetch(`${apiUrl}/api/v1/admin/connection-groups`, { credentials });
         if (!res.ok) {
-          if (!cancelled) setConnectionError(`Could not load connections (HTTP ${res.status})`);
+          if (!cancelled) setConnectionError(`Could not load environments (HTTP ${res.status})`);
           return;
         }
         const data = await res.json();
-        if (!cancelled && Array.isArray(data.connections)) {
-          setConnections(data.connections);
+        if (!cancelled && Array.isArray(data.groups)) {
+          const nextGroups = data.groups as ConnectionGroupInfo[];
+          setGroups(nextGroups);
+          setForm((prev) => {
+            if (prev.connectionGroupId || nextGroups.length === 0) return prev;
+            return { ...prev, connectionGroupId: nextGroups[0]?.id ?? "" };
+          });
         }
       } catch (err) {
-        console.warn("[TaskFormDialog] Failed to fetch connections:", err);
-        if (!cancelled) setConnectionError("Could not load connections");
+        console.warn("[TaskFormDialog] Failed to fetch environments:", err);
+        if (!cancelled) setConnectionError("Could not load environments");
       }
     }
-    fetchConnections();
+    fetchGroups();
     return () => { cancelled = true; };
   }, [open, apiUrl, credentials]);
 
@@ -316,7 +323,8 @@ export function TaskFormDialog({
       cronExpression: form.cronExpression.trim(),
       deliveryChannel: form.deliveryChannel,
       recipients,
-      connectionId: form.connectionId === "default" ? null : form.connectionId,
+      connectionGroupId: form.connectionGroupId || null,
+      connectionId: groups.find((g) => g.id === form.connectionGroupId)?.resolvedConnectionId ?? null,
       approvalMode: form.approvalMode,
       ...(isEdit ? { enabled: form.enabled } : {}),
     };
@@ -543,20 +551,21 @@ export function TaskFormDialog({
             </div>
           )}
 
-          {/* Connection */}
+          {/* Environment */}
           <div className="grid gap-2">
-            <Label>Connection</Label>
-            <Select value={form.connectionId} onValueChange={(v) => updateField("connectionId", v)}>
+            <Label>Environment</Label>
+            <Select
+              value={form.connectionGroupId}
+              onValueChange={(v) => updateField("connectionGroupId", v)}
+              disabled={groups.length === 0}
+            >
               <SelectTrigger>
-                <SelectValue />
+                <SelectValue placeholder="Select environment" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="default">Default</SelectItem>
-                {connections
-                  .filter((c) => c.id !== "default")
-                  .map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
-                      {c.id} ({c.type})
+                {groups.map((group) => (
+                    <SelectItem key={group.id} value={group.id}>
+                      {group.name} ({group.memberCount})
                     </SelectItem>
                   ))}
               </SelectContent>

@@ -64,6 +64,7 @@ function makeTaskRow(overrides: Partial<Record<string, unknown>> = {}): Record<s
     cron_expression: "0 9 * * 1",
     delivery_channel: "email",
     recipients: JSON.stringify([{ type: "email", address: "test@test.com" }]),
+    connection_group_id: null,
     connection_id: null,
     approval_mode: "auto",
     enabled: true,

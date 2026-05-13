@@ -91,6 +91,7 @@ describe("scheduled-task-types", () => {
         cronExpression: "0 9 * * 1",
         deliveryChannel: "email",
         recipients: [],
+        connectionGroupId: null,
         connectionId: null,
         approvalMode: "auto",
         enabled: true,

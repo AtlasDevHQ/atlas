@@ -162,6 +162,23 @@ describe("Abuse Prevention Engine", () => {
         else process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS = original;
       }
     });
+
+    it("envIntAllowZero rejects fractional / non-integer cooldown values", () => {
+      // `parseInt("0.5", 10)` returns `0` and would silently disable the
+      // cooldown despite the helper's "only an explicit 0 opts out"
+      // contract. The strict `Number.isInteger` parse rejects fractional
+      // and unit-suffixed values, falling back to the 60s default.
+      const original = process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS;
+      try {
+        for (const raw of ["0.5", "0s", "1.5", "30s", "abc", ""]) {
+          process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS = raw;
+          expect(getAbuseConfig().escalationCooldownMs).toBe(60_000);
+        }
+      } finally {
+        if (original === undefined) delete process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS;
+        else process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS = original;
+      }
+    });
   });
 
   describe("escalation cooldown (#2167)", () => {
@@ -308,6 +325,24 @@ describe("Abuse Prevention Engine", () => {
         }
         expect(checkAbuseStatus(`ws-${mode}`).level).toBe("none");
       }
+    });
+
+    it("admin abuse views are bypassed alongside enforcement on self-hosted", async () => {
+      // Seed a suspended workspace under saas mode, then flip to
+      // self-hosted. The admin list + detail must collapse to the
+      // disengaged shape (empty list / null detail) so an operator can't
+      // reinstate a workspace that's already not being blocked.
+      process.env.ATLAS_DEPLOY_MODE = "saas";
+      const config = getAbuseConfig();
+      for (let i = 0; i <= config.queryRateLimit + 5; i++) {
+        recordQueryEvent("ws-admin-bypass", { success: true });
+      }
+      expect(listFlaggedWorkspaces().length).toBeGreaterThan(0);
+      expect(await getAbuseDetail("ws-admin-bypass")).not.toBeNull();
+
+      delete process.env.ATLAS_DEPLOY_MODE;
+      expect(listFlaggedWorkspaces()).toEqual([]);
+      expect(await getAbuseDetail("ws-admin-bypass")).toBeNull();
     });
   });
 
@@ -1379,6 +1414,47 @@ describe("Abuse Prevention Engine", () => {
       expect(detail.triggerCounters?.escalations).toBe(0);
       // queryCount=0 → below the 10-query baseline → errorRatePct null.
       expect(detail.triggerCounters?.errorRatePct).toBeNull();
+    });
+
+    it("clamps negative metadata counts so errorRatePct precondition isn't violated", async () => {
+      // `errorRatePct` throws on non-finite or negative inputs. Pre-clamp,
+      // a corrupt `abuse_events` row with `queryCount >= 10` and
+      // `errorCount: -1` (partial-write race) would throw out of
+      // `triggerCountersFromInstance` and 500 the entire admin detail
+      // page. Sanitize to non-negative floor before the call so the
+      // panel renders and operators can still investigate the workspace.
+      const config = getAbuseConfig();
+      for (let i = 0; i <= config.queryRateLimit; i++) {
+        recordQueryEvent("ws-neg-md", { success: true });
+      }
+      setInternalDB(true);
+      setInternalQuery(async () => [
+        {
+          id: "evt-neg-md",
+          workspace_id: "ws-neg-md",
+          level: "warning",
+          trigger_type: "query_rate",
+          message: "negative metadata",
+          metadata: JSON.stringify({
+            queryCount: 50,
+            errorCount: -3, // negative → would have thrown
+            uniqueTables: -1,
+            escalations: 1,
+          }),
+          actor: "system",
+          created_at: "2026-04-19T10:00:00Z",
+        },
+      ]);
+
+      const detail = await getAbuseDetail("ws-neg-md");
+      expect(detail).not.toBeNull();
+      if (!detail) return;
+      expect(detail.triggerCounters).not.toBeNull();
+      expect(detail.triggerCounters?.queryCount).toBe(50);
+      expect(detail.triggerCounters?.errorCount).toBe(0);
+      expect(detail.triggerCounters?.uniqueTablesAccessed).toBe(0);
+      // 0 / 50 = 0% — clean number, no NaN, no throw.
+      expect(detail.triggerCounters?.errorRatePct).toBe<number>(0);
     });
 
     it("returns null errorRatePct while under the 10-query baseline", async () => {

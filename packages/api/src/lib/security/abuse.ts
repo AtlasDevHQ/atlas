@@ -153,28 +153,53 @@ export function getAbuseConfig(): AbuseThresholdConfig {
  * value (or omit the var entirely to take the default), so a stray `0` in
  * a SaaS env file does not silently revive the pre-cooldown fast-walk
  * regression. See `getAbuseConfig`.
+ *
+ * Uses `Number()` + `Number.isInteger` rather than `parseInt` so values
+ * like `"0.5"` or `"0s"` fall back to the default instead of silently
+ * truncating to `0` and reopening the fast-walk path.
  */
 function envIntAllowZero(key: string, fallback: number): number {
   const raw = process.env[key];
-  if (raw === undefined) return fallback;
-  const n = parseInt(raw, 10);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : fallback;
 }
 
 /**
  * Abuse detection is only useful in multi-tenant SaaS. On a single-tenant
  * self-hosted deploy the operator *is* the user — auto-suspending them on
- * their own queries is pure false positive. Mirrors the env-var read in
- * `startup.ts` / `saas-guards.ts:explicitSaasFromEnv`; config-file-only
- * SaaS mode (`atlas.config.ts` setting `deployMode: "saas"` without the
- * env var) is rare in practice and would trip the boot-time
- * `EnterpriseGuardLive` warning rather than silently downgrade. Keeping
- * this as a plain env-var read avoids pulling `lib/config` into the
- * abuse engine's import graph (the engine ships in the AGPL core and
- * imports nothing from `lib/effect`).
+ * their own queries is pure false positive.
+ *
+ * Two-step resolution covers all three ways prod can land in SaaS mode:
+ *
+ *   1. **Env var** — `ATLAS_DEPLOY_MODE=saas` is the canonical Railway
+ *      signal and the strongest operator intent (mirrors
+ *      `saas-guards.ts:explicitSaasFromEnv`).
+ *   2. **Resolved config** — `atlas.config.ts` may pin
+ *      `deployMode: "saas"` without the env var (the actual
+ *      `deploy/api/atlas.config.ts` does exactly this), and `auto` mode
+ *      can resolve to `"saas"` when `isEnterpriseEnabled() &&
+ *      hasInternalDB()`. The resolved value lives on `getConfig()`.
+ *
+ * Either path returning `"saas"` engages the engine. `getConfig()` is
+ * loaded via `require()` rather than a static import so the AGPL core
+ * (which never depends on `lib/effect`) keeps its lean import graph;
+ * mirrors the lazy-load pattern in
+ * `settings.ts:resolveDeployModeSnapshot`. Any throw (missing module,
+ * pre-init call) falls back to the env-var-only answer so abuse
+ * detection never crashes a request path.
  */
 function isSaasDeployment(): boolean {
-  return process.env.ATLAS_DEPLOY_MODE === "saas";
+  if (process.env.ATLAS_DEPLOY_MODE === "saas") return true;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const configMod = require("@atlas/api/lib/config") as {
+      getConfig: () => { deployMode?: string } | null;
+    };
+    return configMod.getConfig()?.deployMode === "saas";
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -489,6 +514,14 @@ export function checkAbuseStatus(workspaceId: string): {
  * paths diverge.
  */
 export function listFlaggedWorkspaces(): AbuseStatus[] {
+  // Self-hosted bypass — symmetric with `checkAbuseStatus`. Without this,
+  // a process that flipped from saas → self-hosted (or rehydrated stale
+  // state from `abuse_events`) would still render flagged workspaces in
+  // the admin abuse console even though every enforcement path reports
+  // `none`. Operators would click reinstate on rows that aren't actually
+  // blocking anything, and the read/write paths would diverge.
+  if (!isSaasDeployment()) return [];
+
   const results: AbuseStatus[] = [];
   for (const [workspaceId, state] of workspaceState) {
     if (state.level === "none") continue;
@@ -521,6 +554,12 @@ export async function getAbuseDetail(
   priorLimit = 5,
   eventLimit = 50,
 ): Promise<AbuseDetail | null> {
+  // Self-hosted bypass — symmetric with `checkAbuseStatus` and
+  // `listFlaggedWorkspaces`. Returning `null` makes the admin route 404,
+  // so a stale detail view can't contradict an enforcement path that's
+  // already reporting `none`.
+  if (!isSaasDeployment()) return null;
+
   const state = workspaceState.get(workspaceId);
   if (!state || state.level === "none") return null;
 
@@ -594,27 +633,43 @@ function triggerCountersFromInstance(events: readonly AbuseEvent[]): AbuseCounte
   const latest = events[events.length - 1];
   if (!latest) return null;
   const md = latest.metadata;
-  const queryCount = Number(md.queryCount ?? 0);
-  const errorCount = Number(md.errorCount ?? 0);
-  const uniqueTablesAccessed = Number(md.uniqueTables ?? 0);
-  const escalations = Number(md.escalations ?? 0);
+  // Hostile-input guard — corrupt / pre-schema metadata could land here as
+  // `NaN` if any field was string-shaped and refused coercion, or as a
+  // negative number from a partial-write race. `errorRatePct` throws on
+  // non-finite or negative inputs, which would propagate up and crash
+  // `getAbuseDetail()` exactly for the bad-row case this helper exists to
+  // tolerate. Clamp counts to non-negative finite integers before any
+  // downstream arithmetic. Surfacing the bad row to operators is already
+  // covered by the per-row warn in `getAbuseEvents`.
+  const queryCount = sanitizeNonNegInt(md.queryCount);
+  const errorCount = Math.min(sanitizeNonNegInt(md.errorCount), queryCount);
+  const uniqueTablesAccessed = sanitizeNonNegInt(md.uniqueTables);
+  const escalations = sanitizeNonNegInt(md.escalations);
   // Mirror the live-counter "needs a baseline" contract — < 10 → null.
   // Below-baseline triggers come from non-error_rate paths (query_rate or
   // unique_tables hitting the limit), so an at-trigger row showing
   // `errorRatePct: null` is honest, not missing.
   const errorRate =
     queryCount >= 10 ? errorRatePct(errorCount, queryCount) : null;
-  // Hostile-input guard — corrupt / pre-schema metadata could land here as
-  // `NaN` if any field was string-shaped and refused coercion. Coercing to
-  // 0 keeps the panel renderable; surfacing the bad row to operators is
-  // already covered by the per-row warn in `getAbuseEvents`.
   return {
-    queryCount: Number.isFinite(queryCount) ? queryCount : 0,
-    errorCount: Number.isFinite(errorCount) ? errorCount : 0,
+    queryCount,
+    errorCount,
     errorRatePct: errorRate,
-    uniqueTablesAccessed: Number.isFinite(uniqueTablesAccessed) ? uniqueTablesAccessed : 0,
-    escalations: Number.isFinite(escalations) ? escalations : 0,
+    uniqueTablesAccessed,
+    escalations,
   };
+}
+
+/**
+ * Clamp an arbitrary JSON-decoded metadata value to a non-negative
+ * integer. Anything non-finite, negative, or non-numeric collapses to
+ * `0` — the safe fallback for both the wire counters (which are typed
+ * `number`) and the `errorRatePct` precondition (`>= 0` finite).
+ */
+function sanitizeNonNegInt(raw: unknown): number {
+  const n = Number(raw ?? 0);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.floor(n);
 }
 
 /**

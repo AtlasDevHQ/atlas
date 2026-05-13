@@ -35,6 +35,7 @@ const validThresholds = {
   errorRateThreshold: 0.5,
   uniqueTablesLimit: 50,
   throttleDelayMs: 200,
+  escalationCooldownMs: 60_000,
 };
 
 const validCounters = {
@@ -60,6 +61,7 @@ const validDetail = {
   message: "Too many failed queries",
   updatedAt: "2026-04-19T12:00:00.000Z",
   counters: validCounters,
+  triggerCounters: validCounters,
   thresholds: validThresholds,
   currentInstance: validInstance,
   priorInstances: [],

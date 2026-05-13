@@ -1521,9 +1521,18 @@ describe("POST /api/v1/chat", () => {
   describe("#2269 — allowlisted-with-stale-suspended workspace", () => {
     it("returns non-403 when checkAbuseStatus is shadowed by the allowlist", async () => {
       const origAllowlist = process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
+      const origDeployMode = process.env.ATLAS_DEPLOY_MODE;
+      const origCooldown = process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS;
       const abuse = await import("@atlas/api/lib/security/abuse");
       abuse._resetAbuseState();
       try {
+        // Self-hosted bypass: the abuse engine no-ops unless deploy mode is
+        // SaaS. Without this the entire test is moot — the suspended-then-
+        // allowlisted setup below would just return "none" both times via
+        // the deploy-mode gate, not via the allowlist read-time guard.
+        // Cooldown=0 so the tight-loop seeder can walk the full ladder.
+        process.env.ATLAS_DEPLOY_MODE = "saas";
+        process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS = "0";
         // Order matters: drive suspended BEFORE allowlisting, since
         // recordQueryEvent short-circuits on allowlist membership.
         delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
@@ -1556,6 +1565,10 @@ describe("POST /api/v1/chat", () => {
       } finally {
         if (origAllowlist === undefined) delete process.env.ATLAS_LOADTEST_ALLOWED_ORGS;
         else process.env.ATLAS_LOADTEST_ALLOWED_ORGS = origAllowlist;
+        if (origDeployMode === undefined) delete process.env.ATLAS_DEPLOY_MODE;
+        else process.env.ATLAS_DEPLOY_MODE = origDeployMode;
+        if (origCooldown === undefined) delete process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS;
+        else process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS = origCooldown;
         abuse._resetAbuseState();
       }
     });

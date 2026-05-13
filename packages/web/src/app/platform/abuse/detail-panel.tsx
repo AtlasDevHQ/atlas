@@ -55,13 +55,26 @@ function CounterRow({
 
 function CountersSection({
   counters,
+  triggerCounters,
   thresholds,
 }: {
   counters: AbuseCounters;
+  triggerCounters: AbuseCounters | null;
   thresholds: AbuseThresholdConfig;
 }) {
+  // Prefer the at-trigger snapshot once one exists. Once a workspace is
+  // suspended (or throttled), `recordQueryEvent` short-circuits and the
+  // sliding window keeps pruning — so the live `counters` row reads 0
+  // queries / no error rate even though the trigger message + level
+  // reflect "Error rate 75% exceeds threshold 50%". `triggerCounters`
+  // freezes the at-escalation numbers from `abuse_events.metadata` so the
+  // panel matches the trigger reason it's showing. Falls back to the live
+  // window when no persisted event exists yet (in-memory only — first
+  // page-load before persist, or self-hosted without DATABASE_URL).
+  const usingTriggerSnapshot = triggerCounters !== null;
+  const display = triggerCounters ?? counters;
   const errorRatePctDisplay =
-    counters.errorRatePct !== null ? counters.errorRatePct.toFixed(0) : null;
+    display.errorRatePct !== null ? display.errorRatePct.toFixed(0) : null;
   // `errorRateThreshold` is a `Ratio` on the wire (0–1); display as a
   // percentage via `ratioToPercentage`. The explicit conversion is what
   // the type system uses to catch the old 0–100 vs 0–1 mixups (#1685).
@@ -70,44 +83,52 @@ function CountersSection({
   return (
     <section>
       <h4 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        Current counters
+        {usingTriggerSnapshot ? "Counters at trigger" : "Current counters"}
       </h4>
       <div className="space-y-1.5 rounded-md border bg-background p-3">
         <CounterRow
           label="Queries"
-          value={counters.queryCount.toString()}
+          value={display.queryCount.toString()}
           threshold={thresholds.queryRateLimit.toString()}
           suffix={`in ${thresholds.queryRateWindowSeconds}s`}
-          over={counters.queryCount > thresholds.queryRateLimit}
+          over={display.queryCount > thresholds.queryRateLimit}
         />
         <CounterRow
           label="Error rate"
           value={errorRatePctDisplay !== null ? `${errorRatePctDisplay}%` : "—"}
           threshold={`${errorRateThresholdPct}%`}
           over={
-            counters.errorRatePct !== null &&
-            // Explicit scale conversion — `counters.errorRatePct` is
+            display.errorRatePct !== null &&
+            // Explicit scale conversion — `display.errorRatePct` is
             // `Percentage` (0–100), `thresholds.errorRateThreshold` is
             // `Ratio` (0–1). `percentageToRatio` makes the scale mismatch
             // obvious at the call site; both operands below are `Ratio`.
-            percentageToRatio(counters.errorRatePct) > thresholds.errorRateThreshold
+            percentageToRatio(display.errorRatePct) > thresholds.errorRateThreshold
           }
         />
         <CounterRow
           label="Unique tables"
-          value={counters.uniqueTablesAccessed.toString()}
+          value={display.uniqueTablesAccessed.toString()}
           threshold={thresholds.uniqueTablesLimit.toString()}
-          over={counters.uniqueTablesAccessed > thresholds.uniqueTablesLimit}
+          over={display.uniqueTablesAccessed > thresholds.uniqueTablesLimit}
         />
         <div className="flex items-baseline justify-between gap-2 pt-1">
           <span className="text-xs text-muted-foreground">Consecutive escalations</span>
-          <span className="font-mono text-xs tabular-nums">{counters.escalations}</span>
+          <span className="font-mono text-xs tabular-nums">{display.escalations}</span>
         </div>
       </div>
-      {counters.errorRatePct === null && counters.queryCount > 0 && (
+      {usingTriggerSnapshot ? (
         <p className="mt-1 text-[11px] text-muted-foreground/70">
-          Error rate is evaluated after 10 queries in the current window.
+          Snapshot from the moment of the last escalation. The live window resets after
+          suspension while the level persists.
         </p>
+      ) : (
+        display.errorRatePct === null &&
+        display.queryCount > 0 && (
+          <p className="mt-1 text-[11px] text-muted-foreground/70">
+            Error rate is evaluated after 10 queries in the current window.
+          </p>
+        )
       )}
     </section>
   );
@@ -362,7 +383,11 @@ export function AbuseDetailPanel({
   return (
     <div className="grid gap-4 lg:grid-cols-2">
       <EventsStatusBanner status={data.eventsStatus} />
-      <CountersSection counters={data.counters} thresholds={data.thresholds} />
+      <CountersSection
+        counters={data.counters}
+        triggerCounters={data.triggerCounters}
+        thresholds={data.thresholds}
+      />
       <TimelineSection
         title="Current flag timeline"
         instance={data.currentInstance}

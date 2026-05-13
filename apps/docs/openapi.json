@@ -39963,6 +39963,41 @@
                         "escalations"
                       ]
                     },
+                    "triggerCounters": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "queryCount": {
+                          "type": "number"
+                        },
+                        "errorCount": {
+                          "type": "number"
+                        },
+                        "errorRatePct": {
+                          "type": [
+                            "number",
+                            "null"
+                          ],
+                          "minimum": 0,
+                          "maximum": 100
+                        },
+                        "uniqueTablesAccessed": {
+                          "type": "number"
+                        },
+                        "escalations": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "queryCount",
+                        "errorCount",
+                        "errorRatePct",
+                        "uniqueTablesAccessed",
+                        "escalations"
+                      ]
+                    },
                     "thresholds": {
                       "type": "object",
                       "properties": {
@@ -39982,6 +40017,9 @@
                         },
                         "throttleDelayMs": {
                           "type": "number"
+                        },
+                        "escalationCooldownMs": {
+                          "type": "number"
                         }
                       },
                       "required": [
@@ -39989,7 +40027,8 @@
                         "queryRateWindowSeconds",
                         "errorRateThreshold",
                         "uniqueTablesLimit",
-                        "throttleDelayMs"
+                        "throttleDelayMs",
+                        "escalationCooldownMs"
                       ]
                     },
                     "currentInstance": {
@@ -40179,6 +40218,7 @@
                     "updatedAt",
                     "eventsStatus",
                     "counters",
+                    "triggerCounters",
                     "thresholds",
                     "currentInstance",
                     "priorInstances"
@@ -40305,6 +40345,9 @@
                     },
                     "throttleDelayMs": {
                       "type": "number"
+                    },
+                    "escalationCooldownMs": {
+                      "type": "number"
                     }
                   },
                   "required": [
@@ -40312,7 +40355,8 @@
                     "queryRateWindowSeconds",
                     "errorRateThreshold",
                     "uniqueTablesLimit",
-                    "throttleDelayMs"
+                    "throttleDelayMs",
+                    "escalationCooldownMs"
                   ]
                 }
               }

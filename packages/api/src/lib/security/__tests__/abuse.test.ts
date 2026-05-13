@@ -105,16 +105,209 @@ describe("Abuse Prevention Engine", () => {
     setInternalQuery(async () => []);
     mockInternalExecute.mockClear();
     counterAdds.length = 0;
+    // Every legacy fast-walk test in this file assumes the engine is
+    // engaged AND the cooldown gate is open. SaaS mode keeps
+    // `recordQueryEvent` from short-circuiting on self-hosted; cooldown=0
+    // lets a tight-loop driver walk warning→throttled→suspended without
+    // wall-clock waits. Tests that need to exercise the gate override
+    // these locally.
+    process.env.ATLAS_DEPLOY_MODE = "saas";
+    process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS = "0";
   });
+
 
   describe("getAbuseConfig()", () => {
     it("returns default thresholds", () => {
+      // The default-thresholds assertion needs `ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS`
+      // unset — the global beforeEach pins it to "0" for fast-walk tests, which
+      // would mask a missing default. Drop it here, restore in finally.
+      const original = process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS;
+      try {
+        delete process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS;
+        const config = getAbuseConfig();
+        expect(config.queryRateLimit).toBe(200);
+        expect(config.queryRateWindowSeconds).toBe(300);
+        expect(config.errorRateThreshold).toBe<number>(0.5);
+        expect(config.uniqueTablesLimit).toBe(50);
+        expect(config.throttleDelayMs).toBe(2000);
+        // 60s default — keeps a single failing-SQL burst from walking
+        // warning→throttled→suspended in the same second. Pinned here so a
+        // future "no one will notice if we drop it to 0" regression trips
+        // the suite.
+        expect(config.escalationCooldownMs).toBe(60_000);
+      } finally {
+        if (original === undefined) delete process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS;
+        else process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS = original;
+      }
+    });
+
+    it("envIntAllowZero accepts 0 for cooldown (test/dev opt-out)", () => {
+      const original = process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS;
+      try {
+        process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS = "0";
+        expect(getAbuseConfig().escalationCooldownMs).toBe(0);
+      } finally {
+        if (original === undefined) delete process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS;
+        else process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS = original;
+      }
+    });
+
+    it("envIntAllowZero rejects negative cooldown and falls back to default", () => {
+      const original = process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS;
+      try {
+        process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS = "-30";
+        expect(getAbuseConfig().escalationCooldownMs).toBe(60_000);
+      } finally {
+        if (original === undefined) delete process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS;
+        else process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS = original;
+      }
+    });
+  });
+
+  describe("escalation cooldown (#2167)", () => {
+    // Pre-cooldown: three consecutive over-threshold checks fired in the
+    // same millisecond walked `none → warning → throttled → suspended` with
+    // no chance for the operator to react or for warn/throttle to take
+    // effect. The cooldown gates each ladder rung by a minimum dwell time.
+
+    it("blocks rapid-fire transitions past warning while dwell time is in effect", () => {
+      process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS = "60";
       const config = getAbuseConfig();
-      expect(config.queryRateLimit).toBe(200);
-      expect(config.queryRateWindowSeconds).toBe(300);
-      expect(config.errorRateThreshold).toBe<number>(0.5);
-      expect(config.uniqueTablesLimit).toBe(50);
-      expect(config.throttleDelayMs).toBe(2000);
+      // Drive far past the rate limit in a tight loop — pre-fix this would
+      // suspend the workspace; with cooldown it must hold at warning.
+      for (let i = 0; i <= config.queryRateLimit + 50; i++) {
+        recordQueryEvent("ws-cooldown-hold", { success: true });
+      }
+      expect(checkAbuseStatus("ws-cooldown-hold").level).toBe("warning");
+      // Counter still accumulates so the metrics + admin UI reflect ongoing
+      // pressure even when the level isn't advancing.
+      const flagged = listFlaggedWorkspaces();
+      expect(flagged.find((f) => f.workspaceId === "ws-cooldown-hold")).toBeDefined();
+    });
+
+    it("only emits one OTel transition during a held cooldown window", () => {
+      process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS = "60";
+      const config = getAbuseConfig();
+      for (let i = 0; i <= config.queryRateLimit + 50; i++) {
+        recordQueryEvent("ws-cooldown-counter", { success: true });
+      }
+      // Only the initial `none → warning` transition fires the meter; the
+      // suppressed warning→throttled and throttled→suspended bumps must
+      // not show up as no-op transitions.
+      expect(counterAdds).toEqual([
+        { value: 1, attributes: { level: "warning", trigger: "query_rate" } },
+      ]);
+    });
+
+    it("allows the next rung once dwell time has elapsed", () => {
+      // Mock `Date.now` so we can advance virtual time past the cooldown
+      // without sleeping. The engine reads `Date.now()` in both
+      // `recordQueryEvent` and `escalate` — by mocking the global, we
+      // control the entire wall-clock from the test.
+      process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS = "60";
+      const origNow = Date.now.bind(Date);
+      let virtualNow = origNow();
+      const dateNowSpy = mock(() => virtualNow);
+      Date.now = dateNowSpy as unknown as typeof Date.now;
+      try {
+        const config = getAbuseConfig();
+        for (let i = 0; i <= config.queryRateLimit; i++) {
+          recordQueryEvent("ws-cooldown-advance", { success: true });
+        }
+        expect(checkAbuseStatus("ws-cooldown-advance").level).toBe("warning");
+
+        // 61s later — past the 60s cooldown.
+        virtualNow += 61_000;
+        recordQueryEvent("ws-cooldown-advance", { success: true });
+        expect(checkAbuseStatus("ws-cooldown-advance").level).toBe("throttled");
+
+        // Still cooldowned again — another rapid call must hold.
+        recordQueryEvent("ws-cooldown-advance", { success: true });
+        expect(checkAbuseStatus("ws-cooldown-advance").level).toBe("throttled");
+
+        // Advance another cooldown — escalates to suspended.
+        virtualNow += 61_000;
+        recordQueryEvent("ws-cooldown-advance", { success: true });
+        expect(checkAbuseStatus("ws-cooldown-advance").level).toBe("suspended");
+      } finally {
+        Date.now = origNow as typeof Date.now;
+      }
+    });
+
+    it("seeds lastLevelChangeAt from the persisted event on rehydrate so the gate carries across restarts", async () => {
+      // Without the rehydrate-time seeding, a process restart would reset
+      // `lastLevelChangeAt` to undefined and the very next over-threshold
+      // check would advance the ladder — collapsing the cooldown across
+      // boots. The fix seeds it from `abuse_events.created_at`.
+      process.env.ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS = "60";
+      setInternalDB(true);
+      const justNowIso = new Date().toISOString();
+      setInternalQuery(async () => [
+        {
+          workspace_id: "ws-restart-gate",
+          level: "warning",
+          trigger_type: "query_rate",
+          message: "rehydrated warning",
+          created_at: justNowIso,
+        },
+      ]);
+      await restoreAbuseState();
+      expect(checkAbuseStatus("ws-restart-gate").level).toBe("warning");
+
+      // Right after restart the cooldown is still active — a single
+      // over-threshold check must NOT advance to throttled.
+      const config = getAbuseConfig();
+      for (let i = 0; i <= config.queryRateLimit + 5; i++) {
+        recordQueryEvent("ws-restart-gate", { success: true });
+      }
+      expect(checkAbuseStatus("ws-restart-gate").level).toBe("warning");
+    });
+  });
+
+  describe("self-hosted deploy bypass", () => {
+    it("recordQueryEvent skips when ATLAS_DEPLOY_MODE !== 'saas'", () => {
+      // Drop the env var entirely — self-hosted is the unset default.
+      delete process.env.ATLAS_DEPLOY_MODE;
+      const config = getAbuseConfig();
+      // Same loop that suspends a saas workspace.
+      for (let i = 0; i <= config.queryRateLimit + 50; i++) {
+        recordQueryEvent("ws-selfhost", { success: true });
+      }
+      // Engine is fully disengaged — no escalation, no event log, no
+      // workspace entry in the in-memory map.
+      expect(listFlaggedWorkspaces()).toEqual([]);
+      expect(counterAdds).toEqual([]);
+    });
+
+    it("checkAbuseStatus reports 'none' when ATLAS_DEPLOY_MODE !== 'saas' even with stale suspended state", () => {
+      // Seed state under saas mode so the in-memory map carries a
+      // suspended record, then flip to self-hosted. The read-time gate
+      // must lift the suspension so the chat gate doesn't keep blocking.
+      process.env.ATLAS_DEPLOY_MODE = "saas";
+      const config = getAbuseConfig();
+      for (let i = 0; i <= config.queryRateLimit + 5; i++) {
+        recordQueryEvent("ws-mode-flip", { success: true });
+      }
+      expect(checkAbuseStatus("ws-mode-flip").level).toBe("suspended");
+
+      delete process.env.ATLAS_DEPLOY_MODE;
+      expect(checkAbuseStatus("ws-mode-flip").level).toBe("none");
+      expect(checkAbuseStatus("ws-mode-flip").throttleDelayMs).toBeUndefined();
+    });
+
+    it("non-'saas' deploy mode values (e.g. 'self-hosted', 'auto') skip the engine", () => {
+      // The startup gate only treats 'saas' as the enable signal — any
+      // other value (including the canonical 'self-hosted' and the
+      // pre-resolution 'auto') must bypass.
+      for (const mode of ["self-hosted", "auto", "unknown"]) {
+        _resetAbuseState();
+        process.env.ATLAS_DEPLOY_MODE = mode;
+        const config = getAbuseConfig();
+        for (let i = 0; i <= config.queryRateLimit + 5; i++) {
+          recordQueryEvent(`ws-${mode}`, { success: true });
+        }
+        expect(checkAbuseStatus(`ws-${mode}`).level).toBe("none");
+      }
     });
   });
 
@@ -1075,6 +1268,117 @@ describe("Abuse Prevention Engine", () => {
       expect(detail.currentInstance.peakLevel).toBe("warning");
       expect(detail.currentInstance.events).toHaveLength(1);
       expect(detail.priorInstances).toEqual([]);
+    });
+
+    it("surfaces triggerCounters from the latest escalation event's metadata (#2167)", async () => {
+      // Pre-fix, a suspended workspace's live counters showed 0 queries / 0
+      // tables / no error rate (the sliding window prunes after 5min while
+      // `recordQueryEvent` short-circuits at the suspended level), yet the
+      // trigger message + level still showed "Error rate 75% exceeds
+      // threshold 50%". The frozen at-trigger snapshot from
+      // `abuse_events.metadata` is what makes the admin panel coherent
+      // again — pin both the shape and the metadata-passthrough here so a
+      // future refactor that drops the metadata read trips the suite.
+      const config = getAbuseConfig();
+      for (let i = 0; i <= config.queryRateLimit; i++) {
+        recordQueryEvent("ws-trigger-counters", { success: true });
+      }
+      setInternalDB(true);
+      setInternalQuery(async () => [
+        {
+          id: "evt-trigger",
+          workspace_id: "ws-trigger-counters",
+          level: "warning",
+          trigger_type: "error_rate",
+          message: "Error rate 75% exceeds threshold 50%",
+          metadata: JSON.stringify({
+            queryCount: 12,
+            errorCount: 9,
+            uniqueTables: 3,
+            escalations: 1,
+          }),
+          actor: "system",
+          created_at: "2026-04-19T10:00:00Z",
+        },
+      ]);
+
+      const detail = await getAbuseDetail("ws-trigger-counters");
+      expect(detail).not.toBeNull();
+      if (!detail) return;
+
+      expect(detail.triggerCounters).not.toBeNull();
+      // queryCount + errorCount come directly from the persisted metadata —
+      // they reflect the moment of escalation, not the live (now-pruned)
+      // sliding window.
+      expect(detail.triggerCounters?.queryCount).toBe(12);
+      expect(detail.triggerCounters?.errorCount).toBe(9);
+      // errorRatePct is recomputed from queryCount/errorCount via the
+      // shared `errorRatePct` helper so it matches the engine's own
+      // 2-decimal rounding — NOT scraped from the human-readable message
+      // string.
+      expect(detail.triggerCounters?.errorRatePct).toBe<number>(75);
+      expect(detail.triggerCounters?.uniqueTablesAccessed).toBe(3);
+      expect(detail.triggerCounters?.escalations).toBe(1);
+    });
+
+    it("returns triggerCounters=null when no events have persisted yet", async () => {
+      const config = getAbuseConfig();
+      for (let i = 0; i <= config.queryRateLimit; i++) {
+        recordQueryEvent("ws-no-events", { success: true });
+      }
+      setInternalDB(true);
+      setInternalQuery(async () => []);
+
+      const detail = await getAbuseDetail("ws-no-events");
+      expect(detail).not.toBeNull();
+      if (!detail) return;
+      // No abuse_events row yet → no at-trigger snapshot. UI falls back to
+      // the live counters for this case (and renders the original "Current
+      // counters" heading).
+      expect(detail.triggerCounters).toBeNull();
+      // Live counters still populated from in-memory window.
+      expect(detail.counters.queryCount).toBe(config.queryRateLimit + 1);
+    });
+
+    it("coerces hostile / corrupt metadata to 0 rather than rendering NaN", async () => {
+      const config = getAbuseConfig();
+      for (let i = 0; i <= config.queryRateLimit; i++) {
+        recordQueryEvent("ws-corrupt-md", { success: true });
+      }
+      setInternalDB(true);
+      // Metadata fields with non-numeric strings — Number() returns NaN.
+      // The Number.isFinite guard inside `triggerCountersFromInstance`
+      // must clamp these to 0 so the wire schema (z.number()) doesn't
+      // reject the response.
+      setInternalQuery(async () => [
+        {
+          id: "evt-bad-md",
+          workspace_id: "ws-corrupt-md",
+          level: "warning",
+          trigger_type: "query_rate",
+          message: "bad metadata",
+          metadata: JSON.stringify({
+            queryCount: "not a number",
+            errorCount: null,
+            uniqueTables: undefined,
+            escalations: "five",
+          }),
+          actor: "system",
+          created_at: "2026-04-19T10:00:00Z",
+        },
+      ]);
+
+      const detail = await getAbuseDetail("ws-corrupt-md");
+      expect(detail).not.toBeNull();
+      if (!detail) return;
+      expect(detail.triggerCounters).not.toBeNull();
+      // All fields land at 0 — no NaN escapes to the wire.
+      expect(detail.triggerCounters?.queryCount).toBe(0);
+      expect(detail.triggerCounters?.errorCount).toBe(0);
+      expect(detail.triggerCounters?.uniqueTablesAccessed).toBe(0);
+      expect(detail.triggerCounters?.escalations).toBe(0);
+      // queryCount=0 → below the 10-query baseline → errorRatePct null.
+      expect(detail.triggerCounters?.errorRatePct).toBeNull();
     });
 
     it("returns null errorRatePct while under the 10-query baseline", async () => {

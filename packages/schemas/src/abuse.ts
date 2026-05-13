@@ -85,6 +85,7 @@ export const AbuseThresholdConfigSchema = z.object({
   errorRateThreshold: z.number().min(0).max(1).transform((n): Ratio => asRatio(n)),
   uniqueTablesLimit: z.number(),
   throttleDelayMs: z.number(),
+  escalationCooldownMs: z.number(),
 }) satisfies z.ZodType<AbuseThresholdConfig, unknown>;
 
 // `errorRatePct` is branded `Percentage` (#1685). Same wire-boundary range
@@ -133,6 +134,7 @@ export const AbuseInstanceSchema = z
 // close.
 export const AbuseDetailSchema = AbuseStatusSchema.omit({ events: true }).extend({
   counters: AbuseCountersSchema,
+  triggerCounters: AbuseCountersSchema.nullable(),
   thresholds: AbuseThresholdConfigSchema,
   currentInstance: AbuseInstanceSchema,
   priorInstances: z.array(AbuseInstanceSchema),

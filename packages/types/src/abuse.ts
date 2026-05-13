@@ -108,6 +108,16 @@ export interface AbuseThresholdConfig {
   uniqueTablesLimit: number;
   /** Delay injected for throttled workspaces, in milliseconds. */
   throttleDelayMs: number;
+  /**
+   * Minimum dwell time at each level before the next escalation rung can fire.
+   * Without this, three consecutive over-threshold checks can walk a workspace
+   * from `none` → `warning` → `throttled` → `suspended` in milliseconds — a
+   * single failing-SQL burst suspends the workspace before warn/throttle have
+   * any chance to take effect. Authored in seconds via the env var; surfaced
+   * here in milliseconds to match the other duration on this object
+   * (`throttleDelayMs`).
+   */
+  escalationCooldownMs: number;
 }
 
 /** Live sliding-window counters for the admin detail panel. */
@@ -220,6 +230,22 @@ export type AbuseEventsStatus = (typeof ABUSE_EVENTS_STATUSES)[number];
  */
 export interface AbuseDetail extends Omit<AbuseStatus, "events"> {
   counters: AbuseCounters;
+  /**
+   * Counters captured at the moment of the most recent escalation event for
+   * this flag instance. The live `counters` above reflect the sliding window
+   * *right now* — but a suspended workspace's window keeps pruning while
+   * `recordQueryEvent` short-circuits, so by the time an admin opens the
+   * investigation panel the live counters often read 0 queries / no error
+   * rate even though `level === "suspended"` and the trigger message shows
+   * "Error rate 75% exceeds threshold 50%". `triggerCounters` surfaces the
+   * frozen at-trigger snapshot so the admin sees what actually tripped the
+   * threshold, not a misleading post-prune zero row.
+   *
+   * Null when the current instance has no persisted events yet (in-memory
+   * state exists but `abuse_events` row hasn't been written, or the DB load
+   * failed — `eventsStatus` carries the explanation).
+   */
+  triggerCounters: AbuseCounters | null;
   thresholds: AbuseThresholdConfig;
   /**
    * Current (unreinstated) flag instance.

@@ -20,6 +20,7 @@ import {
   ABUSE_LEVELS,
   ABUSE_TRIGGERS,
   asRatio,
+  type AbuseCounters,
   type AbuseLevel,
   type AbuseRestoreStatus,
   type AbuseTrigger,
@@ -135,7 +136,45 @@ export function getAbuseConfig(): AbuseThresholdConfig {
     errorRateThreshold: asRatio(envFloat("ATLAS_ABUSE_ERROR_RATE", 0.5)),
     uniqueTablesLimit: envInt("ATLAS_ABUSE_UNIQUE_TABLES", 50),
     throttleDelayMs: envInt("ATLAS_ABUSE_THROTTLE_DELAY_MS", 2000),
+    // `envInt` rejects `≤ 0` and falls back to the default, so the only way
+    // to bypass the cooldown (e.g. for the abuse engine's own unit tests)
+    // is `envIntAllowZero` below — a deliberate two-helper split so a typo
+    // in a SaaS env file (`ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS=0`)
+    // doesn't silently turn the dwell-time guard off in prod.
+    escalationCooldownMs: envIntAllowZero("ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS", 60) * 1000,
   };
+}
+
+/**
+ * Variant of `envInt` that accepts `0` as a valid value. Only the
+ * escalation cooldown is allowed to be disabled this way — explicit opt-in
+ * for the abuse engine's own unit tests, where the ladder behaviour is
+ * exercised in a tight loop. Production deployments must set a positive
+ * value (or omit the var entirely to take the default), so a stray `0` in
+ * a SaaS env file does not silently revive the pre-cooldown fast-walk
+ * regression. See `getAbuseConfig`.
+ */
+function envIntAllowZero(key: string, fallback: number): number {
+  const raw = process.env[key];
+  if (raw === undefined) return fallback;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+/**
+ * Abuse detection is only useful in multi-tenant SaaS. On a single-tenant
+ * self-hosted deploy the operator *is* the user — auto-suspending them on
+ * their own queries is pure false positive. Mirrors the env-var read in
+ * `startup.ts` / `saas-guards.ts:explicitSaasFromEnv`; config-file-only
+ * SaaS mode (`atlas.config.ts` setting `deployMode: "saas"` without the
+ * env var) is rare in practice and would trip the boot-time
+ * `EnterpriseGuardLive` warning rather than silently downgrade. Keeping
+ * this as a plain env-var read avoids pulling `lib/config` into the
+ * abuse engine's import graph (the engine ships in the AGPL core and
+ * imports nothing from `lib/effect`).
+ */
+function isSaasDeployment(): boolean {
+  return process.env.ATLAS_DEPLOY_MODE === "saas";
 }
 
 // ---------------------------------------------------------------------------
@@ -156,6 +195,13 @@ interface WorkspaceAbuseState {
   window: WindowCounter;
   /** Escalation count — how many consecutive windows triggered. */
   escalations: number;
+  /**
+   * Timestamp of the last `level` transition (ms since epoch). Undefined
+   * before the first escalation. Drives `escalationCooldownMs` — the next
+   * rung on the ladder (`warning` → `throttled` → `suspended`) only fires
+   * once the dwell time at the current level has elapsed.
+   */
+  lastLevelChangeAt?: number;
 }
 
 const workspaceState = new Map<string, WorkspaceAbuseState>();
@@ -232,6 +278,13 @@ export function recordQueryEvent(
   workspaceId: string,
   opts: { success: boolean; tablesAccessed?: string[] },
 ): void {
+  // Self-hosted single-tenant deploys: skip abuse tracking entirely. The
+  // detector exists to defend a multi-tenant SaaS region against a
+  // single noisy workspace; on self-hosted, the operator IS the user
+  // and the detector produces only false positives. See
+  // `isSaasDeployment` for the gate.
+  if (!isSaasDeployment()) return;
+
   // #2166 — workspaces in the load-test allowlist
   // (`ATLAS_LOADTEST_ALLOWED_ORGS`) bypass the escalation chain so a
   // designated load-test workspace can't auto-suspend itself while
@@ -317,25 +370,38 @@ function escalate(
   trigger: AbuseTrigger,
   message: string,
 ): void {
+  const config = getAbuseConfig();
+  const now = Date.now();
   const prevLevel = state.level;
   state.escalations++;
   state.trigger = trigger;
   state.message = message;
-  state.updatedAt = Date.now();
+  state.updatedAt = now;
 
-  // First trigger → warning
-  // Second consecutive trigger → throttle
-  // Third consecutive trigger → suspend
-  if (state.escalations === 1 && prevLevel === "none") {
-    state.level = "warning";
-  } else if (state.escalations >= 2 && prevLevel === "warning") {
-    state.level = "throttled";
-  } else if (state.escalations >= 3 && prevLevel === "throttled") {
-    state.level = "suspended";
+  // Dwell-time gate (#2167-ish — self-suspension during dev). Pre-cooldown,
+  // three consecutive over-threshold checks (e.g. three failing-SQL attempts
+  // in the same minute) walked the workspace `none → warning → throttled →
+  // suspended` in seconds, before warn/throttle had any chance to take
+  // effect or for the operator to react. Each level transition now requires
+  // `escalationCooldownMs` to have elapsed since the last one — the
+  // escalation counter still increments so the metrics + admin UI reflect
+  // ongoing pressure, but the ladder advances at most once per cooldown
+  // window. Undefined `lastLevelChangeAt` means "no transition yet" → the
+  // first rung fires immediately, mirroring the pre-cooldown first-trigger
+  // semantics.
+  const dwellElapsed =
+    state.lastLevelChangeAt === undefined ||
+    now - state.lastLevelChangeAt >= config.escalationCooldownMs;
+
+  if (dwellElapsed) {
+    if (prevLevel === "none") state.level = "warning";
+    else if (prevLevel === "warning") state.level = "throttled";
+    else if (prevLevel === "throttled") state.level = "suspended";
   }
 
   // Only emit event if level changed
   if (state.level !== prevLevel) {
+    state.lastLevelChangeAt = now;
     const event: AbuseEvent = {
       id: crypto.randomUUID(),
       workspaceId,
@@ -383,6 +449,14 @@ export function checkAbuseStatus(workspaceId: string): {
   level: AbuseLevel;
   throttleDelayMs?: number;
 } {
+  // Self-hosted bypass — symmetric with `recordQueryEvent`. The
+  // `recordQueryEvent` no-op already prevents new in-memory state from
+  // ever escalating past `none` on self-hosted, but this guard lifts any
+  // pre-existing state too (e.g. a SaaS deploy that flipped to self-hosted
+  // post-`restoreAbuseState`) so the chat/query gate doesn't keep blocking
+  // on stale enforcement.
+  if (!isSaasDeployment()) return { level: "none" };
+
   if (isLoadTestWorkspace(workspaceId)) return { level: "none" };
 
   const state = workspaceState.get(workspaceId);
@@ -477,10 +551,69 @@ export async function getAbuseDetail(
       uniqueTablesAccessed: w.tables.size,
       escalations: state.escalations,
     },
+    triggerCounters: triggerCountersFromInstance(currentInstance.events),
     thresholds: config,
     currentInstance,
     priorInstances,
     eventsStatus,
+  };
+}
+
+/**
+ * Pull the at-trigger counters out of the most recent escalation event in
+ * the current flag instance.
+ *
+ * Once a workspace is suspended (or throttled), `recordQueryEvent`
+ * short-circuits and the sliding window keeps pruning timestamps older
+ * than `queryRateWindowSeconds`. By the time an admin opens the
+ * investigation panel — typically minutes later — the live counters read
+ * `queries: 0`, `errorRate: —`, `uniqueTables: 0`, while the level + the
+ * `state.message` trigger reason still reflect the snapshot at escalation
+ * time ("Error rate 75% exceeds threshold 50%"). The mismatch makes the
+ * UI nonsensical. `escalate()` already persists the at-trigger counts
+ * into `event.metadata`, so we read them back here and surface them as
+ * `triggerCounters` for the detail panel to show instead of (or alongside)
+ * the live-window row.
+ *
+ * Returns `null` when the current instance has no events (in-memory state
+ * exists but `abuse_events` hasn't been written yet, or the DB load
+ * failed). The wire schema accepts `null` and the panel falls back to the
+ * live counters in that case.
+ *
+ * `errorRatePct` is recomputed from the persisted `queryCount` +
+ * `errorCount` so the percentage matches the engine's own arithmetic
+ * (2-decimal rounding via `errorRatePct`), rather than the truncated `(rate
+ * * 100).toFixed(0)` string baked into the human-readable `message` field
+ * at escalation time. Below-baseline events (< 10 queries) surface
+ * `errorRatePct: null` to match the live-counters contract.
+ */
+function triggerCountersFromInstance(events: readonly AbuseEvent[]): AbuseCounters | null {
+  if (events.length === 0) return null;
+  // `splitIntoInstances` orders the current-instance events chronologically
+  // (oldest first), so the last entry is the most recent escalation.
+  const latest = events[events.length - 1];
+  if (!latest) return null;
+  const md = latest.metadata;
+  const queryCount = Number(md.queryCount ?? 0);
+  const errorCount = Number(md.errorCount ?? 0);
+  const uniqueTablesAccessed = Number(md.uniqueTables ?? 0);
+  const escalations = Number(md.escalations ?? 0);
+  // Mirror the live-counter "needs a baseline" contract — < 10 → null.
+  // Below-baseline triggers come from non-error_rate paths (query_rate or
+  // unique_tables hitting the limit), so an at-trigger row showing
+  // `errorRatePct: null` is honest, not missing.
+  const errorRate =
+    queryCount >= 10 ? errorRatePct(errorCount, queryCount) : null;
+  // Hostile-input guard — corrupt / pre-schema metadata could land here as
+  // `NaN` if any field was string-shaped and refused coercion. Coercing to
+  // 0 keeps the panel renderable; surfacing the bad row to operators is
+  // already covered by the per-row warn in `getAbuseEvents`.
+  return {
+    queryCount: Number.isFinite(queryCount) ? queryCount : 0,
+    errorCount: Number.isFinite(errorCount) ? errorCount : 0,
+    errorRatePct: errorRate,
+    uniqueTablesAccessed: Number.isFinite(uniqueTablesAccessed) ? uniqueTablesAccessed : 0,
+    escalations: Number.isFinite(escalations) ? escalations : 0,
   };
 }
 
@@ -510,6 +643,12 @@ export function reinstateWorkspace(
   state.updatedAt = Date.now();
   // Reset the window so the workspace gets a clean slate
   state.window = { timestamps: [], errorCount: 0, tables: new Set() };
+  // Clear the dwell-time gate too — otherwise a re-flag right after
+  // reinstate would still see an "old enough" `lastLevelChangeAt` and the
+  // gate would be vacuously satisfied, but worse, the timestamp would now
+  // refer to a *prior instance*'s transition, which is misleading in any
+  // future restore-time invariant check.
+  state.lastLevelChangeAt = undefined;
 
   const event: AbuseEvent = {
     id: crypto.randomUUID(),
@@ -738,7 +877,15 @@ export async function restoreAbuseState(): Promise<void> {
       state.level = level;
       state.trigger = trigger;
       state.message = row.message;
-      state.updatedAt = new Date(row.created_at).getTime();
+      const createdAtMs = new Date(row.created_at).getTime();
+      state.updatedAt = createdAtMs;
+      // Seed `lastLevelChangeAt` from the last persisted transition so the
+      // dwell-time gate is honored across process restarts. Without this,
+      // a workspace rehydrated as `warning` could be re-escalated to
+      // `throttled` on the very next over-threshold check — the cooldown
+      // would treat the missing timestamp as "no transition yet" and
+      // collapse the entire ladder back into a fast-walk.
+      state.lastLevelChangeAt = createdAtMs;
       // Set escalations based on current level to maintain correct position in the ladder
       state.escalations = level === "warning" ? 1 : level === "throttled" ? 2 : 3;
     }

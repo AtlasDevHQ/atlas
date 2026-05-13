@@ -59,6 +59,38 @@ const _whitelists = new Map<string, Set<string>>();
 let _tablesByConnection: Map<string, Set<string>> | null = null;
 let _crossSourceJoins: CrossSourceJoin[] | null = null;
 
+/**
+ * Strip identifier quotes from each dotted segment of a table name.
+ *
+ * Entity YAMLs sometimes carry quoted table names because the underlying
+ * identifier is a SQL reserved keyword (e.g. Better Auth's Postgres `"user"`
+ * table). `node-sql-parser` strips identifier quotes from its `tableList`
+ * output before we look the name up, so the whitelist must store the
+ * unquoted form or the lookup misses on every `FROM "user"` the agent
+ * emits. Handles the three identifier-quote forms our supported dialects
+ * use: `"name"` (Postgres / ANSI), `` `name` `` (MySQL), `[name]` (T-SQL).
+ * Schema-qualified names are normalized per segment so `public."user"`
+ * → `public.user`.
+ */
+export function normalizeTableIdentifier(raw: string): string {
+  return raw
+    .split(".")
+    .map((seg) => {
+      if (seg.length < 2) return seg;
+      const first = seg[0];
+      const last = seg[seg.length - 1];
+      if (
+        (first === '"' && last === '"') ||
+        (first === "`" && last === "`") ||
+        (first === "[" && last === "]")
+      ) {
+        return seg.slice(1, -1);
+      }
+      return seg;
+    })
+    .join(".");
+}
+
 /** Plugin-provided entity tables, keyed by connection ID. */
 const _pluginEntities = new Map<string, Set<string>>();
 
@@ -113,11 +145,14 @@ function loadEntitiesFromDir(
       if (!byConnection.has(connId)) byConnection.set(connId, new Set());
       const tables = byConnection.get(connId)!;
 
-      // Extract table name (may include schema prefix like "public.users")
-      const parts = entity.table.split(".");
+      // Extract table name (may include schema prefix like "public.users").
+      // Normalize identifier quotes so `"user"` / `` `user` `` in the YAML
+      // matches the unquoted name `node-sql-parser` returns from `FROM "user"`.
+      const normalized = normalizeTableIdentifier(entity.table);
+      const parts = normalized.split(".");
       tables.add(parts[parts.length - 1].toLowerCase());
       // Also add the full qualified name
-      tables.add(entity.table.toLowerCase());
+      tables.add(normalized.toLowerCase());
 
       // Validate and collect cross-source joins separately from core entity parsing.
       // Invalid join entries are skipped individually without dropping the entity.
@@ -343,7 +378,7 @@ export function registerPluginEntities(
         skippedCount++;
         continue;
       }
-      const tableName = parsed.data.table;
+      const tableName = normalizeTableIdentifier(parsed.data.table);
       const parts = tableName.split(".");
       tables.add(parts[parts.length - 1].toLowerCase());
       tables.add(tableName.toLowerCase());
@@ -458,9 +493,10 @@ export async function loadOrgWhitelist(orgId: string, mode?: "published" | "deve
       const connId = parsed.data.connection ?? row.connection_id ?? "default";
       if (!byConnection.has(connId)) byConnection.set(connId, new Set());
       const tables = byConnection.get(connId)!;
-      const parts = parsed.data.table.split(".");
+      const normalized = normalizeTableIdentifier(parsed.data.table);
+      const parts = normalized.split(".");
       tables.add(parts[parts.length - 1].toLowerCase());
-      tables.add(parsed.data.table.toLowerCase());
+      tables.add(normalized.toLowerCase());
     } catch (err) {
       parseFailures++;
       log.warn(

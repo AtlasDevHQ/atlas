@@ -39,8 +39,14 @@ export default defineConfig({
   },
 
   // ── Sandbox ─────────────────────────────────────────────────────
+  // SaaS sandbox priority: Vercel Sandbox (Firecracker microVM, per-request
+  // isolation) is the primary backend; sidecar is the fallback if the
+  // Vercel API is unreachable. Off-Vercel auth requires VERCEL_TEAM_ID,
+  // VERCEL_PROJECT_ID, and VERCEL_TOKEN env vars on the Railway service.
+  // No just-bash fallback in SaaS — config-priority chains throw if all
+  // listed backends fail, which is the correct behavior for multi-tenant.
   sandbox: {
-    priority: ["sidecar"],
+    priority: ["vercel-sandbox", "sidecar"],
   },
 
   // ── Connection Pool ─────────────────────────────────────────────

@@ -42,3 +42,5 @@ critique-*.png
 
 # Atlas team dogfood semantic layer + setup script (internal product naming, not part of shipping repo)
 internal/
+.vercel
+.env*.local

@@ -26,6 +26,7 @@ import { Effect, Data, Duration, Schedule } from "effect";
 import type { PythonBackend, PythonResult } from "./python";
 import { PYTHON_SECURITY_AND_SETUP, PYTHON_EXEC_AND_COLLECT } from "./python-wrapper";
 import { sandboxErrorDetail, safeError, MAX_OUTPUT } from "./backends/shared";
+import { vercelSandboxAccess } from "./backends/detect";
 import { randomUUID } from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
 
@@ -142,10 +143,18 @@ export function createPythonSandboxBackend(): PythonBackend {
         },
       });
 
-      // 2. Create sandbox with retry for transient failures
+      // 2. Create sandbox with retry for transient failures. Off-Vercel
+      // (e.g. Railway) requires explicit VERCEL_TEAM_ID/VERCEL_PROJECT_ID/
+      // VERCEL_TOKEN; on Vercel proper, OIDC handles auth and `access` is
+      // undefined.
+      const access = vercelSandboxAccess();
       const sandbox = yield* Effect.tryPromise({
         try: () =>
-          Sandbox.create({ runtime: "python3.13", networkPolicy: "allow-all" }),
+          Sandbox.create({
+            runtime: "python3.13",
+            networkPolicy: "allow-all",
+            ...(access ?? {}),
+          }),
         catch: (err) => {
           const detail = sandboxErrorDetail(err);
           log.warn({ err: detail }, "Python Sandbox.create() attempt failed");

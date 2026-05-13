@@ -11,6 +11,7 @@
 
 import type { ExploreBackend, ExecResult } from "./backends/types";
 import { sandboxErrorDetail, safeError } from "./backends/shared";
+import { vercelSandboxAccess } from "./backends/detect";
 import * as path from "path";
 import * as fs from "fs";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -98,12 +99,17 @@ export async function createSandboxBackend(
     );
   }
 
-  // 2. Create the sandbox
+  // 2. Create the sandbox. When VERCEL_TEAM_ID/VERCEL_PROJECT_ID/VERCEL_TOKEN
+  // are set we're running off-Vercel (e.g. Railway) and need to pass explicit
+  // credentials; on Vercel itself, OIDC handles auth automatically and these
+  // are undefined.
+  const access = vercelSandboxAccess();
   let sandbox: InstanceType<typeof Sandbox>;
   try {
     sandbox = await Sandbox.create({
       runtime: "node24",
       networkPolicy: "deny-all",
+      ...(access ?? {}),
     });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);

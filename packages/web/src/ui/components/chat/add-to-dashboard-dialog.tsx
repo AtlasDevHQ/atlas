@@ -28,6 +28,20 @@ import type { Dashboard, DashboardChartConfig, ChartType } from "../../lib/types
 import { CHART_TYPES } from "../../lib/types";
 import type { ChartDetectionResult } from "../chart/chart-detection";
 
+/**
+ * Wire shape returned by `/api/v1/admin/connection-groups`. Inline here
+ * to avoid widening `@useatlas/types` for a single picker — the admin
+ * surface owns its own response type. `resolvedConnectionId` is the
+ * "executes against" target the dashboard card will use at view time.
+ */
+interface ConnectionGroup {
+  id: string;
+  name: string;
+  memberCount: number;
+  primaryConnectionId: string | null;
+  resolvedConnectionId: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -82,6 +96,10 @@ export function AddToDashboardDialog({
   const [newDashboardTitle, setNewDashboardTitle] = useState("");
   const [cardTitle, setCardTitle] = useState(explanation ?? "Query result");
   const [chartType, setChartType] = useState<string>("table");
+  // Empty string = "no group" (renders as workspace default at view time —
+  // matches pre-1.4.4 behavior for orgs that haven't onboarded to env
+  // groups yet). Non-empty = group id, resolves to its primary member.
+  const [connectionGroupId, setConnectionGroupId] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const submittingRef = useRef(false);
@@ -92,6 +110,14 @@ export function AddToDashboardDialog({
     dashboards: Dashboard[];
     total: number;
   }>("/api/v1/dashboards");
+
+  // Fetch connection groups so the user picks an environment per card
+  // rather than a single connection. The picker is optional — an empty
+  // selection leaves `connectionGroupId` null on the card, which the
+  // refresh path resolves to the workspace default.
+  const { data: groupsData } = useAdminFetch<{
+    groups: ConnectionGroup[];
+  }>("/api/v1/admin/connection-groups");
 
   const { mutate: createDashboard, saving: creatingDashboard } = useAdminMutation<Dashboard>({});
   const { mutate: addCard, saving: addingCard } = useAdminMutation<{ id: string }>({});
@@ -104,6 +130,7 @@ export function AddToDashboardDialog({
       setCardTitle(explanation ?? "Query result");
       setNewDashboardTitle("");
       setSelectedDashboardId("");
+      setConnectionGroupId("");
       setError(null);
       setSuccess(false);
       submittingRef.current = false;
@@ -189,6 +216,7 @@ export function AddToDashboardDialog({
           chartConfig: buildChartConfig(),
           cachedColumns: columns,
           cachedRows: rows.slice(0, MAX_CACHED_ROWS),
+          ...(connectionGroupId && { connectionGroupId }),
         },
       });
 
@@ -304,6 +332,51 @@ export function AddToDashboardDialog({
 
               {renderDashboardSelector()}
             </div>
+
+            {/* Environment (connection group) — hidden when the workspace
+                has at most one group (single-env orgs see no value here). */}
+            {(groupsData?.groups.length ?? 0) > 1 && (
+              <div className="grid gap-2">
+                <Label htmlFor="connection-group">Environment</Label>
+                <Select
+                  value={connectionGroupId || "__default__"}
+                  onValueChange={(v) => setConnectionGroupId(v === "__default__" ? "" : v)}
+                >
+                  <SelectTrigger id="connection-group">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__default__">Workspace default</SelectItem>
+                    {(groupsData?.groups ?? []).map((g) => (
+                      <SelectItem key={g.id} value={g.id}>
+                        {g.name} ({g.memberCount} connection{g.memberCount !== 1 ? "s" : ""})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {connectionGroupId && (() => {
+                  const picked = groupsData?.groups.find((g) => g.id === connectionGroupId);
+                  if (!picked) return null;
+                  if (picked.memberCount === 0) {
+                    return (
+                      <p className="text-xs text-amber-600 dark:text-amber-400">
+                        This environment has no connections. Add one in Admin → Connection Groups before the card can refresh.
+                      </p>
+                    );
+                  }
+                  const target = picked.resolvedConnectionId;
+                  if (!target) return null;
+                  const primaryNote = picked.primaryConnectionId
+                    ? "primary member"
+                    : "first member (no primary pinned)";
+                  return (
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                      Executes against <span className="font-medium">{target}</span> ({primaryNote}).
+                    </p>
+                  );
+                })()}
+              </div>
+            )}
 
             {/* Card title */}
             <div className="grid gap-2">

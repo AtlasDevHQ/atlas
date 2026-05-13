@@ -41,6 +41,12 @@ Each dashboard card shows:
 - **Data table** — the underlying rows and columns
 - **Last refreshed** — timestamp of the most recent data
 
+### Environment (1.4.4+)
+
+If your workspace has more than one **connection group** (an "environment") configured under **Admin → Connections → Environments**, the **Add to Dashboard** dialog includes an **Environment** picker. Pick the group your card should run against — Atlas resolves it to the group's primary member at view time, falling back to the first member by creation order when no primary is pinned. Moving the primary to a different member (e.g. from `us-int` to `eu`) retargets every card scoped to that environment without editing the cards themselves.
+
+Single-environment workspaces don't see the picker — cards run against the workspace default, same as pre-1.4.4. A card pointing at an environment with zero members will refuse to refresh until an admin adds one, surfacing as a 500 with the offending group name; the dialog warns up-front so you don't save a card that can't run.
+
 ### Card Actions
 
 | Action | How |

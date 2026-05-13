@@ -25,8 +25,14 @@ import { DASHBOARD_GRID } from "@atlas/api/lib/dashboard-types";
 import type { ShareMode, ShareExpiryKey } from "@useatlas/types/share";
 import { SHARE_EXPIRY_OPTIONS } from "@useatlas/types/share";
 import type { CrudResult, CrudDataResult, CrudFailReason } from "@atlas/api/lib/conversations";
+import {
+  selectGroupMember,
+  NoGroupMembersError,
+  type GroupSnapshot,
+} from "@atlas/api/lib/dashboards-group-resolve";
 
 export type { CrudResult, CrudDataResult, CrudFailReason };
+export { NoGroupMembersError };
 
 const log = createLogger("dashboards");
 
@@ -126,6 +132,7 @@ export function rowToCard(r: Record<string, unknown>): DashboardCard {
     cachedRows,
     cachedAt: r.cached_at ? String(r.cached_at) : null,
     connectionId: (r.connection_id as string) ?? null,
+    connectionGroupId: (r.connection_group_id as string) ?? null,
     layout,
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
@@ -155,6 +162,80 @@ function computeExpiresAt(expiresIn?: ShareExpiryKey | null): string | null {
   const seconds = SHARE_EXPIRY_OPTIONS[expiresIn];
   if (seconds === null) return null;
   return new Date(Date.now() + seconds * 1000).toISOString();
+}
+
+// ---------------------------------------------------------------------------
+// Group-scoped execution resolver (#2342)
+// ---------------------------------------------------------------------------
+
+/**
+ * Load the group's primary + membership snapshot for resolver use. The
+ * snapshot drives `selectGroupMember` — see `lib/dashboards-group-resolve.ts`
+ * for the resolution rules.
+ *
+ * Members come back ordered by `(created_at ASC, id ASC)` so the resolver's
+ * fallback path matches the DB-side ORDER BY and the documented tie-breaker.
+ */
+export async function loadGroupSnapshot(
+  groupId: string,
+  orgId: string | null,
+): Promise<GroupSnapshot | null> {
+  if (!hasInternalDB()) return null;
+  // Resolve via the parent dashboard's `org_id`. `orgId` is the active
+  // request scope (may be NULL for legacy global content). The group
+  // lookup composite PK `(id, org_id)` ensures cross-org membership is
+  // impossible at the DB layer.
+  const groupRows = await internalQuery<{ primary_connection_id: string | null }>(
+    `SELECT primary_connection_id FROM connection_groups
+      WHERE id = $1 AND org_id = $2`,
+    [groupId, orgId ?? "__global__"],
+  );
+  if (groupRows.length === 0) return null;
+
+  const memberRows = await internalQuery<{ id: string; created_at: Date | string }>(
+    `SELECT id, created_at FROM connections
+      WHERE group_id = $1 AND org_id = $2
+      ORDER BY created_at ASC, id ASC`,
+    [groupId, orgId ?? "__global__"],
+  );
+
+  return {
+    groupId,
+    orgId,
+    primaryConnectionId: groupRows[0].primary_connection_id,
+    members: memberRows.map((r) => ({
+      id: r.id,
+      createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
+    })),
+  };
+}
+
+/**
+ * Resolve the physical connection id a card executes against, honouring
+ * the precedence: `connection_group_id` (preferred) → legacy
+ * `connection_id` → workspace default (`null`).
+ *
+ * Throws `NoGroupMembersError` when the card resolves to a group with
+ * zero members — the route layer must catch and return a 500 with
+ * `requestId` rather than silently falling through to the workspace
+ * connection (CLAUDE.md "Prefer errors over silent fallbacks").
+ */
+export async function resolveCardConnectionId(
+  card: { connectionGroupId: string | null; connectionId: string | null },
+  orgId: string | null,
+): Promise<string | null> {
+  if (card.connectionGroupId) {
+    const snap = await loadGroupSnapshot(card.connectionGroupId, orgId);
+    if (!snap) {
+      // Group row vanished while the card still points at it — treat as
+      // empty membership so callers surface a typed 500. Silently
+      // demoting to the workspace default would render against the
+      // wrong connection.
+      throw new NoGroupMembersError(card.connectionGroupId, orgId);
+    }
+    return selectGroupMember(snap);
+  }
+  return card.connectionId;
 }
 
 // ---------------------------------------------------------------------------
@@ -341,7 +422,10 @@ export async function addCard(opts: {
   chartConfig?: DashboardChartConfig | null;
   cachedColumns?: string[] | null;
   cachedRows?: Record<string, unknown>[] | null;
+  /** @deprecated 1.4.4 — pass `connectionGroupId` instead. */
   connectionId?: string | null;
+  /** Group-scoped execution target (1.4.4). */
+  connectionGroupId?: string | null;
   layout?: DashboardCardLayout | null;
 }): Promise<CrudDataResult<DashboardCard>> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
@@ -354,8 +438,8 @@ export async function addCard(opts: {
     const nextPos = (posRows[0]?.next_pos as number) ?? 0;
 
     const rows = await internalQuery<Record<string, unknown>>(
-      `INSERT INTO dashboard_cards (dashboard_id, position, title, sql, chart_config, cached_columns, cached_rows, cached_at, connection_id, layout)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `INSERT INTO dashboard_cards (dashboard_id, position, title, sql, chart_config, cached_columns, cached_rows, cached_at, connection_id, connection_group_id, layout)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
       [
         opts.dashboardId,
@@ -367,6 +451,7 @@ export async function addCard(opts: {
         opts.cachedRows ? JSON.stringify(opts.cachedRows) : null,
         opts.cachedRows ? new Date().toISOString() : null,
         opts.connectionId ?? null,
+        opts.connectionGroupId ?? null,
         opts.layout ? JSON.stringify(opts.layout) : null,
       ],
     );
@@ -769,19 +854,29 @@ export async function refreshDashboardCards(dashboardId: string): Promise<{
   }
 
   const cards = dashResult.data.cards;
+  const dashboardOrgId = dashResult.data.orgId ?? null;
   let refreshed = 0;
   let failed = 0;
 
   for (const card of cards) {
     try {
-      const validation = await validateSQL(card.sql, card.connectionId ?? undefined);
+      // Resolve group → primary member before validation so the
+      // connectionId-keyed whitelist lookup runs against the right
+      // physical connection. NoGroupMembersError is treated as a
+      // skip + warn here (scheduler tick is best-effort across cards);
+      // the interactive routes surface it as a 500 + requestId.
+      const resolvedConnectionId = await resolveCardConnectionId(
+        { connectionGroupId: card.connectionGroupId, connectionId: card.connectionId },
+        dashboardOrgId,
+      );
+      const validation = await validateSQL(card.sql, resolvedConnectionId ?? undefined);
       if (!validation.valid) {
         log.warn({ cardId: card.id, error: validation.error }, "Auto-refresh: card SQL failed validation");
         failed++;
         continue;
       }
-      const db = card.connectionId
-        ? connections.get(card.connectionId)
+      const db = resolvedConnectionId
+        ? connections.get(resolvedConnectionId)
         : connections.getDefault();
       const queryResult = await db.query(card.sql, 30000);
       const result = await refreshCard(card.id, dashboardId, {
@@ -791,6 +886,14 @@ export async function refreshDashboardCards(dashboardId: string): Promise<{
       if (result.ok) refreshed++;
       else failed++;
     } catch (err) {
+      if (err instanceof NoGroupMembersError) {
+        log.warn(
+          { cardId: card.id, groupId: err.groupId, orgId: err.orgId },
+          "Auto-refresh: card resolves to a group with no members — skipping until an admin adds one",
+        );
+        failed++;
+        continue;
+      }
       log.warn({ err: errorMessage(err), cardId: card.id }, "Auto-refresh: card query failed");
       failed++;
     }

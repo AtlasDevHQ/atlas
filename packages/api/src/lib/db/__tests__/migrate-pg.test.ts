@@ -1225,4 +1225,164 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows[0]?.indexdef).toMatch(/status = 'approved'/i);
     expect(rows[0]?.indexdef).toMatch(/connection_group_id/i);
   }, PG_TEST_TIMEOUT_MS);
+
+
+  // 0066 — Group-scoped dashboard cards (PRD #2336, issue #2342).
+  //
+  //  - `dashboard_cards.connection_group_id` is the new scope column; it's
+  //    additive and nullable for transitional dual-write — existing
+  //    `connection_id` rows keep working until callers migrate.
+  //  - `connection_groups.primary_connection_id` is a nullable, composite
+  //    FK pointing at `(connections.id, connections.org_id)` so a primary
+  //    cannot point at a connection in another org. The FK action is
+  //    `ON DELETE SET NULL` — removing a connection from the org should
+  //    silently clear its "primary" flag, not block the delete.
+  //  - Backfill: any pre-0066 card with `connection_id` set gets the
+  //    corresponding `connection_group_id` resolved through 0062's 1:1
+  //    `g_<connId>` mapping.
+  it("dashboard_cards.connection_group_id: column exists and is nullable", async () => {
+    const { rows } = await pool.query<{ is_nullable: string; data_type: string }>(
+      `SELECT is_nullable, data_type
+       FROM information_schema.columns
+       WHERE table_name = 'dashboard_cards'
+         AND column_name = 'connection_group_id'
+         AND table_schema = current_schema()`,
+    );
+    expect(rows[0]?.data_type).toBe("text");
+    // Nullable during transition — legacy cards keep their `connection_id`
+    // until the deprecation slice (#2347) removes the column entirely.
+    expect(rows[0]?.is_nullable).toBe("YES");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("connection_groups.primary_connection_id: column exists and is nullable", async () => {
+    const { rows } = await pool.query<{ is_nullable: string; data_type: string }>(
+      `SELECT is_nullable, data_type
+       FROM information_schema.columns
+       WHERE table_name = 'connection_groups'
+         AND column_name = 'primary_connection_id'
+         AND table_schema = current_schema()`,
+    );
+    expect(rows[0]?.data_type).toBe("text");
+    // NULL = "fall back to first member ordered by (created_at, id)" —
+    // the resolver in lib/dashboards-group-resolve.ts handles both cases.
+    expect(rows[0]?.is_nullable).toBe("YES");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("connection_groups.primary_connection_id: composite FK rejects cross-org primaries with 23503", async () => {
+    // The primary must live in the same org as the group. A composite FK
+    // on `(primary_connection_id, org_id) → connections(id, org_id)` is
+    // the DB-layer guarantee against the otherwise-tempting "let admins
+    // pick any connection id" bug class — same logic 0062 uses for the
+    // FK on `connections.group_id`.
+    const orgA = `org-a-pri-${Date.now()}`;
+    const orgB = `org-b-pri-${Date.now()}`;
+    const groupBId = `g-pri-${Date.now()}`;
+    const connAId = `conn-cross-${Date.now()}`;
+    // Group lives in org B; connection lives in org A. The connection
+    // exists, but its (id, org_id) tuple is in a different org — the
+    // composite FK must reject the UPDATE.
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'cross-org')`,
+      [groupBId, orgB],
+    );
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status)
+       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published')`,
+      [connAId, orgA],
+    );
+    await expect(
+      pool.query(
+        `UPDATE connection_groups SET primary_connection_id = $1 WHERE id = $2 AND org_id = $3`,
+        [connAId, groupBId, orgB],
+      ),
+    ).rejects.toMatchObject({ code: "23503" });
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("connection_groups.primary_connection_id: SET NULL on connection delete", async () => {
+    // Removing a connection drops it from the group AND clears the
+    // primary pointer in the same transaction. Without SET NULL the
+    // RESTRICT default from the FK shape would block any delete that
+    // hit a primary-pinned connection — that's a worse default than
+    // "silently demote and require admin to repin".
+    const orgId = `org-setnull-${Date.now()}`;
+    const groupId = `g-setnull-${Date.now()}`;
+    const connId = `conn-primary-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'prod')`,
+      [groupId, orgId],
+    );
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status, group_id)
+       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3)`,
+      [connId, orgId, groupId],
+    );
+    await pool.query(
+      `UPDATE connection_groups SET primary_connection_id = $1 WHERE id = $2 AND org_id = $3`,
+      [connId, groupId, orgId],
+    );
+    // First clear the membership so 0062's ON DELETE RESTRICT FK on
+    // `connections.group_id` doesn't block the connection delete.
+    await pool.query(
+      `UPDATE connections SET group_id = NULL WHERE id = $1 AND org_id = $2`,
+      [connId, orgId],
+    );
+    await pool.query(
+      `DELETE FROM connections WHERE id = $1 AND org_id = $2`,
+      [connId, orgId],
+    );
+    const { rows } = await pool.query<{ primary_connection_id: string | null }>(
+      `SELECT primary_connection_id FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [groupId, orgId],
+    );
+    expect(rows[0]?.primary_connection_id).toBeNull();
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("dashboard_cards: backfill resolves connection_id → connection_group_id via 0062's 1:1 mapping", async () => {
+    // Pre-0066 cards reference a `connection_id` directly. The migration
+    // backfills `connection_group_id` to the group `g_<connId>` that 0062
+    // created. Same backfill shape as 0063 — keeps the dual-write contract
+    // in lockstep while the deprecation slice (#2347) is still pending.
+    const orgId = `org-card-backfill-${Date.now()}`;
+    const connId = `conn-card-${Date.now()}`;
+    const groupId = `g_${connId}`;
+    const dashboardOwner = `owner-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, $3)`,
+      [groupId, orgId, connId],
+    );
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status, group_id)
+       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3)`,
+      [connId, orgId, groupId],
+    );
+    const dashRow = await pool.query<{ id: string }>(
+      `INSERT INTO dashboards (org_id, owner_id, title) VALUES ($1, $2, 'card-backfill') RETURNING id`,
+      [orgId, dashboardOwner],
+    );
+    const dashboardId = dashRow.rows[0]?.id;
+    // Pre-0066 card shape: connection_id set, connection_group_id NULL.
+    await pool.query(
+      `INSERT INTO dashboard_cards (dashboard_id, title, sql, connection_id, connection_group_id)
+       VALUES ($1, 'card', 'SELECT 1', $2, NULL)`,
+      [dashboardId, connId],
+    );
+    // Re-run the backfill block (same SQL the migration emits).
+    await pool.query(
+      `UPDATE dashboard_cards dc
+         SET connection_group_id = c.group_id
+         FROM connections c, dashboards d
+         WHERE dc.dashboard_id = d.id
+           AND d.org_id = $1
+           AND dc.connection_id IS NOT NULL
+           AND dc.connection_group_id IS NULL
+           AND c.id = dc.connection_id
+           AND (c.org_id = d.org_id OR c.org_id = '__global__')`,
+      [orgId],
+    );
+    const { rows } = await pool.query<{ connection_group_id: string | null }>(
+      `SELECT connection_group_id FROM dashboard_cards WHERE dashboard_id = $1`,
+      [dashboardId],
+    );
+    expect(rows[0]?.connection_group_id).toBe(groupId);
+  }, PG_TEST_TIMEOUT_MS);
 });

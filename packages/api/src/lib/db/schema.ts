@@ -275,6 +275,18 @@ export const connectionGroups = pgTable(
     id: text("id").notNull(),
     orgId: text("org_id").notNull().default("__global__"),
     name: text("name").notNull(),
+    // Admin-pinned primary member. NULL = "use first member by
+    // (created_at, id)" — see lib/dashboards-group-resolve.ts. 0066
+    // introduces this for group-scoped dashboard cards (#2342).
+    //
+    // The DB enforces a composite FK `(primary_connection_id, org_id)
+    // → connections(id, org_id)` so the primary stays org-isolated.
+    // The FK is declared in the migration only — drizzle's declaration
+    // order forbids referencing `connections` from this earlier table
+    // (forward reference at module eval time). The smoke test in
+    // `migrate-pg.test.ts` pins the FK shape so drift here surfaces
+    // explicitly rather than as a silently dropped constraint.
+    primaryConnectionId: text("primary_connection_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -282,6 +294,7 @@ export const connectionGroups = pgTable(
     primaryKey({ columns: [t.id, t.orgId] }),
     index("idx_connection_groups_org").on(t.orgId),
     uniqueIndex("uq_connection_groups_org_name").on(t.orgId, t.name),
+    index("idx_connection_groups_primary").on(t.primaryConnectionId, t.orgId),
   ],
 );
 
@@ -1589,7 +1602,19 @@ export const dashboardCards = pgTable(
     cachedColumns: jsonb("cached_columns"),
     cachedRows: jsonb("cached_rows"),
     cachedAt: timestamp("cached_at", { withTimezone: true }),
+    /** @deprecated 1.4.4 — kept for read-side dual-write. Removed by #2347. */
     connectionId: text("connection_id"),
+    // 0066: group-scoped execution. The card's `connection_group_id`
+    // resolves to a physical connection at view time via
+    // `lib/dashboards-group-resolve.ts` (primary member, or first by
+    // `(created_at, id)` if the primary is unset). No FK at the DB
+    // layer — `dashboard_cards` doesn't carry its own `org_id`, so a
+    // composite FK to `connection_groups (id, org_id)` would either
+    // require denormalising org_id or relax to a single-column ref
+    // that leaks cross-org. Same trade-off 0063 made for
+    // `semantic_entities.connection_group_id`; org scope is enforced
+    // one layer up in the route handler.
+    connectionGroupId: text("connection_group_id"),
     // NULL = not yet placed; client auto-lays out by `position`.
     layout: jsonb("layout"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -1598,6 +1623,7 @@ export const dashboardCards = pgTable(
   (t) => [
     index("idx_dashboard_cards_dashboard").on(t.dashboardId),
     index("idx_dashboard_cards_position").on(t.dashboardId, t.position),
+    index("idx_dashboard_cards_group").on(t.connectionGroupId),
   ],
 );
 

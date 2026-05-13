@@ -632,7 +632,7 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
   }, PG_TEST_TIMEOUT_MS);
 
-  // 0064 — conversations.connection_group_id. Adds the *content scope*
+  // 0067 — conversations.connection_group_id. Adds the *content scope*
   // column the chat-routing slice (#2345) lives on while keeping the
   // existing `conversations.connection_id` as the *execution target*.
   // What this set of assertions guards against:
@@ -658,8 +658,8 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows[0]?.is_nullable).toBe("YES");
   }, PG_TEST_TIMEOUT_MS);
 
-  it("conversations: 0064 backfill resolves connection_id → connection_group_id via 0062's 1:1 mapping", async () => {
-    // Pre-0064 conversations have `connection_id` set but no
+  it("conversations: 0067 backfill resolves connection_id → connection_group_id via 0062's 1:1 mapping", async () => {
+    // Pre-0067 conversations have `connection_id` set but no
     // `connection_group_id`. The migration backfills by joining
     // `connections`, so every row with a known connection lands on
     // `g_<connId>` (the group_id 0062 created for the 1:1 backfill).
@@ -676,9 +676,9 @@ describeIfPg("migrate-pg (real Postgres)", () => {
        VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3)`,
       [connId, orgId, groupId],
     );
-    // Insert a conversation matching the pre-0064 shape: connection_id
+    // Insert a conversation matching the pre-0067 shape: connection_id
     // set, connection_group_id left NULL — same shape an upgrade row
-    // would have on the moment 0064 starts running.
+    // would have on the moment 0067 starts running.
     const convRow = await pool.query<{ id: string }>(
       `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, org_id)
        VALUES ($1, $2, 'web', $3, NULL, $4)

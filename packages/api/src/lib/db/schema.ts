@@ -87,7 +87,7 @@ export const conversations = pgTable(
     title: text("title"),
     surface: text("surface").default("web"),
     connectionId: text("connection_id"),
-    // 0064 — group-aware routing (#2345). `connection_id` is the
+    // 0067 — group-aware routing (#2345). `connection_id` is the
     // execution target (which replica SQL runs against);
     // `connection_group_id` is the content scope (which group's
     // entities, dashboards, etc. resolve). Two columns, two purposes —

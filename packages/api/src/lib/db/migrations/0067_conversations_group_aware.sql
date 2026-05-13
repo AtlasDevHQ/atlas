@@ -1,4 +1,4 @@
--- 0064 — Group-aware conversation routing (PRD #2336, issue #2345).
+-- 0067 — Group-aware conversation routing (PRD #2336, issue #2345).
 --
 -- Adds `conversations.connection_group_id` as the *content scope* for a
 -- chat (entity resolution, semantic-layer reads, dashboard scope). The
@@ -24,7 +24,7 @@
 
 -- ── 1. Column ─────────────────────────────────────────────────────────
 --
--- Nullable initially. Legacy conversations created before 0064 lacked
+-- Nullable initially. Legacy conversations created before 0067 lacked
 -- any concept of group scope; the backfill below resolves their value
 -- from the existing `connection_id`. Conversations that never had a
 -- `connection_id` (rare — pre-0034 self-hosted shapes) keep

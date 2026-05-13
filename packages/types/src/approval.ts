@@ -106,7 +106,22 @@ interface ApprovalRequestBase {
   /** The SQL query awaiting approval. */
   querySql: string;
   explanation: string | null;
-  connectionId: string;
+  /**
+   * Originating connection id (audit trail). Nullable post-#2344 — the
+   * approval lookup keys on {@link connectionGroupId}; this column
+   * survives so reviewers can see which group member submitted the
+   * request. Removed in a follow-up slice once SDK consumers settle.
+   */
+  connectionId: string | null;
+  /**
+   * Group scope for this approval (#2344). NULL for legacy pre-#2344
+   * rows and for callers that don't have a group context yet; new
+   * rows resolve via the connection's `group_id`. One approval covers
+   * every member of the group running the same query — keying on
+   * connection forced re-approval per replica even when an admin had
+   * already greenlit the query for the group.
+   */
+  connectionGroupId: string | null;
   tablesAccessed: string[];
   columnsAccessed: string[];
   /**

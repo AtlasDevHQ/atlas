@@ -987,7 +987,20 @@ export const approvalQueue = pgTable(
     requesterEmail: text("requester_email"),
     querySql: text("query_sql").notNull(),
     explanation: text("explanation"),
-    connectionId: text("connection_id").notNull().default("default"),
+    // #2344 — connection_id is now nullable. Pre-#2344 rows carried
+    // `NOT NULL DEFAULT 'default'` which silently rewrote unstamped
+    // inserts to the literal string 'default'. The new lookup keys on
+    // `connection_group_id`, so this column survives only as the audit
+    // trail for which member originated the request — and the legacy
+    // default is gone so the audit log no longer carries the drift.
+    connectionId: text("connection_id"),
+    // #2344 — group scope. Nullable during the transition; backfilled
+    // from `connections.group_id` via 0062's 1:1 map. Composite FK to
+    // (connection_groups.id, connection_groups.orgId) so a row cannot
+    // reference a group in a different org. ON DELETE RESTRICT mirrors
+    // `connections.group_id` and forces admins to expire / reject the
+    // queue before tearing down the group.
+    connectionGroupId: text("connection_group_id"),
     tablesAccessed: jsonb("tables_accessed").default(sql`'[]'`),
     columnsAccessed: jsonb("columns_accessed").default(sql`'[]'`),
     status: text("status").notNull().default("pending"),
@@ -1008,9 +1021,18 @@ export const approvalQueue = pgTable(
       "chk_approval_request_surface",
       sql`surface IS NULL OR surface IN ('chat', 'mcp', 'scheduler', 'slack', 'teams', 'webhook')`,
     ),
+    foreignKey({
+      columns: [t.connectionGroupId, t.orgId],
+      foreignColumns: [connectionGroups.id, connectionGroups.orgId],
+      name: "fk_approval_queue_group",
+    }).onDelete("restrict"),
     index("idx_approval_queue_org_status").on(t.orgId, t.status),
     index("idx_approval_queue_expires").on(t.expiresAt).where(sql`status = 'pending'`),
     index("idx_approval_queue_requester").on(t.requesterId),
+    // #2344 — partial index covers the hasApprovedRequest hot path.
+    index("idx_approval_queue_group")
+      .on(t.orgId, t.connectionGroupId, t.requesterId)
+      .where(sql`status = 'approved'`),
   ],
 );
 

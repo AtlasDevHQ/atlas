@@ -96,7 +96,9 @@ const ApprovalRequestBaseShape = {
   requesterEmail: z.string().nullable(),
   querySql: z.string(),
   explanation: z.string().nullable(),
-  connectionId: z.string(),
+  // #2344 — connectionId now nullable; lookup keys on connectionGroupId.
+  connectionId: z.string().nullable(),
+  connectionGroupId: z.string().nullable(),
   tablesAccessed: z.array(z.string()),
   columnsAccessed: z.array(z.string()),
   surface: RequestSurfaceEnum.nullable(),

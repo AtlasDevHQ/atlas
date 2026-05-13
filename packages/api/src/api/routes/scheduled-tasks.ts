@@ -275,7 +275,7 @@ authed.openapi(
         return c.json({ error: "invalid_request", message: `Invalid cron expression: ${cronCheck.error}` }, 400);
       }
 
-      const createResult = yield* Effect.promise(() => createScheduledTask({
+      const createOpts = {
         ownerId: user?.id ?? "anonymous",
         orgId,
         name: parsed.name,
@@ -283,10 +283,11 @@ authed.openapi(
         cronExpression: parsed.cronExpression,
         deliveryChannel: parsed.deliveryChannel,
         recipients: parsed.recipients,
-        connectionGroupId: parsed.connectionGroupId ?? null,
         connectionId: parsed.connectionId ?? null,
         approvalMode: parsed.approvalMode,
-      }));
+        ...("connectionGroupId" in parsed ? { connectionGroupId: parsed.connectionGroupId ?? null } : {}),
+      };
+      const createResult = yield* Effect.promise(() => createScheduledTask(createOpts));
 
       if (!createResult.ok) {
         const fail = crudFailResponse(createResult.reason, requestId);

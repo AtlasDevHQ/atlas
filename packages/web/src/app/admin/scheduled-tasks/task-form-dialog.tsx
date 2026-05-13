@@ -199,7 +199,7 @@ export function TaskFormDialog({
           const nextGroups = data.groups as ConnectionGroupInfo[];
           setGroups(nextGroups);
           setForm((prev) => {
-            if (prev.connectionGroupId || nextGroups.length === 0) return prev;
+            if (isEdit || prev.connectionGroupId || nextGroups.length === 0) return prev;
             return { ...prev, connectionGroupId: nextGroups[0]?.id ?? "" };
           });
         }
@@ -210,7 +210,7 @@ export function TaskFormDialog({
     }
     fetchGroups();
     return () => { cancelled = true; };
-  }, [open, apiUrl, credentials]);
+  }, [open, apiUrl, credentials, isEdit]);
 
   // ── Field updaters ──────────────────────────────────────────────────
 
@@ -317,6 +317,7 @@ export function TaskFormDialog({
       return;
     }
 
+    const selectedGroup = groups.find((g) => g.id === form.connectionGroupId);
     const body = {
       name: form.name.trim(),
       question: form.question.trim(),
@@ -324,7 +325,7 @@ export function TaskFormDialog({
       deliveryChannel: form.deliveryChannel,
       recipients,
       connectionGroupId: form.connectionGroupId || null,
-      connectionId: groups.find((g) => g.id === form.connectionGroupId)?.resolvedConnectionId ?? null,
+      connectionId: selectedGroup?.resolvedConnectionId ?? task?.connectionId ?? null,
       approvalMode: form.approvalMode,
       ...(isEdit ? { enabled: form.enabled } : {}),
     };

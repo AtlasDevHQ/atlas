@@ -50,13 +50,25 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_group
   ON scheduled_tasks (org_id, connection_group_id);
 
-UPDATE scheduled_tasks st
-   SET connection_group_id = c.group_id
-   FROM connections c
+WITH resolved_task_groups AS (
+  SELECT st.id AS task_id,
+         picked.group_id
+    FROM scheduled_tasks st
+    CROSS JOIN LATERAL (
+      SELECT c.group_id
+        FROM connections c
+       WHERE c.id = st.connection_id
+         AND (c.org_id = st.org_id OR c.org_id = '__global__')
+       ORDER BY CASE WHEN c.org_id = st.org_id THEN 0 ELSE 1 END
+       LIMIT 1
+    ) picked
    WHERE st.connection_id IS NOT NULL
      AND st.connection_group_id IS NULL
-     AND c.id = st.connection_id
-     AND (c.org_id = st.org_id OR c.org_id = '__global__');
+)
+UPDATE scheduled_tasks st
+   SET connection_group_id = resolved.group_id
+   FROM resolved_task_groups resolved
+  WHERE st.id = resolved.task_id;
 
 COMMENT ON COLUMN scheduled_tasks.connection_group_id IS
   'Group scope for this scheduled task (#2343). New rows should set this field; connection_id remains as a legacy execution/audit compatibility field until #2346.';

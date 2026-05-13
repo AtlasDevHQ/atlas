@@ -210,6 +210,43 @@ export const actionLog = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Connection groups — multi-environment semantic layer
+// ---------------------------------------------------------------------------
+//
+// Declared above `connections` so the composite FK on `connections.group_id`
+// can name `connectionGroups` directly; the chronological-by-introduction
+// ordering of this file is a soft convention, not a runtime requirement.
+
+export const connectionGroups = pgTable(
+  "connection_groups",
+  {
+    id: text("id").notNull(),
+    orgId: text("org_id").notNull().default("__global__"),
+    name: text("name").notNull(),
+    // Admin-pinned primary member. NULL = "use first member by
+    // (created_at, id)" — see lib/dashboards-group-resolve.ts. 0066
+    // introduces this for group-scoped dashboard cards (#2342).
+    //
+    // The DB enforces a composite FK `(primary_connection_id, org_id)
+    // → connections(id, org_id)` so the primary stays org-isolated.
+    // The FK is declared in the migration only — drizzle's declaration
+    // order forbids referencing `connections` from this earlier table
+    // (forward reference at module eval time). The smoke test in
+    // `migrate-pg.test.ts` pins the FK shape so drift here surfaces
+    // explicitly rather than as a silently dropped constraint.
+    primaryConnectionId: text("primary_connection_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.id, t.orgId] }),
+    index("idx_connection_groups_org").on(t.orgId),
+    uniqueIndex("uq_connection_groups_org_name").on(t.orgId, t.name),
+    index("idx_connection_groups_primary").on(t.primaryConnectionId, t.orgId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // Scheduled tasks
 // ---------------------------------------------------------------------------
 
@@ -247,6 +284,11 @@ export const scheduledTasks = pgTable(
     index("idx_scheduled_tasks_org").on(t.orgId),
     index("idx_scheduled_tasks_group").on(t.orgId, t.connectionGroupId),
     index("idx_scheduled_tasks_plugin_org").on(t.pluginId, t.orgId).where(sql`plugin_id IS NOT NULL`),
+    foreignKey({
+      columns: [t.connectionGroupId, t.orgId],
+      foreignColumns: [connectionGroups.id, connectionGroups.orgId],
+      name: "fk_scheduled_tasks_group",
+    }).onDelete("restrict"),
   ],
 );
 
@@ -270,43 +312,6 @@ export const scheduledTaskRuns = pgTable(
   (t) => [
     index("idx_scheduled_task_runs_task").on(t.taskId),
     index("idx_scheduled_task_runs_status").on(t.status),
-  ],
-);
-
-// ---------------------------------------------------------------------------
-// Connection groups — multi-environment semantic layer
-// ---------------------------------------------------------------------------
-//
-// Declared above `connections` so the composite FK on `connections.group_id`
-// can name `connectionGroups` directly; the chronological-by-introduction
-// ordering of this file is a soft convention, not a runtime requirement.
-
-export const connectionGroups = pgTable(
-  "connection_groups",
-  {
-    id: text("id").notNull(),
-    orgId: text("org_id").notNull().default("__global__"),
-    name: text("name").notNull(),
-    // Admin-pinned primary member. NULL = "use first member by
-    // (created_at, id)" — see lib/dashboards-group-resolve.ts. 0066
-    // introduces this for group-scoped dashboard cards (#2342).
-    //
-    // The DB enforces a composite FK `(primary_connection_id, org_id)
-    // → connections(id, org_id)` so the primary stays org-isolated.
-    // The FK is declared in the migration only — drizzle's declaration
-    // order forbids referencing `connections` from this earlier table
-    // (forward reference at module eval time). The smoke test in
-    // `migrate-pg.test.ts` pins the FK shape so drift here surfaces
-    // explicitly rather than as a silently dropped constraint.
-    primaryConnectionId: text("primary_connection_id"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    primaryKey({ columns: [t.id, t.orgId] }),
-    index("idx_connection_groups_org").on(t.orgId),
-    uniqueIndex("uq_connection_groups_org_name").on(t.orgId, t.name),
-    index("idx_connection_groups_primary").on(t.primaryConnectionId, t.orgId),
   ],
 );
 

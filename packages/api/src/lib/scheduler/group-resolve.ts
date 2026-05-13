@@ -6,7 +6,7 @@ const log = createLogger("scheduler-group-resolve");
 
 export interface SchedulerGroupMember {
   readonly id: string;
-  readonly createdAt: string;
+  readonly createdAt: Date | string;
 }
 
 export interface SchedulerGroupSnapshot {
@@ -14,6 +14,10 @@ export interface SchedulerGroupSnapshot {
   readonly orgId: string | null;
   readonly primaryConnectionId: string | null;
   readonly members: readonly SchedulerGroupMember[];
+}
+
+function timestampToSortable(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : String(value);
 }
 
 export class NoScheduledTaskGroupMembersError extends Error {
@@ -47,7 +51,9 @@ export function selectScheduledTaskGroupMember(snapshot: SchedulerGroupSnapshot)
   }
 
   const sorted = [...snapshot.members].sort((a, b) => {
-    if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? -1 : 1;
+    const aCreatedAt = timestampToSortable(a.createdAt);
+    const bCreatedAt = timestampToSortable(b.createdAt);
+    if (aCreatedAt !== bCreatedAt) return aCreatedAt < bCreatedAt ? -1 : 1;
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
   return sorted[0].id;
@@ -61,31 +67,52 @@ export async function loadScheduledTaskGroupSnapshot(
 
   try {
     const groupRows = await internalQuery<{ primary_connection_id: string | null }>(
-      `SELECT COALESCE(local.primary_connection_id, global.primary_connection_id) AS primary_connection_id
-         FROM connection_groups local
-         LEFT JOIN connection_groups global
-           ON global.id = local.id
-          AND global.org_id = '__global__'
-        WHERE local.id = $1 AND local.org_id = $2`,
+      `SELECT primary_connection_id
+         FROM connection_groups
+        WHERE id = $1 AND org_id = $2`,
       [groupId, orgId ?? "__global__"],
     );
     if (groupRows.length === 0) return null;
+    let primaryConnectionId = groupRows[0]?.primary_connection_id ?? null;
 
-    const memberRows = await internalQuery<{ id: string; created_at: string }>(
+    let memberRows = await internalQuery<{ id: string; created_at: Date | string }>(
       `SELECT id, created_at
          FROM connections
         WHERE group_id = $1
-          AND (org_id = $2 OR org_id = '__global__')
+          AND org_id = $2
           AND status != 'archived'
-        ORDER BY CASE WHEN org_id = $2 THEN 0 ELSE 1 END, created_at ASC, id ASC`,
+        ORDER BY created_at ASC, id ASC`,
       [groupId, orgId ?? "__global__"],
     );
+    if (memberRows.length === 0 && orgId !== null && orgId !== "__global__") {
+      const globalRows = await Promise.all([
+        primaryConnectionId === null
+          ? internalQuery<{ primary_connection_id: string | null }>(
+            `SELECT primary_connection_id
+               FROM connection_groups
+              WHERE id = $1 AND org_id = '__global__'`,
+            [groupId],
+          )
+          : Promise.resolve([]),
+        internalQuery<{ id: string; created_at: Date | string }>(
+          `SELECT id, created_at
+           FROM connections
+          WHERE group_id = $1
+            AND org_id = '__global__'
+            AND status != 'archived'
+          ORDER BY created_at ASC, id ASC`,
+          [groupId],
+        ),
+      ]);
+      primaryConnectionId = primaryConnectionId ?? globalRows[0][0]?.primary_connection_id ?? null;
+      memberRows = globalRows[1];
+    }
 
     return {
       groupId,
       orgId,
-      primaryConnectionId: groupRows[0]?.primary_connection_id ?? null,
-      members: memberRows.map((row) => ({ id: row.id, createdAt: String(row.created_at) })),
+      primaryConnectionId,
+      members: memberRows.map((row) => ({ id: row.id, createdAt: timestampToSortable(row.created_at) })),
     };
   } catch (err) {
     log.error({ err: errorMessage(err), groupId, orgId }, "Failed to load scheduled task group snapshot");

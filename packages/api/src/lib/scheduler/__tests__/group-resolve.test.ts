@@ -48,6 +48,20 @@ describe("selectScheduledTaskGroupMember", () => {
     expect(selectScheduledTaskGroupMember(snap)).toBe("alpha");
   });
 
+  it("sorts Date-created members chronologically", () => {
+    const snap: SchedulerGroupSnapshot = {
+      groupId: "g_prod",
+      orgId: "org-1",
+      primaryConnectionId: null,
+      members: [
+        { id: "may", createdAt: new Date("2026-05-01T00:00:00Z") },
+        { id: "apr", createdAt: new Date("2026-04-01T00:00:00Z") },
+      ],
+    };
+
+    expect(selectScheduledTaskGroupMember(snap)).toBe("apr");
+  });
+
   it("throws when the group has no members", () => {
     expect(() =>
       selectScheduledTaskGroupMember({

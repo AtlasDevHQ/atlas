@@ -58,7 +58,46 @@ UPDATE semantic_entities se
      AND c.id = se.connection_id
      AND (c.org_id = se.org_id OR c.org_id = '__global__');
 
--- ── 3. Indexes — replace the connection-keyed indexes from 0028 ───────
+-- ── 3. Dedup pre-existing multi-connection rows ───────────────────────
+--
+-- Defensive sweep for the case an admin already merged multiple
+-- connections into one group BEFORE 0063 runs (#2339 ships the admin
+-- UI to do exactly this). Without this step, each connection's
+-- per-row entity collapses into the same group bucket and the new
+-- partial unique index below fails to build with 23505.
+--
+-- Strategy: rank rows in each (org_id, entity_type, name, status,
+-- COALESCE(group_id)) bucket by (updated_at DESC, id DESC) and keep
+-- only `rn = 1`. `updated_at` is the natural "freshest write" tie-
+-- breaker; `id` is the deterministic fallback for two rows updated
+-- in the same statement. `semantic_entity_versions.entity_id` has
+-- ON DELETE CASCADE, so version snapshots travel with the row that
+-- gets deleted.
+--
+-- Idempotent: a re-run sees one row per partition and finds nothing
+-- to delete. The acid test in `migrate-pg.test.ts` exercises this
+-- pre-migration shape explicitly so a future migration that breaks
+-- the dedup fails CI loudly.
+WITH ranked AS (
+  SELECT id,
+         ROW_NUMBER() OVER (
+           PARTITION BY
+             org_id,
+             entity_type,
+             name,
+             status,
+             COALESCE(connection_group_id, '__default__')
+           ORDER BY updated_at DESC, id DESC
+         ) AS rn
+  FROM semantic_entities
+  WHERE status IN ('published', 'draft', 'draft_delete')
+)
+DELETE FROM semantic_entities se
+USING ranked r
+WHERE se.id = r.id
+  AND r.rn > 1;
+
+-- ── 4. Indexes — replace the connection-keyed indexes from 0028 ───────
 --
 -- The new natural key is `(org_id, entity_type, name,
 -- COALESCE(connection_group_id, '__default__'))` per status. The

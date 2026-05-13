@@ -97,8 +97,12 @@ export async function exportWorkspaceBundle(
   }
 
   // --- 2. Semantic entities ---
+  // Both `connection_id` and `connection_group_id` are exported during
+  // the dual-write window (#2340). Bundles produced pre-1.4.4 omit the
+  // group field; consumers fall back to `connectionId` (additive wire
+  // shape — see `ExportedSemanticEntity` in `@useatlas/types`).
   const entityResult = await pool.query(
-    `SELECT name, entity_type, yaml_content, connection_id
+    `SELECT name, entity_type, yaml_content, connection_id, connection_group_id
      FROM semantic_entities WHERE org_id = $1
      ORDER BY entity_type, name`,
     [orgId],
@@ -109,6 +113,7 @@ export async function exportWorkspaceBundle(
     entityType: e.entity_type as string,
     yamlContent: e.yaml_content as string,
     connectionId: (e.connection_id as string | null) ?? null,
+    connectionGroupId: (e.connection_group_id as string | null) ?? null,
   }));
 
   // --- 3. Learned patterns ---

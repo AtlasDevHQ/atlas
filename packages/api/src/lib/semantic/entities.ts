@@ -954,12 +954,17 @@ export async function applyTombstones(
   client: TransactionalClient,
   orgId: string,
 ): Promise<number> {
-  // Delete the published rows targeted by tombstones (using USING join)
+  // Delete the published rows targeted by tombstones (using USING join).
+  // `entity_type` is in the join key because the partial unique index
+  // from 0063 includes it — without that, a tombstoned `metric "orders"`
+  // would also drop the published `entity "orders"`, since both share
+  // (org_id, name, connection_group_id).
   const deletedPublished = await client.query(
     `DELETE FROM semantic_entities p
      USING semantic_entities d
      WHERE p.org_id = $1 AND p.status = 'published'
        AND d.org_id = p.org_id
+       AND d.entity_type = p.entity_type
        AND d.name = p.name
        AND ${matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "p", column: "connection_group_id" })}
        AND d.status = 'draft_delete'
@@ -987,12 +992,15 @@ export async function promoteDraftEntities(
   client: TransactionalClient,
   orgId: string,
 ): Promise<number> {
-  // Remove published rows that a draft is about to replace
+  // Remove published rows that a draft is about to replace. `entity_type`
+  // is in the join key because the partial unique index from 0063
+  // includes it — same fix as applyTombstones above.
   await client.query(
     `DELETE FROM semantic_entities p
      USING semantic_entities d
      WHERE p.org_id = $1 AND p.status = 'published'
        AND d.org_id = p.org_id
+       AND d.entity_type = p.entity_type
        AND d.name = p.name
        AND ${matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "p", column: "connection_group_id" })}
        AND d.status = 'draft'`,

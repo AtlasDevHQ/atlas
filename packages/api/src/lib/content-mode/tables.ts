@@ -42,10 +42,16 @@ export const CONTENT_MODE_TABLES = [
         // group is counted once per logical entity, not N per replica.
         // The PRD's "pending changes" banner is supposed to read as
         // "12 draft changes" — not "12 × 3 regions = 36".
+        //
+        // `entity_type` in the join key matches the partial unique index
+        // from migration 0063. Without it, a draft *metric* named
+        // "accounts" cross-matches a published *entity* of the same name,
+        // double-counting some rows and silently miscounting others.
         sql: (p) =>
           `SELECT 'entityEdits' AS key, COUNT(*)::int AS n FROM semantic_entities d
            INNER JOIN semantic_entities pub
              ON d.org_id = pub.org_id
+            AND d.entity_type = pub.entity_type
             AND d.name = pub.name
             AND ${matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "pub", column: "connection_group_id" })}
            WHERE d.org_id = ${p} AND d.status = 'draft' AND pub.status = 'published'`,

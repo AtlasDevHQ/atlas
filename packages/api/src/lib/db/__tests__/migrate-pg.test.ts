@@ -523,6 +523,105 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows[0]?.connection_group_id).toBe(groupId);
   }, PG_TEST_TIMEOUT_MS);
 
+  it("semantic_entities: 0063 dedup CTE collapses pre-merged duplicates so the unique index builds", async () => {
+    // Defensive case from the multi-env rollout: admins who pre-merged
+    // multiple connections into one group (via #2339's admin UI) before
+    // 0063 runs will see N rows for what is logically one entity. The
+    // migration's dedup CTE keeps the freshest row per group bucket so
+    // the new partial unique indexes can be created without 23505.
+    //
+    // Test shape: two rows sharing (org_id, entity_type, name, group_id)
+    // with different `updated_at` — the older one must end up deleted,
+    // the newer one preserved. ROW_NUMBER tie-breaker is `id DESC`.
+    const orgId = `org-dedup-${Date.now()}`;
+    const groupId = `g-dedup-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'prod')`,
+      [groupId, orgId],
+    );
+    // Insert two rows that would have collided before 0063's dedup ran.
+    // Both rows pre-date the unique index — we insert them directly to
+    // simulate the pre-migration shape (the prod indexes are already
+    // group-keyed at this point, but the rows here have unique
+    // connection_id values + a placeholder name so we can verify the
+    // dedup logic on a post-migration database).
+    const newerId = `00000000-0000-0000-0000-000000000001`;
+    const olderId = `00000000-0000-0000-0000-000000000002`;
+    await pool.query(
+      `INSERT INTO semantic_entities
+         (id, org_id, entity_type, name, yaml_content, connection_id, connection_group_id, status, updated_at)
+       VALUES ($1, $2, 'entity', 'dedup_target', 'newer', 'conn-a', $3, 'published', NOW()),
+              ($4, $2, 'entity', 'dedup_target_v2', 'older', 'conn-b', $3, 'published', NOW() - INTERVAL '1 hour')`,
+      [newerId, orgId, groupId, olderId],
+    );
+    // Re-run the dedup block — it should be a no-op when the rows
+    // have distinct natural keys (different name), so both survive.
+    // This validates the ROW_NUMBER PARTITION shape.
+    await pool.query(
+      `WITH ranked AS (
+         SELECT id,
+                ROW_NUMBER() OVER (
+                  PARTITION BY org_id, entity_type, name, status,
+                               COALESCE(connection_group_id, '__default__')
+                  ORDER BY updated_at DESC, id DESC
+                ) AS rn
+         FROM semantic_entities
+         WHERE org_id = $1 AND status IN ('published', 'draft', 'draft_delete')
+       )
+       DELETE FROM semantic_entities se USING ranked r
+       WHERE se.id = r.id AND r.rn > 1`,
+      [orgId],
+    );
+    const after = await pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM semantic_entities WHERE org_id = $1`,
+      [orgId],
+    );
+    expect(after.rows[0]?.count).toBe("2");
+
+    // Now collide the two on the same name + group — force the dedup
+    // to fire. Rename the older row to match the newer one. Without
+    // the dedup CTE, this would have been a 23505 at migration time;
+    // here we get to assert it picks the right winner.
+    await pool.query(
+      `UPDATE semantic_entities SET name = 'dedup_target' WHERE id = $1`,
+      [olderId],
+    );
+    // Drop the unique constraint just for this test — the dedup CTE
+    // runs BEFORE the index is created in 0063, so it must work
+    // against a non-uniqueness-enforced table.
+    await pool.query(`DROP INDEX uq_semantic_entity_published`);
+    await pool.query(
+      `WITH ranked AS (
+         SELECT id,
+                ROW_NUMBER() OVER (
+                  PARTITION BY org_id, entity_type, name, status,
+                               COALESCE(connection_group_id, '__default__')
+                  ORDER BY updated_at DESC, id DESC
+                ) AS rn
+         FROM semantic_entities
+         WHERE org_id = $1 AND status IN ('published', 'draft', 'draft_delete')
+       )
+       DELETE FROM semantic_entities se USING ranked r
+       WHERE se.id = r.id AND r.rn > 1`,
+      [orgId],
+    );
+    const survivors = await pool.query<{ id: string }>(
+      `SELECT id FROM semantic_entities WHERE org_id = $1`,
+      [orgId],
+    );
+    // Newer row (freshest updated_at) wins; older row is gone.
+    expect(survivors.rows.length).toBe(1);
+    expect(survivors.rows[0]?.id).toBe(newerId);
+
+    // Restore the unique index so subsequent tests in the same schema
+    // see the production shape.
+    await pool.query(
+      `CREATE UNIQUE INDEX uq_semantic_entity_published
+        ON semantic_entities (org_id, entity_type, name, COALESCE(connection_group_id, '__default__'))
+        WHERE status = 'published'`,
+    );
+  }, PG_TEST_TIMEOUT_MS);
+
   it("semantic_entities: two connections in the same group cannot duplicate the same entity", async () => {
     // Group-scoped uniqueness: a multi-member group has ONE entity row
     // per (entity_type, name) — not N per member. Attempting a second

@@ -134,6 +134,7 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
        USING semantic_entities d
        WHERE p.org_id = $1 AND p.status = 'published'
          AND d.org_id = p.org_id
+         AND d.entity_type = p.entity_type
          AND d.name = p.name
          AND ${matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "p", column: "connection_group_id" })}
          AND d.status = 'draft_delete'
@@ -155,6 +156,7 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
        USING semantic_entities d
        WHERE p.org_id = $1 AND p.status = 'published'
          AND d.org_id = p.org_id
+         AND d.entity_type = p.entity_type
          AND d.name = p.name
          AND ${matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "p", column: "connection_group_id" })}
          AND d.status = 'draft'`,

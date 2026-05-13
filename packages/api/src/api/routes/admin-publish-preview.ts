@@ -169,6 +169,14 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
       // `CONTENT_MODE_TABLES` so the two lists never overlap. Scope match
       // keys on `connection_group_id` (#2340) — multi-environment drafts
       // collapse to one preview row per logical entity, not N per replica.
+      //
+      // `pub.entity_type = d.entity_type` is load-bearing: the partial
+      // unique indexes from 0063 key on `(org_id, entity_type, name,
+      // connection_group_id)`, so without this clause a draft *metric*
+      // named "accounts" would falsely "match" a published *entity* of
+      // the same name (and vice versa) — counted as a new-entity create
+      // when it should be an edit, or hidden from `entities` when it's
+      // genuinely new. Same fix on both queries below.
       internalQuery<DbRow>(
         `SELECT d.id::text AS id, d.name AS label, d.updated_at,
                 d.connection_id, d.connection_group_id
@@ -178,6 +186,7 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
             AND NOT EXISTS (
               SELECT 1 FROM semantic_entities pub
                WHERE pub.org_id = d.org_id
+                 AND pub.entity_type = d.entity_type
                  AND pub.name = d.name
                  AND ${matchScopeAcrossAliases({ leftAlias: "pub", rightAlias: "d", column: "connection_group_id" })}
                  AND pub.status = 'published'
@@ -191,6 +200,7 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
            FROM semantic_entities d
            INNER JOIN semantic_entities pub
              ON d.org_id = pub.org_id
+            AND d.entity_type = pub.entity_type
             AND d.name = pub.name
             AND ${matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "pub", column: "connection_group_id" })}
           WHERE d.org_id = $1

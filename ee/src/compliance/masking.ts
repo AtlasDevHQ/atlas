@@ -23,6 +23,10 @@ import {
   hasInternalDB,
   internalQuery,
 } from "@atlas/api/lib/db/internal";
+import {
+  coalescedScopeColumn,
+  withGroupScope,
+} from "@atlas/api/lib/db/with-group-scope";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
   PIICategory,
@@ -50,6 +54,14 @@ export class ComplianceError extends Data.TaggedError("ComplianceError")<{
 
 const TABLE_NAME = "pii_column_classifications";
 
+// Bootstrap CREATE TABLE for legacy self-hosted installs that bypassed
+// the migration runner (older deploys ran the masking module's ensure-
+// table lazily). The shape mirrors the post-0064 schema: nullable
+// `connection_id` (no NOT NULL DEFAULT 'default') and the
+// `connection_group_id` column. The UNIQUE constraint here is the
+// column-level form (no COALESCE) — bootstrap-only; production deploys
+// reach this table via the migration runner first and get the
+// COALESCE-sentinel form from 0064, so this code path is a no-op there.
 const ensureTable = (): Effect.Effect<void, Error> =>
   Effect.gen(function* () {
     if (!hasInternalDB()) return;
@@ -60,7 +72,8 @@ const ensureTable = (): Effect.Effect<void, Error> =>
           org_id TEXT NOT NULL,
           table_name TEXT NOT NULL,
           column_name TEXT NOT NULL,
-          connection_id TEXT NOT NULL DEFAULT 'default',
+          connection_id TEXT,
+          connection_group_id TEXT,
           category TEXT NOT NULL,
           confidence TEXT NOT NULL DEFAULT 'medium',
           masking_strategy TEXT NOT NULL DEFAULT 'partial',
@@ -68,7 +81,7 @@ const ensureTable = (): Effect.Effect<void, Error> =>
           dismissed BOOLEAN NOT NULL DEFAULT false,
           created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
           updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-          UNIQUE(org_id, table_name, column_name, connection_id)
+          UNIQUE(org_id, table_name, column_name, connection_group_id)
         )
       `),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
@@ -102,7 +115,11 @@ interface PIIClassificationRow {
   org_id: string;
   table_name: string;
   column_name: string;
-  connection_id: string;
+  /** Legacy connection scope. Nullable post-0064. Dual-written by the
+   *  save path during the transitional slice; final removal in #2346. */
+  connection_id: string | null;
+  /** Group scope (#2341). One row per (org, table, column, group). */
+  connection_group_id: string | null;
   category: string;
   confidence: string;
   masking_strategy: string;
@@ -120,6 +137,7 @@ function rowToClassification(row: PIIClassificationRow): PIIColumnClassification
     tableName: row.table_name,
     columnName: row.column_name,
     connectionId: row.connection_id,
+    connectionGroupId: row.connection_group_id,
     category: row.category as PIICategory,
     confidence: row.confidence as PIIConfidence,
     maskingStrategy: row.masking_strategy as MaskingStrategy,
@@ -130,11 +148,70 @@ function rowToClassification(row: PIIClassificationRow): PIIColumnClassification
   };
 }
 
+/**
+ * Resolve the `connection_group_id` for a given connection via 0062's
+ * 1:1 backfill. Returns `null` for unknown connections and for the
+ * legacy NULL-scope (caller passed `undefined` / `null`).
+ *
+ * Mirrors `resolveGroupIdForConnection` in `semantic/entities.ts` so
+ * write paths can dual-set `connection_id` + `connection_group_id`
+ * atomically. The lookup tolerates connections living at
+ * `org_id = '__global__'` (demo / built-in connections moved by 0060)
+ * so demo writes resolve to the demo group.
+ */
+export const resolveConnectionGroupForFilter = (
+  orgId: string,
+  connectionId: string | null | undefined,
+): Effect.Effect<string | null> => resolveGroupIdForConnection(orgId, connectionId);
+
+const resolveGroupIdForConnection = (
+  orgId: string,
+  connectionId: string | null | undefined,
+): Effect.Effect<string | null> =>
+  Effect.gen(function* () {
+    if (!connectionId) return null;
+    if (!hasInternalDB()) return null;
+    const rows = yield* Effect.tryPromise({
+      try: () => internalQuery<{ group_id: string | null }>(
+        `SELECT group_id FROM connections
+         WHERE id = $1 AND (org_id = $2 OR org_id = '__global__')
+         ORDER BY CASE WHEN org_id = $2 THEN 0 ELSE 1 END
+         LIMIT 1`,
+        [connectionId, orgId],
+      ),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(
+      Effect.catchAll((err) => {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err), connectionId, orgId },
+          "Failed to resolve connection_group_id — falling back to NULL scope",
+        );
+        return Effect.succeed([] as ReadonlyArray<{ group_id: string | null }>);
+      }),
+    );
+    return rows[0]?.group_id ?? null;
+  });
+
 // ── CRUD operations (enterprise-gated) ──────────────────────────
 
+/**
+ * List PII classifications for an org, optionally filtered by group scope.
+ *
+ * `connectionGroupId` accepts both a literal group id (`g_prod`) and the
+ * legacy `undefined` for "no filter". Passing `null` would normalise to
+ * the COALESCE sentinel via `withGroupScope` but isn't exposed through
+ * the route layer — admins always filter by an explicit group id or by
+ * org-wide (no filter).
+ *
+ * Pre-#2341 callers passed `connectionId` directly. The route layer
+ * still accepts the legacy `connectionId` query param, resolves it to a
+ * group id via `resolveGroupIdForConnection`, and forwards the group
+ * here — the SQL only ever looks at the group column. See PRD #2336
+ * §"Migration sequencing".
+ */
 export const listPIIClassifications = (
   orgId: string | undefined,
-  connectionId?: string,
+  connectionGroupId?: string,
 ): Effect.Effect<PIIColumnClassification[], EnterpriseError> =>
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("pii-detection");
@@ -147,9 +224,10 @@ export const listPIIClassifications = (
       params.push(orgId);
       sql += ` AND org_id = $${params.length}`;
     }
-    if (connectionId) {
-      params.push(connectionId);
-      sql += ` AND connection_id = $${params.length}`;
+    if (connectionGroupId) {
+      const scope = withGroupScope(connectionGroupId);
+      params.push(scope.param);
+      sql += ` AND ${scope.match(params.length, { column: "connection_group_id" })}`;
     }
     sql += " ORDER BY table_name, column_name";
 
@@ -157,11 +235,24 @@ export const listPIIClassifications = (
     return rows.map(rowToClassification);
   });
 
+/**
+ * Persist a PII classification at group scope.
+ *
+ * Accepts `connectionId` for back-compat with the PII detection write
+ * path; the connection's `group_id` is resolved inline via 0062's 1:1
+ * mapping and stored on `connection_group_id`. ON CONFLICT targets the
+ * group-keyed unique index — multiple connections in the same group
+ * share one classification row (PRD #2336 acceptance criterion).
+ *
+ * Reassigning a connection between groups does NOT carry classifications
+ * — the row stays on the originating group. Staging admins decide their
+ * own posture from scratch (the migration-pg smoke pins this).
+ */
 export const savePIIClassification = (
   orgId: string,
   tableName: string,
   columnName: string,
-  connectionId: string,
+  connectionId: string | null | undefined,
   category: PIICategory,
   confidence: PIIConfidence,
   maskingStrategy: MaskingStrategy = "partial",
@@ -175,13 +266,19 @@ export const savePIIClassification = (
     validateCategory(category);
     validateStrategy(maskingStrategy);
 
+    // Dual-write: legacy `connection_id` stays populated for transitional
+    // SDK compatibility (#2336 §"Migration sequencing"). The natural key
+    // is `connection_group_id` — ON CONFLICT targets the group-keyed
+    // partial index from 0064.
+    const groupId = yield* resolveGroupIdForConnection(orgId, connectionId);
+
     const rows = yield* Effect.promise(() => internalQuery<PIIClassificationRow>(
-      `INSERT INTO ${TABLE_NAME} (org_id, table_name, column_name, connection_id, category, confidence, masking_strategy)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       ON CONFLICT (org_id, table_name, column_name, connection_id)
-       DO UPDATE SET category = $5, confidence = $6, masking_strategy = $7, updated_at = now(), dismissed = false
+      `INSERT INTO ${TABLE_NAME} (org_id, table_name, column_name, connection_id, connection_group_id, category, confidence, masking_strategy)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (org_id, table_name, column_name, ${coalescedScopeColumn({ column: "connection_group_id" })})
+       DO UPDATE SET category = $6, confidence = $7, masking_strategy = $8, updated_at = now(), dismissed = false
        RETURNING *`,
-      [orgId, tableName, columnName, connectionId, category, confidence, maskingStrategy],
+      [orgId, tableName, columnName, connectionId ?? null, groupId, category, confidence, maskingStrategy],
     ));
     return rowToClassification(rows[0]);
   });
@@ -295,6 +392,18 @@ export interface MaskingContext {
   orgId: string;
   /** User role — determines masking level. */
   userRole: MaskingRole | string | undefined;
+  /**
+   * Connection id the query ran against (#2341). When provided, the
+   * masking lookup is filtered to classifications whose
+   * `connection_group_id` matches the connection's group (resolved
+   * via 0062's 1:1 mapping) or to NULL-scoped global classifications.
+   *
+   * When omitted, every classification for the org applies — this is
+   * the back-compat shape for single-group orgs and for callers that
+   * haven't been wired through yet. Multi-group orgs MUST pass this
+   * so prod's masking rules don't leak onto staging queries.
+   */
+  connectionId?: string | null;
 }
 
 /**
@@ -332,9 +441,24 @@ export const applyMasking = (
 
     if (classifications.length === 0) return ctx.rows;
 
+    // Resolve the active query's connection_group_id once. Multi-group
+    // orgs need this to scope the lookup; single-group orgs (and callers
+    // that omit `connectionId`) get the back-compat "all classifications
+    // apply" shape via `currentGroupId = null`.
+    const currentGroupId = ctx.connectionId
+      ? yield* resolveGroupIdForConnection(ctx.orgId, ctx.connectionId)
+      : null;
+
     // Build a lookup: columnName → masking strategy (filtered to tables accessed by this query)
     const maskLookup = new Map<string, MaskingStrategy>();
     for (const cls of classifications) {
+      // Group filter (#2341): when the caller passed a connectionId, drop
+      // classifications whose group doesn't match. NULL-scoped rows
+      // (legacy / global / un-scoped) always apply. When the caller
+      // omitted connectionId, every classification applies (back-compat).
+      if (ctx.connectionId && cls.connection_group_id != null && cls.connection_group_id !== currentGroupId) {
+        continue;
+      }
       const tableNameLower = cls.table_name.toLowerCase();
       const colNameLower = cls.column_name.toLowerCase();
       // Match against tables accessed by this query

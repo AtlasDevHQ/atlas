@@ -315,6 +315,7 @@ function ClassificationsTab() {
               <TableRow>
                 <TableHead>Table</TableHead>
                 <TableHead>Column</TableHead>
+                <TableHead>Environment</TableHead>
                 <TableHead>Category</TableHead>
                 <TableHead>Confidence</TableHead>
                 <TableHead>Masking</TableHead>
@@ -327,6 +328,15 @@ function ClassificationsTab() {
                 <TableRow key={cls.id}>
                   <TableCell className="font-mono text-sm">{cls.tableName}</TableCell>
                   <TableCell className="font-mono text-sm">{cls.columnName}</TableCell>
+                  <TableCell>
+                    {cls.connectionGroupId ? (
+                      <Badge variant="secondary" className="font-mono text-xs">
+                        {cls.connectionGroupId.replace(/^g_/, "")}
+                      </Badge>
+                    ) : (
+                      <span className="text-muted-foreground text-sm">—</span>
+                    )}
+                  </TableCell>
                   <TableCell>{CATEGORY_LABELS[cls.category] ?? cls.category}</TableCell>
                   <TableCell>{confidenceBadge(cls.confidence)}</TableCell>
                   <TableCell>

@@ -229,6 +229,22 @@ describe("PIIColumnClassificationSchema", () => {
       expect(() => PIIColumnClassificationSchema.parse({ ...validPII, maskingStrategy })).not.toThrow();
     }
   });
+
+  test("connectionId accepts null (post-0064 nullable)", () => {
+    // Migration 0064 dropped the legacy `NOT NULL DEFAULT 'default'`.
+    // Bundles emitted post-#2341 may carry `connectionId: null` for
+    // rows whose source connection was deleted.
+    const nullScoped = { ...validPII, connectionId: null };
+    expect(PIIColumnClassificationSchema.parse(nullScoped)).toEqual(nullScoped);
+  });
+
+  test("connectionGroupId is additive — optional with null allowed", () => {
+    // #2341 added the field. Legacy bundles omit it; new bundles populate
+    // either a group id or null (for un-scoped / cross-env rows).
+    expect(() => PIIColumnClassificationSchema.parse(validPII)).not.toThrow();
+    expect(() => PIIColumnClassificationSchema.parse({ ...validPII, connectionGroupId: "g_prod" })).not.toThrow();
+    expect(() => PIIColumnClassificationSchema.parse({ ...validPII, connectionGroupId: null })).not.toThrow();
+  });
 });
 
 describe("SemanticDiffResponseSchema", () => {

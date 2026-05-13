@@ -664,4 +664,274 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       ),
     ).rejects.toMatchObject({ code: "23505" });
   }, PG_TEST_TIMEOUT_MS);
+
+  // 0064 — pii_column_classifications.connection_group_id. Mirrors the 0063
+  // shape on the PII table: the natural key flips from `connection_id` to
+  // `connection_group_id`, the legacy NOT NULL DEFAULT 'default' on
+  // `connection_id` drops, and the unique index is recreated keyed on the
+  // group. The PRD assumption (replicas inside a group share schema, so a
+  // column's PII classification is the same across all group members) is
+  // pinned by the group-reassignment test below: moving a connection
+  // between groups MUST NOT carry classifications with it — the row stays
+  // attached to the originating group, and the new group inherits its own
+  // independent classification set.
+  it("pii_column_classifications.connection_group_id: column exists and is nullable", async () => {
+    const { rows } = await pool.query<{ is_nullable: string; data_type: string }>(
+      `SELECT is_nullable, data_type
+       FROM information_schema.columns
+       WHERE table_name = 'pii_column_classifications'
+         AND column_name = 'connection_group_id'
+         AND table_schema = current_schema()`,
+    );
+    expect(rows[0]?.data_type).toBe("text");
+    // Nullable: legacy rows may carry connection_id values that no longer
+    // resolve to a live connection (orphaned classifications from deleted
+    // connections). Those rows backfill to NULL and live in the COALESCE
+    // sentinel bucket alongside other un-scoped rows. Flipping to NOT
+    // NULL would orphan them at boot.
+    expect(rows[0]?.is_nullable).toBe("YES");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("pii_column_classifications.connection_id: legacy NOT NULL DEFAULT 'default' dropped", async () => {
+    // 0064 drops the `NOT NULL DEFAULT 'default'` so callers don't get
+    // silently bucketed into a `'default'` sentinel they never asked for.
+    // The group is the natural key now; connection_id is dual-write for
+    // the transitional SDK and goes away in #2346.
+    const { rows } = await pool.query<{ is_nullable: string; column_default: string | null }>(
+      `SELECT is_nullable, column_default
+       FROM information_schema.columns
+       WHERE table_name = 'pii_column_classifications'
+         AND column_name = 'connection_id'
+         AND table_schema = current_schema()`,
+    );
+    expect(rows[0]?.is_nullable).toBe("YES");
+    expect(rows[0]?.column_default).toBeNull();
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("pii_column_classifications: unique index is keyed on connection_group_id, not connection_id", async () => {
+    // The old `pii_column_classifications_unique` index from 0000 is
+    // dropped and recreated by 0064 to key on `connection_group_id`.
+    // `pg_indexes.indexdef` reflects the post-CREATE expression so we
+    // can assert the new keying without parsing pg_index.indkey.
+    const { rows } = await pool.query<{ indexname: string; indexdef: string }>(
+      `SELECT indexname, indexdef
+       FROM pg_indexes
+       WHERE schemaname = current_schema()
+         AND tablename = 'pii_column_classifications'
+         AND indexname = 'pii_column_classifications_unique'`,
+    );
+    expect(rows.length).toBe(1);
+    // Group-keyed: COALESCE(connection_group_id, '__default__'). The
+    // `::text` optional suffix matches PG's expression-index reconstruction.
+    expect(rows[0]?.indexdef).toMatch(/COALESCE\(connection_group_id, '__default__'(?:::text)?\)/i);
+    // The legacy `connection_id` column MUST NOT appear in the new
+    // index — drift between drop+create would leave the old index live
+    // and the new one silently absent.
+    expect(rows[0]?.indexdef).not.toMatch(/connection_id/i);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("pii_column_classifications: backfill resolves connection_id → connection_group_id via 0062's 1:1 mapping", async () => {
+    // Pre-migration classifications have `connection_id` set but no
+    // `connection_group_id`. 0064 backfills by joining `connections`, so
+    // every row with a known connection lands on `g_<connId>` (the group
+    // 0062 created for the 1:1 backfill).
+    const orgId = `org-backfill-pii-${Date.now()}`;
+    const connId = `conn-back-pii-${Date.now()}`;
+    const groupId = `g_${connId}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, $3)`,
+      [groupId, orgId, connId],
+    );
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status, group_id)
+       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3)`,
+      [connId, orgId, groupId],
+    );
+    // Pre-0064 shape: connection_id set, connection_group_id NULL.
+    await pool.query(
+      `INSERT INTO pii_column_classifications
+         (org_id, table_name, column_name, connection_id, connection_group_id, category, confidence, masking_strategy)
+       VALUES ($1, 'users', 'email', $2, NULL, 'email', 'high', 'partial')`,
+      [orgId, connId],
+    );
+    // Re-run the backfill block (same SQL the migration emits). Idempotent
+    // — the WHERE clause only touches rows still missing connection_group_id.
+    await pool.query(
+      `UPDATE pii_column_classifications pc
+         SET connection_group_id = c.group_id
+         FROM connections c
+         WHERE pc.org_id = $1
+           AND pc.connection_id IS NOT NULL
+           AND pc.connection_group_id IS NULL
+           AND c.id = pc.connection_id
+           AND (c.org_id = pc.org_id OR c.org_id = '__global__')`,
+      [orgId],
+    );
+    const { rows } = await pool.query<{ connection_group_id: string | null }>(
+      `SELECT connection_group_id FROM pii_column_classifications
+       WHERE org_id = $1 AND table_name = 'users' AND column_name = 'email'`,
+      [orgId],
+    );
+    expect(rows[0]?.connection_group_id).toBe(groupId);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("pii_column_classifications: two connections in the same group cannot duplicate the same classification", async () => {
+    // Group-scoped uniqueness — the PRD invariant for #2341. A multi-
+    // member group ("us-int + eu + apac = one logical 'prod'") sees one
+    // classification per (table, column). Attempting a second row keyed
+    // on the same group with a different connection_id must fail with
+    // 23505. This is the assumption the prompt asks us to lock in: same
+    // column = same PII across group members.
+    const orgId = `org-pii-group-dup-${Date.now()}`;
+    const groupId = `g-pii-group-dup-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'prod')`,
+      [groupId, orgId],
+    );
+    await pool.query(
+      `INSERT INTO pii_column_classifications
+         (org_id, table_name, column_name, connection_id, connection_group_id, category, confidence, masking_strategy)
+       VALUES ($1, 'users', 'email', 'us-int', $2, 'email', 'high', 'partial')`,
+      [orgId, groupId],
+    );
+    await expect(
+      pool.query(
+        `INSERT INTO pii_column_classifications
+           (org_id, table_name, column_name, connection_id, connection_group_id, category, confidence, masking_strategy)
+         VALUES ($1, 'users', 'email', 'eu', $2, 'email', 'high', 'partial')`,
+        [orgId, groupId],
+      ),
+    ).rejects.toMatchObject({ code: "23505" });
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("pii_column_classifications: group reassignment keeps classifications with the originating group", async () => {
+    // PRD #2336 acceptance criterion (from issue #2341): moving a
+    // connection between groups must NOT carry classifications with it
+    // — the row stays attached to the originating group, and the new
+    // group inherits its own independent classification set.
+    //
+    // Why: PII classifications live on the GROUP, not the connection.
+    // Reassigning `us-int` from group `prod` to group `staging` is a
+    // governance event ("we're treating this replica as staging now");
+    // the staging admins decide their own PII posture from scratch.
+    // Auto-migrating the prod classifications would silently relax
+    // staging's posture to match prod's, which is exactly the failure
+    // mode the PRD calls out.
+    const orgId = `org-reassign-${Date.now()}`;
+    const prodGroup = `g-prod-${Date.now()}`;
+    const stagingGroup = `g-staging-${Date.now()}`;
+    const connId = `conn-reassign-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'prod'), ($3, $2, 'staging')`,
+      [prodGroup, orgId, stagingGroup],
+    );
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status, group_id)
+       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3)`,
+      [connId, orgId, prodGroup],
+    );
+    // Classify `users.email` on the prod group.
+    await pool.query(
+      `INSERT INTO pii_column_classifications
+         (org_id, table_name, column_name, connection_id, connection_group_id, category, confidence, masking_strategy)
+       VALUES ($1, 'users', 'email', $2, $3, 'email', 'high', 'partial')`,
+      [orgId, connId, prodGroup],
+    );
+    // Reassign the connection to staging. The classification's
+    // connection_group_id must NOT follow — it stays on prod.
+    await pool.query(
+      `UPDATE connections SET group_id = $1 WHERE id = $2 AND org_id = $3`,
+      [stagingGroup, connId, orgId],
+    );
+    const prodRows = await pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM pii_column_classifications
+       WHERE org_id = $1 AND connection_group_id = $2`,
+      [orgId, prodGroup],
+    );
+    expect(prodRows.rows[0]?.count).toBe("1");
+    const stagingRows = await pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM pii_column_classifications
+       WHERE org_id = $1 AND connection_group_id = $2`,
+      [orgId, stagingGroup],
+    );
+    expect(stagingRows.rows[0]?.count).toBe("0");
+
+    // Staging admins can now classify the same column independently —
+    // no 23505, because the row is keyed on the staging group.
+    await pool.query(
+      `INSERT INTO pii_column_classifications
+         (org_id, table_name, column_name, connection_id, connection_group_id, category, confidence, masking_strategy)
+       VALUES ($1, 'users', 'email', $2, $3, 'email', 'low', 'redact')`,
+      [orgId, connId, stagingGroup],
+    );
+    const stagingAfter = await pool.query<{ masking_strategy: string }>(
+      `SELECT masking_strategy FROM pii_column_classifications
+       WHERE org_id = $1 AND connection_group_id = $2 AND table_name = 'users' AND column_name = 'email'`,
+      [orgId, stagingGroup],
+    );
+    expect(stagingAfter.rows[0]?.masking_strategy).toBe("redact");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("pii_column_classifications: 0064 dedup CTE collapses pre-merged duplicates so the unique index builds", async () => {
+    // Defensive case from the multi-env rollout: admins who pre-merged
+    // multiple connections into one group (via #2339's admin UI) before
+    // 0064 runs will see N classification rows for what is logically
+    // one (org, table, column, group) entry. The migration's dedup CTE
+    // keeps the freshest row per group bucket so the new unique index
+    // can be created without 23505. Mirrors the 0063 dedup shape.
+    const orgId = `org-pii-dedup-${Date.now()}`;
+    const groupId = `g-pii-dedup-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'prod')`,
+      [groupId, orgId],
+    );
+    // Insert two pre-merged rows differing only on connection_id. Both
+    // currently coexist under the live group-keyed index because they
+    // target distinct column names (so we can seed without collision),
+    // then we rename to force the dedup to fire.
+    const newerId = `00000000-0000-0000-0000-aaaa00000001`;
+    const olderId = `00000000-0000-0000-0000-aaaa00000002`;
+    await pool.query(
+      `INSERT INTO pii_column_classifications
+         (id, org_id, table_name, column_name, connection_id, connection_group_id, category, confidence, masking_strategy, updated_at)
+       VALUES ($1, $2, 'users', 'email_v1', 'conn-a', $3, 'email', 'high', 'partial', NOW()),
+              ($4, $2, 'users', 'email_v2', 'conn-b', $3, 'email', 'high', 'partial', NOW() - INTERVAL '1 hour')`,
+      [newerId, orgId, groupId, olderId],
+    );
+    // Drop the unique index so we can force a name collision and then
+    // re-run the dedup CTE. (The dedup CTE runs BEFORE the new index is
+    // built in the production migration; this test mirrors that order.)
+    await pool.query(`DROP INDEX pii_column_classifications_unique`);
+    await pool.query(
+      `UPDATE pii_column_classifications SET column_name = 'email_v1' WHERE id = $1`,
+      [olderId],
+    );
+    await pool.query(
+      `WITH ranked AS (
+         SELECT id,
+                ROW_NUMBER() OVER (
+                  PARTITION BY org_id, table_name, column_name,
+                               COALESCE(connection_group_id, '__default__')
+                  ORDER BY updated_at DESC, id DESC
+                ) AS rn
+         FROM pii_column_classifications
+         WHERE org_id = $1
+       )
+       DELETE FROM pii_column_classifications pc USING ranked r
+       WHERE pc.id = r.id AND r.rn > 1`,
+      [orgId],
+    );
+    const survivors = await pool.query<{ id: string }>(
+      `SELECT id FROM pii_column_classifications WHERE org_id = $1`,
+      [orgId],
+    );
+    expect(survivors.rows.length).toBe(1);
+    expect(survivors.rows[0]?.id).toBe(newerId);
+
+    // Restore the unique index so subsequent tests see production shape.
+    await pool.query(
+      `CREATE UNIQUE INDEX pii_column_classifications_unique
+        ON pii_column_classifications (org_id, table_name, column_name, COALESCE(connection_group_id, '__default__'))`,
+    );
+  }, PG_TEST_TIMEOUT_MS);
 });

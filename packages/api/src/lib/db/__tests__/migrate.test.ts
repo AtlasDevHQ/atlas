@@ -79,7 +79,7 @@ describe("runMigrations", () => {
 
     const count = await runMigrations(pool);
 
-    expect(count).toBe(64);
+    expect(count).toBe(65);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -172,6 +172,7 @@ describe("runMigrations", () => {
         "0061_user_default_landing.sql",
         "0062_connection_groups.sql",
         "0063_semantic_entities_group_scoped.sql",
+        "0064_pii_group_scoped.sql",
       ],
     });
 

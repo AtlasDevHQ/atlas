@@ -309,6 +309,7 @@ describe("migrateAuthTables", () => {
             { name: "0061_user_default_landing.sql" },
             { name: "0062_connection_groups.sql" },
             { name: "0063_semantic_entities_group_scoped.sql" },
+            { name: "0064_pii_group_scoped.sql" },
           ],
         };
       }

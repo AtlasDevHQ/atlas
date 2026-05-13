@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, mock, beforeEach, afterEach } from "bun:test";
 import { createConnectionMock } from "@atlas/api/testing/connection";
+import { withRequestContext } from "@atlas/api/lib/logger";
 
 mock.module("@atlas/api/lib/semantic", () => ({
   getOrgWhitelistedTables: () => new Set(),
@@ -89,6 +90,44 @@ describe("executeSQL connection error handling", () => {
     } else {
       delete process.env.ATLAS_DATASOURCE_URL;
     }
+  });
+
+  it("falls back to the request context connection when tool args omit connectionId", async () => {
+    const connectionLookups: string[] = [];
+    const dbTypeLookups: string[] = [];
+    getFn = (id: string) => {
+      connectionLookups.push(id);
+      return mockConn;
+    };
+    getDBTypeFn = (id: string) => {
+      dbTypeLookups.push(id);
+      return "postgres";
+    };
+
+    const result = await withRequestContext(
+      { requestId: "req-chat-eu", connectionId: "eu" },
+      () => exec("SELECT id FROM companies"),
+    );
+
+    expect(result.success).toBe(true);
+    expect(connectionLookups).toEqual(["eu"]);
+    expect(dbTypeLookups).toContain("eu");
+  });
+
+  it("honors an explicit tool connectionId over the request context connection", async () => {
+    const connectionLookups: string[] = [];
+    getFn = (id: string) => {
+      connectionLookups.push(id);
+      return mockConn;
+    };
+
+    const result = await withRequestContext(
+      { requestId: "req-chat-eu", connectionId: "eu" },
+      () => exec("SELECT id FROM companies", "us"),
+    );
+
+    expect(result.success).toBe(true);
+    expect(connectionLookups).toEqual(["us"]);
   });
 
   // --- Known registration/configuration errors (curated message) ---

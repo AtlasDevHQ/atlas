@@ -126,6 +126,7 @@ const mockCardData = {
   cachedRows: [{ month: "Jan", total: 1000 }],
   cachedAt: "2026-04-04T00:00:00.000Z",
   connectionId: null,
+  connectionGroupId: null,
   createdAt: "2026-04-04T00:00:00.000Z",
   updatedAt: "2026-04-04T00:00:00.000Z",
 };

@@ -29,6 +29,8 @@ import {
   getSharedDashboard,
   setRefreshSchedule,
   CardLayoutSchema,
+  resolveCardConnectionId,
+  NoGroupMembersError,
   type CrudFailReason,
   type SharedDashboardFailReason,
 } from "@atlas/api/lib/dashboards";
@@ -76,7 +78,11 @@ const AddCardSchema = z.object({
   chartConfig: ChartConfigSchema.nullable().optional(),
   cachedColumns: z.array(z.string()).nullable().optional(),
   cachedRows: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
+  /** @deprecated 1.4.4 — pass `connectionGroupId` instead. */
   connectionId: z.string().nullable().optional(),
+  /** Group-scoped execution target (1.4.4). Resolved to a physical
+   * connection at view time via the group's primary member. */
+  connectionGroupId: z.string().nullable().optional(),
   layout: CardLayoutSchema.nullable().optional(),
 });
 
@@ -769,6 +775,7 @@ authed.openapi(
         cachedColumns: parsed.cachedColumns ?? null,
         cachedRows: parsed.cachedRows ?? null,
         connectionId: parsed.connectionId ?? null,
+        connectionGroupId: parsed.connectionGroupId ?? null,
         layout: parsed.layout ?? null,
       }));
 
@@ -905,11 +912,40 @@ authed.openapi(refreshCardRoute, async (c) => {
       return c.json({ error: "not_found", message: "Card not found." }, 404);
     }
 
+    // Resolve group-scoped execution. A card pointing at a group with
+    // zero members must NOT silently fall back to the workspace
+    // default — return a typed 500 with requestId so the admin can
+    // see exactly which group needs members.
+    let resolvedConnectionId: string | null;
+    try {
+      resolvedConnectionId = yield* Effect.promise(() =>
+        resolveCardConnectionId(
+          {
+            connectionGroupId: cardResult.data.connectionGroupId,
+            connectionId: cardResult.data.connectionId,
+          },
+          dash.data.orgId,
+        ),
+      );
+    } catch (err) {
+      if (err instanceof NoGroupMembersError) {
+        log.warn({ cardId, groupId: err.groupId, orgId: err.orgId, requestId }, "Card refresh: group has no members");
+        return c.json(
+          {
+            error: "group_no_members",
+            message: `Connection group "${err.groupId}" has no members. Add a connection or repoint the card.`,
+            requestId,
+          },
+          500,
+        );
+      }
+      throw err;
+    }
     const { runUserQueryPipeline } = yield* Effect.promise(() => import("@atlas/api/lib/tools/sql"));
     const outcome = yield* Effect.promise(() =>
       runUserQueryPipeline({
         sql: cardResult.data.sql,
-        ...(cardResult.data.connectionId && { connectionId: cardResult.data.connectionId }),
+        ...(resolvedConnectionId && { connectionId: resolvedConnectionId }),
         explanation: `Dashboard card refresh: ${cardResult.data.title}`,
       }),
     );
@@ -963,10 +999,35 @@ authed.openapi(refreshAllCardsRoute, async (c) => {
     // the full pipeline (validation + approval + RLS + audit) — the bulk
     // entry point is not a license to skip per-query governance.
     for (const card of cards) {
+      // Resolve group → primary member per card. A "no members" group
+      // counts as a per-card failure with `reason: "group_no_members"`
+      // so the bulk loop keeps draining instead of failing the whole
+      // refresh; the response surfaces the offending group in `errors`.
+      let resolvedConnectionId: string | null;
+      try {
+        resolvedConnectionId = yield* Effect.promise(() =>
+          resolveCardConnectionId(
+            { connectionGroupId: card.connectionGroupId, connectionId: card.connectionId },
+            dashResult.data.orgId,
+          ),
+        );
+      } catch (err) {
+        if (err instanceof NoGroupMembersError) {
+          failed++;
+          errors.push({
+            cardId: card.id,
+            cardTitle: card.title,
+            reason: "group_no_members",
+            message: `Connection group "${err.groupId}" has no members.`,
+          });
+          continue;
+        }
+        throw err;
+      }
       const outcome = yield* Effect.promise(() =>
         runUserQueryPipeline({
           sql: card.sql,
-          ...(card.connectionId && { connectionId: card.connectionId }),
+          ...(resolvedConnectionId && { connectionId: resolvedConnectionId }),
           explanation: `Dashboard bulk refresh: ${card.title}`,
         }),
       );

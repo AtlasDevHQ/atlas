@@ -311,6 +311,7 @@ describe("migrateAuthTables", () => {
             { name: "0063_semantic_entities_group_scoped.sql" },
             { name: "0064_pii_group_scoped.sql" },
             { name: "0065_approvals_group_scoped.sql" },
+            { name: "0066_dashboards_group_scoped.sql" },
           ],
         };
       }

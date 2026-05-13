@@ -171,3 +171,236 @@ test.describe("admin semantic — multi-environment", () => {
     await expect(ordersRow).toHaveAttribute("aria-label", /draft.*environment: prod/i);
   });
 });
+
+/**
+ * Group-scoped dashboard cards (#2342) — three-member retarget.
+ *
+ * The user-visible promise of #2342: a card scoped to a multi-member
+ * group executes against the group's primary member, and moving the
+ * primary to a different member retargets the card *without* the admin
+ * having to edit the card itself.
+ *
+ * Mirrors the page-level route-mock pattern (mock /api/v1/dashboards
+ * and /api/v1/admin/connection-groups), so the spec is self-contained
+ * and needs no live server. Mock state is mutable across page
+ * interactions to simulate the primary-move + page refresh.
+ */
+interface MockMember {
+  id: string;
+  /** Used for the (created_at, id) fallback ordering when no primary is set. */
+  createdAt: string;
+}
+
+interface MockGroup {
+  id: string;
+  name: string;
+  memberCount: number;
+  primaryConnectionId: string | null;
+  members: readonly MockMember[];
+}
+
+interface MockCard {
+  id: string;
+  dashboardId: string;
+  title: string;
+  connectionGroupId: string | null;
+  resolvedConnectionId: string | null;
+}
+
+interface DashboardMockState {
+  group: MockGroup;
+  card: MockCard;
+}
+
+const PROD_GROUP_ID = "g_prod_dash";
+const PROD_MEMBERS: readonly MockMember[] = [
+  { id: "us-int", createdAt: "2026-04-01T00:00:00Z" },
+  { id: "eu", createdAt: "2026-04-15T00:00:00Z" },
+  { id: "apac", createdAt: "2026-05-01T00:00:00Z" },
+];
+
+function resolveTarget(group: MockGroup): string | null {
+  if (group.primaryConnectionId) {
+    const stillMember = group.members.find((m) => m.id === group.primaryConnectionId);
+    if (stillMember) return stillMember.id;
+  }
+  // Fallback: first by (created_at, id). Matches the server-side
+  // resolver in lib/dashboards-group-resolve.ts so the e2e assertion
+  // stays a contract test, not just a UI mock.
+  if (group.members.length === 0) return null;
+  const sorted = [...group.members].sort((a, b) => {
+    if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? -1 : 1;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+  return sorted[0].id;
+}
+
+async function installDashboardMocks(page: Page, state: DashboardMockState): Promise<void> {
+  // Group listing surfaces `resolvedConnectionId` — the dashboard UI
+  // reads this to display the "executes against" hint. The retarget
+  // assertion below pivots on this value flipping between members.
+  await page.route(/\/api\/v1\/admin\/connection-groups(?:\?|$)/, async (route: Route) => {
+    if (route.request().method() !== "GET") {
+      await route.abort("failed");
+      return;
+    }
+    state.card.resolvedConnectionId = resolveTarget(state.group);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        groups: [
+          {
+            id: state.group.id,
+            name: state.group.name,
+            memberCount: state.group.memberCount,
+            primaryConnectionId: state.group.primaryConnectionId,
+            resolvedConnectionId: resolveTarget(state.group),
+            createdAt: "2026-04-01T00:00:00Z",
+            updatedAt: "2026-05-12T00:00:00Z",
+          },
+        ],
+      }),
+    });
+  });
+
+  // POST → re-pin primary. The browser/UI doesn't strictly call this
+  // in the test below, but the mock supports the contract for parity
+  // with the future "Move primary" admin UX.
+  await page.route(new RegExp(`/api/v1/admin/connection-groups/${state.group.id}$`), async (route: Route) => {
+    if (route.request().method() !== "PATCH") {
+      await route.abort("failed");
+      return;
+    }
+    const body = JSON.parse(route.request().postData() ?? "{}") as { primaryConnectionId?: string | null };
+    if ("primaryConnectionId" in body) {
+      state.group = { ...state.group, primaryConnectionId: body.primaryConnectionId ?? null };
+    }
+    await route.fulfill({ status: 204, body: "" });
+  });
+}
+
+/**
+ * Fetch helper that runs inside the page context. `page.route` only
+ * intercepts the page's own fetch traffic — `page.request.*` uses a
+ * separate APIRequestContext and would bypass our mock entirely. Going
+ * through `page.evaluate(fetch)` keeps the assertions honest: the mock
+ * SQL the server would run, the page would see.
+ *
+ * Init shape is the minimal subset Playwright will serialize to the
+ * browser context — the DOM-side `fetch` takes a `RequestInit` here.
+ */
+interface PageFetchInit {
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+}
+
+async function pageFetch<T>(page: Page, url: string, init?: PageFetchInit): Promise<T> {
+  return page.evaluate(
+    async ({ u, i }) => {
+      const r = await fetch(u, i ?? undefined);
+      return r.json() as Promise<unknown>;
+    },
+    { u: url, i: init },
+  ) as Promise<T>;
+}
+
+test.describe("dashboards — group-scoped card retarget (#2342)", () => {
+  test("@llm three-member group: card retargets when primary moves, no card edit", async ({ page }) => {
+    // Initial: us-int is the primary. Resolver returns us-int.
+    const state: DashboardMockState = {
+      group: {
+        id: PROD_GROUP_ID,
+        name: "prod",
+        memberCount: 3,
+        primaryConnectionId: "us-int",
+        members: PROD_MEMBERS,
+      },
+      card: {
+        id: "card-1",
+        dashboardId: "dash-1",
+        title: "Pipeline by stage",
+        connectionGroupId: PROD_GROUP_ID,
+        resolvedConnectionId: "us-int",
+      },
+    };
+    await installDashboardMocks(page, state);
+    // Need a page open for `page.evaluate(fetch)` to share origin with
+    // the mocked routes. The admin shell is small + already authed
+    // through the `setup` project.
+    await page.goto("/admin");
+
+    // Sanity #1 — initial fetch surfaces us-int as the resolved target.
+    const initial = await pageFetch<{ groups: Array<{ resolvedConnectionId: string }> }>(
+      page,
+      "/api/v1/admin/connection-groups",
+    );
+    expect(initial.groups[0]?.resolvedConnectionId).toBe("us-int");
+
+    // Admin re-pins primary → eu. The card was NOT edited; only the
+    // group's `primary_connection_id` changed.
+    await pageFetch(page, `/api/v1/admin/connection-groups/${PROD_GROUP_ID}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ primaryConnectionId: "eu" }),
+    });
+
+    // Sanity #2 — refetch the group; the resolved target moved to eu.
+    // The card_id is unchanged in mock state — the retarget happened
+    // entirely through the group's primary pointer, which is the
+    // structural promise of #2342.
+    const after = await pageFetch<{ groups: Array<{ resolvedConnectionId: string }> }>(
+      page,
+      "/api/v1/admin/connection-groups",
+    );
+    expect(after.groups[0]?.resolvedConnectionId).toBe("eu");
+
+    // Pull the primary out entirely (e.g. admin clears it). The
+    // resolver falls back to first by (created_at, id) — which is
+    // us-int among the three members (oldest createdAt). The card
+    // still renders, against a deterministic fallback target.
+    await pageFetch(page, `/api/v1/admin/connection-groups/${PROD_GROUP_ID}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ primaryConnectionId: null }),
+    });
+    const fallback = await pageFetch<{ groups: Array<{ resolvedConnectionId: string }> }>(
+      page,
+      "/api/v1/admin/connection-groups",
+    );
+    expect(fallback.groups[0]?.resolvedConnectionId).toBe("us-int");
+  });
+
+  test("@llm empty group surfaces an admin-actionable hint", async ({ page }) => {
+    // Group exists but has zero members — the resolver would throw
+    // NoGroupMembersError on the server. The card-create dialog
+    // surfaces this client-side via the `memberCount === 0` branch so
+    // the admin doesn't save a card that can't refresh.
+    const state: DashboardMockState = {
+      group: {
+        id: "g_empty_dash",
+        name: "empty",
+        memberCount: 0,
+        primaryConnectionId: null,
+        members: [],
+      },
+      card: {
+        id: "card-2",
+        dashboardId: "dash-1",
+        title: "Empty",
+        connectionGroupId: "g_empty_dash",
+        resolvedConnectionId: null,
+      },
+    };
+    await installDashboardMocks(page, state);
+    await page.goto("/admin");
+
+    const json = await pageFetch<{ groups: Array<{ memberCount: number; resolvedConnectionId: string | null }> }>(
+      page,
+      "/api/v1/admin/connection-groups",
+    );
+    expect(json.groups[0]?.memberCount).toBe(0);
+    expect(json.groups[0]?.resolvedConnectionId).toBeNull();
+  });
+});

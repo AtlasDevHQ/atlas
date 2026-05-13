@@ -42,6 +42,11 @@ type GroupRow = {
   created_at: Date;
   updated_at: Date;
   member_count: string;
+  /** 0066: admin-pinned primary. NULL means resolver uses first member by (created_at, id). */
+  primary_connection_id: string | null;
+  /** First (oldest) non-archived member id — convenience for callers
+   * surfacing the "executes against" hint without a second round-trip. */
+  fallback_connection_id: string | null;
 } & Record<string, unknown>;
 
 function rowToWire(row: GroupRow) {
@@ -49,6 +54,10 @@ function rowToWire(row: GroupRow) {
     id: row.id,
     name: row.name,
     memberCount: safeMemberCount(row.member_count),
+    primaryConnectionId: row.primary_connection_id ?? null,
+    /** Resolved "executes against" target: primary if set, else first
+     * member by (created_at, id). Null when the group has no members. */
+    resolvedConnectionId: row.primary_connection_id ?? row.fallback_connection_id ?? null,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
@@ -111,6 +120,13 @@ const ConnectionGroupSchema = z.object({
   id: z.string(),
   name: z.string(),
   memberCount: z.number().int().nonnegative(),
+  /** 0066 — admin-pinned primary member. NULL means "fall back to
+   * first member by (created_at, id)" — see lib/dashboards-group-resolve.ts. */
+  primaryConnectionId: z.string().nullable(),
+  /** 0066 — convenience field for callers surfacing the "executes
+   * against" hint. Equals `primaryConnectionId` when set, else the
+   * group's first non-archived member by `(created_at, id)`, else null. */
+  resolvedConnectionId: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -291,13 +307,23 @@ adminConnectionGroups.openapi(listGroupsRoute, async (c) =>
                 g.name,
                 g.created_at,
                 g.updated_at,
+                g.primary_connection_id,
                 (
                   SELECT COUNT(*)::text
                   FROM connections c
                   WHERE c.group_id = g.id
                     AND c.org_id = g.org_id
                     AND c.status != 'archived'
-                ) AS member_count
+                ) AS member_count,
+                (
+                  SELECT c.id
+                  FROM connections c
+                  WHERE c.group_id = g.id
+                    AND c.org_id = g.org_id
+                    AND c.status != 'archived'
+                  ORDER BY c.created_at ASC, c.id ASC
+                  LIMIT 1
+                ) AS fallback_connection_id
          FROM connection_groups g
          WHERE g.org_id = $1
          ORDER BY g.name ASC`,
@@ -322,13 +348,23 @@ adminConnectionGroups.openapi(getGroupRoute, async (c) =>
                 g.name,
                 g.created_at,
                 g.updated_at,
+                g.primary_connection_id,
                 (
                   SELECT COUNT(*)::text
                   FROM connections c
                   WHERE c.group_id = g.id
                     AND c.org_id = g.org_id
                     AND c.status != 'archived'
-                ) AS member_count
+                ) AS member_count,
+                (
+                  SELECT c.id
+                  FROM connections c
+                  WHERE c.group_id = g.id
+                    AND c.org_id = g.org_id
+                    AND c.status != 'archived'
+                  ORDER BY c.created_at ASC, c.id ASC
+                  LIMIT 1
+                ) AS fallback_connection_id
          FROM connection_groups g
          WHERE g.id = $1 AND g.org_id = $2`,
         [id, orgId],

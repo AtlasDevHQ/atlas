@@ -4887,6 +4887,12 @@
                       "null"
                     ]
                   },
+                  "connectionGroupId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "layout": {
                     "type": [
                       "object",
@@ -49637,6 +49643,18 @@
                             "type": "integer",
                             "minimum": 0
                           },
+                          "primaryConnectionId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "resolvedConnectionId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "createdAt": {
                             "type": "string"
                           },
@@ -49648,6 +49666,8 @@
                           "id",
                           "name",
                           "memberCount",
+                          "primaryConnectionId",
+                          "resolvedConnectionId",
                           "createdAt",
                           "updatedAt"
                         ]
@@ -49735,6 +49755,18 @@
                       "type": "integer",
                       "minimum": 0
                     },
+                    "primaryConnectionId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "resolvedConnectionId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "createdAt": {
                       "type": "string"
                     },
@@ -49746,6 +49778,8 @@
                     "id",
                     "name",
                     "memberCount",
+                    "primaryConnectionId",
+                    "resolvedConnectionId",
                     "createdAt",
                     "updatedAt"
                   ]
@@ -49891,6 +49925,18 @@
                       "type": "integer",
                       "minimum": 0
                     },
+                    "primaryConnectionId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "resolvedConnectionId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "createdAt": {
                       "type": "string"
                     },
@@ -49927,6 +49973,8 @@
                     "id",
                     "name",
                     "memberCount",
+                    "primaryConnectionId",
+                    "resolvedConnectionId",
                     "createdAt",
                     "updatedAt",
                     "members"
@@ -50046,6 +50094,18 @@
                       "type": "integer",
                       "minimum": 0
                     },
+                    "primaryConnectionId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "resolvedConnectionId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "createdAt": {
                       "type": "string"
                     },
@@ -50057,6 +50117,8 @@
                     "id",
                     "name",
                     "memberCount",
+                    "primaryConnectionId",
+                    "resolvedConnectionId",
                     "createdAt",
                     "updatedAt"
                   ]

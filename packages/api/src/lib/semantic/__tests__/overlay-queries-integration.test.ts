@@ -42,11 +42,16 @@ beforeAll(async () => {
   db = newDb();
 
   // Minimal schema — only the columns referenced by the overlay CTE.
+  // `connection_group_id` mirrors 0063: nullable, dual-written by every
+  // production write path. Test fixtures seed `connection_id` only;
+  // legacy NULL-group entities collapse correctly in the DISTINCT ON
+  // bucket because Postgres treats NULL as a single value there.
   db.public.none(`
     CREATE TABLE connections (
       id TEXT NOT NULL,
       org_id TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'published',
+      group_id TEXT,
       PRIMARY KEY (id, org_id)
     );
     CREATE TABLE semantic_entities (
@@ -56,6 +61,7 @@ beforeAll(async () => {
       name TEXT NOT NULL,
       yaml_content TEXT NOT NULL,
       connection_id TEXT,
+      connection_group_id TEXT,
       status TEXT NOT NULL DEFAULT 'published',
       created_at TEXT NOT NULL DEFAULT 'now',
       updated_at TEXT NOT NULL DEFAULT 'now'

@@ -46,16 +46,25 @@ const TombstoneRowSchema = z.object({
 
 const EntityEditRowSchema = z.object({
   id: z.string(),
-  /** Entity name; the published row with the same `(name, connection_id)` will be replaced. */
+  /** Entity name; the published row sharing the same `connection_group_id` will be replaced. */
   label: z.string(),
-  /** Connection scope — `null` for `default` to match the published-side overlay key. */
+  /**
+   * Legacy connection scope. Retained for SDK compatibility during the
+   * dual-write transition (#2336). `null` matches NULL-scope entities.
+   * Removed when `connection_id` drops in a follow-on slice.
+   */
   connectionId: z.string().nullable(),
+  /**
+   * Group scope (#2340) — the environment the entity belongs to. `null`
+   * for legacy `__global__` rows whose backfill did not resolve a group.
+   */
+  connectionGroupId: z.string().nullable(),
   updatedAt: z.string().datetime(),
 });
 
 const PublishPreviewSchema = z.object({
   connections: z.array(DraftRowSchema),
-  /** Drafts of new entities (no published row exists yet for that `(name, connection_id)`). */
+  /** Drafts of new entities (no published row exists yet for that `connection_group_id`). */
   entities: z.array(DraftRowSchema),
   /** Drafts that supersede an existing published entity row. */
   entityEdits: z.array(EntityEditRowSchema),
@@ -110,6 +119,7 @@ type DbRow = {
   label: string;
   updated_at: Date | string | null;
   connection_id?: string | null;
+  connection_group_id?: string | null;
 } & Record<string, unknown>;
 
 /** Coerce pg timestamptz → ISO-8601 string, falling back to epoch-zero so
@@ -156,18 +166,29 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
       ),
       // Entities that are NOT also a draft-edit (no published sibling).
       // The `NOT EXISTS` filter mirrors the `entityEdits` segment in
-      // `CONTENT_MODE_TABLES` so the two lists never overlap.
+      // `CONTENT_MODE_TABLES` so the two lists never overlap. Scope match
+      // keys on `connection_group_id` (#2340) — multi-environment drafts
+      // collapse to one preview row per logical entity, not N per replica.
+      //
+      // `pub.entity_type = d.entity_type` is load-bearing: the partial
+      // unique indexes from 0063 key on `(org_id, entity_type, name,
+      // connection_group_id)`, so without this clause a draft *metric*
+      // named "accounts" would falsely "match" a published *entity* of
+      // the same name (and vice versa) — counted as a new-entity create
+      // when it should be an edit, or hidden from `entities` when it's
+      // genuinely new. Same fix on both queries below.
       internalQuery<DbRow>(
         `SELECT d.id::text AS id, d.name AS label, d.updated_at,
-                d.connection_id
+                d.connection_id, d.connection_group_id
            FROM semantic_entities d
           WHERE d.org_id = $1
             AND d.status = 'draft'
             AND NOT EXISTS (
               SELECT 1 FROM semantic_entities pub
                WHERE pub.org_id = d.org_id
+                 AND pub.entity_type = d.entity_type
                  AND pub.name = d.name
-                 AND ${matchScopeAcrossAliases({ leftAlias: "pub", rightAlias: "d" })}
+                 AND ${matchScopeAcrossAliases({ leftAlias: "pub", rightAlias: "d", column: "connection_group_id" })}
                  AND pub.status = 'published'
             )
           ORDER BY d.updated_at DESC`,
@@ -175,12 +196,13 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
       ),
       internalQuery<DbRow>(
         `SELECT d.id::text AS id, d.name AS label, d.updated_at,
-                d.connection_id
+                d.connection_id, d.connection_group_id
            FROM semantic_entities d
            INNER JOIN semantic_entities pub
              ON d.org_id = pub.org_id
+            AND d.entity_type = pub.entity_type
             AND d.name = pub.name
-            AND ${matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "pub" })}
+            AND ${matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "pub", column: "connection_group_id" })}
           WHERE d.org_id = $1
             AND d.status = 'draft'
             AND pub.status = 'published'
@@ -225,6 +247,7 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
         id: r.id,
         label: r.label,
         connectionId: r.connection_id ?? null,
+        connectionGroupId: r.connection_group_id ?? null,
         updatedAt: toIso(r.updated_at),
       })),
       entityDeletes: entityDeleteRows.map((r) => ({

@@ -58,8 +58,23 @@ export function makeArchiveRestoreStubs() {
         );
       }
       const archivedEntities = await client.query(
-        `UPDATE semantic_entities SET status = 'archived', updated_at = now()
-         WHERE org_id = $1 AND connection_id = $2 AND status = 'published'
+        `WITH conn AS (
+           SELECT group_id,
+                  (SELECT COUNT(*)::int FROM connections m
+                     WHERE m.org_id = c.org_id AND m.group_id = c.group_id) AS member_count
+           FROM connections c
+           WHERE c.org_id = $1 AND c.id = $2
+         )
+         UPDATE semantic_entities SET status = 'archived', updated_at = now()
+            FROM conn
+            WHERE org_id = $1
+              AND status = 'published'
+              AND conn.group_id IS NOT NULL
+              AND conn.member_count = 1
+              AND (
+                connection_group_id = conn.group_id
+                OR connection_id = $2
+              )
          RETURNING id`,
         [orgId, connectionId],
       );
@@ -103,8 +118,23 @@ export function makeArchiveRestoreStubs() {
         [orgId, connectionId],
       );
       const restoredEntities = await client.query(
-        `UPDATE semantic_entities SET status = 'published', updated_at = now()
-         WHERE org_id = $1 AND connection_id = $2 AND status = 'archived'
+        `WITH conn AS (
+           SELECT group_id,
+                  (SELECT COUNT(*)::int FROM connections m
+                     WHERE m.org_id = c.org_id AND m.group_id = c.group_id) AS member_count
+           FROM connections c
+           WHERE c.org_id = $1 AND c.id = $2
+         )
+         UPDATE semantic_entities SET status = 'published', updated_at = now()
+            FROM conn
+            WHERE org_id = $1
+              AND status = 'archived'
+              AND conn.group_id IS NOT NULL
+              AND conn.member_count = 1
+              AND (
+                connection_group_id = conn.group_id
+                OR connection_id = $2
+              )
          RETURNING id`,
         [orgId, connectionId],
       );

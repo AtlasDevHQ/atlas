@@ -59,6 +59,14 @@ interface EntitySummary {
   table: string;
   description: string;
   columnCount: number;
+  /**
+   * Group / environment label (#2340). Carries `connection_group_id`
+   * when set (e.g. `"g_prod"`), falling back to legacy `connection_id`
+   * during the dual-write transition. Multi-member groups now render
+   * as a single row scoped to the group, not N rows scoped to each
+   * member connection.
+   */
+  source?: string;
 }
 
 interface GlossaryTerm {
@@ -462,6 +470,13 @@ export default function SemanticPage() {
           table: typeof e.table === "string" ? e.table : (typeof e.name === "string" ? e.name : ""),
           description: typeof e.description === "string" ? e.description : "",
           columnCount: typeof e.columnCount === "number" ? e.columnCount : 0,
+          // `source` carries the environment label for the entity-list badge
+          // (#2340). Skip the `"default"` sentinel — pre-group orgs see one
+          // un-badged row, which is the right "no environment configured
+          // yet" UX. Multi-environment orgs land on the group_id (e.g.
+          // `g_prod`) until the connection-groups admin surface resolves it
+          // to a display name in a follow-up.
+          source: typeof e.source === "string" && e.source !== "default" ? e.source : undefined,
         })).filter((e) => e.table.length > 0);
         const dropped = rawEntities.length - normalized.length;
         if (dropped > 0) {
@@ -652,6 +667,15 @@ export default function SemanticPage() {
   };
 
   const entityNames = entities.map((e) => e.table).toSorted();
+  // entity name → environment / group label (#2340). Used by
+  // `<SemanticFileTree entitySources={...} />` to render a quiet trailing
+  // badge so admins can see which environment an entity belongs to
+  // without diving into the detail view. Entities without a group label
+  // (single-connection orgs, legacy demo) render unbadged.
+  const entitySources = new Map<string, string>();
+  for (const entity of entities) {
+    if (entity.source) entitySources.set(entity.table, entity.source);
+  }
   const metricFileNames = (() => {
     const files = new Set<string>();
     for (const m of metrics) {
@@ -793,6 +817,7 @@ export default function SemanticPage() {
           selection={selection}
           onSelect={handleSelect}
           draftEntityNames={draftEntityNames}
+          entitySources={entitySources}
           className="w-64 shrink-0 border-r"
         />
 

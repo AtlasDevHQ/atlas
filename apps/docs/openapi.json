@@ -50624,6 +50624,12 @@
                               "null"
                             ]
                           },
+                          "connectionGroupId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "updatedAt": {
                             "type": "string",
                             "format": "date-time"
@@ -50633,6 +50639,7 @@
                           "id",
                           "label",
                           "connectionId",
+                          "connectionGroupId",
                           "updatedAt"
                         ]
                       }

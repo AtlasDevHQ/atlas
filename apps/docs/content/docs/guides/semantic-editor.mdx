@@ -25,6 +25,12 @@ Navigate to **Admin > Semantic Layer** (`/admin/semantic`). The page has two pan
 
 Click any item in the sidebar to view its details. Entities show parsed dimensions, measures, joins, and query patterns in Pretty mode. Switch to YAML mode to see the raw source.
 
+### Multi-Environment Entities
+
+When you have multiple connections sharing a logical schema (e.g. a `prod` group with `us-int`, `eu`, and `apac` replicas), each entity appears as **one row** in the tree — not three. A quiet trailing badge (e.g. `prod`) names the [environment](/getting-started/semantic-layer#connection-groups) the entity belongs to.
+
+Editing an entity edits it for the whole group. Publishing it through the pending-changes flow promotes the change to every replica atomically. To split an entity off for a single member, move that connection out of the group via **Admin > Connections > Groups**.
+
 ---
 
 ## Creating an Entity

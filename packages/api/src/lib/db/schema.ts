@@ -427,7 +427,19 @@ export const semanticEntities = pgTable(
     entityType: text("entity_type").notNull(),
     name: text("name").notNull(),
     yamlContent: text("yaml_content").notNull(),
+    // Legacy connection scope. Retained for transitional dual-write while
+    // call sites move to `connection_group_id`. Removed in a follow-on
+    // slice once SDK consumers and the whitelist all key on the group
+    // column. See PRD #2336 §"Migration sequencing" and CLAUDE.md
+    // §"Semantic Layer".
     connectionId: text("connection_id"),
+    // Group scope (multi-environment semantic layer, #2340). One row
+    // per (org_id, entity_type, name, group_id) — multi-member groups
+    // share the same entity definition. Nullable so legacy
+    // `__global__` demo entities (connection_id IS NULL too) stay
+    // unique through the COALESCE sentinel in the partial indexes
+    // below.
+    connectionGroupId: text("connection_group_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     // Developer/published mode status
@@ -437,19 +449,22 @@ export const semanticEntities = pgTable(
     uniqueIndex("idx_semantic_entities_org_type_name").on(t.orgId, t.entityType, t.name),
     index("idx_semantic_entities_org").on(t.orgId),
     index("idx_semantic_entities_org_type").on(t.orgId, t.entityType),
+    index("idx_semantic_entities_group").on(t.connectionGroupId, t.orgId),
     check("chk_semantic_entities_status", sql`status IN ('published', 'draft', 'draft_delete', 'archived')`),
     // IMPORTANT: These are placeholder stubs — the real indexes are UNIQUE on
-    // (org_id, entity_type, name, COALESCE(connection_id, '__default__')) and
-    // are managed by raw SQL in migration 0028. Drizzle can't represent
-    // expression indexes, so these non-unique approximations exist solely
-    // to suppress drift warnings. Do NOT rely on these for constraint
-    // reasoning — and any code calling `ON CONFLICT (...)` against these
-    // indexes must include `entity_type` in the conflict-target column list,
-    // otherwise Postgres raises "no unique or exclusion constraint matching
-    // the ON CONFLICT specification" and the upsert silently fails.
-    index("uq_semantic_entity_published").on(t.orgId, t.entityType, t.name).where(sql`status = 'published'`),
-    index("uq_semantic_entity_draft").on(t.orgId, t.entityType, t.name).where(sql`status = 'draft'`),
-    index("uq_semantic_entity_tombstone").on(t.orgId, t.entityType, t.name).where(sql`status = 'draft_delete'`),
+    // (org_id, entity_type, name, COALESCE(connection_group_id, '__default__')) and
+    // are managed by raw SQL in migration 0063 (which superseded 0028's
+    // connection_id-keyed indexes). Drizzle can't represent expression
+    // indexes, so these non-unique approximations exist solely to
+    // suppress drift warnings. Do NOT rely on these for constraint
+    // reasoning — and any code calling `ON CONFLICT (...)` against
+    // these indexes must include `entity_type` in the conflict-target
+    // column list, otherwise Postgres raises "no unique or exclusion
+    // constraint matching the ON CONFLICT specification" and the
+    // upsert silently fails.
+    index("uq_semantic_entity_published").on(t.orgId, t.entityType, t.name, t.connectionGroupId).where(sql`status = 'published'`),
+    index("uq_semantic_entity_draft").on(t.orgId, t.entityType, t.name, t.connectionGroupId).where(sql`status = 'draft'`),
+    index("uq_semantic_entity_tombstone").on(t.orgId, t.entityType, t.name, t.connectionGroupId).where(sql`status = 'draft_delete'`),
   ],
 );
 

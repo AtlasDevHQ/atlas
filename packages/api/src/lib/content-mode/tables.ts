@@ -38,12 +38,16 @@ export const CONTENT_MODE_TABLES = [
       },
       {
         key: "entityEdits",
+        // Join keys on `connection_group_id` (#2340) so a multi-member
+        // group is counted once per logical entity, not N per replica.
+        // The PRD's "pending changes" banner is supposed to read as
+        // "12 draft changes" — not "12 × 3 regions = 36".
         sql: (p) =>
           `SELECT 'entityEdits' AS key, COUNT(*)::int AS n FROM semantic_entities d
            INNER JOIN semantic_entities pub
              ON d.org_id = pub.org_id
             AND d.name = pub.name
-            AND ${matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "pub" })}
+            AND ${matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "pub", column: "connection_group_id" })}
            WHERE d.org_id = ${p} AND d.status = 'draft' AND pub.status = 'published'`,
       },
       {

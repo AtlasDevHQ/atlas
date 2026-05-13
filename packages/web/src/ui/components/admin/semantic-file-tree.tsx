@@ -26,6 +26,17 @@ interface SemanticFileTreeProps {
    * without the treatment shouting at non-draft rows (#1435).
    */
   draftEntityNames?: ReadonlySet<string>;
+  /**
+   * Map of entity name → environment / group label (#2340). When
+   * provided, the file-tree renders a quiet trailing badge next to the
+   * entity name showing the environment (e.g. `prod`). Multi-member
+   * groups collapse to one row server-side; the badge tells the admin
+   * which environment that row applies to.
+   *
+   * Entities without a source mapping render unbadged — the legacy
+   * single-connection-org UX is unchanged.
+   */
+  entitySources?: ReadonlyMap<string, string>;
   className?: string;
 }
 
@@ -43,6 +54,7 @@ function FileItem({
   onClick,
   indent = 0,
   draft = false,
+  source,
 }: {
   name: string;
   selected: boolean;
@@ -50,7 +62,16 @@ function FileItem({
   indent?: number;
   /** Quiet amber accent to signal "this is a draft" without shouting. */
   draft?: boolean;
+  /**
+   * Optional environment label rendered as a trailing badge (#2340).
+   * Group IDs from the connection-groups admin are passed in as-is —
+   * stripping the `g_` prefix keeps the badge concise so multi-
+   * environment orgs read "users.yml [prod]" instead of "users.yml
+   * [g_prod]".
+   */
+  source?: string;
 }) {
+  const sourceLabel = source?.startsWith("g_") ? source.slice(2) : source;
   return (
     <button
       onClick={onClick}
@@ -63,10 +84,24 @@ function FileItem({
         draft && "border-l-2 border-amber-400/60",
       )}
       style={{ paddingLeft: `${8 + indent * 16}px` }}
-      aria-label={draft ? `${name} (draft)` : undefined}
+      aria-label={
+        sourceLabel
+          ? `${name} (${draft ? "draft, " : ""}environment: ${sourceLabel})`
+          : draft
+            ? `${name} (draft)`
+            : undefined
+      }
     >
       <File className="size-4 shrink-0 opacity-60" />
       <span className="truncate">{name}</span>
+      {sourceLabel ? (
+        <span
+          data-testid="entity-env-badge"
+          className="ml-auto shrink-0 rounded-sm bg-muted/70 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+        >
+          {sourceLabel}
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -109,6 +144,7 @@ export function SemanticFileTree({
   selection,
   onSelect,
   draftEntityNames,
+  entitySources,
   className,
 }: SemanticFileTreeProps) {
   return (
@@ -150,6 +186,7 @@ export function SemanticFileTree({
                   onClick={() => onSelect({ type: "entity", name })}
                   indent={1}
                   draft={draftEntityNames?.has(name) ?? false}
+                  source={entitySources?.get(name)}
                 />
               ))
             )}

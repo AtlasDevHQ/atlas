@@ -59,7 +59,25 @@ export interface ExportedSemanticEntity {
   name: string;
   entityType: string;
   yamlContent: string;
+  /**
+   * Legacy connection scope. Retained for compatibility with bundles
+   * exported before #2340; new exports also populate
+   * `connectionGroupId` (additive). Removed alongside the column
+   * itself in a follow-on slice — see PRD #2336 §"Migration sequencing".
+   *
+   * @deprecated Prefer `connectionGroupId` when reading bundles from
+   *   1.4.4+ instances.
+   */
   connectionId: string | null;
+  /**
+   * Group scope (multi-environment semantic layer, #2340). One entity
+   * row per group — multi-member groups share the same definition.
+   * Optional during the wire-format transition: bundles exported by
+   * pre-1.4.4 instances omit the field. Consumers should resolve
+   * `connectionGroupId ?? null` and fall back to `connectionId` for
+   * legacy bundles.
+   */
+  connectionGroupId?: string | null;
 }
 
 /** Exported learned pattern. */

@@ -32,6 +32,10 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntityRows: mockListEntities,
   listEntities: mock(async () => []),
   listEntitiesWithOverlay: mockListEntitiesWithOverlay,
+  // No connection groups in this mock — whitelist falls back to row-
+  // level keys, which is the legacy (single-connection org) behavior
+  // the test set was originally written for.
+  listConnectionGroupMembers: mock(async () => [] as ReadonlyArray<{ group_id: string; id: string }>),
   getEntity: mockGetEntity,
   upsertEntity: mockUpsertEntity,
   deleteEntity: mockDeleteEntity,

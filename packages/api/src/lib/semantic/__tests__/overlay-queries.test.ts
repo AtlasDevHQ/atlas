@@ -104,8 +104,8 @@ describe("listEntitiesWithOverlay — SQL shape", () => {
     const sql = capturedCalls[0].sql;
     // CTE pattern
     expect(sql).toMatch(/WITH\s+overlay\s+AS/i);
-    // DISTINCT ON the entity key
-    expect(sql).toMatch(/DISTINCT\s+ON\s*\(\s*org_id\s*,\s*name\s*,\s*connection_id\s*\)/i);
+    // DISTINCT ON the entity key — keyed on connection_group_id (#2340).
+    expect(sql).toMatch(/DISTINCT\s+ON\s*\(\s*org_id\s*,\s*name\s*,\s*connection_group_id\s*\)/i);
     // Priority ordering with draft_delete first, then draft, then published
     expect(sql).toMatch(/CASE\s+status\s+WHEN\s+'draft_delete'\s+THEN\s+0/i);
     expect(sql).toMatch(/WHEN\s+'draft'\s+THEN\s+1/i);

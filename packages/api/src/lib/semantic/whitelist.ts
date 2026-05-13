@@ -474,12 +474,73 @@ export async function loadOrgWhitelist(orgId: string, mode?: "published" | "deve
     _orgWhitelists.delete(cacheKey);
   }
 
-  const { listEntityRows, listEntitiesWithOverlay } = await import("@atlas/api/lib/semantic/entities");
+  const { listEntityRows, listEntitiesWithOverlay, listConnectionGroupMembers } =
+    await import("@atlas/api/lib/semantic/entities");
   const rows = mode === "developer"
     ? await listEntitiesWithOverlay(orgId, "entity")
     : await listEntityRows(orgId, "entity", mode === "published" ? "published" : undefined);
 
+  // Group membership resolution — `connection.group_id` from 0062's
+  // backfill (#2340). An entity scoped to group `g_prod` is queryable
+  // on every connection that belongs to that group. We populate the
+  // whitelist under every accepted key (group_id + each member
+  // connection id) so lookups by either form succeed without an extra
+  // DB round-trip at query time. Best-effort: if the lookup fails
+  // (transient DB blip, no internal DB), fall back to keying by the
+  // entity's own row-level columns — single-connection orgs still
+  // resolve, multi-member groups degrade gracefully.
+  //
+  // Reads via the entities module helper rather than pulling in
+  // `db/internal` directly so partial-mock test fixtures that swap out
+  // `@atlas/api/lib/semantic/entities` cover this lookup with their
+  // existing mocks instead of breaking on the content-mode transitive
+  // import chain.
+  const groupMembers = new Map<string, string[]>();
+  try {
+    const memberRows = await listConnectionGroupMembers(orgId);
+    for (const { group_id, id } of memberRows) {
+      const list = groupMembers.get(group_id) ?? [];
+      list.push(id);
+      groupMembers.set(group_id, list);
+    }
+  } catch (err) {
+    log.warn(
+      { orgId, err: err instanceof Error ? err.message : String(err) },
+      "loadOrgWhitelist: failed to resolve group memberships — falling back to per-row keys",
+    );
+  }
+
   const byConnection = new Map<string, Set<string>>();
+  /**
+   * Register the entity's tables under every key the whitelist should
+   * accept: the explicit YAML `connection`, the row's `connection_id`,
+   * its `connection_group_id`, and every fellow group member. Multiple
+   * registrations of the same key share the underlying Set, so a
+   * second entity for the same group accretes onto the existing
+   * table set (correct fan-in semantics).
+   */
+  function recordTables(row: typeof rows[number], parsedConnection: string | undefined, tableList: string[]): void {
+    const keys = new Set<string>();
+    if (parsedConnection) keys.add(parsedConnection);
+    if (row.connection_id) keys.add(row.connection_id);
+    if (row.connection_group_id) {
+      keys.add(row.connection_group_id);
+      for (const member of groupMembers.get(row.connection_group_id) ?? []) {
+        keys.add(member);
+      }
+    }
+    if (keys.size === 0) keys.add("default");
+
+    for (const key of keys) {
+      let bucket = byConnection.get(key);
+      if (!bucket) {
+        bucket = new Set();
+        byConnection.set(key, bucket);
+      }
+      for (const t of tableList) bucket.add(t);
+    }
+  }
+
   let parseFailures = 0;
   for (const row of rows) {
     try {
@@ -490,13 +551,10 @@ export async function loadOrgWhitelist(orgId: string, mode?: "published" | "deve
         log.warn({ orgId, entity: row.name, err: parsed.error.message }, "Skipping org entity — failed to validate");
         continue;
       }
-      const connId = parsed.data.connection ?? row.connection_id ?? "default";
-      if (!byConnection.has(connId)) byConnection.set(connId, new Set());
-      const tables = byConnection.get(connId)!;
       const normalized = normalizeTableIdentifier(parsed.data.table);
       const parts = normalized.split(".");
-      tables.add(parts[parts.length - 1].toLowerCase());
-      tables.add(normalized.toLowerCase());
+      const tableList = [parts[parts.length - 1].toLowerCase(), normalized.toLowerCase()];
+      recordTables(row, parsed.data.connection ?? undefined, tableList);
     } catch (err) {
       parseFailures++;
       log.warn(

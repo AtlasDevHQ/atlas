@@ -169,7 +169,7 @@ const DRAFT_ACTIVITY_SQL = `
     INNER JOIN semantic_entities pub
       ON d.org_id = pub.org_id
      AND d.name = pub.name
-     AND ${matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "pub" })}
+     AND ${matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "pub", column: "connection_group_id" })}
    WHERE d.org_id = $1 AND d.status = 'draft' AND pub.status = 'published'
   UNION ALL
   SELECT 'entityDeletes' AS key, MAX(updated_at) AS at FROM semantic_entities

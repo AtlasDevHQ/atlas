@@ -84,6 +84,12 @@
                   "conversationId": {
                     "type": "string",
                     "format": "uuid"
+                  },
+                  "connectionId": {
+                    "type": "string"
+                  },
+                  "connectionGroupId": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -1814,6 +1820,12 @@
                               "null"
                             ]
                           },
+                          "connectionGroupId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "starred": {
                             "type": "boolean"
                           },
@@ -1911,6 +1923,7 @@
                           "title",
                           "surface",
                           "connectionId",
+                          "connectionGroupId",
                           "starred",
                           "createdAt",
                           "updatedAt"
@@ -2075,6 +2088,12 @@
                         "null"
                       ]
                     },
+                    "connectionGroupId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "starred": {
                       "type": "boolean"
                     },
@@ -2208,6 +2227,7 @@
                     "title",
                     "surface",
                     "connectionId",
+                    "connectionGroupId",
                     "starred",
                     "createdAt",
                     "updatedAt",
@@ -8030,6 +8050,113 @@
           }
         },
         "operationId": "getMode"
+      }
+    },
+    "/api/v1/me/connection-groups": {
+      "get": {
+        "tags": [
+          "Me — Connection Groups"
+        ],
+        "summary": "List connection groups visible to the user",
+        "description": "Returns connection groups for the active organization with their members. Scoped to the caller's workspace. Read-only — group mutations live under the admin router.",
+        "responses": {
+          "200": {
+            "description": "Connection group list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "groups": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "members": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "connectionId": {
+                                  "type": "string"
+                                },
+                                "dbType": {
+                                  "type": "string"
+                                },
+                                "description": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "connectionId",
+                                "dbType",
+                                "description"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "members"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "groups"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getMeConnectionGroups"
       }
     },
     "/api/v1/starter-prompts": {
@@ -68840,6 +68967,9 @@
     },
     {
       "name": "Health"
+    },
+    {
+      "name": "Me — Connection Groups"
     },
     {
       "name": "Me — MCP Prompts"

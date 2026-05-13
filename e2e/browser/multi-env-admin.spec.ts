@@ -404,3 +404,153 @@ test.describe("dashboards — group-scoped card retarget (#2342)", () => {
     expect(json.groups[0]?.resolvedConnectionId).toBeNull();
   });
 });
+
+// ── Chat env/member picker (#2345) ─────────────────────────────────
+//
+// Mirrors the published-vs-draft pattern but exercises the user-facing
+// chat surface: a three-member "prod" group must collapse to one row in
+// the picker dropdown grouped under "prod", the active member chip
+// reflects the current selection, and choosing a different member
+// stamps the override into the chat request body without persisting
+// back to the conversation.
+
+interface ChatEnvFixture {
+  groups: Array<{
+    id: string;
+    name: string;
+    members: Array<{ connectionId: string; dbType: string; description: string | null }>;
+  }>;
+}
+
+function buildChatEnvFixture(): ChatEnvFixture {
+  // Three-member "prod" group + a single-member "staging" group —
+  // matches the prompt's "three-member group, send a chat turn against
+  // 'us-int', per-turn override to 'eu'" acceptance criterion.
+  return {
+    groups: [
+      {
+        id: "g_prod",
+        name: "prod",
+        members: [
+          { connectionId: "us-int", dbType: "postgres", description: "US internal" },
+          { connectionId: "eu", dbType: "postgres", description: "EU mirror" },
+          { connectionId: "apac", dbType: "postgres", description: "APAC mirror" },
+        ],
+      },
+      {
+        id: "g_staging",
+        name: "staging",
+        members: [
+          { connectionId: "staging-us", dbType: "postgres", description: "Staging" },
+        ],
+      },
+    ],
+  };
+}
+
+async function installChatEnvMocks(
+  page: Page,
+  fixture: ChatEnvFixture,
+  captured: { lastChatBody: Record<string, unknown> | null },
+): Promise<void> {
+  // Auth health probe — return a "managed" mode so the chat surface
+  // renders the signed-in shell where the picker lives.
+  await page.route(/\/api\/health/, async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ checks: { auth: { mode: "managed" } } }),
+    });
+  });
+
+  // Connection-groups feed for the picker.
+  await page.route(/\/api\/v1\/me\/connection-groups(\?|$)/, async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ groups: fixture.groups }),
+    });
+  });
+
+  // Conversations list — empty so we go to the empty-chat state.
+  await page.route(/\/api\/v1\/conversations(\?|$)/, async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ conversations: [], total: 0 }),
+    });
+  });
+
+  // Capture the chat POST body so the test can assert what the
+  // picker selection produced. The mock terminates the stream early
+  // with a single text-delta frame so the test isn't waiting on the
+  // model.
+  await page.route(/\/api\/v1\/chat$/, async (route: Route) => {
+    const req = route.request();
+    if (req.method() === "POST") {
+      try {
+        captured.lastChatBody = JSON.parse(req.postData() ?? "{}") as Record<string, unknown>;
+      } catch {
+        captured.lastChatBody = null;
+      }
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      headers: { "x-conversation-id": "conv-2345-test" },
+      body: 'data: {"type":"text-delta","delta":"ok"}\n\ndata: {"type":"finish"}\n\n',
+    });
+  });
+}
+
+test.describe("chat env/member picker (#2345)", () => {
+  test("@llm three-member group surfaces three options under one 'prod' label", async ({ page }) => {
+    const captured = { lastChatBody: null as Record<string, unknown> | null };
+    await installChatEnvMocks(page, buildChatEnvFixture(), captured);
+
+    await page.goto("/");
+
+    // Trigger the picker dropdown.
+    const trigger = page.getByTestId("chat-env-picker-trigger");
+    await expect(trigger).toBeVisible();
+    await trigger.click();
+
+    // All three prod members + one staging member render under their
+    // respective group headers. The "prod" group's three rows are the
+    // collapse-promise of #2340: one entity per logical name even with
+    // three replica connections.
+    await expect(page.getByTestId("chat-env-picker-member-us-int")).toBeVisible();
+    await expect(page.getByTestId("chat-env-picker-member-eu")).toBeVisible();
+    await expect(page.getByTestId("chat-env-picker-member-apac")).toBeVisible();
+    await expect(page.getByTestId("chat-env-picker-member-staging-us")).toBeVisible();
+  });
+
+  test("@llm per-turn override stamps connectionId into the chat request body", async ({ page }) => {
+    const captured = { lastChatBody: null as Record<string, unknown> | null };
+    await installChatEnvMocks(page, buildChatEnvFixture(), captured);
+
+    await page.goto("/");
+
+    // Pick the "eu" replica from the dropdown — the picker's onSelect
+    // stamps both `connectionGroupId` (sticky content scope) and
+    // `connectionId` (per-turn execution target) into the next chat
+    // body.
+    await page.getByTestId("chat-env-picker-trigger").click();
+    await page.getByTestId("chat-env-picker-member-eu").click();
+
+    // The trigger label now reads "prod / eu".
+    await expect(page.getByTestId("chat-env-picker-label")).toHaveText(/prod\s*\/\s*eu/);
+
+    // Send a chat turn — the captured POST body carries the routing
+    // fields the agent reads via RequestContext.
+    await page.locator("textarea, input[type=text]").first().fill("query against eu");
+    await page.keyboard.press("Enter");
+    await page.waitForResponse(/\/api\/v1\/chat$/);
+
+    expect(captured.lastChatBody).toMatchObject({
+      connectionId: "eu",
+      connectionGroupId: "g_prod",
+    });
+  });
+});
+

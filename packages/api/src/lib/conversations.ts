@@ -104,6 +104,7 @@ function rowToConversation(r: Record<string, unknown>): Conversation {
     title: (r.title as string) ?? null,
     surface: (r.surface as Surface) ?? "web",
     connectionId: (r.connection_id as string) ?? null,
+    connectionGroupId: (r.connection_group_id as string) ?? null,
     starred: r.starred === true,
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
@@ -131,15 +132,23 @@ export async function createConversation(opts: {
   userId?: string | null;
   title?: string | null;
   surface?: string;
+  /** Execution target. */
   connectionId?: string | null;
+  /**
+   * Content scope. When omitted but `connectionId` is provided, the
+   * caller is expected to resolve the group via {@link resolveGroupForConnection}
+   * before invoking; this helper does not do the join itself so that
+   * `addMessage`-style fire-and-forget shape is preserved.
+   */
+  connectionGroupId?: string | null;
   orgId?: string | null;
 }): Promise<{ id: string } | null> {
   if (!hasInternalDB()) return null;
   try {
     const rows = opts.id
       ? await internalQuery<{ id: string }>(
-          `INSERT INTO conversations (id, user_id, title, surface, connection_id, org_id)
-           VALUES ($1, $2, $3, $4, $5, $6)
+          `INSERT INTO conversations (id, user_id, title, surface, connection_id, connection_group_id, org_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
            RETURNING id`,
           [
             opts.id,
@@ -147,24 +156,62 @@ export async function createConversation(opts: {
             opts.title ?? null,
             opts.surface ?? "web",
             opts.connectionId ?? null,
+            opts.connectionGroupId ?? null,
             opts.orgId ?? null,
           ],
         )
       : await internalQuery<{ id: string }>(
-          `INSERT INTO conversations (user_id, title, surface, connection_id, org_id)
-           VALUES ($1, $2, $3, $4, $5)
+          `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, org_id)
+           VALUES ($1, $2, $3, $4, $5, $6)
            RETURNING id`,
           [
             opts.userId ?? null,
             opts.title ?? null,
             opts.surface ?? "web",
             opts.connectionId ?? null,
+            opts.connectionGroupId ?? null,
             opts.orgId ?? null,
           ],
         );
     return rows[0] ?? null;
   } catch (err) {
     log.error({ err: errorMessage(err) }, "createConversation failed");
+    return null;
+  }
+}
+
+/**
+ * Resolve a connection's group id, using the 0062 1:1 backfill as the
+ * source of truth. Returns `null` when:
+ *   - The internal DB is unavailable.
+ *   - The connection id is not present in `connections` for this org
+ *     (or `__global__`).
+ *   - The connection has no group_id (legacy single-connection deploy
+ *     that came up before 0062 ran and was never backfilled).
+ *
+ * The caller is expected to treat `null` as "fall back to legacy
+ * single-connection behavior" — the multi-environment routing only
+ * kicks in when the connection participates in a group.
+ */
+export async function resolveGroupForConnection(
+  connectionId: string,
+  orgId?: string | null,
+): Promise<string | null> {
+  if (!hasInternalDB()) return null;
+  try {
+    const rows = await internalQuery<{ group_id: string | null }>(
+      `SELECT group_id FROM connections
+        WHERE id = $1
+          AND (org_id = $2 OR org_id = '__global__')
+        LIMIT 1`,
+      [connectionId, orgId ?? null],
+    );
+    return rows[0]?.group_id ?? null;
+  } catch (err) {
+    log.warn(
+      { err: errorMessage(err), connectionId },
+      "resolveGroupForConnection failed — caller will fall back to legacy single-connection routing",
+    );
     return null;
   }
 }
@@ -427,7 +474,7 @@ export async function getConversation(
   try {
     const scope = scopeClause(2, userId, orgId);
     const convRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, user_id, title, surface, connection_id, starred, notebook_state, created_at, updated_at
+      `SELECT id, user_id, title, surface, connection_id, connection_group_id, starred, notebook_state, created_at, updated_at
        FROM conversations WHERE id = $1${scope.sql}`,
       [id, ...scope.params],
     );
@@ -499,7 +546,7 @@ export async function listConversations(opts?: {
       params,
     );
     const dataRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, user_id, title, surface, connection_id, starred, created_at, updated_at
+      `SELECT id, user_id, title, surface, connection_id, connection_group_id, starred, created_at, updated_at
        FROM conversations ${where}
        ORDER BY updated_at DESC LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
       [...params, limit, offset],
@@ -576,7 +623,7 @@ export async function forkConversation(opts: {
     // source row's org_id; scopeClause rejects mismatches (NULL-safe for legacy rows).
     const sourceScope = scopeClause(2, opts.userId, opts.orgId);
     const sourceRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, title, surface, connection_id, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
+      `SELECT id, title, surface, connection_id, connection_group_id, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
       [opts.sourceId, ...sourceScope.params],
     );
     if (sourceRows.length === 0) return { ok: false, reason: "not_found" };
@@ -607,16 +654,19 @@ export async function forkConversation(opts: {
       ? toISOTimestamp(nextMsg[0].created_at)
       : forkTimestamp;
 
-    // Create new conversation
+    // Create new conversation. Carries forward both routing columns —
+    // a fork inherits the source's execution target AND content scope so
+    // the user keeps the same env context after branching.
     const orgId = opts.orgId ?? (source.org_id as string) ?? null;
     const newConv = await internalQuery<{ id: string }>(
-      `INSERT INTO conversations (user_id, title, surface, connection_id, org_id)
-       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, org_id)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
       [
         opts.userId ?? null,
         `${sourceTitle} (fork)`,
         (source.surface as string) ?? "web",
         (source.connection_id as string) ?? null,
+        (source.connection_group_id as string) ?? null,
         orgId,
       ],
     );
@@ -760,7 +810,7 @@ export async function convertToNotebook(opts: {
     // Verify source exists and caller has access in both the user + org dimensions.
     const sourceScope = scopeClause(2, opts.userId, opts.orgId);
     const sourceRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, title, surface, connection_id, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
+      `SELECT id, title, surface, connection_id, connection_group_id, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
       [opts.sourceId, ...sourceScope.params],
     );
     if (sourceRows.length === 0) return { ok: false, reason: "not_found" };
@@ -769,15 +819,18 @@ export async function convertToNotebook(opts: {
     const sourceTitle = (source.title as string) ?? "Conversation";
     const orgId = opts.orgId ?? (source.org_id as string) ?? null;
 
-    // Create new conversation with surface "notebook"
+    // Create new conversation with surface "notebook". Carries forward
+    // both routing columns so the notebook preserves the source's env
+    // context.
     const newConv = await internalQuery<{ id: string }>(
-      `INSERT INTO conversations (user_id, title, surface, connection_id, org_id)
-       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, org_id)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
       [
         opts.userId ?? null,
         `${sourceTitle} (notebook)`,
         "notebook",
         (source.connection_id as string) ?? null,
+        (source.connection_group_id as string) ?? null,
         orgId,
       ],
     );
@@ -1019,7 +1072,7 @@ export async function getSharedConversation(
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
     const convRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, user_id, org_id, title, surface, connection_id, starred, share_expires_at, share_mode, notebook_state, created_at, updated_at
+      `SELECT id, user_id, org_id, title, surface, connection_id, connection_group_id, starred, share_expires_at, share_mode, notebook_state, created_at, updated_at
        FROM conversations
        WHERE share_token = $1`,
       [token],

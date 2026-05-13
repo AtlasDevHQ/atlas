@@ -79,9 +79,9 @@ describe("runMigrations", () => {
 
     const count = await runMigrations(pool);
 
-    // 64 base + 0064 (PII, #2341) + 0065 (approvals, #2344) + 0066 (dashboards, #2342) = 67.
-    // Bump when the next 1.4.4 group-scoped slice lands.
-    expect(count).toBe(67);
+    // 64 base + 0064 (PII, #2341) + 0065 (approvals, #2344) + 0066 (dashboards, #2342)
+    // + 0067 (conversations, #2345) = 68. Bump when the next 1.4.4 slice lands.
+    expect(count).toBe(68);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -177,6 +177,7 @@ describe("runMigrations", () => {
         "0064_pii_group_scoped.sql",
         "0065_approvals_group_scoped.sql",
         "0066_dashboards_group_scoped.sql",
+        "0067_conversations_group_aware.sql",
       ],
     });
 

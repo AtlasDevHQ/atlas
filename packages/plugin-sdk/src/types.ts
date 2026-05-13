@@ -468,6 +468,24 @@ export interface McpToolContext {
   readonly requestId: string;
   /** Owning plugin id (matches the `<plugin-id>.<name>` namespace). */
   readonly pluginId: string;
+  /**
+   * #2345 — group-aware routing surfaced additively to plugin tools.
+   *
+   * `connectionId` is the conversation's *execution target* (or the
+   * per-turn override) — pass through to `executeSQL` or any other
+   * connection-keyed tool the plugin invokes. Absent when the
+   * dispatch is not chat-routed (legacy single-connection deploy,
+   * scheduler context, ad-hoc MCP call with no env picker).
+   *
+   * `connectionGroupId` is the *content scope* — the connection group
+   * whose entities, dashboards, and approvals resolve for this turn.
+   * Decoupled from `connectionId` (a multi-member "prod" group may
+   * resolve content while `connectionId` targets a single replica),
+   * so a plugin that overlays group-scoped content should read this
+   * field rather than reaching for `connectionId`.
+   */
+  readonly connectionId?: string;
+  readonly connectionGroupId?: string;
   /** Pino-compatible child logger scoped to the plugin + tool. */
   readonly logger: PluginLogger;
   /**

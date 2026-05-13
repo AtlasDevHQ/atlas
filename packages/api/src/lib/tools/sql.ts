@@ -1289,7 +1289,12 @@ export const executeSQL = tool({
   }),
 
   execute: async ({ sql, explanation, connectionId }) => {
-    const connId = connectionId ?? "default";
+    // Chat routes stamp the user-selected per-turn connection into
+    // RequestContext. The model normally omits `connectionId`, so fall back to
+    // that routed context before the legacy default to avoid executing against
+    // the wrong environment while conversation metadata says otherwise.
+    const requestContextConnectionId = getRequestContext()?.connectionId;
+    const connId = connectionId ?? requestContextConnectionId ?? "default";
 
     // The full pipeline runs as an Effect.gen program. Tagged errors flow through
     // the error channel; expected rejections (validation, approval, cache) return

@@ -77,6 +77,13 @@ const ConversationSchema = z.object({
   title: z.string().nullable(),
   surface: z.enum(["web", "api", "mcp", "slack", "notebook"]),
   connectionId: z.string().nullable(),
+  /**
+   * Connection group (content scope) the conversation resolves against —
+   * decoupled from `connectionId` so per-turn execution overrides do not
+   * shift the entity / dashboard overlay. Nullable for legacy
+   * conversations created before the multi-environment slice (#2345).
+   */
+  connectionGroupId: z.string().nullable(),
   starred: z.boolean(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),

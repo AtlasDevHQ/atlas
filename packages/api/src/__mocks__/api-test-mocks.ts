@@ -598,6 +598,11 @@ export function createApiTestMocks(
     renameBranch: mock(() =>
       Promise.resolve({ ok: false, reason: "not_found" }),
     ),
+    // #2345 — group-aware routing. Default to "no group" so chat-route
+    // tests that don't exercise the multi-env flow continue to create
+    // conversations with `connection_group_id = NULL`. Tests that
+    // exercise the routing override this mock locally via mock.module.
+    resolveGroupForConnection: mock(() => Promise.resolve(null)),
   }));
 
   // ── Security ──────────────────────────────────────────────────

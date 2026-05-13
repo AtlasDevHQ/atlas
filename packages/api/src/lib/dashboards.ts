@@ -875,9 +875,11 @@ export async function refreshDashboardCards(dashboardId: string): Promise<{
         failed++;
         continue;
       }
-      const db = resolvedConnectionId
-        ? connections.get(resolvedConnectionId)
-        : connections.getDefault();
+      const db = dashboardOrgId
+        ? connections.getForOrg(dashboardOrgId, resolvedConnectionId ?? undefined)
+        : resolvedConnectionId
+          ? connections.get(resolvedConnectionId)
+          : connections.getDefault();
       const queryResult = await db.query(card.sql, 30000);
       const result = await refreshCard(card.id, dashboardId, {
         columns: queryResult.columns,

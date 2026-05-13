@@ -11,7 +11,7 @@ import type { SemanticTableDiff, SemanticDiffResponse } from "@useatlas/types";
 import type { AtlasMode } from "@useatlas/types/auth";
 import { createLogger } from "@atlas/api/lib/logger";
 import { connections } from "@atlas/api/lib/db/connection";
-import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { getSemanticRoot, readYamlFile, discoverEntities } from "./files";
 import {
   getOrgWhitelistedTables,
@@ -355,10 +355,22 @@ export async function getYAMLSnapshotsFromDB(
   const rows = atlasMode === "developer"
     ? await listEntitiesWithOverlay(orgId, "entity")
     : await listEntityRows(orgId, "entity", "published");
+  const groupRows = await internalQuery<{ group_id: string | null }>(
+    `SELECT group_id FROM connections
+      WHERE id = $1 AND (org_id = $2 OR org_id = '__global__')
+      ORDER BY CASE WHEN org_id = $2 THEN 0 ELSE 1 END
+      LIMIT 1`,
+    [connectionId, orgId],
+  );
+  const connectionGroupId = groupRows[0]?.group_id ?? null;
 
   for (const row of rows) {
-    const rowConnection = row.connection_id ?? "default";
-    if (rowConnection !== connectionId) continue;
+    if (row.connection_group_id) {
+      if (row.connection_group_id !== connectionGroupId) continue;
+    } else {
+      const rowConnection = row.connection_id ?? "default";
+      if (rowConnection !== connectionId) continue;
+    }
     try {
       const doc = yaml.load(row.yaml_content) as Record<string, unknown> | null;
       if (!doc || typeof doc.table !== "string") continue;

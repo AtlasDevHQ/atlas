@@ -46,6 +46,7 @@ beforeAll(async () => {
     CREATE TABLE connections (
       id TEXT NOT NULL,
       org_id TEXT NOT NULL,
+      group_id TEXT,
       status TEXT NOT NULL DEFAULT 'published',
       PRIMARY KEY (id, org_id)
     );
@@ -56,6 +57,7 @@ beforeAll(async () => {
       name TEXT NOT NULL,
       yaml_content TEXT NOT NULL,
       connection_id TEXT,
+      connection_group_id TEXT,
       status TEXT NOT NULL DEFAULT 'published',
       created_at TEXT NOT NULL DEFAULT 'now',
       updated_at TEXT NOT NULL DEFAULT 'now'

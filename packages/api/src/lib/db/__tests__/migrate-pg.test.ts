@@ -365,4 +365,48 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
     expect(rows.length).toBe(0);
   }, PG_TEST_TIMEOUT_MS);
+
+  // 0063 — semantic_entities.connection_group_id. The unique natural key
+  // moved from connection_id to connection_group_id while keeping entity_type
+  // in the expression index. This is the same class of boot-risk as 0028:
+  // if entity_type is omitted, metrics and entities with the same name collide.
+  it("semantic_entities.connection_group_id: column exists", async () => {
+    const { rows } = await pool.query<{ is_nullable: string; data_type: string }>(
+      `SELECT is_nullable, data_type
+       FROM information_schema.columns
+       WHERE table_name = 'semantic_entities'
+         AND column_name = 'connection_group_id'
+         AND table_schema = current_schema()`,
+    );
+    expect(rows[0]?.data_type).toBe("text");
+    expect(rows[0]?.is_nullable).toBe("YES");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("semantic_entities: group-scoped unique key keeps entity_type in the key", async () => {
+    const orgId = `org-sem-group-${Date.now()}`;
+    const groupId = `g-sem-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'prod')`,
+      [groupId, orgId],
+    );
+
+    await pool.query(
+      `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
+       VALUES ($1, 'entity', 'accounts', 'table: accounts', $2, 'published')`,
+      [orgId, groupId],
+    );
+    await pool.query(
+      `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
+       VALUES ($1, 'metric', 'accounts', 'sql: count(*)', $2, 'published')`,
+      [orgId, groupId],
+    );
+
+    await expect(
+      pool.query(
+        `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
+         VALUES ($1, 'entity', 'accounts', 'table: accounts_v2', $2, 'published')`,
+        [orgId, groupId],
+      ),
+    ).rejects.toMatchObject({ code: "23505" });
+  }, PG_TEST_TIMEOUT_MS);
 });

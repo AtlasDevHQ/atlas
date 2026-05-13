@@ -60,6 +60,8 @@ export interface ExportedSemanticEntity {
   entityType: string;
   yamlContent: string;
   connectionId: string | null;
+  /** Additive 1.4.4 transition field. Replaces connectionId in the next major wire format. */
+  connectionGroupId?: string | null;
 }
 
 /** Exported learned pattern. */

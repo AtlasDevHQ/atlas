@@ -46,16 +46,18 @@ const TombstoneRowSchema = z.object({
 
 const EntityEditRowSchema = z.object({
   id: z.string(),
-  /** Entity name; the published row with the same `(name, connection_id)` will be replaced. */
+  /** Entity name; the published row with the same `(name, connection_group_id)` will be replaced. */
   label: z.string(),
-  /** Connection scope — `null` for `default` to match the published-side overlay key. */
+  /** Legacy connection scope retained during the transition. */
   connectionId: z.string().nullable(),
+  /** Connection group scope — `null` for `default` to match the published-side overlay key. */
+  connectionGroupId: z.string().nullable(),
   updatedAt: z.string().datetime(),
 });
 
 const PublishPreviewSchema = z.object({
   connections: z.array(DraftRowSchema),
-  /** Drafts of new entities (no published row exists yet for that `(name, connection_id)`). */
+  /** Drafts of new entities (no published row exists yet for that `(name, connection_group_id)`). */
   entities: z.array(DraftRowSchema),
   /** Drafts that supersede an existing published entity row. */
   entityEdits: z.array(EntityEditRowSchema),
@@ -110,6 +112,7 @@ type DbRow = {
   label: string;
   updated_at: Date | string | null;
   connection_id?: string | null;
+  connection_group_id?: string | null;
 } & Record<string, unknown>;
 
 /** Coerce pg timestamptz → ISO-8601 string, falling back to epoch-zero so
@@ -159,13 +162,15 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
       // `CONTENT_MODE_TABLES` so the two lists never overlap.
       internalQuery<DbRow>(
         `SELECT d.id::text AS id, d.name AS label, d.updated_at,
-                d.connection_id
+                d.connection_id,
+                d.connection_group_id
            FROM semantic_entities d
           WHERE d.org_id = $1
             AND d.status = 'draft'
             AND NOT EXISTS (
               SELECT 1 FROM semantic_entities pub
                WHERE pub.org_id = d.org_id
+                 AND pub.entity_type = d.entity_type
                  AND pub.name = d.name
                  AND ${matchScopeAcrossAliases({ leftAlias: "pub", rightAlias: "d" })}
                  AND pub.status = 'published'
@@ -175,10 +180,12 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
       ),
       internalQuery<DbRow>(
         `SELECT d.id::text AS id, d.name AS label, d.updated_at,
-                d.connection_id
+                d.connection_id,
+                d.connection_group_id
            FROM semantic_entities d
            INNER JOIN semantic_entities pub
              ON d.org_id = pub.org_id
+            AND d.entity_type = pub.entity_type
             AND d.name = pub.name
             AND ${matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "pub" })}
           WHERE d.org_id = $1
@@ -225,6 +232,7 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
         id: r.id,
         label: r.label,
         connectionId: r.connection_id ?? null,
+        connectionGroupId: r.connection_group_id ?? null,
         updatedAt: toIso(r.updated_at),
       })),
       entityDeletes: entityDeleteRows.map((r) => ({

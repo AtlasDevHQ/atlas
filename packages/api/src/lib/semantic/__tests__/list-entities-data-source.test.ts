@@ -47,6 +47,7 @@ const mockInternalQuery = mock(async (_sql: string, params: unknown[]) => {
       r.description ? `description: ${r.description}\n` : ""
     }`,
     connection_id: r.connection_id ?? null,
+    connection_group_id: null,
     status: "published" as const,
     created_at: "2026-01-01",
     updated_at: "2026-01-01",
@@ -310,6 +311,7 @@ describe("listEntities — EntityShape parity with loadOrgWhitelist", () => {
         name: "broken",
         yaml_content: "description: missing table field\n",
         connection_id: null,
+        connection_group_id: null,
         status: "published",
         created_at: "2026-01-01",
         updated_at: "2026-01-01",
@@ -338,6 +340,7 @@ describe("listEntities — EntityShape parity with loadOrgWhitelist", () => {
         name: "malformed",
         yaml_content: "table: orders\ndimensions:\n  - {invalid",
         connection_id: null,
+        connection_group_id: null,
         status: "published",
         created_at: "2026-01-01",
         updated_at: "2026-01-01",

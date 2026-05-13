@@ -26,6 +26,7 @@ interface SemanticFileTreeProps {
    * without the treatment shouting at non-draft rows (#1435).
    */
   draftEntityNames?: ReadonlySet<string>;
+  entityBadges?: ReadonlyMap<string, string>;
   className?: string;
 }
 
@@ -43,6 +44,7 @@ function FileItem({
   onClick,
   indent = 0,
   draft = false,
+  badge,
 }: {
   name: string;
   selected: boolean;
@@ -50,6 +52,7 @@ function FileItem({
   indent?: number;
   /** Quiet amber accent to signal "this is a draft" without shouting. */
   draft?: boolean;
+  badge?: string;
 }) {
   return (
     <button
@@ -67,6 +70,11 @@ function FileItem({
     >
       <File className="size-4 shrink-0 opacity-60" />
       <span className="truncate">{name}</span>
+      {badge && (
+        <span className="ml-auto max-w-[7rem] shrink-0 truncate rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+          {badge}
+        </span>
+      )}
     </button>
   );
 }
@@ -109,6 +117,7 @@ export function SemanticFileTree({
   selection,
   onSelect,
   draftEntityNames,
+  entityBadges,
   className,
 }: SemanticFileTreeProps) {
   return (
@@ -150,6 +159,7 @@ export function SemanticFileTree({
                   onClick={() => onSelect({ type: "entity", name })}
                   indent={1}
                   draft={draftEntityNames?.has(name) ?? false}
+                  badge={entityBadges?.get(name)}
                 />
               ))
             )}

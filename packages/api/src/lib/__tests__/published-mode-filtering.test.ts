@@ -87,6 +87,7 @@ function makeEntityRow(
     name,
     yaml_content: `table: ${table}\n${connectionId ? `connection: ${connectionId}\n` : ""}`,
     connection_id: connectionId ?? null,
+    connection_group_id: null,
     status,
     created_at: "2026-01-01",
     updated_at: "2026-01-01",

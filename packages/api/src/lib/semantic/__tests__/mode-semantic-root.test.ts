@@ -65,6 +65,7 @@ function row(name: string, status: SemanticEntityRow["status"] = "published"): S
     name,
     yaml_content: `table: ${name}\n`,
     connection_id: null,
+    connection_group_id: null,
     status,
     created_at: "2026-01-01",
     updated_at: "2026-01-01",

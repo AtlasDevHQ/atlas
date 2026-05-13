@@ -41,7 +41,7 @@ describe("migration types", () => {
         },
       ],
       semanticEntities: [
-        { name: "users", entityType: "entity", yamlContent: "table: users", connectionId: null },
+        { name: "users", entityType: "entity", yamlContent: "table: users", connectionId: null, connectionGroupId: null },
       ],
       learnedPatterns: [],
       settings: [],

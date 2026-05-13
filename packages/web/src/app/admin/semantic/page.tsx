@@ -59,6 +59,7 @@ interface EntitySummary {
   table: string;
   description: string;
   columnCount: number;
+  source?: string;
 }
 
 interface GlossaryTerm {
@@ -462,6 +463,7 @@ export default function SemanticPage() {
           table: typeof e.table === "string" ? e.table : (typeof e.name === "string" ? e.name : ""),
           description: typeof e.description === "string" ? e.description : "",
           columnCount: typeof e.columnCount === "number" ? e.columnCount : 0,
+          source: typeof e.source === "string" && e.source !== "default" ? e.source : undefined,
         })).filter((e) => e.table.length > 0);
         const dropped = rawEntities.length - normalized.length;
         if (dropped > 0) {
@@ -652,6 +654,10 @@ export default function SemanticPage() {
   };
 
   const entityNames = entities.map((e) => e.table).toSorted();
+  const entityBadges = new Map(
+    entities
+      .flatMap((entity) => entity.source ? [[entity.table, entity.source] as const] : []),
+  );
   const metricFileNames = (() => {
     const files = new Set<string>();
     for (const m of metrics) {
@@ -793,6 +799,7 @@ export default function SemanticPage() {
           selection={selection}
           onSelect={handleSelect}
           draftEntityNames={draftEntityNames}
+          entityBadges={entityBadges}
           className="w-64 shrink-0 border-r"
         />
 

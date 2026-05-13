@@ -25,6 +25,7 @@ import * as yaml from "js-yaml";
 import { z } from "zod";
 import { getSemanticRoot as getDefaultSemanticRoot } from "./files";
 import { createLogger } from "@atlas/api/lib/logger";
+import { internalQuery } from "@atlas/api/lib/db/internal";
 import { invalidateSemanticIndex } from "./search";
 import { getEntityDirs } from "./scanner";
 import { invalidateOrgModeRoots } from "./sync";
@@ -479,6 +480,26 @@ export async function loadOrgWhitelist(orgId: string, mode?: "published" | "deve
     ? await listEntitiesWithOverlay(orgId, "entity")
     : await listEntityRows(orgId, "entity", mode === "published" ? "published" : undefined);
 
+  const groupIds = Array.from(
+    new Set(rows.map((row) => row.connection_group_id).filter((id): id is string => typeof id === "string" && id.length > 0)),
+  );
+  const membersByGroup = new Map<string, string[]>();
+  if (groupIds.length > 0) {
+    const memberRows = await internalQuery<{ group_id: string; id: string }>(
+      `SELECT group_id, id
+         FROM connections
+        WHERE (org_id = $1 OR org_id = '__global__')
+          AND group_id = ANY($2::text[])
+          AND status != 'archived'`,
+      [orgId, groupIds],
+    );
+    for (const member of memberRows) {
+      const existing = membersByGroup.get(member.group_id) ?? [];
+      existing.push(member.id);
+      membersByGroup.set(member.group_id, existing);
+    }
+  }
+
   const byConnection = new Map<string, Set<string>>();
   let parseFailures = 0;
   for (const row of rows) {
@@ -490,13 +511,17 @@ export async function loadOrgWhitelist(orgId: string, mode?: "published" | "deve
         log.warn({ orgId, entity: row.name, err: parsed.error.message }, "Skipping org entity — failed to validate");
         continue;
       }
-      const connId = parsed.data.connection ?? row.connection_id ?? "default";
-      if (!byConnection.has(connId)) byConnection.set(connId, new Set());
-      const tables = byConnection.get(connId)!;
       const normalized = normalizeTableIdentifier(parsed.data.table);
       const parts = normalized.split(".");
-      tables.add(parts[parts.length - 1].toLowerCase());
-      tables.add(normalized.toLowerCase());
+      const tableNames = [parts[parts.length - 1].toLowerCase(), normalized.toLowerCase()];
+      const connectionIds = row.connection_group_id
+        ? (membersByGroup.get(row.connection_group_id) ?? [])
+        : [parsed.data.connection ?? row.connection_id ?? "default"];
+      for (const connId of connectionIds) {
+        if (!byConnection.has(connId)) byConnection.set(connId, new Set());
+        const tables = byConnection.get(connId)!;
+        for (const tableName of tableNames) tables.add(tableName);
+      }
     } catch (err) {
       parseFailures++;
       log.warn(

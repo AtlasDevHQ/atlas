@@ -14,6 +14,7 @@ const dbRow = (over: Partial<SemanticEntityRow> & Pick<SemanticEntityRow, "name"
   name: over.name,
   yaml_content: over.yaml_content,
   connection_id: over.connection_id ?? null,
+  connection_group_id: over.connection_group_id ?? null,
   status: over.status ?? "published",
   created_at: over.created_at ?? "2026-01-01",
   updated_at: over.updated_at ?? "2026-01-02",
@@ -69,6 +70,7 @@ measures:
       status: "draft",
       sourceKind: "db",
       connectionId: "warehouse",
+      connectionGroupId: null,
       updatedAt: "2026-03-01T00:00:00Z",
     } satisfies AdminEntitySummary);
   });
@@ -200,6 +202,7 @@ describe("mergeAdminEntities", () => {
       status: "published",
       sourceKind: "db",
       connectionId: null,
+      connectionGroupId: null,
       updatedAt: "2026-01-02",
     } satisfies AdminEntitySummary);
   });

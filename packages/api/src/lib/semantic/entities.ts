@@ -70,10 +70,31 @@ export interface SemanticEntityRow {
   name: string;
   yaml_content: string;
   connection_id: string | null;
+  connection_group_id: string | null;
   status: SemanticEntityStatus;
   created_at: string;
   updated_at: string;
   [key: string]: unknown;
+}
+
+const ENTITY_ROW_COLUMNS =
+  "id, org_id, entity_type, name, yaml_content, connection_id, connection_group_id, status, created_at, updated_at";
+
+async function resolveConnectionGroupId(
+  orgId: string,
+  connectionId: string | null | undefined,
+): Promise<string | null> {
+  if (!connectionId || !hasInternalDB()) return null;
+  const rows = await internalQuery<{ group_id: string | null }>(
+    `SELECT group_id
+       FROM connections
+      WHERE id = $1
+        AND (org_id = $2 OR org_id = '__global__')
+      ORDER BY CASE WHEN org_id = $2 THEN 0 ELSE 1 END
+      LIMIT 1`,
+    [connectionId, orgId],
+  );
+  return rows[0]?.group_id ?? null;
 }
 
 /**
@@ -96,16 +117,18 @@ export async function upsertEntity(
   if (!hasInternalDB()) {
     throw new Error("Internal DB required for org-scoped semantic entities");
   }
-  const scope = withGroupScope(connectionId);
+  const connectionGroupId = await resolveConnectionGroupId(orgId, connectionId);
+  const scope = withGroupScope(connectionGroupId);
   await internalQuery(
-    `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id, status)
-     VALUES ($1, $2, $3, $4, $5, 'published')
+    `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id, connection_group_id, status)
+     VALUES ($1, $2, $3, $4, $5, $6, 'published')
      ON CONFLICT (org_id, entity_type, name, ${coalescedScopeColumn()}) WHERE status = 'published'
      DO UPDATE SET yaml_content = EXCLUDED.yaml_content,
                    entity_type = EXCLUDED.entity_type,
                    connection_id = EXCLUDED.connection_id,
+                   connection_group_id = EXCLUDED.connection_group_id,
                    updated_at = now()`,
-    [orgId, entityType, name, yamlContent, scope.param],
+    [orgId, entityType, name, yamlContent, connectionId ?? null, scope.param],
   );
 }
 
@@ -126,16 +149,18 @@ export async function upsertDraftEntity(
   if (!hasInternalDB()) {
     throw new Error("Internal DB required for org-scoped semantic entities");
   }
-  const scope = withGroupScope(connectionId);
+  const connectionGroupId = await resolveConnectionGroupId(orgId, connectionId);
+  const scope = withGroupScope(connectionGroupId);
   await internalQuery(
-    `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id, status)
-     VALUES ($1, $2, $3, $4, $5, 'draft')
+    `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id, connection_group_id, status)
+     VALUES ($1, $2, $3, $4, $5, $6, 'draft')
      ON CONFLICT (org_id, entity_type, name, ${coalescedScopeColumn()}) WHERE status = 'draft'
      DO UPDATE SET yaml_content = EXCLUDED.yaml_content,
                    entity_type = EXCLUDED.entity_type,
                    connection_id = EXCLUDED.connection_id,
+                   connection_group_id = EXCLUDED.connection_group_id,
                    updated_at = now()`,
-    [orgId, entityType, name, yamlContent, scope.param],
+    [orgId, entityType, name, yamlContent, connectionId ?? null, scope.param],
   );
 }
 
@@ -156,13 +181,16 @@ export async function upsertTombstone(
   if (!hasInternalDB()) {
     throw new Error("Internal DB required for org-scoped semantic entities");
   }
-  const scope = withGroupScope(connectionId);
+  const connectionGroupId = await resolveConnectionGroupId(orgId, connectionId);
+  const scope = withGroupScope(connectionGroupId);
   await internalQuery(
-    `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id, status)
-     VALUES ($1, $2, $3, '', $4, 'draft_delete')
+    `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id, connection_group_id, status)
+     VALUES ($1, $2, $3, '', $4, $5, 'draft_delete')
      ON CONFLICT (org_id, entity_type, name, ${coalescedScopeColumn()}) WHERE status = 'draft_delete'
-     DO UPDATE SET updated_at = now()`,
-    [orgId, entityType, name, scope.param],
+     DO UPDATE SET connection_id = EXCLUDED.connection_id,
+                   connection_group_id = EXCLUDED.connection_group_id,
+                   updated_at = now()`,
+    [orgId, entityType, name, connectionId ?? null, scope.param],
   );
 }
 
@@ -179,7 +207,8 @@ export async function deleteDraftEntity(
   connectionId?: string,
 ): Promise<boolean> {
   if (!hasInternalDB()) return false;
-  const scope = withGroupScope(connectionId);
+  const connectionGroupId = await resolveConnectionGroupId(orgId, connectionId);
+  const scope = withGroupScope(connectionGroupId);
   const rows = await internalQuery<{ id: string }>(
     `DELETE FROM semantic_entities
      WHERE org_id = $1
@@ -230,7 +259,20 @@ export async function listEntityRows(
   const visibilityClause = statusFilter === "published"
     ? `AND (org_id = $1 OR org_id = '__global__')
        AND (
-         connection_id IS NULL
+         (connection_group_id IS NULL AND connection_id IS NULL)
+         OR connection_group_id IN (
+           SELECT group_id FROM connections
+            WHERE org_id = $1 AND status = 'published' AND group_id IS NOT NULL
+         )
+         OR (
+           connection_group_id IN (
+             SELECT group_id FROM connections
+              WHERE org_id = '__global__' AND status = 'published' AND group_id IS NOT NULL
+           )
+           AND connection_id NOT IN (
+             SELECT id FROM connections WHERE org_id = $1
+           )
+         )
          OR connection_id IN (
            SELECT id FROM connections WHERE org_id = $1 AND status = 'published'
          )
@@ -255,7 +297,7 @@ export async function listEntityRows(
     if (statusFilter) {
       const orgPredicate = isPublishedRead ? "" : "org_id = $1 AND ";
       return internalQuery<SemanticEntityRow>(
-        `SELECT id, org_id, entity_type, name, yaml_content, connection_id, status, created_at, updated_at
+        `SELECT ${ENTITY_ROW_COLUMNS}
          FROM semantic_entities
          WHERE ${orgPredicate}entity_type = $2 AND status = $3
            ${visibilityClause}
@@ -264,7 +306,7 @@ export async function listEntityRows(
       );
     }
     return internalQuery<SemanticEntityRow>(
-      `SELECT id, org_id, entity_type, name, yaml_content, connection_id, status, created_at, updated_at
+      `SELECT ${ENTITY_ROW_COLUMNS}
        FROM semantic_entities
        WHERE org_id = $1 AND entity_type = $2
        ORDER BY name`,
@@ -275,7 +317,7 @@ export async function listEntityRows(
   if (statusFilter) {
     const orgPredicate = isPublishedRead ? "" : "org_id = $1 AND ";
     return internalQuery<SemanticEntityRow>(
-      `SELECT id, org_id, entity_type, name, yaml_content, connection_id, status, created_at, updated_at
+      `SELECT ${ENTITY_ROW_COLUMNS}
        FROM semantic_entities
        WHERE ${orgPredicate}status = $2
          ${visibilityClause}
@@ -285,7 +327,7 @@ export async function listEntityRows(
   }
 
   return internalQuery<SemanticEntityRow>(
-    `SELECT id, org_id, entity_type, name, yaml_content, connection_id, status, created_at, updated_at
+    `SELECT ${ENTITY_ROW_COLUMNS}
      FROM semantic_entities
      WHERE org_id = $1
      ORDER BY entity_type, name`,
@@ -399,7 +441,7 @@ function rowToEntry(row: SemanticEntityRow): EntityListEntry | null {
     name: typeof nameField === "string" && nameField ? nameField : parsed.data.table,
     table: parsed.data.table,
     description: typeof descField === "string" && descField ? descField : null,
-    source: row.connection_id ?? "default",
+    source: row.connection_group_id ?? row.connection_id ?? "default",
   };
 }
 
@@ -468,8 +510,7 @@ export async function listEntitiesWithOverlay(
 ): Promise<SemanticEntityRow[]> {
   if (!hasInternalDB()) return [];
 
-  const baseSelect =
-    "id, org_id, entity_type, name, yaml_content, connection_id, status, created_at, updated_at";
+  const baseSelect = ENTITY_ROW_COLUMNS;
 
   // Connection visibility mirrors `getVisibleConnectionIds`'s
   // *developer-mode* shape (this overlay is developer-mode by construction):
@@ -485,7 +526,20 @@ export async function listEntitiesWithOverlay(
   // integration suite can execute it; logically equivalent to the
   // shadow-check pattern in `getVisibleConnectionIds`.
   const connectionVisibilitySql = `
-    connection_id IS NULL
+    (connection_group_id IS NULL AND connection_id IS NULL)
+    OR connection_group_id IN (
+      SELECT group_id FROM connections
+       WHERE org_id = $1 AND status IN ('published', 'draft') AND group_id IS NOT NULL
+    )
+    OR (
+      connection_group_id IN (
+        SELECT group_id FROM connections
+         WHERE org_id = '__global__' AND status IN ('published', 'draft') AND group_id IS NOT NULL
+      )
+      AND connection_id NOT IN (
+        SELECT id FROM connections WHERE org_id = $1
+      )
+    )
     OR connection_id IN (
       SELECT id FROM connections WHERE org_id = $1 AND status IN ('published', 'draft')
     )
@@ -517,13 +571,13 @@ export async function listEntitiesWithOverlay(
   if (entityType) {
     return internalQuery<SemanticEntityRow>(
       `WITH overlay AS (
-         SELECT DISTINCT ON (org_id, name, connection_id) ${baseSelect}
+         SELECT DISTINCT ON (org_id, entity_type, name, connection_group_id) ${baseSelect}
          FROM semantic_entities
          WHERE (${entityOrgVisibilitySql})
            AND entity_type = $2
            AND status IN ('published', 'draft', 'draft_delete')
            AND (${connectionVisibilitySql})
-         ORDER BY org_id, name, connection_id,
+         ORDER BY org_id, entity_type, name, connection_group_id,
            CASE status
              WHEN 'draft_delete' THEN 0
              WHEN 'draft' THEN 1
@@ -539,12 +593,12 @@ export async function listEntitiesWithOverlay(
 
   return internalQuery<SemanticEntityRow>(
     `WITH overlay AS (
-       SELECT DISTINCT ON (org_id, name, connection_id) ${baseSelect}
+       SELECT DISTINCT ON (org_id, entity_type, name, connection_group_id) ${baseSelect}
        FROM semantic_entities
        WHERE (${entityOrgVisibilitySql})
          AND status IN ('published', 'draft', 'draft_delete')
          AND (${connectionVisibilitySql})
-       ORDER BY org_id, name, connection_id,
+       ORDER BY org_id, entity_type, name, connection_group_id,
          CASE status
            WHEN 'draft_delete' THEN 0
            WHEN 'draft' THEN 1
@@ -569,7 +623,7 @@ export async function getEntity(
   if (!hasInternalDB()) return null;
 
   const rows = await internalQuery<SemanticEntityRow>(
-    `SELECT id, org_id, entity_type, name, yaml_content, connection_id, status, created_at, updated_at
+    `SELECT ${ENTITY_ROW_COLUMNS}
      FROM semantic_entities
      WHERE org_id = $1 AND entity_type = $2 AND name = $3`,
     [orgId, entityType, name],
@@ -837,6 +891,7 @@ export async function applyTombstones(
      USING semantic_entities d
      WHERE p.org_id = $1 AND p.status = 'published'
        AND d.org_id = p.org_id
+       AND d.entity_type = p.entity_type
        AND d.name = p.name
        AND ${matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "p" })}
        AND d.status = 'draft_delete'
@@ -870,6 +925,7 @@ export async function promoteDraftEntities(
      USING semantic_entities d
      WHERE p.org_id = $1 AND p.status = 'published'
        AND d.org_id = p.org_id
+       AND d.entity_type = p.entity_type
        AND d.name = p.name
        AND ${matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "p" })}
        AND d.status = 'draft'`,
@@ -972,7 +1028,10 @@ export async function archiveSingleConnection(
 
   const archivedEntities = await client.query(
     `UPDATE semantic_entities SET status = 'archived', updated_at = now()
-     WHERE org_id = $1 AND connection_id = $2 AND status = 'published'
+     WHERE org_id = $1
+       AND connection_group_id IS NULL
+       AND connection_id = $2
+       AND status = 'published'
      RETURNING id`,
     [orgId, connectionId],
   );
@@ -1059,7 +1118,10 @@ export async function restoreSingleConnection(
 
   const restoredEntities = await client.query(
     `UPDATE semantic_entities SET status = 'published', updated_at = now()
-     WHERE org_id = $1 AND connection_id = $2 AND status = 'archived'
+     WHERE org_id = $1
+       AND connection_group_id IS NULL
+       AND connection_id = $2
+       AND status = 'archived'
      RETURNING id`,
     [orgId, connectionId],
   );

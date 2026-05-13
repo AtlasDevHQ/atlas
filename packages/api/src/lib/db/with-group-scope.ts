@@ -1,9 +1,9 @@
 /**
- * Helpers that encapsulate the `COALESCE(connection_id, '__default__')`
+ * Helpers that encapsulate the `COALESCE(connection_group_id, '__default__')`
  * sentinel pattern used by the developer-mode publish flow to compare and
  * match rows on `semantic_entities`' nullable scope column.
  *
- * Migration 0028 made `(org_id, entity_type, name, COALESCE(connection_id,
+ * Migration 0063 made `(org_id, entity_type, name, COALESCE(connection_group_id,
  * '__default__'))` the natural key of `semantic_entities`. That sentinel
  * literal then leaks into every consumer that joins drafts to published rows
  * or upserts via the matching partial index. Four production files inlined
@@ -18,8 +18,8 @@
  *
  * This module is the pre-cursor to #2336 (multi-environment semantic layer):
  * by funnelling the COALESCE shape through one helper, the eventual
- * `connection_id` → `connection_group_id` column rename becomes a one-line
- * change here instead of a four-file sweep.
+ * Earlier 1.4.4 pre-work deliberately funneled the COALESCE shape through
+ * this helper so the group-scope migration was localized here.
  *
  * The helpers are pure — they produce SQL string fragments only. Callers
  * remain responsible for composing them into a larger query and binding the
@@ -35,9 +35,9 @@
 export const GROUP_SCOPE_SENTINEL = "__default__" as const;
 
 export interface ScopeColumnRef {
-  /** Column name. Defaults to `connection_id`. */
+  /** Column name. Defaults to `connection_group_id`. */
   readonly column?: string;
-  /** Optional table alias prefix (e.g. `"d"` → `d.connection_id`). */
+  /** Optional table alias prefix (e.g. `"d"` → `d.connection_group_id`). */
   readonly alias?: string;
 }
 
@@ -64,12 +64,12 @@ export interface GroupScope {
 export interface ScopeAliasMatch {
   readonly leftAlias: string;
   readonly rightAlias: string;
-  /** Column name. Defaults to `connection_id`. */
+  /** Column name. Defaults to `connection_group_id`. */
   readonly column?: string;
 }
 
 function qualifiedRef(opts?: ScopeColumnRef): string {
-  const column = opts?.column ?? "connection_id";
+  const column = opts?.column ?? "connection_group_id";
   return opts?.alias ? `${opts.alias}.${column}` : column;
 }
 
@@ -84,11 +84,11 @@ export function coalescedScopeColumn(opts?: ScopeColumnRef): string {
 
 /**
  * SQL fragment matching the scope columns of two joined rows, e.g.
- * `COALESCE(d.connection_id, '__default__') = COALESCE(p.connection_id,
+ * `COALESCE(d.connection_group_id, '__default__') = COALESCE(p.connection_group_id,
  * '__default__')`. Used by every draft/published join in the publish flow.
  */
 export function matchScopeAcrossAliases(opts: ScopeAliasMatch): string {
-  const column = opts.column ?? "connection_id";
+  const column = opts.column ?? "connection_group_id";
   return (
     coalescedScopeColumn({ column, alias: opts.leftAlias }) +
     " = " +

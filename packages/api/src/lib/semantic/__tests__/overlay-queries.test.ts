@@ -83,6 +83,7 @@ function makeRow(opts: MakeRowOpts): Record<string, unknown> {
     name: opts.name,
     yaml_content: `table: ${opts.table ?? opts.name}\n`,
     connection_id: opts.connectionId ?? null,
+    connection_group_id: null,
     status,
     created_at: "2026-01-01",
     updated_at: "2026-01-01",
@@ -105,7 +106,7 @@ describe("listEntitiesWithOverlay — SQL shape", () => {
     // CTE pattern
     expect(sql).toMatch(/WITH\s+overlay\s+AS/i);
     // DISTINCT ON the entity key
-    expect(sql).toMatch(/DISTINCT\s+ON\s*\(\s*org_id\s*,\s*name\s*,\s*connection_id\s*\)/i);
+    expect(sql).toMatch(/DISTINCT\s+ON\s*\(\s*org_id\s*,\s*entity_type\s*,\s*name\s*,\s*connection_group_id\s*\)/i);
     // Priority ordering with draft_delete first, then draft, then published
     expect(sql).toMatch(/CASE\s+status\s+WHEN\s+'draft_delete'\s+THEN\s+0/i);
     expect(sql).toMatch(/WHEN\s+'draft'\s+THEN\s+1/i);

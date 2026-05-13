@@ -28,7 +28,7 @@ import {
   type EntitySummary,
 } from "./files";
 import { getSemanticRoot as resolveSemanticRoot } from "./sync";
-import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { EntityShape, type EntityShapeT } from "./shapes";
 
 const log = createLogger("semantic-admin-source");
@@ -81,12 +81,14 @@ export type AdminEntitySummary =
       readonly sourceKind: "db";
       readonly status: AdminEntityStatus;
       readonly connectionId: string | null;
+      readonly connectionGroupId: string | null;
       readonly updatedAt: string;
     })
   | (AdminEntitySummaryShared & {
       readonly sourceKind: "disk";
       readonly status: "published";
       readonly connectionId: null;
+      readonly connectionGroupId: null;
       readonly updatedAt: null;
     });
 
@@ -223,12 +225,15 @@ export function parseRowToAdminSummary(row: SemanticEntityRow): AdminEntitySumma
     columnCount: sectionLength(data.dimensions),
     joinCount: sectionLength(data.joins),
     measureCount: sectionLength(data.measures),
-    source: row.connection_id ?? "default",
+    source: typeof row.connection_group_name === "string"
+      ? row.connection_group_name
+      : row.connection_group_id ?? row.connection_id ?? "default",
     connection: typeof data.connection === "string" ? data.connection : null,
     type: typeof data.type === "string" ? data.type : null,
     status,
     sourceKind: "db",
     connectionId: row.connection_id,
+    connectionGroupId: row.connection_group_id,
     updatedAt: row.updated_at,
   };
 }
@@ -247,6 +252,7 @@ function diskToAdminSummary(e: EntitySummary): AdminEntitySummary {
     status: "published",
     sourceKind: "disk",
     connectionId: null,
+    connectionGroupId: null,
     updatedAt: null,
   };
 }
@@ -315,12 +321,40 @@ export async function listAdminEntities(opts: {
     dbRows = mode === "developer"
       ? await listEntitiesWithOverlay(opts.orgId, "entity")
       : await listEntityRows(opts.orgId, "entity", "published");
+    dbRows = await decorateRowsWithGroupNames(opts.orgId, dbRows);
   }
 
   const root = resolveSemanticRoot(opts.orgId);
   const { entities: diskEntities, warnings } = discoverEntities(root);
 
   return mergeAdminEntities({ dbRows, diskEntities, diskWarnings: warnings });
+}
+
+async function decorateRowsWithGroupNames(
+  orgId: string,
+  rows: readonly SemanticEntityRow[],
+): Promise<SemanticEntityRow[]> {
+  const groupIds = Array.from(
+    new Set(rows.map((row) => row.connection_group_id).filter((id): id is string => typeof id === "string" && id.length > 0)),
+  );
+  if (groupIds.length === 0) return [...rows];
+
+  const groupRows = await internalQuery<{ id: string; name: string }>(
+    `SELECT id, name
+       FROM connection_groups
+      WHERE id = ANY($1::text[])
+        AND (org_id = $2 OR org_id = '__global__')
+      ORDER BY CASE WHEN org_id = $2 THEN 0 ELSE 1 END`,
+    [groupIds, orgId],
+  );
+  const namesById = new Map<string, string>();
+  for (const row of groupRows) {
+    if (!namesById.has(row.id)) namesById.set(row.id, row.name);
+  }
+  return rows.map((row) => ({
+    ...row,
+    connection_group_name: row.connection_group_id ? namesById.get(row.connection_group_id) ?? null : null,
+  }));
 }
 
 interface GetAdminEntityOptions {

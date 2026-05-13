@@ -428,6 +428,7 @@ export const semanticEntities = pgTable(
     name: text("name").notNull(),
     yamlContent: text("yaml_content").notNull(),
     connectionId: text("connection_id"),
+    connectionGroupId: text("connection_group_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     // Developer/published mode status
@@ -437,10 +438,11 @@ export const semanticEntities = pgTable(
     uniqueIndex("idx_semantic_entities_org_type_name").on(t.orgId, t.entityType, t.name),
     index("idx_semantic_entities_org").on(t.orgId),
     index("idx_semantic_entities_org_type").on(t.orgId, t.entityType),
+    index("idx_semantic_entities_connection_group").on(t.connectionGroupId),
     check("chk_semantic_entities_status", sql`status IN ('published', 'draft', 'draft_delete', 'archived')`),
     // IMPORTANT: These are placeholder stubs — the real indexes are UNIQUE on
-    // (org_id, entity_type, name, COALESCE(connection_id, '__default__')) and
-    // are managed by raw SQL in migration 0028. Drizzle can't represent
+    // (org_id, entity_type, name, COALESCE(connection_group_id, '__default__')) and
+    // are managed by raw SQL in migrations 0028/0063. Drizzle can't represent
     // expression indexes, so these non-unique approximations exist solely
     // to suppress drift warnings. Do NOT rely on these for constraint
     // reasoning — and any code calling `ON CONFLICT (...)` against these

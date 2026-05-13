@@ -1053,6 +1053,83 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows[0]?.connection_group_id).toBe(groupId);
   }, PG_TEST_TIMEOUT_MS);
 
+  it("approval_queue: global connection backfill mirrors group into tenant before FK use", async () => {
+    // Demo / built-in connections are stored under `__global__`, but
+    // approval rows are tenant-scoped. 0065 mirrors the global group row
+    // into the tenant before writing approval_queue.connection_group_id so
+    // the composite FK can remain tenant-local.
+    const orgId = `org-approval-global-${Date.now()}`;
+    const connId = `conn-global-approval-${Date.now()}`;
+    const groupId = `g_${connId}`;
+
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, '__global__', $2)`,
+      [groupId, connId],
+    );
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status, group_id)
+       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', '__global__', 'published', $2)`,
+      [connId, groupId],
+    );
+    const ruleRow = await pool.query<{ id: string }>(
+      `INSERT INTO approval_rules (org_id, name, rule_type, pattern, threshold, enabled)
+       VALUES ($1, 'Global backfill rule', 'table', 'orders', NULL, true)
+       RETURNING id`,
+      [orgId],
+    );
+    await pool.query(
+      `INSERT INTO approval_queue
+         (org_id, rule_id, rule_name, requester_id, query_sql, connection_id, connection_group_id)
+       VALUES ($1, $2, 'Global backfill rule', 'user-global-backfill', 'SELECT * FROM orders', $3, NULL)`,
+      [orgId, ruleRow.rows[0].id, connId],
+    );
+
+    await pool.query(
+      `WITH global_approval_groups AS (
+         SELECT DISTINCT
+                COALESCE(aq.connection_group_id, c.group_id) AS group_id,
+                aq.org_id AS tenant_org_id,
+                ('__global__:' || g.id) AS name
+           FROM approval_queue aq
+           JOIN connections c
+             ON c.id = aq.connection_id
+            AND c.org_id = '__global__'
+           JOIN connection_groups g
+             ON g.id = c.group_id
+            AND g.org_id = '__global__'
+          WHERE aq.org_id = $1
+            AND aq.org_id <> '__global__'
+            AND COALESCE(aq.connection_group_id, c.group_id) IS NOT NULL
+       )
+       INSERT INTO connection_groups (id, org_id, name)
+       SELECT group_id, tenant_org_id, name
+         FROM global_approval_groups
+       ON CONFLICT (id, org_id) DO NOTHING`,
+      [orgId],
+    );
+    await pool.query(
+      `UPDATE approval_queue aq
+         SET connection_group_id = c.group_id
+         FROM connections c
+         WHERE aq.org_id = $1
+           AND aq.connection_id IS NOT NULL
+           AND aq.connection_group_id IS NULL
+           AND c.id = aq.connection_id
+           AND (c.org_id = aq.org_id OR c.org_id = '__global__')`,
+      [orgId],
+    );
+
+    const { rows } = await pool.query<{ connection_group_id: string | null; mirrored: string | null }>(
+      `SELECT aq.connection_group_id,
+              (SELECT g.id FROM connection_groups g WHERE g.id = aq.connection_group_id AND g.org_id = aq.org_id) AS mirrored
+         FROM approval_queue aq
+        WHERE aq.org_id = $1 AND aq.requester_id = 'user-global-backfill'`,
+      [orgId],
+    );
+    expect(rows[0]?.connection_group_id).toBe(groupId);
+    expect(rows[0]?.mirrored).toBe(groupId);
+  }, PG_TEST_TIMEOUT_MS);
+
   it("approval_queue.connection_group_id: composite FK blocks cross-org membership", async () => {
     // Same shape as `connections.group_id` in 0062: the composite FK
     // (connection_group_id, org_id) → connection_groups (id, org_id)

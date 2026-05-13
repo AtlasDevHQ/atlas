@@ -24,20 +24,49 @@
 -- ── 1. Column ─────────────────────────────────────────────────────────
 --
 -- Nullable initially. Legacy rows pre-#2344 carry `connection_group_id
--- IS NULL` until the backfill below resolves them; the `hasApprovedRequest`
--- lookup uses a COALESCE sentinel so a NULL-group approval and a NULL-
--- group execution lookup match each other, preserving pre-migration
--- semantics until every consumer threads connection_id through.
+-- IS NULL` until the backfill below resolves them. Runtime lookups only
+-- share approvals across non-NULL groups; ungrouped connections fall back
+-- to `connection_id` scope so unrelated NULL-group connections do not
+-- authorize each other.
 ALTER TABLE approval_queue
   ADD COLUMN IF NOT EXISTS connection_group_id TEXT;
 
+-- Global/demo connections live in the sentinel `__global__` org, but
+-- approval_queue rows are tenant-scoped. Before we enforce the composite
+-- FK below, mirror any global connection's group row into each tenant
+-- that already has approval rows for that global connection. The approval
+-- row stores the same group id with the tenant org_id, so the FK remains
+-- tenant-local while demo / built-in connections still resolve through the
+-- same visibility rule used by the runtime.
+WITH global_approval_groups AS (
+  SELECT DISTINCT
+         COALESCE(aq.connection_group_id, c.group_id) AS group_id,
+         aq.org_id AS tenant_org_id,
+         ('__global__:' || g.id) AS name
+    FROM approval_queue aq
+    JOIN connections c
+      ON c.id = aq.connection_id
+     AND c.org_id = '__global__'
+    JOIN connection_groups g
+      ON g.id = c.group_id
+     AND g.org_id = '__global__'
+   WHERE aq.org_id <> '__global__'
+     AND COALESCE(aq.connection_group_id, c.group_id) IS NOT NULL
+)
+INSERT INTO connection_groups (id, org_id, name)
+SELECT group_id, tenant_org_id, name
+  FROM global_approval_groups
+ON CONFLICT (id, org_id) DO NOTHING;
+
 -- Composite FK so an approval row's `connection_group_id` can never
--- reference a group in a different org. Same shape as `connections.group_id`
--- in 0062. ON DELETE RESTRICT: dropping a group with live approval rows
--- pointing at it must fail loudly — admins are expected to expire or
--- reject the queue before tearing down the group. The route-layer
--- DELETE handler in `admin-connection-groups.ts` already checks for
--- members; this FK is the last-resort defence if a caller bypasses it.
+-- reference a group in a different tenant org. Global/demo connection
+-- groups are handled by the tenant-local mirror above before the FK is
+-- enforced. Same shape as `connections.group_id` in 0062. ON DELETE
+-- RESTRICT: dropping a group with live approval rows pointing at it must
+-- fail loudly — admins are expected to expire or reject the queue before
+-- tearing down the group. The route-layer DELETE handler in
+-- `admin-connection-groups.ts` already checks for members; this FK is the
+-- last-resort defence if a caller bypasses it.
 DO $$ BEGIN
   IF NOT EXISTS (
     SELECT 1
@@ -54,13 +83,13 @@ DO $$ BEGIN
 END $$;
 
 -- Lookup index supporting the new read path:
---   `WHERE org_id = $1 AND requester_id = $2 AND query_sql = $3
---    AND status = 'approved' AND COALESCE(connection_group_id, '__default__')
---                                 = COALESCE($4, '__default__')`
--- Same `__default__` sentinel as semantic_entities (0028 / 0063) so the
--- NULL-group execution path keeps a hot index path. Partial on
--- status = 'approved' because that's the only state the lookup ever
--- reads — keeps the index small.
+--   grouped:   `WHERE org_id = $1 AND requester_id = $2 AND query_sql = $3
+--               AND status = 'approved' AND connection_group_id = $4`
+--   ungrouped: `WHERE org_id = $1 AND requester_id = $2 AND query_sql = $3
+--               AND status = 'approved' AND connection_group_id IS NULL
+--               AND connection_id = $4`
+-- Partial on status = 'approved' because that's the only state the lookup
+-- ever reads — keeps the index small.
 CREATE INDEX IF NOT EXISTS idx_approval_queue_group
   ON approval_queue (org_id, connection_group_id, requester_id)
   WHERE status = 'approved';

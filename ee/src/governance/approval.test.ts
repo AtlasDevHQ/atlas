@@ -538,7 +538,7 @@ describe("createApprovalRequest", () => {
   beforeEach(resetMocks);
 
   it("creates an approval request", async () => {
-    ee.queueMockRows([makeQueueRow()]);
+    ee.queueMockRows([], [makeQueueRow()]);
     const result = await run(createApprovalRequest({
       orgId: "org-1",
       ruleId: "rule-1",
@@ -554,11 +554,11 @@ describe("createApprovalRequest", () => {
     expect(result.id).toBe("req-1");
     expect(result.status).toBe("pending");
     expect(result.tablesAccessed).toEqual(["users"]);
-    expect(ee.capturedQueries[0].sql).toContain("INSERT INTO approval_queue");
+    expect(ee.capturedQueries.some((q) => q.sql.includes("INSERT INTO approval_queue"))).toBe(true);
   });
 
   it("#2072: stamps surface on the queued row when caller provides it", async () => {
-    ee.queueMockRows([makeQueueRow({ surface: "mcp" })]);
+    ee.queueMockRows([], [makeQueueRow({ surface: "mcp" })]);
     const result = await run(createApprovalRequest({
       orgId: "org-1",
       ruleId: "rule-1",
@@ -581,7 +581,7 @@ describe("createApprovalRequest", () => {
   });
 
   it("#2072: stores surface as null when the caller does not provide it (legacy shape)", async () => {
-    ee.queueMockRows([makeQueueRow({ surface: null })]);
+    ee.queueMockRows([], [makeQueueRow({ surface: null })]);
     const result = await run(createApprovalRequest({
       orgId: "org-1",
       ruleId: "rule-1",
@@ -878,15 +878,36 @@ describe("hasApprovedRequest — group-scoped (#2344)", () => {
     expect(approvalLookup!.params).not.toContain("conn-eu");
   });
 
+  it("falls back to connection scope for ungrouped connections", async () => {
+    // NULL group_id is not a shared environment. The approval lookup must
+    // require the originating connection_id so an approval for one
+    // ungrouped connection does not authorize another ungrouped connection.
+    ee.queueMockRows(
+      [{ group_id: null }],
+      [],
+    );
+    const result = await run(hasApprovedRequest(
+      "org-1",
+      "user-1",
+      "SELECT * FROM accounts",
+      "conn-ungrouped-b",
+    ));
+    expect(result).toBe(false);
+
+    const approvalLookup = ee.capturedQueries.find((q) =>
+      q.sql.includes("FROM approval_queue") && q.sql.includes("connection_group_id IS NULL"),
+    );
+    expect(approvalLookup).toBeDefined();
+    expect(approvalLookup!.sql).toContain("connection_id = $4");
+    expect(approvalLookup!.params).toContain("conn-ungrouped-b");
+  });
+
   it("rejects when the connection has been archived (group_id no longer resolves)", async () => {
     // Archived / deleted connection: the group resolver returns no
-    // rows. Without a resolvable group, the lookup falls through to
-    // the COALESCE sentinel and only matches a NULL-group approval
-    // — i.e. legacy pre-#2344 rows — so the approved row issued
-    // against `g-prod` does NOT apply to an orphaned execution.
+    // rows. Without a resolvable connection context, the check fails
+    // closed instead of falling through to another approval bucket.
     ee.queueMockRows(
-      [], // no row → group resolver returns null
-      [], // approval_queue lookup finds nothing for sentinel
+      [], // no row → group resolver cannot resolve the connection
     );
     const result = await run(hasApprovedRequest(
       "org-1",
@@ -926,7 +947,7 @@ describe("createApprovalRequest — group-scoped (#2344)", () => {
   beforeEach(resetMocks);
 
   it("stamps connection_group_id on the queued row when caller passes one", async () => {
-    ee.queueMockRows([makeQueueRow({ connection_group_id: "g-prod" })]);
+    ee.queueMockRows([], [], [makeQueueRow({ connection_group_id: "g-prod" })]);
     const result = await run(createApprovalRequest({
       orgId: "org-1",
       ruleId: "rule-1",
@@ -951,7 +972,7 @@ describe("createApprovalRequest — group-scoped (#2344)", () => {
     // Mirrors the inline scalar-subquery shape used by
     // `inlineConnectionGroupSql`. The returned queue row carries the
     // group resolved by the subquery rather than the caller passing it.
-    ee.queueMockRows([makeQueueRow({ connection_group_id: "g-prod", connection_id: "conn-us" })]);
+    ee.queueMockRows([], [makeQueueRow({ connection_group_id: "g-prod", connection_id: "conn-us" })]);
     const result = await run(createApprovalRequest({
       orgId: "org-1",
       ruleId: "rule-1",

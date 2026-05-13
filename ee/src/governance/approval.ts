@@ -116,6 +116,24 @@ function isValidRequestSurface(surface: string): surface is ApprovalRequestSurfa
   return (APPROVAL_REQUEST_SURFACES as readonly string[]).includes(surface);
 }
 
+const mirrorGlobalConnectionGroupForTenantSql = `INSERT INTO connection_groups (id, org_id, name)
+SELECT g.id, $1, ('__global__:' || g.id) AS name
+  FROM connections c
+  JOIN connection_groups g
+    ON g.id = c.group_id
+   AND g.org_id = c.org_id
+ WHERE c.id = $2
+   AND c.org_id = '__global__'
+   AND c.group_id IS NOT NULL
+ON CONFLICT (id, org_id) DO NOTHING`;
+
+const mirrorExplicitGlobalGroupForTenantSql = `INSERT INTO connection_groups (id, org_id, name)
+SELECT id, $1, ('__global__:' || id) AS name
+  FROM connection_groups
+ WHERE id = $2
+   AND org_id = '__global__'
+ON CONFLICT (id, org_id) DO NOTHING`;
+
 function rowToRule(row: ApprovalRuleRow): ApprovalRule | null {
   if (!isValidRuleType(row.rule_type)) {
     log.warn({ ruleId: row.id, ruleType: row.rule_type }, "Approval rule has unexpected rule_type in database — skipping rule");
@@ -695,8 +713,8 @@ export const createApprovalRequest = (opts: {
    * and a `connectionId` is given, the INSERT resolves the group
    * inline via a scalar subquery against `connections.group_id`
    * (mirrors `inlineConnectionGroupSql` in semantic/entities.ts). When
-   * neither is provided, the row carries NULL and matches only the
-   * legacy NULL-group lookup branch.
+   * neither is provided, the row carries NULL and is only eligible for
+   * the legacy 3-arg unscoped lookup path.
    */
   connectionGroupId?: string | null;
   tablesAccessed: string[];
@@ -771,6 +789,26 @@ export const createApprovalRequest = (opts: {
       : hasConnectionForResolve
         ? (opts.connectionId as string)
         : null;
+
+    // Global/demo connections live under `__global__`, while approval
+    // rows are tenant-scoped. The composite FK on approval_queue requires
+    // `(connection_group_id, org_id)` to exist in `connection_groups`, so
+    // mirror the global group into the tenant before inserting the queue
+    // row. This is idempotent and preserves the same group id that lookup
+    // uses, without weakening cross-tenant FK protection.
+    if (opts.connectionId !== null && opts.connectionId !== undefined) {
+      yield* Effect.promise(() => internalQuery(
+        mirrorGlobalConnectionGroupForTenantSql,
+        [opts.orgId, opts.connectionId],
+      ));
+    }
+    if (hasExplicitGroup && opts.connectionGroupId != null) {
+      yield* Effect.promise(() => internalQuery(
+        mirrorExplicitGlobalGroupForTenantSql,
+        [opts.orgId, opts.connectionGroupId],
+      ));
+    }
+
     // Param ordering: $1..$7 stable; $8 carries either the explicit
     // group_id or (when resolving inline) the connection_id consumed by
     // the scalar subquery. $9 is connection_id stored verbatim on the
@@ -1007,10 +1045,9 @@ export const getPendingCount = (orgId: string): Effect.Effect<number, never> =>
  * `connection_group_id`. One approval covers every member of the same
  * group running the same query — keying on connection forced re-
  * approval per replica even when an admin had already greenlit the
- * query for the group. When the connection is archived / deleted, the
- * resolver returns NULL and only legacy NULL-group approvals match,
- * which is the "reject-on-archived-group" shape — the approval issued
- * against the original group no longer applies.
+ * query for the group. When a connection has no group, the lookup falls
+ * back to the originating `connection_id` scope; when the connection is
+ * archived / deleted and cannot be resolved, no approval applies.
  *
  * The legacy 3-arg shape (`omit connectionId`) keeps the pre-#2344
  * unscoped match for callers that don't yet thread the connection
@@ -1053,8 +1090,7 @@ export const hasApprovedRequest = (
     // Separate SELECT (not a joined CTE on `approval_queue`) so the
     // archived-connection case is a clean signal: the resolver
     // returning zero rows means the connection has been removed /
-    // archived, and we fall through to the NULL-group sentinel
-    // branch which only matches legacy pre-#2344 rows.
+    // archived and no connection-scoped approval can safely apply.
     const groupRows = yield* Effect.promise(() => internalQuery<{ group_id: string | null }>(
       `SELECT group_id FROM connections
        WHERE id = $1 AND (org_id = $2 OR org_id = '__global__')
@@ -1062,19 +1098,39 @@ export const hasApprovedRequest = (
        LIMIT 1`,
       [connectionId, orgId],
     ));
+    if (groupRows.length === 0) return false;
+
     const resolvedGroupId = groupRows[0]?.group_id ?? null;
 
-    // Match approval rows whose group equals the resolved group. The
-    // COALESCE sentinel keeps NULL-group lookups indexable via
-    // idx_approval_queue_group and matches the legacy
-    // pre-#2344 rows that carry connection_group_id IS NULL.
+    if (resolvedGroupId === null) {
+      // Ungrouped connections are not an environment group. Fall back to
+      // the originating connection scope so an approval for one NULL-group
+      // connection cannot authorize the same SQL on another NULL-group
+      // connection in the org.
+      const rows = yield* Effect.promise(() => internalQuery<{ id: string }>(
+        `SELECT id FROM approval_queue
+         WHERE org_id = $1
+           AND requester_id = $2
+           AND query_sql = $3
+           AND status = 'approved'
+           AND connection_group_id IS NULL
+           AND connection_id = $4
+         LIMIT 1`,
+        [orgId, requesterId, querySql, connectionId],
+      ));
+      return rows.length > 0;
+    }
+
+    // Match approval rows whose group equals the resolved group. NULL-group
+    // rows are handled by the connection-scoped branch above, because NULL
+    // does not identify a shared environment group.
     const rows = yield* Effect.promise(() => internalQuery<{ id: string }>(
       `SELECT id FROM approval_queue
        WHERE org_id = $1
          AND requester_id = $2
          AND query_sql = $3
          AND status = 'approved'
-         AND COALESCE(connection_group_id, '__default__') = COALESCE($4, '__default__')
+         AND connection_group_id = $4
        LIMIT 1`,
       [orgId, requesterId, querySql, resolvedGroupId],
     ));

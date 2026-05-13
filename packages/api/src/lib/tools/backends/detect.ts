@@ -9,10 +9,28 @@ import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("sandbox-detect");
 
+const REDACTED = "[REDACTED]";
+
+export interface RuntimeOpaqueSecret {
+  readonly __brand: "OpaqueSecret";
+  reveal(): string;
+  toJSON(): string;
+  toString(): string;
+}
+
+function opaqueSecret(value: string): RuntimeOpaqueSecret {
+  return Object.freeze({
+    __brand: "OpaqueSecret" as const,
+    reveal: () => value,
+    toJSON: () => REDACTED,
+    toString: () => REDACTED,
+  });
+}
+
 export interface VercelSandboxAccess {
   teamId: string;
   projectId: string;
-  token: string;
+  token: RuntimeOpaqueSecret;
 }
 
 let _partialCredsWarned = false;
@@ -47,7 +65,7 @@ export function vercelSandboxAccess(): VercelSandboxAccess | undefined {
     }
     return undefined;
   }
-  return { teamId, projectId, token };
+  return { teamId, projectId, token: opaqueSecret(token) };
 }
 
 /**
@@ -66,4 +84,12 @@ export function useVercelSandbox(): boolean {
 /** Returns true when ATLAS_SANDBOX_URL is set (sidecar backend available). */
 export function useSidecar(): boolean {
   return !!process.env.ATLAS_SANDBOX_URL;
+}
+
+export function _resetVercelSandboxDetectForTest(): void {
+  _partialCredsWarned = false;
+}
+
+export function _partialCredsWarnedForTest(): boolean {
+  return _partialCredsWarned;
 }

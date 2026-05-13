@@ -179,36 +179,84 @@ export function getExploreBackendType(): ExploreBackendType {
 }
 
 /**
- * Try to create a specific backend by name. Returns null if the backend
- * is not available (env vars not set, binary not found, etc.).
+ * Try to create a specific backend by name. Returns a backend on success,
+ * otherwise a sanitized reason suitable for operator-facing config errors.
  */
-async function tryCreateBackend(name: SandboxBackendName, semanticRoot: string, orgId?: string): Promise<ExploreBackend | null> {
+interface BackendInitFailure {
+  name: SandboxBackendName;
+  reason: string;
+}
+
+interface BackendInitResult {
+  backend: ExploreBackend | null;
+  failure?: BackendInitFailure;
+}
+
+function unavailable(name: SandboxBackendName, reason: string): BackendInitResult {
+  return { backend: null, failure: { name, reason } };
+}
+
+function formatSandboxPriorityFailure(
+  priority: readonly SandboxBackendName[],
+  failures: readonly BackendInitFailure[],
+  deployMode: "saas" | "self-hosted" | undefined,
+): string {
+  const summary = failures.length > 0
+    ? ` Failed backends: ${failures.map((f) => `${f.name}: ${f.reason}`).join("; ")}.`
+    : "";
+  const guidance: string[] = [];
+  if (priority.includes("vercel-sandbox")) {
+    guidance.push("For Vercel Sandbox off-Vercel, set VERCEL_TEAM_ID, VERCEL_PROJECT_ID, and VERCEL_TOKEN.");
+  }
+  if (priority.includes("sidecar")) {
+    guidance.push("For sidecar, set ATLAS_SANDBOX_URL.");
+  }
+  if (deployMode !== "saas") {
+    guidance.push("Add 'just-bash' to the priority list if you want an unsandboxed fallback.");
+  }
+  guidance.push("Fix the backend configuration.");
+
+  return `All backends in sandbox.priority (${priority.join(", ")}) failed to initialize.${summary} ${guidance.join(" ")}`;
+}
+
+export const _formatSandboxPriorityFailureForTest = formatSandboxPriorityFailure;
+
+async function tryCreateBackend(name: SandboxBackendName, semanticRoot: string, orgId?: string): Promise<BackendInitResult> {
   switch (name) {
     case "vercel-sandbox": {
-      if (!useVercelSandbox()) return null;
+      if (!useVercelSandbox()) {
+        return unavailable(
+          name,
+          "not configured (set ATLAS_RUNTIME=vercel, VERCEL=1, or all of VERCEL_TEAM_ID / VERCEL_PROJECT_ID / VERCEL_TOKEN)",
+        );
+      }
       try {
         const { createSandboxBackend } = await import("./explore-sandbox");
-        return createSandboxBackend(semanticRoot);
+        return { backend: await createSandboxBackend(semanticRoot) };
       } catch (err) {
         const detail = errorMessage(err);
         log.warn(
           { error: detail },
           "vercel-sandbox backend failed to initialize — trying next in priority",
         );
-        return null;
+        return unavailable(name, detail);
       }
     }
 
     case "nsjail": {
-      if (_nsjailFailed) return null;
+      if (_nsjailFailed) return unavailable(name, "previous initialization failed");
       // Check if nsjail is available (explicit or auto-detect)
-      if (process.env.ATLAS_SANDBOX !== "nsjail" && !useNsjail()) return null;
+      if (process.env.ATLAS_SANDBOX !== "nsjail" && !useNsjail()) {
+        return unavailable(name, "nsjail binary not available");
+      }
       try {
         const { createNsjailBackend } = await import("./explore-nsjail");
-        return await createNsjailBackend(semanticRoot, {
-          onInfrastructureError: invalidateExploreBackend,
-          onNsjailFailed: markNsjailFailed,
-        });
+        return {
+          backend: await createNsjailBackend(semanticRoot, {
+            onInfrastructureError: invalidateExploreBackend,
+            onNsjailFailed: markNsjailFailed,
+          }),
+        };
       } catch (err) {
         _nsjailFailed = true;
         const detail = errorMessage(err);
@@ -216,7 +264,7 @@ async function tryCreateBackend(name: SandboxBackendName, semanticRoot: string, 
           { error: detail },
           "nsjail backend failed to initialize — trying next in priority",
         );
-        return null;
+        return unavailable(name, detail);
       }
     }
 
@@ -224,11 +272,13 @@ async function tryCreateBackend(name: SandboxBackendName, semanticRoot: string, 
       // Workspace-level URL override takes priority over env var
       const wsSidecarUrl = orgId ? getSetting("ATLAS_SANDBOX_URL", orgId) : undefined;
       const sidecarUrl = wsSidecarUrl ?? process.env.ATLAS_SANDBOX_URL;
-      if ((!sidecarUrl && !useSidecar()) || _sidecarFailed) return null;
-      if (!sidecarUrl) return null;
+      if (_sidecarFailed) return unavailable(name, "previous initialization failed");
+      if ((!sidecarUrl && !useSidecar()) || !sidecarUrl) {
+        return unavailable(name, "not configured (set ATLAS_SANDBOX_URL)");
+      }
       try {
         const { createSidecarBackend } = await import("./explore-sidecar");
-        return createSidecarBackend(sidecarUrl, { semanticRoot });
+        return { backend: await createSidecarBackend(sidecarUrl, { semanticRoot }) };
       } catch (err) {
         _sidecarFailed = true;
         const detail = errorMessage(err);
@@ -236,7 +286,7 @@ async function tryCreateBackend(name: SandboxBackendName, semanticRoot: string, 
           { error: detail },
           "sidecar backend failed to initialize — trying next in priority",
         );
-        return null;
+        return unavailable(name, detail);
       }
     }
 
@@ -252,7 +302,7 @@ async function tryCreateBackend(name: SandboxBackendName, semanticRoot: string, 
       } else {
         log.debug("Explore tool using just-bash backend (acceptable for development)");
       }
-      return createBashBackend(semanticRoot);
+      return { backend: await createBashBackend(semanticRoot) };
     }
   }
 }
@@ -302,10 +352,10 @@ function getExploreBackend(semanticRoot: string, orgId?: string): Promise<Explor
         // Check if override is a built-in backend name
         const builtInNames: readonly string[] = ["vercel-sandbox", "nsjail", "sidecar", "just-bash"];
         if (builtInNames.includes(wsOverride)) {
-          const backend = await tryCreateBackend(wsOverride as SandboxBackendName, semanticRoot, orgId);
-          if (backend) return backend;
+          const result = await tryCreateBackend(wsOverride as SandboxBackendName, semanticRoot, orgId);
+          if (result.backend) return result.backend;
           log.warn(
-            { backend: wsOverride, orgId },
+            { backend: wsOverride, orgId, reason: result.failure?.reason },
             "Workspace sandbox override %s unavailable — falling through to default",
             wsOverride,
           );
@@ -368,17 +418,25 @@ function getExploreBackend(semanticRoot: string, orgId?: string): Promise<Explor
           "Using configured sandbox priority: %s",
           configPriority.join(" > "),
         );
+        const failures: BackendInitFailure[] = [];
         for (const name of configPriority) {
-          const backend = await tryCreateBackend(name, semanticRoot, orgId);
-          if (backend) {
+          const result = await tryCreateBackend(name, semanticRoot, orgId);
+          if (result.backend) {
             log.info(
               { backend: name, source: "config" },
               "Explore backend selected: %s (config priority)",
               name,
             );
-            return backend;
+            return result.backend;
           }
-          log.debug({ backend: name }, "Backend %s unavailable — trying next in priority", name);
+          if (result.failure) {
+            failures.push(result.failure);
+          }
+          log.debug(
+            { backend: name, reason: result.failure?.reason },
+            "Backend %s unavailable — trying next in priority",
+            name,
+          );
         }
         // All config backends failed
         if (configPriority.includes("just-bash")) {
@@ -390,11 +448,7 @@ function getExploreBackend(semanticRoot: string, orgId?: string): Promise<Explor
           return createBashBackend(semanticRoot);
         }
         // Operator did NOT include just-bash — respect their intent
-        throw new Error(
-          `All backends in sandbox.priority (${configPriority.join(", ")}) failed to initialize. ` +
-          "Add 'just-bash' to the priority list if you want an unsandboxed fallback, " +
-          "or fix the backend configuration.",
-        );
+        throw new Error(formatSandboxPriorityFailure(configPriority, failures, getConfig()?.deployMode));
       }
 
       // --- Default priority chain ---

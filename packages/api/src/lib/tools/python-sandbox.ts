@@ -148,12 +148,19 @@ export function createPythonSandboxBackend(): PythonBackend {
       // VERCEL_TOKEN; on Vercel proper, OIDC handles auth and `access` is
       // undefined.
       const access = vercelSandboxAccess();
+      const explicitAccess = access
+        ? {
+            teamId: access.teamId,
+            projectId: access.projectId,
+            token: access.token.reveal(),
+          }
+        : undefined;
       const sandbox = yield* Effect.tryPromise({
         try: () =>
           Sandbox.create({
             runtime: "python3.13",
             networkPolicy: "allow-all",
-            ...(access ?? {}),
+            ...(explicitAccess ?? {}),
           }),
         catch: (err) => {
           const detail = sandboxErrorDetail(err);

@@ -264,4 +264,36 @@ describe("explore backend selection", () => {
       mod.invalidateExploreBackend(); // Should not throw
     });
   });
+
+  describe("sandbox.priority failure message", () => {
+    it("includes backend reasons and self-hosted just-bash guidance", async () => {
+      const mod = await freshExploreModule();
+      const message = mod._formatSandboxPriorityFailureForTest(
+        ["vercel-sandbox", "sidecar"],
+        [
+          { name: "vercel-sandbox", reason: "401 invalid token" },
+          { name: "sidecar", reason: "connection refused" },
+        ],
+        "self-hosted",
+      );
+
+      expect(message).toContain("vercel-sandbox: 401 invalid token");
+      expect(message).toContain("sidecar: connection refused");
+      expect(message).toContain("VERCEL_TEAM_ID");
+      expect(message).toContain("ATLAS_SANDBOX_URL");
+      expect(message).toContain("Add 'just-bash'");
+    });
+
+    it("suppresses just-bash guidance in SaaS mode", async () => {
+      const mod = await freshExploreModule();
+      const message = mod._formatSandboxPriorityFailureForTest(
+        ["vercel-sandbox", "sidecar"],
+        [{ name: "vercel-sandbox", reason: "401 invalid token" }],
+        "saas",
+      );
+
+      expect(message).toContain("vercel-sandbox: 401 invalid token");
+      expect(message).not.toContain("Add 'just-bash'");
+    });
+  });
 });

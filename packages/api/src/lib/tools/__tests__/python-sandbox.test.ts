@@ -138,6 +138,9 @@ describe("createPythonSandboxBackend", () => {
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
+    delete process.env.VERCEL_TEAM_ID;
+    delete process.env.VERCEL_PROJECT_ID;
+    delete process.env.VERCEL_TOKEN;
     setupSandboxMock();
   });
 
@@ -166,6 +169,26 @@ describe("createPythonSandboxBackend", () => {
     if (result.success) {
       expect(result.output).toBe("hello");
     }
+  });
+
+  it("passes explicit Vercel Sandbox access credentials to Sandbox.create", async () => {
+    process.env.VERCEL_TEAM_ID = "team_123";
+    process.env.VERCEL_PROJECT_ID = "prj_123";
+    process.env.VERCEL_TOKEN = "vercel-token";
+
+    setupSandboxMock();
+    const backend = await freshBackend();
+    await backend.exec("print(1)");
+
+    expect(mockCreateCalls.length).toBe(1);
+    const createOpts = mockCreateCalls[0] as {
+      teamId?: string;
+      projectId?: string;
+      token?: string;
+    };
+    expect(createOpts.teamId).toBe("team_123");
+    expect(createOpts.projectId).toBe("prj_123");
+    expect(createOpts.token).toBe("vercel-token");
   });
 
   it("writes wrapper, user code, and data files to sandbox", async () => {

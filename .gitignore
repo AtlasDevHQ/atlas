@@ -44,3 +44,4 @@ critique-*.png
 internal/
 .vercel
 .env*.local
+.codex/

@@ -1097,7 +1097,7 @@ export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryO
               };
             }
 
-            const alreadyApproved = await Effect.runPromise(hasApprovedRequest(approvalOrgId, userId, normalizedSql));
+            const alreadyApproved = await Effect.runPromise(hasApprovedRequest(approvalOrgId, userId, normalizedSql, connId));
             if (!alreadyApproved) {
               const firstRule = approvalMatch.matchedRules[0];
               const approvalReq = await Effect.runPromise(createApprovalRequest({
@@ -1403,7 +1403,7 @@ export const executeSQL = tool({
                 };
               }
 
-              const alreadyApproved = await Effect.runPromise(hasApprovedRequest(approvalOrgId, userId, normalizedSql));
+              const alreadyApproved = await Effect.runPromise(hasApprovedRequest(approvalOrgId, userId, normalizedSql, connId));
               if (!alreadyApproved) {
                 const firstRule = approvalMatch.matchedRules[0];
                 const approvalReq = await Effect.runPromise(createApprovalRequest({

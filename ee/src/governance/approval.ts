@@ -80,7 +80,10 @@ interface ApprovalQueueRow {
   requester_email: string | null;
   query_sql: string;
   explanation: string | null;
-  connection_id: string;
+  /** #2344 — nullable post-migration 0065. Audit-trail only; lookup keys on `connection_group_id`. */
+  connection_id: string | null;
+  /** #2344 — group scope. NULL for legacy rows and for callers without a group context. */
+  connection_group_id: string | null;
   tables_accessed: string | null;
   columns_accessed: string | null;
   status: string;
@@ -112,6 +115,24 @@ function isValidRuleSurface(surface: string): surface is ApprovalRuleSurface {
 function isValidRequestSurface(surface: string): surface is ApprovalRequestSurface {
   return (APPROVAL_REQUEST_SURFACES as readonly string[]).includes(surface);
 }
+
+const mirrorGlobalConnectionGroupForTenantSql = `INSERT INTO connection_groups (id, org_id, name)
+SELECT g.id, $1, ('__global__:' || g.id) AS name
+  FROM connections c
+  JOIN connection_groups g
+    ON g.id = c.group_id
+   AND g.org_id = c.org_id
+ WHERE c.id = $2
+   AND c.org_id = '__global__'
+   AND c.group_id IS NOT NULL
+ON CONFLICT (id, org_id) DO NOTHING`;
+
+const mirrorExplicitGlobalGroupForTenantSql = `INSERT INTO connection_groups (id, org_id, name)
+SELECT id, $1, ('__global__:' || id) AS name
+  FROM connection_groups
+ WHERE id = $2
+   AND org_id = '__global__'
+ON CONFLICT (id, org_id) DO NOTHING`;
 
 function rowToRule(row: ApprovalRuleRow): ApprovalRule | null {
   if (!isValidRuleType(row.rule_type)) {
@@ -197,6 +218,11 @@ function rowToRequest(row: ApprovalQueueRow): ApprovalRequest | null {
     querySql: row.query_sql,
     explanation: row.explanation,
     connectionId: row.connection_id,
+    // #2344 — undefined-tolerant access guards the in-memory test
+    // fixtures (`makeQueueRow` in approval.test.ts predates the
+    // column). Real DB rows always carry the column post-0065 — the
+    // missing-column case is purely a unit-test convenience.
+    connectionGroupId: row.connection_group_id ?? null,
     tablesAccessed: parseJsonArray(row.tables_accessed),
     columnsAccessed: parseJsonArray(row.columns_accessed),
     surface,
@@ -272,6 +298,16 @@ function validateRuleInput(input: CreateApprovalRuleRequest): Effect.Effect<void
   }
   return Effect.void;
 }
+
+// #2344 — single source of truth for the approval_queue projection so
+// SELECT, RETURNING (insert), and RETURNING (update) all carry the
+// new `connection_group_id` column without drifting from each other.
+// Drift was the exact #2191-class regression PR review caught on the
+// surface column rollout; centralizing here keeps the three sites in
+// lockstep.
+const APPROVAL_QUEUE_COLUMNS = `id, org_id, rule_id, rule_name, requester_id, requester_email, query_sql,
+  explanation, connection_id, connection_group_id, tables_accessed, columns_accessed, status,
+  reviewer_id, reviewer_email, review_comment, reviewed_at, surface, created_at, expires_at`;
 
 // ── Default expiry ──────────────────────────────────────────────────
 
@@ -666,7 +702,21 @@ export const createApprovalRequest = (opts: {
   requesterEmail: string | null;
   querySql: string;
   explanation: string | null;
-  connectionId: string;
+  /**
+   * Originating connection id. Nullable post-#2344 — the lookup keys
+   * on {@link connectionGroupId}; this column survives as the audit
+   * trail for which member submitted the request.
+   */
+  connectionId: string | null;
+  /**
+   * #2344 — group scope. When provided, stored verbatim. When omitted
+   * and a `connectionId` is given, the INSERT resolves the group
+   * inline via a scalar subquery against `connections.group_id`
+   * (mirrors `inlineConnectionGroupSql` in semantic/entities.ts). When
+   * neither is provided, the row carries NULL and is only eligible for
+   * the legacy 3-arg unscoped lookup path.
+   */
+  connectionGroupId?: string | null;
   tablesAccessed: string[];
   columnsAccessed: string[];
   /**
@@ -713,14 +763,64 @@ export const createApprovalRequest = (opts: {
       }));
     }
 
-    const rows = yield* Effect.promise(() => internalQuery<ApprovalQueueRow>(
-      `INSERT INTO approval_queue
+    // #2344 — branch on whether the caller passed a group id verbatim.
+    // Inline shape: when omitted but a connectionId is present, resolve
+    // the group via a scalar subquery against `connections` in the
+    // same INSERT — no SELECT-then-INSERT race with concurrent
+    // connection deletes. Matches the resolution rule in
+    // `semantic/entities.ts: inlineConnectionGroupSql`: prefer the
+    // org's own connection row, fall back to `__global__` for demo /
+    // built-in connections.
+    const hasExplicitGroup = opts.connectionGroupId !== undefined;
+    const hasConnectionForResolve = !hasExplicitGroup && opts.connectionId !== null && opts.connectionId !== undefined;
+    const groupExpression = hasExplicitGroup
+      ? "$8"
+      : hasConnectionForResolve
+        ? `(
+            SELECT group_id FROM connections
+            WHERE id = $8
+              AND (org_id = $1 OR org_id = '__global__')
+            ORDER BY CASE WHEN org_id = $1 THEN 0 ELSE 1 END
+            LIMIT 1
+          )`
+        : "NULL";
+    const groupParam: string | null = hasExplicitGroup
+      ? (opts.connectionGroupId ?? null)
+      : hasConnectionForResolve
+        ? (opts.connectionId as string)
+        : null;
+
+    // Global/demo connections live under `__global__`, while approval
+    // rows are tenant-scoped. The composite FK on approval_queue requires
+    // `(connection_group_id, org_id)` to exist in `connection_groups`, so
+    // mirror the global group into the tenant before inserting the queue
+    // row. This is idempotent and preserves the same group id that lookup
+    // uses, without weakening cross-tenant FK protection.
+    if (opts.connectionId !== null && opts.connectionId !== undefined) {
+      yield* Effect.promise(() => internalQuery(
+        mirrorGlobalConnectionGroupForTenantSql,
+        [opts.orgId, opts.connectionId],
+      ));
+    }
+    if (hasExplicitGroup && opts.connectionGroupId != null) {
+      yield* Effect.promise(() => internalQuery(
+        mirrorExplicitGlobalGroupForTenantSql,
+        [opts.orgId, opts.connectionGroupId],
+      ));
+    }
+
+    // Param ordering: $1..$7 stable; $8 carries either the explicit
+    // group_id or (when resolving inline) the connection_id consumed by
+    // the scalar subquery. $9 is connection_id stored verbatim on the
+    // row regardless of which path produced the group.
+    const insertSql = `INSERT INTO approval_queue
          (org_id, rule_id, rule_name, requester_id, requester_email, query_sql, explanation,
-          connection_id, tables_accessed, columns_accessed, surface, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now() + make_interval(hours => $12))
-       RETURNING id, org_id, rule_id, rule_name, requester_id, requester_email, query_sql,
-         explanation, connection_id, tables_accessed, columns_accessed, status,
-         reviewer_id, reviewer_email, review_comment, reviewed_at, surface, created_at, expires_at`,
+          connection_group_id, connection_id, tables_accessed, columns_accessed, surface, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, ${groupExpression}, $9, $10, $11, $12, now() + make_interval(hours => $13))
+       RETURNING ${APPROVAL_QUEUE_COLUMNS}`;
+
+    const rows = yield* Effect.promise(() => internalQuery<ApprovalQueueRow>(
+      insertSql,
       [
         opts.orgId,
         opts.ruleId,
@@ -729,6 +829,7 @@ export const createApprovalRequest = (opts: {
         opts.requesterEmail,
         opts.querySql,
         opts.explanation,
+        groupParam,
         opts.connectionId,
         JSON.stringify(opts.tablesAccessed),
         JSON.stringify(opts.columnsAccessed),
@@ -741,7 +842,10 @@ export const createApprovalRequest = (opts: {
       return yield* Effect.fail(new ApprovalError({ message: "Failed to create approval request.", code: "validation" }));
     }
 
-    log.info({ orgId: opts.orgId, requestId: rows[0].id, ruleId: opts.ruleId }, "Approval request created");
+    log.info(
+      { orgId: opts.orgId, requestId: rows[0].id, ruleId: opts.ruleId, connectionGroupId: rows[0].connection_group_id },
+      "Approval request created",
+    );
     const request = rowToRequest(rows[0]);
     if (!request) return yield* Effect.fail(new ApprovalError({ message: `Created request has unexpected status "${rows[0].status}" after insert.`, code: "conflict" }));
     return request;
@@ -761,9 +865,7 @@ export const listApprovalRequests = (
     const safeLimit = Math.min(Math.max(1, limit), 1000);
     const safeOffset = Math.max(0, offset);
 
-    let sql = `SELECT id, org_id, rule_id, rule_name, requester_id, requester_email, query_sql,
-         explanation, connection_id, tables_accessed, columns_accessed, status,
-         reviewer_id, reviewer_email, review_comment, reviewed_at, surface, created_at, expires_at
+    let sql = `SELECT ${APPROVAL_QUEUE_COLUMNS}
        FROM approval_queue
        WHERE org_id = $1`;
     const params: unknown[] = [orgId];
@@ -790,9 +892,7 @@ export const getApprovalRequest = (
     if (!hasInternalDB()) return null;
 
     const rows = yield* Effect.promise(() => internalQuery<ApprovalQueueRow>(
-      `SELECT id, org_id, rule_id, rule_name, requester_id, requester_email, query_sql,
-         explanation, connection_id, tables_accessed, columns_accessed, status,
-         reviewer_id, reviewer_email, review_comment, reviewed_at, surface, created_at, expires_at
+      `SELECT ${APPROVAL_QUEUE_COLUMNS}
        FROM approval_queue
        WHERE org_id = $1 AND id = $2
        LIMIT 1`,
@@ -851,9 +951,7 @@ export const reviewApprovalRequest = (
       `UPDATE approval_queue
        SET status = $3, reviewer_id = $4, reviewer_email = $5, review_comment = $6, reviewed_at = now()
        WHERE org_id = $1 AND id = $2 AND status = 'pending'
-       RETURNING id, org_id, rule_id, rule_name, requester_id, requester_email, query_sql,
-         explanation, connection_id, tables_accessed, columns_accessed, status,
-         reviewer_id, reviewer_email, review_comment, reviewed_at, surface, created_at, expires_at`,
+       RETURNING ${APPROVAL_QUEUE_COLUMNS}`,
       [orgId, requestId, newStatus, reviewerId, reviewerEmail, comment ?? null],
     ));
 
@@ -942,6 +1040,20 @@ export const getPendingCount = (orgId: string): Effect.Effect<number, never> =>
  * Used by the SQL interception to allow re-execution of approved queries.
  * Returns true if an approved request exists for this exact query text.
  *
+ * #2344 — when `connectionId` is provided, the lookup resolves the
+ * caller's `group_id` from `connections` and matches on
+ * `connection_group_id`. One approval covers every member of the same
+ * group running the same query — keying on connection forced re-
+ * approval per replica even when an admin had already greenlit the
+ * query for the group. When a connection has no group, the lookup falls
+ * back to the originating `connection_id` scope; when the connection is
+ * archived / deleted and cannot be resolved, no approval applies.
+ *
+ * The legacy 3-arg shape (`omit connectionId`) keeps the pre-#2344
+ * unscoped match for callers that don't yet thread the connection
+ * id. Used by the agent loop and the test harnesses; removed in a
+ * follow-up slice once every caller carries a connection.
+ *
  * Returns false when enterprise is disabled — stale approved records from a
  * previously-enabled enterprise license should not grant query access.
  * Only `EnterpriseError` is caught — unexpected errors propagate to avoid
@@ -951,17 +1063,76 @@ export const hasApprovedRequest = (
   orgId: string,
   requesterId: string,
   querySql: string,
+  connectionId?: string,
 ): Effect.Effect<boolean, never> =>
   Effect.gen(function* () {
     if (!hasInternalDB()) return false;
 
     yield* requireEnterpriseEffect("approval-workflows");
 
+    // #2344 — legacy 3-arg shape preserves the pre-migration unscoped
+    // lookup so the agent loop and the test harnesses that still call
+    // through the old signature don't regress. The new branch only
+    // engages when the caller supplies a connection — sql.ts does so;
+    // a follow-up slice removes the legacy branch once every consumer
+    // is migrated.
+    if (connectionId === undefined) {
+      const legacyRows = yield* Effect.promise(() => internalQuery<{ id: string }>(
+        `SELECT id FROM approval_queue
+         WHERE org_id = $1 AND requester_id = $2 AND query_sql = $3 AND status = 'approved'
+         LIMIT 1`,
+        [orgId, requesterId, querySql],
+      ));
+      return legacyRows.length > 0;
+    }
+
+    // #2344 — resolve the connection's group_id at lookup time.
+    // Separate SELECT (not a joined CTE on `approval_queue`) so the
+    // archived-connection case is a clean signal: the resolver
+    // returning zero rows means the connection has been removed /
+    // archived and no connection-scoped approval can safely apply.
+    const groupRows = yield* Effect.promise(() => internalQuery<{ group_id: string | null }>(
+      `SELECT group_id FROM connections
+       WHERE id = $1 AND (org_id = $2 OR org_id = '__global__')
+       ORDER BY CASE WHEN org_id = $2 THEN 0 ELSE 1 END
+       LIMIT 1`,
+      [connectionId, orgId],
+    ));
+    if (groupRows.length === 0) return false;
+
+    const resolvedGroupId = groupRows[0]?.group_id ?? null;
+
+    if (resolvedGroupId === null) {
+      // Ungrouped connections are not an environment group. Fall back to
+      // the originating connection scope so an approval for one NULL-group
+      // connection cannot authorize the same SQL on another NULL-group
+      // connection in the org.
+      const rows = yield* Effect.promise(() => internalQuery<{ id: string }>(
+        `SELECT id FROM approval_queue
+         WHERE org_id = $1
+           AND requester_id = $2
+           AND query_sql = $3
+           AND status = 'approved'
+           AND connection_group_id IS NULL
+           AND connection_id = $4
+         LIMIT 1`,
+        [orgId, requesterId, querySql, connectionId],
+      ));
+      return rows.length > 0;
+    }
+
+    // Match approval rows whose group equals the resolved group. NULL-group
+    // rows are handled by the connection-scoped branch above, because NULL
+    // does not identify a shared environment group.
     const rows = yield* Effect.promise(() => internalQuery<{ id: string }>(
       `SELECT id FROM approval_queue
-       WHERE org_id = $1 AND requester_id = $2 AND query_sql = $3 AND status = 'approved'
+       WHERE org_id = $1
+         AND requester_id = $2
+         AND query_sql = $3
+         AND status = 'approved'
+         AND connection_group_id = $4
        LIMIT 1`,
-      [orgId, requesterId, querySql],
+      [orgId, requesterId, querySql, resolvedGroupId],
     ));
 
     return rows.length > 0;

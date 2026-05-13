@@ -34315,7 +34315,16 @@
                                 ]
                               },
                               "connectionId": {
-                                "type": "string"
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "connectionGroupId": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
                               },
                               "tablesAccessed": {
                                 "type": "array",
@@ -34379,6 +34388,7 @@
                               "querySql",
                               "explanation",
                               "connectionId",
+                              "connectionGroupId",
                               "tablesAccessed",
                               "columnsAccessed",
                               "surface",
@@ -34425,7 +34435,16 @@
                                 ]
                               },
                               "connectionId": {
-                                "type": "string"
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "connectionGroupId": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
                               },
                               "tablesAccessed": {
                                 "type": "array",
@@ -34495,6 +34514,7 @@
                               "querySql",
                               "explanation",
                               "connectionId",
+                              "connectionGroupId",
                               "tablesAccessed",
                               "columnsAccessed",
                               "surface",
@@ -34541,7 +34561,16 @@
                                 ]
                               },
                               "connectionId": {
-                                "type": "string"
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "connectionGroupId": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
                               },
                               "tablesAccessed": {
                                 "type": "array",
@@ -34611,6 +34640,7 @@
                               "querySql",
                               "explanation",
                               "connectionId",
+                              "connectionGroupId",
                               "tablesAccessed",
                               "columnsAccessed",
                               "surface",
@@ -34657,7 +34687,16 @@
                                 ]
                               },
                               "connectionId": {
-                                "type": "string"
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "connectionGroupId": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
                               },
                               "tablesAccessed": {
                                 "type": "array",
@@ -34721,6 +34760,7 @@
                               "querySql",
                               "explanation",
                               "connectionId",
+                              "connectionGroupId",
                               "tablesAccessed",
                               "columnsAccessed",
                               "surface",
@@ -34921,7 +34961,16 @@
                               ]
                             },
                             "connectionId": {
-                              "type": "string"
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "connectionGroupId": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
                             "tablesAccessed": {
                               "type": "array",
@@ -34985,6 +35034,7 @@
                             "querySql",
                             "explanation",
                             "connectionId",
+                            "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
                             "surface",
@@ -35031,7 +35081,16 @@
                               ]
                             },
                             "connectionId": {
-                              "type": "string"
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "connectionGroupId": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
                             "tablesAccessed": {
                               "type": "array",
@@ -35101,6 +35160,7 @@
                             "querySql",
                             "explanation",
                             "connectionId",
+                            "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
                             "surface",
@@ -35147,7 +35207,16 @@
                               ]
                             },
                             "connectionId": {
-                              "type": "string"
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "connectionGroupId": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
                             "tablesAccessed": {
                               "type": "array",
@@ -35217,6 +35286,7 @@
                             "querySql",
                             "explanation",
                             "connectionId",
+                            "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
                             "surface",
@@ -35263,7 +35333,16 @@
                               ]
                             },
                             "connectionId": {
-                              "type": "string"
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "connectionGroupId": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
                             "tablesAccessed": {
                               "type": "array",
@@ -35327,6 +35406,7 @@
                             "querySql",
                             "explanation",
                             "connectionId",
+                            "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
                             "surface",
@@ -35528,7 +35608,16 @@
                               ]
                             },
                             "connectionId": {
-                              "type": "string"
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "connectionGroupId": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
                             "tablesAccessed": {
                               "type": "array",
@@ -35592,6 +35681,7 @@
                             "querySql",
                             "explanation",
                             "connectionId",
+                            "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
                             "surface",
@@ -35638,7 +35728,16 @@
                               ]
                             },
                             "connectionId": {
-                              "type": "string"
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "connectionGroupId": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
                             "tablesAccessed": {
                               "type": "array",
@@ -35708,6 +35807,7 @@
                             "querySql",
                             "explanation",
                             "connectionId",
+                            "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
                             "surface",
@@ -35754,7 +35854,16 @@
                               ]
                             },
                             "connectionId": {
-                              "type": "string"
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "connectionGroupId": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
                             "tablesAccessed": {
                               "type": "array",
@@ -35824,6 +35933,7 @@
                             "querySql",
                             "explanation",
                             "connectionId",
+                            "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
                             "surface",
@@ -35870,7 +35980,16 @@
                               ]
                             },
                             "connectionId": {
-                              "type": "string"
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "connectionGroupId": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             },
                             "tablesAccessed": {
                               "type": "array",
@@ -35934,6 +36053,7 @@
                             "querySql",
                             "explanation",
                             "connectionId",
+                            "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
                             "surface",

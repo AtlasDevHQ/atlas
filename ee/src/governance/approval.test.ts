@@ -99,6 +99,9 @@ function makeQueueRow(overrides: Partial<Record<string, unknown>> = {}): Record<
     query_sql: "SELECT * FROM users",
     explanation: "Fetching user data",
     connection_id: "default",
+    // #2344 — group-scoped approval queue. Legacy rows pre-#2344 are
+    // NULL; tests that exercise the new lookup override explicitly.
+    connection_group_id: null,
     tables_accessed: '["users"]',
     columns_accessed: '["id","name","email"]',
     status: "pending",
@@ -535,7 +538,7 @@ describe("createApprovalRequest", () => {
   beforeEach(resetMocks);
 
   it("creates an approval request", async () => {
-    ee.queueMockRows([makeQueueRow()]);
+    ee.queueMockRows([], [makeQueueRow()]);
     const result = await run(createApprovalRequest({
       orgId: "org-1",
       ruleId: "rule-1",
@@ -551,11 +554,11 @@ describe("createApprovalRequest", () => {
     expect(result.id).toBe("req-1");
     expect(result.status).toBe("pending");
     expect(result.tablesAccessed).toEqual(["users"]);
-    expect(ee.capturedQueries[0].sql).toContain("INSERT INTO approval_queue");
+    expect(ee.capturedQueries.some((q) => q.sql.includes("INSERT INTO approval_queue"))).toBe(true);
   });
 
   it("#2072: stamps surface on the queued row when caller provides it", async () => {
-    ee.queueMockRows([makeQueueRow({ surface: "mcp" })]);
+    ee.queueMockRows([], [makeQueueRow({ surface: "mcp" })]);
     const result = await run(createApprovalRequest({
       orgId: "org-1",
       ruleId: "rule-1",
@@ -578,7 +581,7 @@ describe("createApprovalRequest", () => {
   });
 
   it("#2072: stores surface as null when the caller does not provide it (legacy shape)", async () => {
-    ee.queueMockRows([makeQueueRow({ surface: null })]);
+    ee.queueMockRows([], [makeQueueRow({ surface: null })]);
     const result = await run(createApprovalRequest({
       orgId: "org-1",
       ruleId: "rule-1",
@@ -831,6 +834,163 @@ describe("hasApprovedRequest", () => {
     } catch (err) {
       expect(err).toBe(original);
     }
+  });
+});
+
+// #2344 — group-scoped approval. The PRD's HITL assumption is that one
+// approval row covers any group member running the same query: an
+// approval issued against `conn-us` flows through to a follow-up
+// execution against `conn-eu` if both are members of the same group.
+// Connection-id continues to be written so the audit log carries which
+// member originated the request, but the lookup keys on group.
+describe("hasApprovedRequest — group-scoped (#2344)", () => {
+  beforeEach(resetMocks);
+
+  it("matches an approval issued against a different connection in the same group", async () => {
+    // Two-step query trace mock: (1) resolve connection's group_id,
+    // (2) approval_queue lookup. The execution-side caller is on
+    // `conn-eu`, which resolves to `g-prod`; the approval row was
+    // issued for `conn-us` (same group). The lookup must succeed.
+    ee.queueMockRows(
+      [{ group_id: "g-prod" }],
+      [{ id: "req-approved" }],
+    );
+    const result = await run(hasApprovedRequest(
+      "org-1",
+      "user-1",
+      "SELECT * FROM accounts",
+      "conn-eu",
+    ));
+    expect(result).toBe(true);
+
+    // The approval_queue SELECT must filter on the resolved group_id —
+    // not the raw connection_id — so two members of the same group
+    // share approvals. The captured params should carry the resolved
+    // group_id as $4.
+    const approvalLookup = ee.capturedQueries.find((q) =>
+      q.sql.includes("FROM approval_queue") && q.sql.includes("status = 'approved'"),
+    );
+    expect(approvalLookup).toBeDefined();
+    expect(approvalLookup!.params).toContain("g-prod");
+    // And the lookup must NOT bind the raw connection id — the regression
+    // shape we're guarding against is "lookup filters by connection_id"
+    // which would force re-approval per-member.
+    expect(approvalLookup!.params).not.toContain("conn-eu");
+  });
+
+  it("falls back to connection scope for ungrouped connections", async () => {
+    // NULL group_id is not a shared environment. The approval lookup must
+    // require the originating connection_id so an approval for one
+    // ungrouped connection does not authorize another ungrouped connection.
+    ee.queueMockRows(
+      [{ group_id: null }],
+      [],
+    );
+    const result = await run(hasApprovedRequest(
+      "org-1",
+      "user-1",
+      "SELECT * FROM accounts",
+      "conn-ungrouped-b",
+    ));
+    expect(result).toBe(false);
+
+    const approvalLookup = ee.capturedQueries.find((q) =>
+      q.sql.includes("FROM approval_queue") && q.sql.includes("connection_group_id IS NULL"),
+    );
+    expect(approvalLookup).toBeDefined();
+    expect(approvalLookup!.sql).toContain("connection_id = $4");
+    expect(approvalLookup!.params).toContain("conn-ungrouped-b");
+  });
+
+  it("rejects when the connection has been archived (group_id no longer resolves)", async () => {
+    // Archived / deleted connection: the group resolver returns no
+    // rows. Without a resolvable connection context, the check fails
+    // closed instead of falling through to another approval bucket.
+    ee.queueMockRows(
+      [], // no row → group resolver cannot resolve the connection
+    );
+    const result = await run(hasApprovedRequest(
+      "org-1",
+      "user-1",
+      "SELECT * FROM accounts",
+      "conn-archived",
+    ));
+    expect(result).toBe(false);
+  });
+
+  it("preserves the legacy no-connection-id shape for callers that don't pass one", async () => {
+    // sql.ts call sites that pre-date #2344 (and the agent loop's
+    // backwards-compat path) call `hasApprovedRequest` with three
+    // positional args. The legacy shape must keep returning a boolean
+    // based on the (orgId, requesterId, querySql) match without
+    // attempting a group resolve. This guards the migration sequencing.
+    ee.queueMockRows([{ id: "req-approved" }]);
+    const result = await run(hasApprovedRequest(
+      "org-1",
+      "user-1",
+      "SELECT * FROM accounts",
+    ));
+    expect(result).toBe(true);
+    // No group-resolution query was issued — the legacy path is one SELECT.
+    expect(ee.capturedQueries).toHaveLength(1);
+    expect(ee.capturedQueries[0].sql).toContain("FROM approval_queue");
+  });
+});
+
+// #2344 — group-scoped createApprovalRequest. The approval row carries
+// `connection_group_id` so the lookup above can filter on it. The
+// caller may pass it explicitly (preferred — sql.ts has the connection
+// in hand), and the service resolves it inline via the connections
+// 1:1 group map when omitted, mirroring `inlineConnectionGroupSql` in
+// `semantic/entities.ts`.
+describe("createApprovalRequest — group-scoped (#2344)", () => {
+  beforeEach(resetMocks);
+
+  it("stamps connection_group_id on the queued row when caller passes one", async () => {
+    ee.queueMockRows([], [], [makeQueueRow({ connection_group_id: "g-prod" })]);
+    const result = await run(createApprovalRequest({
+      orgId: "org-1",
+      ruleId: "rule-1",
+      ruleName: "PII table approval",
+      requesterId: "user-1",
+      requesterEmail: "user@example.com",
+      querySql: "SELECT * FROM accounts",
+      explanation: null,
+      connectionId: "conn-us",
+      connectionGroupId: "g-prod",
+      tablesAccessed: ["accounts"],
+      columnsAccessed: ["id"],
+    }));
+    expect(result.connectionGroupId).toBe("g-prod");
+    const insert = ee.capturedQueries.find((q) => q.sql.includes("INSERT INTO approval_queue"));
+    expect(insert).toBeDefined();
+    expect(insert!.sql).toContain("connection_group_id");
+    expect(insert!.params).toContain("g-prod");
+  });
+
+  it("resolves connection_group_id inline from connection_id when caller omits it", async () => {
+    // Mirrors the inline scalar-subquery shape used by
+    // `inlineConnectionGroupSql`. The returned queue row carries the
+    // group resolved by the subquery rather than the caller passing it.
+    ee.queueMockRows([], [makeQueueRow({ connection_group_id: "g-prod", connection_id: "conn-us" })]);
+    const result = await run(createApprovalRequest({
+      orgId: "org-1",
+      ruleId: "rule-1",
+      ruleName: "PII table approval",
+      requesterId: "user-1",
+      requesterEmail: "user@example.com",
+      querySql: "SELECT * FROM accounts",
+      explanation: null,
+      connectionId: "conn-us",
+      tablesAccessed: ["accounts"],
+      columnsAccessed: ["id"],
+    }));
+    expect(result.connectionGroupId).toBe("g-prod");
+    const insert = ee.capturedQueries.find((q) => q.sql.includes("INSERT INTO approval_queue"));
+    expect(insert).toBeDefined();
+    // Inline subquery against connections — the SQL contains both the
+    // connection_id parameter and the inline group lookup.
+    expect(insert!.sql).toContain("FROM connections");
   });
 });
 

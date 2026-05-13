@@ -132,6 +132,18 @@ Pending requests expire automatically after 24 hours by default. Configure via t
 ATLAS_APPROVAL_EXPIRY_HOURS=48
 ```
 
+### Environment-Scoped Approvals
+
+Approvals are scoped to the connection's **environment group** (called a "connection group" in the schema; see the [multi-environment guide](/docs/guides/multi-environment)). When an admin approves a query, the approval covers any member of that group running the same query — operators don't have to re-approve once for each replica of a federated dataset.
+
+In practice:
+
+- A query approved against the `us-int` connection in the `prod` group automatically applies when the same user re-runs it against the `eu` or `apac` connection in the same `prod` group.
+- An approved query does **not** apply across groups — `prod` and `staging` are independent approval scopes.
+- Archiving a connection or moving it out of the group invalidates approvals issued against the old group; the next execution will queue a new request.
+
+The originating connection id is preserved on each approval row so reviewers can still see which group member submitted the request (visible in the expanded row details). The lookup itself keys on the group.
+
 ---
 
 ## API Reference

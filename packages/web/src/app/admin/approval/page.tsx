@@ -574,6 +574,29 @@ function QueueSection() {
   const someSelected = selectedIds.size > 0;
   const bulkInProgress = bulkAction !== null;
 
+  // #2344 — collapse pending requests by (environment, querySql) so
+  // reviewers see when the same query is queued multiple times in the
+  // same group. Approving any one row will satisfy the gate for every
+  // member running the same query, so visual de-duplication helps the
+  // reviewer skip past obvious dupes. Minimal pass: a banner showing
+  // "N pending across M environments — K duplicates within an
+  // environment can be approved together." `?? "__no-env__"` lifts the
+  // legacy NULL-group rows into a single bucket rather than pretending
+  // each is its own environment.
+  const pendingGroupBuckets = new Map<string, ApprovalRequest[]>();
+  for (const req of pendingRequests) {
+    const env = req.connectionGroupId ?? req.connectionId ?? "__no-env__";
+    const key = `${env} ${req.querySql}`;
+    const bucket = pendingGroupBuckets.get(key);
+    if (bucket) bucket.push(req);
+    else pendingGroupBuckets.set(key, [req]);
+  }
+  const dupBuckets = [...pendingGroupBuckets.values()].filter((b) => b.length > 1);
+  const dupCount = dupBuckets.reduce((sum, b) => sum + (b.length - 1), 0);
+  const distinctEnvCount = new Set(
+    pendingRequests.map((r) => r.connectionGroupId ?? r.connectionId ?? "__no-env__"),
+  ).size;
+
   function toggleSelect(id: string) {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -803,6 +826,23 @@ function QueueSection() {
           />
         )}
 
+        {/* #2344 — environment-aware list summary. Only shown when the
+            pending queue has at least one (environment, query) bucket
+            that contains multiples — single-bucket queues don't need
+            the noise. Approving one row in a bucket implicitly covers
+            the rest because the lookup keys on environment, not on
+            connection id. */}
+        {statusFilter === "pending" && dupCount > 0 && (
+          <p className="text-xs text-muted-foreground">
+            {pendingRequests.length} pending across {distinctEnvCount}{" "}
+            environment{distinctEnvCount === 1 ? "" : "s"}.{" "}
+            <span className="text-muted-foreground/80">
+              {dupCount} duplicate{dupCount === 1 ? "" : "s"} within an
+              environment — approving one covers the rest.
+            </span>
+          </p>
+        )}
+
         {loading ? (
           <p className="py-8 text-center text-sm text-muted-foreground">Loading approval queue...</p>
         ) : requests.length === 0 ? (
@@ -1023,6 +1063,25 @@ function ExpandedRequestDetails({
               {t}
             </Badge>
           ))}
+        </div>
+      )}
+
+      {/* #2344 — surface the environment context. Approvals are now
+          group-wide: one greenlight covers any member of the same
+          environment running the same query, so reviewers need to see
+          which group they're approving for. Legacy pre-#2344 rows fall
+          back to the originating connection id. */}
+      {(req.connectionGroupId || req.connectionId) && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">Environment:</span>
+          <Badge variant="outline" className="text-xs font-mono">
+            {req.connectionGroupId ?? req.connectionId}
+          </Badge>
+          {!req.connectionGroupId && req.connectionId && (
+            <span className="text-[10px] text-muted-foreground/70">
+              (legacy — pre-environment-grouping)
+            </span>
+          )}
         </div>
       )}
 

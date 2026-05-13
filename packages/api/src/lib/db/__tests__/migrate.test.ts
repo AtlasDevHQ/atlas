@@ -79,7 +79,9 @@ describe("runMigrations", () => {
 
     const count = await runMigrations(pool);
 
-    expect(count).toBe(65);
+    // 64 base migrations + 0064 (PII, #2341) + 0065 (approvals, #2344) = 66.
+    // Bump when the next 1.4.4 group-scoped slice lands.
+    expect(count).toBe(66);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -173,6 +175,7 @@ describe("runMigrations", () => {
         "0062_connection_groups.sql",
         "0063_semantic_entities_group_scoped.sql",
         "0064_pii_group_scoped.sql",
+        "0065_approvals_group_scoped.sql",
       ],
     });
 

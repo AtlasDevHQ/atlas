@@ -947,4 +947,282 @@ describeIfPg("migrate-pg (real Postgres)", () => {
         ON pii_column_classifications (org_id, table_name, column_name, COALESCE(connection_group_id, '__default__'))`,
     );
   }, PG_TEST_TIMEOUT_MS);
+
+  // 0065 — group-scoped approval queue. The migration adds
+  // `approval_queue.connection_group_id` (FK to connection_groups), drops
+  // the vestigial `connection_id NOT NULL DEFAULT 'default'`, and back-
+  // fills via the 0062 1:1 connection→group map. What this set of
+  // assertions guards against:
+  //   - A future migration that re-introduces NOT NULL on connection_id,
+  //     breaking the audit-only nullable shape post-#2344.
+  //   - A future migration that drops connection_group_id without an
+  //     equivalent group-scope replacement, regressing the "approve once
+  //     per group" semantics.
+  //   - The backfill drifting: every existing row that had a valid
+  //     connection_id must end up with the corresponding
+  //     connection_group_id resolved through 0062's `g_<connId>` map.
+  it("approval_queue.connection_group_id: column exists and is nullable", async () => {
+    const { rows } = await pool.query<{ is_nullable: string; data_type: string }>(
+      `SELECT is_nullable, data_type
+       FROM information_schema.columns
+       WHERE table_name = 'approval_queue'
+         AND column_name = 'connection_group_id'
+         AND table_schema = current_schema()`,
+    );
+    expect(rows[0]?.data_type).toBe("text");
+    // Nullable: legacy pre-#2344 rows and callers without a group
+    // context (the agent loop's identityMissing path stays NULL too)
+    // must keep booting; the lookup uses a COALESCE sentinel to match
+    // the NULL case.
+    expect(rows[0]?.is_nullable).toBe("YES");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("approval_queue.connection_id: column is nullable post-#2344 (no NOT NULL DEFAULT)", async () => {
+    // The pre-#2344 schema had `connection_id NOT NULL DEFAULT 'default'`,
+    // which silently rewrote unstamped inserts to the string 'default'.
+    // 0065 drops both — the column is audit-only, the lookup keys on
+    // connection_group_id. A future migration that re-tightens this
+    // would force every caller back through the 'default' drift shape.
+    const { rows } = await pool.query<{ is_nullable: string; column_default: string | null }>(
+      `SELECT is_nullable, column_default
+       FROM information_schema.columns
+       WHERE table_name = 'approval_queue'
+         AND column_name = 'connection_id'
+         AND table_schema = current_schema()`,
+    );
+    expect(rows[0]?.is_nullable).toBe("YES");
+    expect(rows[0]?.column_default).toBeNull();
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("approval_queue: backfill resolves connection_id → connection_group_id via 0062's 1:1 mapping", async () => {
+    // Pre-migration approval rows have `connection_id` set but no
+    // `connection_group_id`. 0065 backfills by joining `connections`,
+    // so every row with a known connection lands on `g_<connId>` (the
+    // group_id 0062 created for the 1:1 backfill).
+    const orgId = `org-approval-backfill-${Date.now()}`;
+    const connId = `conn-approval-${Date.now()}`;
+    const groupId = `g_${connId}`;
+    // Seed the 1:1 group + connection that 0062 would have produced.
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, $3)`,
+      [groupId, orgId, connId],
+    );
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status, group_id)
+       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3)`,
+      [connId, orgId, groupId],
+    );
+    // Seed an approval rule the approval_queue row can reference (the
+    // queue has no rule_id FK, but using a real UUID keeps the row
+    // shape consistent with production inserts).
+    const ruleRow = await pool.query<{ id: string }>(
+      `INSERT INTO approval_rules (org_id, name, rule_type, pattern, threshold, enabled)
+       VALUES ($1, 'Backfill rule', 'table', 'orders', NULL, true)
+       RETURNING id`,
+      [orgId],
+    );
+    const ruleId = ruleRow.rows[0].id;
+    // Insert an approval row matching the pre-0065 shape: connection_id
+    // set, connection_group_id left NULL — same shape an upgrade row
+    // would have on the moment 0065 starts running.
+    await pool.query(
+      `INSERT INTO approval_queue
+         (org_id, rule_id, rule_name, requester_id, query_sql, connection_id, connection_group_id)
+       VALUES ($1, $2, 'Backfill rule', 'user-backfill', 'SELECT * FROM orders', $3, NULL)`,
+      [orgId, ruleId, connId],
+    );
+    // Re-run the backfill block (same SQL the migration uses).
+    // Idempotent: the WHERE clause only touches rows still missing
+    // connection_group_id.
+    await pool.query(
+      `UPDATE approval_queue aq
+         SET connection_group_id = c.group_id
+         FROM connections c
+         WHERE aq.org_id = $1
+           AND aq.connection_id IS NOT NULL
+           AND aq.connection_group_id IS NULL
+           AND c.id = aq.connection_id
+           AND (c.org_id = aq.org_id OR c.org_id = '__global__')`,
+      [orgId],
+    );
+    const { rows } = await pool.query<{ connection_group_id: string | null }>(
+      `SELECT connection_group_id FROM approval_queue
+       WHERE org_id = $1 AND requester_id = 'user-backfill'`,
+      [orgId],
+    );
+    expect(rows[0]?.connection_group_id).toBe(groupId);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("approval_queue: global connection backfill mirrors group into tenant before FK use", async () => {
+    // Demo / built-in connections are stored under `__global__`, but
+    // approval rows are tenant-scoped. 0065 mirrors the global group row
+    // into the tenant before writing approval_queue.connection_group_id so
+    // the composite FK can remain tenant-local.
+    const orgId = `org-approval-global-${Date.now()}`;
+    const connId = `conn-global-approval-${Date.now()}`;
+    const groupId = `g_${connId}`;
+
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, '__global__', $2)`,
+      [groupId, connId],
+    );
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status, group_id)
+       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', '__global__', 'published', $2)`,
+      [connId, groupId],
+    );
+    const ruleRow = await pool.query<{ id: string }>(
+      `INSERT INTO approval_rules (org_id, name, rule_type, pattern, threshold, enabled)
+       VALUES ($1, 'Global backfill rule', 'table', 'orders', NULL, true)
+       RETURNING id`,
+      [orgId],
+    );
+    await pool.query(
+      `INSERT INTO approval_queue
+         (org_id, rule_id, rule_name, requester_id, query_sql, connection_id, connection_group_id)
+       VALUES ($1, $2, 'Global backfill rule', 'user-global-backfill', 'SELECT * FROM orders', $3, NULL)`,
+      [orgId, ruleRow.rows[0].id, connId],
+    );
+
+    await pool.query(
+      `WITH global_approval_groups AS (
+         SELECT DISTINCT
+                COALESCE(aq.connection_group_id, c.group_id) AS group_id,
+                aq.org_id AS tenant_org_id,
+                ('__global__:' || g.id) AS name
+           FROM approval_queue aq
+           JOIN connections c
+             ON c.id = aq.connection_id
+            AND c.org_id = '__global__'
+           JOIN connection_groups g
+             ON g.id = c.group_id
+            AND g.org_id = '__global__'
+          WHERE aq.org_id = $1
+            AND aq.org_id <> '__global__'
+            AND COALESCE(aq.connection_group_id, c.group_id) IS NOT NULL
+       )
+       INSERT INTO connection_groups (id, org_id, name)
+       SELECT group_id, tenant_org_id, name
+         FROM global_approval_groups
+       ON CONFLICT (id, org_id) DO NOTHING`,
+      [orgId],
+    );
+    await pool.query(
+      `UPDATE approval_queue aq
+         SET connection_group_id = c.group_id
+         FROM connections c
+         WHERE aq.org_id = $1
+           AND aq.connection_id IS NOT NULL
+           AND aq.connection_group_id IS NULL
+           AND c.id = aq.connection_id
+           AND (c.org_id = aq.org_id OR c.org_id = '__global__')`,
+      [orgId],
+    );
+
+    const { rows } = await pool.query<{ connection_group_id: string | null; mirrored: string | null }>(
+      `SELECT aq.connection_group_id,
+              (SELECT g.id FROM connection_groups g WHERE g.id = aq.connection_group_id AND g.org_id = aq.org_id) AS mirrored
+         FROM approval_queue aq
+        WHERE aq.org_id = $1 AND aq.requester_id = 'user-global-backfill'`,
+      [orgId],
+    );
+    expect(rows[0]?.connection_group_id).toBe(groupId);
+    expect(rows[0]?.mirrored).toBe(groupId);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("approval_queue.connection_group_id: composite FK blocks cross-org membership", async () => {
+    // Same shape as `connections.group_id` in 0062: the composite FK
+    // (connection_group_id, org_id) → connection_groups (id, org_id)
+    // makes it impossible for an approval row in org B to reference a
+    // group that lives in org A.
+    const orgA = `org-approval-fk-a-${Date.now()}`;
+    const orgB = `org-approval-fk-b-${Date.now()}`;
+    const groupId = `g-approval-fk-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'shared')`,
+      [groupId, orgA],
+    );
+    const ruleRow = await pool.query<{ id: string }>(
+      `INSERT INTO approval_rules (org_id, name, rule_type, pattern, threshold, enabled)
+       VALUES ($1, 'Cross-org rule', 'table', 'orders', NULL, true)
+       RETURNING id`,
+      [orgB],
+    );
+    // 23503 = foreign_key_violation. Pointing org B's approval row at
+    // org A's group must fail loudly at the DB layer.
+    await expect(
+      pool.query(
+        `INSERT INTO approval_queue
+           (org_id, rule_id, rule_name, requester_id, query_sql, connection_group_id)
+         VALUES ($1, $2, 'Cross-org rule', 'user-1', 'SELECT 1', $3)`,
+        [orgB, ruleRow.rows[0].id, groupId],
+      ),
+    ).rejects.toMatchObject({ code: "23503" });
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("approval_queue.connection_group_id: deleting a referenced group is rejected with 23503", async () => {
+    // ON DELETE RESTRICT on the FK is the last-resort defence against
+    // a group teardown that would orphan live approval rows. The route
+    // handler in `admin-connection-groups.ts` already rejects non-
+    // empty groups with a 409; this guards the path where a caller
+    // bypasses the handler (raw SQL or future call site).
+    const orgId = `org-approval-restrict-${Date.now()}`;
+    const groupId = `g-approval-restrict-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'temp')`,
+      [groupId, orgId],
+    );
+    const ruleRow = await pool.query<{ id: string }>(
+      `INSERT INTO approval_rules (org_id, name, rule_type, pattern, threshold, enabled)
+       VALUES ($1, 'Restrict rule', 'table', 'orders', NULL, true)
+       RETURNING id`,
+      [orgId],
+    );
+    await pool.query(
+      `INSERT INTO approval_queue
+         (org_id, rule_id, rule_name, requester_id, query_sql, connection_group_id)
+       VALUES ($1, $2, 'Restrict rule', 'user-1', 'SELECT 1', $3)`,
+      [orgId, ruleRow.rows[0].id, groupId],
+    );
+    // 23503: dropping a group with a live approval row pointing at it
+    // must fail.
+    await expect(
+      pool.query(
+        `DELETE FROM connection_groups WHERE id = $1 AND org_id = $2`,
+        [groupId, orgId],
+      ),
+    ).rejects.toMatchObject({ code: "23503" });
+
+    // Removing the approval row's group reference lets the delete
+    // proceed — proves the FK isn't blocking on phantom data.
+    await pool.query(
+      `UPDATE approval_queue SET connection_group_id = NULL WHERE org_id = $1 AND requester_id = 'user-1'`,
+      [orgId],
+    );
+    await pool.query(
+      `DELETE FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [groupId, orgId],
+    );
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT id FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [groupId, orgId],
+    );
+    expect(rows.length).toBe(0);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("approval_queue: idx_approval_queue_group is the partial-index on approved-only rows", async () => {
+    // The new lookup-path index is partial (status = 'approved') so it
+    // stays small even on workspaces with a deep historical queue.
+    // A future "drop the partial predicate" change would explode the
+    // index size and burn IO on every hasApprovedRequest call.
+    const { rows } = await pool.query<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes
+       WHERE schemaname = current_schema()
+         AND tablename = 'approval_queue'
+         AND indexname = 'idx_approval_queue_group'`,
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.indexdef).toMatch(/status = 'approved'/i);
+    expect(rows[0]?.indexdef).toMatch(/connection_group_id/i);
+  }, PG_TEST_TIMEOUT_MS);
 });

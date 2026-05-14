@@ -16,7 +16,6 @@ function makeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     deliveryChannel: "email",
     recipients: [],
     connectionGroupId: null,
-    connectionId: null,
     approvalMode: "auto",
     enabled: true,
     lastRunAt: null,

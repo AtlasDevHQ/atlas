@@ -34,6 +34,8 @@ import type { ActionApprovalMode } from "@atlas/api/lib/action-types";
 
 const log = createLogger("scheduled-tasks");
 
+type ScheduledTaskInternal = ScheduledTask & { connectionId: string | null };
+
 // Re-export types for consumers
 export type { ScheduledTask, ScheduledTaskRun, ScheduledTaskRunWithTaskName, ScheduledTaskWithRuns };
 
@@ -48,7 +50,7 @@ export type { CrudResult, CrudDataResult, CrudFailReason };
 // Helpers
 // ---------------------------------------------------------------------------
 
-function rowToScheduledTask(r: Record<string, unknown>): ScheduledTask {
+function rowToScheduledTask(r: Record<string, unknown>): ScheduledTaskInternal {
   let recipients: Recipient[] = [];
   try {
     const raw = typeof r.recipients === "string" ? JSON.parse(r.recipients) : r.recipients;
@@ -67,7 +69,7 @@ function rowToScheduledTask(r: Record<string, unknown>): ScheduledTask {
     );
   }
 
-  return {
+  const task = {
     id: r.id as string,
     ownerId: r.owner_id as string,
     orgId: typeof r.org_id === "string" ? r.org_id : null,
@@ -77,14 +79,18 @@ function rowToScheduledTask(r: Record<string, unknown>): ScheduledTask {
     deliveryChannel: (r.delivery_channel as DeliveryChannel) ?? "webhook",
     recipients,
     connectionGroupId: (r.connection_group_id as string) ?? null,
-    connectionId: (r.connection_id as string) ?? null,
     approvalMode: (r.approval_mode as ActionApprovalMode) ?? "auto",
     enabled: r.enabled === true,
     lastRunAt: r.last_run_at ? String(r.last_run_at) : null,
     nextRunAt: r.next_run_at ? String(r.next_run_at) : null,
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
-  };
+  } as ScheduledTaskInternal;
+  Object.defineProperty(task, "connectionId", {
+    value: (r.connection_id as string) ?? null,
+    enumerable: false,
+  });
+  return task;
 }
 
 function rowToScheduledTaskRun(r: Record<string, unknown>): ScheduledTaskRun {
@@ -193,7 +199,7 @@ export async function createScheduledTask(opts: {
   connectionGroupId?: string | null;
   connectionId?: string | null;
   approvalMode?: ActionApprovalMode;
-}): Promise<CrudDataResult<ScheduledTask>> {
+}): Promise<CrudDataResult<ScheduledTaskInternal>> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
 
   const validation = validateCronExpression(opts.cronExpression);
@@ -244,7 +250,7 @@ export async function createScheduledTask(opts: {
 export async function getScheduledTask(
   id: string,
   scope?: { orgId?: string | null; connectionGroupId?: string | null },
-): Promise<CrudDataResult<ScheduledTask>> {
+): Promise<CrudDataResult<ScheduledTaskInternal>> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
     let rows: Record<string, unknown>[];
@@ -591,7 +597,7 @@ export async function listTaskRuns(
 // ---------------------------------------------------------------------------
 
 /** Get tasks that are due for execution (enabled + next_run_at <= now). */
-export async function getTasksDueForExecution(): Promise<ScheduledTask[]> {
+export async function getTasksDueForExecution(): Promise<ScheduledTaskInternal[]> {
   if (!hasInternalDB()) return [];
   try {
     const rows = await internalQuery<Record<string, unknown>>(

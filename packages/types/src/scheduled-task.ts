@@ -61,8 +61,6 @@ export interface ScheduledTask {
    * instead of targeting raw connections directly.
    */
   connectionGroupId: string | null;
-  /** @deprecated Prefer `connectionGroupId`; retained until #2346. */
-  connectionId: string | null;
   approvalMode: ActionApprovalMode;
   enabled: boolean;
   lastRunAt: string | null;

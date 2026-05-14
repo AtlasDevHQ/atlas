@@ -36,6 +36,11 @@ export { NoGroupMembersError };
 
 const log = createLogger("dashboards");
 
+type DashboardCardInternal = DashboardCard & { connectionId: string | null };
+type DashboardWithCardsInternal = Omit<DashboardWithCards, "cards"> & {
+  cards: DashboardCardInternal[];
+};
+
 /**
  * Tile layout in the 24-col freeform grid. Single source for both write-time
  * Zod validation (route) and read-time DB-row validation (`rowToCard`).
@@ -72,7 +77,7 @@ function rowToDashboard(r: Record<string, unknown>): Dashboard {
   };
 }
 
-export function rowToCard(r: Record<string, unknown>): DashboardCard {
+export function rowToCard(r: Record<string, unknown>): DashboardCardInternal {
   let chartConfig: DashboardChartConfig | null = null;
   if (r.chart_config) {
     try {
@@ -121,7 +126,7 @@ export function rowToCard(r: Record<string, unknown>): DashboardCard {
     }
   }
 
-  return {
+  const card = {
     id: r.id as string,
     dashboardId: r.dashboard_id as string,
     position: typeof r.position === "number" ? r.position : 0,
@@ -131,12 +136,16 @@ export function rowToCard(r: Record<string, unknown>): DashboardCard {
     cachedColumns,
     cachedRows,
     cachedAt: r.cached_at ? String(r.cached_at) : null,
-    connectionId: (r.connection_id as string) ?? null,
     connectionGroupId: (r.connection_group_id as string) ?? null,
     layout,
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
-  };
+  } as DashboardCardInternal;
+  Object.defineProperty(card, "connectionId", {
+    value: (r.connection_id as string) ?? null,
+    enumerable: false,
+  });
+  return card;
 }
 
 function orgScopeClause(
@@ -221,7 +230,7 @@ export async function loadGroupSnapshot(
  * connection (CLAUDE.md "Prefer errors over silent fallbacks").
  */
 export async function resolveCardConnectionId(
-  card: { connectionGroupId: string | null; connectionId: string | null },
+  card: { connectionGroupId: string | null; connectionId?: string | null },
   orgId: string | null,
 ): Promise<string | null> {
   if (card.connectionGroupId) {
@@ -235,7 +244,7 @@ export async function resolveCardConnectionId(
     }
     return selectGroupMember(snap);
   }
-  return card.connectionId;
+  return card.connectionId ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -267,7 +276,7 @@ export async function createDashboard(opts: {
 export async function getDashboard(
   id: string,
   scope: { orgId?: string | null },
-): Promise<CrudDataResult<DashboardWithCards>> {
+): Promise<CrudDataResult<DashboardWithCardsInternal>> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
     const params: unknown[] = [id];
@@ -427,7 +436,7 @@ export async function addCard(opts: {
   /** Group-scoped execution target (1.4.4). */
   connectionGroupId?: string | null;
   layout?: DashboardCardLayout | null;
-}): Promise<CrudDataResult<DashboardCard>> {
+}): Promise<CrudDataResult<DashboardCardInternal>> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
     // Get next position
@@ -567,7 +576,7 @@ export async function refreshCard(
 export async function getCard(
   cardId: string,
   dashboardId: string,
-): Promise<CrudDataResult<DashboardCard>> {
+): Promise<CrudDataResult<DashboardCardInternal>> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
     const rows = await internalQuery<Record<string, unknown>>(
@@ -723,7 +732,7 @@ export type SharedDashboardFailReason = "no_db" | "not_found" | "expired" | "err
 export async function getSharedDashboard(
   token: string,
 ): Promise<
-  | { ok: true; data: DashboardWithCards }
+  | { ok: true; data: DashboardWithCardsInternal }
   | { ok: false; reason: SharedDashboardFailReason }
 > {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
@@ -907,7 +916,7 @@ export async function refreshDashboardCards(dashboardId: string): Promise<{
 /** Get dashboard with cards without org scoping (for scheduler engine). */
 async function getDashboardUnscoped(
   id: string,
-): Promise<CrudDataResult<DashboardWithCards>> {
+): Promise<CrudDataResult<DashboardWithCardsInternal>> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
     const dashRows = await internalQuery<Record<string, unknown>>(

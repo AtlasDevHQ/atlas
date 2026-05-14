@@ -217,7 +217,6 @@ function rowToRequest(row: ApprovalQueueRow): ApprovalRequest | null {
     requesterEmail: row.requester_email,
     querySql: row.query_sql,
     explanation: row.explanation,
-    connectionId: row.connection_id,
     // #2344 — undefined-tolerant access guards the in-memory test
     // fixtures (`makeQueueRow` in approval.test.ts predates the
     // column). Real DB rows always carry the column post-0065 — the

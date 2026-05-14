@@ -34,7 +34,7 @@ interface DraftRow {
 }
 
 interface EntityEditRow extends DraftRow {
-  readonly connectionId: string | null;
+  readonly connectionGroupId: string | null;
 }
 
 interface PublishPreviewData {
@@ -258,7 +258,7 @@ function buildSections(data: PublishPreviewData): Section[] {
   const entityRows: SectionRow[] = [];
   for (const r of data.entities) entityRows.push({ ...r, intent: "create" });
   for (const r of data.entityEdits) {
-    const suffix = r.connectionId ? ` · ${r.connectionId}` : "";
+    const suffix = r.connectionGroupId ? ` · ${r.connectionGroupId}` : "";
     entityRows.push({
       id: r.id,
       label: `${r.label}${suffix}`,

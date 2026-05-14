@@ -12,7 +12,7 @@ export interface EntitySummary {
   description: string;
   type?: "table" | "view";
   columnCount: number;
-  connectionId?: string;
+  connectionGroupId?: string | null;
 }
 
 export function EntityList({
@@ -80,9 +80,9 @@ export function EntityList({
                   <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
                     {entity.columnCount} cols
                   </Badge>
-                  {entity.connectionId && entity.connectionId !== "default" && (
+                  {entity.connectionGroupId && (
                     <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
-                      {entity.connectionId}
+                      {entity.connectionGroupId}
                     </Badge>
                   )}
                 </div>

@@ -3,6 +3,7 @@
   "description": "Task-focused guides for the @useatlas/sdk TypeScript client",
   "icon": "Code",
   "pages": [
+    "migration-types-0-1",
     "starter-prompts",
     "mcp"
   ]

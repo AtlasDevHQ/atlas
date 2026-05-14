@@ -1,0 +1,59 @@
+---
+title: Migrating @useatlas/types to 0.1.0
+description: Update SDK consumers for the multi-environment semantic layer wire-format cleanup.
+---
+
+`@useatlas/types@0.1.0` removes the deprecated `connectionId` fields that were temporarily exposed during the 1.4.4 multi-environment rollout. Use `connectionGroupId` for content scope. `Conversation.connectionId` is still present because it is the physical execution target.
+
+## DashboardCard
+
+```ts
+// before
+card.connectionId;
+card.connectionGroupId;
+
+// after
+card.connectionGroupId;
+```
+
+## ScheduledTask
+
+```ts
+// before
+task.connectionId;
+task.connectionGroupId;
+
+// after
+task.connectionGroupId;
+```
+
+## Approval Queue Entries
+
+```ts
+// before
+request.connectionId;
+request.connectionGroupId;
+
+// after
+request.connectionGroupId;
+```
+
+## Semantic Entity Exports
+
+```ts
+// before
+entity.connectionId;
+entity.connectionGroupId ?? null;
+
+// after
+entity.connectionGroupId;
+```
+
+## Conversations
+
+```ts
+conversation.connectionId; // execution target, retained
+conversation.connectionGroupId; // content scope
+```
+
+This release is Wave 1 of the package migration: `@useatlas/types` publishes first, then `@useatlas/sdk`, `@useatlas/react`, and templates update after the new types version is visible on npm.

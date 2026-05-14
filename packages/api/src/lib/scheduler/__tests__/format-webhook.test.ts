@@ -17,7 +17,6 @@ function makeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     deliveryChannel: "webhook",
     recipients: [],
     connectionGroupId: null,
-    connectionId: null,
     approvalMode: "auto",
     enabled: true,
     lastRunAt: null,

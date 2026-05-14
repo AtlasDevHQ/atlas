@@ -226,9 +226,9 @@ export async function importBundle(
     }
 
     await client.query(
-      `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id)
+      `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id)
        VALUES ($1, $2, $3, $4, $5)`,
-      [orgId, entity.entityType, entity.name, entity.yamlContent, entity.connectionId],
+      [orgId, entity.entityType, entity.name, entity.yamlContent, entity.connectionGroupId ?? null],
     );
     result.semanticEntities.imported++;
   }

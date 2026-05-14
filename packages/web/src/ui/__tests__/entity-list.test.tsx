@@ -5,9 +5,9 @@ import { EntityList, type EntitySummary } from "../components/admin/entity-list"
 function makeEntities(): EntitySummary[] {
   return [
     { name: "users", description: "User accounts", columnCount: 8 },
-    { name: "orders", description: "Customer orders", type: "table", columnCount: 12, connectionId: "default" },
+    { name: "orders", description: "Customer orders", type: "table", columnCount: 12, connectionGroupId: null },
     { name: "revenue_view", description: "Revenue aggregates", type: "view", columnCount: 4 },
-    { name: "products", description: "Product catalog", columnCount: 6, connectionId: "warehouse" },
+    { name: "products", description: "Product catalog", columnCount: 6, connectionGroupId: "warehouse" },
   ];
 }
 

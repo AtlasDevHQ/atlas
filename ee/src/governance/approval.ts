@@ -80,8 +80,6 @@ interface ApprovalQueueRow {
   requester_email: string | null;
   query_sql: string;
   explanation: string | null;
-  /** #2344 — nullable post-migration 0065. Audit-trail only; lookup keys on `connection_group_id`. */
-  connection_id: string | null;
   /** #2344 — group scope. NULL for legacy rows and for callers without a group context. */
   connection_group_id: string | null;
   tables_accessed: string | null;
@@ -217,7 +215,7 @@ function rowToRequest(row: ApprovalQueueRow): ApprovalRequest | null {
     requesterEmail: row.requester_email,
     querySql: row.query_sql,
     explanation: row.explanation,
-    connectionId: row.connection_id,
+    connectionId: null,
     // #2344 — undefined-tolerant access guards the in-memory test
     // fixtures (`makeQueueRow` in approval.test.ts predates the
     // column). Real DB rows always carry the column post-0065 — the
@@ -306,7 +304,7 @@ function validateRuleInput(input: CreateApprovalRuleRequest): Effect.Effect<void
 // surface column rollout; centralizing here keeps the three sites in
 // lockstep.
 const APPROVAL_QUEUE_COLUMNS = `id, org_id, rule_id, rule_name, requester_id, requester_email, query_sql,
-  explanation, connection_id, connection_group_id, tables_accessed, columns_accessed, status,
+  explanation, connection_group_id, tables_accessed, columns_accessed, status,
   reviewer_id, reviewer_email, review_comment, reviewed_at, surface, created_at, expires_at`;
 
 // ── Default expiry ──────────────────────────────────────────────────
@@ -811,12 +809,11 @@ export const createApprovalRequest = (opts: {
 
     // Param ordering: $1..$7 stable; $8 carries either the explicit
     // group_id or (when resolving inline) the connection_id consumed by
-    // the scalar subquery. $9 is connection_id stored verbatim on the
-    // row regardless of which path produced the group.
+    // the scalar subquery.
     const insertSql = `INSERT INTO approval_queue
          (org_id, rule_id, rule_name, requester_id, requester_email, query_sql, explanation,
-          connection_group_id, connection_id, tables_accessed, columns_accessed, surface, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, ${groupExpression}, $9, $10, $11, $12, now() + make_interval(hours => $13))
+          connection_group_id, tables_accessed, columns_accessed, surface, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, ${groupExpression}, $9, $10, $11, now() + make_interval(hours => $12))
        RETURNING ${APPROVAL_QUEUE_COLUMNS}`;
 
     const rows = yield* Effect.promise(() => internalQuery<ApprovalQueueRow>(
@@ -830,7 +827,6 @@ export const createApprovalRequest = (opts: {
         opts.querySql,
         opts.explanation,
         groupParam,
-        opts.connectionId,
         JSON.stringify(opts.tablesAccessed),
         JSON.stringify(opts.columnsAccessed),
         opts.surface ?? null,
@@ -1045,9 +1041,9 @@ export const getPendingCount = (orgId: string): Effect.Effect<number, never> =>
  * `connection_group_id`. One approval covers every member of the same
  * group running the same query — keying on connection forced re-
  * approval per replica even when an admin had already greenlit the
- * query for the group. When a connection has no group, the lookup falls
- * back to the originating `connection_id` scope; when the connection is
- * archived / deleted and cannot be resolved, no approval applies.
+ * query for the group. Connections are required to belong to a group
+ * after 0069; when the connection is archived / deleted and cannot be
+ * resolved, no approval applies.
  *
  * The legacy 3-arg shape (`omit connectionId`) keeps the pre-#2344
  * unscoped match for callers that don't yet thread the connection
@@ -1101,25 +1097,7 @@ export const hasApprovedRequest = (
     if (groupRows.length === 0) return false;
 
     const resolvedGroupId = groupRows[0]?.group_id ?? null;
-
-    if (resolvedGroupId === null) {
-      // Ungrouped connections are not an environment group. Fall back to
-      // the originating connection scope so an approval for one NULL-group
-      // connection cannot authorize the same SQL on another NULL-group
-      // connection in the org.
-      const rows = yield* Effect.promise(() => internalQuery<{ id: string }>(
-        `SELECT id FROM approval_queue
-         WHERE org_id = $1
-           AND requester_id = $2
-           AND query_sql = $3
-           AND status = 'approved'
-           AND connection_group_id IS NULL
-           AND connection_id = $4
-         LIMIT 1`,
-        [orgId, requesterId, querySql, connectionId],
-      ));
-      return rows.length > 0;
-    }
+    if (resolvedGroupId === null) return false;
 
     // Match approval rows whose group equals the resolved group. NULL-group
     // rows are handled by the connection-scoped branch above, because NULL

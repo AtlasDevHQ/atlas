@@ -52,7 +52,7 @@ export async function applyAmendmentToEntity(
   const newYaml = yaml.dump(updated, { lineWidth: 120, noRefs: true });
 
   // Upsert entity
-  await upsertEntity(effectiveOrgId, "entity", result.entityName, newYaml, entity.connection_id ?? undefined);
+  await upsertEntity(effectiveOrgId, "entity", result.entityName, newYaml);
 
   // Create version snapshot
   try {

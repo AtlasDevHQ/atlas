@@ -40,7 +40,6 @@ export interface ScheduledTaskRow {
   delivery_channel: string;
   recipients: unknown; // JSONB
   connection_group_id: string | null;
-  connection_id: string | null;
   approval_mode: string;
   enabled: boolean;
   last_run_at: string | null;

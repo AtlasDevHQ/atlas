@@ -513,8 +513,8 @@ export async function loadOrgWhitelist(orgId: string, mode?: "published" | "deve
   const byConnection = new Map<string, Set<string>>();
   /**
    * Register the entity's tables under every key the whitelist should
-   * accept: the explicit YAML `connection`, the row's `connection_id`,
-   * its `connection_group_id`, and every fellow group member. Multiple
+   * accept: the explicit YAML `connection`, its `connection_group_id`,
+   * and every fellow group member. Multiple
    * registrations of the same key share the underlying Set, so a
    * second entity for the same group accretes onto the existing
    * table set (correct fan-in semantics).
@@ -522,7 +522,6 @@ export async function loadOrgWhitelist(orgId: string, mode?: "published" | "deve
   function recordTables(row: typeof rows[number], parsedConnection: string | undefined, tableList: string[]): void {
     const keys = new Set<string>();
     if (parsedConnection) keys.add(parsedConnection);
-    if (row.connection_id) keys.add(row.connection_id);
     if (row.connection_group_id) {
       keys.add(row.connection_group_id);
       for (const member of groupMembers.get(row.connection_group_id) ?? []) {
@@ -709,4 +708,3 @@ export async function getOrgSemanticIndex(orgId: string): Promise<string> {
 export function _resetOrgSemanticIndexes(): void {
   _orgSemanticIndexes.clear();
 }
-

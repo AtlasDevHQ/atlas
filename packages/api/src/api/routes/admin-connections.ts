@@ -967,22 +967,21 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => runHandler(c, "dele
     return c.json({ error: "not_found", message: `Connection "${id}" not found or is not admin-managed.`, requestId }, 404);
   }
 
-  // Check for scheduled tasks referencing this connection. MUST scope by
-  // org_id — `__demo__` is now a single shared connection across every
-  // workspace (#2304), so without the org_id filter any tenant's task on
-  // `__demo__` would trigger a 409 conflict for every other tenant trying
-  // to "hide" the demo with an error message pointing at tasks they
-  // cannot see.
   try {
-    const refs = await internalQuery<{ count: string }>(
-      "SELECT COUNT(*) as count FROM scheduled_tasks WHERE connection_id = $1 AND org_id = $2",
+    const groupRefs = await internalQuery<{ count: string }>(
+      `SELECT COUNT(*) AS count
+         FROM scheduled_tasks st
+         JOIN connections c
+           ON c.group_id = st.connection_group_id
+          AND c.org_id = st.org_id
+        WHERE c.id = $1 AND c.org_id = $2`,
       [id, orgId],
     );
-    const refCount = parseInt(String(refs[0]?.count ?? "0"), 10);
+    const refCount = parseInt(String(groupRefs[0]?.count ?? "0"), 10);
     if (refCount > 0) {
       return c.json({
         error: "conflict",
-        message: `Cannot delete connection "${id}" — it is referenced by ${refCount} scheduled task(s). Remove or update those tasks first.`,
+        message: `Cannot delete connection "${id}" — its environment is referenced by ${refCount} scheduled task(s). Remove or update those tasks first.`,
         requestId,
       }, 409);
     }

@@ -1,25 +1,12 @@
 /**
- * Helpers that encapsulate the `COALESCE(connection_id, '__default__')`
+ * Helpers that encapsulate the `COALESCE(connection_group_id, '__default__')`
  * sentinel pattern used by the developer-mode publish flow to compare and
- * match rows on `semantic_entities`' nullable scope column.
+ * match rows on group-scoped content tables.
  *
- * Migration 0028 made `(org_id, entity_type, name, COALESCE(connection_id,
- * '__default__'))` the natural key of `semantic_entities`. That sentinel
- * literal then leaks into every consumer that joins drafts to published rows
- * or upserts via the matching partial index. Four production files inlined
- * the same fragment across ten sites — `semantic/entities.ts` (×6),
- * `api/routes/admin-publish-preview.ts` (×2), `api/routes/mode.ts` (×1), and
- * `lib/content-mode/tables.ts` (×1). The test mocks in
- * `api/__tests__/admin-publish.test.ts` (the `mock.module("@atlas/api/lib/
- * semantic/entities", ...)` block) keep the SQL inlined intentionally — that
- * mock fully replaces the real `applyTombstones` / `promoteDraftEntities`, so
- * its SQL fixture is independent of the production query. A drift-guard test
- * in `admin-publish.test.ts` pins the mock substring to this helper's output.
- *
- * This module is the pre-cursor to #2336 (multi-environment semantic layer):
- * by funnelling the COALESCE shape through one helper, the eventual
- * `connection_id` → `connection_group_id` column rename becomes a one-line
- * change here instead of a four-file sweep.
+ * Migration 0069 removed the legacy content-scope `connection_id`
+ * columns, so the default helper target is now `connection_group_id`.
+ * Callers can still pass an explicit column only for tables with a
+ * different group-scope column name.
  *
  * The helpers are pure — they produce SQL string fragments only. Callers
  * remain responsible for composing them into a larger query and binding the
@@ -28,16 +15,16 @@
 
 /**
  * Sentinel value substituted for NULL scope ids in COALESCE comparisons.
- * Mirrors the literal baked into migration 0028's partial unique indexes on
+ * Mirrors the literal baked into the group-scoped partial unique indexes on
  * `semantic_entities`; changing it here without a coordinated migration would
  * silently break the draft/published natural key.
  */
 export const GROUP_SCOPE_SENTINEL = "__default__" as const;
 
 export interface ScopeColumnRef {
-  /** Column name. Defaults to `connection_id`. */
+  /** Column name. Defaults to `connection_group_id`. */
   readonly column?: string;
-  /** Optional table alias prefix (e.g. `"d"` → `d.connection_id`). */
+  /** Optional table alias prefix (e.g. `"d"` → `d.connection_group_id`). */
   readonly alias?: string;
 }
 
@@ -64,12 +51,12 @@ export interface GroupScope {
 export interface ScopeAliasMatch {
   readonly leftAlias: string;
   readonly rightAlias: string;
-  /** Column name. Defaults to `connection_id`. */
+  /** Column name. Defaults to `connection_group_id`. */
   readonly column?: string;
 }
 
 function qualifiedRef(opts?: ScopeColumnRef): string {
-  const column = opts?.column ?? "connection_id";
+  const column = opts?.column ?? "connection_group_id";
   return opts?.alias ? `${opts.alias}.${column}` : column;
 }
 
@@ -84,11 +71,12 @@ export function coalescedScopeColumn(opts?: ScopeColumnRef): string {
 
 /**
  * SQL fragment matching the scope columns of two joined rows, e.g.
- * `COALESCE(d.connection_id, '__default__') = COALESCE(p.connection_id,
- * '__default__')`. Used by every draft/published join in the publish flow.
+ * `COALESCE(d.connection_group_id, '__default__') =
+ * COALESCE(p.connection_group_id, '__default__')`. Used by every
+ * draft/published join in the publish flow.
  */
 export function matchScopeAcrossAliases(opts: ScopeAliasMatch): string {
-  const column = opts.column ?? "connection_id";
+  const column = opts.column ?? "connection_group_id";
   return (
     coalescedScopeColumn({ column, alias: opts.leftAlias }) +
     " = " +

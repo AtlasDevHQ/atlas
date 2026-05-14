@@ -70,7 +70,7 @@ interface AdminEntitySummaryShared {
   readonly joinCount: number;
   readonly measureCount: number;
   readonly source: string;
-  /** YAML `connection:` hint — distinct from the DB row's `connection_id`. */
+  /** YAML `connection:` hint — distinct from the DB row's group scope. */
   readonly connection: string | null;
   /** YAML `type:` field, when set. */
   readonly type: string | null;
@@ -223,12 +223,12 @@ export function parseRowToAdminSummary(row: SemanticEntityRow): AdminEntitySumma
     columnCount: sectionLength(data.dimensions),
     joinCount: sectionLength(data.joins),
     measureCount: sectionLength(data.measures),
-    source: row.connection_id ?? "default",
+    source: row.connection_group_id ?? "default",
     connection: typeof data.connection === "string" ? data.connection : null,
     type: typeof data.type === "string" ? data.type : null,
     status,
     sourceKind: "db",
-    connectionId: row.connection_id,
+    connectionId: row.connection_group_id ?? null,
     updatedAt: row.updated_at,
   };
 }

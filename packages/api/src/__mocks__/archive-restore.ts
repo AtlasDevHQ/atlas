@@ -71,10 +71,7 @@ export function makeArchiveRestoreStubs() {
               AND status = 'published'
               AND conn.group_id IS NOT NULL
               AND conn.member_count = 1
-              AND (
-                connection_group_id = conn.group_id
-                OR connection_id = $2
-              )
+              AND connection_group_id = conn.group_id
          RETURNING id`,
         [orgId, connectionId],
       );
@@ -131,10 +128,7 @@ export function makeArchiveRestoreStubs() {
               AND status = 'archived'
               AND conn.group_id IS NOT NULL
               AND conn.member_count = 1
-              AND (
-                connection_group_id = conn.group_id
-                OR connection_id = $2
-              )
+              AND connection_group_id = conn.group_id
          RETURNING id`,
         [orgId, connectionId],
       );

@@ -137,10 +137,19 @@ async function resolveGroupIdForConnection(
   if (!connectionId) return null;
   if (!hasInternalDB()) return null;
   const rows = await internalQuery<{ group_id: string | null }>(
-    `SELECT group_id FROM connections
-     WHERE id = $1 AND (org_id = $2 OR org_id = '__global__')
-     ORDER BY CASE WHEN org_id = $2 THEN 0 ELSE 1 END
-     LIMIT 1`,
+    `SELECT group_id
+       FROM (
+         SELECT group_id, CASE WHEN org_id = $2 THEN 0 ELSE 1 END AS priority
+           FROM connections
+          WHERE id = $1 AND (org_id = $2 OR org_id = '__global__')
+         UNION ALL
+         SELECT id AS group_id, CASE WHEN org_id = $2 THEN 2 ELSE 3 END AS priority
+           FROM connection_groups
+          WHERE id = 'g_' || $1 AND (org_id = $2 OR org_id = '__global__')
+       ) scoped_groups
+      WHERE group_id IS NOT NULL
+      ORDER BY priority
+      LIMIT 1`,
     [connectionId, orgId],
   );
   return rows[0]?.group_id ?? null;
@@ -155,16 +164,31 @@ async function resolveGroupIdForConnection(
  *
  * `$connParam` is the placeholder for the connection id; `$orgParam`
  * is the placeholder for the org id (already in the outer query's
- * parameter list). The subquery returns NULL when the connection is
- * not present, which keeps legacy NULL-scope semantics.
+ * parameter list). If onboarding has pre-created the deterministic
+ * single-member group but has not committed the connection row yet, the
+ * query falls back to `connection_groups.id = 'g_' || connection_id`.
+ * That preserves demo import scope while the connection-visibility join
+ * continues to hide the imported rows until the connection commit lands.
+ * The subquery returns NULL when neither row is present, which keeps
+ * legacy NULL-scope semantics.
  */
 function inlineConnectionGroupSql(connParam: string, orgParam: string): string {
   return `(
-    SELECT group_id FROM connections
-    WHERE id = ${connParam}
-      AND (org_id = ${orgParam} OR org_id = '__global__')
-    ORDER BY CASE WHEN org_id = ${orgParam} THEN 0 ELSE 1 END
-    LIMIT 1
+    SELECT group_id
+      FROM (
+        SELECT group_id, CASE WHEN org_id = ${orgParam} THEN 0 ELSE 1 END AS priority
+          FROM connections
+         WHERE id = ${connParam}
+           AND (org_id = ${orgParam} OR org_id = '__global__')
+        UNION ALL
+        SELECT id AS group_id, CASE WHEN org_id = ${orgParam} THEN 2 ELSE 3 END AS priority
+          FROM connection_groups
+         WHERE id = 'g_' || ${connParam}
+           AND (org_id = ${orgParam} OR org_id = '__global__')
+      ) scoped_groups
+     WHERE group_id IS NOT NULL
+     ORDER BY priority
+     LIMIT 1
   )`;
 }
 

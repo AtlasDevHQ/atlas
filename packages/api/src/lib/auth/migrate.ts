@@ -311,9 +311,15 @@ async function seedDemoData(orgId: string): Promise<void> {
     const encryptedUrl: URLSecret = encryptSecret(url);
     const urlKeyVersion = activeKeyVersion();
     await internalQuery(
-      `INSERT INTO connections (id, url, url_key_version, type, description, org_id)
-       VALUES ($1, $2, $6, $3, $4, $5)
-       ON CONFLICT (id, org_id) DO UPDATE SET url = $2, url_key_version = $6, type = $3, updated_at = NOW()`,
+      `WITH group_row AS (
+         INSERT INTO connection_groups (id, org_id, name)
+         VALUES ('g_' || $1, $5, $1)
+         ON CONFLICT (id, org_id) DO UPDATE SET updated_at = connection_groups.updated_at
+         RETURNING id
+       )
+       INSERT INTO connections (id, url, url_key_version, type, description, org_id, group_id)
+       VALUES ($1, $2, $6, $3, $4, $5, (SELECT id FROM group_row))
+       ON CONFLICT (id, org_id) DO UPDATE SET url = $2, url_key_version = $6, type = $3, group_id = COALESCE(connections.group_id, EXCLUDED.group_id), updated_at = NOW()`,
       ["default", encryptedUrl, dbType, `Demo ${dbType} datasource`, orgId, urlKeyVersion],
     );
 

@@ -738,7 +738,14 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
       );
     } else {
       await internalQuery(
-        `INSERT INTO connections (id, url, url_key_version, type, description, schema_name, org_id, status) VALUES ($1, $2, $8, $3, $4, $5, $6, $7)`,
+        `WITH group_row AS (
+           INSERT INTO connection_groups (id, org_id, name)
+           VALUES ('g_' || $1, $6, $1)
+           ON CONFLICT (id, org_id) DO UPDATE SET updated_at = connection_groups.updated_at
+           RETURNING id
+         )
+         INSERT INTO connections (id, url, url_key_version, type, description, schema_name, org_id, status, group_id)
+         VALUES ($1, $2, $8, $3, $4, $5, $6, $7, (SELECT id FROM group_row))`,
         [id, encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null, orgId, status, urlKeyVersion],
       );
     }
@@ -1013,9 +1020,15 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => runHandler(c, "dele
       // `internal.ts::loadSavedConnections`, and the PUT/GET handlers in
       // this file.
       await internalQuery(
-        `INSERT INTO connections (id, url, url_key_version, type, description, org_id, status)
-         VALUES ($1, '', 1, $2, $3, $4, 'archived')
-         ON CONFLICT (id, org_id) DO UPDATE SET status = 'archived', updated_at = now()`,
+        `WITH group_row AS (
+           INSERT INTO connection_groups (id, org_id, name)
+           VALUES ('g_' || $1, $4, $1)
+           ON CONFLICT (id, org_id) DO UPDATE SET updated_at = connection_groups.updated_at
+           RETURNING id
+         )
+         INSERT INTO connections (id, url, url_key_version, type, description, org_id, status, group_id)
+         VALUES ($1, '', 1, $2, $3, $4, 'archived', (SELECT id FROM group_row))
+         ON CONFLICT (id, org_id) DO UPDATE SET status = 'archived', group_id = COALESCE(connections.group_id, EXCLUDED.group_id), updated_at = now()`,
         [id, globalRow!.type, `Hidden from this workspace`, orgId],
       );
     }

@@ -260,7 +260,7 @@ const assignMemberRoute = createRoute({
   path: "/{id}/members",
   tags: ["Admin — Connection Groups"],
   summary: "Move connection into group",
-  description: "Assigns a connection to this group, or unassigns it (groupId = null in body).",
+  description: "Assigns a connection to this group, or moves it back to its deterministic single-connection group when unassign=true.",
   request: {
     params: z.object({
       id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "g_prod" }),
@@ -273,7 +273,7 @@ const assignMemberRoute = createRoute({
         "application/json": {
           schema: z.object({
             connectionId: z.string(),
-            groupId: z.string().nullable(),
+            groupId: z.string(),
           }),
         },
       },
@@ -608,7 +608,7 @@ adminConnectionGroups.openapi(deleteGroupRoute, async (c) =>
   }),
 );
 
-// POST /:id/members — move a connection into this group, or out (groupId: null)
+// POST /:id/members — move a connection into this group, or back to its single-connection group
 adminConnectionGroups.openapi(assignMemberRoute, async (c) =>
   runHandler(c, "assign connection group member", async () => {
     const { orgId, requestId } = c.get("orgContext");
@@ -642,9 +642,9 @@ adminConnectionGroups.openapi(assignMemberRoute, async (c) =>
 
     // Verify the connection belongs to this org and (for unassign) is
     // currently a member of the group named in the URL. Without the
-    // group_id match on unassign, a caller could null out membership for
-    // a connection that lives in a different group — the URL implies
-    // "this group" but the effect would be "any group".
+    // group_id match on unassign, a caller could move a connection out
+    // of a different group — the URL implies "this group" but the
+    // effect would be "any group".
     const conn = await internalQuery<{ id: string; group_id: string | null }>(
       `SELECT id, group_id FROM connections
        WHERE id = $1 AND org_id = $2 AND status != 'archived'`,
@@ -664,13 +664,27 @@ adminConnectionGroups.openapi(assignMemberRoute, async (c) =>
       );
     }
 
-    const targetGroupId = isUnassign ? null : groupId;
+    const targetGroupId = isUnassign ? `g_${connectionId}` : groupId;
     try {
-      await internalQuery(
-        `UPDATE connections SET group_id = $1, updated_at = NOW()
-         WHERE id = $2 AND org_id = $3`,
-        [targetGroupId, connectionId, orgId],
-      );
+      if (isUnassign) {
+        await internalQuery(
+          `WITH group_row AS (
+             INSERT INTO connection_groups (id, org_id, name)
+             VALUES ($1, $3, $2)
+             ON CONFLICT (id, org_id) DO UPDATE SET updated_at = connection_groups.updated_at
+             RETURNING id
+           )
+           UPDATE connections SET group_id = (SELECT id FROM group_row), updated_at = NOW()
+            WHERE id = $2 AND org_id = $3`,
+          [targetGroupId, connectionId, orgId],
+        );
+      } else {
+        await internalQuery(
+          `UPDATE connections SET group_id = $1, updated_at = NOW()
+           WHERE id = $2 AND org_id = $3`,
+          [targetGroupId, connectionId, orgId],
+        );
+      }
     } catch (err) {
       log.error(
         { err: errorMessage(err), requestId, orgId, groupId, connectionId },

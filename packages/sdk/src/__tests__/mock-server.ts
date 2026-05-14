@@ -165,7 +165,7 @@ export const MOCK_SCHEDULED_TASK = {
   cronExpression: "0 9 * * 1",
   deliveryChannel: "email" as const,
   recipients: [{ type: "email" as const, address: "alice@example.com" }],
-  connectionId: null,
+  connectionGroupId: null,
   approvalMode: "auto" as const,
   enabled: true,
   lastRunAt: null,

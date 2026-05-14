@@ -214,7 +214,9 @@ export interface CreateScheduledTaskInput {
   cronExpression: string;
   deliveryChannel?: DeliveryChannel;
   recipients?: Recipient[];
-  connectionId?: string | null;
+  /** Group-scoped execution target. Resolves to a physical connection
+   * at run time via the group's primary member. */
+  connectionGroupId?: string | null;
   approvalMode?: ActionApprovalMode;
 }
 
@@ -224,7 +226,7 @@ export interface UpdateScheduledTaskInput {
   cronExpression?: string;
   deliveryChannel?: DeliveryChannel;
   recipients?: Recipient[];
-  connectionId?: string | null;
+  connectionGroupId?: string | null;
   approvalMode?: ActionApprovalMode;
   enabled?: boolean;
 }

@@ -45,7 +45,7 @@ const validPII = {
   orgId: "org_1",
   tableName: "users",
   columnName: "email",
-  connectionId: "conn_1",
+  connectionGroupId: "g_prod",
   category: "email" as const,
   confidence: "high" as const,
   maskingStrategy: "partial" as const,
@@ -230,20 +230,12 @@ describe("PIIColumnClassificationSchema", () => {
     }
   });
 
-  test("connectionId accepts null (post-0064 nullable)", () => {
-    // Migration 0064 dropped the legacy `NOT NULL DEFAULT 'default'`.
-    // Bundles emitted post-#2341 may carry `connectionId: null` for
-    // rows whose source connection was deleted.
-    const nullScoped = { ...validPII, connectionId: null };
+  test("connectionGroupId accepts null (un-scoped / cross-env rows)", () => {
+    // Rows whose originating connection was deleted (and so no longer
+    // resolve to a live group) carry `connectionGroupId: null`. The
+    // legacy `connectionId` was dropped from the wire shape in #2346.
+    const nullScoped = { ...validPII, connectionGroupId: null };
     expect(PIIColumnClassificationSchema.parse(nullScoped)).toEqual(nullScoped);
-  });
-
-  test("connectionGroupId is additive — optional with null allowed", () => {
-    // #2341 added the field. Legacy bundles omit it; new bundles populate
-    // either a group id or null (for un-scoped / cross-env rows).
-    expect(() => PIIColumnClassificationSchema.parse(validPII)).not.toThrow();
-    expect(() => PIIColumnClassificationSchema.parse({ ...validPII, connectionGroupId: "g_prod" })).not.toThrow();
-    expect(() => PIIColumnClassificationSchema.parse({ ...validPII, connectionGroupId: null })).not.toThrow();
   });
 });
 

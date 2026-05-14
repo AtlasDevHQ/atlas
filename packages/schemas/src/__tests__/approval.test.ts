@@ -43,7 +43,6 @@ const pendingRequest = {
   requesterEmail: "alice@example.com",
   querySql: "SELECT * FROM users",
   explanation: "Quarterly audit",
-  connectionId: "conn_1",
   // #2344 — group scope. Asserts the additive field parses on the
   // happy path; null is the legacy / unstamped shape.
   connectionGroupId: "g_prod",

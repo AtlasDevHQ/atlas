@@ -124,9 +124,8 @@ export async function resolveScheduledTaskConnection(opts: {
   readonly taskId: string;
   readonly orgId: string | null;
   readonly connectionGroupId: string | null;
-  readonly legacyConnectionId: string | null;
 }): Promise<string | null> {
-  if (!opts.connectionGroupId) return opts.legacyConnectionId;
+  if (!opts.connectionGroupId) return null;
 
   const snapshot = await loadScheduledTaskGroupSnapshot(opts.connectionGroupId, opts.orgId);
   if (!snapshot) {

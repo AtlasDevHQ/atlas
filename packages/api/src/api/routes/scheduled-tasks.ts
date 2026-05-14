@@ -54,7 +54,6 @@ const CreateScheduledTaskSchema = z.object({
   deliveryChannel: z.enum(DELIVERY_CHANNELS).default("webhook"),
   recipients: z.array(RecipientSchema).default([]),
   connectionGroupId: z.string().nullable().optional(),
-  connectionId: z.string().nullable().optional(),
   approvalMode: z.enum(ACTION_APPROVAL_MODES).default("auto"),
 });
 
@@ -65,7 +64,6 @@ const UpdateScheduledTaskSchema = z.object({
   deliveryChannel: z.enum(DELIVERY_CHANNELS).optional(),
   recipients: z.array(RecipientSchema).optional(),
   connectionGroupId: z.string().nullable().optional(),
-  connectionId: z.string().nullable().optional(),
   approvalMode: z.enum(ACTION_APPROVAL_MODES).optional(),
   enabled: z.boolean().optional(),
 });
@@ -283,9 +281,8 @@ authed.openapi(
         cronExpression: parsed.cronExpression,
         deliveryChannel: parsed.deliveryChannel,
         recipients: parsed.recipients,
-        connectionId: parsed.connectionId ?? null,
+        connectionGroupId: parsed.connectionGroupId ?? null,
         approvalMode: parsed.approvalMode,
-        ...("connectionGroupId" in parsed ? { connectionGroupId: parsed.connectionGroupId ?? null } : {}),
       };
       const createResult = yield* Effect.promise(() => createScheduledTask(createOpts));
 

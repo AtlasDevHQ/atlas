@@ -224,7 +224,6 @@ describe("executor", () => {
       taskId: "task-1",
       orgId: "org-1",
       connectionGroupId: "group-1",
-      legacyConnectionId: "legacy-connection",
     });
     const opts = mockExecuteAgentQuery.mock.calls[0][2];
     expect(opts?.connectionId).toBe("resolved-connection");

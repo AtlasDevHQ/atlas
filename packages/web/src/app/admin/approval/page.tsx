@@ -585,7 +585,7 @@ function QueueSection() {
   // each is its own environment.
   const pendingGroupBuckets = new Map<string, ApprovalRequest[]>();
   for (const req of pendingRequests) {
-    const env = req.connectionGroupId ?? req.connectionId ?? "__no-env__";
+    const env = req.connectionGroupId ?? "__no-env__";
     const key = `${env} ${req.querySql}`;
     const bucket = pendingGroupBuckets.get(key);
     if (bucket) bucket.push(req);
@@ -594,7 +594,7 @@ function QueueSection() {
   const dupBuckets = [...pendingGroupBuckets.values()].filter((b) => b.length > 1);
   const dupCount = dupBuckets.reduce((sum, b) => sum + (b.length - 1), 0);
   const distinctEnvCount = new Set(
-    pendingRequests.map((r) => r.connectionGroupId ?? r.connectionId ?? "__no-env__"),
+    pendingRequests.map((r) => r.connectionGroupId ?? "__no-env__"),
   ).size;
 
   function toggleSelect(id: string) {
@@ -1069,19 +1069,13 @@ function ExpandedRequestDetails({
       {/* #2344 — surface the environment context. Approvals are now
           group-wide: one greenlight covers any member of the same
           environment running the same query, so reviewers need to see
-          which group they're approving for. Legacy pre-#2344 rows fall
-          back to the originating connection id. */}
-      {(req.connectionGroupId || req.connectionId) && (
+          which group they're approving for. */}
+      {req.connectionGroupId && (
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-xs text-muted-foreground">Environment:</span>
           <Badge variant="outline" className="text-xs font-mono">
-            {req.connectionGroupId ?? req.connectionId}
+            {req.connectionGroupId}
           </Badge>
-          {!req.connectionGroupId && req.connectionId && (
-            <span className="text-[10px] text-muted-foreground/70">
-              (legacy — pre-environment-grouping)
-            </span>
-          )}
         </div>
       )}
 

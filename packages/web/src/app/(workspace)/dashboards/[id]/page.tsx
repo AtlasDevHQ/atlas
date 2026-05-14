@@ -168,7 +168,7 @@ export default function DashboardViewPage() {
         chartConfig: card.chartConfig,
         cachedColumns: card.cachedColumns,
         cachedRows: card.cachedRows,
-        connectionId: card.connectionId,
+        connectionGroupId: card.connectionGroupId,
         layout: nextTileLayout(placed),
       },
     });

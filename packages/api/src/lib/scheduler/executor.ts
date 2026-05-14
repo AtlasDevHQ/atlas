@@ -110,7 +110,6 @@ export async function executeScheduledTask(
     taskId,
     orgId: task.orgId,
     connectionGroupId: task.connectionGroupId,
-    legacyConnectionId: task.connectionId,
   });
 
   // F-54: resolve the task creator so approval rules apply. If the user no

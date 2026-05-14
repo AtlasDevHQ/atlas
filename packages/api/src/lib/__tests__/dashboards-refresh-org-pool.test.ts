@@ -67,7 +67,7 @@ function dashboardRow(orgId: string | null): Record<string, unknown> {
   };
 }
 
-function cardRow(connectionId: string | null): Record<string, unknown> {
+function cardRow(connectionGroupId: string | null): Record<string, unknown> {
   return {
     id: "card-1",
     dashboard_id: "dash-1",
@@ -78,12 +78,24 @@ function cardRow(connectionId: string | null): Record<string, unknown> {
     cached_columns: null,
     cached_rows: null,
     cached_at: null,
-    connection_id: connectionId,
-    connection_group_id: null,
+    connection_group_id: connectionGroupId,
     layout: null,
     created_at: "2026-05-13T00:00:00.000Z",
     updated_at: "2026-05-13T00:00:00.000Z",
   };
+}
+
+/** Two rows the group snapshot loader expects: a primary lookup, then a member list. */
+function groupSnapshotRows(primaryConnectionId: string, memberIds: string[]): Array<{ rows: Record<string, unknown>[] }> {
+  return [
+    { rows: [{ primary_connection_id: primaryConnectionId }] },
+    {
+      rows: memberIds.map((id, idx) => ({
+        id,
+        created_at: `2026-05-13T00:00:0${idx}.000Z`,
+      })),
+    },
+  ];
 }
 
 function setResults(...results: Array<{ rows: Record<string, unknown>[] }>) {
@@ -114,10 +126,11 @@ describe("refreshDashboardCards org-scoped pool selection", () => {
     _resetPool(null);
   });
 
-  it("uses the dashboard org when opening a scheduled refresh pool", async () => {
+  it("resolves the group's primary member when opening a scheduled refresh pool", async () => {
     setResults(
       { rows: [dashboardRow("org-1")] },
-      { rows: [cardRow("warehouse")] },
+      { rows: [cardRow("g-warehouse")] },
+      ...groupSnapshotRows("warehouse", ["warehouse"]),
       { rows: [{ id: "card-1" }] },
       { rows: [] },
     );
@@ -132,7 +145,7 @@ describe("refreshDashboardCards org-scoped pool selection", () => {
     expect(mockOrgQuery).toHaveBeenCalledWith("SELECT 1 AS total", 30000);
   });
 
-  it("uses the org default pool for org-scoped cards without a connection id", async () => {
+  it("uses the org default pool for org-scoped cards without a connection group", async () => {
     setResults(
       { rows: [dashboardRow("org-1")] },
       { rows: [cardRow(null)] },

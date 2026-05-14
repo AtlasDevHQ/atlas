@@ -49,12 +49,6 @@ const EntityEditRowSchema = z.object({
   /** Entity name; the published row sharing the same `connection_group_id` will be replaced. */
   label: z.string(),
   /**
-   * Legacy connection scope. Retained for SDK compatibility during the
-   * dual-write transition (#2336). `null` matches NULL-scope entities.
-   * Removed when `connection_id` drops in a follow-on slice.
-   */
-  connectionId: z.string().nullable(),
-  /**
    * Group scope (#2340) — the environment the entity belongs to. `null`
    * for legacy `__global__` rows whose backfill did not resolve a group.
    */
@@ -246,7 +240,6 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
       entityEdits: entityEditRows.map((r) => ({
         id: r.id,
         label: r.label,
-        connectionId: r.connection_id ?? null,
         connectionGroupId: r.connection_group_id ?? null,
         updatedAt: toIso(r.updated_at),
       })),

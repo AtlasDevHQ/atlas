@@ -317,7 +317,6 @@ export function TaskFormDialog({
       return;
     }
 
-    const selectedGroup = groups.find((g) => g.id === form.connectionGroupId);
     const body = {
       name: form.name.trim(),
       question: form.question.trim(),
@@ -325,7 +324,6 @@ export function TaskFormDialog({
       deliveryChannel: form.deliveryChannel,
       recipients,
       connectionGroupId: form.connectionGroupId || null,
-      connectionId: selectedGroup?.resolvedConnectionId ?? task?.connectionId ?? null,
       approvalMode: form.approvalMode,
       ...(isEdit ? { enabled: form.enabled } : {}),
     };

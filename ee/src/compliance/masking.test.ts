@@ -555,7 +555,6 @@ describe("savePIIClassification", () => {
       org_id: "org-1",
       table_name: "users",
       column_name: "email",
-      connection_id: null,
       connection_group_id: null,
       category: "email",
       confidence: "high",
@@ -568,7 +567,6 @@ describe("savePIIClassification", () => {
     const result = await run(savePIIClassification(
       "org-1", "users", "email", null, "email", "high", "partial",
     ));
-    expect(result.connectionId).toBeNull();
     expect(result.connectionGroupId).toBeNull();
   });
 });

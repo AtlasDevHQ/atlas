@@ -313,7 +313,7 @@ describe("scheduled-tasks routes", () => {
       }));
     });
 
-    it("omits connectionGroupId for legacy connectionId-only creates", async () => {
+    it("silently drops legacy connectionId from the create body (#2346)", async () => {
       const response = await app.fetch(
         new Request("http://localhost/api/v1/scheduled-tasks", {
           method: "POST",
@@ -330,8 +330,8 @@ describe("scheduled-tasks routes", () => {
       );
       expect(response.status).toBe(201);
       const opts = mockCreateScheduledTask.mock.calls[0][0] as { connectionGroupId?: string | null; connectionId?: string | null };
-      expect(opts.connectionId).toBe("legacy-connection");
-      expect("connectionGroupId" in opts).toBe(false);
+      expect("connectionId" in opts).toBe(false);
+      expect(opts.connectionGroupId).toBeNull();
     });
 
     it("returns 422 for missing name", async () => {

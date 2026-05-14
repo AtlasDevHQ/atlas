@@ -92,7 +92,6 @@ describe("scheduled-task-types", () => {
         deliveryChannel: "email",
         recipients: [],
         connectionGroupId: null,
-        connectionId: null,
         approvalMode: "auto",
         enabled: true,
         lastRunAt: null,

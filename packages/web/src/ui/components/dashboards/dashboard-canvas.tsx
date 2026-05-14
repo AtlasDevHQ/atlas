@@ -188,7 +188,6 @@ export function DashboardCanvas({ apiUrl, getHeaders, getCredentials }: Dashboar
               sql: card.sql,
               chartConfig: card.chartConfig,
               layout: card.layout ?? null,
-              connectionId: card.connectionId ?? null,
               ...cached,
             }),
           });

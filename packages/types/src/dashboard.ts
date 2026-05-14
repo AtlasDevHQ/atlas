@@ -53,13 +53,6 @@ export interface DashboardCard {
   cachedRows: Record<string, unknown>[] | null;
   cachedAt: string | null;
   /**
-   * @deprecated 1.4.4 — superseded by `connectionGroupId`. Retained
-   * for read-side dual-write while #2347 deprecates the column on
-   * the API; new writes from the admin UI should set
-   * `connectionGroupId` instead.
-   */
-  connectionId: string | null;
-  /**
    * Group-scoped execution target (1.4.4). Resolves to a physical
    * connection at view time via the group's primary member, or the
    * first member by `(created_at, id)` when no primary is set.

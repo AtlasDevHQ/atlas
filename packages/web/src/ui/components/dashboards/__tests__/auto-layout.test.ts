@@ -10,7 +10,6 @@ const DEFAULT_CARD: Omit<DashboardCard, "id" | "position" | "layout"> = {
   cachedColumns: null,
   cachedRows: null,
   cachedAt: null,
-  connectionId: null,
   connectionGroupId: null,
   createdAt: "2026-04-25T00:00:00Z",
   updatedAt: "2026-04-25T00:00:00Z",

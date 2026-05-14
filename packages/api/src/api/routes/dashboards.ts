@@ -78,8 +78,6 @@ const AddCardSchema = z.object({
   chartConfig: ChartConfigSchema.nullable().optional(),
   cachedColumns: z.array(z.string()).nullable().optional(),
   cachedRows: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
-  /** @deprecated 1.4.4 — pass `connectionGroupId` instead. */
-  connectionId: z.string().nullable().optional(),
   /** Group-scoped execution target (1.4.4). Resolved to a physical
    * connection at view time via the group's primary member. */
   connectionGroupId: z.string().nullable().optional(),
@@ -774,7 +772,6 @@ authed.openapi(
         chartConfig: parsed.chartConfig ?? null,
         cachedColumns: parsed.cachedColumns ?? null,
         cachedRows: parsed.cachedRows ?? null,
-        connectionId: parsed.connectionId ?? null,
         connectionGroupId: parsed.connectionGroupId ?? null,
         layout: parsed.layout ?? null,
       }));
@@ -920,10 +917,7 @@ authed.openapi(refreshCardRoute, async (c) => {
     try {
       resolvedConnectionId = yield* Effect.promise(() =>
         resolveCardConnectionId(
-          {
-            connectionGroupId: cardResult.data.connectionGroupId,
-            connectionId: cardResult.data.connectionId,
-          },
+          { connectionGroupId: cardResult.data.connectionGroupId },
           dash.data.orgId,
         ),
       );
@@ -1007,7 +1001,7 @@ authed.openapi(refreshAllCardsRoute, async (c) => {
       try {
         resolvedConnectionId = yield* Effect.promise(() =>
           resolveCardConnectionId(
-            { connectionGroupId: card.connectionGroupId, connectionId: card.connectionId },
+            { connectionGroupId: card.connectionGroupId },
             dashResult.data.orgId,
           ),
         );

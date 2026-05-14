@@ -1181,6 +1181,7 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     // `DO UPDATE SET url=...` would silently re-introduce per-onboarder
     // URL clobbering.
     mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("INSERT INTO connection_groups")) return [{ id: "g___demo__" }];
       if (sql.includes("INSERT INTO connections")) return [];
       if (sql.includes("SELECT id FROM connections WHERE id = $1 AND org_id = '__global__'")) {
         return [{ id: "__demo__" }];
@@ -1308,4 +1309,3 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     expect(data.requestId).toBeDefined();
   });
 });
-

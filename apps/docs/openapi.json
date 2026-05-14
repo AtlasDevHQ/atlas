@@ -50420,7 +50420,7 @@
           "Admin — Connection Groups"
         ],
         "summary": "Move connection into group",
-        "description": "Assigns a connection to this group, or unassigns it (groupId = null in body).",
+        "description": "Assigns a connection to this group, or moves it back to its deterministic single-connection group when unassign=true.",
         "parameters": [
           {
             "schema": {
@@ -50445,10 +50445,7 @@
                       "type": "string"
                     },
                     "groupId": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
+                      "type": "string"
                     }
                   },
                   "required": [

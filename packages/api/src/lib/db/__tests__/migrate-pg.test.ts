@@ -246,32 +246,24 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows[0]?.is_nullable).toBe("NO");
   }, PG_TEST_TIMEOUT_MS);
 
-  it("connection_groups: 1:1 backfill creates one group per existing connection", async () => {
+  it("connection_groups: cleaned connections keep one group per existing connection", async () => {
     const orgId = `org-backfill-${Date.now()}`;
-    // Insert two connections pre-grouping (group_id NULL) — mimics rows
-    // that existed before 0062 ran in a real upgrade.
+    const connA = `conn-a-${Date.now()}`;
+    const connB = `conn-b-${Date.now()}`;
+    const groupA = `g_${connA}`;
+    const groupB = `g_${connB}`;
+
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name)
+       VALUES ($1, $2, $3),
+              ($4, $2, $5)`,
+      [groupA, orgId, connA, groupB, connB],
+    );
     await pool.query(
       `INSERT INTO connections (id, url, type, org_id, status, group_id)
-       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', NULL),
-              ($3, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', NULL)`,
-      [`conn-a-${Date.now()}`, orgId, `conn-b-${Date.now()}`],
-    );
-    // Re-run the backfill block (same SQL the migration uses). Idempotent:
-    // ON CONFLICT keeps existing rows, the UPDATE clause only touches
-    // rows still missing group_id.
-    await pool.query(
-      `WITH source AS (
-         SELECT id, org_id FROM connections WHERE org_id = $1 AND group_id IS NULL
-       )
-       INSERT INTO connection_groups (id, org_id, name)
-       SELECT 'g_' || id, org_id, id FROM source
-       ON CONFLICT (id, org_id) DO NOTHING`,
-      [orgId],
-    );
-    await pool.query(
-      `UPDATE connections SET group_id = 'g_' || id
-       WHERE org_id = $1 AND group_id IS NULL`,
-      [orgId],
+       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3),
+              ($4, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $5)`,
+      [connA, orgId, groupA, connB, groupB],
     );
 
     const groupRows = await pool.query<{ count: string }>(
@@ -1129,24 +1121,16 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       [orgId],
     );
     await pool.query(
-      `INSERT INTO approval_queue
-         (org_id, rule_id, rule_name, requester_id, query_sql, connection_group_id)
-       VALUES ($1, $2, 'Global backfill rule', 'user-global-backfill', 'SELECT * FROM orders', $3)`,
-      [orgId, ruleRow.rows[0].id, groupId],
-    );
-
-    await pool.query(
       `INSERT INTO connection_groups (id, org_id, name)
        VALUES ($2, $1, '__global__:' || $2)
        ON CONFLICT (id, org_id) DO NOTHING`,
       [orgId, groupId],
     );
     await pool.query(
-      `UPDATE approval_queue
-          SET connection_group_id = $2
-        WHERE org_id = $1
-          AND requester_id = 'user-global-backfill'`,
-      [orgId, groupId],
+      `INSERT INTO approval_queue
+         (org_id, rule_id, rule_name, requester_id, query_sql, connection_group_id)
+       VALUES ($1, $2, 'Global backfill rule', 'user-global-backfill', 'SELECT * FROM orders', $3)`,
+      [orgId, ruleRow.rows[0].id, groupId],
     );
 
     const { rows } = await pool.query<{ connection_group_id: string | null; mirrored: string | null }>(

@@ -571,8 +571,8 @@ export function registerSemanticEditorRoutes(
 
       const {
         getEntity,
-        upsertTombstone,
-        deleteDraftEntity,
+        upsertTombstoneForGroup,
+        deleteDraftEntityForGroup,
       } = await import("@atlas/api/lib/semantic/entities");
 
       // All deletes stage as drafts regardless of `atlasMode` (#2177).
@@ -584,18 +584,18 @@ export function registerSemanticEditorRoutes(
       }
       let deleted: boolean;
       if (existing.status === "draft" || existing.status === "draft_delete") {
-        deleted = await deleteDraftEntity(
+        deleted = await deleteDraftEntityForGroup(
           orgId,
           "entity",
           name,
-          existing.connection_id ?? undefined,
+          existing.connection_group_id ?? null,
         );
       } else {
-        await upsertTombstone(
+        await upsertTombstoneForGroup(
           orgId,
           "entity",
           name,
-          existing.connection_id ?? undefined,
+          existing.connection_group_id ?? null,
         );
         deleted = true;
       }
@@ -819,7 +819,7 @@ export function registerSemanticEditorRoutes(
       // Rollback stages the target YAML as a draft (#2177). The admin
       // publishes via `/api/v1/admin/publish` to materialize it as the
       // new published row, preserving the existing publish gate.
-      await upsertDraftEntity(orgId, "entity", name, targetVersion.yaml_content, currentEntity?.connection_id ?? undefined);
+      await upsertDraftEntity(orgId, "entity", name, targetVersion.yaml_content);
 
       // Create a new version snapshot for the rollback
       let newVersionNumber = 0;

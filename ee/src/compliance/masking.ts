@@ -56,9 +56,8 @@ const TABLE_NAME = "pii_column_classifications";
 
 // Bootstrap CREATE TABLE for legacy self-hosted installs that bypassed
 // the migration runner (older deploys ran the masking module's ensure-
-// table lazily). The shape mirrors the post-0064 schema: nullable
-// `connection_id` (no NOT NULL DEFAULT 'default') and the
-// `connection_group_id` column. The UNIQUE constraint here is the
+// table lazily). The shape mirrors the post-0069 schema with the
+// `connection_group_id` column as the only scope. The UNIQUE constraint here is the
 // column-level form (no COALESCE) — bootstrap-only; production deploys
 // reach this table via the migration runner first and get the
 // COALESCE-sentinel form from 0064, so this code path is a no-op there.
@@ -72,7 +71,6 @@ const ensureTable = (): Effect.Effect<void, Error> =>
           org_id TEXT NOT NULL,
           table_name TEXT NOT NULL,
           column_name TEXT NOT NULL,
-          connection_id TEXT,
           connection_group_id TEXT,
           category TEXT NOT NULL,
           confidence TEXT NOT NULL DEFAULT 'medium',

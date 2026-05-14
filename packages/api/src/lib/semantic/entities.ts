@@ -8,7 +8,7 @@
  *
  * - `listEntityRows` — returns the full DB-row shape (`SemanticEntityRow[]`)
  *   keyed to a specific org. Use when the caller needs `yaml_content`,
- *   `status`, `connection_id`, or other row-level fields (whitelist load,
+ *   `status`, `connection_group_id`, or other row-level fields (whitelist load,
  *   diff snapshots, sync-to-disk, admin row listings).
  *
  * - `listEntities` — the canonical caller-facing summary export. Returns
@@ -52,7 +52,7 @@ export interface EntityListEntry {
   /**
    * Source tag. For disk reads, the subdirectory name (`"default"` for
    * root `entities/`, otherwise the per-source dir). For DB reads, the
-   * row's `connection_id` (`"default"` when null).
+   * row's `connection_group_id` (`"default"` when null).
    */
   readonly source: string;
 }
@@ -69,13 +69,6 @@ export interface SemanticEntityRow {
   entity_type: SemanticEntityType;
   name: string;
   yaml_content: string;
-  /**
-   * Legacy connection scope. Dual-written by write paths for transitional
-   * compatibility; removed in a follow-on PRD slice once SDK consumers and
-   * the whitelist all key on `connection_group_id`. See PRD #2336
-   * §"Migration sequencing".
-   */
-  connection_id: string | null;
   /**
    * Group scope (#2340). One row per (org_id, entity_type, name, group_id)
    * — multi-member groups share the same entity definition. NULL for legacy
@@ -144,10 +137,19 @@ async function resolveGroupIdForConnection(
   if (!connectionId) return null;
   if (!hasInternalDB()) return null;
   const rows = await internalQuery<{ group_id: string | null }>(
-    `SELECT group_id FROM connections
-     WHERE id = $1 AND (org_id = $2 OR org_id = '__global__')
-     ORDER BY CASE WHEN org_id = $2 THEN 0 ELSE 1 END
-     LIMIT 1`,
+    `SELECT group_id
+       FROM (
+         SELECT group_id, CASE WHEN org_id = $2 THEN 0 ELSE 1 END AS priority
+           FROM connections
+          WHERE id = $1 AND (org_id = $2 OR org_id = '__global__')
+         UNION ALL
+         SELECT id AS group_id, CASE WHEN org_id = $2 THEN 2 ELSE 3 END AS priority
+           FROM connection_groups
+          WHERE id = 'g_' || $1 AND (org_id = $2 OR org_id = '__global__')
+       ) scoped_groups
+      WHERE group_id IS NOT NULL
+      ORDER BY priority
+      LIMIT 1`,
     [connectionId, orgId],
   );
   return rows[0]?.group_id ?? null;
@@ -156,22 +158,37 @@ async function resolveGroupIdForConnection(
 /**
  * SQL fragment that resolves a connection's `group_id` inline via a
  * scalar subquery. Mirrors {@link resolveGroupIdForConnection} so write
- * paths can dual-set `connection_id` + `connection_group_id` atomically
+ * paths can set `connection_group_id` atomically
  * inside a single INSERT — no SELECT-then-INSERT race with concurrent
  * connection deletes.
  *
  * `$connParam` is the placeholder for the connection id; `$orgParam`
  * is the placeholder for the org id (already in the outer query's
- * parameter list). The subquery returns NULL when the connection is
- * not present, which keeps legacy NULL-scope semantics.
+ * parameter list). If onboarding has pre-created the deterministic
+ * single-member group but has not committed the connection row yet, the
+ * query falls back to `connection_groups.id = 'g_' || connection_id`.
+ * That preserves demo import scope while the connection-visibility join
+ * continues to hide the imported rows until the connection commit lands.
+ * The subquery returns NULL when neither row is present, which keeps
+ * legacy NULL-scope semantics.
  */
 function inlineConnectionGroupSql(connParam: string, orgParam: string): string {
   return `(
-    SELECT group_id FROM connections
-    WHERE id = ${connParam}
-      AND (org_id = ${orgParam} OR org_id = '__global__')
-    ORDER BY CASE WHEN org_id = ${orgParam} THEN 0 ELSE 1 END
-    LIMIT 1
+    SELECT group_id
+      FROM (
+        SELECT group_id, CASE WHEN org_id = ${orgParam} THEN 0 ELSE 1 END AS priority
+          FROM connections
+         WHERE id = ${connParam}
+           AND (org_id = ${orgParam} OR org_id = '__global__')
+        UNION ALL
+        SELECT id AS group_id, CASE WHEN org_id = ${orgParam} THEN 2 ELSE 3 END AS priority
+          FROM connection_groups
+         WHERE id = 'g_' || ${connParam}
+           AND (org_id = ${orgParam} OR org_id = '__global__')
+      ) scoped_groups
+     WHERE group_id IS NOT NULL
+     ORDER BY priority
+     LIMIT 1
   )`;
 }
 
@@ -198,18 +215,12 @@ export async function upsertEntity(
   if (!hasInternalDB()) {
     throw new Error("Internal DB required for org-scoped semantic entities");
   }
-  // Dual-write: legacy `connection_id` stays populated for transitional
-  // SDK compatibility (#2336 §"Migration sequencing"). The natural key
-  // is `connection_group_id` — ON CONFLICT targets the new partial
-  // index from 0063. The scalar subquery resolves the connection's
-  // group via 0062's 1:1 backfill, atomically.
   await internalQuery(
-    `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id, connection_group_id, status)
-     VALUES ($1, $2, $3, $4, $5, ${inlineConnectionGroupSql("$5", "$1")}, 'published')
+    `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
+     VALUES ($1, $2, $3, $4, ${inlineConnectionGroupSql("$5", "$1")}, 'published')
      ON CONFLICT (org_id, entity_type, name, ${coalescedScopeColumn(GROUP_COLUMN)}) WHERE status = 'published'
      DO UPDATE SET yaml_content = EXCLUDED.yaml_content,
                    entity_type = EXCLUDED.entity_type,
-                   connection_id = EXCLUDED.connection_id,
                    connection_group_id = EXCLUDED.connection_group_id,
                    updated_at = now()`,
     [orgId, entityType, name, yamlContent, connectionId ?? null],
@@ -234,12 +245,11 @@ export async function upsertDraftEntity(
     throw new Error("Internal DB required for org-scoped semantic entities");
   }
   await internalQuery(
-    `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id, connection_group_id, status)
-     VALUES ($1, $2, $3, $4, $5, ${inlineConnectionGroupSql("$5", "$1")}, 'draft')
+    `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
+     VALUES ($1, $2, $3, $4, ${inlineConnectionGroupSql("$5", "$1")}, 'draft')
      ON CONFLICT (org_id, entity_type, name, ${coalescedScopeColumn(GROUP_COLUMN)}) WHERE status = 'draft'
      DO UPDATE SET yaml_content = EXCLUDED.yaml_content,
                    entity_type = EXCLUDED.entity_type,
-                   connection_id = EXCLUDED.connection_id,
                    connection_group_id = EXCLUDED.connection_group_id,
                    updated_at = now()`,
     [orgId, entityType, name, yamlContent, connectionId ?? null],
@@ -264,11 +274,29 @@ export async function upsertTombstone(
     throw new Error("Internal DB required for org-scoped semantic entities");
   }
   await internalQuery(
-    `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id, connection_group_id, status)
-     VALUES ($1, $2, $3, '', $4, ${inlineConnectionGroupSql("$4", "$1")}, 'draft_delete')
+    `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
+     VALUES ($1, $2, $3, '', ${inlineConnectionGroupSql("$4", "$1")}, 'draft_delete')
      ON CONFLICT (org_id, entity_type, name, ${coalescedScopeColumn(GROUP_COLUMN)}) WHERE status = 'draft_delete'
      DO UPDATE SET updated_at = now()`,
     [orgId, entityType, name, connectionId ?? null],
+  );
+}
+
+export async function upsertTombstoneForGroup(
+  orgId: string,
+  entityType: SemanticEntityType,
+  name: string,
+  connectionGroupId?: string | null,
+): Promise<void> {
+  if (!hasInternalDB()) {
+    throw new Error("Internal DB required for org-scoped semantic entities");
+  }
+  await internalQuery(
+    `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
+     VALUES ($1, $2, $3, '', $4, 'draft_delete')
+     ON CONFLICT (org_id, entity_type, name, ${coalescedScopeColumn(GROUP_COLUMN)}) WHERE status = 'draft_delete'
+     DO UPDATE SET updated_at = now()`,
+    [orgId, entityType, name, connectionGroupId ?? null],
   );
 }
 
@@ -305,10 +333,31 @@ export async function deleteDraftEntity(
   return rows.length > 0;
 }
 
+export async function deleteDraftEntityForGroup(
+  orgId: string,
+  entityType: SemanticEntityType,
+  name: string,
+  connectionGroupId?: string | null,
+): Promise<boolean> {
+  if (!hasInternalDB()) return false;
+  const scope = withGroupScope(connectionGroupId);
+  const rows = await internalQuery<{ id: string }>(
+    `DELETE FROM semantic_entities
+     WHERE org_id = $1
+       AND entity_type = $2
+       AND name = $3
+       AND ${scope.match(4, GROUP_COLUMN)}
+       AND status IN ('draft', 'draft_delete')
+     RETURNING id`,
+    [orgId, entityType, name, scope.param],
+  );
+  return rows.length > 0;
+}
+
 /**
  * List raw semantic-entity DB rows for an org, optionally filtered by type
  * and status. Returns the full row shape (`yaml_content`, `status`,
- * `connection_id`, timestamps) so callers that need to parse YAML or
+ * `connection_group_id`, timestamps) so callers that need to parse YAML or
  * inspect lifecycle state can do so without a second query.
  *
  * Use this when you need the row-level data; reach for `listEntities`
@@ -342,17 +391,15 @@ export async function listEntityRows(
   const visibilityClause = statusFilter === "published"
     ? `AND (org_id = $1 OR org_id = '__global__')
        AND (
-         connection_id IS NULL
-         OR connection_id IN (
-           SELECT id FROM connections WHERE org_id = $1 AND status = 'published'
+         connection_group_id IS NULL
+         OR connection_group_id IN (
+           SELECT group_id FROM connections WHERE org_id = $1 AND status = 'published'
          )
-         OR (
-           connection_id IN (
-             SELECT id FROM connections WHERE org_id = '__global__' AND status = 'published'
-           )
-           AND connection_id NOT IN (
-             SELECT id FROM connections WHERE org_id = $1
-           )
+         OR connection_group_id IN (
+           SELECT group_id FROM connections
+           WHERE org_id = '__global__'
+             AND status = 'published'
+             AND id NOT IN (SELECT id FROM connections WHERE org_id = $1)
          )
        )`
     : "";
@@ -367,7 +414,7 @@ export async function listEntityRows(
     if (statusFilter) {
       const orgPredicate = isPublishedRead ? "" : "org_id = $1 AND ";
       return internalQuery<SemanticEntityRow>(
-        `SELECT id, org_id, entity_type, name, yaml_content, connection_id, connection_group_id, status, created_at, updated_at
+        `SELECT id, org_id, entity_type, name, yaml_content, connection_group_id, status, created_at, updated_at
          FROM semantic_entities
          WHERE ${orgPredicate}entity_type = $2 AND status = $3
            ${visibilityClause}
@@ -376,7 +423,7 @@ export async function listEntityRows(
       );
     }
     return internalQuery<SemanticEntityRow>(
-      `SELECT id, org_id, entity_type, name, yaml_content, connection_id, connection_group_id, status, created_at, updated_at
+      `SELECT id, org_id, entity_type, name, yaml_content, connection_group_id, status, created_at, updated_at
        FROM semantic_entities
        WHERE org_id = $1 AND entity_type = $2
        ORDER BY name`,
@@ -387,7 +434,7 @@ export async function listEntityRows(
   if (statusFilter) {
     const orgPredicate = isPublishedRead ? "" : "org_id = $1 AND ";
     return internalQuery<SemanticEntityRow>(
-      `SELECT id, org_id, entity_type, name, yaml_content, connection_id, connection_group_id, status, created_at, updated_at
+      `SELECT id, org_id, entity_type, name, yaml_content, connection_group_id, status, created_at, updated_at
        FROM semantic_entities
        WHERE ${orgPredicate}status = $2
          ${visibilityClause}
@@ -397,7 +444,7 @@ export async function listEntityRows(
   }
 
   return internalQuery<SemanticEntityRow>(
-    `SELECT id, org_id, entity_type, name, yaml_content, connection_id, connection_group_id, status, created_at, updated_at
+    `SELECT id, org_id, entity_type, name, yaml_content, connection_group_id, status, created_at, updated_at
      FROM semantic_entities
      WHERE org_id = $1
      ORDER BY entity_type, name`,
@@ -511,13 +558,7 @@ function rowToEntry(row: SemanticEntityRow): EntityListEntry | null {
     name: typeof nameField === "string" && nameField ? nameField : parsed.data.table,
     table: parsed.data.table,
     description: typeof descField === "string" && descField ? descField : null,
-    // Surface the group scope when present (multi-environment semantic
-    // layer, #2340). Falls back to the legacy connection scope during
-    // the dual-write transition, then to the `"default"` sentinel for
-    // NULL-scope demo rows. UI surfaces consume this as a per-row
-    // environment label and should resolve group → display name via
-    // the connection-groups admin endpoint.
-    source: row.connection_group_id ?? row.connection_id ?? "default",
+    source: row.connection_group_id ?? "default",
   };
 }
 
@@ -567,7 +608,7 @@ function scanDiskEntities(
  * - A `draft_delete` tombstone hides the published entity it targets (final
  *   projection excludes tombstones)
  * - A `draft` row supersedes a published row with the same
- *   (org_id, name, connection_id) key
+ *   (org_id, name, connection_group_id) key
  * - Unmodified published entities pass through
  * - `archived` entity rows are excluded (the `status IN` filter drops them)
  * - Entities whose parent connection is archived are also excluded
@@ -587,7 +628,7 @@ export async function listEntitiesWithOverlay(
   if (!hasInternalDB()) return [];
 
   const baseSelect =
-    "id, org_id, entity_type, name, yaml_content, connection_id, connection_group_id, status, created_at, updated_at";
+    "id, org_id, entity_type, name, yaml_content, connection_group_id, status, created_at, updated_at";
 
   // Connection visibility mirrors `getVisibleConnectionIds`'s
   // *developer-mode* shape (this overlay is developer-mode by construction):
@@ -596,24 +637,22 @@ export async function listEntitiesWithOverlay(
   //      row of the same id — including an archived tombstone — masks the
   //      global counterpart). This is what makes "delete the demo" work
   //      end-to-end: tombstone the connection → global drops out of the
-  //      visible set → entities tied to that connection_id get filtered
+  //      visible set → entities tied to that connection's group get filtered
   //      out of the developer-mode overlay alongside it.
   //
   // Phrased without UNION / NOT EXISTS so pg-mem's overlay-queries
   // integration suite can execute it; logically equivalent to the
   // shadow-check pattern in `getVisibleConnectionIds`.
   const connectionVisibilitySql = `
-    connection_id IS NULL
-    OR connection_id IN (
-      SELECT id FROM connections WHERE org_id = $1 AND status IN ('published', 'draft')
+    connection_group_id IS NULL
+    OR connection_group_id IN (
+      SELECT group_id FROM connections WHERE org_id = $1 AND status IN ('published', 'draft')
     )
-    OR (
-      connection_id IN (
-        SELECT id FROM connections WHERE org_id = '__global__' AND status IN ('published', 'draft')
-      )
-      AND connection_id NOT IN (
-        SELECT id FROM connections WHERE org_id = $1
-      )
+    OR connection_group_id IN (
+      SELECT group_id FROM connections
+      WHERE org_id = '__global__'
+        AND status IN ('published', 'draft')
+        AND id NOT IN (SELECT id FROM connections WHERE org_id = $1)
     )
   `;
 
@@ -692,7 +731,7 @@ export async function getEntity(
   if (!hasInternalDB()) return null;
 
   const rows = await internalQuery<SemanticEntityRow>(
-    `SELECT id, org_id, entity_type, name, yaml_content, connection_id, connection_group_id, status, created_at, updated_at
+    `SELECT id, org_id, entity_type, name, yaml_content, connection_group_id, status, created_at, updated_at
      FROM semantic_entities
      WHERE org_id = $1 AND entity_type = $2 AND name = $3`,
     [orgId, entityType, name],
@@ -1118,9 +1157,7 @@ export async function archiveSingleConnection(
   // round-trip.
   // Unqualified column names below refer to `semantic_entities` — the
   // `conn` CTE only projects `group_id` / `member_count`, so there's no
-  // ambiguity. Skipping the table alias keeps the SQL string stable for
-  // the regex-based test mocks in `admin-publish.test.ts` and
-  // `admin-archive-restore.test.ts` that pin the UPDATE shape.
+  // ambiguity.
   const archivedEntities = await client.query(
     `WITH conn AS (
        SELECT group_id,
@@ -1135,10 +1172,7 @@ export async function archiveSingleConnection(
           AND status = 'published'
           AND conn.group_id IS NOT NULL
           AND conn.member_count = 1
-          AND (
-            connection_group_id = conn.group_id
-            OR connection_id = $2
-          )
+          AND connection_group_id = conn.group_id
      RETURNING id`,
     [orgId, connectionId],
   );
@@ -1243,10 +1277,7 @@ export async function restoreSingleConnection(
           AND status = 'archived'
           AND conn.group_id IS NOT NULL
           AND conn.member_count = 1
-          AND (
-            connection_group_id = conn.group_id
-            OR connection_id = $2
-          )
+          AND connection_group_id = conn.group_id
      RETURNING id`,
     [orgId, connectionId],
   );

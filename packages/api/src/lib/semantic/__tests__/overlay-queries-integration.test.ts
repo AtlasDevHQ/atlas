@@ -42,10 +42,8 @@ beforeAll(async () => {
   db = newDb();
 
   // Minimal schema — only the columns referenced by the overlay CTE.
-  // `connection_group_id` mirrors 0063: nullable, dual-written by every
-  // production write path. Test fixtures seed `connection_id` only;
-  // legacy NULL-group entities collapse correctly in the DISTINCT ON
-  // bucket because Postgres treats NULL as a single value there.
+  // `connection_group_id` mirrors the post-0069 schema: content rows key by
+  // group, while `connections.id` remains useful for global shadowing.
   db.public.none(`
     CREATE TABLE connections (
       id TEXT NOT NULL,
@@ -60,7 +58,6 @@ beforeAll(async () => {
       entity_type TEXT NOT NULL,
       name TEXT NOT NULL,
       yaml_content TEXT NOT NULL,
-      connection_id TEXT,
       connection_group_id TEXT,
       status TEXT NOT NULL DEFAULT 'published',
       created_at TEXT NOT NULL DEFAULT 'now',
@@ -101,7 +98,7 @@ beforeEach(() => {
 
 function seedConnection(id: string, status: "published" | "draft" | "archived" = "published"): void {
   db.public.none(
-    `INSERT INTO connections (id, org_id, status) VALUES ('${id}', 'org-1', '${status}')`,
+    `INSERT INTO connections (id, org_id, status, group_id) VALUES ('${id}', 'org-1', '${status}', 'g_${id}')`,
   );
 }
 
@@ -112,11 +109,11 @@ function seedEntity(opts: {
   connectionId?: string | null;
   yaml?: string;
 }): void {
-  const conn = opts.connectionId === undefined ? "NULL" : opts.connectionId === null ? "NULL" : `'${opts.connectionId}'`;
+  const group = opts.connectionId === undefined ? "NULL" : opts.connectionId === null ? "NULL" : `'g_${opts.connectionId}'`;
   const yaml = (opts.yaml ?? `table: ${opts.name}`).replace(/'/g, "''");
   db.public.none(
-    `INSERT INTO semantic_entities (id, org_id, entity_type, name, yaml_content, connection_id, status)
-     VALUES ('${opts.id}', 'org-1', 'entity', '${opts.name}', '${yaml}', ${conn}, '${opts.status}')`,
+    `INSERT INTO semantic_entities (id, org_id, entity_type, name, yaml_content, connection_group_id, status)
+     VALUES ('${opts.id}', 'org-1', 'entity', '${opts.name}', '${yaml}', ${group}, '${opts.status}')`,
   );
 }
 
@@ -147,7 +144,7 @@ describe("listEntitiesWithOverlay — acceptance matrix against real Postgres", 
     expect(rowsByName(rows)).toEqual({ events: "draft" });
   });
 
-  it("case 3: draft supersedes published for the same (name, connection_id) key", async () => {
+  it("case 3: draft supersedes published for the same (name, connection_group_id) key", async () => {
     seedConnection("warehouse");
     seedEntity({ id: "e-pub", name: "users", status: "published", connectionId: "warehouse" });
     seedEntity({ id: "e-draft", name: "users", status: "draft", connectionId: "warehouse" });
@@ -206,7 +203,7 @@ describe("listEntitiesWithOverlay — acceptance matrix against real Postgres", 
     });
   });
 
-  it("NULL connection_id entities pass through (org-level, not connection-scoped)", async () => {
+  it("NULL connection_group_id entities pass through (org-level, not connection-scoped)", async () => {
     // Glossary and catalog entries typically have no connection — they must
     // survive the archived-connection filter.
     seedEntity({ id: "g1", name: "kpi_terms", status: "published", connectionId: null });
@@ -229,8 +226,8 @@ describe("listEntitiesWithOverlay — acceptance matrix against real Postgres", 
     seedEntity({ id: "e-ent", name: "users", status: "published", connectionId: "warehouse" });
     // Pretend a metric was stored in the same table — different entity_type
     db.public.none(
-      `INSERT INTO semantic_entities (id, org_id, entity_type, name, yaml_content, connection_id, status)
-       VALUES ('m1', 'org-1', 'metric', 'mrr', 'name: mrr', 'warehouse', 'published')`,
+      `INSERT INTO semantic_entities (id, org_id, entity_type, name, yaml_content, connection_group_id, status)
+       VALUES ('m1', 'org-1', 'metric', 'mrr', 'name: mrr', 'g_warehouse', 'published')`,
     );
 
     const entities = await listEntitiesWithOverlay("org-1", "entity");
@@ -243,11 +240,11 @@ describe("listEntitiesWithOverlay — acceptance matrix against real Postgres", 
   it("cross-org rows are invisible", async () => {
     // Seed an entity under a different org — should never appear in org-1's overlay
     db.public.none(
-      `INSERT INTO connections (id, org_id, status) VALUES ('warehouse', 'org-2', 'published')`,
+      `INSERT INTO connections (id, org_id, status, group_id) VALUES ('warehouse', 'org-2', 'published', 'g_warehouse_org2')`,
     );
     db.public.none(
-      `INSERT INTO semantic_entities (id, org_id, entity_type, name, yaml_content, connection_id, status)
-       VALUES ('other', 'org-2', 'entity', 'other_users', 'table: other', 'warehouse', 'published')`,
+      `INSERT INTO semantic_entities (id, org_id, entity_type, name, yaml_content, connection_group_id, status)
+       VALUES ('other', 'org-2', 'entity', 'other_users', 'table: other', 'g_warehouse_org2', 'published')`,
     );
 
     // org-1 has nothing
@@ -257,10 +254,10 @@ describe("listEntitiesWithOverlay — acceptance matrix against real Postgres", 
 
   it("entities tied to a __global__ connection are visible to any org (#2304)", async () => {
     // The canonical `__demo__` lives at org_id = '__global__'. Per-org
-    // entities reference it via connection_id; the connection-visibility
+    // entities reference it via connection_group_id; the connection-visibility
     // subquery now accepts `__global__` rows so those entities resolve.
     db.public.none(
-      `INSERT INTO connections (id, org_id, status) VALUES ('__demo__', '__global__', 'published')`,
+      `INSERT INTO connections (id, org_id, status, group_id) VALUES ('__demo__', '__global__', 'published', 'g___demo__')`,
     );
     seedEntity({ id: "demo-ent", name: "novamart_orders", status: "published", connectionId: "__demo__" });
 
@@ -274,14 +271,14 @@ describe("listEntitiesWithOverlay — acceptance matrix against real Postgres", 
     // can't silently start surfacing tombstoned demos to the agent. Visible
     // before tombstone → hidden after.
     db.public.none(
-      `INSERT INTO connections (id, org_id, status) VALUES ('__demo__', '__global__', 'published')`,
+      `INSERT INTO connections (id, org_id, status, group_id) VALUES ('__demo__', '__global__', 'published', 'g___demo__')`,
     );
     seedEntity({ id: "demo-ent-pre", name: "novamart_orders", status: "published", connectionId: "__demo__" });
     expect(rowsByName(await listEntitiesWithOverlay("org-1", "entity"))).toEqual({ novamart_orders: "published" });
 
     // Tombstone arrives — same id, status='archived', org-1 scope.
     db.public.none(
-      `INSERT INTO connections (id, org_id, status) VALUES ('__demo__', 'org-1', 'archived')`,
+      `INSERT INTO connections (id, org_id, status, group_id) VALUES ('__demo__', 'org-1', 'archived', 'g___demo__')`,
     );
     expect(await listEntitiesWithOverlay("org-1", "entity")).toHaveLength(0);
   });
@@ -290,12 +287,12 @@ describe("listEntitiesWithOverlay — acceptance matrix against real Postgres", 
     // The "delete the demo from my workspace" flow inserts a per-org
     // archived row at the same id as the global. The shadow check excludes
     // the global from the visible-connection set, so any entities the org
-    // owns at that connection_id drop out of the overlay alongside it.
+    // owns at that connection_group_id drop out of the overlay alongside it.
     db.public.none(
-      `INSERT INTO connections (id, org_id, status) VALUES ('__demo__', '__global__', 'published')`,
+      `INSERT INTO connections (id, org_id, status, group_id) VALUES ('__demo__', '__global__', 'published', 'g___demo__')`,
     );
     db.public.none(
-      `INSERT INTO connections (id, org_id, status) VALUES ('__demo__', 'org-1', 'archived')`,
+      `INSERT INTO connections (id, org_id, status, group_id) VALUES ('__demo__', 'org-1', 'archived', 'g___demo__')`,
     );
     seedEntity({ id: "demo-ent", name: "novamart_orders", status: "published", connectionId: "__demo__" });
 

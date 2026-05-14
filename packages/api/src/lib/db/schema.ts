@@ -260,11 +260,10 @@ export const scheduledTasks = pgTable(
     cronExpression: text("cron_expression").notNull(),
     deliveryChannel: text("delivery_channel").notNull().default("webhook"),
     recipients: jsonb("recipients").notNull().default(sql`'[]'`),
-    // 0068 — group-scoped scheduling (#2343). New rows scope to a
-    // connection group; `connection_id` stays nullable for the #2346
-    // compatibility window.
+    // 0068/0069 — group-scoped scheduling (#2343/#2347). New rows
+    // scope to a connection group; the legacy content-scope
+    // connection_id column was removed in 0069.
     connectionGroupId: text("connection_group_id"),
-    connectionId: text("connection_id"),
     approvalMode: text("approval_mode").notNull().default("auto"),
     enabled: boolean("enabled").notNull().default(true),
     lastRunAt: timestamp("last_run_at", { withTimezone: true }),
@@ -338,10 +337,9 @@ export const connections = pgTable(
     // Developer/published mode status
     status: text("status").notNull().default("published"),
     // Connection group membership (multi-environment semantic layer).
-    // Nullable during the transition; every existing row is backfilled
-    // by the introducing migration to a single-member group named after
-    // the connection.
-    groupId: text("group_id"),
+    // Required after 0069; existing rows are repaired into a
+    // single-member group before the NOT NULL constraint is applied.
+    groupId: text("group_id").notNull(),
   },
   (t) => [
     primaryKey({ columns: [t.id, t.orgId] }),
@@ -457,12 +455,6 @@ export const semanticEntities = pgTable(
     entityType: text("entity_type").notNull(),
     name: text("name").notNull(),
     yamlContent: text("yaml_content").notNull(),
-    // Legacy connection scope. Retained for transitional dual-write while
-    // call sites move to `connection_group_id`. Removed in a follow-on
-    // slice once SDK consumers and the whitelist all key on the group
-    // column. See PRD #2336 §"Migration sequencing" and CLAUDE.md
-    // §"Semantic Layer".
-    connectionId: text("connection_id"),
     // Group scope (multi-environment semantic layer, #2340). One row
     // per (org_id, entity_type, name, group_id) — multi-member groups
     // share the same entity definition. Nullable so legacy
@@ -1017,13 +1009,6 @@ export const approvalQueue = pgTable(
     requesterEmail: text("requester_email"),
     querySql: text("query_sql").notNull(),
     explanation: text("explanation"),
-    // #2344 — connection_id is now nullable. Pre-#2344 rows carried
-    // `NOT NULL DEFAULT 'default'` which silently rewrote unstamped
-    // inserts to the literal string 'default'. The new lookup keys on
-    // `connection_group_id`, so this column survives only as the audit
-    // trail for which member originated the request — and the legacy
-    // default is gone so the audit log no longer carries the drift.
-    connectionId: text("connection_id"),
     // #2344 — group scope. Nullable during the transition; backfilled
     // from `connections.group_id` via 0062's 1:1 map. Composite FK to
     // (connection_groups.id, connection_groups.orgId) so a row cannot
@@ -1214,10 +1199,6 @@ export const piiColumnClassifications = pgTable(
     orgId: text("org_id").notNull(),
     tableName: text("table_name").notNull(),
     columnName: text("column_name").notNull(),
-    // Legacy connection scope. 0064 dropped `NOT NULL DEFAULT 'default'`
-    // — the natural key is `connection_group_id` now. Retained nullable
-    // for transitional dual-write; final removal lives in #2346.
-    connectionId: text("connection_id"),
     // Group scope (#2341). One row per (org_id, table_name, column_name,
     // group_id) — multi-member groups share the same classification
     // (replicas inside a group share schema, so the column's PII
@@ -1619,8 +1600,6 @@ export const dashboardCards = pgTable(
     cachedColumns: jsonb("cached_columns"),
     cachedRows: jsonb("cached_rows"),
     cachedAt: timestamp("cached_at", { withTimezone: true }),
-    /** @deprecated 1.4.4 — kept for read-side dual-write. Removed by #2347. */
-    connectionId: text("connection_id"),
     // 0066: group-scoped execution. The card's `connection_group_id`
     // resolves to a physical connection at view time via
     // `lib/dashboards-group-resolve.ts` (primary member, or first by

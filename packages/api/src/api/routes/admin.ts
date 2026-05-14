@@ -1519,7 +1519,7 @@ admin.openapi(listOrgEntitiesRoute, async (c) => runHandler(c, "list org semanti
     entities: rows.map((r) => ({
       name: r.name,
       entityType: r.entity_type,
-      connectionId: r.connection_id,
+      connectionGroupId: r.connection_group_id ?? null,
       status: r.status,
       updatedAt: r.updated_at,
     })),
@@ -1554,7 +1554,7 @@ admin.openapi(getOrgEntityRoute, async (c) => runHandler(c, "get org semantic en
   return c.json({
     name: row.name,
     entityType: row.entity_type,
-    connectionId: row.connection_id,
+    connectionGroupId: row.connection_group_id ?? null,
     yamlContent: row.yaml_content,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -1650,7 +1650,7 @@ admin.openapi(deleteOrgEntityRoute, async (c) => runHandler(c, "delete org seman
   if (!entityType) {
     return c.json({ error: "bad_request", message: `Invalid type. Must be one of: ${[...VALID_ENTITY_TYPES].join(", ")}` }, 400);
   }
-  const { getEntity, deleteDraftEntity, upsertTombstone } = await import("@atlas/api/lib/semantic/entities");
+  const { getEntity, deleteDraftEntityForGroup, upsertTombstoneForGroup } = await import("@atlas/api/lib/semantic/entities");
   const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
   const { syncEntityDeleteFromDisk } = await import("@atlas/api/lib/semantic/sync");
 
@@ -1664,9 +1664,9 @@ admin.openapi(deleteOrgEntityRoute, async (c) => runHandler(c, "delete org seman
   }
   let deleted: boolean;
   if (existing.status === "draft" || existing.status === "draft_delete") {
-    deleted = await deleteDraftEntity(orgId, entityType, name, existing.connection_id ?? undefined);
+    deleted = await deleteDraftEntityForGroup(orgId, entityType, name, existing.connection_group_id ?? null);
   } else {
-    await upsertTombstone(orgId, entityType, name, existing.connection_id ?? undefined);
+    await upsertTombstoneForGroup(orgId, entityType, name, existing.connection_group_id ?? null);
     deleted = true;
   }
   if (!deleted) {

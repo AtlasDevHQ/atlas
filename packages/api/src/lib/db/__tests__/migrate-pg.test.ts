@@ -234,7 +234,7 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(byName.name?.is_nullable).toBe("NO");
   }, PG_TEST_TIMEOUT_MS);
 
-  it("connections.group_id: column exists and is nullable during transition", async () => {
+  it("connections.group_id: column exists and is NOT NULL after cleanup", async () => {
     const { rows } = await pool.query<{ is_nullable: string; data_type: string }>(
       `SELECT is_nullable, data_type
        FROM information_schema.columns
@@ -243,38 +243,27 @@ describeIfPg("migrate-pg (real Postgres)", () => {
          AND table_schema = current_schema()`,
     );
     expect(rows[0]?.data_type).toBe("text");
-    // Nullable so legacy single-connection orgs that came up before 0062
-    // ran (or that have pre-migration content shapes) keep booting; non-
-    // null is enforced by the API for newly-created connections.
-    expect(rows[0]?.is_nullable).toBe("YES");
+    expect(rows[0]?.is_nullable).toBe("NO");
   }, PG_TEST_TIMEOUT_MS);
 
-  it("connection_groups: 1:1 backfill creates one group per existing connection", async () => {
+  it("connection_groups: cleaned connections keep one group per existing connection", async () => {
     const orgId = `org-backfill-${Date.now()}`;
-    // Insert two connections pre-grouping (group_id NULL) — mimics rows
-    // that existed before 0062 ran in a real upgrade.
+    const connA = `conn-a-${Date.now()}`;
+    const connB = `conn-b-${Date.now()}`;
+    const groupA = `g_${connA}`;
+    const groupB = `g_${connB}`;
+
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name)
+       VALUES ($1, $2, $3),
+              ($4, $2, $5)`,
+      [groupA, orgId, connA, groupB, connB],
+    );
     await pool.query(
       `INSERT INTO connections (id, url, type, org_id, status, group_id)
-       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', NULL),
-              ($3, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', NULL)`,
-      [`conn-a-${Date.now()}`, orgId, `conn-b-${Date.now()}`],
-    );
-    // Re-run the backfill block (same SQL the migration uses). Idempotent:
-    // ON CONFLICT keeps existing rows, the UPDATE clause only touches
-    // rows still missing group_id.
-    await pool.query(
-      `WITH source AS (
-         SELECT id, org_id FROM connections WHERE org_id = $1 AND group_id IS NULL
-       )
-       INSERT INTO connection_groups (id, org_id, name)
-       SELECT 'g_' || id, org_id, id FROM source
-       ON CONFLICT (id, org_id) DO NOTHING`,
-      [orgId],
-    );
-    await pool.query(
-      `UPDATE connections SET group_id = 'g_' || id
-       WHERE org_id = $1 AND group_id IS NULL`,
-      [orgId],
+       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3),
+              ($4, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $5)`,
+      [connA, orgId, groupA, connB, groupB],
     );
 
     const groupRows = await pool.query<{ count: string }>(
@@ -350,9 +339,9 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       ),
     ).rejects.toMatchObject({ code: "23503" });
 
-    // Emptying the group lets the delete proceed.
+    // Deleting the member lets the group delete proceed.
     await pool.query(
-      `UPDATE connections SET group_id = NULL WHERE id = $1 AND org_id = $2`,
+      `DELETE FROM connections WHERE id = $1 AND org_id = $2`,
       [connId, orgId],
     );
     await pool.query(
@@ -457,10 +446,10 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     // Two entities sharing org_id + name + connection_group_id but
     // differing on entity_type. Both must insert without 23505.
     await pool.query(
-      `INSERT INTO semantic_entities
-         (org_id, entity_type, name, yaml_content, connection_id, connection_group_id, status)
-       VALUES ($1, 'entity', 'accounts', 'table: accounts', NULL, $2, 'published'),
-              ($1, 'metric', 'accounts', 'table: accounts', NULL, $2, 'published')`,
+       `INSERT INTO semantic_entities
+         (org_id, entity_type, name, yaml_content, connection_group_id, status)
+       VALUES ($1, 'entity', 'accounts', 'table: accounts', $2, 'published'),
+              ($1, 'metric', 'accounts', 'table: accounts', $2, 'published')`,
       [orgId, groupId],
     );
     const { rows } = await pool.query<{ count: string }>(
@@ -475,8 +464,8 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     await expect(
       pool.query(
         `INSERT INTO semantic_entities
-           (org_id, entity_type, name, yaml_content, connection_id, connection_group_id, status)
-         VALUES ($1, 'entity', 'accounts', 'table: accounts (dup)', NULL, $2, 'published')`,
+           (org_id, entity_type, name, yaml_content, connection_group_id, status)
+         VALUES ($1, 'entity', 'accounts', 'table: accounts (dup)', $2, 'published')`,
         [orgId, groupId],
       ),
     ).rejects.toMatchObject({ code: "23505" });
@@ -505,22 +494,9 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     // have on the moment 0063 starts running.
     await pool.query(
       `INSERT INTO semantic_entities
-         (org_id, entity_type, name, yaml_content, connection_id, connection_group_id, status)
-       VALUES ($1, 'entity', 'orders', 'table: orders', $2, NULL, 'published')`,
-      [orgId, connId],
-    );
-    // Re-run the backfill block (same SQL the migration emits). Idempotent:
-    // the WHERE clause only touches rows still missing connection_group_id.
-    await pool.query(
-      `UPDATE semantic_entities se
-         SET connection_group_id = c.group_id
-         FROM connections c
-         WHERE se.org_id = $1
-           AND se.connection_id IS NOT NULL
-           AND se.connection_group_id IS NULL
-           AND c.id = se.connection_id
-           AND (c.org_id = se.org_id OR c.org_id = '__global__')`,
-      [orgId],
+         (org_id, entity_type, name, yaml_content, connection_group_id, status)
+       VALUES ($1, 'entity', 'orders', 'table: orders', $2, 'published')`,
+      [orgId, groupId],
     );
     const { rows } = await pool.query<{ connection_group_id: string | null }>(
       `SELECT connection_group_id FROM semantic_entities
@@ -555,10 +531,10 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     const newerId = `00000000-0000-0000-0000-000000000001`;
     const olderId = `00000000-0000-0000-0000-000000000002`;
     await pool.query(
-      `INSERT INTO semantic_entities
-         (id, org_id, entity_type, name, yaml_content, connection_id, connection_group_id, status, updated_at)
-       VALUES ($1, $2, 'entity', 'dedup_target', 'newer', 'conn-a', $3, 'published', NOW()),
-              ($4, $2, 'entity', 'dedup_target_v2', 'older', 'conn-b', $3, 'published', NOW() - INTERVAL '1 hour')`,
+       `INSERT INTO semantic_entities
+         (id, org_id, entity_type, name, yaml_content, connection_group_id, status, updated_at)
+       VALUES ($1, $2, 'entity', 'dedup_target', 'newer', $3, 'published', NOW()),
+              ($4, $2, 'entity', 'dedup_target_v2', 'older', $3, 'published', NOW() - INTERVAL '1 hour')`,
       [newerId, orgId, groupId, olderId],
     );
     // Re-run the dedup block — it should be a no-op when the rows
@@ -753,9 +729,9 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
     // First insert — succeeds.
     await pool.query(
-      `INSERT INTO semantic_entities
-         (org_id, entity_type, name, yaml_content, connection_id, connection_group_id, status)
-       VALUES ($1, 'entity', 'orders', 'table: orders', 'us-int', $2, 'published')`,
+       `INSERT INTO semantic_entities
+         (org_id, entity_type, name, yaml_content, connection_group_id, status)
+       VALUES ($1, 'entity', 'orders', 'table: orders', $2, 'published')`,
       [orgId, groupId],
     );
     // Second insert with same (org_id, entity_type, name, connection_group_id)
@@ -763,8 +739,8 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     await expect(
       pool.query(
         `INSERT INTO semantic_entities
-           (org_id, entity_type, name, yaml_content, connection_id, connection_group_id, status)
-         VALUES ($1, 'entity', 'orders', 'table: orders', 'eu', $2, 'published')`,
+           (org_id, entity_type, name, yaml_content, connection_group_id, status)
+         VALUES ($1, 'entity', 'orders', 'table: orders', $2, 'published')`,
         [orgId, groupId],
       ),
     ).rejects.toMatchObject({ code: "23505" });
@@ -797,11 +773,7 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows[0]?.is_nullable).toBe("YES");
   }, PG_TEST_TIMEOUT_MS);
 
-  it("pii_column_classifications.connection_id: legacy NOT NULL DEFAULT 'default' dropped", async () => {
-    // 0064 drops the `NOT NULL DEFAULT 'default'` so callers don't get
-    // silently bucketed into a `'default'` sentinel they never asked for.
-    // The group is the natural key now; connection_id is dual-write for
-    // the transitional SDK and goes away in #2346.
+  it("pii_column_classifications.connection_id: legacy column dropped", async () => {
     const { rows } = await pool.query<{ is_nullable: string; column_default: string | null }>(
       `SELECT is_nullable, column_default
        FROM information_schema.columns
@@ -809,8 +781,7 @@ describeIfPg("migrate-pg (real Postgres)", () => {
          AND column_name = 'connection_id'
          AND table_schema = current_schema()`,
     );
-    expect(rows[0]?.is_nullable).toBe("YES");
-    expect(rows[0]?.column_default).toBeNull();
+    expect(rows).toEqual([]);
   }, PG_TEST_TIMEOUT_MS);
 
   it("pii_column_classifications: unique index is keyed on connection_group_id, not connection_id", async () => {
@@ -868,22 +839,9 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     // Pre-0064 shape: connection_id set, connection_group_id NULL.
     await pool.query(
       `INSERT INTO pii_column_classifications
-         (org_id, table_name, column_name, connection_id, connection_group_id, category, confidence, masking_strategy)
-       VALUES ($1, 'users', 'email', $2, NULL, 'email', 'high', 'partial')`,
-      [orgId, connId],
-    );
-    // Re-run the backfill block (same SQL the migration emits). Idempotent
-    // — the WHERE clause only touches rows still missing connection_group_id.
-    await pool.query(
-      `UPDATE pii_column_classifications pc
-         SET connection_group_id = c.group_id
-         FROM connections c
-         WHERE pc.org_id = $1
-           AND pc.connection_id IS NOT NULL
-           AND pc.connection_group_id IS NULL
-           AND c.id = pc.connection_id
-           AND (c.org_id = pc.org_id OR c.org_id = '__global__')`,
-      [orgId],
+         (org_id, table_name, column_name, connection_group_id, category, confidence, masking_strategy)
+       VALUES ($1, 'users', 'email', $2, 'email', 'high', 'partial')`,
+      [orgId, groupId],
     );
     const { rows } = await pool.query<{ connection_group_id: string | null }>(
       `SELECT connection_group_id FROM pii_column_classifications
@@ -908,15 +866,15 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
     await pool.query(
       `INSERT INTO pii_column_classifications
-         (org_id, table_name, column_name, connection_id, connection_group_id, category, confidence, masking_strategy)
-       VALUES ($1, 'users', 'email', 'us-int', $2, 'email', 'high', 'partial')`,
+         (org_id, table_name, column_name, connection_group_id, category, confidence, masking_strategy)
+       VALUES ($1, 'users', 'email', $2, 'email', 'high', 'partial')`,
       [orgId, groupId],
     );
     await expect(
       pool.query(
         `INSERT INTO pii_column_classifications
-           (org_id, table_name, column_name, connection_id, connection_group_id, category, confidence, masking_strategy)
-         VALUES ($1, 'users', 'email', 'eu', $2, 'email', 'high', 'partial')`,
+           (org_id, table_name, column_name, connection_group_id, category, confidence, masking_strategy)
+         VALUES ($1, 'users', 'email', $2, 'email', 'high', 'partial')`,
         [orgId, groupId],
       ),
     ).rejects.toMatchObject({ code: "23505" });
@@ -951,9 +909,9 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     // Classify `users.email` on the prod group.
     await pool.query(
       `INSERT INTO pii_column_classifications
-         (org_id, table_name, column_name, connection_id, connection_group_id, category, confidence, masking_strategy)
-       VALUES ($1, 'users', 'email', $2, $3, 'email', 'high', 'partial')`,
-      [orgId, connId, prodGroup],
+         (org_id, table_name, column_name, connection_group_id, category, confidence, masking_strategy)
+       VALUES ($1, 'users', 'email', $2, 'email', 'high', 'partial')`,
+      [orgId, prodGroup],
     );
     // Reassign the connection to staging. The classification's
     // connection_group_id must NOT follow — it stays on prod.
@@ -977,10 +935,10 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     // Staging admins can now classify the same column independently —
     // no 23505, because the row is keyed on the staging group.
     await pool.query(
-      `INSERT INTO pii_column_classifications
-         (org_id, table_name, column_name, connection_id, connection_group_id, category, confidence, masking_strategy)
-       VALUES ($1, 'users', 'email', $2, $3, 'email', 'low', 'redact')`,
-      [orgId, connId, stagingGroup],
+       `INSERT INTO pii_column_classifications
+         (org_id, table_name, column_name, connection_group_id, category, confidence, masking_strategy)
+       VALUES ($1, 'users', 'email', $2, 'email', 'low', 'redact')`,
+      [orgId, stagingGroup],
     );
     const stagingAfter = await pool.query<{ masking_strategy: string }>(
       `SELECT masking_strategy FROM pii_column_classifications
@@ -1010,10 +968,10 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     const newerId = `00000000-0000-0000-0000-aaaa00000001`;
     const olderId = `00000000-0000-0000-0000-aaaa00000002`;
     await pool.query(
-      `INSERT INTO pii_column_classifications
-         (id, org_id, table_name, column_name, connection_id, connection_group_id, category, confidence, masking_strategy, updated_at)
-       VALUES ($1, $2, 'users', 'email_v1', 'conn-a', $3, 'email', 'high', 'partial', NOW()),
-              ($4, $2, 'users', 'email_v2', 'conn-b', $3, 'email', 'high', 'partial', NOW() - INTERVAL '1 hour')`,
+       `INSERT INTO pii_column_classifications
+         (id, org_id, table_name, column_name, connection_group_id, category, confidence, masking_strategy, updated_at)
+       VALUES ($1, $2, 'users', 'email_v1', $3, 'email', 'high', 'partial', NOW()),
+              ($4, $2, 'users', 'email_v2', $3, 'email', 'high', 'partial', NOW() - INTERVAL '1 hour')`,
       [newerId, orgId, groupId, olderId],
     );
     // Drop the unique index so we can force a name collision and then
@@ -1082,12 +1040,7 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows[0]?.is_nullable).toBe("YES");
   }, PG_TEST_TIMEOUT_MS);
 
-  it("approval_queue.connection_id: column is nullable post-#2344 (no NOT NULL DEFAULT)", async () => {
-    // The pre-#2344 schema had `connection_id NOT NULL DEFAULT 'default'`,
-    // which silently rewrote unstamped inserts to the string 'default'.
-    // 0065 drops both — the column is audit-only, the lookup keys on
-    // connection_group_id. A future migration that re-tightens this
-    // would force every caller back through the 'default' drift shape.
+  it("approval_queue.connection_id: legacy column dropped", async () => {
     const { rows } = await pool.query<{ is_nullable: string; column_default: string | null }>(
       `SELECT is_nullable, column_default
        FROM information_schema.columns
@@ -1095,8 +1048,7 @@ describeIfPg("migrate-pg (real Postgres)", () => {
          AND column_name = 'connection_id'
          AND table_schema = current_schema()`,
     );
-    expect(rows[0]?.is_nullable).toBe("YES");
-    expect(rows[0]?.column_default).toBeNull();
+    expect(rows).toEqual([]);
   }, PG_TEST_TIMEOUT_MS);
 
   it("approval_queue: backfill resolves connection_id → connection_group_id via 0062's 1:1 mapping", async () => {
@@ -1132,23 +1084,9 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     // would have on the moment 0065 starts running.
     await pool.query(
       `INSERT INTO approval_queue
-         (org_id, rule_id, rule_name, requester_id, query_sql, connection_id, connection_group_id)
-       VALUES ($1, $2, 'Backfill rule', 'user-backfill', 'SELECT * FROM orders', $3, NULL)`,
-      [orgId, ruleId, connId],
-    );
-    // Re-run the backfill block (same SQL the migration uses).
-    // Idempotent: the WHERE clause only touches rows still missing
-    // connection_group_id.
-    await pool.query(
-      `UPDATE approval_queue aq
-         SET connection_group_id = c.group_id
-         FROM connections c
-         WHERE aq.org_id = $1
-           AND aq.connection_id IS NOT NULL
-           AND aq.connection_group_id IS NULL
-           AND c.id = aq.connection_id
-           AND (c.org_id = aq.org_id OR c.org_id = '__global__')`,
-      [orgId],
+         (org_id, rule_id, rule_name, requester_id, query_sql, connection_group_id)
+       VALUES ($1, $2, 'Backfill rule', 'user-backfill', 'SELECT * FROM orders', $3)`,
+      [orgId, ruleId, groupId],
     );
     const { rows } = await pool.query<{ connection_group_id: string | null }>(
       `SELECT connection_group_id FROM approval_queue
@@ -1183,45 +1121,16 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       [orgId],
     );
     await pool.query(
-      `INSERT INTO approval_queue
-         (org_id, rule_id, rule_name, requester_id, query_sql, connection_id, connection_group_id)
-       VALUES ($1, $2, 'Global backfill rule', 'user-global-backfill', 'SELECT * FROM orders', $3, NULL)`,
-      [orgId, ruleRow.rows[0].id, connId],
-    );
-
-    await pool.query(
-      `WITH global_approval_groups AS (
-         SELECT DISTINCT
-                COALESCE(aq.connection_group_id, c.group_id) AS group_id,
-                aq.org_id AS tenant_org_id,
-                ('__global__:' || g.id) AS name
-           FROM approval_queue aq
-           JOIN connections c
-             ON c.id = aq.connection_id
-            AND c.org_id = '__global__'
-           JOIN connection_groups g
-             ON g.id = c.group_id
-            AND g.org_id = '__global__'
-          WHERE aq.org_id = $1
-            AND aq.org_id <> '__global__'
-            AND COALESCE(aq.connection_group_id, c.group_id) IS NOT NULL
-       )
-       INSERT INTO connection_groups (id, org_id, name)
-       SELECT group_id, tenant_org_id, name
-         FROM global_approval_groups
+      `INSERT INTO connection_groups (id, org_id, name)
+       VALUES ($2, $1, '__global__:' || $2)
        ON CONFLICT (id, org_id) DO NOTHING`,
-      [orgId],
+      [orgId, groupId],
     );
     await pool.query(
-      `UPDATE approval_queue aq
-         SET connection_group_id = c.group_id
-         FROM connections c
-         WHERE aq.org_id = $1
-           AND aq.connection_id IS NOT NULL
-           AND aq.connection_group_id IS NULL
-           AND c.id = aq.connection_id
-           AND (c.org_id = aq.org_id OR c.org_id = '__global__')`,
-      [orgId],
+      `INSERT INTO approval_queue
+         (org_id, rule_id, rule_name, requester_id, query_sql, connection_group_id)
+       VALUES ($1, $2, 'Global backfill rule', 'user-global-backfill', 'SELECT * FROM orders', $3)`,
+      [orgId, ruleRow.rows[0].id, groupId],
     );
 
     const { rows } = await pool.query<{ connection_group_id: string | null; mirrored: string | null }>(
@@ -1390,10 +1299,15 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'cross-org')`,
       [groupBId, orgB],
     );
+    const groupAId = `g-source-${Date.now()}`;
     await pool.query(
-      `INSERT INTO connections (id, url, type, org_id, status)
-       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published')`,
-      [connAId, orgA],
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'source')`,
+      [groupAId, orgA],
+    );
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status, group_id)
+       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3)`,
+      [connAId, orgA, groupAId],
     );
     await expect(
       pool.query(
@@ -1424,12 +1338,6 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     await pool.query(
       `UPDATE connection_groups SET primary_connection_id = $1 WHERE id = $2 AND org_id = $3`,
       [connId, groupId, orgId],
-    );
-    // First clear the membership so 0062's ON DELETE RESTRICT FK on
-    // `connections.group_id` doesn't block the connection delete.
-    await pool.query(
-      `UPDATE connections SET group_id = NULL WHERE id = $1 AND org_id = $2`,
-      [connId, orgId],
     );
     await pool.query(
       `DELETE FROM connections WHERE id = $1 AND org_id = $2`,
@@ -1467,22 +1375,9 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     const dashboardId = dashRow.rows[0]?.id;
     // Pre-0066 card shape: connection_id set, connection_group_id NULL.
     await pool.query(
-      `INSERT INTO dashboard_cards (dashboard_id, title, sql, connection_id, connection_group_id)
-       VALUES ($1, 'card', 'SELECT 1', $2, NULL)`,
-      [dashboardId, connId],
-    );
-    // Re-run the backfill block (same SQL the migration emits).
-    await pool.query(
-      `UPDATE dashboard_cards dc
-         SET connection_group_id = c.group_id
-         FROM connections c, dashboards d
-         WHERE dc.dashboard_id = d.id
-           AND d.org_id = $1
-           AND dc.connection_id IS NOT NULL
-           AND dc.connection_group_id IS NULL
-           AND c.id = dc.connection_id
-           AND (c.org_id = d.org_id OR c.org_id = '__global__')`,
-      [orgId],
+      `INSERT INTO dashboard_cards (dashboard_id, title, sql, connection_group_id)
+       VALUES ($1, 'card', 'SELECT 1', $2)`,
+      [dashboardId, groupId],
     );
     const { rows } = await pool.query<{ connection_group_id: string | null }>(
       `SELECT connection_group_id FROM dashboard_cards WHERE dashboard_id = $1`,

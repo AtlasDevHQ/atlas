@@ -1,6 +1,6 @@
 /**
- * These tests pin the helper's output to migration 0028's
- * `COALESCE(connection_id, '__default__')` expression so any drift between
+ * These tests pin the helper's output to migration 0069's
+ * `COALESCE(connection_group_id, '__default__')` expression so any drift between
  * the helper and the partial-unique-index expression baked into the schema
  * surfaces here instead of as silent natural-key duplication at runtime.
  *
@@ -19,17 +19,17 @@ import {
 } from "../with-group-scope";
 
 describe("GROUP_SCOPE_SENTINEL", () => {
-  it("matches the literal baked into migration 0028's partial indexes", () => {
+  it("matches the literal baked into migration 0069's partial indexes", () => {
     expect(GROUP_SCOPE_SENTINEL).toBe("__default__");
   });
 });
 
 describe("coalescedScopeColumn", () => {
-  it("defaults to the `connection_id` column with no alias", () => {
-    expect(coalescedScopeColumn()).toBe("COALESCE(connection_id, '__default__')");
+  it("defaults to the `connection_group_id` column with no alias", () => {
+    expect(coalescedScopeColumn()).toBe("COALESCE(connection_group_id, '__default__')");
   });
 
-  it("accepts a custom column name (forward-compat with `connection_group_id`)", () => {
+  it("accepts a custom column name (explicit column override)", () => {
     expect(coalescedScopeColumn({ column: "connection_group_id" })).toBe(
       "COALESCE(connection_group_id, '__default__')",
     );
@@ -37,7 +37,7 @@ describe("coalescedScopeColumn", () => {
 
   it("qualifies the column with the supplied alias", () => {
     expect(coalescedScopeColumn({ alias: "d" })).toBe(
-      "COALESCE(d.connection_id, '__default__')",
+      "COALESCE(d.connection_group_id, '__default__')",
     );
   });
 
@@ -51,14 +51,14 @@ describe("coalescedScopeColumn", () => {
 describe("matchScopeAcrossAliases", () => {
   it("emits the cross-alias equality used by the draft/published join", () => {
     expect(matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "p" })).toBe(
-      "COALESCE(d.connection_id, '__default__') = COALESCE(p.connection_id, '__default__')",
+      "COALESCE(d.connection_group_id, '__default__') = COALESCE(p.connection_group_id, '__default__')",
     );
   });
 
   it("emits the same shape with `pub` as the published alias", () => {
     // Matches `admin-publish-preview.ts`, `mode.ts`, `content-mode/tables.ts`.
     expect(matchScopeAcrossAliases({ leftAlias: "d", rightAlias: "pub" })).toBe(
-      "COALESCE(d.connection_id, '__default__') = COALESCE(pub.connection_id, '__default__')",
+      "COALESCE(d.connection_group_id, '__default__') = COALESCE(pub.connection_group_id, '__default__')",
     );
   });
 
@@ -88,7 +88,7 @@ describe("withGroupScope", () => {
     });
 
     it("normalises `\"\"` to `null` so a partial client payload can't split rows", () => {
-      // Without this, a row inserted with `connection_id = ""` would land in a
+      // Without this, a row inserted with `connection_group_id = ""` would land in a
       // distinct partial-index bucket from rows with no scope at all — a silent
       // failure where deletion by undefined scope no longer matches.
       const scope = withGroupScope("");
@@ -98,7 +98,7 @@ describe("withGroupScope", () => {
     it("emits a sentinel-coalesced equality clause when scope is null", () => {
       const scope = withGroupScope(null);
       expect(scope.match(4)).toBe(
-        "COALESCE(connection_id, '__default__') = COALESCE($4, '__default__')",
+        "COALESCE(connection_group_id, '__default__') = COALESCE($4, '__default__')",
       );
     });
   });
@@ -112,7 +112,7 @@ describe("withGroupScope", () => {
     it("produces the same SQL shape regardless of whether scope is set", () => {
       // `withGroupScope` should not branch its SQL on whether the scope id is
       // null or not — the COALESCE-with-sentinel form makes both cases match
-      // the partial index on `(org_id, name, COALESCE(connection_id, '__default__'))`.
+      // the partial index on `(org_id, name, COALESCE(connection_group_id, '__default__'))`.
       const withId = withGroupScope("conn_us").match(4);
       const withoutId = withGroupScope(null).match(4);
       expect(withId).toBe(withoutId);
@@ -139,17 +139,17 @@ describe("withGroupScope", () => {
     it("qualifies the column with an alias in `.match()`", () => {
       const scope = withGroupScope("conn_us");
       expect(scope.match(2, { alias: "d" })).toBe(
-        "COALESCE(d.connection_id, '__default__') = COALESCE($2, '__default__')",
+        "COALESCE(d.connection_group_id, '__default__') = COALESCE($2, '__default__')",
       );
     });
 
     it("supports any positive `$N` placeholder", () => {
       const scope = withGroupScope("conn_us");
       expect(scope.match(1)).toBe(
-        "COALESCE(connection_id, '__default__') = COALESCE($1, '__default__')",
+        "COALESCE(connection_group_id, '__default__') = COALESCE($1, '__default__')",
       );
       expect(scope.match(10)).toBe(
-        "COALESCE(connection_id, '__default__') = COALESCE($10, '__default__')",
+        "COALESCE(connection_group_id, '__default__') = COALESCE($10, '__default__')",
       );
     });
   });

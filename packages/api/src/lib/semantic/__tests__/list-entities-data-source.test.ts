@@ -31,7 +31,7 @@ type InternalRow = {
   name: string;
   table: string;
   description?: string | null;
-  connection_id?: string | null;
+  connection_group_id?: string | null;
 };
 let internalRows: InternalRow[] = [];
 let lastQueryParams: unknown[] = [];
@@ -46,7 +46,7 @@ const mockInternalQuery = mock(async (_sql: string, params: unknown[]) => {
     yaml_content: `table: ${r.table}\n${
       r.description ? `description: ${r.description}\n` : ""
     }`,
-    connection_id: r.connection_id ?? null,
+    connection_group_id: r.connection_group_id ?? null,
     status: "published" as const,
     created_at: "2026-01-01",
     updated_at: "2026-01-01",
@@ -228,7 +228,7 @@ describe("listEntities — return shape is consistent across sources", () => {
         name: "Customer",
         table: "customers",
         description: "DB customers",
-        connection_id: "warehouse",
+        connection_group_id: "g_warehouse",
       },
     ];
 
@@ -243,14 +243,14 @@ describe("listEntities — return shape is consistent across sources", () => {
     expect(typeof entry.table).toBe("string");
     expect(entry.description === null || typeof entry.description === "string").toBe(true);
     expect(typeof entry.source).toBe("string");
-    // For DB rows, `source` mirrors connection_id (or "default" when null).
-    expect(entry.source).toBe("warehouse");
+    // For DB rows, `source` mirrors connection_group_id (or "default" when null).
+    expect(entry.source).toBe("g_warehouse");
   });
 
-  it("DB row with null connection_id surfaces as source: 'default'", async () => {
+  it("DB row with null connection_group_id surfaces as source: 'default'", async () => {
     internalDBAvailable = true;
     internalRows = [
-      { name: "Customer", table: "customers", connection_id: null },
+      { name: "Customer", table: "customers", connection_group_id: null },
     ];
 
     const result = await listEntities({
@@ -309,7 +309,7 @@ describe("listEntities — EntityShape parity with loadOrgWhitelist", () => {
         entity_type: "entity",
         name: "broken",
         yaml_content: "description: missing table field\n",
-        connection_id: null,
+        connection_group_id: null,
         status: "published",
         created_at: "2026-01-01",
         updated_at: "2026-01-01",
@@ -337,7 +337,7 @@ describe("listEntities — EntityShape parity with loadOrgWhitelist", () => {
         entity_type: "entity",
         name: "malformed",
         yaml_content: "table: orders\ndimensions:\n  - {invalid",
-        connection_id: null,
+        connection_group_id: null,
         status: "published",
         created_at: "2026-01-01",
         updated_at: "2026-01-01",

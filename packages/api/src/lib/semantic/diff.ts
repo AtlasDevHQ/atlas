@@ -357,7 +357,7 @@ export async function getYAMLSnapshotsFromDB(
     : await listEntityRows(orgId, "entity", "published");
 
   for (const row of rows) {
-    const rowConnection = row.connection_id ?? "default";
+    const rowConnection = row.connection_group_id ?? "default";
     if (rowConnection !== connectionId) continue;
     try {
       const doc = yaml.load(row.yaml_content) as Record<string, unknown> | null;

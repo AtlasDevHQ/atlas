@@ -500,12 +500,20 @@ onboarding.openapi(
       }
 
       const urlKeyVersion = activeKeyVersion();
-      // Org-scoped upsert: composite PK (id, org_id) ensures each org has its own namespace
+      // Org-scoped upsert: composite PK (id, org_id) ensures each org has its own namespace.
+      // The deterministic group row is created in the same statement so 0069's
+      // NOT NULL + FK requirements are satisfied before the connection is inserted.
       const upsertResult = yield* Effect.tryPromise({
         try: () => internalQuery<{ id: string }>(
-          `INSERT INTO connections (id, url, url_key_version, type, description, org_id)
-           VALUES ($1, $2, $6, $3, $4, $5)
-           ON CONFLICT (id, org_id) DO UPDATE SET url = $2, url_key_version = $6, type = $3, updated_at = NOW()
+          `WITH group_row AS (
+             INSERT INTO connection_groups (id, org_id, name)
+             VALUES ('g_' || $1, $5, $1)
+             ON CONFLICT (id, org_id) DO UPDATE SET updated_at = connection_groups.updated_at
+             RETURNING id
+           )
+           INSERT INTO connections (id, url, url_key_version, type, description, org_id, group_id)
+           VALUES ($1, $2, $6, $3, $4, $5, (SELECT id FROM group_row))
+           ON CONFLICT (id, org_id) DO UPDATE SET url = $2, url_key_version = $6, type = $3, group_id = COALESCE(connections.group_id, EXCLUDED.group_id), updated_at = NOW()
            RETURNING id`,
           [id, encryptedUrl, dbType, `${dbType} datasource`, orgId, urlKeyVersion],
         ),
@@ -682,17 +690,38 @@ onboarding.openapi(
       }
 
       // ---------------------------------------------------------------
-      // Phase 2 — import entities FIRST. Orphan rows (entities whose
-      // `connection_id` references a connection row that doesn't exist
-      // for this org, or whose connection isn't `published` / `draft`)
-      // are filtered out by `listEntitiesWithOverlay`'s connection-
-      // visibility join — so a failure between phase 2 and phase 3
-      // leaves nothing visible to the user. On retry,
-      // `bulkUpsertEntities` upserts on `(org_id, name, connection_id)`,
-      // so prior partial state is reabsorbed cleanly; once phase 3
-      // commits the connection, the existing entity rows become
-      // visible.
+      // Phase 2 — create the deterministic demo group, then import
+      // entities FIRST. The group is not user-visible by itself; entity
+      // reads still require a published/draft connection with a matching
+      // group_id. Pre-creating it lets the semantic upsert resolve
+      // connection_group_id even though the demo connection row does not
+      // commit until phase 3, preventing imported demo entities from
+      // falling into the default NULL scope. If phase 3 fails, the rows
+      // remain hidden by the connection-visibility join and retry reuses
+      // the same group.
       // ---------------------------------------------------------------
+      const demoGroupResult = yield* Effect.tryPromise({
+        try: () => internalQuery<{ id: string }>(
+          `INSERT INTO connection_groups (id, org_id, name)
+           VALUES ('g_' || $1, '__global__', $1)
+           ON CONFLICT (id, org_id) DO UPDATE SET updated_at = connection_groups.updated_at
+           RETURNING id`,
+          [id],
+        ),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(Effect.catchAll((err) => {
+        log.error({ err: err.message, requestId }, "Failed to prepare demo connection group");
+        return Effect.succeed(null);
+      }));
+
+      if (demoGroupResult === null || demoGroupResult.length === 0) {
+        return c.json({
+          error: "internal_error",
+          message: "Failed to prepare the demo environment. Retry in a moment.",
+          requestId,
+        }, 500);
+      }
+
       const importResult = yield* Effect.tryPromise({
         try: () => importFromDisk(orgId, { sourceDir: semanticDir, connectionId: DEMO_CONNECTION_ID }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
@@ -704,7 +733,7 @@ onboarding.openapi(
       if (importResult === null) {
         return c.json({
           error: "import_failed",
-          message: "Failed to import the demo semantic layer. No partial state was committed — retry in a moment.",
+          message: "Failed to import the demo semantic layer. No queryable demo state was committed — retry in a moment.",
           requestId,
         }, 500);
       }
@@ -764,8 +793,14 @@ onboarding.openapi(
       const urlKeyVersion = activeKeyVersion();
       const upsertResult = yield* Effect.tryPromise({
         try: () => internalQuery<{ id: string }>(
-          `INSERT INTO connections (id, url, url_key_version, type, description, org_id, status)
-           VALUES ($1, $2, $5, $3, $4, '__global__', 'published')
+          `WITH group_row AS (
+             INSERT INTO connection_groups (id, org_id, name)
+             VALUES ('g_' || $1, '__global__', $1)
+             ON CONFLICT (id, org_id) DO UPDATE SET updated_at = connection_groups.updated_at
+             RETURNING id
+           )
+           INSERT INTO connections (id, url, url_key_version, type, description, org_id, status, group_id)
+           VALUES ($1, $2, $5, $3, $4, '__global__', 'published', (SELECT id FROM group_row))
            ON CONFLICT (id, org_id) DO NOTHING
            RETURNING id`,
           [id, encryptedUrl, dbType, `${demoLabel} — demo ${dbType} datasource`, urlKeyVersion],

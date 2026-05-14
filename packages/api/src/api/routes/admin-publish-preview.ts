@@ -112,7 +112,6 @@ type DbRow = {
   id: string;
   label: string;
   updated_at: Date | string | null;
-  connection_id?: string | null;
   connection_group_id?: string | null;
 } & Record<string, unknown>;
 
@@ -173,7 +172,7 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
       // genuinely new. Same fix on both queries below.
       internalQuery<DbRow>(
         `SELECT d.id::text AS id, d.name AS label, d.updated_at,
-                d.connection_id, d.connection_group_id
+                d.connection_group_id
            FROM semantic_entities d
           WHERE d.org_id = $1
             AND d.status = 'draft'
@@ -190,7 +189,7 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
       ),
       internalQuery<DbRow>(
         `SELECT d.id::text AS id, d.name AS label, d.updated_at,
-                d.connection_id, d.connection_group_id
+                d.connection_group_id
            FROM semantic_entities d
            INNER JOIN semantic_entities pub
              ON d.org_id = pub.org_id

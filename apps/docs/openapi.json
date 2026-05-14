@@ -4901,12 +4901,6 @@
                       "additionalProperties": {}
                     }
                   },
-                  "connectionId": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
                   "connectionGroupId": {
                     "type": [
                       "string",
@@ -13407,12 +13401,6 @@
                       "null"
                     ]
                   },
-                  "connectionId": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
                   "approvalMode": {
                     "type": "string",
                     "enum": [
@@ -14014,12 +14002,6 @@
                     }
                   },
                   "connectionGroupId": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "connectionId": {
                     "type": [
                       "string",
                       "null"
@@ -34469,12 +34451,6 @@
                                   "null"
                                 ]
                               },
-                              "connectionId": {
-                                "type": [
-                                  "string",
-                                  "null"
-                                ]
-                              },
                               "connectionGroupId": {
                                 "type": [
                                   "string",
@@ -34542,7 +34518,6 @@
                               "requesterEmail",
                               "querySql",
                               "explanation",
-                              "connectionId",
                               "connectionGroupId",
                               "tablesAccessed",
                               "columnsAccessed",
@@ -34584,12 +34559,6 @@
                                 "type": "string"
                               },
                               "explanation": {
-                                "type": [
-                                  "string",
-                                  "null"
-                                ]
-                              },
-                              "connectionId": {
                                 "type": [
                                   "string",
                                   "null"
@@ -34668,7 +34637,6 @@
                               "requesterEmail",
                               "querySql",
                               "explanation",
-                              "connectionId",
                               "connectionGroupId",
                               "tablesAccessed",
                               "columnsAccessed",
@@ -34710,12 +34678,6 @@
                                 "type": "string"
                               },
                               "explanation": {
-                                "type": [
-                                  "string",
-                                  "null"
-                                ]
-                              },
-                              "connectionId": {
                                 "type": [
                                   "string",
                                   "null"
@@ -34794,7 +34756,6 @@
                               "requesterEmail",
                               "querySql",
                               "explanation",
-                              "connectionId",
                               "connectionGroupId",
                               "tablesAccessed",
                               "columnsAccessed",
@@ -34836,12 +34797,6 @@
                                 "type": "string"
                               },
                               "explanation": {
-                                "type": [
-                                  "string",
-                                  "null"
-                                ]
-                              },
-                              "connectionId": {
                                 "type": [
                                   "string",
                                   "null"
@@ -34914,7 +34869,6 @@
                               "requesterEmail",
                               "querySql",
                               "explanation",
-                              "connectionId",
                               "connectionGroupId",
                               "tablesAccessed",
                               "columnsAccessed",
@@ -35115,12 +35069,6 @@
                                 "null"
                               ]
                             },
-                            "connectionId": {
-                              "type": [
-                                "string",
-                                "null"
-                              ]
-                            },
                             "connectionGroupId": {
                               "type": [
                                 "string",
@@ -35188,7 +35136,6 @@
                             "requesterEmail",
                             "querySql",
                             "explanation",
-                            "connectionId",
                             "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
@@ -35230,12 +35177,6 @@
                               "type": "string"
                             },
                             "explanation": {
-                              "type": [
-                                "string",
-                                "null"
-                              ]
-                            },
-                            "connectionId": {
                               "type": [
                                 "string",
                                 "null"
@@ -35314,7 +35255,6 @@
                             "requesterEmail",
                             "querySql",
                             "explanation",
-                            "connectionId",
                             "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
@@ -35356,12 +35296,6 @@
                               "type": "string"
                             },
                             "explanation": {
-                              "type": [
-                                "string",
-                                "null"
-                              ]
-                            },
-                            "connectionId": {
                               "type": [
                                 "string",
                                 "null"
@@ -35440,7 +35374,6 @@
                             "requesterEmail",
                             "querySql",
                             "explanation",
-                            "connectionId",
                             "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
@@ -35482,12 +35415,6 @@
                               "type": "string"
                             },
                             "explanation": {
-                              "type": [
-                                "string",
-                                "null"
-                              ]
-                            },
-                            "connectionId": {
                               "type": [
                                 "string",
                                 "null"
@@ -35560,7 +35487,6 @@
                             "requesterEmail",
                             "querySql",
                             "explanation",
-                            "connectionId",
                             "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
@@ -35762,12 +35688,6 @@
                                 "null"
                               ]
                             },
-                            "connectionId": {
-                              "type": [
-                                "string",
-                                "null"
-                              ]
-                            },
                             "connectionGroupId": {
                               "type": [
                                 "string",
@@ -35835,7 +35755,6 @@
                             "requesterEmail",
                             "querySql",
                             "explanation",
-                            "connectionId",
                             "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
@@ -35877,12 +35796,6 @@
                               "type": "string"
                             },
                             "explanation": {
-                              "type": [
-                                "string",
-                                "null"
-                              ]
-                            },
-                            "connectionId": {
                               "type": [
                                 "string",
                                 "null"
@@ -35961,7 +35874,6 @@
                             "requesterEmail",
                             "querySql",
                             "explanation",
-                            "connectionId",
                             "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
@@ -36003,12 +35915,6 @@
                               "type": "string"
                             },
                             "explanation": {
-                              "type": [
-                                "string",
-                                "null"
-                              ]
-                            },
-                            "connectionId": {
                               "type": [
                                 "string",
                                 "null"
@@ -36087,7 +35993,6 @@
                             "requesterEmail",
                             "querySql",
                             "explanation",
-                            "connectionId",
                             "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
@@ -36129,12 +36034,6 @@
                               "type": "string"
                             },
                             "explanation": {
-                              "type": [
-                                "string",
-                                "null"
-                              ]
-                            },
-                            "connectionId": {
                               "type": [
                                 "string",
                                 "null"
@@ -36207,7 +36106,6 @@
                             "requesterEmail",
                             "querySql",
                             "explanation",
-                            "connectionId",
                             "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
@@ -36398,16 +36296,6 @@
             "description": "Filter by connection group (environment) ID",
             "name": "connectionGroupId",
             "in": "query"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Legacy: filter by connection ID — resolved to the connection's group via 0062's 1:1 mapping. Prefer `connectionGroupId` for new callers."
-            },
-            "required": false,
-            "description": "Legacy: filter by connection ID — resolved to the connection's group via 0062's 1:1 mapping. Prefer `connectionGroupId` for new callers.",
-            "name": "connectionId",
-            "in": "query"
           }
         ],
         "responses": {
@@ -36434,12 +36322,6 @@
                           },
                           "columnName": {
                             "type": "string"
-                          },
-                          "connectionId": {
-                            "type": [
-                              "string",
-                              "null"
-                            ]
                           },
                           "connectionGroupId": {
                             "type": [
@@ -36500,7 +36382,7 @@
                           "orgId",
                           "tableName",
                           "columnName",
-                          "connectionId",
+                          "connectionGroupId",
                           "category",
                           "confidence",
                           "maskingStrategy",
@@ -36700,12 +36582,6 @@
                         "columnName": {
                           "type": "string"
                         },
-                        "connectionId": {
-                          "type": [
-                            "string",
-                            "null"
-                          ]
-                        },
                         "connectionGroupId": {
                           "type": [
                             "string",
@@ -36765,7 +36641,7 @@
                         "orgId",
                         "tableName",
                         "columnName",
-                        "connectionId",
+                        "connectionGroupId",
                         "category",
                         "confidence",
                         "maskingStrategy",
@@ -50977,12 +50853,6 @@
                           "label": {
                             "type": "string"
                           },
-                          "connectionId": {
-                            "type": [
-                              "string",
-                              "null"
-                            ]
-                          },
                           "connectionGroupId": {
                             "type": [
                               "string",
@@ -50997,7 +50867,6 @@
                         "required": [
                           "id",
                           "label",
-                          "connectionId",
                           "connectionGroupId",
                           "updatedAt"
                         ]

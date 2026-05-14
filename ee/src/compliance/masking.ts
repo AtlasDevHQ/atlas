@@ -115,9 +115,6 @@ interface PIIClassificationRow {
   org_id: string;
   table_name: string;
   column_name: string;
-  /** Legacy connection scope. Nullable post-0064. Dual-written by the
-   *  save path during the transitional slice; final removal in #2346. */
-  connection_id: string | null;
   /** Group scope (#2341). One row per (org, table, column, group). */
   connection_group_id: string | null;
   category: string;
@@ -136,7 +133,6 @@ function rowToClassification(row: PIIClassificationRow): PIIColumnClassification
     orgId: row.org_id,
     tableName: row.table_name,
     columnName: row.column_name,
-    connectionId: row.connection_id,
     connectionGroupId: row.connection_group_id,
     category: row.category as PIICategory,
     confidence: row.confidence as PIIConfidence,
@@ -150,20 +146,11 @@ function rowToClassification(row: PIIClassificationRow): PIIColumnClassification
 
 /**
  * Resolve the `connection_group_id` for a given connection via 0062's
- * 1:1 backfill. Returns `null` for unknown connections and for the
- * legacy NULL-scope (caller passed `undefined` / `null`).
- *
- * Mirrors `resolveGroupIdForConnection` in `semantic/entities.ts` so
- * write paths can dual-set `connection_id` + `connection_group_id`
- * atomically. The lookup tolerates connections living at
- * `org_id = '__global__'` (demo / built-in connections moved by 0060)
- * so demo writes resolve to the demo group.
+ * 1:1 backfill. Used by `savePIIClassification` to map the auto-
+ * detection caller's source connection to its group. Tolerates
+ * connections living at `org_id = '__global__'` (demo / built-in
+ * connections moved by 0060) so demo writes resolve to the demo group.
  */
-export const resolveConnectionGroupForFilter = (
-  orgId: string,
-  connectionId: string | null | undefined,
-): Effect.Effect<string | null> => resolveGroupIdForConnection(orgId, connectionId);
-
 const resolveGroupIdForConnection = (
   orgId: string,
   connectionId: string | null | undefined,
@@ -266,19 +253,19 @@ export const savePIIClassification = (
     validateCategory(category);
     validateStrategy(maskingStrategy);
 
-    // Dual-write: legacy `connection_id` stays populated for transitional
-    // SDK compatibility (#2336 §"Migration sequencing"). The natural key
-    // is `connection_group_id` — ON CONFLICT targets the group-keyed
-    // partial index from 0064.
+    // The auto-detection caller passes the source `connectionId` so we
+    // can resolve its group via 0062's 1:1 mapping; the row itself is
+    // keyed on `connection_group_id` (the legacy column is no-op writes
+    // until #2347 drops it).
     const groupId = yield* resolveGroupIdForConnection(orgId, connectionId);
 
     const rows = yield* Effect.promise(() => internalQuery<PIIClassificationRow>(
-      `INSERT INTO ${TABLE_NAME} (org_id, table_name, column_name, connection_id, connection_group_id, category, confidence, masking_strategy)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO ${TABLE_NAME} (org_id, table_name, column_name, connection_group_id, category, confidence, masking_strategy)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (org_id, table_name, column_name, ${coalescedScopeColumn({ column: "connection_group_id" })})
-       DO UPDATE SET category = $6, confidence = $7, masking_strategy = $8, updated_at = now(), dismissed = false
+       DO UPDATE SET category = $5, confidence = $6, masking_strategy = $7, updated_at = now(), dismissed = false
        RETURNING *`,
-      [orgId, tableName, columnName, connectionId ?? null, groupId, category, confidence, maskingStrategy],
+      [orgId, tableName, columnName, groupId, category, confidence, maskingStrategy],
     ));
     return rowToClassification(rows[0]);
   });

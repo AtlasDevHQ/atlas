@@ -84,7 +84,7 @@ export async function handleExport(args: string[]): Promise<void> {
 
     // 2. Semantic entities (DB-backed)
     const entRows = await pool.query(
-      `SELECT name, entity_type, yaml_content, connection_id
+      `SELECT name, entity_type, yaml_content, connection_group_id
        FROM semantic_entities
        WHERE ${orgClause}
        ORDER BY entity_type, name`,
@@ -95,7 +95,7 @@ export async function handleExport(args: string[]): Promise<void> {
         name: r.name as string,
         entityType: r.entity_type as string,
         yamlContent: r.yaml_content as string,
-        connectionId: (r.connection_id as string) ?? null,
+        connectionGroupId: (r.connection_group_id as string) ?? null,
       }),
     );
     console.log(`  Entities:      ${semanticEntities.length}`);

@@ -1,0 +1,188 @@
+---
+title: Migrating to 0.1
+description: Drop the legacy `connectionId` field — the 1.4.4 multi-environment slice (#2336) replaces it with `connectionGroupId` on every wire shape it touched.
+---
+
+`@useatlas/types@0.1.0` is the first major bump on the `0.x` line. It
+removes the deprecated `connectionId` field that #2340–#2345 dual-wrote
+alongside the new `connectionGroupId` while the multi-environment
+semantic layer rolled out. `@useatlas/sdk` and `@useatlas/react` follow
+the major in a coordinated second wave.
+
+## Why this exists
+
+Atlas 1.4.4 made every piece of content (semantic entities, PII rules,
+dashboards, scheduled tasks, approvals) scope to a **connection group**
+instead of a single connection. The migration shipped additively:
+existing rows kept `connection_id`, new rows started populating
+`connection_group_id`, and every response shape exposed both. That
+overlap is what `@useatlas/types@0.1.0` clears.
+
+The legacy database columns survive one more slice. They're dropped in
+#2347 once self-hosted consumers have rolled forward. The wire format
+moves first so SDK consumers don't conditionally branch on a column
+that's already been removed underneath them.
+
+## Field-by-field changes
+
+The shapes below now expose `connectionGroupId` only — read it directly,
+or fall back to `null` when no group is set (the SDK no longer ships a
+legacy fallback).
+
+### `ScheduledTask`
+
+```ts
+// 0.0.x
+const task: ScheduledTask = {
+  // …
+  connectionGroupId: "g_prod",
+  connectionId: "warehouse-prod-1", // ← removed
+};
+
+// 0.1.0
+const task: ScheduledTask = {
+  // …
+  connectionGroupId: "g_prod",
+};
+```
+
+`POST /api/v1/scheduled-tasks` and `PUT /api/v1/scheduled-tasks/:id` no
+longer accept `connectionId` in the body. Pass `connectionGroupId`
+instead — the scheduler resolves it to a physical connection (the
+group's `primary_connection_id`, or first member by
+`(created_at, id)`) at run time.
+
+### `DashboardCard`
+
+```ts
+// 0.0.x
+const card: DashboardCard = {
+  // …
+  connectionGroupId: "g_prod",
+  connectionId: "warehouse-prod-1", // ← removed
+};
+
+// 0.1.0
+const card: DashboardCard = {
+  // …
+  connectionGroupId: "g_prod",
+};
+```
+
+`POST /api/v1/dashboards/:id/cards` drops the legacy `connectionId`
+field. The dashboard refresh resolver no longer falls back to it; cards
+with `connectionGroupId: null` execute against the workspace default.
+
+`/api/v1/dashboards/preview-card` keeps its `connectionId` body field —
+that's an *execution-target override* for the preview, not a stored
+card property. Same semantics as `Conversation.connectionId`, which is
+also retained.
+
+### `ApprovalRequest` (approval queue)
+
+```ts
+// 0.0.x
+const req: ApprovalRequest = {
+  // …
+  connectionGroupId: "g_prod",
+  connectionId: "warehouse-prod-1", // ← removed
+};
+
+// 0.1.0
+const req: ApprovalRequest = {
+  // …
+  connectionGroupId: "g_prod",
+};
+```
+
+#2344 already routed lookups through `connectionGroupId`; the legacy
+field only survived for admin-UI display copy. The admin queue now
+shows the group as the canonical scope.
+
+### `ExportedSemanticEntity` (migration bundles)
+
+```ts
+// 0.0.x
+const entity: ExportedSemanticEntity = {
+  name: "users",
+  entityType: "entity",
+  yamlContent: "…",
+  connectionGroupId: "g_prod",
+  connectionId: "warehouse-prod-1", // ← removed
+};
+
+// 0.1.0
+const entity: ExportedSemanticEntity = {
+  name: "users",
+  entityType: "entity",
+  yamlContent: "…",
+  connectionGroupId: "g_prod",
+};
+```
+
+Export bundles produced by `atlas export` (CLI) and
+`/api/v1/admin/migrate/export` (API) now exclusively carry
+`connectionGroupId`. Pre-1.4.4 bundles that only have `connectionId`
+need to be re-exported from a 1.4.4+ instance before they can be
+imported into 0.1.0 consumers — the `0066` backfill populates the new
+column from the legacy one during a one-time migration.
+
+### `PIIColumnClassification`
+
+```ts
+// 0.0.x
+const cls: PIIColumnClassification = {
+  // …
+  connectionGroupId: "g_prod",
+  connectionId: "warehouse-prod-1", // ← removed
+};
+
+// 0.1.0
+const cls: PIIColumnClassification = {
+  // …
+  connectionGroupId: "g_prod",
+};
+```
+
+The PII detection write path still accepts a source `connectionId`
+parameter — it's used internally to resolve the connection's group via
+0062's 1:1 mapping, then stored on `connection_group_id`. That's an
+input to `savePIIClassification()`, not a field on the response shape.
+
+## Fields that did NOT change
+
+These keep `connectionId` because the field is the **execution target**
+(which physical connection a query runs against), not a deprecated
+scope identifier:
+
+- `Conversation.connectionId` — the per-conversation execution target,
+  optionally overridden per-turn by the chat header.
+- `ExportedConversation.connectionId` — carried into export bundles so
+  imports preserve the execution target.
+- `PoolMetrics.connectionId` / `ConnectionGroupMember.connectionId` —
+  identity of a single connection.
+- `ProposedCard.connectionId` — agent-side proposal for which
+  connection a card should run against. The matching saved
+  `DashboardCard` now stores a group; agents that want to target a
+  specific connection should emit `connectionGroupId` instead.
+- `validateSQL(sql, connectionId)` — execution-target argument.
+
+## Coordinating the SDK + React bump
+
+`@useatlas/types@0.1.0` ships ahead of `@useatlas/sdk` and
+`@useatlas/react`. Once the types tag publishes to npm, the
+follow-up release coordinates the SDK + react majors so consumers can
+upgrade all three in one step.
+
+If your project pins `@useatlas/sdk@^0.0.x` you keep getting the old
+types until you bump the SDK explicitly. The wire format is
+forward-compatible: a 0.1.0 server's responses still satisfy an
+0.0.x SDK's parsing (it just ignores the missing field).
+
+## Rollback
+
+If you need to revert: pin `@useatlas/types@0.0.29` in your
+`package.json` and reinstall. The 0.1.0 wire shapes don't carry the
+legacy field, so an 0.0.29 SDK reading a 0.1.0 server will see
+`connectionId === undefined` on the affected shapes — code paths that
+read the field will need a `?? null` fallback while pinned.

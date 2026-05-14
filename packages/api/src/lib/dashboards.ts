@@ -131,7 +131,6 @@ export function rowToCard(r: Record<string, unknown>): DashboardCard {
     cachedColumns,
     cachedRows,
     cachedAt: r.cached_at ? String(r.cached_at) : null,
-    connectionId: (r.connection_id as string) ?? null,
     connectionGroupId: (r.connection_group_id as string) ?? null,
     layout,
     createdAt: String(r.created_at),
@@ -211,9 +210,14 @@ export async function loadGroupSnapshot(
 }
 
 /**
- * Resolve the physical connection id a card executes against, honouring
- * the precedence: `connection_group_id` (preferred) → legacy
- * `connection_id` → workspace default (`null`).
+ * Resolve the physical connection id a card executes against.
+ *
+ * Cards with `connectionGroupId` resolve to the group's primary member
+ * (or first-by-(created_at, id) when no primary is set). Cards without
+ * a group fall through to the workspace default (`null`). The 0066
+ * backfill populated `connection_group_id` from the legacy `connection_id`
+ * via 0062's 1:1 mapping, so post-1.4.4 cards always carry a group when
+ * they had a legacy connection.
  *
  * Throws `NoGroupMembersError` when the card resolves to a group with
  * zero members — the route layer must catch and return a 500 with
@@ -221,21 +225,17 @@ export async function loadGroupSnapshot(
  * connection (CLAUDE.md "Prefer errors over silent fallbacks").
  */
 export async function resolveCardConnectionId(
-  card: { connectionGroupId: string | null; connectionId: string | null },
+  card: { connectionGroupId: string | null },
   orgId: string | null,
 ): Promise<string | null> {
   if (card.connectionGroupId) {
     const snap = await loadGroupSnapshot(card.connectionGroupId, orgId);
     if (!snap) {
-      // Group row vanished while the card still points at it — treat as
-      // empty membership so callers surface a typed 500. Silently
-      // demoting to the workspace default would render against the
-      // wrong connection.
       throw new NoGroupMembersError(card.connectionGroupId, orgId);
     }
     return selectGroupMember(snap);
   }
-  return card.connectionId;
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -422,8 +422,6 @@ export async function addCard(opts: {
   chartConfig?: DashboardChartConfig | null;
   cachedColumns?: string[] | null;
   cachedRows?: Record<string, unknown>[] | null;
-  /** @deprecated 1.4.4 — pass `connectionGroupId` instead. */
-  connectionId?: string | null;
   /** Group-scoped execution target (1.4.4). */
   connectionGroupId?: string | null;
   layout?: DashboardCardLayout | null;
@@ -438,8 +436,8 @@ export async function addCard(opts: {
     const nextPos = (posRows[0]?.next_pos as number) ?? 0;
 
     const rows = await internalQuery<Record<string, unknown>>(
-      `INSERT INTO dashboard_cards (dashboard_id, position, title, sql, chart_config, cached_columns, cached_rows, cached_at, connection_id, connection_group_id, layout)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      `INSERT INTO dashboard_cards (dashboard_id, position, title, sql, chart_config, cached_columns, cached_rows, cached_at, connection_group_id, layout)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [
         opts.dashboardId,
@@ -450,7 +448,6 @@ export async function addCard(opts: {
         opts.cachedColumns ? JSON.stringify(opts.cachedColumns) : null,
         opts.cachedRows ? JSON.stringify(opts.cachedRows) : null,
         opts.cachedRows ? new Date().toISOString() : null,
-        opts.connectionId ?? null,
         opts.connectionGroupId ?? null,
         opts.layout ? JSON.stringify(opts.layout) : null,
       ],
@@ -866,7 +863,7 @@ export async function refreshDashboardCards(dashboardId: string): Promise<{
       // skip + warn here (scheduler tick is best-effort across cards);
       // the interactive routes surface it as a 500 + requestId.
       const resolvedConnectionId = await resolveCardConnectionId(
-        { connectionGroupId: card.connectionGroupId, connectionId: card.connectionId },
+        { connectionGroupId: card.connectionGroupId },
         dashboardOrgId,
       );
       const validation = await validateSQL(card.sql, resolvedConnectionId ?? undefined);

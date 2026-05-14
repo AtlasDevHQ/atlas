@@ -96,8 +96,8 @@ const ApprovalRequestBaseShape = {
   requesterEmail: z.string().nullable(),
   querySql: z.string(),
   explanation: z.string().nullable(),
-  // #2344 — connectionId now nullable; lookup keys on connectionGroupId.
-  connectionId: z.string().nullable(),
+  // #2344 — lookup keys on connectionGroupId. Legacy `connectionId`
+  // dropped from the wire shape in #2346.
   connectionGroupId: z.string().nullable(),
   tablesAccessed: z.array(z.string()),
   columnsAccessed: z.array(z.string()),

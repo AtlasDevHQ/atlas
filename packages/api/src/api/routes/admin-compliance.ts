@@ -24,7 +24,6 @@ import {
   updatePIIClassification,
   deletePIIClassification,
   invalidateClassificationCache,
-  resolveConnectionGroupForFilter,
   ComplianceError,
 } from "@atlas/ee/compliance/masking";
 import {
@@ -81,7 +80,6 @@ const listRoute = createRoute({
   request: {
     query: z.object({
       connectionGroupId: z.string().optional().openapi({ description: "Filter by connection group (environment) ID" }),
-      connectionId: z.string().optional().openapi({ description: "Legacy: filter by connection ID — resolved to the connection's group via 0062's 1:1 mapping. Prefer `connectionGroupId` for new callers." }),
     }),
   },
   responses: {
@@ -137,17 +135,9 @@ adminCompliance.use(requireOrgContext());
 adminCompliance.openapi(listRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
-    const { connectionGroupId, connectionId } = c.req.valid("query");
+    const { connectionGroupId } = c.req.valid("query");
 
-    // Prefer explicit group filter. Legacy `connectionId` is resolved to
-    // the connection's group via 0062's 1:1 mapping (the row is keyed on
-    // the group post-0064, so filtering by connection_id would never
-    // match the new shape). Omitting both returns all classifications
-    // for the org.
-    const groupFilter = connectionGroupId
-      ?? (connectionId ? yield* resolveConnectionGroupForFilter(orgId!, connectionId) : undefined);
-
-    const classifications = yield* listPIIClassifications(orgId!, groupFilter ?? undefined);
+    const classifications = yield* listPIIClassifications(orgId!, connectionGroupId ?? undefined);
     return c.json({ classifications }, 200);
   }), { label: "list PII classifications", domainErrors: [complianceDomainError, reportDomainError] });
 });

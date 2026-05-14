@@ -4,6 +4,7 @@
   "icon": "Code",
   "pages": [
     "starter-prompts",
-    "mcp"
+    "mcp",
+    "migration-0.1"
   ]
 }

@@ -77,7 +77,6 @@ function rowToScheduledTask(r: Record<string, unknown>): ScheduledTask {
     deliveryChannel: (r.delivery_channel as DeliveryChannel) ?? "webhook",
     recipients,
     connectionGroupId: (r.connection_group_id as string) ?? null,
-    connectionId: (r.connection_id as string) ?? null,
     approvalMode: (r.approval_mode as ActionApprovalMode) ?? "auto",
     enabled: r.enabled === true,
     lastRunAt: r.last_run_at ? String(r.last_run_at) : null,
@@ -161,23 +160,6 @@ function orgScopeClause(
   return { clause: `${col} IS NULL`, nextIdx: paramIdx };
 }
 
-async function resolveGroupIdForConnection(
-  orgId: string | null | undefined,
-  connectionId: string | null | undefined,
-): Promise<string | null> {
-  if (!connectionId) return null;
-  const rows = await internalQuery<{ group_id: string | null }>(
-    `SELECT group_id
-       FROM connections
-      WHERE id = $1
-        AND (org_id = $2 OR org_id = '__global__')
-      ORDER BY CASE WHEN org_id = $2 THEN 0 ELSE 1 END
-      LIMIT 1`,
-    [connectionId, orgId ?? "__global__"],
-  );
-  return rows[0]?.group_id ?? null;
-}
-
 // ---------------------------------------------------------------------------
 // CRUD — Tasks
 // ---------------------------------------------------------------------------
@@ -191,7 +173,6 @@ export async function createScheduledTask(opts: {
   deliveryChannel?: DeliveryChannel;
   recipients?: Recipient[];
   connectionGroupId?: string | null;
-  connectionId?: string | null;
   approvalMode?: ActionApprovalMode;
 }): Promise<CrudDataResult<ScheduledTask>> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
@@ -205,12 +186,9 @@ export async function createScheduledTask(opts: {
   const nextRun = computeNextRun(opts.cronExpression);
 
   try {
-    const connectionGroupId = opts.connectionGroupId !== undefined
-      ? opts.connectionGroupId
-      : await resolveGroupIdForConnection(opts.orgId, opts.connectionId);
     const rows = await internalQuery<Record<string, unknown>>(
-      `INSERT INTO scheduled_tasks (owner_id, org_id, name, question, cron_expression, delivery_channel, recipients, connection_group_id, connection_id, approval_mode, next_run_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      `INSERT INTO scheduled_tasks (owner_id, org_id, name, question, cron_expression, delivery_channel, recipients, connection_group_id, approval_mode, next_run_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [
         opts.ownerId,
@@ -220,8 +198,7 @@ export async function createScheduledTask(opts: {
         opts.cronExpression,
         opts.deliveryChannel ?? "webhook",
         JSON.stringify(opts.recipients ?? []),
-        connectionGroupId ?? null,
-        opts.connectionId ?? null,
+        opts.connectionGroupId ?? null,
         opts.approvalMode ?? "auto",
         nextRun?.toISOString() ?? null,
       ],
@@ -339,7 +316,6 @@ export async function updateScheduledTask(
     deliveryChannel?: DeliveryChannel;
     recipients?: Recipient[];
     connectionGroupId?: string | null;
-    connectionId?: string | null;
     approvalMode?: ActionApprovalMode;
     enabled?: boolean;
   },
@@ -381,13 +357,6 @@ export async function updateScheduledTask(
   if (updates.connectionGroupId !== undefined) {
     setClauses.push(`connection_group_id = $${paramIdx++}`);
     params.push(updates.connectionGroupId);
-  } else if (updates.connectionId !== undefined) {
-    setClauses.push(`connection_group_id = $${paramIdx++}`);
-    params.push(await resolveGroupIdForConnection(scope.orgId, updates.connectionId));
-  }
-  if (updates.connectionId !== undefined) {
-    setClauses.push(`connection_id = $${paramIdx++}`);
-    params.push(updates.connectionId);
   }
   if (updates.approvalMode !== undefined) {
     setClauses.push(`approval_mode = $${paramIdx++}`);

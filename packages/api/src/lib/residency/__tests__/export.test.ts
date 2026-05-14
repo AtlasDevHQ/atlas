@@ -135,8 +135,8 @@ describe("exportWorkspaceBundle", () => {
   it("exports semantic entities", async () => {
     mockPoolQueryResults["FROM semantic_entities"] = {
       rows: [
-        { name: "users", entity_type: "entity", yaml_content: "table: users\n", connection_id: null },
-        { name: "orders", entity_type: "entity", yaml_content: "table: orders\n", connection_id: "conn-1" },
+        { name: "users", entity_type: "entity", yaml_content: "table: users\n", connection_group_id: null },
+        { name: "orders", entity_type: "entity", yaml_content: "table: orders\n", connection_group_id: "g-prod" },
       ],
     };
 
@@ -144,7 +144,7 @@ describe("exportWorkspaceBundle", () => {
 
     expect(bundle.semanticEntities).toHaveLength(2);
     expect(bundle.semanticEntities[0].name).toBe("users");
-    expect(bundle.semanticEntities[1].connectionId).toBe("conn-1");
+    expect(bundle.semanticEntities[1].connectionGroupId).toBe("g-prod");
     expect(bundle.manifest.counts.semanticEntities).toBe(2);
   });
 

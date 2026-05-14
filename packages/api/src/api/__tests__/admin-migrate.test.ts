@@ -44,7 +44,7 @@ function validBundle(overrides?: Partial<ExportBundle>): ExportBundle {
       },
     ],
     semanticEntities: [
-      { name: "users", entityType: "entity", yamlContent: "table: users\n", connectionId: null },
+      { name: "users", entityType: "entity", yamlContent: "table: users\n", connectionGroupId: null },
     ],
     learnedPatterns: [
       { patternSql: "SELECT COUNT(*) FROM users", description: "User count", sourceEntity: "users", confidence: 0.9, status: "approved" },

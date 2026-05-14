@@ -39,7 +39,7 @@ type EntityRow = {
   table: string;
   status: "published" | "draft" | "draft_delete" | "archived";
   org_id: string;
-  connection_id?: string | null;
+  connection_group_id?: string | null;
 };
 
 let entityRows: EntityRow[] = [];
@@ -56,7 +56,7 @@ const mockListEntities = mock(
         entity_type: "entity" as const,
         name: r.name,
         yaml_content: `table: ${r.table}\n`,
-        connection_id: r.connection_id ?? null,
+        connection_group_id: r.connection_group_id ?? null,
         status: r.status,
         created_at: "2026-01-01",
         updated_at: "2026-01-01",
@@ -76,7 +76,7 @@ const mockListEntitiesWithOverlay = mock(
         entity_type: "entity" as const,
         name: r.name,
         yaml_content: `table: ${r.table}\n`,
-        connection_id: r.connection_id ?? null,
+        connection_group_id: r.connection_group_id ?? null,
         status: r.status,
         created_at: "2026-01-01",
         updated_at: "2026-01-01",
@@ -414,15 +414,15 @@ describe("runDiff — org+mode scoping (#1431)", () => {
 
   it("scopes YAML loader to the requested connection — `__demo__` rows hidden when picker is `default`", async () => {
     // SaaS workspace owns both `default` and `__demo__`. Picker on `default`
-    // must only see entities where connection_id IS NULL (or = "default") —
+    // must only see entities where connection_group_id IS NULL (or = "default") —
     // no `__demo__` rows. Confirms `getYAMLSnapshotsFromDB`'s connection
     // filter mirrors the executeSQL whitelist scoping.
     setDBTables({ orders: { id: "integer" } });
     entityRows = [
       // `__demo__` row should NOT appear when picker is `default`
-      { name: "demo_table", table: "demo_table", status: "published", org_id: "org-1", connection_id: "__demo__" },
+      { name: "demo_table", table: "demo_table", status: "published", org_id: "org-1", connection_group_id: "__demo__" },
       // `default` row should appear
-      { name: "orders", table: "orders", status: "published", org_id: "org-1", connection_id: null },
+      { name: "orders", table: "orders", status: "published", org_id: "org-1", connection_group_id: null },
     ];
 
     const result = await runDiff("default", { orgId: "org-1", atlasMode: "published" });
@@ -437,7 +437,7 @@ describe("runDiff — org+mode scoping (#1431)", () => {
   });
 
   it("YAML loader reads from DB rather than disk for SaaS demo orgs", async () => {
-    // SaaS onboarding writes entity rows with connection_id="__demo__" into
+    // SaaS onboarding writes entity rows with connection_group_id="__demo__" into
     // semantic_entities (never to disk under __demo__/entities/). Before the
     // DB-backed loader, runDiff(connectionId="__demo__") returned empty
     // yamlSnapshots and the page rendered every DB table as "new". With the
@@ -445,7 +445,7 @@ describe("runDiff — org+mode scoping (#1431)", () => {
     // comparison.
     setDBTables({ users: { id: "integer", email: "text" } });
     entityRows = [
-      { name: "users", table: "users", status: "published", org_id: "saas-org", connection_id: "__demo__" },
+      { name: "users", table: "users", status: "published", org_id: "saas-org", connection_group_id: "__demo__" },
     ];
 
     const result = await runDiff("__demo__", { orgId: "saas-org", atlasMode: "published" });
@@ -464,8 +464,8 @@ describe("runDiff — org+mode scoping (#1431)", () => {
     // omitted-mode path filter them out.
     setDBTables({ active_table: { id: "integer" }, retired_table: { id: "integer" } });
     entityRows = [
-      { name: "active_table", table: "active_table", status: "published", org_id: "org-1", connection_id: null },
-      { name: "retired_table", table: "retired_table", status: "archived", org_id: "org-1", connection_id: null },
+      { name: "active_table", table: "active_table", status: "published", org_id: "org-1", connection_group_id: null },
+      { name: "retired_table", table: "retired_table", status: "archived", org_id: "org-1", connection_group_id: null },
     ];
 
     const published = await runDiff("default", { orgId: "org-1", atlasMode: "published" });
@@ -507,7 +507,7 @@ describe("runDiff — org+mode scoping (#1431)", () => {
 
       // Add rows out-of-band, simulating a recovery SQL insert.
       entityRows = [
-        { name: "users", table: "users", status: "published", org_id: "ttl-org", connection_id: "__demo__" },
+        { name: "users", table: "users", status: "published", org_id: "ttl-org", connection_group_id: "__demo__" },
       ];
 
       // Within TTL window (advance < 60s): cache hit, still empty.

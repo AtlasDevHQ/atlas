@@ -337,6 +337,8 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   upsertDraftEntity: mockUpsertDraftEntityAdmin,
   upsertTombstone: mockUpsertTombstoneAdmin,
   deleteDraftEntity: mockDeleteDraftEntityAdmin,
+  upsertTombstoneForGroup: mockUpsertTombstoneAdmin,
+  deleteDraftEntityForGroup: mockDeleteDraftEntityAdmin,
   countEntities: mock(() => Promise.resolve(0)),
   bulkUpsertEntities: mock(() => Promise.resolve(0)),
   createVersion: mockCreateVersion,

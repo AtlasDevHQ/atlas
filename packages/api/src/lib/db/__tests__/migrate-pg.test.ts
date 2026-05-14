@@ -1131,8 +1131,8 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     await pool.query(
       `INSERT INTO approval_queue
          (org_id, rule_id, rule_name, requester_id, query_sql, connection_group_id)
-       VALUES ($1, $2, 'Global backfill rule', 'user-global-backfill', 'SELECT * FROM orders', $3, NULL)`,
-      [orgId, ruleRow.rows[0].id, connId],
+       VALUES ($1, $2, 'Global backfill rule', 'user-global-backfill', 'SELECT * FROM orders', $3)`,
+      [orgId, ruleRow.rows[0].id, groupId],
     );
 
     await pool.query(

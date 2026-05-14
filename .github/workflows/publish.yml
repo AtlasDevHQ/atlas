@@ -86,8 +86,8 @@ jobs:
       - name: Build and publish @useatlas/react
         if: startsWith(github.ref, 'refs/tags/react-v')
         run: |
-          bun install @useatlas/sdk@latest
-          cd packages/react && bun run build && npm publish --access public --provenance
+          cd packages/sdk && bun run build
+          cd ../react && bun run build && npm publish --access public --provenance
 
       # Plugins — ship raw TypeScript, no build step needed
       # Tests are already run by CI on every push to main; tags are always cut from main

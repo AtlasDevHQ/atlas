@@ -297,7 +297,7 @@
       },
       "peerDependencies": {
         "@ai-sdk/react": ">=3.0.0",
-        "@useatlas/sdk": ">=0.0.13",
+        "@useatlas/sdk": ">=0.1.0",
         "ai": ">=6.0.0",
         "exceljs": ">=4.0.0",
         "lucide-react": ">=0.400.0",

@@ -878,13 +878,12 @@ describe("hasApprovedRequest — group-scoped (#2344)", () => {
     expect(approvalLookup!.params).not.toContain("conn-eu");
   });
 
-  it("falls back to connection scope for ungrouped connections", async () => {
-    // NULL group_id is not a shared environment. The approval lookup must
-    // require the originating connection_id so an approval for one
-    // ungrouped connection does not authorize another ungrouped connection.
+  it("fails closed when a connection unexpectedly has no group", async () => {
+    // Migration 0069 makes connections.group_id NOT NULL. If an older or
+    // corrupted row still resolves to NULL, approval lookup must fail closed
+    // instead of falling through to a legacy per-connection bucket.
     ee.queueMockRows(
       [{ group_id: null }],
-      [],
     );
     const result = await run(hasApprovedRequest(
       "org-1",
@@ -895,11 +894,9 @@ describe("hasApprovedRequest — group-scoped (#2344)", () => {
     expect(result).toBe(false);
 
     const approvalLookup = ee.capturedQueries.find((q) =>
-      q.sql.includes("FROM approval_queue") && q.sql.includes("connection_group_id IS NULL"),
+      q.sql.includes("FROM approval_queue") && q.sql.includes("status = 'approved'"),
     );
-    expect(approvalLookup).toBeDefined();
-    expect(approvalLookup!.sql).toContain("connection_id = $4");
-    expect(approvalLookup!.params).toContain("conn-ungrouped-b");
+    expect(approvalLookup).toBeUndefined();
   });
 
   it("rejects when the connection has been archived (group_id no longer resolves)", async () => {

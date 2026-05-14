@@ -13,7 +13,7 @@ const dbRow = (over: Partial<SemanticEntityRow> & Pick<SemanticEntityRow, "name"
   entity_type: over.entity_type ?? "entity",
   name: over.name,
   yaml_content: over.yaml_content,
-  connection_id: over.connection_id ?? null,
+  connection_group_id: over.connection_group_id ?? null,
   status: over.status ?? "published",
   created_at: over.created_at ?? "2026-01-01",
   updated_at: over.updated_at ?? "2026-01-02",
@@ -34,7 +34,7 @@ describe("parseRowToAdminSummary", () => {
   it("projects a valid DB row to the admin summary shape with parsed YAML counts", () => {
     const row = dbRow({
       name: "users",
-      connection_id: "warehouse",
+      connection_group_id: "g_warehouse",
       status: "draft",
       updated_at: "2026-03-01T00:00:00Z",
       yaml_content: `
@@ -65,10 +65,10 @@ measures:
       measureCount: 1,
       connection: null,
       type: null,
-      source: "warehouse",
+      source: "g_warehouse",
       status: "draft",
       sourceKind: "db",
-      connectionId: "warehouse",
+      connectionId: "g_warehouse",
       updatedAt: "2026-03-01T00:00:00Z",
     } satisfies AdminEntitySummary);
   });
@@ -104,18 +104,18 @@ measures:
     }
   });
 
-  it("labels source as 'default' when connection_id is null", () => {
-    const row = dbRow({ name: "kpi_terms", connection_id: null, yaml_content: "table: kpi_terms\n" });
+  it("labels source as 'default' when connection_group_id is null", () => {
+    const row = dbRow({ name: "kpi_terms", connection_group_id: null, yaml_content: "table: kpi_terms\n" });
     expect(parseRowToAdminSummary(row)?.source).toBe("default");
   });
 
-  it("carries the YAML `connection:` hint independent of `connection_id`", () => {
-    // The two columns are intentionally distinct: `connection_id` is the FK
-    // the SQL whitelist routes by; `connection:` is the YAML-authored hint.
+  it("carries the YAML `connection:` hint independent of `connection_group_id`", () => {
+    // The two fields are intentionally distinct: `connection_group_id` is the
+    // DB row scope; `connection:` is the YAML-authored hint.
     // Conflating them would mask cross-source joins.
     const row = dbRow({
       name: "orders",
-      connection_id: null,
+      connection_group_id: null,
       yaml_content: "table: orders\nconnection: warehouse\n",
     });
     const summary = parseRowToAdminSummary(row);

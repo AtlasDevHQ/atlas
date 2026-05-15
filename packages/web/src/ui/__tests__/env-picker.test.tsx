@@ -3,18 +3,32 @@ import React, { type ReactNode } from "react";
 
 // Mock the dropdown-menu primitives so portal'd content renders inline.
 // We're testing predicate + label logic, not Radix's open/close machinery.
+// CLAUDE.md "Mock all exports" — stub every named export of the module
+// so an unrelated sibling test importing a different symbol doesn't
+// trip a SyntaxError under the isolated test runner.
 mock.module("@/components/ui/dropdown-menu", () => {
   const passthrough =
     (tag: string) =>
     ({ children, asChild: _asChild, ...rest }: { children?: ReactNode; asChild?: boolean } & Record<string, unknown>) =>
       React.createElement(tag, rest, children as React.ReactNode);
+  const div = passthrough("div");
+  const hr = () => React.createElement("hr");
   return {
-    DropdownMenu: passthrough("div"),
-    DropdownMenuTrigger: passthrough("div"),
-    DropdownMenuContent: passthrough("div"),
-    DropdownMenuItem: passthrough("div"),
-    DropdownMenuLabel: passthrough("div"),
-    DropdownMenuSeparator: () => React.createElement("hr"),
+    DropdownMenu: div,
+    DropdownMenuPortal: div,
+    DropdownMenuTrigger: div,
+    DropdownMenuContent: div,
+    DropdownMenuGroup: div,
+    DropdownMenuItem: div,
+    DropdownMenuCheckboxItem: div,
+    DropdownMenuRadioGroup: div,
+    DropdownMenuRadioItem: div,
+    DropdownMenuLabel: div,
+    DropdownMenuSeparator: hr,
+    DropdownMenuShortcut: passthrough("span"),
+    DropdownMenuSub: div,
+    DropdownMenuSubTrigger: div,
+    DropdownMenuSubContent: div,
   };
 });
 
@@ -41,6 +55,27 @@ describe("ChatEnvPicker visibility predicate (#2408)", () => {
         groups={groups}
         activeGroupId={null}
         activeConnectionId={null}
+        onSelect={noop}
+      />,
+    );
+    expect(container.firstChild).toBeNull();
+  });
+
+  test("still hides 1×1 when an activeGroupId is present — predicate is shape-only", () => {
+    // Locks the predicate to groups/members shape so a future refactor
+    // can't accidentally re-couple visibility to active-id resolution.
+    const groups: ChatEnvGroup[] = [
+      {
+        id: "g_a",
+        name: "g_a",
+        members: [{ connectionId: "a", dbType: "postgres", description: null }],
+      },
+    ];
+    const { container } = render(
+      <ChatEnvPicker
+        groups={groups}
+        activeGroupId="g_a"
+        activeConnectionId="a"
         onSelect={noop}
       />,
     );
@@ -204,6 +239,39 @@ describe("ChatEnvPicker chip label collapse (#2408)", () => {
     );
     expect(label).not.toBeNull();
     expect(label?.textContent).toBe("warehouse");
+  });
+
+  test("collapses with a custom (non-g_-prefixed) group name equal to the member id", () => {
+    // Admin-renamed group with no `g_` prefix — stripGroupPrefix is a
+    // no-op, and the collapse must still kick in to avoid
+    // "warehouse / warehouse".
+    const groups: ChatEnvGroup[] = [
+      {
+        id: "g_warehouse",
+        name: "warehouse",
+        members: [
+          { connectionId: "warehouse", dbType: "postgres", description: null },
+        ],
+      },
+      {
+        id: "g_other",
+        name: "other",
+        members: [
+          { connectionId: "other", dbType: "postgres", description: null },
+        ],
+      },
+    ];
+    const { container } = render(
+      <ChatEnvPicker
+        groups={groups}
+        activeGroupId="g_warehouse"
+        activeConnectionId="warehouse"
+        onSelect={noop}
+      />,
+    );
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-label"]')?.textContent,
+    ).toBe("warehouse");
   });
 
   test("renders 'group / member' when the stripped group name differs from the member id", () => {

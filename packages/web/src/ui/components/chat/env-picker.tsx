@@ -100,7 +100,8 @@ export function ChatEnvPicker({
   // backfill shape: g_<connId> + one member named <connId>).
   const chipLabel = groupLabel === memberLabel ? memberLabel : `${groupLabel} / ${memberLabel}`;
 
-  // When every group is a singleton, the dropdown has no actual
+  // When every group has at most one member (the 0062 backfill shape,
+  // or a defensive-empty group), the dropdown has no actual
   // multi-member choice to offer. Surface a hint so admins discover
   // that merging connections into a shared environment is possible.
   const allSingletons = groups.every((g) => g.members.length <= 1);

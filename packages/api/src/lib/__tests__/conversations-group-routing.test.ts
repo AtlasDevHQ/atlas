@@ -263,9 +263,10 @@ describe("missing group falls back to legacy behavior", () => {
     expect(queryCalls.length).toBe(1);
     const { sql, params } = queryCalls[0];
     expect(sql).toContain("IS NOT DISTINCT FROM");
-    // Reject the broken shape explicitly — `org_id = $2 OR` is the exact
-    // predicate the bug fix removed. A regression that brings it back
-    // (without the null-safe operator) trips this assertion.
+    // Plain `org_id = $2 OR` is forbidden: it's null-unsafe by Postgres
+    // semantics (NULL=NULL → UNKNOWN), and the OR-fallback hides the
+    // miss. The null-safe `IS NOT DISTINCT FROM` form is the invariant
+    // this helper has to maintain.
     expect(sql).not.toMatch(/org_id\s*=\s*\$2\s+OR/);
     // The fallback to the shared `__global__` row must still be in the
     // predicate — that's what lets demo/global connections resolve under

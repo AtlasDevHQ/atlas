@@ -2061,9 +2061,10 @@ describeIfPg("migrate-pg (real Postgres)", () => {
   //       helper-shaped query returns the right set when run end-to-end
   //       against the post-migration schema.
   it("resolveGroupForConnection predicate: VALUES-row matrix under null caller orgId (#2415)", async () => {
-    // Direct predicate-correctness test. The literal here mirrors the
-    // SQL in `resolveGroupForConnection` so a future refactor that
-    // diverges the two has to update both — drift caught in review.
+    // Direct predicate-correctness test. The unit-level SQL-string
+    // assertion in `conversations-group-routing.test.ts` is what locks
+    // the helper to this exact predicate shape; this test verifies the
+    // shape's *semantics* against a live Postgres planner.
     const { rows } = await pool.query<{ id: string }>(
       `SELECT id FROM (VALUES
          ('null-row', NULL::text),

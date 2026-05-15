@@ -327,7 +327,17 @@ const mockListVersions: Mock<(...args: unknown[]) => Promise<{ versions: unknown
 const mockGetVersion: Mock<(...args: unknown[]) => Promise<unknown>> = mock(() => Promise.resolve(null));
 const mockGenerateChangeSummary: Mock<(oldYaml: string | null, newYaml: string) => Promise<string | null>> = mock(() => Promise.resolve("Initial version"));
 
+// Pull the real tagged error class through so `instanceof` checks in
+// route handlers (e.g. version-snapshot catches that must re-throw
+// ambiguity 409s) compare against the same class the production code
+// throws. Without this the mocked import returns `undefined` and the
+// `instanceof` always evaluates false (or worse, throws TypeError).
+const { AmbiguousEntityError: RealAmbiguousEntityError } = await import(
+  "@atlas/api/lib/effect/errors"
+);
+
 mock.module("@atlas/api/lib/semantic/entities", () => ({
+  AmbiguousEntityError: RealAmbiguousEntityError,
   listEntityRows: mockListEntitiesAdmin,
   listEntitiesWithOverlay: mockListEntitiesWithOverlay,
   listEntities: mock(() => Promise.resolve([])),

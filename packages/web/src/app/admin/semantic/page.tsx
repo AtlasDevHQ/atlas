@@ -311,6 +311,22 @@ function normalizeMetrics(raw: unknown): MetricEntry[] {
 
 // ── Helpers ───────────────────────────────────────────────────────
 
+/**
+ * Encode a `connectionGroupId` for the admin entity detail / delete /
+ * save URLs (#2412). The trinary mapping mirrors the backend's
+ * `parseConnectionGroupIdQuery`:
+ *
+ * - `undefined` → no param (backend disambiguates / 409s).
+ * - `null` → `?connectionGroupId=` (empty string → null on the backend,
+ *   addresses legacy `__global__` rows explicitly).
+ * - `string` → `?connectionGroupId=<group>`.
+ */
+function encodeGroupParam(group: string | null | undefined): string {
+  if (group === undefined) return "";
+  if (group === null) return "?connectionGroupId=";
+  return `?connectionGroupId=${encodeURIComponent(group)}`;
+}
+
 /** Map a selection to its raw YAML file path on the semantic/ directory. */
 function selectionToRawPath(sel: SemanticSelection): string | null {
   if (!sel) return null;
@@ -388,8 +404,6 @@ export default function SemanticPage() {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [{ file: fileParam, view: viewMode, group: groupParam }, setParams] = useQueryStates(semanticSearchParams);
   const [, startTransition] = useTransition();
-  // Compose the entity selection from the `file` + `group` query params
-  // so multi-group orgs can deep-link to a specific environment (#2412).
   const selection = withGroupOnSelection(fileParamToSelection(fileParam), groupParam);
   const [rawYaml, setRawYaml] = useState<string | null>(null);
   const [rawYamlLoading, setRawYamlLoading] = useState(false);
@@ -552,8 +566,6 @@ export default function SemanticPage() {
       setParams({
         file: selectionToFileParam(sel),
         view: "pretty",
-        // Persist the group qualifier so refresh + back-button restore
-        // the same row in multi-group orgs (#2412).
         group: selectionToGroupParam(sel),
       });
     });
@@ -570,12 +582,7 @@ export default function SemanticPage() {
     setDetailError(null);
     setSelectedEntity(null);
 
-    // Pass the group qualifier through so multi-group orgs hit the right
-    // row instead of getting a 409. Single-group / unset cases omit the
-    // param and use the backend's unique-or-409 default.
-    const detailUrl = selection.connectionGroupId
-      ? `${apiUrl}/api/v1/admin/semantic/entities/${encodeURIComponent(selection.name)}?connectionGroupId=${encodeURIComponent(selection.connectionGroupId)}`
-      : `${apiUrl}/api/v1/admin/semantic/entities/${encodeURIComponent(selection.name)}`;
+    const detailUrl = `${apiUrl}/api/v1/admin/semantic/entities/${encodeURIComponent(selection.name)}${encodeGroupParam(selection.connectionGroupId)}`;
     fetch(detailUrl, fetchOpts)
       .then(async (r) => {
         // The backend's 500 response carries a tagged message + requestId
@@ -672,12 +679,10 @@ export default function SemanticPage() {
 
   const handleDeleteEntity = async () => {
     if (!deleteTarget) return;
-    // Forward the active group qualifier so multi-group orgs delete the
-    // intended row instead of returning a 409 (#2412). Single-group orgs
-    // omit the param and the backend resolves uniquely.
-    const groupSuffix = selection?.type === "entity" && selection.connectionGroupId
-      ? `?connectionGroupId=${encodeURIComponent(selection.connectionGroupId)}`
-      : "";
+    const groupSuffix =
+      selection?.type === "entity"
+        ? encodeGroupParam(selection.connectionGroupId)
+        : "";
     const result = await mutateDelete({
       path: `/api/v1/admin/semantic/entities/edit/${encodeURIComponent(deleteTarget)}${groupSuffix}`,
     });
@@ -693,10 +698,8 @@ export default function SemanticPage() {
     }
   };
 
-  // Tree entries keyed by `(name, connectionGroupId)` so multi-group orgs
-  // render one row per environment with a quiet group badge (#2412).
-  // Sort: name asc, then null-group first (legacy / unscoped row), then
-  // groups lexicographically — matches the backend dedup ordering.
+  // Sort matches the backend's mergeAdminEntities order so paging is
+  // stable across server/client (#2412).
   const treeEntities = entities
     .map((e) => ({
       name: e.name,

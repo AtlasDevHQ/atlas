@@ -32,6 +32,7 @@ export async function applyAmendmentToEntity(
     upsertEntity,
     createVersion,
     generateChangeSummary,
+    AmbiguousEntityError,
   } = await import("@atlas/api/lib/semantic/entities");
 
   const entity = await getEntity(effectiveOrgId, "entity", result.entityName);
@@ -54,7 +55,10 @@ export async function applyAmendmentToEntity(
   // Upsert entity
   await upsertEntity(effectiveOrgId, "entity", result.entityName, newYaml);
 
-  // Create version snapshot
+  // Create version snapshot. Tagged errors (AmbiguousEntityError) must
+  // re-throw so the route layer maps them to 409 with `groups`; a generic
+  // warn-log would bury the structural ambiguity that the expert agent
+  // needs the operator to resolve.
   try {
     const refreshed = await getEntity(effectiveOrgId, "entity", result.entityName);
     if (refreshed) {
@@ -66,6 +70,7 @@ export async function applyAmendmentToEntity(
       );
     }
   } catch (versionErr) {
+    if (versionErr instanceof AmbiguousEntityError) throw versionErr;
     log.warn(
       { err: versionErr instanceof Error ? versionErr.message : String(versionErr), requestId, orgId, entity: result.entityName },
       "Amendment applied but version snapshot failed",

@@ -138,6 +138,51 @@ describe("getEntity — backward compatible without group", () => {
       expect([...caught.groups].toSorted()).toEqual(["g_prod_eu", "g_prod_us"]);
     }
   });
+
+  it("does NOT throw when single group has BOTH published and draft (overlay state)", async () => {
+    // Regression for #2412 follow-up: the original unique-or-409 probe
+    // pulled all rows matching (org, type, name) without status filtering,
+    // so a single-group org with a published row + a draft row (the
+    // normal post-edit state) tripped a false-positive 409. The fixed
+    // SQL deduplicates by connection_group_id before counting; a single
+    // group is single-group, period — overlay rows must collapse here.
+    queuedRows.push([
+      // What the DB-side DISTINCT ON returns: one row per group, draft wins.
+      makeRow({ connectionGroupId: "g_prod_us", status: "draft" }),
+    ]);
+
+    const row = await getEntity("org-1", "entity", "users");
+
+    expect(row).not.toBeNull();
+    expect(row?.connection_group_id).toBe("g_prod_us");
+    expect(row?.status).toBe("draft");
+  });
+
+  it("emits a DISTINCT ON SQL form so single-group overlay is collapsed at the DB", async () => {
+    queuedRows.push([makeRow({ connectionGroupId: "g_prod_us" })]);
+
+    await getEntity("org-1", "entity", "users");
+
+    const lastCall = capturedCalls[capturedCalls.length - 1];
+    expect(lastCall.sql.toUpperCase()).toContain("DISTINCT ON");
+    expect(lastCall.sql.toUpperCase()).toContain("CONNECTION_GROUP_ID");
+    // Filter to overlay-effective statuses (draft_delete in the inner
+    // CTE, then excluded by the outer WHERE).
+    expect(lastCall.sql).toMatch(/STATUS IN \('PUBLISHED', 'DRAFT', 'DRAFT_DELETE'\)/i);
+    // Multi-tenant safety: every probe must include org_id predicate.
+    expect(lastCall.sql).toMatch(/org_id\s*=\s*\$1/);
+  });
+
+  it("returns null when the only group's effective row is a draft_delete tombstone", async () => {
+    // The outer WHERE excludes tombstones; an org with a single-group
+    // draft_delete returns zero rows, which getEntity reports as null
+    // to match overlay semantics.
+    queuedRows.push([]);
+
+    const row = await getEntity("org-1", "entity", "users");
+
+    expect(row).toBeNull();
+  });
 });
 
 describe("getEntity — group-scoped lookup", () => {
@@ -159,6 +204,8 @@ describe("getEntity — group-scoped lookup", () => {
     const lastCall = capturedCalls[capturedCalls.length - 1];
     expect(lastCall.sql).toContain("connection_group_id");
     expect(lastCall.params).toContain("g_prod_us");
+    // Multi-tenant safety predicate.
+    expect(lastCall.sql).toMatch(/org_id\s*=\s*\$1/);
   });
 
   it("filters to NULL group when caller passes null explicitly (legacy scope)", async () => {
@@ -183,6 +230,33 @@ describe("getEntity — group-scoped lookup", () => {
 
     expect(row).not.toBeNull();
     expect(row?.connection_group_id).toBe("g_prod_us");
+  });
+
+  it("prefers draft over published when both exist for the same scoped group", async () => {
+    // The DB-side ORDER BY draft=1 / published=2 + LIMIT 1 means a group
+    // carrying both rows surfaces the draft. The mock returns whatever
+    // we put first; we assert the SQL shape carries the priority order.
+    queuedRows.push([makeRow({ connectionGroupId: "g_prod_us", status: "draft" })]);
+
+    const row = await getEntity("org-1", "entity", "users", "g_prod_us");
+
+    expect(row?.status).toBe("draft");
+    const lastCall = capturedCalls[capturedCalls.length - 1];
+    expect(lastCall.sql.toUpperCase()).toContain("CASE STATUS");
+    expect(lastCall.sql).toMatch(/'draft'\s+THEN\s+1/);
+    expect(lastCall.sql).toMatch(/LIMIT 1/i);
+  });
+
+  it("returns null when the scoped group's effective row is a tombstone", async () => {
+    // Scoped query returns the draft_delete row at top of overlay order;
+    // getEntity reports null to match overlay-hides-published semantics.
+    queuedRows.push([
+      makeRow({ connectionGroupId: "g_prod_us", status: "draft_delete" }),
+    ]);
+
+    const row = await getEntity("org-1", "entity", "users", "g_prod_us");
+
+    expect(row).toBeNull();
   });
 });
 

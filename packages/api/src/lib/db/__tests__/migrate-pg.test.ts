@@ -761,6 +761,134 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
   }, PG_TEST_TIMEOUT_MS);
 
+  // ─── #2412 — getEntity / deleteEntity cross-group isolation ─────────────
+  // The mock-based unit tests in `semantic/__tests__/entities-group-scope.test.ts`
+  // assert SQL shape (predicate fragments + bound params) but cannot prove
+  // the Postgres planner actually isolates rows by `connection_group_id`.
+  // A `=` typed as `!=` or an accidental `OR connection_group_id IS NULL`
+  // would pass every mock-based test. This block runs the real helper
+  // bodies against the real database so cross-group leaks fail loudly.
+
+  it("getEntity scoped to a specific group returns only that group's row (#2412)", async () => {
+    const { getEntity } = await import("@atlas/api/lib/semantic/entities");
+    const orgId = `org-2412-get-${Date.now()}`;
+
+    await pool.query(
+      `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
+       VALUES
+         ($1, 'entity', 'users', 'table: users\ndescription: prod US\n', 'g_prod_us', 'published'),
+         ($1, 'entity', 'users', 'table: users\ndescription: prod EU\n', 'g_prod_eu', 'published')`,
+      [orgId],
+    );
+
+    const us = await getEntity(orgId, "entity", "users", "g_prod_us");
+    const eu = await getEntity(orgId, "entity", "users", "g_prod_eu");
+
+    expect(us?.connection_group_id).toBe("g_prod_us");
+    expect(us?.yaml_content).toContain("prod US");
+    expect(eu?.connection_group_id).toBe("g_prod_eu");
+    expect(eu?.yaml_content).toContain("prod EU");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("getEntity unscoped throws AmbiguousEntityError when same name in 2 groups (#2412)", async () => {
+    const { getEntity, AmbiguousEntityError } = await import(
+      "@atlas/api/lib/semantic/entities"
+    );
+    const orgId = `org-2412-ambig-${Date.now()}`;
+
+    await pool.query(
+      `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
+       VALUES
+         ($1, 'entity', 'orders', 'table: orders\n', 'g_a', 'published'),
+         ($1, 'entity', 'orders', 'table: orders\n', 'g_b', 'published')`,
+      [orgId],
+    );
+
+    let caught: unknown;
+    try {
+      await getEntity(orgId, "entity", "orders");
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(AmbiguousEntityError);
+    if (caught instanceof AmbiguousEntityError) {
+      expect([...caught.groups].toSorted()).toEqual(["g_a", "g_b"]);
+    }
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("getEntity unscoped does NOT throw for single-group org with published+draft overlay (#2412)", async () => {
+    // The original regression: the unique-or-409 probe selected all rows
+    // regardless of status, so a single-group org with a published row
+    // and a draft overlay row 409'd on save / delete. The DB-side
+    // DISTINCT ON (connection_group_id) collapses overlay rows to one
+    // logical entity per group before counting.
+    const { getEntity } = await import("@atlas/api/lib/semantic/entities");
+    const orgId = `org-2412-overlay-${Date.now()}`;
+
+    await pool.query(
+      `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
+       VALUES
+         ($1, 'entity', 'accounts', 'table: accounts\ndescription: published\n', 'g_only', 'published'),
+         ($1, 'entity', 'accounts', 'table: accounts\ndescription: draft edit\n', 'g_only', 'draft')`,
+      [orgId],
+    );
+
+    const row = await getEntity(orgId, "entity", "accounts");
+    expect(row).not.toBeNull();
+    // Draft beats published in the overlay; the helper returns the
+    // overlay-effective row.
+    expect(row?.status).toBe("draft");
+    expect(row?.connection_group_id).toBe("g_only");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("deleteEntity scoped to one group leaves the other group's row intact (#2412)", async () => {
+    const { deleteEntity } = await import("@atlas/api/lib/semantic/entities");
+    const orgId = `org-2412-del-${Date.now()}`;
+
+    await pool.query(
+      `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
+       VALUES
+         ($1, 'entity', 'invoices', 'table: invoices\n', 'g_us', 'published'),
+         ($1, 'entity', 'invoices', 'table: invoices\n', 'g_eu', 'published')`,
+      [orgId],
+    );
+
+    const deleted = await deleteEntity(orgId, "entity", "invoices", "g_us");
+    expect(deleted).toBe(true);
+
+    const survivors = await pool.query<{ connection_group_id: string | null }>(
+      `SELECT connection_group_id FROM semantic_entities
+       WHERE org_id = $1 AND entity_type = 'entity' AND name = 'invoices'`,
+      [orgId],
+    );
+    expect(survivors.rows.length).toBe(1);
+    expect(survivors.rows[0]?.connection_group_id).toBe("g_eu");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("deleteEntity scoped to null matches legacy null-group row only (#2412)", async () => {
+    const { deleteEntity } = await import("@atlas/api/lib/semantic/entities");
+    const orgId = `org-2412-null-${Date.now()}`;
+
+    await pool.query(
+      `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
+       VALUES
+         ($1, 'entity', 'demos', 'table: demos\n', NULL, 'published'),
+         ($1, 'entity', 'demos', 'table: demos\n', 'g_real', 'published')`,
+      [orgId],
+    );
+
+    const deleted = await deleteEntity(orgId, "entity", "demos", null);
+    expect(deleted).toBe(true);
+
+    const survivors = await pool.query<{ connection_group_id: string | null }>(
+      `SELECT connection_group_id FROM semantic_entities
+       WHERE org_id = $1 AND entity_type = 'entity' AND name = 'demos'`,
+      [orgId],
+    );
+    expect(survivors.rows.length).toBe(1);
+    expect(survivors.rows[0]?.connection_group_id).toBe("g_real");
+  }, PG_TEST_TIMEOUT_MS);
+
   // 0067 — conversations.connection_group_id. Adds the *content scope*
   // column the chat-routing slice (#2345) lives on while keeping the
   // existing `conversations.connection_id` as the *execution target*.

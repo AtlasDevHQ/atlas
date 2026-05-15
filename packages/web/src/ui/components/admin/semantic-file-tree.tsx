@@ -193,9 +193,6 @@ export function SemanticFileTree({
               </p>
             ) : (
               entities.map((entry) => {
-                // Composite key keeps React keys unique when the same
-                // name appears in multiple groups (#2412). `name|null`
-                // disambiguates from `name|g_prod`.
                 const key = `${entry.name}|${entry.connectionGroupId ?? ""}`;
                 const target: SemanticSelection = {
                   type: "entity",

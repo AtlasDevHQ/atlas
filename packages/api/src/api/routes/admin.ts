@@ -1336,11 +1336,9 @@ admin.openapi(getEntityRoute, async (c) => {
   }
 
   const orgId = authResult.user?.activeOrganizationId;
-  // `?connectionGroupId=g_prod` scopes the lookup to that group (#2412).
-  // `?connectionGroupId=` (empty) scopes to legacy null-group rows.
-  // Omitting the param leaves disambiguation to `getEntity`'s unique-
-  // or-409 default — multi-group orgs with a duplicate name will get
-  // back a 409 with the candidate groups so the UI can prompt for one.
+  // Empty `?connectionGroupId=` maps to null (legacy / `__global__` row)
+  // — the surprising case worth a comment. Missing param falls through
+  // to getEntity's unique-or-409 default (#2412).
   const rawGroup = c.req.query("connectionGroupId");
   const connectionGroupId =
     rawGroup === undefined ? undefined : rawGroup === "" ? null : rawGroup;
@@ -1588,8 +1586,13 @@ admin.openapi(getOrgEntityRoute, async (c) => runHandler(c, "get org semantic en
   if (!entityType) {
     return c.json({ error: "bad_request", message: `Invalid type. Must be one of: ${[...VALID_ENTITY_TYPES].join(", ")}` }, 400);
   }
+  // Group scope for multi-environment orgs (#2412). Empty string → null
+  // (legacy unscoped). Omit → unique-or-409 default in getEntity.
+  const rawGroup = c.req.query("connectionGroupId");
+  const scope =
+    rawGroup === undefined ? undefined : rawGroup === "" ? null : rawGroup;
   const { getEntity } = await import("@atlas/api/lib/semantic/entities");
-  const row = await getEntity(orgId, entityType, name);
+  const row = await getEntity(orgId, entityType, name, scope);
   if (!row) {
     return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
   }
@@ -1696,11 +1699,16 @@ admin.openapi(deleteOrgEntityRoute, async (c) => runHandler(c, "delete org seman
   const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
   const { syncEntityDeleteFromDisk } = await import("@atlas/api/lib/semantic/sync");
 
+  // Group scope for multi-environment orgs (#2412).
+  const rawGroup = c.req.query("connectionGroupId");
+  const scope =
+    rawGroup === undefined ? undefined : rawGroup === "" ? null : rawGroup;
+
   // All deletes stage as drafts regardless of `atlasMode` (#2177): discard
   // a draft outright or stamp a tombstone over a published row. The
   // existing publish flow (`/api/v1/admin/publish`) applies the tombstone
   // and deletes the published row atomically.
-  const existing = await getEntity(orgId, entityType, name);
+  const existing = await getEntity(orgId, entityType, name, scope);
   if (!existing) {
     return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
   }

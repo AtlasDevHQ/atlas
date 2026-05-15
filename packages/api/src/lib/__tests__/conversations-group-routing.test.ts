@@ -239,11 +239,40 @@ describe("missing group falls back to legacy behavior", () => {
     expect(result).toBeNull();
   });
 
-  it("accepts a null orgId without throwing (self-hosted / pre-org-scoping shape)", async () => {
+  it("uses a null-safe org predicate so caller orgId=null doesn't collapse to `__global__` only (#2415)", async () => {
+    // Mock-theater regression guard. The mock returns whatever rows we
+    // hand it regardless of WHERE-clause semantics, so a "result is
+    // g_default" assertion gives false confidence. The real signal is
+    // the SQL itself: plain `org_id = $2` collapses to UNKNOWN when $2
+    // is NULL and falls through to `org_id = '__global__'`, silently
+    // losing the binding for any deploy whose connections.org_id is
+    // anything else. The null-safe `IS NOT DISTINCT FROM` operator
+    // matches NULL to NULL.
+    //
+    // Real-Postgres coverage of the predicate semantics lives in
+    // `db/__tests__/migrate-pg.test.ts` ("resolveGroupForConnection
+    // predicate: VALUES-row matrix under null caller orgId"). This
+    // unit-level assertion locks the SQL string so a future helper-side
+    // refactor can't quietly weaken the predicate without the migrate-pg
+    // suite catching it too.
     enableInternalDB();
     setResults({ rows: [{ group_id: "g_default" }] });
 
-    const result = await resolveGroupForConnection("conn-1", null);
-    expect(result).toBe("g_default");
+    await resolveGroupForConnection("conn-1", null);
+
+    expect(queryCalls.length).toBe(1);
+    const { sql, params } = queryCalls[0];
+    expect(sql).toContain("IS NOT DISTINCT FROM");
+    // Reject the broken shape explicitly — `org_id = $2 OR` is the exact
+    // predicate the bug fix removed. A regression that brings it back
+    // (without the null-safe operator) trips this assertion.
+    expect(sql).not.toMatch(/org_id\s*=\s*\$2\s+OR/);
+    // The fallback to the shared `__global__` row must still be in the
+    // predicate — that's what lets demo/global connections resolve under
+    // any caller orgId.
+    expect(sql).toContain("'__global__'");
+    // The caller's null orgId is forwarded as a SQL NULL so the
+    // null-safe operator can match against connections.org_id IS NULL.
+    expect(params).toEqual(["conn-1", null]);
   });
 });

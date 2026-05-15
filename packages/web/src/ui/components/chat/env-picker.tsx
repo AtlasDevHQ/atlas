@@ -16,9 +16,11 @@
  * `connectionGroupId`), so subsequent turns inherit the new scope
  * without the user having to re-pick.
  *
- * Empty groups list ⇒ render nothing. The legacy single-connection
- * flow doesn't need a picker, and a misconfigured workspace (no groups
- * yet) shouldn't surface an empty dropdown.
+ * Renders nothing only in the truly trivial 1×1 case: one group with
+ * one member. Multi-singleton workspaces (the 0062 1:1 backfill shape)
+ * still surface the picker so the 1.4.4 feature is discoverable; a
+ * dropdown footer hints that admins can merge connections into shared
+ * environments. See #2408.
  */
 
 import { useEffect, useState } from "react";
@@ -75,10 +77,13 @@ export function ChatEnvPicker({
   activeConnectionId,
   onSelect,
 }: ChatEnvPickerProps): React.ReactElement | null {
-  // Hide the picker when there's nothing meaningful to pick — fewer
-  // than two members total means no override is possible.
-  const totalMembers = groups.reduce((acc, g) => acc + g.members.length, 0);
-  if (totalMembers < 2) return null;
+  // Hide only the truly trivial 1×1 case: one group with one member.
+  // The 0062 1:1 backfill emits N singleton groups for N legacy
+  // connections, so anything ≥ 2 groups (even all singletons) is a
+  // legitimate environment fan-out we want to surface — otherwise the
+  // 1.4.4 marquee feature stays invisible on the dev/demo setup. See
+  // #2408.
+  if (groups.length < 2 && (groups[0]?.members.length ?? 0) < 2) return null;
 
   const activeGroup =
     groups.find((g) => g.id === activeGroupId) ??
@@ -90,6 +95,15 @@ export function ChatEnvPicker({
 
   const groupLabel = activeGroup ? stripGroupPrefix(activeGroup.name) : "—";
   const memberLabel = activeMember?.connectionId ?? "—";
+  // Collapse "warehouse / warehouse" → "warehouse" when the stripped
+  // group name and the member id are the same value (the common 0062
+  // backfill shape: g_<connId> + one member named <connId>).
+  const chipLabel = groupLabel === memberLabel ? memberLabel : `${groupLabel} / ${memberLabel}`;
+
+  // When every group is a singleton, the dropdown has no actual
+  // multi-member choice to offer. Surface a hint so admins discover
+  // that merging connections into a shared environment is possible.
+  const allSingletons = groups.every((g) => g.members.length <= 1);
 
   return (
     <DropdownMenu>
@@ -102,9 +116,7 @@ export function ChatEnvPicker({
           aria-label={`Active environment: ${groupLabel}, member: ${memberLabel}. Change.`}
         >
           <Layers className="size-3.5 text-zinc-500" aria-hidden />
-          <span data-testid="chat-env-picker-label">
-            {groupLabel} / {memberLabel}
-          </span>
+          <span data-testid="chat-env-picker-label">{chipLabel}</span>
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-64" data-testid="chat-env-picker-menu">
@@ -117,6 +129,21 @@ export function ChatEnvPicker({
             isLast={idx === groups.length - 1}
           />
         ))}
+        {allSingletons && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel
+              className="px-2 py-1.5 text-[11px] font-normal leading-snug text-zinc-500 dark:text-zinc-400"
+              data-testid="chat-env-picker-singleton-hint"
+            >
+              No multi-member environments configured. Add another connection in{" "}
+              <span className="font-mono text-zinc-600 dark:text-zinc-300">
+                /admin/connections
+              </span>
+              .
+            </DropdownMenuLabel>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -192,8 +219,8 @@ export interface UseChatEnvGroupsResult {
  * Fetches the user's accessible connection groups + members from
  * `/api/v1/me/connection-groups`. Defensive: a network or 5xx failure
  * surfaces as an empty list so the chat still renders, just without the
- * picker. The picker treats fewer than two members as "no override
- * possible" and hides itself.
+ * picker. The picker only hides itself when there's a single
+ * single-member group — see {@link ChatEnvPicker} for the predicate.
  */
 export function useChatEnvGroups(
   opts: UseChatEnvGroupsOptions,

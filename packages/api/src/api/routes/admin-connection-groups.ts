@@ -589,14 +589,22 @@ adminConnectionGroups.openapi(deleteGroupRoute, async (c) =>
 
     try {
       await internalQuery(
-        `DELETE FROM connection_groups WHERE id = $1 AND org_id = $2`,
+        `WITH deleted_archived_connections AS (
+           DELETE FROM connections
+            WHERE group_id = $1
+              AND org_id = $2
+              AND status = 'archived'
+              AND url <> ''
+           RETURNING id
+         )
+         DELETE FROM connection_groups WHERE id = $1 AND org_id = $2`,
         [id, orgId],
       );
     } catch (err) {
       const meta = pgErrorMeta(err);
       if (meta.code === "23503") {
         const message = meta.constraint === CONNECTIONS_GROUP_FK
-          ? `Group "${id}" is still referenced by connection rows. Restore or permanently remove those connections before deleting it.`
+          ? `Group "${id}" is still referenced by hidden connection rows. Restore or unhide those connections before deleting it.`
           : `Group "${id}" is still referenced by workspace content. Remove or update those references before deleting it.`;
         return c.json(
           {

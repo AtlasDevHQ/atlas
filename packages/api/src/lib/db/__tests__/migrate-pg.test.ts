@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
+import { DELETE_GROUP_AND_ARCHIVED_CONNECTIONS_SQL } from "@atlas/api/lib/db/connection-groups-sql";
 
 // Real-Postgres migration smoke. Skips cleanly when TEST_DATABASE_URL
 // is unset so local dev that hasn't run `bun run db:up` is unaffected.
@@ -355,6 +356,132 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows.length).toBe(0);
   }, PG_TEST_TIMEOUT_MS);
 
+  // #2410 — env-delete CTE must drop both archived shapes. Reproduces
+  // the third-pass failure: PR #2405 added the cascading archived
+  // delete, PR #2406 tightened it to `url <> ''` to preserve global-hide
+  // tombstones (which it succeeded at — outside env-delete), but the
+  // env-delete path itself then 23503'd whenever the group contained a
+  // `url = ''` tombstone. The shape mirrors the per-org `__global__`
+  // hide INSERT written by the non-`ownRow` branch of
+  // `admin-connections.ts` DELETE /:id.
+  //
+  // Imports `DELETE_GROUP_AND_ARCHIVED_CONNECTIONS_SQL` so this test and
+  // the production route share the same canonical SQL — a regression
+  // that tightens the WHERE clause shows up in both files in the same
+  // diff and can't sneak through.
+  it("connections.group_id: env-delete CTE drops both archived shapes (#2410)", async () => {
+    const orgId = `org-tomb-${Date.now()}`;
+    const groupId = `g-tomb-${Date.now()}`;
+    const archivedOwnedConnId = `conn-archived-${Date.now()}`;
+    const tombstoneConnId = `conn-tomb-${Date.now()}`;
+
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'tombstone-env')`,
+      [groupId, orgId],
+    );
+
+    // Shape 1: archived in-place — org-owned row, real encrypted URL,
+    // `status = 'archived'`. This is what the `ownRow` branch of
+    // `admin-connections.ts` DELETE /:id produces when the admin
+    // deletes an org-owned connection.
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status, group_id)
+       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'archived', $3)`,
+      [archivedOwnedConnId, orgId, groupId],
+    );
+
+    // Shape 2: per-org `__global__` tombstone — `url = ''`,
+    // `status = 'archived'`, non-null `group_id`. This is what the
+    // non-`ownRow` branch of `admin-connections.ts` DELETE /:id
+    // produces when the admin hides a global connection. Pre-fix the
+    // env-delete CTE filtered `url <> ''`, so this row stayed put and
+    // the trailing `DELETE FROM connection_groups` 23503'd against the
+    // connections_group_id FK.
+    await pool.query(
+      `INSERT INTO connections (id, url, url_key_version, type, description, org_id, status, group_id)
+       VALUES ($1, '', 1, 'postgres', 'Hidden from this workspace', $2, 'archived', $3)`,
+      [tombstoneConnId, orgId, groupId],
+    );
+
+    // Sanity: run the *pre-fix* CTE (with `AND url <> ''`) and confirm
+    // it still 23503s with the tombstone present. This pins the exact
+    // regression mode — not the "raw delete fails" property of the FK
+    // (which has always been true and is already covered above by the
+    // 0062 RESTRICT test). If a future change accidentally tightens
+    // the production CTE again, the positive assertion below would
+    // catch the symptom; this sanity step locks the cause.
+    await expect(
+      pool.query(
+        `WITH deleted_archived_connections AS (
+           DELETE FROM connections
+            WHERE group_id = $1
+              AND org_id = $2
+              AND status = 'archived'
+              AND url <> ''
+           RETURNING id
+         )
+         DELETE FROM connection_groups WHERE id = $1 AND org_id = $2`,
+        [groupId, orgId],
+      ),
+    ).rejects.toMatchObject({ code: "23503" });
+
+    // The fixed CTE — imported from the production module so the test
+    // and the route share one source of truth.
+    await pool.query(DELETE_GROUP_AND_ARCHIVED_CONNECTIONS_SQL, [groupId, orgId]);
+
+    // Group is gone.
+    const groupRows = await pool.query<{ id: string }>(
+      `SELECT id FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [groupId, orgId],
+    );
+    expect(groupRows.rows.length).toBe(0);
+
+    // Both archived rows are gone — no orphans, no FK violations.
+    const connRows = await pool.query<{ id: string }>(
+      `SELECT id FROM connections WHERE org_id = $1 AND id IN ($2, $3)`,
+      [orgId, archivedOwnedConnId, tombstoneConnId],
+    );
+    expect(connRows.rows.length).toBe(0);
+  }, PG_TEST_TIMEOUT_MS);
+
+  // Adjacent shape: a group whose *only* archived row is a `url = ''`
+  // tombstone. This is the exact production path an admin hits when
+  // they hide a global into a fresh environment and then delete that
+  // environment without ever attaching an org-owned connection. The
+  // CTE handles it because the predicate is `status = 'archived'`, but
+  // a future "optimization" that reinstates `url <> ''` would let the
+  // multi-shape test above still pass on shape 1 while quietly failing
+  // closed on this one. The single-shape variant catches that drift.
+  it("connections.group_id: env-delete CTE drops a tombstone-only group (#2410)", async () => {
+    const orgId = `org-tomb-only-${Date.now()}`;
+    const groupId = `g-tomb-only-${Date.now()}`;
+    const tombstoneConnId = `conn-tomb-only-${Date.now()}`;
+
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'tombstone-only-env')`,
+      [groupId, orgId],
+    );
+    await pool.query(
+      `INSERT INTO connections (id, url, url_key_version, type, description, org_id, status, group_id)
+       VALUES ($1, '', 1, 'postgres', 'Hidden from this workspace', $2, 'archived', $3)`,
+      [tombstoneConnId, orgId, groupId],
+    );
+
+    await pool.query(DELETE_GROUP_AND_ARCHIVED_CONNECTIONS_SQL, [groupId, orgId]);
+
+    const groupRows = await pool.query<{ id: string }>(
+      `SELECT id FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [groupId, orgId],
+    );
+    expect(groupRows.rows.length).toBe(0);
+
+    const connRows = await pool.query<{ id: string }>(
+      `SELECT id FROM connections WHERE org_id = $1 AND id = $2`,
+      [orgId, tombstoneConnId],
+    );
+    expect(connRows.rows.length).toBe(0);
+  }, PG_TEST_TIMEOUT_MS);
+
   // 0063 — semantic_entities.connection_group_id. Adds the group-scoped
   // natural key the multi-environment semantic layer (#2336 / #2340) lives
   // on. The three partial unique indexes from 0028 are dropped and recreated
@@ -471,39 +598,63 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     ).rejects.toMatchObject({ code: "23505" });
   }, PG_TEST_TIMEOUT_MS);
 
-  it("semantic_entities: backfill resolves connection_id → connection_group_id via 0062's 1:1 mapping", async () => {
-    // Pre-migration entities have `connection_id` set but no
-    // `connection_group_id`. 0063 backfills by joining `connections`,
-    // so every row with a known connection lands on `g_<connId>` (the
-    // group_id 0062 created for the 1:1 backfill).
+  it("semantic_entities: 0063 backfill resolves connection_id → connection_group_id via 0062's 1:1 mapping", async () => {
+    // The smoke suite runs every migration end-to-end (including 0069),
+    // which drops `semantic_entities.connection_id`. To exercise the
+    // ACTUAL backfill SQL from 0063 against a pre-migration row shape,
+    // we temporarily re-add `connection_id`, seed a row with it set and
+    // `connection_group_id IS NULL`, run the migration's UPDATE block
+    // verbatim, then drop the column to restore the post-0069 shape.
     const orgId = `org-backfill-se-${Date.now()}`;
     const connId = `conn-back-${Date.now()}`;
     const groupId = `g_${connId}`;
-    // Seed: connection + its 1:1 group (mirrors what 0062 did at upgrade).
-    await pool.query(
-      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, $3)`,
-      [groupId, orgId, connId],
-    );
-    await pool.query(
-      `INSERT INTO connections (id, url, type, org_id, status, group_id)
-       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3)`,
-      [connId, orgId, groupId],
-    );
-    // Insert a row matching the pre-0063 shape: connection_id set,
-    // connection_group_id left NULL — same shape an upgrade row would
-    // have on the moment 0063 starts running.
-    await pool.query(
-      `INSERT INTO semantic_entities
-         (org_id, entity_type, name, yaml_content, connection_group_id, status)
-       VALUES ($1, 'entity', 'orders', 'table: orders', $2, 'published')`,
-      [orgId, groupId],
-    );
-    const { rows } = await pool.query<{ connection_group_id: string | null }>(
-      `SELECT connection_group_id FROM semantic_entities
-       WHERE org_id = $1 AND name = 'orders' AND entity_type = 'entity'`,
-      [orgId],
-    );
-    expect(rows[0]?.connection_group_id).toBe(groupId);
+    await pool.query(`ALTER TABLE semantic_entities ADD COLUMN connection_id TEXT`);
+    try {
+      // Seed: connection + its 1:1 group (mirrors what 0062 did at upgrade).
+      await pool.query(
+        `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, $3)`,
+        [groupId, orgId, connId],
+      );
+      await pool.query(
+        `INSERT INTO connections (id, url, type, org_id, status, group_id)
+         VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3)`,
+        [connId, orgId, groupId],
+      );
+      // Pre-0063 shape: connection_id set, connection_group_id NULL.
+      await pool.query(
+        `INSERT INTO semantic_entities
+           (org_id, entity_type, name, yaml_content, connection_id, connection_group_id, status)
+         VALUES ($1, 'entity', 'orders', 'table: orders', $2, NULL, 'published')`,
+        [orgId, connId],
+      );
+      // Run the migration's actual backfill block (verbatim from 0063).
+      await pool.query(
+        `UPDATE semantic_entities se
+           SET connection_group_id = c.group_id
+           FROM connections c
+           WHERE se.connection_id IS NOT NULL
+             AND se.connection_group_id IS NULL
+             AND c.id = se.connection_id
+             AND (c.org_id = se.org_id OR c.org_id = '__global__')`,
+      );
+      const { rows } = await pool.query<{ connection_group_id: string | null }>(
+        `SELECT connection_group_id FROM semantic_entities
+         WHERE org_id = $1 AND name = 'orders' AND entity_type = 'entity'`,
+        [orgId],
+      );
+      expect(rows[0]?.connection_group_id).toBe(groupId);
+    } finally {
+      // Cleanup must not shadow an in-`try` assertion error. If the DROP
+      // itself trips (pool closed mid-test, etc.), log and let the
+      // original failure propagate.
+      try {
+        await pool.query(`ALTER TABLE semantic_entities DROP COLUMN connection_id`);
+      } catch (err) {
+        console.warn(
+          `cleanup semantic_entities.connection_id DROP failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   }, PG_TEST_TIMEOUT_MS);
 
   it("semantic_entities: 0063 dedup CTE collapses pre-merged duplicates so the unique index builds", async () => {
@@ -819,36 +970,62 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows[0]?.indexdef).not.toMatch(/connection_id/i);
   }, PG_TEST_TIMEOUT_MS);
 
-  it("pii_column_classifications: backfill resolves connection_id → connection_group_id via 0062's 1:1 mapping", async () => {
-    // Pre-migration classifications have `connection_id` set but no
-    // `connection_group_id`. 0064 backfills by joining `connections`, so
-    // every row with a known connection lands on `g_<connId>` (the group
-    // 0062 created for the 1:1 backfill).
+  it("pii_column_classifications: 0064 backfill resolves connection_id → connection_group_id via 0062's 1:1 mapping", async () => {
+    // The smoke suite runs every migration end-to-end (including 0069),
+    // which drops `pii_column_classifications.connection_id`. To exercise
+    // the ACTUAL backfill SQL from 0064 against a pre-migration row shape,
+    // we temporarily re-add `connection_id`, seed a row with it set and
+    // `connection_group_id IS NULL`, run the migration's UPDATE block
+    // verbatim, then drop the column to restore the post-0069 shape.
     const orgId = `org-backfill-pii-${Date.now()}`;
     const connId = `conn-back-pii-${Date.now()}`;
     const groupId = `g_${connId}`;
-    await pool.query(
-      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, $3)`,
-      [groupId, orgId, connId],
-    );
-    await pool.query(
-      `INSERT INTO connections (id, url, type, org_id, status, group_id)
-       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3)`,
-      [connId, orgId, groupId],
-    );
-    // Pre-0064 shape: connection_id set, connection_group_id NULL.
-    await pool.query(
-      `INSERT INTO pii_column_classifications
-         (org_id, table_name, column_name, connection_group_id, category, confidence, masking_strategy)
-       VALUES ($1, 'users', 'email', $2, 'email', 'high', 'partial')`,
-      [orgId, groupId],
-    );
-    const { rows } = await pool.query<{ connection_group_id: string | null }>(
-      `SELECT connection_group_id FROM pii_column_classifications
-       WHERE org_id = $1 AND table_name = 'users' AND column_name = 'email'`,
-      [orgId],
-    );
-    expect(rows[0]?.connection_group_id).toBe(groupId);
+    await pool.query(`ALTER TABLE pii_column_classifications ADD COLUMN connection_id TEXT`);
+    try {
+      await pool.query(
+        `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, $3)`,
+        [groupId, orgId, connId],
+      );
+      await pool.query(
+        `INSERT INTO connections (id, url, type, org_id, status, group_id)
+         VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3)`,
+        [connId, orgId, groupId],
+      );
+      // Pre-0064 shape: connection_id set, connection_group_id NULL.
+      await pool.query(
+        `INSERT INTO pii_column_classifications
+           (org_id, table_name, column_name, connection_id, connection_group_id, category, confidence, masking_strategy)
+         VALUES ($1, 'users', 'email', $2, NULL, 'email', 'high', 'partial')`,
+        [orgId, connId],
+      );
+      // Run the migration's actual backfill block (verbatim from 0064).
+      await pool.query(
+        `UPDATE pii_column_classifications pc
+           SET connection_group_id = c.group_id
+           FROM connections c
+           WHERE pc.connection_id IS NOT NULL
+             AND pc.connection_group_id IS NULL
+             AND c.id = pc.connection_id
+             AND (c.org_id = pc.org_id OR c.org_id = '__global__')`,
+      );
+      const { rows } = await pool.query<{ connection_group_id: string | null }>(
+        `SELECT connection_group_id FROM pii_column_classifications
+         WHERE org_id = $1 AND table_name = 'users' AND column_name = 'email'`,
+        [orgId],
+      );
+      expect(rows[0]?.connection_group_id).toBe(groupId);
+    } finally {
+      // Cleanup must not shadow an in-`try` assertion error. If the DROP
+      // itself trips (pool closed mid-test, etc.), log and let the
+      // original failure propagate.
+      try {
+        await pool.query(`ALTER TABLE pii_column_classifications DROP COLUMN connection_id`);
+      } catch (err) {
+        console.warn(
+          `cleanup pii_column_classifications.connection_id DROP failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   }, PG_TEST_TIMEOUT_MS);
 
   it("pii_column_classifications: two connections in the same group cannot duplicate the same classification", async () => {
@@ -1051,49 +1228,73 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows).toEqual([]);
   }, PG_TEST_TIMEOUT_MS);
 
-  it("approval_queue: backfill resolves connection_id → connection_group_id via 0062's 1:1 mapping", async () => {
-    // Pre-migration approval rows have `connection_id` set but no
-    // `connection_group_id`. 0065 backfills by joining `connections`,
-    // so every row with a known connection lands on `g_<connId>` (the
-    // group_id 0062 created for the 1:1 backfill).
+  it("approval_queue: 0065 backfill resolves connection_id → connection_group_id via 0062's 1:1 mapping", async () => {
+    // The smoke suite runs every migration end-to-end (including 0069),
+    // which drops `approval_queue.connection_id`. To exercise the ACTUAL
+    // backfill SQL from 0065 against a pre-migration row shape, we
+    // temporarily re-add `connection_id`, seed a row with it set and
+    // `connection_group_id IS NULL`, run the migration's UPDATE block
+    // verbatim, then drop the column to restore the post-0069 shape.
     const orgId = `org-approval-backfill-${Date.now()}`;
     const connId = `conn-approval-${Date.now()}`;
     const groupId = `g_${connId}`;
-    // Seed the 1:1 group + connection that 0062 would have produced.
-    await pool.query(
-      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, $3)`,
-      [groupId, orgId, connId],
-    );
-    await pool.query(
-      `INSERT INTO connections (id, url, type, org_id, status, group_id)
-       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3)`,
-      [connId, orgId, groupId],
-    );
-    // Seed an approval rule the approval_queue row can reference (the
-    // queue has no rule_id FK, but using a real UUID keeps the row
-    // shape consistent with production inserts).
-    const ruleRow = await pool.query<{ id: string }>(
-      `INSERT INTO approval_rules (org_id, name, rule_type, pattern, threshold, enabled)
-       VALUES ($1, 'Backfill rule', 'table', 'orders', NULL, true)
-       RETURNING id`,
-      [orgId],
-    );
-    const ruleId = ruleRow.rows[0].id;
-    // Insert an approval row matching the pre-0065 shape: connection_id
-    // set, connection_group_id left NULL — same shape an upgrade row
-    // would have on the moment 0065 starts running.
-    await pool.query(
-      `INSERT INTO approval_queue
-         (org_id, rule_id, rule_name, requester_id, query_sql, connection_group_id)
-       VALUES ($1, $2, 'Backfill rule', 'user-backfill', 'SELECT * FROM orders', $3)`,
-      [orgId, ruleId, groupId],
-    );
-    const { rows } = await pool.query<{ connection_group_id: string | null }>(
-      `SELECT connection_group_id FROM approval_queue
-       WHERE org_id = $1 AND requester_id = 'user-backfill'`,
-      [orgId],
-    );
-    expect(rows[0]?.connection_group_id).toBe(groupId);
+    await pool.query(`ALTER TABLE approval_queue ADD COLUMN connection_id TEXT`);
+    try {
+      // Seed the 1:1 group + connection that 0062 would have produced.
+      await pool.query(
+        `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, $3)`,
+        [groupId, orgId, connId],
+      );
+      await pool.query(
+        `INSERT INTO connections (id, url, type, org_id, status, group_id)
+         VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3)`,
+        [connId, orgId, groupId],
+      );
+      // Seed an approval rule the approval_queue row can reference (the
+      // queue has no rule_id FK, but using a real UUID keeps the row
+      // shape consistent with production inserts).
+      const ruleRow = await pool.query<{ id: string }>(
+        `INSERT INTO approval_rules (org_id, name, rule_type, pattern, threshold, enabled)
+         VALUES ($1, 'Backfill rule', 'table', 'orders', NULL, true)
+         RETURNING id`,
+        [orgId],
+      );
+      const ruleId = ruleRow.rows[0].id;
+      // Pre-0065 shape: connection_id set, connection_group_id NULL.
+      await pool.query(
+        `INSERT INTO approval_queue
+           (org_id, rule_id, rule_name, requester_id, query_sql, connection_id, connection_group_id)
+         VALUES ($1, $2, 'Backfill rule', 'user-backfill', 'SELECT * FROM orders', $3, NULL)`,
+        [orgId, ruleId, connId],
+      );
+      // Run the migration's actual backfill block (verbatim from 0065).
+      await pool.query(
+        `UPDATE approval_queue aq
+           SET connection_group_id = c.group_id
+           FROM connections c
+           WHERE aq.connection_id IS NOT NULL
+             AND aq.connection_group_id IS NULL
+             AND c.id = aq.connection_id
+             AND (c.org_id = aq.org_id OR c.org_id = '__global__')`,
+      );
+      const { rows } = await pool.query<{ connection_group_id: string | null }>(
+        `SELECT connection_group_id FROM approval_queue
+         WHERE org_id = $1 AND requester_id = 'user-backfill'`,
+        [orgId],
+      );
+      expect(rows[0]?.connection_group_id).toBe(groupId);
+    } finally {
+      // Cleanup must not shadow an in-`try` assertion error. If the DROP
+      // itself trips (pool closed mid-test, etc.), log and let the
+      // original failure propagate.
+      try {
+        await pool.query(`ALTER TABLE approval_queue DROP COLUMN connection_id`);
+      } catch (err) {
+        console.warn(
+          `cleanup approval_queue.connection_id DROP failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   }, PG_TEST_TIMEOUT_MS);
 
   it("approval_queue: global connection backfill mirrors group into tenant before FK use", async () => {
@@ -1350,40 +1551,73 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows[0]?.primary_connection_id).toBeNull();
   }, PG_TEST_TIMEOUT_MS);
 
-  it("dashboard_cards: backfill resolves connection_id → connection_group_id via 0062's 1:1 mapping", async () => {
-    // Pre-0066 cards reference a `connection_id` directly. The migration
-    // backfills `connection_group_id` to the group `g_<connId>` that 0062
-    // created. Same backfill shape as 0063 — keeps the dual-write contract
-    // in lockstep while the deprecation slice (#2347) is still pending.
+  it("dashboard_cards: 0066 backfill resolves connection_id → connection_group_id via 0062's 1:1 mapping", async () => {
+    // The smoke suite runs every migration end-to-end (including 0069),
+    // which drops `dashboard_cards.connection_id`. To exercise the ACTUAL
+    // backfill SQL from 0066 against a pre-migration row shape, we
+    // temporarily re-add `connection_id`, seed a card with it set and
+    // `connection_group_id IS NULL`, run the migration's UPDATE block
+    // verbatim, then drop the column to restore the post-0069 shape.
+    //
+    // The 0066 backfill joins through `dashboards` (cards have no own
+    // org_id) — the test exercises that join shape, not just a flat
+    // `connections` lookup like 0063/0064/0065.
     const orgId = `org-card-backfill-${Date.now()}`;
     const connId = `conn-card-${Date.now()}`;
     const groupId = `g_${connId}`;
     const dashboardOwner = `owner-${Date.now()}`;
-    await pool.query(
-      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, $3)`,
-      [groupId, orgId, connId],
-    );
-    await pool.query(
-      `INSERT INTO connections (id, url, type, org_id, status, group_id)
-       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3)`,
-      [connId, orgId, groupId],
-    );
-    const dashRow = await pool.query<{ id: string }>(
-      `INSERT INTO dashboards (org_id, owner_id, title) VALUES ($1, $2, 'card-backfill') RETURNING id`,
-      [orgId, dashboardOwner],
-    );
-    const dashboardId = dashRow.rows[0]?.id;
-    // Pre-0066 card shape: connection_id set, connection_group_id NULL.
-    await pool.query(
-      `INSERT INTO dashboard_cards (dashboard_id, title, sql, connection_group_id)
-       VALUES ($1, 'card', 'SELECT 1', $2)`,
-      [dashboardId, groupId],
-    );
-    const { rows } = await pool.query<{ connection_group_id: string | null }>(
-      `SELECT connection_group_id FROM dashboard_cards WHERE dashboard_id = $1`,
-      [dashboardId],
-    );
-    expect(rows[0]?.connection_group_id).toBe(groupId);
+    await pool.query(`ALTER TABLE dashboard_cards ADD COLUMN connection_id TEXT`);
+    try {
+      await pool.query(
+        `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, $3)`,
+        [groupId, orgId, connId],
+      );
+      await pool.query(
+        `INSERT INTO connections (id, url, type, org_id, status, group_id)
+         VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3)`,
+        [connId, orgId, groupId],
+      );
+      const dashRow = await pool.query<{ id: string }>(
+        `INSERT INTO dashboards (org_id, owner_id, title) VALUES ($1, $2, 'card-backfill') RETURNING id`,
+        [orgId, dashboardOwner],
+      );
+      const dashboardId = dashRow.rows[0]?.id;
+      // Pre-0066 card shape: connection_id set, connection_group_id NULL.
+      await pool.query(
+        `INSERT INTO dashboard_cards (dashboard_id, title, sql, connection_id, connection_group_id)
+         VALUES ($1, 'card', 'SELECT 1', $2, NULL)`,
+        [dashboardId, connId],
+      );
+      // Run the migration's actual backfill block (verbatim from 0066).
+      // Note the three-table join — cards lack their own org_id and
+      // resolve through the parent dashboard's org.
+      await pool.query(
+        `UPDATE dashboard_cards dc
+           SET connection_group_id = c.group_id
+           FROM connections c, dashboards d
+           WHERE dc.dashboard_id = d.id
+             AND dc.connection_id IS NOT NULL
+             AND dc.connection_group_id IS NULL
+             AND c.id = dc.connection_id
+             AND (c.org_id = d.org_id OR c.org_id = '__global__')`,
+      );
+      const { rows } = await pool.query<{ connection_group_id: string | null }>(
+        `SELECT connection_group_id FROM dashboard_cards WHERE dashboard_id = $1`,
+        [dashboardId],
+      );
+      expect(rows[0]?.connection_group_id).toBe(groupId);
+    } finally {
+      // Cleanup must not shadow an in-`try` assertion error. If the DROP
+      // itself trips (pool closed mid-test, etc.), log and let the
+      // original failure propagate.
+      try {
+        await pool.query(`ALTER TABLE dashboard_cards DROP COLUMN connection_id`);
+      } catch (err) {
+        console.warn(
+          `cleanup dashboard_cards.connection_id DROP failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   }, PG_TEST_TIMEOUT_MS);
 
   // 0068 — scheduled_tasks.connection_group_id. The scheduler is now scoped

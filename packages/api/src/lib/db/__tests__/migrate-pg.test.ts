@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
@@ -1651,5 +1653,218 @@ describeIfPg("migrate-pg (real Postgres)", () => {
         [groupId],
       ),
     ).rejects.toMatchObject({ code: "23503" });
+  }, PG_TEST_TIMEOUT_MS);
+
+  // 0070 — Rename synthetic `__global__:<id>` connection_group names (#2417).
+  //
+  // Migrations 0065 + 0068 mirrored global groups into tenant orgs with a
+  // display name of `__global__:` || g.id. That string was rendering verbatim
+  // in admin dropdowns. 0070 backfills tenant rows with the source __global__
+  // group's actual name, skipping rows whose target name would collide with
+  // an existing tenant group.
+  //
+  // Per the #2427 honest-backfill pattern: insert a pre-migration state that
+  // simulates what 0065/0068 left behind, replay the migration SQL by reading
+  // it from disk, then assert post-state. Loading the SQL from disk keeps
+  // the assertion bound to production SQL — a future edit to 0070 that
+  // changes its semantics will surface here rather than passing a stale
+  // duplicated string.
+  const MIGRATION_0070 = readFileSync(
+    join(__dirname, "../migrations/0070_rename_synthetic_global_group_names.sql"),
+    "utf8",
+  );
+
+  it("0070: renames synthetic '__global__:<id>' names to the source __global__ group's display name", async () => {
+    const groupId = `g_rename_${Date.now()}`;
+    const tenantOrg = `org-rename-${Date.now()}`;
+    const sourceName = `Production-${Date.now()}`;
+
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, '__global__', $2)`,
+      [groupId, sourceName],
+    );
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name)
+       VALUES ($1, $2, '__global__:' || $1)`,
+      [groupId, tenantOrg],
+    );
+
+    // Sanity: the pre-state really does carry the synthetic name. Without
+    // this, a regression that already cleaned the row before 0070 ran
+    // would let the test pass for the wrong reason.
+    const before = await pool.query<{ name: string }>(
+      `SELECT name FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [groupId, tenantOrg],
+    );
+    expect(before.rows[0]?.name).toBe(`__global__:${groupId}`);
+
+    await pool.query(MIGRATION_0070);
+
+    const after = await pool.query<{ name: string }>(
+      `SELECT name FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [groupId, tenantOrg],
+    );
+    expect(after.rows[0]?.name).toBe(sourceName);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0070: leaves the synthetic name alone when the source name would collide with an existing tenant group", async () => {
+    // If the tenant already carries a group with the same display name as
+    // the source __global__ group, renaming would violate the
+    // (org_id, name) UNIQUE index. The migration's NOT EXISTS guard keeps
+    // the synthetic row as-is; the display-layer strip (`stripGroupPrefix`)
+    // handles the residual case at render time. See #2417.
+    const sharedName = `Shared-${Date.now()}`;
+    const globalGroupId = `g_collide_global_${Date.now()}`;
+    const tenantOrg = `org-collide-${Date.now()}`;
+    const tenantGroupId = `g_collide_tenant_${Date.now()}`;
+
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, '__global__', $2)`,
+      [globalGroupId, sharedName],
+    );
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, $3)`,
+      [tenantGroupId, tenantOrg, sharedName],
+    );
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name)
+       VALUES ($1, $2, '__global__:' || $1)`,
+      [globalGroupId, tenantOrg],
+    );
+
+    // Migration must not throw on collision — the guard skips, doesn't
+    // raise.
+    await expect(pool.query(MIGRATION_0070)).resolves.toBeDefined();
+
+    const row = await pool.query<{ name: string }>(
+      `SELECT name FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [globalGroupId, tenantOrg],
+    );
+    expect(row.rows[0]?.name).toBe(`__global__:${globalGroupId}`);
+
+    // The *other* tenant row — the one whose name caused the collision
+    // — must also be untouched. Without this assertion, an inverted
+    // NOT EXISTS (e.g. EXISTS) would rename the legitimate tenant row
+    // to the synthetic name and the first assertion would still pass.
+    const sibling = await pool.query<{ name: string }>(
+      `SELECT name FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [tenantGroupId, tenantOrg],
+    );
+    expect(sibling.rows[0]?.name).toBe(sharedName);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0070: renames every tenant mirror of one global group — multi-tenant fan-out", async () => {
+    // The realistic post-0065/0068 state: one global group, three
+    // tenants each carrying a `__global__:<id>` mirror. The UPDATE's
+    // correlated subquery joins by `src.id = t.id` so the rename must
+    // fan out across every tenant in a single pass. A regression that
+    // accidentally collapsed the join (e.g. a stray GROUP BY) would
+    // process only one tenant and the other two would survive.
+    const groupId = `g_fanout_${Date.now()}`;
+    const sourceName = `Fanout-${Date.now()}`;
+    const tenantOrgs = [
+      `org-fanout-a-${Date.now()}`,
+      `org-fanout-b-${Date.now()}`,
+      `org-fanout-c-${Date.now()}`,
+    ];
+
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, '__global__', $2)`,
+      [groupId, sourceName],
+    );
+    for (const tenantOrg of tenantOrgs) {
+      await pool.query(
+        `INSERT INTO connection_groups (id, org_id, name)
+         VALUES ($1, $2, '__global__:' || $1)`,
+        [groupId, tenantOrg],
+      );
+    }
+
+    await pool.query(MIGRATION_0070);
+
+    for (const tenantOrg of tenantOrgs) {
+      const { rows } = await pool.query<{ name: string }>(
+        `SELECT name FROM connection_groups WHERE id = $1 AND org_id = $2`,
+        [groupId, tenantOrg],
+      );
+      expect(rows[0]?.name).toBe(sourceName);
+    }
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0070: is idempotent — re-running after the cleanup is a no-op", async () => {
+    // Idempotency matters because `runMigrations` records 0070 as applied
+    // and won't re-run it, but operators occasionally replay migrations
+    // by hand against staging. The WHERE predicate guards on the prefix,
+    // so once names are clean, re-runs change nothing.
+    const groupId = `g_idem_${Date.now()}`;
+    const tenantOrg = `org-idem-${Date.now()}`;
+    const sourceName = `Idem-${Date.now()}`;
+
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, '__global__', $2)`,
+      [groupId, sourceName],
+    );
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name)
+       VALUES ($1, $2, '__global__:' || $1)`,
+      [groupId, tenantOrg],
+    );
+
+    await pool.query(MIGRATION_0070);
+    // `pg` returns TIMESTAMPTZ as `Date` objects, so two separate SELECTs
+    // produce distinct instances and `.toBe()` fails identity even when
+    // the value is unchanged. Cast to text so equality is value-based.
+    const firstRun = await pool.query<{ updated_at: string; name: string }>(
+      `SELECT name, updated_at::text AS updated_at
+         FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [groupId, tenantOrg],
+    );
+    expect(firstRun.rows[0]?.name).toBe(sourceName);
+
+    await pool.query(MIGRATION_0070);
+    const secondRun = await pool.query<{ updated_at: string; name: string }>(
+      `SELECT name, updated_at::text AS updated_at
+         FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [groupId, tenantOrg],
+    );
+    expect(secondRun.rows[0]?.name).toBe(sourceName);
+    // `updated_at` is a proxy here, not a hard signal: 0070 never sets it
+    // on first run either. The point is to catch a future regression
+    // that *does* add `SET updated_at = now()` to the UPDATE — in that
+    // world the no-op re-run would silently bump `updated_at` despite
+    // touching nothing semantic, and the WHERE prefix-guard would be
+    // the only thing protecting idempotency.
+    expect(secondRun.rows[0]?.updated_at).toBe(firstRun.rows[0]?.updated_at);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0070: literal-prefix match — `_` wildcards in LIKE don't catch deceptive names", async () => {
+    // Regression guard against a `LIKE '__global__:%'` predicate
+    // (where `_` is a single-char wildcard). The migration uses
+    // `starts_with()` to make the match a literal-prefix comparison,
+    // so a tenant row literally named `abglobalcd:trick` — which
+    // matches the old LIKE wildcard but is not a synthetic mirror —
+    // must stay untouched. Same id as the global source so the
+    // outer JOIN does attach; the prefix check is what saves it.
+    const groupId = `g_wildcard_${Date.now()}`;
+    const tenantOrg = `org-wildcard-${Date.now()}`;
+    const cleanName = `Clean-${Date.now()}`;
+    const deceptive = `abglobalcd:trick-${Date.now()}`;
+
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, '__global__', $2)`,
+      [groupId, cleanName],
+    );
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, $3)`,
+      [groupId, tenantOrg, deceptive],
+    );
+
+    await pool.query(MIGRATION_0070);
+
+    const { rows } = await pool.query<{ name: string }>(
+      `SELECT name FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [groupId, tenantOrg],
+    );
+    expect(rows[0]?.name).toBe(deceptive);
   }, PG_TEST_TIMEOUT_MS);
 });

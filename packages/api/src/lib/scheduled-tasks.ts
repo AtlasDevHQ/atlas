@@ -354,6 +354,10 @@ export async function updateScheduledTask(
     setClauses.push(`recipients = $${paramIdx++}`);
     params.push(JSON.stringify(updates.recipients));
   }
+  // `connection_group_id` mutates iff the caller sets `connectionGroupId`
+  // — no implicit re-derivation from any sibling field. The absence of a
+  // re-derivation branch is load-bearing (#2418); covered by the
+  // `PATCH connection_group_id semantics` block in the unit tests.
   if (updates.connectionGroupId !== undefined) {
     setClauses.push(`connection_group_id = $${paramIdx++}`);
     params.push(updates.connectionGroupId);

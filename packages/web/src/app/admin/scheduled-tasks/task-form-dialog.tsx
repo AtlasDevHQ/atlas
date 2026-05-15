@@ -24,8 +24,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Plus, X, Clock } from "lucide-react";
+import Link from "next/link";
+import { AlertTriangle, Loader2, Plus, X, Clock } from "lucide-react";
 import {
   CRON_PRESETS,
   presetFromCron,
@@ -47,6 +49,26 @@ interface ConnectionGroupInfo {
   name: string;
   memberCount: number;
   resolvedConnectionId: string | null;
+}
+
+// Strip residual migration-leak prefixes from a group's display name
+// before it lands in the environment dropdown.
+//
+//   - `__global__:` is the synthetic name 0065/0068 wrote for tenant
+//     mirrors of global groups. 0070 backfills almost all of these to
+//     the source group's real name, but rows whose target name collides
+//     with an existing tenant group are left as-is to keep
+//     UNIQUE (org_id, name) intact. This branch is unique to this
+//     dropdown — the synthetic name does not surface in env-picker or
+//     the connections table.
+//   - `g_` is the 0062 1:1-backfill id-as-name shape and the same strip
+//     lives in `env-picker.tsx` and `admin/connections/columns.tsx`.
+//
+// Consolidation across the three call sites is tracked in #2432.
+function stripGroupPrefix(name: string): string {
+  if (name.startsWith("__global__:")) return name.slice("__global__:".length);
+  if (name.startsWith("g_")) return name.slice(2);
+  return name;
 }
 
 // Form state (flat, before mapping to API shape)
@@ -168,6 +190,7 @@ export function TaskFormDialog({
   const [validationError, setValidationError] = useState<string | null>(null);
   const [groups, setGroups] = useState<ConnectionGroupInfo[]>([]);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [fetchAttempt, setFetchAttempt] = useState(0);
 
   const submitMutation = useAdminMutation({
     invalidates: onSuccess,
@@ -182,11 +205,20 @@ export function TaskFormDialog({
     }
   }, [open, task]);
 
-  // Fetch environments
+  // Fetch environments. `fetchAttempt` is the retry handle — bumping it
+  // re-runs the effect so the user can recover from a transient 5xx
+  // without closing and reopening the dialog.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     async function fetchGroups() {
+      // Clear cached state before the fetch so a stale non-empty
+      // `groups` array from a previous open can't keep Save enabled
+      // across a refetch (e.g. the user reopens the dialog after an
+      // operator deleted the only environment, or hits Retry after a
+      // 5xx that follows a successful fetch). Without this the
+      // disabled-Save predicate trusts whatever was last set.
+      setGroups([]);
       setConnectionError(null);
       try {
         const res = await fetch(`${apiUrl}/api/v1/admin/connection-groups`, { credentials });
@@ -204,13 +236,14 @@ export function TaskFormDialog({
           });
         }
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
         console.warn("[TaskFormDialog] Failed to fetch environments:", err);
-        if (!cancelled) setConnectionError("Could not load environments");
+        if (!cancelled) setConnectionError(`Could not load environments: ${message}`);
       }
     }
     fetchGroups();
     return () => { cancelled = true; };
-  }, [open, apiUrl, credentials, isEdit]);
+  }, [open, apiUrl, credentials, isEdit, fetchAttempt]);
 
   // ── Field updaters ──────────────────────────────────────────────────
 
@@ -553,24 +586,60 @@ export function TaskFormDialog({
           {/* Environment */}
           <div className="grid gap-2">
             <Label>Environment</Label>
-            <Select
-              value={form.connectionGroupId}
-              onValueChange={(v) => updateField("connectionGroupId", v)}
-              disabled={groups.length === 0}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="Select environment" />
-              </SelectTrigger>
-              <SelectContent>
-                {groups.map((group) => (
+            {connectionError ? (
+              // Save is disabled (groups stays []), so the only useful
+              // surface here is an actionable failure: tell the user
+              // what broke and offer a retry that doesn't require
+              // closing the dialog.
+              <Alert variant="destructive">
+                <AlertTriangle />
+                <AlertTitle>Could not load environments</AlertTitle>
+                <AlertDescription>
+                  {connectionError}
+                </AlertDescription>
+                <div className="mt-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setFetchAttempt((n) => n + 1)}
+                  >
+                    Retry
+                  </Button>
+                </div>
+              </Alert>
+            ) : groups.length === 0 ? (
+              <Alert>
+                <AlertTriangle />
+                <AlertTitle>Create an environment first</AlertTitle>
+                <AlertDescription>
+                  Scheduled tasks run against an environment (a connection
+                  group). Add one before scheduling a task.
+                  {" "}
+                  <Link
+                    href="/admin/connections"
+                    className="font-medium underline underline-offset-2"
+                  >
+                    Go to Environments
+                  </Link>
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <Select
+                value={form.connectionGroupId}
+                onValueChange={(v) => updateField("connectionGroupId", v)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select environment" />
+                </SelectTrigger>
+                <SelectContent>
+                  {groups.map((group) => (
                     <SelectItem key={group.id} value={group.id}>
-                      {group.name} ({group.memberCount})
+                      {stripGroupPrefix(group.name)} ({group.memberCount})
                     </SelectItem>
                   ))}
-              </SelectContent>
-            </Select>
-            {connectionError && (
-              <p className="text-xs text-muted-foreground">{connectionError}</p>
+                </SelectContent>
+              </Select>
             )}
           </div>
 
@@ -626,7 +695,10 @@ export function TaskFormDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitMutation.saving}>
             Cancel
           </Button>
-          <Button onClick={handleSubmit} disabled={submitMutation.saving}>
+          <Button
+            onClick={handleSubmit}
+            disabled={submitMutation.saving || groups.length === 0}
+          >
             {submitMutation.saving && <Loader2 className="mr-2 size-4 animate-spin" />}
             {isEdit ? "Save" : "Create"}
           </Button>

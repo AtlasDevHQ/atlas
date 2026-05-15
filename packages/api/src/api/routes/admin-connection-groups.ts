@@ -100,6 +100,7 @@ function pgErrorMeta(err: unknown): { code?: string; constraint?: string } {
 /** Constraint name from migration 0062. Centralised so a future rename
  * surfaces in this one spot rather than in three string-equality checks. */
 const UNIQUE_NAME_CONSTRAINT = "uq_connection_groups_org_name";
+const CONNECTIONS_GROUP_FK = "fk_connections_group";
 
 function generateGroupId(): string {
   // Random hex tag avoids collisions with the `g_<connection_id>` shape the
@@ -548,8 +549,8 @@ adminConnectionGroups.openapi(deleteGroupRoute, async (c) =>
       return c.json({ error: "not_found", message: `Group "${id}" not found.`, requestId }, 404);
     }
 
-    // Reject delete-with-members so the admin sees a meaningful 409 with
-    // a member count rather than a raw 23503 from the underlying
+    // Reject delete-with-active-members so the admin sees a meaningful 409
+    // with a member count rather than a raw 23503 from the underlying
     // ON DELETE RESTRICT. The "split a group" workflow goes through
     // POST /:id/members with `unassign: true` per connection.
     const members = await internalQuery<{ count: string }>(
@@ -592,6 +593,20 @@ adminConnectionGroups.openapi(deleteGroupRoute, async (c) =>
         [id, orgId],
       );
     } catch (err) {
+      const meta = pgErrorMeta(err);
+      if (meta.code === "23503") {
+        const message = meta.constraint === CONNECTIONS_GROUP_FK
+          ? `Group "${id}" is still referenced by connection rows. Restore or permanently remove those connections before deleting it.`
+          : `Group "${id}" is still referenced by workspace content. Remove or update those references before deleting it.`;
+        return c.json(
+          {
+            error: "conflict",
+            message,
+            requestId,
+          },
+          409,
+        );
+      }
       log.error({ err: errorMessage(err), requestId, orgId, groupId: id }, "Failed to delete connection group");
       return c.json({ error: "internal_error", message: "Failed to delete connection group.", requestId }, 500);
     }

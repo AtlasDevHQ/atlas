@@ -192,6 +192,17 @@ export async function createConversation(opts: {
  * The caller is expected to treat `null` as "fall back to legacy
  * single-connection behavior" — the multi-environment routing only
  * kicks in when the connection participates in a group.
+ *
+ * #2415 — the org scope uses `IS NOT DISTINCT FROM` rather than plain
+ * `=`. Plain equality treats `NULL = NULL` as UNKNOWN, so a caller
+ * passing `orgId = null` (self-hosted single-tenant where the caller
+ * frame has no org context) silently collapsed the predicate to
+ * `org_id = '__global__'`. Any deploy whose connections.org_id was
+ * `NULL` or anything other than `__global__` lost its group binding
+ * and fell back to legacy single-connection routing — silently. The
+ * null-safe operator matches NULL to NULL while still rejecting a
+ * caller-null vs tenant-org mismatch, preserving the cross-tenant
+ * boundary.
  */
 export async function resolveGroupForConnection(
   connectionId: string,
@@ -202,7 +213,7 @@ export async function resolveGroupForConnection(
     const rows = await internalQuery<{ group_id: string | null }>(
       `SELECT group_id FROM connections
         WHERE id = $1
-          AND (org_id = $2 OR org_id = '__global__')
+          AND (org_id IS NOT DISTINCT FROM $2 OR org_id = '__global__')
         LIMIT 1`,
       [connectionId, orgId ?? null],
     );

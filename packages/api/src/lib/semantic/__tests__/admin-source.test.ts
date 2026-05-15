@@ -290,4 +290,108 @@ describe("mergeAdminEntities", () => {
     expect(result.entities).toHaveLength(1);
     expect(result.entities[0].name).toBe("ok");
   });
+
+  // ── Multi-group correctness (#2412) ─────────────────────────────
+  //
+  // `listEntitiesWithOverlay` returns one row per (org_id, name, group)
+  // triple. The merge step must preserve that — keying dedup on `name`
+  // alone collapses M-groups → 1 row and hides whichever group Postgres
+  // didn't surface first.
+
+  it("preserves both rows when the same name exists in two different groups", () => {
+    // Two groups, two `users` definitions — each must survive.
+    const result = mergeAdminEntities({
+      dbRows: [
+        dbRow({
+          name: "users",
+          connection_group_id: "g_prod_us",
+          yaml_content: "table: users\ndescription: US prod\n",
+        }),
+        dbRow({
+          name: "users",
+          connection_group_id: "g_prod_eu",
+          yaml_content: "table: users\ndescription: EU prod\n",
+        }),
+      ],
+      diskEntities: [],
+      diskWarnings: [],
+    });
+
+    expect(result.entities).toHaveLength(2);
+    const groups = result.entities.map((e) => e.connectionId).toSorted();
+    expect(groups).toEqual(["g_prod_eu", "g_prod_us"]);
+    const descriptions = result.entities.map((e) => e.description).toSorted();
+    expect(descriptions).toEqual(["EU prod", "US prod"]);
+  });
+
+  it("DB row in group X shadows disk entity with same name; DB row in group Y survives", () => {
+    // Disk entries have no group scope (effectively `null`). A DB row in
+    // a named group does NOT shadow a disk row — they're different
+    // (name, group) tuples. Only a DB row with matching `null` group
+    // (legacy / global) shadows.
+    const result = mergeAdminEntities({
+      dbRows: [
+        dbRow({
+          name: "users",
+          connection_group_id: "g_prod",
+          status: "draft",
+          yaml_content: "table: users\ndescription: From DB prod\n",
+        }),
+      ],
+      diskEntities: [
+        diskSummary({ table: "users", description: "From disk" }),
+      ],
+      diskWarnings: [],
+    });
+
+    expect(result.entities).toHaveLength(2);
+    const byGroup = new Map(result.entities.map((e) => [e.connectionId, e]));
+    expect(byGroup.get("g_prod")?.description).toBe("From DB prod");
+    expect(byGroup.get(null)?.description).toBe("From disk");
+    expect(byGroup.get(null)?.sourceKind).toBe("disk");
+  });
+
+  it("DB row with null group shadows disk row (both legacy null-scope)", () => {
+    // The legacy single-connection org case: DB row and disk row both
+    // null-scoped → they're the same logical entity. DB wins.
+    const result = mergeAdminEntities({
+      dbRows: [
+        dbRow({
+          name: "users",
+          connection_group_id: null,
+          status: "draft",
+          yaml_content: "table: users\ndescription: From DB null\n",
+        }),
+      ],
+      diskEntities: [
+        diskSummary({ table: "users", description: "From disk null" }),
+      ],
+      diskWarnings: [],
+    });
+
+    expect(result.entities).toHaveLength(1);
+    expect(result.entities[0].sourceKind).toBe("db");
+    expect(result.entities[0].description).toBe("From DB null");
+  });
+
+  it("sort is deterministic — same name across groups orders by name then group", () => {
+    // Two `users` (g_prod_eu, g_prod_us) and one `orders` (g_prod_us)
+    // — name asc, then group asc. Without a stable secondary key the
+    // order could flip between calls and break snapshot tests.
+    const result = mergeAdminEntities({
+      dbRows: [
+        dbRow({ name: "users", connection_group_id: "g_prod_us", yaml_content: "table: users\n" }),
+        dbRow({ name: "orders", connection_group_id: "g_prod_us", yaml_content: "table: orders\n" }),
+        dbRow({ name: "users", connection_group_id: "g_prod_eu", yaml_content: "table: users\n" }),
+      ],
+      diskEntities: [],
+      diskWarnings: [],
+    });
+
+    expect(result.entities.map((e) => `${e.name}|${e.connectionId}`)).toEqual([
+      "orders|g_prod_us",
+      "users|g_prod_eu",
+      "users|g_prod_us",
+    ]);
+  });
 });

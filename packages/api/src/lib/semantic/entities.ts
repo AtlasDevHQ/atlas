@@ -26,7 +26,7 @@ import * as yaml from "js-yaml";
 import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { Effect, Duration } from "effect";
-import { normalizeError } from "@atlas/api/lib/effect/errors";
+import { normalizeError, AmbiguousEntityError } from "@atlas/api/lib/effect/errors";
 import {
   coalescedScopeColumn,
   matchScopeAcrossAliases,
@@ -720,41 +720,136 @@ export async function listEntitiesWithOverlay(
   );
 }
 
+export { AmbiguousEntityError };
+
 /**
- * Get a single semantic entity by org, type, and name.
+ * Get a single semantic entity by org, type, name — optionally scoped to a
+ * specific `connection_group_id` (#2412).
+ *
+ * The 0063 partial unique index made `connection_group_id` part of the
+ * natural key. Multiple groups can each carry one row per status; the
+ * helper distinguishes:
+ *
+ * - "ambiguous": two DIFFERENT groups carry the entity (multi-environment
+ *   org needs to pick one).
+ * - "overlay": one group carries both a `published` row and a `draft`
+ *   row (the normal developer-mode state after any edit — NOT ambiguity).
+ *
+ * Contract:
+ * - `connectionGroupId === undefined` (omitted): backward-compatible
+ *   "find unique". DISTINCT-counts groups across published+draft rows.
+ *   Zero or one group → returns the overlay-effective row (draft beats
+ *   published; `draft_delete` returns null since the tombstone hides
+ *   the entity). Two or more groups → throws `AmbiguousEntityError`
+ *   (mapped to 409).
+ * - `connectionGroupId === string`: filters by the explicit group.
+ * - `connectionGroupId === null`: filters to legacy null-scope rows
+ *   (the `__global__` demo + pre-backfill rows). Uses
+ *   `IS NOT DISTINCT FROM` so the null match works.
  */
 export async function getEntity(
   orgId: string,
   entityType: SemanticEntityType,
   name: string,
+  connectionGroupId?: string | null,
 ): Promise<SemanticEntityRow | null> {
   if (!hasInternalDB()) return null;
 
+  if (connectionGroupId !== undefined) {
+    // Scoped lookup. Prefer the overlay-effective row when both draft
+    // and published exist for the same group: order by draft_delete=0,
+    // draft=1, published=2 so the LIMIT 1 returns draft over published.
+    // A `draft_delete` row at the top means the entity is hidden — the
+    // caller should treat that as "not found", same as the developer-
+    // mode overlay query (`listEntitiesWithOverlay`).
+    const rows = await internalQuery<SemanticEntityRow>(
+      `SELECT id, org_id, entity_type, name, yaml_content, connection_group_id, status, created_at, updated_at
+       FROM semantic_entities
+       WHERE org_id = $1 AND entity_type = $2 AND name = $3
+         AND connection_group_id IS NOT DISTINCT FROM $4
+         AND status IN ('published', 'draft', 'draft_delete')
+       ORDER BY CASE status
+                  WHEN 'draft_delete' THEN 0
+                  WHEN 'draft' THEN 1
+                  ELSE 2
+                END
+       LIMIT 1`,
+      [orgId, entityType, name, connectionGroupId],
+    );
+    const row = rows[0];
+    if (!row) return null;
+    // Tombstone hides the entity — match overlay semantics.
+    if (row.status === "draft_delete") return null;
+    return row;
+  }
+
+  // Unscoped path. Ambiguity is "multiple GROUPS", not "multiple rows" —
+  // a single group with both a published and a draft row is normal
+  // overlay state and must not 409. `DISTINCT ON (connection_group_id)`
+  // collapses each group to its overlay-effective row (draft_delete >
+  // draft > published in the inner ORDER BY) before the outer query
+  // counts distinct groups.
   const rows = await internalQuery<SemanticEntityRow>(
     `SELECT id, org_id, entity_type, name, yaml_content, connection_group_id, status, created_at, updated_at
-     FROM semantic_entities
-     WHERE org_id = $1 AND entity_type = $2 AND name = $3`,
+     FROM (
+       SELECT DISTINCT ON (connection_group_id)
+              id, org_id, entity_type, name, yaml_content, connection_group_id, status, created_at, updated_at
+       FROM semantic_entities
+       WHERE org_id = $1 AND entity_type = $2 AND name = $3
+         AND status IN ('published', 'draft', 'draft_delete')
+       ORDER BY connection_group_id,
+                CASE status
+                  WHEN 'draft_delete' THEN 0
+                  WHEN 'draft' THEN 1
+                  ELSE 2
+                END
+     ) overlay
+     WHERE status != 'draft_delete'
+     ORDER BY connection_group_id NULLS FIRST`,
     [orgId, entityType, name],
   );
-  return rows[0] ?? null;
+
+  if (rows.length === 0) return null;
+  if (rows.length === 1) return rows[0];
+
+  // Multi-group ambiguity. Surface the candidate groups so the route
+  // layer can tell the caller exactly which scope to disambiguate to.
+  const groups = rows
+    .map((r) => r.connection_group_id ?? null)
+    .toSorted((a, b) => (a ?? "").localeCompare(b ?? ""));
+  throw new AmbiguousEntityError({
+    message:
+      `Entity "${name}" exists in ${rows.length} environments. ` +
+      `Pass connectionGroupId to disambiguate.`,
+    entityName: name,
+    entityType,
+    groups,
+  });
 }
 
 /**
- * Delete a semantic entity by org, type, and name.
+ * Delete a semantic entity by org, type, name, and group.
  * Returns true if a row was deleted.
+ *
+ * `connectionGroupId` is required (#2412) — the 0063 partial index made
+ * `connection_group_id` part of the natural key, so a delete without it
+ * would cascade across every group's copy of the entity. Pass `null` to
+ * delete a legacy null-scope row (matches `IS NOT DISTINCT FROM`).
  */
 export async function deleteEntity(
   orgId: string,
   entityType: SemanticEntityType,
   name: string,
+  connectionGroupId: string | null,
 ): Promise<boolean> {
   if (!hasInternalDB()) return false;
 
   const rows = await internalQuery<{ id: string }>(
     `DELETE FROM semantic_entities
      WHERE org_id = $1 AND entity_type = $2 AND name = $3
+       AND connection_group_id IS NOT DISTINCT FROM $4
      RETURNING id`,
-    [orgId, entityType, name],
+    [orgId, entityType, name, connectionGroupId],
   );
   return rows.length > 0;
 }

@@ -20,6 +20,14 @@ export interface FetchError {
   requestId?: string;
   code?: string;
   enrollmentUrl?: string;
+  /**
+   * Candidate groups returned with a 409 `entity_ambiguous` response
+   * (#2412). The UI uses this to render a disambiguation picker
+   * instead of a wall-of-text error. `null` entries represent legacy
+   * unscoped rows (`__global__` / pre-backfill); keep them so the
+   * picker can offer "legacy / global" as a distinct choice.
+   */
+  groups?: ReadonlyArray<string | null>;
 }
 
 /**
@@ -43,6 +51,7 @@ export function buildFetchError(input: {
   code?: string;
   requestId?: string;
   enrollmentUrl?: string;
+  groups?: ReadonlyArray<string | null>;
 }): FetchError {
   const message = input.message?.trim();
   if (!message) {
@@ -62,6 +71,7 @@ export function buildFetchError(input: {
       ...(input.code && { code: input.code }),
       ...(input.requestId && { requestId: input.requestId }),
       ...(input.enrollmentUrl && { enrollmentUrl: input.enrollmentUrl }),
+      ...(input.groups && { groups: input.groups }),
     };
   }
   return {
@@ -70,6 +80,7 @@ export function buildFetchError(input: {
     ...(input.code && { code: input.code }),
     ...(input.requestId && { requestId: input.requestId }),
     ...(input.enrollmentUrl && { enrollmentUrl: input.enrollmentUrl }),
+    ...(input.groups && { groups: input.groups }),
   };
 }
 
@@ -83,6 +94,7 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
   let requestId: string | undefined;
   let code: string | undefined;
   let enrollmentUrl: string | undefined;
+  let groups: ReadonlyArray<string | null> | undefined;
   try {
     const body: unknown = await res.json();
     if (typeof body === "object" && body !== null) {
@@ -99,6 +111,14 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
       if (typeof obj.error === "string") code = obj.error;
       if (typeof obj.enrollmentUrl === "string" && obj.enrollmentUrl.length > 0) {
         enrollmentUrl = obj.enrollmentUrl;
+      }
+      // 409 `entity_ambiguous` payload (#2412). The picker UI keys on
+      // `groups`; preserve null entries (legacy / `__global__`) so the
+      // picker can offer them as a distinct choice.
+      if (Array.isArray(obj.groups)) {
+        groups = obj.groups.filter(
+          (g): g is string | null => g === null || typeof g === "string",
+        );
       }
     }
   } catch (err) {
@@ -123,6 +143,7 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
     code,
     requestId,
     enrollmentUrl,
+    groups,
   });
 }
 
@@ -161,6 +182,21 @@ export function friendlyError(err: FetchError): string {
   if (err.code === "schema_mismatch" && err.status === undefined) {
     return appendRequestId(
       "The server returned data this version of the app can't read. This usually means the server and app are out of sync — contact your administrator or try again later.",
+      err.requestId,
+    );
+  }
+
+  // 409 `entity_ambiguous` (#2412). The server's message references the
+  // API parameter name (`connectionGroupId`) which is jargon to end
+  // users — translate to "environment" language and surface candidate
+  // groups from the structured payload when available.
+  if (err.code === "entity_ambiguous") {
+    const labels = err.groups
+      ? err.groups.map((g) => (g === null ? "legacy / global" : g.replace(/^g_/, "")))
+      : [];
+    const list = labels.length > 0 ? ` (${labels.join(", ")})` : "";
+    return appendRequestId(
+      `This entity exists in multiple environments${list}. Pick the environment you want to act on.`,
       err.requestId,
     );
   }

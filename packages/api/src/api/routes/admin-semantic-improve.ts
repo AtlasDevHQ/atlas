@@ -548,11 +548,16 @@ adminSemanticImprove.openapi(approveProposalRoute, async (c) =>
       return c.json({ error: "already_reviewed", message: `Proposal ${proposalIndex} has already been reviewed.`, requestId }, 409);
     }
 
-    // Apply the amendment to YAML
+    // Apply the amendment to YAML. AmbiguousEntityError must re-throw so
+    // the route layer maps it to 409 with `groups` — wrapping it in 500
+    // `apply_failed` would hide the structural ambiguity the operator
+    // needs to resolve (#2412).
     try {
       const { applyAmendmentToEntity } = await import("@atlas/api/lib/semantic/expert/apply");
       await applyAmendmentToEntity(orgId, proposal, requestId);
     } catch (err) {
+      const { AmbiguousEntityError } = await import("@atlas/api/lib/semantic/entities");
+      if (err instanceof AmbiguousEntityError) throw err;
       log.error(
         { err: err instanceof Error ? err.message : String(err), requestId, orgId },
         "Failed to apply amendment",

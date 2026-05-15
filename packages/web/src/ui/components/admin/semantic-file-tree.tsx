@@ -9,41 +9,57 @@ import { cn } from "@/lib/utils";
 export type SemanticSelection =
   | { type: "catalog" }
   | { type: "glossary" }
-  | { type: "entity"; name: string }
+  | {
+      type: "entity";
+      name: string;
+      /**
+       * Optional connection-group qualifier (#2412). Multi-group orgs
+       * can host the same entity name in more than one environment;
+       * this disambiguates which row the detail / edit / delete
+       * handlers act on. `null` (legacy / global) and `undefined`
+       * (caller has not chosen) are intentionally distinct.
+       */
+      connectionGroupId?: string | null;
+    }
   | { type: "metrics"; file?: string }
   | null;
 
+/**
+ * Entry in the file-tree's entity list. Multi-group orgs surface the
+ * same `name` under multiple `connectionGroupId`s — keying off the pair
+ * keeps React keys unique and lets the badge tell the admin which
+ * environment a row belongs to (#2412).
+ */
+export interface SemanticTreeEntity {
+  readonly name: string;
+  /** Group id (e.g. `g_prod_us`) or `null` for the legacy / unscoped row. */
+  readonly connectionGroupId: string | null;
+  /** `true` when the row carries a draft overlay; renders the amber accent. */
+  readonly draft?: boolean;
+}
+
 interface SemanticFileTreeProps {
-  entityNames: string[];
+  entities: ReadonlyArray<SemanticTreeEntity>;
   metricFileNames: string[];
   hasCatalog: boolean;
   hasGlossary: boolean;
   selection: SemanticSelection;
   onSelect: (selection: SemanticSelection) => void;
-  /**
-   * Names of entities with `status === 'draft'`. Rendered with a quiet
-   * amber accent so admins scanning the tree can spot unpublished edits
-   * without the treatment shouting at non-draft rows (#1435).
-   */
-  draftEntityNames?: ReadonlySet<string>;
-  /**
-   * Map of entity name → environment / group label (#2340). When
-   * provided, the file-tree renders a quiet trailing badge next to the
-   * entity name showing the environment (e.g. `prod`). Multi-member
-   * groups collapse to one row server-side; the badge tells the admin
-   * which environment that row applies to.
-   *
-   * Entities without a source mapping render unbadged — the legacy
-   * single-connection-org UX is unchanged.
-   */
-  entitySources?: ReadonlyMap<string, string>;
   className?: string;
 }
 
 function isSelected(selection: SemanticSelection, target: SemanticSelection): boolean {
   if (!selection || !target) return false;
   if (selection.type !== target.type) return false;
-  if (selection.type === "entity" && target.type === "entity") return selection.name === target.name;
+  if (selection.type === "entity" && target.type === "entity") {
+    if (selection.name !== target.name) return false;
+    // Group qualifier must also match (#2412). `null` and `undefined`
+    // both mean "no scope chosen yet" and compare equal so the legacy
+    // single-group flow keeps highlighting the row when group is unset.
+    const a = selection.connectionGroupId ?? null;
+    const b = target.connectionGroupId ?? null;
+    return a === b;
+  }
   if (selection.type === "metrics" && target.type === "metrics") return selection.file === target.file;
   return true;
 }
@@ -137,14 +153,12 @@ function FolderSection({
 }
 
 export function SemanticFileTree({
-  entityNames,
+  entities,
   metricFileNames,
   hasCatalog,
   hasGlossary,
   selection,
   onSelect,
-  draftEntityNames,
-  entitySources,
   className,
 }: SemanticFileTreeProps) {
   return (
@@ -173,22 +187,30 @@ export function SemanticFileTree({
           )}
 
           <FolderSection name="entities">
-            {entityNames.length === 0 ? (
+            {entities.length === 0 ? (
               <p className="py-2 text-xs text-muted-foreground" style={{ paddingLeft: "40px" }}>
                 No entities
               </p>
             ) : (
-              entityNames.map((name) => (
-                <FileItem
-                  key={name}
-                  name={`${name}.yml`}
-                  selected={isSelected(selection, { type: "entity", name })}
-                  onClick={() => onSelect({ type: "entity", name })}
-                  indent={1}
-                  draft={draftEntityNames?.has(name) ?? false}
-                  source={entitySources?.get(name)}
-                />
-              ))
+              entities.map((entry) => {
+                const key = `${entry.name}|${entry.connectionGroupId ?? ""}`;
+                const target: SemanticSelection = {
+                  type: "entity",
+                  name: entry.name,
+                  connectionGroupId: entry.connectionGroupId,
+                };
+                return (
+                  <FileItem
+                    key={key}
+                    name={`${entry.name}.yml`}
+                    selected={isSelected(selection, target)}
+                    onClick={() => onSelect(target)}
+                    indent={1}
+                    draft={entry.draft ?? false}
+                    source={entry.connectionGroupId ?? undefined}
+                  />
+                );
+              })
             )}
           </FolderSection>
 

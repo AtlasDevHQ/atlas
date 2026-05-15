@@ -78,6 +78,12 @@ const EntityBodySchema = z.object({
   joins: z.array(JoinSchema).optional().default([]),
   query_patterns: z.array(QueryPatternSchema).optional().default([]),
   connectionId: z.string().optional(),
+  // Group scope for multi-environment orgs (#2412). When the entity name
+  // exists in more than one group, the FE must pick one or the backend
+  // will 409. Empty string deliberately encodes "legacy null-group" so
+  // a workspace mixing `__global__` demo rows with named-group rows can
+  // still address the demo row explicitly.
+  connectionGroupId: z.string().optional(),
 });
 
 export type EntityBody = z.infer<typeof EntityBodySchema>;
@@ -118,6 +124,9 @@ const VersionDetailResponseSchema = z.object({
 
 const RollbackBodySchema = z.object({
   versionId: z.string().uuid(),
+  // Group scope for multi-environment orgs (#2412). Empty string →
+  // legacy null-group row. Missing → backend disambiguates or 409s.
+  connectionGroupId: z.string().optional(),
 });
 
 const RollbackResponseSchema = z.object({
@@ -129,6 +138,22 @@ const RollbackResponseSchema = z.object({
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Decode the `?connectionGroupId=<value>` query param (#2412).
+ *
+ * - Missing param → `undefined` → backend uses unique-or-409 default.
+ * - Empty string `?connectionGroupId=` → `null` → match legacy null-scope row.
+ * - Non-empty string → that group id.
+ *
+ * This mirrors the mapping in `admin.ts`'s GET handler so a single
+ * vocabulary holds across every editor route.
+ */
+function parseConnectionGroupIdQuery(raw: string | undefined): string | null | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === "") return null;
+  return raw;
+}
 
 /**
  * Convert structured entity data to YAML string.
@@ -247,9 +272,18 @@ export const deleteStructuredEntityRoute = createRoute({
   path: "/semantic/entities/edit/{name}",
   tags: ["Admin — Semantic"],
   summary: "Delete a semantic entity",
-  description: "Deletes the named entity from the org-scoped semantic_entities table and disk.",
+  description:
+    "Deletes the named entity from the org-scoped semantic_entities table and disk. " +
+    "Pass `?connectionGroupId=<group>` to scope the delete when the same entity name " +
+    "exists in multiple environments — without it the backend returns 409 (#2412).",
   request: {
     params: createParamSchema("name", "users"),
+    query: z.object({
+      connectionGroupId: z.string().optional().openapi({
+        param: { name: "connectionGroupId", in: "query" },
+        example: "g_prod_us",
+      }),
+    }),
   },
   responses: {
     200: {
@@ -496,10 +530,17 @@ export function registerSemanticEditorRoutes(
         getEntity,
         createVersion,
         generateChangeSummary,
+        AmbiguousEntityError,
       } = await import("@atlas/api/lib/semantic/entities");
 
+      // Group scope. Body field over query param so the structured
+      // editor's POST body is the single source of truth. Empty string
+      // → null (explicit legacy/unscoped). Undefined → backend
+      // disambiguates (or 409s with candidate groups).
+      const scope = parseConnectionGroupIdQuery(body.connectionGroupId);
+
       // Fetch previous version for change summary (before upsert overwrites it)
-      const previousEntity = await getEntity(orgId, "entity", name);
+      const previousEntity = await getEntity(orgId, "entity", name, scope);
       const oldYaml = previousEntity?.yaml_content ?? null;
 
       // All writes stage as drafts regardless of `atlasMode` (#2177). The
@@ -508,9 +549,11 @@ export function registerSemanticEditorRoutes(
       // surfaces the draft count.
       await upsertDraftEntity(orgId, "entity", name, yamlContent, body.connectionId);
 
-      // Create version snapshot — non-fatal
+      // Create version snapshot — non-fatal. Narrow the catch so tagged
+      // errors (e.g. AmbiguousEntityError) re-throw and surface their
+      // proper HTTP status instead of getting buried in a warn-log.
       try {
-        const entity = await getEntity(orgId, "entity", name);
+        const entity = await getEntity(orgId, "entity", name, scope);
         if (entity) {
           const changeSummary = await generateChangeSummary(oldYaml, yamlContent);
           await createVersion(
@@ -519,6 +562,7 @@ export function registerSemanticEditorRoutes(
           );
         }
       } catch (versionErr) {
+        if (versionErr instanceof AmbiguousEntityError) throw versionErr;
         log.warn(
           { err: versionErr instanceof Error ? versionErr.message : String(versionErr), requestId, orgId, name },
           "Entity saved but version snapshot failed — version history may be incomplete",
@@ -575,10 +619,16 @@ export function registerSemanticEditorRoutes(
         deleteDraftEntityForGroup,
       } = await import("@atlas/api/lib/semantic/entities");
 
+      // Group scope from query (#2412). Forward to getEntity so multi-
+      // group orgs can address the right environment; without it, an
+      // ambiguous lookup throws AmbiguousEntityError → 409 with the
+      // candidate groups.
+      const scope = parseConnectionGroupIdQuery(c.req.query("connectionGroupId"));
+
       // All deletes stage as drafts regardless of `atlasMode` (#2177).
       // Resolve the existing row so we know whether to discard a draft
       // outright or stamp a tombstone over a published row.
-      const existing = await getEntity(orgId, "entity", name);
+      const existing = await getEntity(orgId, "entity", name, scope);
       if (!existing) {
         return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
       }
@@ -792,7 +842,8 @@ export function registerSemanticEditorRoutes(
   admin.openapi(postRollbackRoute, async (c) =>
     runHandler(c, "rollback semantic entity", async () => {
       const { name } = c.req.valid("param");
-      const { versionId } = c.req.valid("json");
+      const body = c.req.valid("json");
+      const { versionId } = body;
       const { authResult, requestId } = await authFn(c, "admin:semantic");
 
       const orgId = authResult.user?.activeOrganizationId;
@@ -804,7 +855,17 @@ export function registerSemanticEditorRoutes(
         return c.json({ error: "not_available", message: "Rollback requires an internal database (DATABASE_URL).", requestId }, 501);
       }
 
-      const { getVersion, getEntity, upsertDraftEntity, createVersion, generateChangeSummary } = await import("@atlas/api/lib/semantic/entities");
+      const {
+        getVersion,
+        getEntity,
+        upsertDraftEntity,
+        createVersion,
+        generateChangeSummary,
+        AmbiguousEntityError,
+      } = await import("@atlas/api/lib/semantic/entities");
+
+      // Group scope for multi-environment orgs (#2412).
+      const scope = parseConnectionGroupIdQuery(body.connectionGroupId);
 
       // Fetch the target version
       const targetVersion = await getVersion(versionId, orgId);
@@ -813,7 +874,7 @@ export function registerSemanticEditorRoutes(
       }
 
       // Get current entity for change summary
-      const currentEntity = await getEntity(orgId, "entity", name);
+      const currentEntity = await getEntity(orgId, "entity", name, scope);
       const currentYaml = currentEntity?.yaml_content ?? null;
 
       // Rollback stages the target YAML as a draft (#2177). The admin
@@ -821,10 +882,12 @@ export function registerSemanticEditorRoutes(
       // new published row, preserving the existing publish gate.
       await upsertDraftEntity(orgId, "entity", name, targetVersion.yaml_content);
 
-      // Create a new version snapshot for the rollback
+      // Create a new version snapshot for the rollback. Re-throw tagged
+      // errors so AmbiguousEntityError surfaces as 409 with `groups`
+      // instead of getting buried in a "version snapshot failed" warn.
       let newVersionNumber = 0;
       try {
-        const entity = await getEntity(orgId, "entity", name);
+        const entity = await getEntity(orgId, "entity", name, scope);
         if (entity) {
           const changeSummary = await generateChangeSummary(currentYaml, targetVersion.yaml_content);
           const rollbackSummary = `Rolled back to v${targetVersion.version_number}${changeSummary ? ` (${changeSummary})` : ""}`;
@@ -837,6 +900,7 @@ export function registerSemanticEditorRoutes(
           newVersionNumber = newVersion?.version_number ?? 0;
         }
       } catch (versionErr) {
+        if (versionErr instanceof AmbiguousEntityError) throw versionErr;
         log.warn(
           { err: versionErr instanceof Error ? versionErr.message : String(versionErr), requestId, orgId, name },
           "Rollback succeeded but version snapshot failed",

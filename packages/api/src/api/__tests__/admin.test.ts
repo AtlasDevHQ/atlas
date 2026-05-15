@@ -327,7 +327,17 @@ const mockListVersions: Mock<(...args: unknown[]) => Promise<{ versions: unknown
 const mockGetVersion: Mock<(...args: unknown[]) => Promise<unknown>> = mock(() => Promise.resolve(null));
 const mockGenerateChangeSummary: Mock<(oldYaml: string | null, newYaml: string) => Promise<string | null>> = mock(() => Promise.resolve("Initial version"));
 
+// Pull the real tagged error class through so `instanceof` checks in
+// route handlers (e.g. version-snapshot catches that must re-throw
+// ambiguity 409s) compare against the same class the production code
+// throws. Without this the mocked import returns `undefined` and the
+// `instanceof` always evaluates false (or worse, throws TypeError).
+const { AmbiguousEntityError: RealAmbiguousEntityError } = await import(
+  "@atlas/api/lib/effect/errors"
+);
+
 mock.module("@atlas/api/lib/semantic/entities", () => ({
+  AmbiguousEntityError: RealAmbiguousEntityError,
   listEntityRows: mockListEntitiesAdmin,
   listEntitiesWithOverlay: mockListEntitiesWithOverlay,
   listEntities: mock(() => Promise.resolve([])),
@@ -908,7 +918,9 @@ describe("GET /api/v1/admin/semantic/entities/:name — org-scoped + DB overlay"
 
     // Confirm the DB lookup was invoked with the org-scoped key, not the
     // base-root probe. Catches a silent revert of the fallback branch.
-    expect(mockGetEntityAdmin).toHaveBeenCalledWith("org-saas-1", "entity", "apikey");
+    // The 4th arg (`connectionGroupId`) is undefined when the request
+    // omits the disambiguation query param (#2412).
+    expect(mockGetEntityAdmin).toHaveBeenCalledWith("org-saas-1", "entity", "apikey", undefined);
   });
 
   it("returns 404 with requestId when both disk and DB miss", async () => {
@@ -976,6 +988,59 @@ describe("GET /api/v1/admin/semantic/entities/:name — org-scoped + DB overlay"
       expect(body.message).toContain("malformed");
       expect(typeof body.requestId).toBe("string");
     }
+  });
+
+  it("scopes the DB lookup when ?connectionGroupId=<group> is passed (#2412)", async () => {
+    // Multi-group orgs disambiguate via the query param. The route must
+    // forward the value to `getEntity` so the SQL filters to that group.
+    setOrgScopedAdmin("org-saas-1");
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "ent-multi",
+      org_id: "org-saas-1",
+      entity_type: "entity",
+      name: "users",
+      yaml_content: "table: users\ndescription: prod US\n",
+      connection_group_id: "g_prod_us",
+      status: "published",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/users?connectionGroupId=g_prod_us"),
+    );
+    expect(res.status).toBe(200);
+    expect(mockGetEntityAdmin).toHaveBeenCalledWith("org-saas-1", "entity", "users", "g_prod_us");
+  });
+
+  it("returns 409 with candidate groups when the name is ambiguous (#2412)", async () => {
+    // Without `?connectionGroupId`, the underlying `getEntity` throws
+    // `AmbiguousEntityError` when multiple groups carry the entity. The
+    // route translates that into a 409 with `groups` so the UI can render
+    // a picker instead of silently showing whichever row Postgres saw first.
+    setOrgScopedAdmin("org-saas-1");
+    mockGetEntityAdmin.mockImplementationOnce(async () => {
+      const { AmbiguousEntityError } = await import("@atlas/api/lib/effect/errors");
+      throw new AmbiguousEntityError({
+        message: 'Entity "users" exists in 2 environments. Pass connectionGroupId to disambiguate.',
+        entityName: "users",
+        entityType: "entity",
+        groups: ["g_prod_eu", "g_prod_us"],
+      });
+    });
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/users"));
+    expect(res.status).toBe(409);
+
+    const body = (await res.json()) as {
+      error: string;
+      message: string;
+      groups: Array<string | null>;
+      requestId: string;
+    };
+    expect(body.error).toBe("entity_ambiguous");
+    expect(body.groups).toEqual(["g_prod_eu", "g_prod_us"]);
+    expect(typeof body.requestId).toBe("string");
   });
 
   it("does not consult the DB overlay when no active org is present", async () => {

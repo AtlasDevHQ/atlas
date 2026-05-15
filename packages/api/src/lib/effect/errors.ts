@@ -208,6 +208,39 @@ export class UnsafeRegionMigrationResetError extends Data.TaggedError("UnsafeReg
   readonly sourceRegion: string;
 }> {}
 
+// ── Semantic Entities ──────────────────────────────────────────────
+
+/**
+ * Narrow union for `AmbiguousEntityError.entityType`. Mirrors
+ * `SemanticEntityType` from `semantic/entities.ts` — declared inline
+ * here to avoid a circular import (errors.ts ↔ semantic/entities.ts).
+ * Adding a new semantic entity kind requires updating both definitions;
+ * the test suite asserts they stay in lockstep.
+ */
+export type AmbiguousEntityKind = "entity" | "metric" | "glossary" | "catalog";
+
+/**
+ * `getEntity(orgId, type, name)` resolved more than one row because the
+ * same `(org, entity_type, name)` triple exists in multiple
+ * `connection_group_id` scopes (#2412). Callers must disambiguate by
+ * passing the group explicitly.
+ *
+ * Maps to HTTP 409 Conflict — the caller asked an ambiguous question.
+ * The route layer returns the candidate groups so the UI can prompt the
+ * admin to pick one (`POST` with `connectionGroupId` set).
+ *
+ * Invariant: `groups.length >= 2`. Caller paths in `getEntity` only
+ * throw when the DISTINCT-on-group probe returned more than one row, so
+ * a single-candidate ambiguity cannot fire in production. Tests that
+ * construct this error by hand should respect the same constraint.
+ */
+export class AmbiguousEntityError extends Data.TaggedError("AmbiguousEntityError")<{
+  readonly message: string;
+  readonly entityName: string;
+  readonly entityType: AmbiguousEntityKind;
+  readonly groups: ReadonlyArray<string | null>;
+}> {}
+
 // ── Scheduler ──────────────────────────────────────────────────────
 
 /** Scheduled task execution timed out. */
@@ -256,6 +289,7 @@ export type AtlasError =
   | ActionTimeoutError
   | ConversationBudgetExceededError
   | UnsafeRegionMigrationResetError
+  | AmbiguousEntityError
   | SchedulerTaskTimeoutError
   | SchedulerExecutionError
   | DeliveryError
@@ -294,6 +328,7 @@ export const ATLAS_ERROR_TAG_LIST = [
   "ActionTimeoutError",
   "ConversationBudgetExceededError",
   "UnsafeRegionMigrationResetError",
+  "AmbiguousEntityError",
   "SchedulerTaskTimeoutError",
   "SchedulerExecutionError",
   "DeliveryError",

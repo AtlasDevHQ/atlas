@@ -81,6 +81,7 @@ type HttpErrorCode =
   | "forbidden"
   | "not_found"
   | "conflict"
+  | "entity_ambiguous"
   | "unprocessable_entity"
   | "rate_limited"
   | "conversation_budget_exceeded"
@@ -93,6 +94,15 @@ interface HttpErrorMapping {
   readonly code: HttpErrorCode;
   readonly message: string;
   readonly headers?: Readonly<Record<string, string>>;
+  /**
+   * Extra fields merged into the response body alongside
+   * `{ error, message, requestId }`. Use for tagged errors that need to
+   * surface structured detail to the client — e.g. `AmbiguousEntityError`
+   * carrying a `groups` array so the UI can render a disambiguation
+   * picker (#2412). Field names must not collide with `error`,
+   * `message`, or `requestId` — they would be shadowed silently.
+   */
+  readonly body?: Readonly<Record<string, unknown>>;
 }
 
 /**
@@ -155,6 +165,17 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
     // ── 409 Conflict — operation rejected because of resource state ─
     case "UnsafeRegionMigrationResetError":
       return { status: 409, code: "conflict", message: error.message };
+    case "AmbiguousEntityError":
+      return {
+        status: 409,
+        code: "entity_ambiguous",
+        message: error.message,
+        body: {
+          groups: [...error.groups],
+          entityName: error.entityName,
+          entityType: error.entityType,
+        },
+      };
 
     // ── 422 Unprocessable Entity — plugin rejected ───────────────
     case "PluginRejectedError":
@@ -317,9 +338,18 @@ function classifyError(
   // 4. Known Atlas tagged error → mapped HTTP status
   if (isTaggedError(error) && isAtlasError(error)) {
     const mapped = mapTaggedError(error);
+    // Reserved keys (`error`, `message`, `requestId`) come last so a
+    // `body` field that accidentally collides with one of them can't
+    // forge the response envelope.
+    const responseBody = {
+      ...(mapped.body ?? {}),
+      error: mapped.code,
+      message: mapped.message,
+      requestId,
+    };
     return new HTTPException(mapped.status, {
       res: Response.json(
-        { error: mapped.code, message: mapped.message, requestId },
+        responseBody,
         { status: mapped.status, headers: mapped.headers },
       ),
     });

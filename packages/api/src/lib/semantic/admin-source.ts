@@ -255,13 +255,27 @@ function diskToAdminSummary(e: EntitySummary): AdminEntitySummary {
  * Combine DB rows + disk entities into a sorted, deduplicated list. Pure —
  * no I/O. Callers pre-filter DB rows via `listEntitiesWithOverlay`
  * (developer mode) or `listEntityRows(..., "published")` (published mode);
- * this helper just merges with DB-shadows-disk on `name` collision.
+ * this helper just merges with DB-shadows-disk on `(name, group)` collision.
  *
- * Dedup key is the projected summary `name`, not the DB row's column —
- * those can diverge when the YAML carries a `name:` distinct from `table`.
- * Two entities sharing `table` but with different display names produce
- * two list entries (correct: they're different things).
+ * Dedup key is `(summary.name, connectionId)` (#2412). The 0063 partial
+ * unique index made `connection_group_id` part of the natural key —
+ * collapsing on `name` alone silently dropped rows when the same entity
+ * existed in two groups (e.g. `users` in `g_prod_us` AND `g_prod_eu`),
+ * surviving whichever Postgres surfaced first. Two entities sharing
+ * `table` but with different display names also produce two entries
+ * (correct: they're different things), and so do same-name entities in
+ * different groups.
+ *
+ * Sort is deterministic on `(name, group)` so M-group orgs read
+ * left-to-right in a stable order; disk entries (null group) sort before
+ * any named group when names match.
  */
+function dedupKey(name: string, groupId: string | null): string {
+  // `\0` is illegal in YAML names and connection-group ids, so it's a safe
+  // delimiter — `users` + `g_users` cannot collide with another row.
+  return `${name}\0${groupId ?? ""}`;
+}
+
 export function mergeAdminEntities(input: {
   readonly dbRows: readonly SemanticEntityRow[];
   readonly diskEntities: readonly EntitySummary[];
@@ -273,19 +287,29 @@ export function mergeAdminEntities(input: {
   for (const row of input.dbRows) {
     const summary = parseRowToAdminSummary(row);
     if (!summary) continue;
-    if (seen.has(summary.name)) continue;
-    seen.add(summary.name);
+    const key = dedupKey(summary.name, summary.connectionId);
+    if (seen.has(key)) continue;
+    seen.add(key);
     merged.push(summary);
   }
 
   for (const entry of input.diskEntities) {
     const summary = diskToAdminSummary(entry);
-    if (seen.has(summary.name)) continue;
-    seen.add(summary.name);
+    const key = dedupKey(summary.name, summary.connectionId);
+    if (seen.has(key)) continue;
+    seen.add(key);
     merged.push(summary);
   }
 
-  merged.sort((a, b) => a.name.localeCompare(b.name));
+  merged.sort((a, b) => {
+    const byName = a.name.localeCompare(b.name);
+    if (byName !== 0) return byName;
+    // Within a name, null-group (disk / legacy) sorts before named groups,
+    // then named groups sort lexicographically.
+    const ag = a.connectionId ?? "";
+    const bg = b.connectionId ?? "";
+    return ag.localeCompare(bg);
+  });
   return { entities: merged, warnings: [...input.diskWarnings] };
 }
 
@@ -327,6 +351,14 @@ interface GetAdminEntityOptions {
   readonly name: string;
   readonly orgId?: string;
   readonly requestId?: string;
+  /**
+   * Scope the DB lookup to a specific `connection_group_id` (#2412).
+   * Required for multi-group orgs where the same entity name exists in
+   * more than one group — without it the DB call throws
+   * `AmbiguousEntityError`. Pass `null` to scope to legacy null-group
+   * rows, omit to use the unique-or-409 default.
+   */
+  readonly connectionGroupId?: string | null;
 }
 
 /**
@@ -349,7 +381,7 @@ interface GetAdminEntityOptions {
  *   empty workspace.
  */
 export async function getAdminEntity(opts: GetAdminEntityOptions): Promise<AdminEntityDetail | null> {
-  const { name, orgId, requestId } = opts;
+  const { name, orgId, requestId, connectionGroupId } = opts;
 
   if (!isValidEntityName(name)) {
     log.warn({ requestId, name }, "getAdminEntity: rejected invalid entity name");
@@ -378,7 +410,10 @@ export async function getAdminEntity(opts: GetAdminEntityOptions): Promise<Admin
 
   // 2. DB fallback
   if (orgId && hasInternalDB()) {
-    const row = await getEntity(orgId, "entity", name);
+    // Pass `connectionGroupId` through verbatim — `undefined` triggers
+    // the unique-or-409 path in `getEntity`, an explicit `null` or
+    // string scopes to that group. The route layer decides which.
+    const row = await getEntity(orgId, "entity", name, connectionGroupId);
     if (!row) return null;
 
     const detail = parseEntityYaml(name, "db", () => yaml.load(row.yaml_content), requestId);

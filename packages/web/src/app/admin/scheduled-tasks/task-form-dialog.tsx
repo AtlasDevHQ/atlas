@@ -24,8 +24,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Plus, X, Clock } from "lucide-react";
+import Link from "next/link";
+import { AlertTriangle, Loader2, Plus, X, Clock } from "lucide-react";
 import {
   CRON_PRESETS,
   presetFromCron,
@@ -47,6 +49,18 @@ interface ConnectionGroupInfo {
   name: string;
   memberCount: number;
   resolvedConnectionId: string | null;
+}
+
+// Belt-and-suspenders strip for migration leak-through (#2417). 0070
+// backfills tenant-mirrored global groups, but rows that would collide
+// with an existing tenant name are left as `__global__:<id>` to avoid
+// violating the UNIQUE (org_id, name) index. The `g_` branch mirrors
+// `env-picker.tsx` / `connections/columns.tsx` for admin-renamed rows.
+// Consolidation into a shared util tracked as a separate follow-up.
+function stripGroupPrefix(name: string): string {
+  if (name.startsWith("__global__:")) return name.slice("__global__:".length);
+  if (name.startsWith("g_")) return name.slice(2);
+  return name;
 }
 
 // Form state (flat, before mapping to API shape)
@@ -553,22 +567,40 @@ export function TaskFormDialog({
           {/* Environment */}
           <div className="grid gap-2">
             <Label>Environment</Label>
-            <Select
-              value={form.connectionGroupId}
-              onValueChange={(v) => updateField("connectionGroupId", v)}
-              disabled={groups.length === 0}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="Select environment" />
-              </SelectTrigger>
-              <SelectContent>
-                {groups.map((group) => (
+            {groups.length === 0 && !connectionError ? (
+              <Alert>
+                <AlertTriangle />
+                <AlertTitle>Create an environment first</AlertTitle>
+                <AlertDescription>
+                  Scheduled tasks run against an environment (a connection
+                  group). Add one before scheduling a task.
+                  {" "}
+                  <Link
+                    href="/admin/connections"
+                    className="font-medium underline underline-offset-2"
+                  >
+                    Go to Environments
+                  </Link>
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <Select
+                value={form.connectionGroupId}
+                onValueChange={(v) => updateField("connectionGroupId", v)}
+                disabled={groups.length === 0}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select environment" />
+                </SelectTrigger>
+                <SelectContent>
+                  {groups.map((group) => (
                     <SelectItem key={group.id} value={group.id}>
-                      {group.name} ({group.memberCount})
+                      {stripGroupPrefix(group.name)} ({group.memberCount})
                     </SelectItem>
                   ))}
-              </SelectContent>
-            </Select>
+                </SelectContent>
+              </Select>
+            )}
             {connectionError && (
               <p className="text-xs text-muted-foreground">{connectionError}</p>
             )}
@@ -626,7 +658,10 @@ export function TaskFormDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitMutation.saving}>
             Cancel
           </Button>
-          <Button onClick={handleSubmit} disabled={submitMutation.saving}>
+          <Button
+            onClick={handleSubmit}
+            disabled={submitMutation.saving || groups.length === 0}
+          >
             {submitMutation.saving && <Loader2 className="mr-2 size-4 animate-spin" />}
             {isEdit ? "Save" : "Create"}
           </Button>

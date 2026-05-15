@@ -384,6 +384,65 @@ describe("scheduled-tasks module", () => {
       queryThrow = new Error("fail");
       expect(await updateScheduledTask("t", { orgId: "org-1" }, { name: "X" })).toEqual({ ok: false, reason: "error" });
     });
+
+    // Regression guard for the #2418 audit finding: prior to #2400 the
+    // function carried an `else if (updates.connectionId !== undefined)`
+    // branch that silently re-derived connection_group_id from the new
+    // connection's group_id whenever the caller PATCH'd connectionId
+    // alone. The major-version drop of `connectionId` from the public
+    // type took that branch with it, but #2418 asks us to lock the
+    // current behavior so a re-introduction can't slip through. These
+    // three tests assert the connection_group_id column is touched
+    // if and only if connectionGroupId itself is in the body.
+    describe("PATCH connection_group_id semantics (#2418)", () => {
+      it("PATCH with only connectionGroupId updates exactly that column", async () => {
+        enableInternalDB();
+        setResults({ rows: [{ id: "task-123" }] });
+
+        await updateScheduledTask("task-123", { orgId: "org-1" }, { connectionGroupId: "g-new" });
+
+        // The UPDATE statement names `connection_group_id` once and
+        // does not name any other content column. `updated_at = now()`
+        // is appended unconditionally by the implementation.
+        const sql = queryCalls[0].sql;
+        expect(sql).toContain("connection_group_id =");
+        expect(sql).not.toContain("name =");
+        expect(sql).not.toContain("question =");
+        expect(sql).not.toContain("cron_expression =");
+        // The new group id flows into the UPDATE params before the
+        // trailing id + org_id used by the WHERE clause.
+        expect(queryCalls[0].params).toEqual(["g-new", "org-1", "task-123"]);
+      });
+
+      it("PATCH that sets connectionGroupId to null clears the column rather than dropping the clause", async () => {
+        // `connectionGroupId: null` is the explicit "unset environment"
+        // signal — the SQL must still SET the column, not skip it.
+        // Skipping would silently retain a stale group; the route layer
+        // treats null and undefined differently and the persistence
+        // layer must honour that.
+        enableInternalDB();
+        setResults({ rows: [{ id: "task-123" }] });
+
+        await updateScheduledTask("task-123", { orgId: "org-1" }, { connectionGroupId: null });
+
+        expect(queryCalls[0].sql).toContain("connection_group_id =");
+        expect(queryCalls[0].params).toEqual([null, "org-1", "task-123"]);
+      });
+
+      it("PATCH that omits connectionGroupId leaves the column untouched", async () => {
+        // Updating an unrelated field (name) must not cascade into the
+        // group_id column. Pre-#2400 a sibling `connectionId` branch
+        // could silently re-derive group_id; today the field doesn't
+        // exist on the public type, but this guard makes the absence
+        // load-bearing for the test suite.
+        enableInternalDB();
+        setResults({ rows: [{ id: "task-123" }] });
+
+        await updateScheduledTask("task-123", { orgId: "org-1" }, { name: "New name" });
+
+        expect(queryCalls[0].sql).not.toContain("connection_group_id");
+      });
+    });
   });
 
   // -------------------------------------------------------------------------

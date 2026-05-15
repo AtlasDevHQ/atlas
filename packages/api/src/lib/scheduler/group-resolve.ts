@@ -73,9 +73,9 @@ export async function loadScheduledTaskGroupSnapshot(
       [groupId, orgId ?? "__global__"],
     );
     if (groupRows.length === 0) return null;
-    let primaryConnectionId = groupRows[0]?.primary_connection_id ?? null;
+    const primaryConnectionId = groupRows[0]?.primary_connection_id ?? null;
 
-    let memberRows = await internalQuery<{ id: string; created_at: Date | string }>(
+    const memberRows = await internalQuery<{ id: string; created_at: Date | string }>(
       `SELECT id, created_at
          FROM connections
         WHERE group_id = $1
@@ -84,29 +84,14 @@ export async function loadScheduledTaskGroupSnapshot(
         ORDER BY created_at ASC, id ASC`,
       [groupId, orgId ?? "__global__"],
     );
-    if (memberRows.length === 0 && orgId !== null && orgId !== "__global__") {
-      const globalRows = await Promise.all([
-        primaryConnectionId === null
-          ? internalQuery<{ primary_connection_id: string | null }>(
-            `SELECT primary_connection_id
-               FROM connection_groups
-              WHERE id = $1 AND org_id = '__global__'`,
-            [groupId],
-          )
-          : Promise.resolve([]),
-        internalQuery<{ id: string; created_at: Date | string }>(
-          `SELECT id, created_at
-           FROM connections
-          WHERE group_id = $1
-            AND org_id = '__global__'
-            AND status != 'archived'
-          ORDER BY created_at ASC, id ASC`,
-          [groupId],
-        ),
-      ]);
-      primaryConnectionId = primaryConnectionId ?? globalRows[0][0]?.primary_connection_id ?? null;
-      memberRows = globalRows[1];
-    }
+    // #2416 — previously this point widened the org filter to '__global__'
+    // when a tenant's group had zero non-archived members. That silently
+    // crossed a tenant→__global__ boundary and could fire the next scheduler
+    // tick against a connection the tenant doesn't own. The contract is
+    // strictly in-org: an empty member set surfaces upstream as
+    // NoScheduledTaskGroupMembersError so the executor can log + skip the
+    // tick. The next admin action (add a member, archive the task, or
+    // unarchive a member) recovers.
 
     return {
       groupId,

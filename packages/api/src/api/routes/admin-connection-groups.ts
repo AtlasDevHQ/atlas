@@ -588,13 +588,37 @@ adminConnectionGroups.openapi(deleteGroupRoute, async (c) =>
     }
 
     try {
+      // Drop BOTH archived shapes in the same CTE before the group
+      // delete fires, otherwise the FK still blocks (23503) and the
+      // user has no recovery path — admin pages exclude archived rows
+      // entirely so tombstones aren't surfaceable.
+      //
+      //   1. `url <> ''` — org-owned connection that the admin archived
+      //      in place via `admin-connections.ts` (DELETE /:id, ownRow
+      //      branch). The URL is the original encrypted value; the
+      //      status flip is the only difference. Real deletion is fine
+      //      because the row is org-scoped and the user explicitly
+      //      asked to drop its environment.
+      //
+      //   2. `url = ''` — per-org `__global__` tombstone created by
+      //      the global-hide branch of `admin-connections.ts` DELETE
+      //      (line 1029). The empty URL is a marker that suppresses
+      //      the global row from this org's lists. Deleting the
+      //      tombstone here re-exposes the underlying global to this
+      //      org — that's the correct outcome when the operator is
+      //      explicitly tearing down the environment that owned it.
+      //
+      // #2410 is the third pass at this bug (#2405 added the archived
+      // delete; #2406 added the `url <> ''` filter to preserve
+      // tombstones outside env-delete). Inside env-delete, both shapes
+      // must go — keep this CTE in lockstep with any future archived-
+      // row shape we introduce.
       await internalQuery(
         `WITH deleted_archived_connections AS (
            DELETE FROM connections
             WHERE group_id = $1
               AND org_id = $2
               AND status = 'archived'
-              AND url <> ''
            RETURNING id
          )
          DELETE FROM connection_groups WHERE id = $1 AND org_id = $2`,

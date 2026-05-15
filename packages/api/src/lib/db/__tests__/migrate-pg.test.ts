@@ -355,6 +355,83 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows.length).toBe(0);
   }, PG_TEST_TIMEOUT_MS);
 
+  // #2410 — env-delete CTE must drop both archived shapes. Reproduces
+  // the third-pass failure: PR #2405 added the cascading archived
+  // delete, PR #2406 tightened it to `url <> ''` to preserve global-hide
+  // tombstones (which it succeeded at — outside env-delete), but the
+  // env-delete path itself then 23503'd whenever the group contained a
+  // `url = ''` tombstone. The shape mirrors the per-org `__global__`
+  // hide INSERT at `admin-connections.ts:1022-1033`.
+  it("connections.group_id: env-delete CTE drops both archived shapes (#2410)", async () => {
+    const orgId = `org-tomb-${Date.now()}`;
+    const groupId = `g-tomb-${Date.now()}`;
+    const archivedOwnedConnId = `conn-archived-${Date.now()}`;
+    const tombstoneConnId = `conn-tomb-${Date.now()}`;
+
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'tombstone-env')`,
+      [groupId, orgId],
+    );
+
+    // Shape 1: archived in-place — org-owned row, real encrypted URL,
+    // `status = 'archived'`. This is what `admin-connections.ts:1009`
+    // produces when the admin deletes an org-owned connection.
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status, group_id)
+       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'archived', $3)`,
+      [archivedOwnedConnId, orgId, groupId],
+    );
+
+    // Shape 2: per-org `__global__` tombstone — `url = ''`,
+    // `status = 'archived'`, non-null `group_id`. This is what
+    // `admin-connections.ts:1022-1033` produces when the admin hides a
+    // global connection. Pre-fix the env-delete CTE filtered `url <> ''`,
+    // so this row stayed put and the trailing `DELETE FROM connection_groups`
+    // 23503'd against the connections_group_id FK.
+    await pool.query(
+      `INSERT INTO connections (id, url, url_key_version, type, description, org_id, status, group_id)
+       VALUES ($1, '', 1, 'postgres', 'Hidden from this workspace', $2, 'archived', $3)`,
+      [tombstoneConnId, orgId, groupId],
+    );
+
+    // Sanity: before the CTE, deleting the group directly explodes
+    // with 23503. This pins the failure mode the CTE is preventing.
+    await expect(
+      pool.query(
+        `DELETE FROM connection_groups WHERE id = $1 AND org_id = $2`,
+        [groupId, orgId],
+      ),
+    ).rejects.toMatchObject({ code: "23503" });
+
+    // The fixed CTE — mirrors `admin-connection-groups.ts` DELETE /:id.
+    // No `url <> ''` filter, so both archived shapes are dropped.
+    await pool.query(
+      `WITH deleted_archived_connections AS (
+         DELETE FROM connections
+          WHERE group_id = $1
+            AND org_id = $2
+            AND status = 'archived'
+         RETURNING id
+       )
+       DELETE FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [groupId, orgId],
+    );
+
+    // Group is gone.
+    const groupRows = await pool.query<{ id: string }>(
+      `SELECT id FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [groupId, orgId],
+    );
+    expect(groupRows.rows.length).toBe(0);
+
+    // Both archived rows are gone — no orphans, no FK violations.
+    const connRows = await pool.query<{ id: string }>(
+      `SELECT id FROM connections WHERE org_id = $1 AND id IN ($2, $3)`,
+      [orgId, archivedOwnedConnId, tombstoneConnId],
+    );
+    expect(connRows.rows.length).toBe(0);
+  }, PG_TEST_TIMEOUT_MS);
+
   // 0063 — semantic_entities.connection_group_id. Adds the group-scoped
   // natural key the multi-environment semantic layer (#2336 / #2340) lives
   // on. The three partial unique indexes from 0028 are dropped and recreated

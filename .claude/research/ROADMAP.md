@@ -140,7 +140,7 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
 
 ## Active
 
-- **1.4.4 — Multi-environment semantic layer** ([milestone #45](https://github.com/AtlasDevHQ/atlas/milestones/45), 8/11 shipped — content-complete) — PRD #2336; foundation (#2338 ✅ / #2339 ✅) + semantic-entities keystone (#2340 ✅) shipped; content slices PII (#2341 ✅), dashboards (#2342 ✅), approvals (#2344 ✅), chat routing + env picker (#2345 ✅), scheduled tasks (#2343 ✅) merged. Remaining: `connection_id` deprecation tail (#2346 types major + #2347 column drops) — gated on a SaaS stabilization window after all content slices run in prod.
+- **1.4.4 — Multi-environment semantic layer** ([milestone #45](https://github.com/AtlasDevHQ/atlas/milestones/45), original 11/11 shipped — **closeout audit reopened**) — PRD #2336; all foundation + content slices + deprecation tail merged through 2026-05-14. Post-merge 10-agent audit (#2407 tracker) surfaced 17 findings — env picker hidden for single-conn workspaces, four tautological backfill tests, env-delete tombstone bug, Codex scheduler cross-org leak, multi-group entity collapse, and more. Tier 1 closeout in flight: 5 shipped (#2408 ✅ / #2410 ✅ / #2411 ✅ / #2416 ✅ / #2421 ✅), 12 open (#2409, #2412–#2415, #2417–#2420, #2422–#2424, #2429).
 
 ## Planned
 

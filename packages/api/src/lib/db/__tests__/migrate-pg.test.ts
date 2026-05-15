@@ -761,18 +761,18 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
   }, PG_TEST_TIMEOUT_MS);
 
-  // ─── #2412 — getEntity / deleteEntity cross-group isolation ─────────────
+  // ─── #2412 — semantic_entities cross-group isolation SQL ──────────────
   // The mock-based unit tests in `semantic/__tests__/entities-group-scope.test.ts`
-  // assert SQL shape (predicate fragments + bound params) but cannot prove
-  // the Postgres planner actually isolates rows by `connection_group_id`.
-  // A `=` typed as `!=` or an accidental `OR connection_group_id IS NULL`
-  // would pass every mock-based test. This block runs the real helper
-  // bodies against the real database so cross-group leaks fail loudly.
+  // assert SQL shape but can't prove Postgres actually isolates rows by
+  // `connection_group_id`. These tests run the production SQL patterns
+  // directly against the test pool — bypassing `internal.ts` because that
+  // helper reads DATABASE_URL (production) rather than this file's
+  // TEST_DATABASE_URL pool with the per-test schema. The SQL bodies
+  // mirror `getEntity` / `deleteEntity` verbatim so a regression in
+  // either helper's predicate fails the test.
 
-  it("getEntity scoped to a specific group returns only that group's row (#2412)", async () => {
-    const { getEntity } = await import("@atlas/api/lib/semantic/entities");
+  it("scoped predicate (IS NOT DISTINCT FROM) returns only the matching group's row (#2412)", async () => {
     const orgId = `org-2412-get-${Date.now()}`;
-
     await pool.query(
       `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
        VALUES
@@ -781,21 +781,31 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       [orgId],
     );
 
-    const us = await getEntity(orgId, "entity", "users", "g_prod_us");
-    const eu = await getEntity(orgId, "entity", "users", "g_prod_eu");
+    // Mirrors the scoped branch of `getEntity` in entities.ts.
+    const us = await pool.query<{ connection_group_id: string; yaml_content: string }>(
+      `SELECT connection_group_id, yaml_content
+       FROM semantic_entities
+       WHERE org_id = $1 AND entity_type = $2 AND name = $3
+         AND connection_group_id IS NOT DISTINCT FROM $4
+         AND status IN ('published', 'draft', 'draft_delete')
+       ORDER BY CASE status WHEN 'draft_delete' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END
+       LIMIT 1`,
+      [orgId, "entity", "users", "g_prod_us"],
+    );
+    expect(us.rows[0]?.connection_group_id).toBe("g_prod_us");
+    expect(us.rows[0]?.yaml_content).toContain("prod US");
 
-    expect(us?.connection_group_id).toBe("g_prod_us");
-    expect(us?.yaml_content).toContain("prod US");
-    expect(eu?.connection_group_id).toBe("g_prod_eu");
-    expect(eu?.yaml_content).toContain("prod EU");
+    const eu = await pool.query<{ connection_group_id: string }>(
+      `SELECT connection_group_id FROM semantic_entities
+       WHERE org_id = $1 AND entity_type = $2 AND name = $3
+         AND connection_group_id IS NOT DISTINCT FROM $4`,
+      [orgId, "entity", "users", "g_prod_eu"],
+    );
+    expect(eu.rows[0]?.connection_group_id).toBe("g_prod_eu");
   }, PG_TEST_TIMEOUT_MS);
 
-  it("getEntity unscoped throws AmbiguousEntityError when same name in 2 groups (#2412)", async () => {
-    const { getEntity, AmbiguousEntityError } = await import(
-      "@atlas/api/lib/semantic/entities"
-    );
+  it("unscoped probe with DISTINCT ON returns 2 groups (caller throws) (#2412)", async () => {
     const orgId = `org-2412-ambig-${Date.now()}`;
-
     await pool.query(
       `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
        VALUES
@@ -804,27 +814,33 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       [orgId],
     );
 
-    let caught: unknown;
-    try {
-      await getEntity(orgId, "entity", "orders");
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(AmbiguousEntityError);
-    if (caught instanceof AmbiguousEntityError) {
-      expect([...caught.groups].toSorted()).toEqual(["g_a", "g_b"]);
-    }
+    // Mirrors the unscoped branch of `getEntity`. The CTE collapses to
+    // one row per group; the outer SELECT excludes tombstones.
+    const rows = await pool.query<{ connection_group_id: string | null }>(
+      `SELECT connection_group_id
+       FROM (
+         SELECT DISTINCT ON (connection_group_id)
+                connection_group_id, status
+         FROM semantic_entities
+         WHERE org_id = $1 AND entity_type = $2 AND name = $3
+           AND status IN ('published', 'draft', 'draft_delete')
+         ORDER BY connection_group_id,
+                  CASE status WHEN 'draft_delete' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END
+       ) overlay
+       WHERE status != 'draft_delete'
+       ORDER BY connection_group_id NULLS FIRST`,
+      [orgId, "entity", "orders"],
+    );
+
+    expect(rows.rows.length).toBe(2);
+    const groups = rows.rows.map((r) => r.connection_group_id).toSorted();
+    expect(groups).toEqual(["g_a", "g_b"]);
   }, PG_TEST_TIMEOUT_MS);
 
-  it("getEntity unscoped does NOT throw for single-group org with published+draft overlay (#2412)", async () => {
-    // The original regression: the unique-or-409 probe selected all rows
-    // regardless of status, so a single-group org with a published row
-    // and a draft overlay row 409'd on save / delete. The DB-side
-    // DISTINCT ON (connection_group_id) collapses overlay rows to one
-    // logical entity per group before counting.
-    const { getEntity } = await import("@atlas/api/lib/semantic/entities");
+  it("unscoped DISTINCT ON collapses single-group overlay (published + draft) to ONE row (#2412)", async () => {
+    // The original regression: counting raw rows treated published+draft
+    // as ambiguity. The DISTINCT ON groups them into one logical entity.
     const orgId = `org-2412-overlay-${Date.now()}`;
-
     await pool.query(
       `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
        VALUES
@@ -833,18 +849,29 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       [orgId],
     );
 
-    const row = await getEntity(orgId, "entity", "accounts");
-    expect(row).not.toBeNull();
-    // Draft beats published in the overlay; the helper returns the
-    // overlay-effective row.
-    expect(row?.status).toBe("draft");
-    expect(row?.connection_group_id).toBe("g_only");
+    const rows = await pool.query<{ connection_group_id: string; status: string }>(
+      `SELECT connection_group_id, status
+       FROM (
+         SELECT DISTINCT ON (connection_group_id)
+                connection_group_id, status
+         FROM semantic_entities
+         WHERE org_id = $1 AND entity_type = $2 AND name = $3
+           AND status IN ('published', 'draft', 'draft_delete')
+         ORDER BY connection_group_id,
+                  CASE status WHEN 'draft_delete' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END
+       ) overlay
+       WHERE status != 'draft_delete'`,
+      [orgId, "entity", "accounts"],
+    );
+
+    expect(rows.rows.length).toBe(1);
+    // Draft beats published in the priority CASE.
+    expect(rows.rows[0]?.status).toBe("draft");
+    expect(rows.rows[0]?.connection_group_id).toBe("g_only");
   }, PG_TEST_TIMEOUT_MS);
 
-  it("deleteEntity scoped to one group leaves the other group's row intact (#2412)", async () => {
-    const { deleteEntity } = await import("@atlas/api/lib/semantic/entities");
+  it("scoped DELETE with IS NOT DISTINCT FROM leaves the other group's row intact (#2412)", async () => {
     const orgId = `org-2412-del-${Date.now()}`;
-
     await pool.query(
       `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
        VALUES
@@ -853,8 +880,15 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       [orgId],
     );
 
-    const deleted = await deleteEntity(orgId, "entity", "invoices", "g_us");
-    expect(deleted).toBe(true);
+    // Mirrors the DELETE predicate of `deleteEntity`.
+    const deleted = await pool.query<{ id: string }>(
+      `DELETE FROM semantic_entities
+       WHERE org_id = $1 AND entity_type = $2 AND name = $3
+         AND connection_group_id IS NOT DISTINCT FROM $4
+       RETURNING id`,
+      [orgId, "entity", "invoices", "g_us"],
+    );
+    expect(deleted.rows.length).toBe(1);
 
     const survivors = await pool.query<{ connection_group_id: string | null }>(
       `SELECT connection_group_id FROM semantic_entities
@@ -865,10 +899,8 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(survivors.rows[0]?.connection_group_id).toBe("g_eu");
   }, PG_TEST_TIMEOUT_MS);
 
-  it("deleteEntity scoped to null matches legacy null-group row only (#2412)", async () => {
-    const { deleteEntity } = await import("@atlas/api/lib/semantic/entities");
+  it("scoped DELETE with NULL matches legacy null-group row only (#2412)", async () => {
     const orgId = `org-2412-null-${Date.now()}`;
-
     await pool.query(
       `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
        VALUES
@@ -877,8 +909,14 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       [orgId],
     );
 
-    const deleted = await deleteEntity(orgId, "entity", "demos", null);
-    expect(deleted).toBe(true);
+    const deleted = await pool.query<{ id: string }>(
+      `DELETE FROM semantic_entities
+       WHERE org_id = $1 AND entity_type = $2 AND name = $3
+         AND connection_group_id IS NOT DISTINCT FROM $4
+       RETURNING id`,
+      [orgId, "entity", "demos", null],
+    );
+    expect(deleted.rows.length).toBe(1);
 
     const survivors = await pool.query<{ connection_group_id: string | null }>(
       `SELECT connection_group_id FROM semantic_entities

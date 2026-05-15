@@ -212,4 +212,101 @@ describe("TaskFormDialog — zero-environment guard (#2418)", () => {
       expect(getSaveButton(container).disabled).toBe(false);
     });
   });
+
+  test("strips the `__global__:` prefix at render — the user-facing artifact of #2417", async () => {
+    // Migration 0070 leaves rows alone when the rename would collide
+    // with an existing tenant group name. The display-layer strip is
+    // the only thing preventing those rows from rendering as
+    // `__global__:cg_xyz` in the dropdown — drop it and the original
+    // #2417 leak is back. The trailing `(<memberCount>)` is the
+    // marker we use to confirm we matched the rendered SelectItem.
+    installFetchMock([
+      {
+        id: "g_leak",
+        name: "__global__:g_leak",
+        memberCount: 2,
+        resolvedConnectionId: "conn-leak",
+      },
+    ]);
+
+    const { container } = render(
+      <TaskFormDialog
+        open={true}
+        onOpenChange={() => {}}
+        task={null}
+        onSuccess={() => {}}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("g_leak (2)");
+    });
+    expect(container.textContent).not.toContain("__global__:");
+  });
+
+  test("strips the `g_` prefix at render — mirrors env-picker/columns parity", async () => {
+    // 0062 backfills group_id as `g_<connId>` and name as `<connId>`.
+    // Admin renames to a `g_`-prefixed label are the only path that
+    // produces a `g_` in the name column; the strip survives that
+    // case across env-picker.tsx, connections/columns.tsx, and here.
+    // A regression that drops the `g_` arm here would silently leak
+    // it back into this one surface and the parity comment would lie.
+    installFetchMock([
+      {
+        id: "g_staging",
+        name: "g_staging",
+        memberCount: 1,
+        resolvedConnectionId: "conn-staging",
+      },
+    ]);
+
+    const { container } = render(
+      <TaskFormDialog
+        open={true}
+        onOpenChange={() => {}}
+        task={null}
+        onSuccess={() => {}}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("staging (1)");
+    });
+    // Sanity: the unstripped label would have ended `g_staging (1)`.
+    expect(container.textContent).not.toContain("g_staging (1)");
+  });
+
+  test("surfaces a destructive alert with a Retry control when the fetch fails", async () => {
+    // The Save button is disabled while groups is []; without an
+    // actionable failure surface the admin would see a greyed-out
+    // dialog and a muted error and have no path forward except
+    // closing and reopening. The destructive variant + Retry button
+    // close that gap (silent-failure-hunter MEDIUM-1).
+    const fetchMock = mock(async () =>
+      new Response(JSON.stringify({ error: "internal_error" }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { container } = render(
+      <TaskFormDialog
+        open={true}
+        onOpenChange={() => {}}
+        task={null}
+        onSuccess={() => {}}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("Could not load environments");
+    });
+    expect(container.textContent).toContain("(HTTP 500)");
+    const retry = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim() === "Retry",
+    );
+    expect(retry).not.toBeUndefined();
+    expect(getSaveButton(container).disabled).toBe(true);
+  });
 });

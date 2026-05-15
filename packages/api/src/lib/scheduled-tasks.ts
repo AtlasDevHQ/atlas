@@ -354,14 +354,10 @@ export async function updateScheduledTask(
     setClauses.push(`recipients = $${paramIdx++}`);
     params.push(JSON.stringify(updates.recipients));
   }
-  // The `connection_group_id` column is updated only when the caller
-  // explicitly sets `connectionGroupId`. Pre-#2400 a sibling
-  // `else if (updates.connectionId !== undefined)` branch silently re-derived
-  // the group from the new connection's `group_id` — see #2418. The
-  // public type no longer carries `connectionId`, but the absence of a
-  // re-derivation branch is load-bearing: a regression that re-introduces
-  // it would silently teleport tasks across environments. Covered by
-  // `PATCH connection_group_id semantics (#2418)` in the unit tests.
+  // `connection_group_id` mutates iff the caller sets `connectionGroupId`
+  // — no implicit re-derivation from any sibling field. The absence of a
+  // re-derivation branch is load-bearing (#2418); covered by the
+  // `PATCH connection_group_id semantics` block in the unit tests.
   if (updates.connectionGroupId !== undefined) {
     setClauses.push(`connection_group_id = $${paramIdx++}`);
     params.push(updates.connectionGroupId);

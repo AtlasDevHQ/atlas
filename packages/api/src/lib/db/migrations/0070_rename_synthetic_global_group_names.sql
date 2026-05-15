@@ -14,8 +14,17 @@
 -- Uniqueness: connection_groups has a UNIQUE (org_id, name) index. If the
 -- target tenant already carries a group with the same name as the source
 -- __global__ group, we leave the synthetic row alone rather than throw a
--- unique-violation. The display layer strips a residual '__global__:'
--- prefix as a belt-and-suspenders defence (#2417 task-form-dialog).
+-- unique-violation. The display layer's `stripGroupPrefix` helper strips
+-- a residual '__global__:' prefix as a belt-and-suspenders defence
+-- (currently in `packages/web/src/app/admin/scheduled-tasks/task-form-dialog.tsx`;
+-- consolidation tracked in #2432).
+--
+-- Orphan rows: a tenant row whose name carries the '__global__:' prefix
+-- but whose `id` no longer matches any `__global__` row (operator
+-- manually deleted the source group, or a hand-inserted literal name)
+-- is silently skipped — the FROM-clause join on `src.id = t.id` excludes
+-- it. `stripGroupPrefix` keeps the dropdown clean for those residual
+-- rows at render time.
 --
 -- Idempotent: the WHERE predicate guards on the prefix, so re-runs
 -- against an already-cleaned set are no-ops.

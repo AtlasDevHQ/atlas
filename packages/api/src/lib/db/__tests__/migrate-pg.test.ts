@@ -1663,7 +1663,7 @@ describeIfPg("migrate-pg (real Postgres)", () => {
   // group's actual name, skipping rows whose target name would collide with
   // an existing tenant group.
   //
-  // The honest pattern (per #2407 audit): insert a pre-migration state that
+  // Per the #2427 honest-backfill pattern: insert a pre-migration state that
   // simulates what 0065/0068 left behind, replay the migration SQL by reading
   // it from disk, then assert post-state. Loading the SQL from disk keeps
   // the assertion bound to production SQL — a future edit to 0070 that
@@ -1741,6 +1741,54 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       [globalGroupId, tenantOrg],
     );
     expect(row.rows[0]?.name).toBe(`__global__:${globalGroupId}`);
+
+    // The *other* tenant row — the one whose name caused the collision
+    // — must also be untouched. Without this assertion, an inverted
+    // NOT EXISTS (e.g. EXISTS) would rename the legitimate tenant row
+    // to the synthetic name and the first assertion would still pass.
+    const sibling = await pool.query<{ name: string }>(
+      `SELECT name FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [tenantGroupId, tenantOrg],
+    );
+    expect(sibling.rows[0]?.name).toBe(sharedName);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0070: renames every tenant mirror of one global group — multi-tenant fan-out", async () => {
+    // The realistic post-0065/0068 state: one global group, three
+    // tenants each carrying a `__global__:<id>` mirror. The UPDATE's
+    // correlated subquery joins by `src.id = t.id` so the rename must
+    // fan out across every tenant in a single pass. A regression that
+    // accidentally collapsed the join (e.g. a stray GROUP BY) would
+    // process only one tenant and the other two would survive.
+    const groupId = `g_fanout_${Date.now()}`;
+    const sourceName = `Fanout-${Date.now()}`;
+    const tenantOrgs = [
+      `org-fanout-a-${Date.now()}`,
+      `org-fanout-b-${Date.now()}`,
+      `org-fanout-c-${Date.now()}`,
+    ];
+
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, '__global__', $2)`,
+      [groupId, sourceName],
+    );
+    for (const tenantOrg of tenantOrgs) {
+      await pool.query(
+        `INSERT INTO connection_groups (id, org_id, name)
+         VALUES ($1, $2, '__global__:' || $1)`,
+        [groupId, tenantOrg],
+      );
+    }
+
+    await pool.query(MIGRATION_0070);
+
+    for (const tenantOrg of tenantOrgs) {
+      const { rows } = await pool.query<{ name: string }>(
+        `SELECT name FROM connection_groups WHERE id = $1 AND org_id = $2`,
+        [groupId, tenantOrg],
+      );
+      expect(rows[0]?.name).toBe(sourceName);
+    }
   }, PG_TEST_TIMEOUT_MS);
 
   it("0070: is idempotent — re-running after the cleanup is a no-op", async () => {
@@ -1775,8 +1823,12 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       [groupId, tenantOrg],
     );
     expect(secondRun.rows[0]?.name).toBe(sourceName);
-    // updated_at unchanged across the no-op re-run (the WHERE predicate
-    // filters the row out entirely on the second pass).
+    // `updated_at` is a proxy here, not a hard signal: 0070 never sets it
+    // on first run either. The point is to catch a future regression
+    // that *does* add `SET updated_at = now()` to the UPDATE — in that
+    // world the no-op re-run would silently bump `updated_at` despite
+    // touching nothing semantic, and the WHERE prefix-guard would be
+    // the only thing protecting idempotency.
     expect(secondRun.rows[0]?.updated_at).toBe(firstRun.rows[0]?.updated_at);
   }, PG_TEST_TIMEOUT_MS);
 });

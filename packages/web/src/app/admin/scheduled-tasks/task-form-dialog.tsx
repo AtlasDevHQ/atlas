@@ -51,12 +51,20 @@ interface ConnectionGroupInfo {
   resolvedConnectionId: string | null;
 }
 
-// Belt-and-suspenders strip for migration leak-through (#2417). 0070
-// backfills tenant-mirrored global groups, but rows that would collide
-// with an existing tenant name are left as `__global__:<id>` to avoid
-// violating the UNIQUE (org_id, name) index. The `g_` branch mirrors
-// `env-picker.tsx` / `connections/columns.tsx` for admin-renamed rows.
-// Consolidation into a shared util tracked as a separate follow-up.
+// Strip residual migration-leak prefixes from a group's display name
+// before it lands in the environment dropdown.
+//
+//   - `__global__:` is the synthetic name 0065/0068 wrote for tenant
+//     mirrors of global groups. 0070 backfills almost all of these to
+//     the source group's real name, but rows whose target name collides
+//     with an existing tenant group are left as-is to keep
+//     UNIQUE (org_id, name) intact. This branch is unique to this
+//     dropdown — the synthetic name does not surface in env-picker or
+//     the connections table.
+//   - `g_` is the 0062 1:1-backfill id-as-name shape and the same strip
+//     lives in `env-picker.tsx` and `admin/connections/columns.tsx`.
+//
+// Consolidation across the three call sites is tracked in #2432.
 function stripGroupPrefix(name: string): string {
   if (name.startsWith("__global__:")) return name.slice("__global__:".length);
   if (name.startsWith("g_")) return name.slice(2);
@@ -182,6 +190,7 @@ export function TaskFormDialog({
   const [validationError, setValidationError] = useState<string | null>(null);
   const [groups, setGroups] = useState<ConnectionGroupInfo[]>([]);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [fetchAttempt, setFetchAttempt] = useState(0);
 
   const submitMutation = useAdminMutation({
     invalidates: onSuccess,
@@ -196,7 +205,9 @@ export function TaskFormDialog({
     }
   }, [open, task]);
 
-  // Fetch environments
+  // Fetch environments. `fetchAttempt` is the retry handle — bumping it
+  // re-runs the effect so the user can recover from a transient 5xx
+  // without closing and reopening the dialog.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -218,13 +229,14 @@ export function TaskFormDialog({
           });
         }
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
         console.warn("[TaskFormDialog] Failed to fetch environments:", err);
-        if (!cancelled) setConnectionError("Could not load environments");
+        if (!cancelled) setConnectionError(`Could not load environments: ${message}`);
       }
     }
     fetchGroups();
     return () => { cancelled = true; };
-  }, [open, apiUrl, credentials, isEdit]);
+  }, [open, apiUrl, credentials, isEdit, fetchAttempt]);
 
   // ── Field updaters ──────────────────────────────────────────────────
 
@@ -567,7 +579,29 @@ export function TaskFormDialog({
           {/* Environment */}
           <div className="grid gap-2">
             <Label>Environment</Label>
-            {groups.length === 0 && !connectionError ? (
+            {connectionError ? (
+              // Save is disabled (groups stays []), so the only useful
+              // surface here is an actionable failure: tell the user
+              // what broke and offer a retry that doesn't require
+              // closing the dialog.
+              <Alert variant="destructive">
+                <AlertTriangle />
+                <AlertTitle>Could not load environments</AlertTitle>
+                <AlertDescription>
+                  {connectionError}
+                </AlertDescription>
+                <div className="mt-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setFetchAttempt((n) => n + 1)}
+                  >
+                    Retry
+                  </Button>
+                </div>
+              </Alert>
+            ) : groups.length === 0 ? (
               <Alert>
                 <AlertTriangle />
                 <AlertTitle>Create an environment first</AlertTitle>
@@ -587,7 +621,6 @@ export function TaskFormDialog({
               <Select
                 value={form.connectionGroupId}
                 onValueChange={(v) => updateField("connectionGroupId", v)}
-                disabled={groups.length === 0}
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Select environment" />
@@ -600,9 +633,6 @@ export function TaskFormDialog({
                   ))}
                 </SelectContent>
               </Select>
-            )}
-            {connectionError && (
-              <p className="text-xs text-muted-foreground">{connectionError}</p>
             )}
           </div>
 

@@ -531,8 +531,8 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
     await pool.query(
       `INSERT INTO connections (id, url, type, org_id, status, group_id) VALUES
-         ($1, 'postgresql://stub-1', 'postgres', $2, 'active', $3),
-         ($4, 'postgresql://stub-2', 'postgres', $2, 'active', $5)`,
+         ($1, 'postgresql://stub-1', 'postgres', $2, 'published', $3),
+         ($4, 'postgresql://stub-2', 'postgres', $2, 'published', $5)`,
       [conn1, orgId, group1, conn2, group2],
     );
 
@@ -584,7 +584,7 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
     await pool.query(
       `INSERT INTO connections (id, url, type, org_id, status, group_id) VALUES
-         ($1, 'postgresql://stub', 'postgres', $2, 'active', $3)`,
+         ($1, 'postgresql://stub', 'postgres', $2, 'published', $3)`,
       [conn1, orgId, group1],
     );
     // A scheduled task pinned to the source group. The CTE's NOT EXISTS
@@ -592,10 +592,16 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     // thing between this and the FK rolling the whole merge back with
     // 23503. Pin the gating behaviour: merge succeeds, source group
     // survives, the task's reference stays valid.
+    // Column names mirror the canonical insert from the 0065 / 0068
+    // smoke tests above — `question` + `cron_expression`, not `prompt` /
+    // `cron_schedule`. Pinned here so a regression in scheduled_tasks
+    // shape surfaces in one of two sibling tests (#2409, #2418).
     await pool.query(
-      `INSERT INTO scheduled_tasks (id, org_id, prompt, cron_schedule, connection_group_id, enabled)
-       VALUES ($1, $2, 'noop', '0 0 * * *', $3, false)`,
-      [`task-${Date.now()}`, orgId, group1],
+      `INSERT INTO scheduled_tasks
+         (owner_id, org_id, name, question, cron_expression, delivery_channel, recipients, connection_group_id)
+       VALUES
+         ('owner-1', $1, 'noop', 'noop?', '0 0 * * *', 'email', '[]'::jsonb, $2)`,
+      [orgId, group1],
     );
 
     const { rows } = await pool.query<{
@@ -642,7 +648,7 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
     await pool.query(
       `INSERT INTO connections (id, url, type, org_id, status, group_id) VALUES
-         ($1, 'postgresql://stub', 'postgres', $2, 'active', $3)`,
+         ($1, 'postgresql://stub', 'postgres', $2, 'published', $3)`,
       [conn1, orgId, group1],
     );
 
@@ -688,8 +694,8 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
     await pool.query(
       `INSERT INTO connections (id, url, type, org_id, status, group_id) VALUES
-         ($1, 'postgresql://stub-1', 'postgres', $2, 'active', $3),
-         ($4, 'postgresql://stub-2', 'postgres', $2, 'active', $5)`,
+         ($1, 'postgresql://stub-1', 'postgres', $2, 'published', $3),
+         ($4, 'postgresql://stub-2', 'postgres', $2, 'published', $5)`,
       [conn1, orgId, group1, conn2, group2],
     );
     await pool.query(

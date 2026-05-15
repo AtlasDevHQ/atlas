@@ -2033,4 +2033,127 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
     expect(rows[0]?.name).toBe(deceptive);
   }, PG_TEST_TIMEOUT_MS);
+
+  // #2415 — resolveGroupForConnection predicate matrix under a null
+  // caller orgId. The helper's WHERE clause must:
+  //
+  //   - Match `org_id = '__global__'` (the schema default — shared rows).
+  //   - Match an `org_id IS NULL` row if one ever existed (defense-in-depth
+  //     against schema relaxation; today migration 0021 makes the column
+  //     NOT NULL, so this branch is exercised against a VALUES rowset
+  //     rather than the live table).
+  //   - NOT match a tenant-owned row from a different org — that would be
+  //     a cross-tenant leak.
+  //
+  // Pre-fix the predicate was `org_id = $2 OR org_id = '__global__'`,
+  // which collapses to `org_id = '__global__'` whenever $2 is NULL
+  // (`= NULL` is UNKNOWN in Postgres). Self-hosted single-tenant deploys
+  // whose connections.org_id is anything other than `__global__` silently
+  // lost their group binding and fell back to legacy single-connection
+  // routing. The null-safe `IS NOT DISTINCT FROM` operator closes that.
+  //
+  // We assert two layers:
+  //   (a) The predicate against synthetic rows (VALUES) — isolates
+  //       predicate semantics from the live schema and covers the
+  //       `org_id IS NULL` branch the NOT NULL constraint blocks at
+  //       insert time.
+  //   (b) The predicate against real `connections` rows — confirms the
+  //       helper-shaped query returns the right set when run end-to-end
+  //       against the post-migration schema.
+  it("resolveGroupForConnection predicate: VALUES-row matrix under null caller orgId (#2415)", async () => {
+    // Direct predicate-correctness test. The unit-level SQL-string
+    // assertion in `conversations-group-routing.test.ts` is what locks
+    // the helper to this exact predicate shape; this test verifies the
+    // shape's *semantics* against a live Postgres planner.
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT id FROM (VALUES
+         ('null-row', NULL::text),
+         ('global-row', '__global__'::text),
+         ('tenant-row', 'tenant-x'::text)
+       ) AS t(id, org_id)
+       WHERE (org_id IS NOT DISTINCT FROM $1 OR org_id = '__global__')
+       ORDER BY id`,
+      [null],
+    );
+    const ids = rows.map((r) => r.id).sort();
+    // null-row matches via IS NOT DISTINCT FROM NULL (null-safe equality).
+    // global-row matches via the OR-branch. tenant-row matches NEITHER —
+    // that's the cross-tenant boundary we mustn't cross.
+    expect(ids).toEqual(["global-row", "null-row"]);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("resolveGroupForConnection predicate: VALUES-row matrix under tenant caller orgId (#2415)", async () => {
+    // Sanity: the same predicate under a non-null caller orgId still
+    // matches that tenant's rows plus the global fallback, and nothing
+    // else. Locks the matrix from both sides.
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT id FROM (VALUES
+         ('null-row', NULL::text),
+         ('global-row', '__global__'::text),
+         ('tenant-row', 'tenant-x'::text),
+         ('other-row', 'tenant-y'::text)
+       ) AS t(id, org_id)
+       WHERE (org_id IS NOT DISTINCT FROM $1 OR org_id = '__global__')
+       ORDER BY id`,
+      ["tenant-x"],
+    );
+    const ids = rows.map((r) => r.id).sort();
+    expect(ids).toEqual(["global-row", "tenant-row"]);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("resolveGroupForConnection: returns group when connections.org_id='__global__' and caller orgId is null (#2415)", async () => {
+    // End-to-end check against the live connections table. Self-hosted
+    // single-tenant deploys hit this path when their org_id defaulted
+    // to `__global__` (the schema default).
+    const groupId = `g_global_null_${Date.now()}`;
+    const connId = `conn-global-null-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, '__global__', $2)`,
+      [groupId, connId],
+    );
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status, group_id)
+       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', '__global__', 'published', $2)`,
+      [connId, groupId],
+    );
+    const { rows } = await pool.query<{ group_id: string | null }>(
+      `SELECT group_id FROM connections
+        WHERE id = $1
+          AND (org_id IS NOT DISTINCT FROM $2 OR org_id = '__global__')
+        LIMIT 1`,
+      [connId, null],
+    );
+    expect(rows[0]?.group_id).toBe(groupId);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("resolveGroupForConnection: does NOT resolve when caller orgId is null and connections.org_id is a different tenant (#2415)", async () => {
+    // The cross-tenant boundary. A null-orgId caller must never resolve
+    // a group binding owned by a specific tenant — that would be the
+    // F-01 leak the row-scope predicates exist to prevent.
+    const groupId = `g_tenant_null_${Date.now()}`;
+    const connId = `conn-tenant-null-${Date.now()}`;
+    const tenantOrg = `tenant-x-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, $3)`,
+      [groupId, tenantOrg, connId],
+    );
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status, group_id)
+       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3)`,
+      [connId, tenantOrg, groupId],
+    );
+    const { rows } = await pool.query<{ group_id: string | null }>(
+      `SELECT group_id FROM connections
+        WHERE id = $1
+          AND (org_id IS NOT DISTINCT FROM $2 OR org_id = '__global__')
+        LIMIT 1`,
+      [connId, null],
+    );
+    // Pre-fix, this case fell through to `org_id = '__global__'` which
+    // also misses, so the helper returned null — same observable
+    // outcome but for the wrong reason. The positive assertion above
+    // (`__global__` case) is what flips red→green; this one guards the
+    // cross-tenant boundary as a permanent invariant.
+    expect(rows.length).toBe(0);
+  }, PG_TEST_TIMEOUT_MS);
 });

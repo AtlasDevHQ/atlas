@@ -28,11 +28,17 @@
 --
 -- Idempotent: the WHERE predicate guards on the prefix, so re-runs
 -- against an already-cleaned set are no-ops.
+--
+-- Note on the prefix predicate: `LIKE '__global__:%'` is wrong here
+-- because `_` is a single-character wildcard in SQL — it would also
+-- match a row literally named e.g. `abglobalcd:foo`. We use
+-- `starts_with()` (Postgres builtin, ≥14) so the match is a literal
+-- prefix comparison.
 
 UPDATE connection_groups t
    SET name = src.name
   FROM connection_groups src
- WHERE t.name LIKE '__global__:%'
+ WHERE starts_with(t.name, '__global__:')
    AND t.org_id <> '__global__'
    AND src.id = t.id
    AND src.org_id = '__global__'

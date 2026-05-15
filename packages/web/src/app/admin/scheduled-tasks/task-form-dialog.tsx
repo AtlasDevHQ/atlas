@@ -212,6 +212,13 @@ export function TaskFormDialog({
     if (!open) return;
     let cancelled = false;
     async function fetchGroups() {
+      // Clear cached state before the fetch so a stale non-empty
+      // `groups` array from a previous open can't keep Save enabled
+      // across a refetch (e.g. the user reopens the dialog after an
+      // operator deleted the only environment, or hits Retry after a
+      // 5xx that follows a successful fetch). Without this the
+      // disabled-Save predicate trusts whatever was last set.
+      setGroups([]);
       setConnectionError(null);
       try {
         const res = await fetch(`${apiUrl}/api/v1/admin/connection-groups`, { credentials });

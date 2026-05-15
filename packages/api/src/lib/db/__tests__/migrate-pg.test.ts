@@ -1811,15 +1811,20 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
 
     await pool.query(MIGRATION_0070);
+    // `pg` returns TIMESTAMPTZ as `Date` objects, so two separate SELECTs
+    // produce distinct instances and `.toBe()` fails identity even when
+    // the value is unchanged. Cast to text so equality is value-based.
     const firstRun = await pool.query<{ updated_at: string; name: string }>(
-      `SELECT name, updated_at FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      `SELECT name, updated_at::text AS updated_at
+         FROM connection_groups WHERE id = $1 AND org_id = $2`,
       [groupId, tenantOrg],
     );
     expect(firstRun.rows[0]?.name).toBe(sourceName);
 
     await pool.query(MIGRATION_0070);
     const secondRun = await pool.query<{ updated_at: string; name: string }>(
-      `SELECT name, updated_at FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      `SELECT name, updated_at::text AS updated_at
+         FROM connection_groups WHERE id = $1 AND org_id = $2`,
       [groupId, tenantOrg],
     );
     expect(secondRun.rows[0]?.name).toBe(sourceName);
@@ -1830,5 +1835,36 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     // touching nothing semantic, and the WHERE prefix-guard would be
     // the only thing protecting idempotency.
     expect(secondRun.rows[0]?.updated_at).toBe(firstRun.rows[0]?.updated_at);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0070: literal-prefix match — `_` wildcards in LIKE don't catch deceptive names", async () => {
+    // Regression guard against a `LIKE '__global__:%'` predicate
+    // (where `_` is a single-char wildcard). The migration uses
+    // `starts_with()` to make the match a literal-prefix comparison,
+    // so a tenant row literally named `abglobalcd:trick` — which
+    // matches the old LIKE wildcard but is not a synthetic mirror —
+    // must stay untouched. Same id as the global source so the
+    // outer JOIN does attach; the prefix check is what saves it.
+    const groupId = `g_wildcard_${Date.now()}`;
+    const tenantOrg = `org-wildcard-${Date.now()}`;
+    const cleanName = `Clean-${Date.now()}`;
+    const deceptive = `abglobalcd:trick-${Date.now()}`;
+
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, '__global__', $2)`,
+      [groupId, cleanName],
+    );
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, $3)`,
+      [groupId, tenantOrg, deceptive],
+    );
+
+    await pool.query(MIGRATION_0070);
+
+    const { rows } = await pool.query<{ name: string }>(
+      `SELECT name FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [groupId, tenantOrg],
+    );
+    expect(rows[0]?.name).toBe(deceptive);
   }, PG_TEST_TIMEOUT_MS);
 });

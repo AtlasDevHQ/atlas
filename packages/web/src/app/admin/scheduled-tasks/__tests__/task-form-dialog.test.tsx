@@ -276,6 +276,62 @@ describe("TaskFormDialog — zero-environment guard (#2418)", () => {
     expect(container.textContent).not.toContain("g_staging (1)");
   });
 
+  test("clears cached groups on refetch so a stale array can't keep Save enabled", async () => {
+    // Codex P2 regression: a first successful fetch populates `groups`
+    // with one environment. A subsequent fetch that returns `[]` (or
+    // fails) must reset the state so the disabled-Save predicate kicks
+    // back in. Without the `setGroups([])` clear, the previous group
+    // would survive in state and Save would stay enabled with a
+    // dangling `connectionGroupId` — exactly the footgun this PR is
+    // trying to remove.
+    //
+    // Simulates the reopen path by toggling `open` false→true with a
+    // different fetch response on the second pass. Two rerenders, one
+    // remount of the effect's dep set via `open`.
+    let callCount = 0;
+    const fetchMock = mock(async () => {
+      callCount += 1;
+      const groups = callCount === 1
+        ? [{ id: "g_p", name: "Production", memberCount: 1, resolvedConnectionId: "c1" }]
+        : [];
+      return new Response(JSON.stringify({ groups }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { container, rerender } = render(
+      <TaskFormDialog
+        open={true}
+        onOpenChange={() => {}}
+        task={null}
+        onSuccess={() => {}}
+      />,
+    );
+    await waitFor(() => expect(getSaveButton(container).disabled).toBe(false));
+
+    rerender(
+      <TaskFormDialog
+        open={false}
+        onOpenChange={() => {}}
+        task={null}
+        onSuccess={() => {}}
+      />,
+    );
+    rerender(
+      <TaskFormDialog
+        open={true}
+        onOpenChange={() => {}}
+        task={null}
+        onSuccess={() => {}}
+      />,
+    );
+
+    await waitFor(() => expect(callCount).toBe(2));
+    await waitFor(() => expect(getSaveButton(container).disabled).toBe(true));
+  });
+
   test("surfaces a destructive alert with a Retry control when the fetch fails", async () => {
     // The Save button is disabled while groups is []; without an
     // actionable failure surface the admin would see a greyed-out

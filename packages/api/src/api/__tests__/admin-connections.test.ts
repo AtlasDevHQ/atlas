@@ -190,9 +190,13 @@ describe("admin connections — org scoping", () => {
       expect(ids).not.toContain("other-org-conn");
     });
 
-    it("workspace admin with no DB connections falls back to default", async () => {
+    it("workspace admin with no DB connections falls back to default and emits null group fields", async () => {
       // No connections in internal DB for this org — self-hosted single-tenant
       // path keeps working because `default` is the only registered connection.
+      // The decoration fallback must still emit groupId/groupName as null on
+      // every row; a regression that drops the `?? null` would silently ship
+      // `undefined` and trip every downstream consumer relying on the
+      // documented three-state semantics.
       mocks.mockInternalQuery.mockResolvedValue([]);
 
       const res = await app.fetch(
@@ -204,6 +208,65 @@ describe("admin connections — org scoping", () => {
       const body = (await res.json()) as any;
       const ids = body.connections.map((c: { id: string }) => c.id);
       expect(ids).toEqual(["default"]);
+      const defaultRow = body.connections[0];
+      expect(defaultRow.groupId).toBeNull();
+      expect(defaultRow.groupName).toBeNull();
+    });
+
+    it("decorates each row with groupId + groupName from the connection_groups JOIN", async () => {
+      // The list endpoint's second internalQuery call selects c.id, c.group_id
+      // and g.name via LEFT JOIN connection_groups. The visibility query runs
+      // first; we only return a group decoration for the visible row.
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT c.id FROM connections c WHERE c.org_id")) {
+          return Promise.resolve([{ id: "warehouse" }]);
+        }
+        if (sql.includes("g.name AS group_name")) {
+          return Promise.resolve([
+            { id: "warehouse", group_id: "g_prod", group_name: "g_prod" },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections"),
+      );
+
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      const warehouse = body.connections.find((c: { id: string }) => c.id === "warehouse");
+      expect(warehouse).toBeDefined();
+      expect(warehouse.groupId).toBe("g_prod");
+      expect(warehouse.groupName).toBe("g_prod");
+    });
+
+    it("emits groupName: null when a visible connection has no group decoration", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT c.id FROM connections c WHERE c.org_id")) {
+          return Promise.resolve([{ id: "warehouse" }]);
+        }
+        // LEFT JOIN returns the row with NULL group_id/name when ungrouped.
+        if (sql.includes("g.name AS group_name")) {
+          return Promise.resolve([
+            { id: "warehouse", group_id: null, group_name: null },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections"),
+      );
+
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      const warehouse = body.connections.find((c: { id: string }) => c.id === "warehouse");
+      expect(warehouse).toBeDefined();
+      expect(warehouse.groupId).toBeNull();
+      expect(warehouse.groupName).toBeNull();
     });
   });
 
@@ -625,9 +688,18 @@ describe("admin connections — org scoping", () => {
         if (sql.includes("SELECT c.id FROM connections c WHERE c.org_id")) {
           return Promise.resolve([{ id: "warehouse" }]);
         }
-        // Detail query for managed connection info
-        if (sql.includes("SELECT url, schema_name FROM connections WHERE id")) {
-          return Promise.resolve([{ url: "encrypted:postgresql://user:pass@host/db", schema_name: null }]);
+        // Detail query — now LEFT JOINs connection_groups to surface
+        // groupId/groupName on the wire (#2421). The substring picks the
+        // composite alias so it doesn't collide with the list endpoint.
+        if (sql.includes("SELECT c.url, c.schema_name, c.group_id, g.name AS group_name")) {
+          return Promise.resolve([
+            {
+              url: "encrypted:postgresql://user:pass@host/db",
+              schema_name: null,
+              group_id: null,
+              group_name: null,
+            },
+          ]);
         }
         return Promise.resolve([]);
       });
@@ -641,6 +713,40 @@ describe("admin connections — org scoping", () => {
       const body = (await res.json()) as any;
       expect(body.id).toBe("warehouse");
       expect(body.managed).toBe(true);
+      // group fields are surfaced; null here because the mock returns NULL
+      // from the LEFT JOIN. A separate case asserts the populated branch.
+      expect(body.groupId).toBeNull();
+      expect(body.groupName).toBeNull();
+    });
+
+    it("get-by-id surfaces groupId + groupName when the LEFT JOIN matches", async () => {
+      setOrgAdmin("org-alpha");
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT c.id FROM connections c WHERE c.org_id")) {
+          return Promise.resolve([{ id: "warehouse" }]);
+        }
+        if (sql.includes("SELECT c.url, c.schema_name, c.group_id, g.name AS group_name")) {
+          return Promise.resolve([
+            {
+              url: "encrypted:postgresql://user:pass@host/db",
+              schema_name: null,
+              group_id: "g_warehouse",
+              group_name: "warehouse",
+            },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/warehouse"),
+      );
+
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.groupId).toBe("g_warehouse");
+      expect(body.groupName).toBe("warehouse");
     });
   });
 

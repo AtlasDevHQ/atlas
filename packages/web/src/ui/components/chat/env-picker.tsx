@@ -64,10 +64,11 @@ export interface ChatEnvPickerProps {
 }
 
 function stripGroupPrefix(name: string): string {
-  // The 0062 1:1 backfill names groups `g_<connId>` for legacy
-  // single-connection orgs. Strip the prefix so the chip reads
-  // naturally ("prod" instead of "g_prod"); admins who set a custom
-  // name see the raw value unchanged.
+  // Defensive strip for any admin-set name that begins with `g_`.
+  // Migration 0062 backfills `connection_groups.id` as `g_<connId>` but
+  // stores `name = <connId>` (unprefixed), so this is a no-op on default
+  // backfilled rows; it only fires when an admin renames a group to
+  // something starting with `g_`.
   return name.startsWith("g_") ? name.slice(2) : name;
 }
 

@@ -36,6 +36,20 @@ export interface ConnectionInfo {
   description?: string | null;
   status?: ConnectionStatus;
   health?: ConnectionHealth;
+  /**
+   * Connection group membership. Three states are meaningful:
+   * - `undefined` — older serializer / client predating the field.
+   * - `null` — explicitly unassigned (no group, or moved out via admin UI).
+   * - `string` — current membership.
+   * Schema + code use `group_id`; UI copy renders this as "environment".
+   */
+  groupId?: string | null;
+  /**
+   * Display name of the group, denormalized so list responses can render
+   * a badge without a second round-trip to `/admin/connections/groups`.
+   * Same three-state semantics as {@link groupId}.
+   */
+  groupName?: string | null;
 }
 
 /** Real-time pool size counters (only available for core adapters with pool access). */
@@ -93,6 +107,12 @@ export interface ConnectionDetail {
    * Schema + code use `group_id`; UI copy renders this as "environment".
    */
   groupId?: string | null;
+  /**
+   * Display name of the group, denormalized so the detail view can render
+   * a badge without a second round-trip. Same three-state semantics as
+   * {@link groupId}.
+   */
+  groupName?: string | null;
 }
 
 /**

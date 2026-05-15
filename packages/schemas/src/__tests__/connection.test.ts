@@ -63,3 +63,19 @@ describe("ConnectionsResponseSchema transforms to array", () => {
     expect(ConnectionsResponseSchema.parse({})).toEqual([]);
   });
 });
+
+describe("group decoration fields survive parse", () => {
+  // Locks in that ConnectionInfoSchema does not strip groupId/groupName.
+  // Before #2421 the admin list endpoint already emitted groupId, but the
+  // schema's default object strip silently dropped it at parse time and the
+  // UI had no way to render an environment chip.
+  test("parses populated groupId + groupName", () => {
+    const withGroup = { ...validInfo, groupId: "g_prod", groupName: "prod" };
+    expect(ConnectionInfoSchema.parse(withGroup)).toEqual(withGroup);
+  });
+
+  test("parses explicit null groupId + groupName (ungrouped row)", () => {
+    const ungrouped = { ...validInfo, groupId: null, groupName: null };
+    expect(ConnectionInfoSchema.parse(ungrouped)).toEqual(ungrouped);
+  });
+});

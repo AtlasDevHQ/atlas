@@ -1,11 +1,12 @@
 "use client";
 
+import Link from "next/link";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Badge } from "@/components/ui/badge";
 import { DataTableColumnHeader } from "@/components/data-table/data-table-column-header";
 import { HealthBadge } from "@/ui/components/admin/health-badge";
 import { DemoBadge, DraftBadge } from "@/ui/components/admin/mode-badges";
-import { Fingerprint, Database, FileText, Activity, Clock } from "lucide-react";
+import { Fingerprint, Database, FileText, Activity, Clock, Layers } from "lucide-react";
 import type { ConnectionHealth, ConnectionInfo } from "@/ui/lib/types";
 
 /** Reserved connection id for the onboarding demo dataset. */
@@ -17,6 +18,18 @@ function mapHealthStatus(
   if (!status) return "unknown";
   if (status === "unhealthy") return "down";
   return status;
+}
+
+/**
+ * Mirror of `stripGroupPrefix` in `chat/env-picker.tsx`. Defensive strip
+ * for any group name an admin renames to `g_*` — migration 0062 backfills
+ * `connection_groups.id` as `g_<connId>` but stores `name = <connId>`
+ * (unprefixed), so the strip is a no-op on default data and only fires
+ * if a custom name starts with `g_`.
+ * TODO(refactor): extract to a shared util — tracked in #2426.
+ */
+function stripGroupPrefix(name: string): string {
+  return name.startsWith("g_") ? name.slice(2) : name;
 }
 
 export function getConnectionColumns(): ColumnDef<ConnectionInfo>[] {
@@ -64,6 +77,35 @@ export function getConnectionColumns(): ColumnDef<ConnectionInfo>[] {
         </span>
       ),
       meta: { label: "Description", icon: FileText },
+      enableSorting: false,
+    },
+    {
+      id: "environment",
+      accessorFn: (row) => row.groupName ?? null,
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} label="Environment" />
+      ),
+      cell: ({ row }) => {
+        const groupName = row.original.groupName;
+        // Use explicit `== null` rather than `!groupName` \u2014 empty string is
+        // not a documented state and falling through to the em-dash would
+        // mask a corrupt `connection_groups.name = ''` row instead of
+        // surfacing it. The backend invariant is `groupId !== null \u21d2
+        // groupName !== null`; both are jointly null/non-null.
+        if (groupName == null) {
+          return <span className="text-sm text-muted-foreground">{"\u2014"}</span>;
+        }
+        return (
+          <Link
+            href="/admin/connections/groups"
+            className="inline-flex items-center"
+            aria-label={`View environment ${stripGroupPrefix(groupName)}`}
+          >
+            <Badge variant="outline">{stripGroupPrefix(groupName)}</Badge>
+          </Link>
+        );
+      },
+      meta: { label: "Environment", icon: Layers },
       enableSorting: false,
     },
     {

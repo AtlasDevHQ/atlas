@@ -55116,6 +55116,9 @@
                   },
                   "connectionId": {
                     "type": "string"
+                  },
+                  "connectionGroupId": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -55271,7 +55274,7 @@
           "Admin — Semantic"
         ],
         "summary": "Delete a semantic entity",
-        "description": "Deletes the named entity from the org-scoped semantic_entities table and disk.",
+        "description": "Deletes the named entity from the org-scoped semantic_entities table and disk. Pass `?connectionGroupId=<group>` to scope the delete when the same entity name exists in multiple environments — without it the backend returns 409 (#2412).",
         "parameters": [
           {
             "schema": {
@@ -55283,6 +55286,15 @@
             "required": true,
             "name": "name",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "g_prod_us"
+            },
+            "required": false,
+            "name": "connectionGroupId",
+            "in": "query"
           }
         ],
         "responses": {
@@ -56030,6 +56042,9 @@
                   "versionId": {
                     "type": "string",
                     "format": "uuid"
+                  },
+                  "connectionGroupId": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -56349,7 +56364,7 @@
           "Admin — Semantic"
         ],
         "summary": "Get entity detail",
-        "description": "Returns the full parsed YAML for a single semantic entity.",
+        "description": "Returns the full parsed YAML for a single semantic entity. Pass `?connectionGroupId=<group>` to scope the lookup when the same entity name exists in multiple environments. Without it, multi-group matches return 409 with the candidate groups (#2412).",
         "parameters": [
           {
             "schema": {
@@ -56360,6 +56375,15 @@
             "required": true,
             "name": "name",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "g_prod_us"
+            },
+            "required": false,
+            "name": "connectionGroupId",
+            "in": "query"
           }
         ],
         "responses": {
@@ -56457,6 +56481,45 @@
                   "required": [
                     "error",
                     "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Entity name exists in multiple groups — pass connectionGroupId to disambiguate",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "entity_ambiguous"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "groups": {
+                      "type": "array",
+                      "items": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message",
+                    "groups",
+                    "requestId"
                   ]
                 }
               }

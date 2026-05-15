@@ -105,8 +105,25 @@ mock.module("../delivery", () => ({
 
 const mockResolveScheduledTaskConnection = mock(() => Promise.resolve("resolved-connection"));
 
+// Stub mirrors the real error class so executor.ts's
+// `err instanceof NoScheduledTaskGroupMembersError` check stays compilable
+// under the mocked module. None of the tests in this file exercise the
+// empty-group path — `executor.empty-group.test.ts` covers that against
+// the real group-resolve module.
+class NoScheduledTaskGroupMembersErrorStub extends Error {
+  override readonly name = "NoScheduledTaskGroupMembersError";
+  readonly groupId: string;
+  readonly orgId: string | null;
+  constructor(groupId: string, orgId: string | null) {
+    super(`stub: group ${groupId} (org=${orgId ?? "__global__"}) empty`);
+    this.groupId = groupId;
+    this.orgId = orgId;
+  }
+}
+
 mock.module("../group-resolve", () => ({
   resolveScheduledTaskConnection: mockResolveScheduledTaskConnection,
+  NoScheduledTaskGroupMembersError: NoScheduledTaskGroupMembersErrorStub,
 }));
 
 const { executeScheduledTask } = await import("../executor");

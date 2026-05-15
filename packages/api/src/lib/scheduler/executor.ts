@@ -25,7 +25,7 @@ import { loadActorUser } from "@atlas/api/lib/auth/actor";
 import { SchedulerTaskTimeoutError, SchedulerExecutionError } from "@atlas/api/lib/effect/errors";
 import { causeToError } from "@atlas/api/lib/audit/error-scrub";
 import { deliverResult } from "./delivery";
-import { resolveScheduledTaskConnection } from "./group-resolve";
+import { NoScheduledTaskGroupMembersError, resolveScheduledTaskConnection } from "./group-resolve";
 
 const log = createLogger("scheduler-executor");
 
@@ -106,11 +106,37 @@ export async function executeScheduledTask(
 
   const task = taskResult.data;
   const requestId = `sched-${taskId}-${runId}`;
-  const resolvedConnectionId = await resolveScheduledTaskConnection({
-    taskId,
-    orgId: task.orgId,
-    connectionGroupId: task.connectionGroupId,
-  });
+  let resolvedConnectionId: string | null;
+  try {
+    resolvedConnectionId = await resolveScheduledTaskConnection({
+      taskId,
+      orgId: task.orgId,
+      connectionGroupId: task.connectionGroupId,
+    });
+  } catch (err) {
+    // #2416 — when the tenant's group has zero non-archived members,
+    // group-resolve refuses to widen the org filter into __global__.
+    // Skip the tick (don't fire the agent blind) and surface a clear
+    // run-row error. The next admin action — add a member, archive the
+    // task, or unarchive a member — recovers automatically.
+    if (err instanceof NoScheduledTaskGroupMembersError) {
+      log.warn(
+        {
+          taskId,
+          runId,
+          groupId: err.groupId,
+          orgId: err.orgId,
+        },
+        "Scheduled task group has no non-archived members — skipping tick",
+      );
+      throw new Error(
+        `Connection group ${err.groupId} has no non-archived members. ` +
+          `Add a connection to the group or unarchive an existing member before this task can run.`,
+        { cause: err },
+      );
+    }
+    throw err;
+  }
 
   // F-54: resolve the task creator so approval rules apply. If the user no
   // longer exists (account deleted, removed from org), fail-loud rather than

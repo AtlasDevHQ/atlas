@@ -826,7 +826,7 @@ const mergeGroupsRoute = createRoute({
               "Auto-backfilled `g_<connId>` singletons cleaned up by this merge. Excludes user-created and admin-renamed groups even when empty after the move.",
             ),
             skippedGroupIds: z.array(z.string()).describe(
-              "Auto-backfilled candidates the server declined to delete because the group still anchors admin-curated content (approvals, scheduled tasks, dashboards, semantic entities, PII classifications, or conversations). Surfaced so the wizard can reconcile its preview with the actual cleanup.",
+              "Auto-backfilled candidates the server declined to delete because the group still anchors admin-curated content (approval queue rows, scheduled tasks, dashboards, semantic entities, PII classifications, or conversations). Surfaced so the wizard can reconcile its preview with the actual cleanup.",
             ),
           }),
         },
@@ -834,8 +834,8 @@ const mergeGroupsRoute = createRoute({
     },
     400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
-    403: { description: "Forbidden — admin role required, or source connection belongs to another org", content: { "application/json": { schema: AuthErrorSchema } } },
-    404: { description: "One or more source connections not found in this org", content: { "application/json": { schema: ErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "One or more source connections not found in this workspace (foreign-org ids appear here too — B2B isolation)", content: { "application/json": { schema: ErrorSchema } } },
     409: { description: "Conflict — the merge could not complete atomically (PK collision on the generated target id, OR a source connection's state changed between pre-validation and the merge). Caller may retry.", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -912,49 +912,47 @@ adminConnectionGroups.openapi(mergeGroupsRoute, async (c) =>
       typeof primaryConnectionId === "string" ? primaryConnectionId : uniqueSourceIds[0];
     const overridePrimary = typeof primaryConnectionId === "string";
 
-    // ── Pre-validate sources (existence + org scope) ─────────────────
+    // ── Pre-validate sources (existence within the caller's org) ─────
+    //
+    // The composite `(id, org_id)` PK on `connections` means SaaS tenants
+    // can legitimately share ids like `default`. A SELECT WHERE id = ANY
+    // without an org filter would return rows from EVERY org, inflating
+    // `sourceRows.length` past `uniqueSourceIds.length` and triggering a
+    // bogus "Connections not found" 404 on what should be a happy-path
+    // merge (codex review #2437).
+    //
+    // Org-scoping the SELECT also closes a B2B information leak: pre-fix
+    // the route returned 403 "belongs to another org" for foreign ids,
+    // which confirms to the caller that an id exists in some OTHER
+    // tenant. Treating foreign-org ids identically to ids that don't
+    // exist anywhere (both → 404) is the standard B2B isolation answer.
     let sourceRows: SourceConnectionRow[];
     try {
       sourceRows = await internalQuery<SourceConnectionRow>(
-        `SELECT id, org_id, group_id FROM connections WHERE id = ANY($1::text[]) AND status != 'archived'`,
-        [uniqueSourceIds],
+        `SELECT id, org_id, group_id FROM connections
+          WHERE id = ANY($1::text[])
+            AND org_id = $2
+            AND status != 'archived'`,
+        [uniqueSourceIds, orgId],
       );
     } catch (err) {
       log.error({ err: errorMessage(err), requestId, orgId }, "Failed to pre-validate source connections for merge");
       return c.json({ error: "internal_error", message: "Failed to validate source connections.", requestId }, 500);
     }
 
-    // Existence check: every requested id must come back.
+    // Existence check: every requested id must come back IN THIS ORG.
+    // Ids that exist only in another org appear "missing" here — that's
+    // the intended B2B isolation behavior.
     if (sourceRows.length !== uniqueSourceIds.length) {
       const found = new Set(sourceRows.map((r) => r.id));
       const missing = uniqueSourceIds.filter((id) => !found.has(id));
       return c.json(
         {
           error: "not_found",
-          message: `Connections not found: ${missing.join(", ")}.`,
+          message: `Connections not found in this workspace: ${missing.join(", ")}.`,
           requestId,
         },
         404,
-      );
-    }
-
-    // Cross-org check: every source must live in the caller's org.
-    // 403 — not 404 — because the caller IS authenticated; they're just
-    // not authorised to move a foreign-org connection. Silent skip would
-    // be worse: the merge appears to succeed but quietly drops rows.
-    const foreignOrg = sourceRows.filter((r) => r.org_id !== orgId);
-    if (foreignOrg.length > 0) {
-      log.warn(
-        { requestId, orgId, foreignIds: foreignOrg.map((r) => r.id) },
-        "Merge rejected — source connection(s) belong to another org",
-      );
-      return c.json(
-        {
-          error: "forbidden",
-          message: "One or more source connections belong to a different organization.",
-          requestId,
-        },
-        403,
       );
     }
 

@@ -62,7 +62,7 @@ export const DELETE_GROUP_AND_ARCHIVED_CONNECTIONS_SQL = `
  *   2. `id <> target.id` → never delete the target we just landed in.
  *   3. `NOT EXISTS` guards against every reference table that carries a
  *      `connection_group_id` column today. The FK-bearing references
- *      (`connections.group_id`, `approvals.connection_group_id`,
+ *      (`connections.group_id`, `approval_queue.connection_group_id`,
  *      `scheduled_tasks.connection_group_id`) would raise 23503 and roll
  *      the merge back without the guard; the soft-reference columns
  *      (`dashboard_cards.connection_group_id`,
@@ -76,6 +76,16 @@ export const DELETE_GROUP_AND_ARCHIVED_CONNECTIONS_SQL = `
  *      group with admin-curated content is left in place, the merge
  *      succeeds with a partial cleanup, and the residual group surfaces
  *      in `skipped_group_ids` so the wizard can show what was preserved.
+ *
+ *   The connections NOT EXISTS guard subtracts the `$6::text[]` source
+ *   set explicitly — Postgres data-modifying CTEs share one snapshot, so
+ *   the sibling `moved` UPDATE is invisible to a fresh SELECT on
+ *   `connections` here. Without the `<> ALL($6)` subtraction, the
+ *   cleanup would see every source connection still in its source group
+ *   and skip every candidate, leaving `deleted_group_ids` empty in
+ *   production while the wire tests (which mock the CTE result directly)
+ *   would still pass. The bug is invisible without a real-Postgres
+ *   smoke; see #2437 codex review for the diagnosis.
  *
  *   `dashboard_cards` is the lone reference without its own `org_id`
  *   (see migration 0066 § "Why no FK on connection_group_id" — cards
@@ -138,11 +148,16 @@ export const MERGE_CONNECTIONS_INTO_GROUP_SQL = `
        AND cg.id IN (SELECT id FROM cleanup_candidates)
        AND NOT EXISTS (
          SELECT 1 FROM connections c
-          WHERE c.group_id = cg.id AND c.org_id = $2
+          WHERE c.group_id = cg.id
+            AND c.org_id = $2
+            -- Subtract the rows the sibling moved CTE is re-parenting.
+            -- Without this, the cleanup never sees the source group as
+            -- empty because data-modifying CTEs share one snapshot.
+            AND c.id <> ALL($6::text[])
        )
        AND NOT EXISTS (
-         SELECT 1 FROM approvals a
-          WHERE a.connection_group_id = cg.id AND a.org_id = $2
+         SELECT 1 FROM approval_queue aq
+          WHERE aq.connection_group_id = cg.id AND aq.org_id = $2
        )
        AND NOT EXISTS (
          SELECT 1 FROM scheduled_tasks st

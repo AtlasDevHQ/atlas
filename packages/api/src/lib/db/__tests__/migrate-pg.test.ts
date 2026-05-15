@@ -506,7 +506,7 @@ describeIfPg("migrate-pg (real Postgres)", () => {
   //   - The seven NOT EXISTS guards (FK-bearing + soft-reference) —
   //     cleanup MUST be skipped when the source group still anchors
   //     admin-curated content. We can't easily test all seven, but the
-  //     two that have FKs (approvals, scheduled_tasks) AND the
+  //     two that have FKs (approval_queue, scheduled_tasks) AND the
   //     soft-reference NULL-safe path (insert a row into one of the
   //     no-FK tables and assert the source group survives) are the
   //     load-bearing ones — the rest follow the same shape.

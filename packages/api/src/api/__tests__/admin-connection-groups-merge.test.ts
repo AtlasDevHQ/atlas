@@ -182,18 +182,18 @@ describe("POST /api/v1/admin/connection-groups/merge", () => {
     expect(res.status).toBe(404);
   });
 
-  it("returns 403 when a source connection belongs to a different org", async () => {
-    // Pre-validate query returns the foreign-org row — the route's org-check
-    // must reject before any state-changing SQL runs.
+  it("returns 404 when a source connection exists only in a different org (B2B isolation)", async () => {
+    // Pre-validate is org-scoped via `AND org_id = $2`, so a foreign-org
+    // id never lands in `sourceRows`. The route treats it identically to
+    // an id that doesn't exist anywhere — both go through the same 404
+    // path. This intentionally avoids leaking "yes, this id exists in
+    // some OTHER tenant" via a discriminating 403 (codex P2 review).
     mocks.mockInternalQuery.mockImplementation((sql: string) => {
-      // Pre-validate match must be MORE specific than the merge CTE's
-      // `moved` branch (which also includes `FROM connections WHERE id =
-      // ANY`). Anchoring on the SELECT shape keeps the two queries
-      // distinguishable.
       if (sql.includes("SELECT id, org_id, group_id FROM connections")) {
+        // Only the caller's-org row is returned — the org_id filter in
+        // the SELECT drops `other-org-conn` from the result set.
         return Promise.resolve([
           { id: "us-int", org_id: "org-alpha", group_id: "g_us-int" },
-          { id: "other-org-conn", org_id: "org-beta", group_id: "g_other-org-conn" },
         ]);
       }
       return Promise.resolve([]);
@@ -205,10 +205,16 @@ describe("POST /api/v1/admin/connection-groups/merge", () => {
         sourceConnectionIds: ["us-int", "other-org-conn"],
       }),
     );
-    expect(res.status).toBe(403);
-    // Cross-org check must short-circuit BEFORE the atomic merge fires.
-    // A regression that lets the merge proceed would silently re-parent a
-    // foreign-org connection into the caller's org.
+    expect(res.status).toBe(404);
+    // Verify the SELECT included an org_id filter — without it, SaaS
+    // tenants sharing connection ids (e.g. "default") would see bogus
+    // 404s on legitimate merges.
+    const preValidateCall = mocks.mockInternalQuery.mock.calls.find(
+      ([sql]) => typeof sql === "string" && sql.includes("SELECT id, org_id, group_id FROM connections"),
+    );
+    expect(preValidateCall).toBeDefined();
+    expect(preValidateCall![0]).toContain("AND org_id = $2");
+    // No state-changing SQL fires.
     expect(
       mocks.mockInternalQuery.mock.calls.some(([sql]) =>
         typeof sql === "string" && sql.includes("INSERT INTO connection_groups"),

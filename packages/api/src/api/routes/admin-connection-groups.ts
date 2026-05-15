@@ -17,6 +17,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { internalQuery } from "@atlas/api/lib/db/internal";
+import { DELETE_GROUP_AND_ARCHIVED_CONNECTIONS_SQL } from "@atlas/api/lib/db/connection-groups-sql";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
@@ -588,48 +589,59 @@ adminConnectionGroups.openapi(deleteGroupRoute, async (c) =>
     }
 
     try {
-      // Drop BOTH archived shapes in the same CTE before the group
-      // delete fires, otherwise the FK still blocks (23503) and the
-      // user has no recovery path — admin pages exclude archived rows
-      // entirely so tombstones aren't surfaceable.
+      // Atomic env-delete: clear every archived connection in the
+      // group, then drop the group. Both archived shapes must go,
+      // otherwise the FK blocks the group delete (23503) and the user
+      // has no recovery path — admin pages exclude `status = 'archived'`
+      // entirely, so tombstones aren't surfaceable.
       //
-      //   1. `url <> ''` — org-owned connection that the admin archived
-      //      in place via `admin-connections.ts` (DELETE /:id, ownRow
-      //      branch). The URL is the original encrypted value; the
-      //      status flip is the only difference. Real deletion is fine
-      //      because the row is org-scoped and the user explicitly
-      //      asked to drop its environment.
+      //   1. real archived row — org-owned connection the admin
+      //      archived in place via the `ownRow` branch of
+      //      `admin-connections.ts` DELETE /:id. URL stays the original
+      //      encrypted value; only the status flipped. Deleting is
+      //      safe because the row is org-scoped and the user
+      //      explicitly asked to drop the environment.
       //
-      //   2. `url = ''` — per-org `__global__` tombstone created by
-      //      the global-hide branch of `admin-connections.ts` DELETE
-      //      (line 1029). The empty URL is a marker that suppresses
-      //      the global row from this org's lists. Deleting the
-      //      tombstone here re-exposes the underlying global to this
-      //      org — that's the correct outcome when the operator is
-      //      explicitly tearing down the environment that owned it.
+      //   2. `url = ''` tombstone — per-org `__global__` hide row
+      //      written by the non-`ownRow` branch of
+      //      `admin-connections.ts` DELETE /:id. The empty URL is a
+      //      marker that suppresses the global from this org's lists.
+      //      Deleting it here re-exposes the underlying global to this
+      //      org — the correct outcome when the operator is explicitly
+      //      tearing down the environment that owned the hide.
       //
-      // #2410 is the third pass at this bug (#2405 added the archived
-      // delete; #2406 added the `url <> ''` filter to preserve
-      // tombstones outside env-delete). Inside env-delete, both shapes
-      // must go — keep this CTE in lockstep with any future archived-
-      // row shape we introduce.
-      await internalQuery(
-        `WITH deleted_archived_connections AS (
-           DELETE FROM connections
-            WHERE group_id = $1
-              AND org_id = $2
-              AND status = 'archived'
-           RETURNING id
-         )
-         DELETE FROM connection_groups WHERE id = $1 AND org_id = $2`,
-        [id, orgId],
-      );
+      // The canonical SQL lives in `lib/db/connection-groups-sql.ts`
+      // and is imported by the real-Postgres regression test so the
+      // route and the test cannot drift apart. #2410 is the third pass
+      // at this bug (#2405 added the cascading archived delete; #2406
+      // tightened it to `url <> ''` to preserve tombstones *outside*
+      // env-delete — which is still correct everywhere except inside
+      // env-delete itself). Keep this CTE in lockstep with any future
+      // archived-row shape we introduce.
+      await internalQuery(DELETE_GROUP_AND_ARCHIVED_CONNECTIONS_SQL, [id, orgId]);
     } catch (err) {
       const meta = pgErrorMeta(err);
       if (meta.code === "23503") {
+        // Post-#2410 the CTE drops every archived row, so the only
+        // residual paths to a 23503 are (a) a TOCTOU race with another
+        // admin inserting an active row into the group between the
+        // member-count check and the CTE, or (b) inward FKs from
+        // workspace content tables (approvals, scheduled_tasks,
+        // dashboards, semantic entities). Log the constraint name so
+        // ops can tell those apart without reproducing the failure —
+        // the user-facing 409 message is identical in (b).
+        log.warn(
+          {
+            requestId,
+            orgId,
+            groupId: id,
+            constraint: meta.constraint,
+          },
+          "Connection group delete blocked by FK (23503) — mapping to 409",
+        );
         const message = meta.constraint === CONNECTIONS_GROUP_FK
-          ? `Group "${id}" is still referenced by hidden connection rows. Restore or unhide those connections before deleting it.`
-          : `Group "${id}" is still referenced by workspace content. Remove or update those references before deleting it.`;
+          ? `Group "${id}" still has connection rows attached — another admin may have added one while you were deleting. Refresh and try again.`
+          : `Group "${id}" is still referenced by workspace content (approvals, scheduled tasks, dashboards, semantic entities). Remove or update those references before deleting it.`;
         return c.json(
           {
             error: "conflict",

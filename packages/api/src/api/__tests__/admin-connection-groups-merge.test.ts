@@ -270,6 +270,7 @@ describe("POST /api/v1/admin/connection-groups/merge", () => {
             },
             moved_connection_ids: ["us-int", "eu-int"],
             deleted_group_ids: ["g_us-int", "g_eu-int"],
+            skipped_group_ids: [],
           },
         ]);
       }
@@ -303,10 +304,15 @@ describe("POST /api/v1/admin/connection-groups/merge", () => {
       target: { id: string; name: string };
       movedConnectionIds: string[];
       deletedGroupIds: string[];
+      skippedGroupIds: string[];
     };
     expect(body.target.name).toBe("prod");
     expect(body.movedConnectionIds).toEqual(["us-int", "eu-int"]);
     expect(body.deletedGroupIds).toEqual(["g_us-int", "g_eu-int"]);
+    // Wizard preview reconciliation: the response must always carry
+    // `skippedGroupIds` (even when empty) so the client doesn't have to
+    // null-check the field.
+    expect(Array.isArray(body.skippedGroupIds)).toBe(true);
   });
 
   it("passes orgId as the second parameter so cross-org re-parenting is impossible at the SQL layer", async () => {
@@ -327,6 +333,7 @@ describe("POST /api/v1/admin/connection-groups/merge", () => {
             target: { id: "g_x", name: "prod", primaryConnectionId: "us-int", createdAt: "", updatedAt: "", created: true },
             moved_connection_ids: ["us-int"],
             deleted_group_ids: [],
+            skipped_group_ids: [],
           },
         ]);
       }
@@ -380,6 +387,7 @@ describe("POST /api/v1/admin/connection-groups/merge", () => {
             },
             moved_connection_ids: ["apac-int"],
             deleted_group_ids: ["g_apac-int"],
+            skipped_group_ids: [],
           },
         ]);
       }
@@ -418,6 +426,7 @@ describe("POST /api/v1/admin/connection-groups/merge", () => {
             target: { id: "g_new", name: "prod", primaryConnectionId: "eu-int", createdAt: "", updatedAt: "", created: true },
             moved_connection_ids: ["us-int", "eu-int"],
             deleted_group_ids: ["g_us-int", "g_eu-int"],
+            skipped_group_ids: [],
           },
         ]);
       }
@@ -475,5 +484,206 @@ describe("POST /api/v1/admin/connection-groups/merge", () => {
     // CLAUDE.md "No generic error messages" still applies, but specific
     // SQL state belongs in the log, not the response body.
     expect(body.message).not.toContain("simulated PG failure");
+  });
+
+  // ─── 5. Atomicity verification (post-merge length check) ──────────────
+
+  it("returns 409 when the CTE moved fewer connections than requested (TOCTOU archive race)", async () => {
+    // The CTE's `moved` branch filters by `org_id = $2`, so a connection
+    // archived between pre-validate and merge silently drops out. The
+    // route must reconcile and return 409 — never claim an atomic merge
+    // that wasn't atomic.
+    mocks.mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("SELECT id, org_id, group_id FROM connections")) {
+        return Promise.resolve([
+          { id: "us-int", org_id: "org-alpha", group_id: "g_us-int" },
+          { id: "eu-int", org_id: "org-alpha", group_id: "g_eu-int" },
+        ]);
+      }
+      if (sql.includes("WITH target AS")) {
+        return Promise.resolve([
+          {
+            target: { id: "g_x", name: "prod", primaryConnectionId: "us-int", createdAt: "", updatedAt: "", created: true },
+            // CTE moved only one — eu-int was archived/migrated mid-request.
+            moved_connection_ids: ["us-int"],
+            deleted_group_ids: [],
+            skipped_group_ids: [],
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/connection-groups/merge", "POST", {
+        targetName: "prod",
+        sourceConnectionIds: ["us-int", "eu-int"],
+      }),
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; message: string; requestId: string };
+    expect(body.error).toBe("conflict");
+    // The dropped id surfaces in the message so the admin knows which
+    // connection to investigate.
+    expect(body.message).toContain("eu-int");
+  });
+
+  // ─── 6. Duplicate / edge inputs ───────────────────────────────────────
+
+  it("dedupes duplicate sourceConnectionIds before pre-validation", async () => {
+    mocks.mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("SELECT id, org_id, group_id FROM connections")) {
+        // Pre-validate returns one row — same connection asked for twice.
+        return Promise.resolve([
+          { id: "us-int", org_id: "org-alpha", group_id: "g_us-int" },
+        ]);
+      }
+      if (sql.includes("WITH target AS")) {
+        return Promise.resolve([
+          {
+            target: { id: "g_x", name: "prod", primaryConnectionId: "us-int", createdAt: "", updatedAt: "", created: true },
+            moved_connection_ids: ["us-int"],
+            deleted_group_ids: ["g_us-int"],
+            skipped_group_ids: [],
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/connection-groups/merge", "POST", {
+        targetName: "prod",
+        sourceConnectionIds: ["us-int", "us-int", "us-int"],
+      }),
+    );
+    expect(res.status).toBe(200);
+
+    // The pre-validate query must receive the deduped array — otherwise
+    // the length-check at line 921 would 404 on `["us-int", "us-int"]`
+    // because a SELECT against the table only returns one row.
+    const preValidateCall = findCall((sql) =>
+      sql.includes("SELECT id, org_id, group_id FROM connections"),
+    );
+    expect(preValidateCall).toBeDefined();
+    expect(preValidateCall!.params[0]).toEqual(["us-int"]);
+  });
+
+  it("accepts primaryConnectionId: null and falls back to first source as the default primary", async () => {
+    // SDK callers / OpenAPI consumers may send `null` for "no preference".
+    // The route must treat that as equivalent to `undefined` rather than a
+    // type error — and the default primary should be the first source.
+    mocks.mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("SELECT id, org_id, group_id FROM connections")) {
+        return Promise.resolve([
+          { id: "us-int", org_id: "org-alpha", group_id: "g_us-int" },
+          { id: "eu-int", org_id: "org-alpha", group_id: "g_eu-int" },
+        ]);
+      }
+      if (sql.includes("WITH target AS")) {
+        return Promise.resolve([
+          {
+            target: { id: "g_x", name: "prod", primaryConnectionId: "us-int", createdAt: "", updatedAt: "", created: true },
+            moved_connection_ids: ["us-int", "eu-int"],
+            deleted_group_ids: ["g_us-int", "g_eu-int"],
+            skipped_group_ids: [],
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/connection-groups/merge", "POST", {
+        targetName: "prod",
+        sourceConnectionIds: ["us-int", "eu-int"],
+        primaryConnectionId: null,
+      }),
+    );
+    expect(res.status).toBe(200);
+
+    const mergeCall = findCall((sql) => sql.includes("WITH target AS"));
+    expect(mergeCall).toBeDefined();
+    // Default primary = first source. The override boolean (param $5)
+    // must be false so the ON CONFLICT branch preserves the existing
+    // primary on a reuse.
+    expect(mergeCall!.params).toContain("us-int");
+    expect(mergeCall!.params[4]).toBe(false);
+  });
+
+  it("surfaces skippedGroupIds when the CTE preserves a source group that still anchors content", async () => {
+    // Scenario: a source group has an approvals row attached. The CTE's
+    // NOT EXISTS guard fires and skips the cleanup; the wizard's preview
+    // promised "1 will be deleted" but the server actually skipped it.
+    // Surfacing `skippedGroupIds` lets the UI explain the discrepancy
+    // rather than silently underreport.
+    mocks.mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("SELECT id, org_id, group_id FROM connections")) {
+        return Promise.resolve([
+          { id: "us-int", org_id: "org-alpha", group_id: "g_us-int" },
+          { id: "eu-int", org_id: "org-alpha", group_id: "g_eu-int" },
+        ]);
+      }
+      if (sql.includes("WITH target AS")) {
+        return Promise.resolve([
+          {
+            target: { id: "g_x", name: "prod", primaryConnectionId: "us-int", createdAt: "", updatedAt: "", created: true },
+            moved_connection_ids: ["us-int", "eu-int"],
+            // Only one of the two source groups was cleaned up — the
+            // other still has approval references and was preserved.
+            deleted_group_ids: ["g_eu-int"],
+            skipped_group_ids: ["g_us-int"],
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/connection-groups/merge", "POST", {
+        targetName: "prod",
+        sourceConnectionIds: ["us-int", "eu-int"],
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      deletedGroupIds: string[];
+      skippedGroupIds: string[];
+    };
+    expect(body.deletedGroupIds).toEqual(["g_eu-int"]);
+    expect(body.skippedGroupIds).toEqual(["g_us-int"]);
+  });
+
+  it("maps a 23505 PK collision on the generated target id to 409 (not 500)", async () => {
+    mocks.mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("SELECT id, org_id, group_id FROM connections")) {
+        return Promise.resolve([
+          { id: "us-int", org_id: "org-alpha", group_id: "g_us-int" },
+        ]);
+      }
+      if (sql.includes("WITH target AS")) {
+        const err = new Error("duplicate key value violates unique constraint") as Error & {
+          code?: string;
+          constraint?: string;
+        };
+        err.code = "23505";
+        // Constraint name = composite PK (id, org_id), NOT the unique-name
+        // index — that path is absorbed by ON CONFLICT.
+        err.constraint = "connection_groups_pkey";
+        return Promise.reject(err);
+      }
+      return Promise.resolve([]);
+    });
+
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/connection-groups/merge", "POST", {
+        targetName: "prod",
+        sourceConnectionIds: ["us-int"],
+      }),
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; message: string; requestId: string };
+    expect(body.error).toBe("conflict");
+    expect(typeof body.requestId).toBe("string");
   });
 });

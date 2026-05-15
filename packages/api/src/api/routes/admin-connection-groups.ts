@@ -797,6 +797,10 @@ type MergeResultRow = {
   } | null;
   moved_connection_ids: string[];
   deleted_group_ids: string[];
+  /** Auto-backfilled candidates the cleanup CTE chose NOT to delete because
+   * a NOT EXISTS guard fired. Surfaced so the wizard preview can reconcile
+   * its client-side cleanup estimate with the server's decision. */
+  skipped_group_ids: string[];
 };
 
 const mergeGroupsRoute = createRoute({
@@ -821,6 +825,9 @@ const mergeGroupsRoute = createRoute({
             deletedGroupIds: z.array(z.string()).describe(
               "Auto-backfilled `g_<connId>` singletons cleaned up by this merge. Excludes user-created and admin-renamed groups even when empty after the move.",
             ),
+            skippedGroupIds: z.array(z.string()).describe(
+              "Auto-backfilled candidates the server declined to delete because the group still anchors admin-curated content (approvals, scheduled tasks, dashboards, semantic entities, PII classifications, or conversations). Surfaced so the wizard can reconcile its preview with the actual cleanup.",
+            ),
           }),
         },
       },
@@ -829,7 +836,7 @@ const mergeGroupsRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — admin role required, or source connection belongs to another org", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "One or more source connections not found in this org", content: { "application/json": { schema: ErrorSchema } } },
-    409: { description: "Target group name collision under a different group id (rare TOCTOU race against a concurrent rename)", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Conflict — the merge could not complete atomically (PK collision on the generated target id, OR a source connection's state changed between pre-validation and the merge). Caller may retry.", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -973,14 +980,31 @@ adminConnectionGroups.openapi(mergeGroupsRoute, async (c) =>
       ]);
     } catch (err) {
       const meta = pgErrorMeta(err);
-      // A 23505 on the unique-name index is conceivable in the rare race
-      // where another admin renames a different group to the target name
-      // between our pre-validate and the merge CTE. Map to 409 so the
-      // wizard can resurface the form rather than burn the admin's
-      // selections to a 500.
-      if (meta.code === "23505" && meta.constraint === UNIQUE_NAME_CONSTRAINT) {
+      // 23505 paths reachable from the merge CTE:
+      //   (a) PK collision on the generated `g_<random>` target id —
+      //       vanishingly rare (~64 bits of entropy) but possible.
+      //   (b) Unique-name index — should NOT fire because
+      //       `ON CONFLICT (org_id, name) DO UPDATE` absorbs name
+      //       collisions non-fatally. If it does fire, that's a sign of
+      //       schema drift (e.g. the constraint name changed and the
+      //       CTE's ON CONFLICT no longer matches).
+      // Both paths map to 409 with a generic message so the wizard
+      // can resurface the form and the admin retries (either with a
+      // different name or a retry against the same name).
+      if (meta.code === "23505") {
+        log.warn(
+          { requestId, orgId, targetName: trimmedTargetName, constraint: meta.constraint ?? null },
+          "Merge hit 23505 (likely generated-id collision; investigate if constraint=" +
+            (meta.constraint ?? "unknown") +
+            ")",
+        );
         return c.json(
-          { error: "conflict", message: `A group named "${trimmedTargetName}" already exists under a different shape.`, requestId },
+          {
+            error: "conflict",
+            message:
+              "Could not complete the merge — please retry. If this persists, try a different environment name.",
+            requestId,
+          },
           409,
         );
       }
@@ -1000,6 +1024,30 @@ adminConnectionGroups.openapi(mergeGroupsRoute, async (c) =>
       // INSERT/ON CONFLICT path is broken in a way we don't recognise.
       log.error({ requestId, orgId }, "Merge CTE returned no target row");
       return c.json({ error: "internal_error", message: "Merge produced no target row.", requestId }, 500);
+    }
+
+    // Atomicity claim verification: the route advertises "all sources
+    // move into the target." The CTE updates `connections WHERE id =
+    // ANY($6) AND org_id = $2`, so if a source's `org_id` or `status`
+    // changed between the pre-validate SELECT (which checks
+    // status != 'archived') and the merge CTE, the `moved` branch
+    // silently drops it. Surface that as a 409 rather than a partial-
+    // success 200 — the wizard must refresh and retry rather than
+    // claim a merge that didn't fully happen.
+    if (row.moved_connection_ids.length !== uniqueSourceIds.length) {
+      const dropped = uniqueSourceIds.filter((id) => !row.moved_connection_ids.includes(id));
+      log.warn(
+        { requestId, orgId, requested: uniqueSourceIds, moved: row.moved_connection_ids, dropped },
+        "Merge moved fewer connections than requested — likely concurrent archive or org migration",
+      );
+      return c.json(
+        {
+          error: "conflict",
+          message: `One or more source connections changed state during the merge: ${dropped.join(", ")}. Refresh and try again.`,
+          requestId,
+        },
+        409,
+      );
     }
 
     log.info(
@@ -1026,6 +1074,7 @@ adminConnectionGroups.openapi(mergeGroupsRoute, async (c) =>
         sourceConnectionIds: uniqueSourceIds,
         movedConnectionIds: row.moved_connection_ids,
         deletedGroupIds: row.deleted_group_ids,
+        skippedGroupIds: row.skipped_group_ids,
         primaryConnectionId: row.target.primaryConnectionId,
         primaryOverridden: overridePrimary,
       },
@@ -1045,6 +1094,7 @@ adminConnectionGroups.openapi(mergeGroupsRoute, async (c) =>
         },
         movedConnectionIds: row.moved_connection_ids,
         deletedGroupIds: row.deleted_group_ids,
+        skippedGroupIds: row.skipped_group_ids ?? [],
       },
       200,
     );

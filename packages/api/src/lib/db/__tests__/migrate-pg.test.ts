@@ -4,7 +4,10 @@ import { join } from "node:path";
 import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
-import { DELETE_GROUP_AND_ARCHIVED_CONNECTIONS_SQL } from "@atlas/api/lib/db/connection-groups-sql";
+import {
+  DELETE_GROUP_AND_ARCHIVED_CONNECTIONS_SQL,
+  MERGE_CONNECTIONS_INTO_GROUP_SQL,
+} from "@atlas/api/lib/db/connection-groups-sql";
 
 // Real-Postgres migration smoke. Skips cleanly when TEST_DATABASE_URL
 // is unset so local dev that hasn't run `bun run db:up` is unaffected.
@@ -482,6 +485,235 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       [orgId, tombstoneConnId],
     );
     expect(connRows.rows.length).toBe(0);
+  }, PG_TEST_TIMEOUT_MS);
+
+  // ── Merge CTE smoke (#2409) ─────────────────────────────────────────
+  //
+  // MERGE_CONNECTIONS_INTO_GROUP_SQL consolidates N source connections
+  // into one target environment in a single atomic statement. The mock-
+  // pool wire tests pin the SQL shape; this real-Postgres smoke pins
+  // the planning-time semantics that mocks can't catch:
+  //
+  //   - `LIKE 'g\_%' ESCAPE '\'` — the literal backslash escape is easy
+  //     to silently break with a future "string normalization" pass.
+  //   - `name = SUBSTRING(id FROM 3)` — pins the 0062 auto-backfill
+  //     signature. A migration that renames backfilled groups (e.g. 0070
+  //     for the __global__: prefix) must not accidentally surface them
+  //     as cleanup candidates again.
+  //   - `(xmax = 0)` on the target CTE — distinguishes INSERT from
+  //     ON CONFLICT DO UPDATE. The wizard's "Created prod" vs "Added to
+  //     prod" copy depends on this fact landing correctly.
+  //   - The seven NOT EXISTS guards (FK-bearing + soft-reference) —
+  //     cleanup MUST be skipped when the source group still anchors
+  //     admin-curated content. We can't easily test all seven, but the
+  //     two that have FKs (approvals, scheduled_tasks) AND the
+  //     soft-reference NULL-safe path (insert a row into one of the
+  //     no-FK tables and assert the source group survives) are the
+  //     load-bearing ones — the rest follow the same shape.
+  //
+  // Why this matters: per the project memory `feedback_migration_pg_smoke.md`,
+  // mock-pool tests can't catch SQL planning errors. The CTE has equivalent
+  // planning-time risk to the env-delete CTE that #2410 needed three
+  // patches to get right; the precedent is explicit.
+  it("merge CTE: happy path inserts target, moves connections, deletes auto-backfilled singletons (#2409)", async () => {
+    const orgId = `org-merge-${Date.now()}`;
+    const conn1 = `m-conn-1-${Date.now()}`;
+    const conn2 = `m-conn-2-${Date.now()}`;
+    const group1 = `g_${conn1}`;
+    const group2 = `g_${conn2}`;
+    const targetId = `g_target-${Date.now()}`;
+
+    // Seed the 0062 1:1 backfill shape: each connection in its own
+    // singleton group named after the bare connection id.
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, $3), ($4, $2, $5)`,
+      [group1, orgId, conn1, group2, conn2],
+    );
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status, group_id) VALUES
+         ($1, 'postgresql://stub-1', 'postgres', $2, 'active', $3),
+         ($4, 'postgresql://stub-2', 'postgres', $2, 'active', $5)`,
+      [conn1, orgId, group1, conn2, group2],
+    );
+
+    const { rows } = await pool.query<{
+      target: { id: string; name: string; primaryConnectionId: string; created: boolean };
+      moved_connection_ids: string[];
+      deleted_group_ids: string[];
+      skipped_group_ids: string[];
+    }>(MERGE_CONNECTIONS_INTO_GROUP_SQL, [
+      targetId, // $1
+      orgId, // $2
+      "prod-merge", // $3
+      conn1, // $4 primary
+      false, // $5 override
+      [conn1, conn2], // $6
+      [group1, group2], // $7
+    ]);
+
+    expect(rows[0].target.created).toBe(true);
+    expect(rows[0].target.name).toBe("prod-merge");
+    expect(rows[0].moved_connection_ids.sort()).toEqual([conn1, conn2].sort());
+    expect(rows[0].deleted_group_ids.sort()).toEqual([group1, group2].sort());
+    expect(rows[0].skipped_group_ids).toEqual([]);
+
+    // Connections are now parented to the target.
+    const reparentedRows = await pool.query<{ id: string; group_id: string }>(
+      `SELECT id, group_id FROM connections WHERE org_id = $1 AND id IN ($2, $3)`,
+      [orgId, conn1, conn2],
+    );
+    expect(reparentedRows.rows.every((r) => r.group_id === targetId)).toBe(true);
+
+    // Source singletons are gone.
+    const sourceGroupRows = await pool.query<{ id: string }>(
+      `SELECT id FROM connection_groups WHERE org_id = $1 AND id IN ($2, $3)`,
+      [orgId, group1, group2],
+    );
+    expect(sourceGroupRows.rows.length).toBe(0);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("merge CTE: cleanup is skipped when the source group still anchors a scheduled task (#2409)", async () => {
+    const orgId = `org-merge-st-${Date.now()}`;
+    const conn1 = `m-st-conn-${Date.now()}`;
+    const group1 = `g_${conn1}`;
+    const targetId = `g_target-st-${Date.now()}`;
+
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, $3)`,
+      [group1, orgId, conn1],
+    );
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status, group_id) VALUES
+         ($1, 'postgresql://stub', 'postgres', $2, 'active', $3)`,
+      [conn1, orgId, group1],
+    );
+    // A scheduled task pinned to the source group. The CTE's NOT EXISTS
+    // guard against `scheduled_tasks.connection_group_id` is the only
+    // thing between this and the FK rolling the whole merge back with
+    // 23503. Pin the gating behaviour: merge succeeds, source group
+    // survives, the task's reference stays valid.
+    await pool.query(
+      `INSERT INTO scheduled_tasks (id, org_id, prompt, cron_schedule, connection_group_id, enabled)
+       VALUES ($1, $2, 'noop', '0 0 * * *', $3, false)`,
+      [`task-${Date.now()}`, orgId, group1],
+    );
+
+    const { rows } = await pool.query<{
+      moved_connection_ids: string[];
+      deleted_group_ids: string[];
+      skipped_group_ids: string[];
+    }>(MERGE_CONNECTIONS_INTO_GROUP_SQL, [
+      targetId,
+      orgId,
+      "prod-merge-st",
+      conn1,
+      false,
+      [conn1],
+      [group1],
+    ]);
+
+    expect(rows[0].moved_connection_ids).toEqual([conn1]);
+    expect(rows[0].deleted_group_ids).toEqual([]);
+    expect(rows[0].skipped_group_ids).toEqual([group1]);
+
+    // Source group survives — the scheduled task's connection_group_id
+    // reference is still valid.
+    const survivedRows = await pool.query<{ id: string }>(
+      `SELECT id FROM connection_groups WHERE org_id = $1 AND id = $2`,
+      [orgId, group1],
+    );
+    expect(survivedRows.rows.length).toBe(1);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("merge CTE: admin-renamed singleton survives cleanup even when empty (#2409)", async () => {
+    // Cleanup must only delete groups matching the 0062 auto-backfill
+    // signature (`name = SUBSTRING(id FROM 3)`). An admin who renamed
+    // their `g_warehouse` group to "Warehouse" expects that label to
+    // persist; a merge that nukes it as cleanup would be data loss.
+    const orgId = `org-merge-renamed-${Date.now()}`;
+    const conn1 = `m-renamed-conn-${Date.now()}`;
+    const group1 = `g_${conn1}`;
+    const targetId = `g_target-renamed-${Date.now()}`;
+
+    // Backfill-shape id, but a non-default (admin-set) name.
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'Warehouse')`,
+      [group1, orgId],
+    );
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status, group_id) VALUES
+         ($1, 'postgresql://stub', 'postgres', $2, 'active', $3)`,
+      [conn1, orgId, group1],
+    );
+
+    const { rows } = await pool.query<{
+      deleted_group_ids: string[];
+      skipped_group_ids: string[];
+    }>(MERGE_CONNECTIONS_INTO_GROUP_SQL, [
+      targetId,
+      orgId,
+      "prod-merge-renamed",
+      conn1,
+      false,
+      [conn1],
+      [group1],
+    ]);
+
+    // Renamed group is NOT in either array — it's not eligible for
+    // cleanup at all, so it's not a candidate, so it's not "skipped".
+    expect(rows[0].deleted_group_ids).toEqual([]);
+    expect(rows[0].skipped_group_ids).toEqual([]);
+
+    const survivedRows = await pool.query<{ id: string; name: string }>(
+      `SELECT id, name FROM connection_groups WHERE org_id = $1 AND id = $2`,
+      [orgId, group1],
+    );
+    expect(survivedRows.rows.length).toBe(1);
+    expect(survivedRows.rows[0].name).toBe("Warehouse");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("merge CTE: ON CONFLICT reuses an existing target and preserves its primary unless overridden (#2409)", async () => {
+    const orgId = `org-merge-reuse-${Date.now()}`;
+    const conn1 = `m-reuse-conn-1-${Date.now()}`;
+    const conn2 = `m-reuse-conn-2-${Date.now()}`;
+    const group1 = `g_${conn1}`;
+    const group2 = `g_${conn2}`;
+    const existingTargetId = `g_existing-${Date.now()}`;
+    const newTargetId = `g_new-target-${Date.now()}`;
+
+    // Seed: an existing target group with its own primary already set.
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'prod-reuse'), ($3, $2, $4), ($5, $2, $6)`,
+      [existingTargetId, orgId, group1, conn1, group2, conn2],
+    );
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status, group_id) VALUES
+         ($1, 'postgresql://stub-1', 'postgres', $2, 'active', $3),
+         ($4, 'postgresql://stub-2', 'postgres', $2, 'active', $5)`,
+      [conn1, orgId, group1, conn2, group2],
+    );
+    await pool.query(
+      `UPDATE connection_groups SET primary_connection_id = $1 WHERE id = $2 AND org_id = $3`,
+      [conn1, existingTargetId, orgId],
+    );
+
+    // Call with `override = false` and a different proposed primary —
+    // the existing primary must survive.
+    const { rows } = await pool.query<{
+      target: { id: string; created: boolean; primaryConnectionId: string };
+    }>(MERGE_CONNECTIONS_INTO_GROUP_SQL, [
+      newTargetId, // ignored on conflict
+      orgId,
+      "prod-reuse",
+      conn2, // proposed primary
+      false, // override = false → preserve existing
+      [conn1, conn2],
+      [group1, group2],
+    ]);
+
+    expect(rows[0].target.created).toBe(false);
+    expect(rows[0].target.id).toBe(existingTargetId);
+    expect(rows[0].target.primaryConnectionId).toBe(conn1);
   }, PG_TEST_TIMEOUT_MS);
 
   // 0063 — semantic_entities.connection_group_id. Adds the group-scoped

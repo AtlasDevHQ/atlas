@@ -574,6 +574,7 @@ interface MergeResponse {
   target: ConnectionGroup & { created: boolean };
   movedConnectionIds: string[];
   deletedGroupIds: string[];
+  skippedGroupIds: string[];
 }
 
 /**
@@ -624,11 +625,19 @@ function MergeGroupsDialog({
 
   const toggleConnection = (id: string) => {
     setSelectedIds((prev) => {
-      if (prev.includes(id)) return prev.filter((x) => x !== id);
-      const next = [...prev, id];
-      // Seed primary to the first selected so the wizard always has a
-      // sensible default — the admin can change it on the name step.
-      if (!primaryId) setPrimaryId(id);
+      const removing = prev.includes(id);
+      const next = removing ? prev.filter((x) => x !== id) : [...prev, id];
+      // Keep `primaryId` in lockstep with the selection set so the server's
+      // `uniqueSourceIds.includes(primaryConnectionId)` check at submit time
+      // never sees a stale primary. Without this, toggling on A (primary=A),
+      // then on B, then off A leaves the wizard with `primaryId=A` not in
+      // selectedIds and the merge fails with a 400 that the admin can't
+      // diagnose from the UI.
+      if (removing && primaryId === id) {
+        setPrimaryId(next[0] ?? "");
+      } else if (!removing && !primaryId) {
+        setPrimaryId(id);
+      }
       return next;
     });
   };

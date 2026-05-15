@@ -760,8 +760,10 @@ function labelForDbType(dbType: string): string {
 
 /**
  * Mirror of `stripGroupPrefix` in `columns.tsx` + `chat/env-picker.tsx`.
- * The 0062 1:1 backfill names groups `g_<connId>` for legacy
- * single-connection orgs; strip the prefix so the badge reads naturally.
+ * Defensive strip for any group name an admin renames to `g_*` —
+ * migration 0062 backfills `connection_groups.id` as `g_<connId>` but
+ * stores `name = <connId>` (unprefixed), so this is a no-op on default
+ * data and only fires for admin-set custom names.
  * TODO(refactor): extract to a shared util — tracked in #2426.
  */
 function stripGroupPrefix(name: string): string {
@@ -1333,7 +1335,7 @@ function ConnectionCard({
 
       <DetailList>
         <DetailRow label="Provider" value={providerLabel} />
-        {conn.groupName ? (
+        {conn.groupName != null ? (
           <DetailRow
             label="Environment"
             value={

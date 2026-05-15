@@ -1097,18 +1097,35 @@ adminConnections.openapi(getConnectionRoute, async (c) => runHandler(c, "get con
   let maskedUrl: string | null = null;
   let schema: string | null = null;
   let managed = false;
+  let groupId: string | null = null;
+  let groupName: string | null = null;
   if (hasInternalDB()) {
     try {
       // Defense-in-depth: even though visibility already filters out
       // archived rows, exclude them here too so a future visibility-layer
       // bug can never feed the empty-string tombstone marker to decryptSecret.
-      const rows = await internalQuery<{ url: string; schema_name: string | null }>(
-        "SELECT url, schema_name FROM connections WHERE id = $1 AND org_id = $2 AND status != 'archived'",
+      // LEFT JOIN connection_groups so the detail response carries the same
+      // groupId + groupName fields the list endpoint emits — the admin UI's
+      // Edit dialog reuses ConnectionDetail and would otherwise lose the
+      // environment chip on detail render.
+      const rows = await internalQuery<{
+        url: string;
+        schema_name: string | null;
+        group_id: string | null;
+        group_name: string | null;
+      }>(
+        `SELECT c.url, c.schema_name, c.group_id, g.name AS group_name
+           FROM connections c
+           LEFT JOIN connection_groups g
+             ON g.id = c.group_id AND g.org_id = c.org_id
+          WHERE c.id = $1 AND c.org_id = $2 AND c.status != 'archived'`,
         [id, orgId],
       );
       if (rows.length > 0) {
         managed = true;
         schema = rows[0].schema_name;
+        groupId = rows[0].group_id;
+        groupName = rows[0].group_name;
         try {
           maskedUrl = maskConnectionUrl(decryptSecret(rows[0].url));
         } catch (decryptErr) {
@@ -1130,6 +1147,8 @@ adminConnections.openapi(getConnectionRoute, async (c) => runHandler(c, "get con
     maskedUrl,
     schema,
     managed,
+    groupId,
+    groupName,
   }, 200);
 }));
 

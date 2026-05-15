@@ -21,10 +21,11 @@ function mapHealthStatus(
 }
 
 /**
- * Mirror of `stripGroupPrefix` in `chat/env-picker.tsx`. The 0062 1:1
- * backfill names groups `g_<connId>` for legacy single-connection orgs;
- * strip the prefix so the badge reads naturally ("prod" instead of
- * "g_prod"). Custom names without the prefix pass through unchanged.
+ * Mirror of `stripGroupPrefix` in `chat/env-picker.tsx`. Defensive strip
+ * for any group name an admin renames to `g_*` — migration 0062 backfills
+ * `connection_groups.id` as `g_<connId>` but stores `name = <connId>`
+ * (unprefixed), so the strip is a no-op on default data and only fires
+ * if a custom name starts with `g_`.
  * TODO(refactor): extract to a shared util — tracked in #2426.
  */
 function stripGroupPrefix(name: string): string {
@@ -86,7 +87,12 @@ export function getConnectionColumns(): ColumnDef<ConnectionInfo>[] {
       ),
       cell: ({ row }) => {
         const groupName = row.original.groupName;
-        if (!groupName) {
+        // Use explicit `== null` rather than `!groupName` \u2014 empty string is
+        // not a documented state and falling through to the em-dash would
+        // mask a corrupt `connection_groups.name = ''` row instead of
+        // surfacing it. The backend invariant is `groupId !== null \u21d2
+        // groupName !== null`; both are jointly null/non-null.
+        if (groupName == null) {
           return <span className="text-sm text-muted-foreground">{"\u2014"}</span>;
         }
         return (

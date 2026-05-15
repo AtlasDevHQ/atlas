@@ -53,13 +53,22 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { Loader2, Plus, Pencil, Trash2, Layers } from "lucide-react";
+import { Loader2, Plus, Pencil, Trash2, Layers, GitMerge } from "lucide-react";
 import type { ConnectionGroup } from "@/ui/lib/types";
+import {
+  stripGroupPrefix,
+  isAutoBackfilledSingleton,
+} from "@/ui/lib/strip-group-prefix";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 
 const GroupSchema = z.object({
   id: z.string(),
   name: z.string(),
   memberCount: z.number().int().nonnegative(),
+  primaryConnectionId: z.string().nullable().optional(),
+  resolvedConnectionId: z.string().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -94,8 +103,15 @@ export default function ConnectionGroupsPage() {
   const connections = connList?.connections ?? [];
 
   const [createOpen, setCreateOpen] = useState(false);
+  const [mergeOpen, setMergeOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<ConnectionGroup | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ConnectionGroup | null>(null);
+  const [showAutoDetected, setShowAutoDetected] = useState(false);
+
+  const autoDetectedGroups = groups.filter(isAutoBackfilledSingleton);
+  const curatedGroups = groups.filter((g) => !isAutoBackfilledSingleton(g));
+  const visibleGroups = showAutoDetected ? groups : curatedGroups;
+  const hasAutoDetected = autoDetectedGroups.length > 0;
 
   return (
     <AdminContentWrapper loading={loading} error={error} onRetry={refetch}>
@@ -112,21 +128,52 @@ export default function ConnectionGroupsPage() {
               <code className="text-xs">connection groups</code>.
             </p>
           </div>
-          <Button onClick={() => setCreateOpen(true)} data-testid="env-create">
-            <Plus className="size-4" /> New environment
-          </Button>
+          <div className="flex flex-col items-end gap-2">
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                onClick={() => setMergeOpen(true)}
+                data-testid="env-merge-open"
+                disabled={connections.length < 2}
+              >
+                <GitMerge className="size-4" /> Merge connections
+              </Button>
+              <Button onClick={() => setCreateOpen(true)} data-testid="env-create">
+                <Plus className="size-4" /> New environment
+              </Button>
+            </div>
+            {hasAutoDetected ? (
+              <Label
+                className="flex items-center gap-2 text-xs text-muted-foreground"
+                htmlFor="env-show-auto-detected"
+              >
+                <Switch
+                  id="env-show-auto-detected"
+                  checked={showAutoDetected}
+                  onCheckedChange={setShowAutoDetected}
+                  data-testid="env-show-auto-detected"
+                />
+                Show {autoDetectedGroups.length} auto-detected singleton
+                {autoDetectedGroups.length === 1 ? "" : "s"}
+              </Label>
+            ) : null}
+          </div>
         </header>
 
-        {groups.length === 0 ? (
+        {visibleGroups.length === 0 ? (
           <Card className="border-dashed">
             <CardContent className="flex flex-col items-center gap-3 py-12 text-center text-muted-foreground">
               <Layers className="size-8 opacity-50" />
-              <p>No environments yet. Create one to group your connections.</p>
+              <p>
+                {hasAutoDetected
+                  ? "No multi-connection environments yet. Use \"Merge connections\" to group connections together."
+                  : "No environments yet. Create one to group your connections."}
+              </p>
             </CardContent>
           </Card>
         ) : (
           <div className="grid gap-4 sm:grid-cols-2">
-            {groups.map((group) => (
+            {visibleGroups.map((group) => (
               <GroupCard
                 key={group.id}
                 group={group}
@@ -145,6 +192,16 @@ export default function ConnectionGroupsPage() {
         open={createOpen}
         onOpenChange={setCreateOpen}
         onCreated={refetch}
+      />
+      <MergeGroupsDialog
+        open={mergeOpen}
+        onOpenChange={setMergeOpen}
+        connections={connections}
+        groups={groups}
+        onMerged={() => {
+          refetch();
+          refetchConnections();
+        }}
       />
       {renameTarget ? (
         <RenameGroupDialog
@@ -207,12 +264,21 @@ function GroupCard({
     });
   };
 
+  const displayName = stripGroupPrefix(group.name);
+  // Hide the raw `g_<connId>` / `g_<random>` id from the description line —
+  // it's an implementation detail and admins routinely confused the
+  // backfilled `g_warehouse` id with a renameable label (#2409). The full
+  // id remains accessible via the rename dialog title for support flows.
+  const showRawId = !group.id.startsWith("g_");
+
   return (
     <Card data-testid={`env-card-${group.id}`}>
       <CardHeader className="flex flex-row items-start justify-between gap-2">
         <div>
-          <CardTitle className="text-base">{group.name}</CardTitle>
-          <CardDescription className="text-xs font-mono">{group.id}</CardDescription>
+          <CardTitle className="text-base">{displayName}</CardTitle>
+          {showRawId ? (
+            <CardDescription className="text-xs font-mono">{group.id}</CardDescription>
+          ) : null}
         </div>
         <div className="flex gap-1">
           <Button
@@ -220,7 +286,7 @@ function GroupCard({
             variant="ghost"
             onClick={onRename}
             data-testid={`env-rename-${group.id}`}
-            aria-label={`Rename ${group.name}`}
+            aria-label={`Rename ${displayName}`}
           >
             <Pencil className="size-4" />
           </Button>
@@ -229,7 +295,7 @@ function GroupCard({
             variant="ghost"
             onClick={onDelete}
             data-testid={`env-delete-${group.id}`}
-            aria-label={`Delete ${group.name}`}
+            aria-label={`Delete ${displayName}`}
             disabled={members.length > 0}
           >
             <Trash2 className="size-4" />
@@ -254,7 +320,7 @@ function GroupCard({
                   variant="ghost"
                   className="size-4 -mr-1"
                   onClick={() => handleRemove(c.id)}
-                  aria-label={`Remove ${c.id} from ${group.name}`}
+                  aria-label={`Remove ${c.id} from ${displayName}`}
                 >
                   ×
                 </Button>
@@ -379,7 +445,11 @@ function RenameGroupDialog({
   onClose: () => void;
   onRenamed: () => void;
 }) {
-  const [name, setName] = useState(group.name);
+  // Seed the input with the user-visible label (stripped) rather than the
+  // raw stored value — otherwise an admin renaming an auto-backfilled
+  // `g_warehouse`-named group sees `g_warehouse` in the input and has to
+  // manually delete the prefix that they never asked to see.
+  const [name, setName] = useState(stripGroupPrefix(group.name));
   const rename = useAdminMutation<ConnectionGroup>({
     path: `/api/v1/admin/connection-groups/${group.id}`,
     method: "PATCH",
@@ -388,7 +458,7 @@ function RenameGroupDialog({
 
   const submit = async () => {
     const trimmed = name.trim();
-    if (!trimmed || trimmed === group.name) {
+    if (!trimmed || trimmed === stripGroupPrefix(group.name)) {
       onClose();
       return;
     }
@@ -463,7 +533,7 @@ function DeleteGroupDialog({
     <AlertDialog open onOpenChange={(open) => !open && onClose()}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Delete environment "{group.name}"?</AlertDialogTitle>
+          <AlertDialogTitle>Delete environment "{stripGroupPrefix(group.name)}"?</AlertDialogTitle>
           <AlertDialogDescription>
             The environment must be empty. Move every connection out first — the
             connections themselves aren't touched.
@@ -486,5 +556,285 @@ function DeleteGroupDialog({
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Merge wizard (#2409)
+// ---------------------------------------------------------------------------
+
+interface MergeConnection {
+  id: string;
+  dbType?: string;
+  description?: string | null;
+  groupId?: string | null;
+}
+
+interface MergeResponse {
+  target: ConnectionGroup & { created: boolean };
+  movedConnectionIds: string[];
+  deletedGroupIds: string[];
+}
+
+/**
+ * Multi-step merge wizard. Surfaces the preview as the second step so the
+ * admin can see what cleanup will happen (e.g. "3 auto-detected
+ * environments will be deleted") before committing. The atomic merge runs
+ * server-side in a single CTE — there's no partial-success state to
+ * recover from.
+ */
+function MergeGroupsDialog({
+  open,
+  onOpenChange,
+  connections,
+  groups,
+  onMerged,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  connections: ReadonlyArray<MergeConnection>;
+  groups: ReadonlyArray<ConnectionGroup>;
+  onMerged: (result: MergeResponse) => void;
+}) {
+  const [step, setStep] = useState<"select" | "name" | "preview">("select");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [targetName, setTargetName] = useState("");
+  const [primaryId, setPrimaryId] = useState<string>("");
+
+  const merge = useAdminMutation<MergeResponse>({
+    path: "/api/v1/admin/connection-groups/merge",
+    method: "POST",
+  });
+
+  // Reset state when the dialog closes so a re-open starts fresh. Leaving
+  // stale selections in place across opens would surface confusing default
+  // values (and a stale primary id no longer in the source set).
+  const reset = () => {
+    setStep("select");
+    setSelectedIds([]);
+    setTargetName("");
+    setPrimaryId("");
+    merge.clearError();
+  };
+
+  const handleOpenChange = (next: boolean) => {
+    if (!next) reset();
+    onOpenChange(next);
+  };
+
+  const toggleConnection = (id: string) => {
+    setSelectedIds((prev) => {
+      if (prev.includes(id)) return prev.filter((x) => x !== id);
+      const next = [...prev, id];
+      // Seed primary to the first selected so the wizard always has a
+      // sensible default — the admin can change it on the name step.
+      if (!primaryId) setPrimaryId(id);
+      return next;
+    });
+  };
+
+  // Existing target group (if the user names a group that already exists).
+  // The preview surfaces this so "Add to existing prod" reads differently
+  // from "Create new prod" — same merge call, different audit framing.
+  const existingTarget = targetName.trim()
+    ? groups.find((g) => g.name === targetName.trim())
+    : undefined;
+
+  // Source groups currently anchoring the selected connections — used to
+  // count the "auto-detected environments will be deleted" preview line.
+  const sourceGroupIds = Array.from(
+    new Set(
+      selectedIds
+        .map((id) => connections.find((c) => c.id === id)?.groupId)
+        .filter((g): g is string => typeof g === "string"),
+    ),
+  );
+  const eligibleForCleanup = sourceGroupIds.filter((gid) => {
+    const g = groups.find((x) => x.id === gid);
+    if (!g) return false;
+    if (existingTarget && g.id === existingTarget.id) return false;
+    return isAutoBackfilledSingleton(g);
+  });
+
+  const submit = async () => {
+    if (selectedIds.length < 2 || !targetName.trim() || !primaryId) return;
+    const result = await merge.mutate({
+      body: {
+        targetName: targetName.trim(),
+        sourceConnectionIds: selectedIds,
+        primaryConnectionId: primaryId,
+      },
+    });
+    if (result.ok && result.data) {
+      onMerged(result.data);
+      handleOpenChange(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Merge connections into an environment</DialogTitle>
+          <DialogDescription>
+            {step === "select"
+              ? "Pick the connections that share a schema. We'll move them into one environment."
+              : step === "name"
+                ? "Name the target environment and choose which connection runs scheduled tasks and dashboards."
+                : "Confirm the changes. The merge is atomic — every step succeeds together or rolls back."}
+          </DialogDescription>
+        </DialogHeader>
+
+        {step === "select" ? (
+          <div
+            className="flex flex-col gap-1 max-h-[280px] overflow-y-auto pr-1"
+            data-testid="env-merge-select-list"
+          >
+            {connections.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No connections to merge.</p>
+            ) : (
+              connections.map((c) => {
+                const checked = selectedIds.includes(c.id);
+                return (
+                  <Label
+                    key={c.id}
+                    className="flex items-center gap-2 rounded-md border border-transparent px-2 py-1.5 text-sm hover:border-border hover:bg-muted/40 cursor-pointer"
+                  >
+                    <Checkbox
+                      checked={checked}
+                      onCheckedChange={() => toggleConnection(c.id)}
+                      data-testid={`env-merge-source-${c.id}`}
+                    />
+                    <span className="flex-1 truncate font-mono text-xs">{c.id}</span>
+                    {c.dbType ? (
+                      <Badge variant="outline" className="text-[10px]">
+                        {c.dbType}
+                      </Badge>
+                    ) : null}
+                  </Label>
+                );
+              })
+            )}
+          </div>
+        ) : null}
+
+        {step === "name" ? (
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="env-merge-name" className="text-xs uppercase tracking-wide text-muted-foreground">
+                Environment name
+              </Label>
+              <Input
+                id="env-merge-name"
+                value={targetName}
+                onChange={(e) => setTargetName(e.target.value)}
+                placeholder="prod"
+                autoFocus
+                data-testid="env-merge-name"
+              />
+              {existingTarget ? (
+                <p className="text-xs text-muted-foreground">
+                  An environment named{" "}
+                  <span className="font-mono">{stripGroupPrefix(existingTarget.name)}</span>{" "}
+                  already exists with {existingTarget.memberCount} member(s) — your selection will
+                  be added to it.
+                </p>
+              ) : null}
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="env-merge-primary" className="text-xs uppercase tracking-wide text-muted-foreground">
+                Primary connection
+              </Label>
+              <Select value={primaryId} onValueChange={setPrimaryId}>
+                <SelectTrigger id="env-merge-primary" data-testid="env-merge-primary">
+                  <SelectValue placeholder="Select a primary…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {selectedIds.map((id) => (
+                    <SelectItem key={id} value={id}>
+                      {id}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Scheduled tasks and dashboard cards in this environment will execute against the
+                primary connection.
+              </p>
+            </div>
+          </div>
+        ) : null}
+
+        {step === "preview" ? (
+          <div className="flex flex-col gap-2 rounded-md border bg-muted/30 p-3 text-sm">
+            <p>
+              <strong>{selectedIds.length} connection(s)</strong> will move into{" "}
+              <span className="font-mono">{targetName.trim()}</span>
+              {existingTarget ? " (existing environment)" : " (new environment)"}.
+            </p>
+            <p>
+              Primary connection: <span className="font-mono">{primaryId}</span>
+            </p>
+            {eligibleForCleanup.length > 0 ? (
+              <p>
+                {eligibleForCleanup.length} auto-detected singleton environment(s) will be
+                deleted.
+              </p>
+            ) : (
+              <p className="text-muted-foreground">
+                No auto-detected environments will be deleted by this merge.
+              </p>
+            )}
+          </div>
+        ) : null}
+
+        <MutationErrorSurface error={merge.error} feature="Environments" onRetry={merge.clearError} />
+
+        <DialogFooter>
+          {step === "select" ? (
+            <>
+              <Button variant="ghost" onClick={() => handleOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={() => setStep("name")}
+                disabled={selectedIds.length < 2}
+                data-testid="env-merge-next-name"
+              >
+                Next
+              </Button>
+            </>
+          ) : null}
+          {step === "name" ? (
+            <>
+              <Button variant="ghost" onClick={() => setStep("select")}>
+                Back
+              </Button>
+              <Button
+                onClick={() => setStep("preview")}
+                disabled={!targetName.trim() || !primaryId}
+                data-testid="env-merge-next-preview"
+              >
+                Review
+              </Button>
+            </>
+          ) : null}
+          {step === "preview" ? (
+            <>
+              <Button variant="ghost" onClick={() => setStep("name")}>
+                Back
+              </Button>
+              <Button
+                onClick={submit}
+                disabled={merge.saving}
+                data-testid="env-merge-confirm"
+              >
+                {merge.saving ? <Loader2 className="size-4 animate-spin" /> : "Merge"}
+              </Button>
+            </>
+          ) : null}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

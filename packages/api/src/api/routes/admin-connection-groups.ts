@@ -17,7 +17,10 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { internalQuery } from "@atlas/api/lib/db/internal";
-import { DELETE_GROUP_AND_ARCHIVED_CONNECTIONS_SQL } from "@atlas/api/lib/db/connection-groups-sql";
+import {
+  DELETE_GROUP_AND_ARCHIVED_CONNECTIONS_SQL,
+  MERGE_CONNECTIONS_INTO_GROUP_SQL,
+} from "@atlas/api/lib/db/connection-groups-sql";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
@@ -764,6 +767,287 @@ adminConnectionGroups.openapi(assignMemberRoute, async (c) =>
       metadata: { connectionId, groupId: targetGroupId },
     });
     return c.json({ connectionId, groupId: targetGroupId }, 200);
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// POST /merge — atomic N-into-1 environment merge (#2409)
+// ---------------------------------------------------------------------------
+
+/**
+ * Pre-validation result shape from `SELECT id, org_id, group_id FROM
+ * connections WHERE id = ANY(...)`. We capture the current `group_id` so
+ * cleanup of auto-backfilled source groups can fire in the same atomic
+ * statement that re-parents the connection.
+ */
+type SourceConnectionRow = {
+  id: string;
+  org_id: string;
+  group_id: string | null;
+};
+
+type MergeResultRow = {
+  target: {
+    id: string;
+    name: string;
+    primaryConnectionId: string | null;
+    createdAt: string;
+    updatedAt: string;
+    created: boolean;
+  } | null;
+  moved_connection_ids: string[];
+  deleted_group_ids: string[];
+};
+
+const mergeGroupsRoute = createRoute({
+  method: "post",
+  path: "/merge",
+  tags: ["Admin — Connection Groups"],
+  summary: "Merge connections into one environment",
+  description:
+    "Atomically re-parents N source connections into one target environment, optionally pinning a primary connection and cleaning up auto-backfilled `g_<connId>` singletons left empty by the move. Reuses an existing target group when one already exists under the requested name.",
+  responses: {
+    200: {
+      description: "Merge complete",
+      content: {
+        "application/json": {
+          schema: z.object({
+            target: ConnectionGroupSchema.extend({
+              created: z.boolean().describe(
+                "True when this merge actually created the target group; false when an existing group with the same name was reused.",
+              ),
+            }),
+            movedConnectionIds: z.array(z.string()),
+            deletedGroupIds: z.array(z.string()).describe(
+              "Auto-backfilled `g_<connId>` singletons cleaned up by this merge. Excludes user-created and admin-renamed groups even when empty after the move.",
+            ),
+          }),
+        },
+      },
+    },
+    400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required, or source connection belongs to another org", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "One or more source connections not found in this org", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Target group name collision under a different group id (rare TOCTOU race against a concurrent rename)", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+adminConnectionGroups.openapi(mergeGroupsRoute, async (c) =>
+  runHandler(c, "merge connection groups", async () => {
+    const { orgId, requestId } = c.get("orgContext");
+    const authResult = c.get("authResult");
+
+    // ── Parse + validate body ─────────────────────────────────────────
+    const body = await c.req.json().catch((err: unknown) => {
+      log.warn({ err: errorMessage(err), requestId }, "Failed to parse JSON body in merge groups request");
+      return null;
+    });
+    if (!body || typeof body !== "object") {
+      return c.json({ error: "invalid_request", message: "Request body is required.", requestId }, 400);
+    }
+    const { targetName, sourceConnectionIds, primaryConnectionId } = body as Record<string, unknown>;
+
+    if (typeof targetName !== "string" || !GROUP_NAME_PATTERN.test(targetName.trim())) {
+      return c.json(
+        {
+          error: "invalid_request",
+          message:
+            "targetName must start with a letter or digit and may contain letters, digits, spaces, hyphens, or underscores (max 64 chars).",
+          requestId,
+        },
+        400,
+      );
+    }
+    const trimmedTargetName = targetName.trim();
+
+    if (
+      !Array.isArray(sourceConnectionIds) ||
+      sourceConnectionIds.length === 0 ||
+      !sourceConnectionIds.every((id) => typeof id === "string" && id.length > 0)
+    ) {
+      return c.json(
+        { error: "invalid_request", message: "sourceConnectionIds must be a non-empty array of strings.", requestId },
+        400,
+      );
+    }
+    // Dedupe up front — duplicate ids in the array would still resolve to
+    // one row in the pre-validate SELECT and only confuse `movedConnectionIds`
+    // for the caller.
+    const uniqueSourceIds = Array.from(new Set(sourceConnectionIds as string[]));
+
+    if (primaryConnectionId !== undefined && primaryConnectionId !== null) {
+      if (typeof primaryConnectionId !== "string") {
+        return c.json(
+          { error: "invalid_request", message: "primaryConnectionId must be a string when provided.", requestId },
+          400,
+        );
+      }
+      if (!uniqueSourceIds.includes(primaryConnectionId)) {
+        // Refuse a primary that isn't in the source set. The composite FK
+        // would reject it at the SQL layer with 23503, but the response
+        // shape is friendlier to the wizard with a 400 + reason.
+        return c.json(
+          {
+            error: "invalid_request",
+            message: "primaryConnectionId must be one of the sourceConnectionIds.",
+            requestId,
+          },
+          400,
+        );
+      }
+    }
+
+    // Default primary: first source. The wizard surfaces a picker so the
+    // admin can override.
+    const resolvedPrimary =
+      typeof primaryConnectionId === "string" ? primaryConnectionId : uniqueSourceIds[0];
+    const overridePrimary = typeof primaryConnectionId === "string";
+
+    // ── Pre-validate sources (existence + org scope) ─────────────────
+    let sourceRows: SourceConnectionRow[];
+    try {
+      sourceRows = await internalQuery<SourceConnectionRow>(
+        `SELECT id, org_id, group_id FROM connections WHERE id = ANY($1::text[]) AND status != 'archived'`,
+        [uniqueSourceIds],
+      );
+    } catch (err) {
+      log.error({ err: errorMessage(err), requestId, orgId }, "Failed to pre-validate source connections for merge");
+      return c.json({ error: "internal_error", message: "Failed to validate source connections.", requestId }, 500);
+    }
+
+    // Existence check: every requested id must come back.
+    if (sourceRows.length !== uniqueSourceIds.length) {
+      const found = new Set(sourceRows.map((r) => r.id));
+      const missing = uniqueSourceIds.filter((id) => !found.has(id));
+      return c.json(
+        {
+          error: "not_found",
+          message: `Connections not found: ${missing.join(", ")}.`,
+          requestId,
+        },
+        404,
+      );
+    }
+
+    // Cross-org check: every source must live in the caller's org.
+    // 403 — not 404 — because the caller IS authenticated; they're just
+    // not authorised to move a foreign-org connection. Silent skip would
+    // be worse: the merge appears to succeed but quietly drops rows.
+    const foreignOrg = sourceRows.filter((r) => r.org_id !== orgId);
+    if (foreignOrg.length > 0) {
+      log.warn(
+        { requestId, orgId, foreignIds: foreignOrg.map((r) => r.id) },
+        "Merge rejected — source connection(s) belong to another org",
+      );
+      return c.json(
+        {
+          error: "forbidden",
+          message: "One or more source connections belong to a different organization.",
+          requestId,
+        },
+        403,
+      );
+    }
+
+    // Capture the source group ids for cleanup. NULL group_ids (which
+    // shouldn't exist post-0062 backfill but are technically valid) are
+    // excluded from the cleanup array — there's nothing to clean up.
+    const sourceGroupIds = Array.from(
+      new Set(sourceRows.map((r) => r.group_id).filter((g): g is string => typeof g === "string")),
+    );
+
+    // ── Atomic merge ──────────────────────────────────────────────────
+    const newTargetId = generateGroupId();
+    let result: MergeResultRow[];
+    try {
+      result = await internalQuery<MergeResultRow>(MERGE_CONNECTIONS_INTO_GROUP_SQL, [
+        newTargetId,
+        orgId,
+        trimmedTargetName,
+        resolvedPrimary,
+        overridePrimary,
+        uniqueSourceIds,
+        sourceGroupIds,
+      ]);
+    } catch (err) {
+      const meta = pgErrorMeta(err);
+      // A 23505 on the unique-name index is conceivable in the rare race
+      // where another admin renames a different group to the target name
+      // between our pre-validate and the merge CTE. Map to 409 so the
+      // wizard can resurface the form rather than burn the admin's
+      // selections to a 500.
+      if (meta.code === "23505" && meta.constraint === UNIQUE_NAME_CONSTRAINT) {
+        return c.json(
+          { error: "conflict", message: `A group named "${trimmedTargetName}" already exists under a different shape.`, requestId },
+          409,
+        );
+      }
+      log.error(
+        { err: errorMessage(err), requestId, orgId, targetName: trimmedTargetName, sourceCount: uniqueSourceIds.length },
+        "Failed to merge connection groups",
+      );
+      return c.json(
+        { error: "internal_error", message: "Failed to merge connection groups. Try again.", requestId },
+        500,
+      );
+    }
+
+    const row = result[0];
+    if (!row || !row.target) {
+      // The CTE always returns one row; an empty result means the
+      // INSERT/ON CONFLICT path is broken in a way we don't recognise.
+      log.error({ requestId, orgId }, "Merge CTE returned no target row");
+      return c.json({ error: "internal_error", message: "Merge produced no target row.", requestId }, 500);
+    }
+
+    log.info(
+      {
+        requestId,
+        orgId,
+        targetId: row.target.id,
+        targetName: row.target.name,
+        created: row.target.created,
+        movedConnectionIds: row.moved_connection_ids,
+        deletedGroupIds: row.deleted_group_ids,
+        actorId: authResult.user?.id,
+      },
+      "Connection groups merged",
+    );
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.connection_group.merge,
+      targetType: "connection_group",
+      targetId: row.target.id,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: {
+        targetName: row.target.name,
+        created: row.target.created,
+        sourceConnectionIds: uniqueSourceIds,
+        movedConnectionIds: row.moved_connection_ids,
+        deletedGroupIds: row.deleted_group_ids,
+        primaryConnectionId: row.target.primaryConnectionId,
+        primaryOverridden: overridePrimary,
+      },
+    });
+
+    return c.json(
+      {
+        target: {
+          id: row.target.id,
+          name: row.target.name,
+          memberCount: row.moved_connection_ids.length,
+          primaryConnectionId: row.target.primaryConnectionId,
+          resolvedConnectionId: row.target.primaryConnectionId,
+          createdAt: row.target.createdAt,
+          updatedAt: row.target.updatedAt,
+          created: row.target.created,
+        },
+        movedConnectionIds: row.moved_connection_ids,
+        deletedGroupIds: row.deleted_group_ids,
+      },
+      200,
+    );
   }),
 );
 

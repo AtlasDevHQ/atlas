@@ -34,6 +34,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
+import { stripGroupPrefix } from "@/ui/lib/strip-group-prefix";
 
 export interface ChatEnvMember {
   readonly connectionId: string;
@@ -61,15 +62,6 @@ export interface ChatEnvPickerProps {
    * (also update the conversation row on the next request).
    */
   readonly onSelect: (next: { groupId: string; connectionId: string }) => void;
-}
-
-function stripGroupPrefix(name: string): string {
-  // Defensive strip for any admin-set name that begins with `g_`.
-  // Migration 0062 backfills `connection_groups.id` as `g_<connId>` but
-  // stores `name = <connId>` (unprefixed), so this is a no-op on default
-  // backfilled rows; it only fires when an admin renames a group to
-  // something starting with `g_`.
-  return name.startsWith("g_") ? name.slice(2) : name;
 }
 
 export function ChatEnvPicker({

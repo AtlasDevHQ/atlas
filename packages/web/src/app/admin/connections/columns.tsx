@@ -1,11 +1,12 @@
 "use client";
 
+import Link from "next/link";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Badge } from "@/components/ui/badge";
 import { DataTableColumnHeader } from "@/components/data-table/data-table-column-header";
 import { HealthBadge } from "@/ui/components/admin/health-badge";
 import { DemoBadge, DraftBadge } from "@/ui/components/admin/mode-badges";
-import { Fingerprint, Database, FileText, Activity, Clock } from "lucide-react";
+import { Fingerprint, Database, FileText, Activity, Clock, Layers } from "lucide-react";
 import type { ConnectionHealth, ConnectionInfo } from "@/ui/lib/types";
 
 /** Reserved connection id for the onboarding demo dataset. */
@@ -17,6 +18,17 @@ function mapHealthStatus(
   if (!status) return "unknown";
   if (status === "unhealthy") return "down";
   return status;
+}
+
+/**
+ * Mirror of `stripGroupPrefix` in `chat/env-picker.tsx`. The 0062 1:1
+ * backfill names groups `g_<connId>` for legacy single-connection orgs;
+ * strip the prefix so the badge reads naturally ("prod" instead of
+ * "g_prod"). Custom names without the prefix pass through unchanged.
+ * TODO(refactor): extract to a shared util — tracked in #2426.
+ */
+function stripGroupPrefix(name: string): string {
+  return name.startsWith("g_") ? name.slice(2) : name;
 }
 
 export function getConnectionColumns(): ColumnDef<ConnectionInfo>[] {
@@ -64,6 +76,30 @@ export function getConnectionColumns(): ColumnDef<ConnectionInfo>[] {
         </span>
       ),
       meta: { label: "Description", icon: FileText },
+      enableSorting: false,
+    },
+    {
+      id: "environment",
+      accessorFn: (row) => row.groupName ?? null,
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} label="Environment" />
+      ),
+      cell: ({ row }) => {
+        const groupName = row.original.groupName;
+        if (!groupName) {
+          return <span className="text-sm text-muted-foreground">{"\u2014"}</span>;
+        }
+        return (
+          <Link
+            href="/admin/connections/groups"
+            className="inline-flex items-center"
+            aria-label={`View environment ${stripGroupPrefix(groupName)}`}
+          >
+            <Badge variant="outline">{stripGroupPrefix(groupName)}</Badge>
+          </Link>
+        );
+      },
+      meta: { label: "Environment", icon: Layers },
       enableSorting: false,
     },
     {

@@ -43,6 +43,14 @@ export const ConnectionInfoSchema = z.object({
   description: z.string().nullable().optional(),
   status: z.enum(CONNECTION_STATUSES).optional(),
   health: ConnectionHealthSchema.optional(),
+  // `groupId` + `groupName` come from the admin connections list endpoint
+  // (LEFT JOIN connection_groups) so the table can render an Environment
+  // badge without a second round-trip. Both are nullable+optional: older
+  // API responses predate the fields, and a connection assigned to no
+  // group serializes them as explicit nulls. Without these here, Zod's
+  // default object strip drops the keys at parse time.
+  groupId: z.string().nullable().optional(),
+  groupName: z.string().nullable().optional(),
 }) as z.ZodType<ConnectionInfo>;
 
 // ---------------------------------------------------------------------------

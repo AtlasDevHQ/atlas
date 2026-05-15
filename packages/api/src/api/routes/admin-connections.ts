@@ -369,28 +369,41 @@ adminConnections.openapi(listConnectionsRoute, async (c) => runHandler(c, "list 
   const visible = await getVisibleConnectionIds(orgId, isPlatformAdmin, getAtlasMode(c));
   const filtered = visible ? connList.filter((conn) => visible.has(conn.id)) : connList;
 
-  // Decorate with `group_id` from the internal DB. The in-memory registry
-  // tracks runtime metadata but not group membership; merging here keeps
-  // both surfaces in lockstep without a second round-trip from the admin
-  // UI. The no-internal-DB branch (self-hosted single-tenant) and the
-  // empty-result branch both fall through with `groupId: null` on every
-  // row. Transient DB errors propagate via runHandler's classifyError —
-  // a flaky pool surfaces as a 500 here just like every other list
-  // endpoint, no silent-success fallback.
-  let groupIdByConnection = new Map<string, string | null>();
+  // Decorate with `group_id` + `group_name` from the internal DB. The
+  // in-memory registry tracks runtime metadata but not group membership;
+  // merging here keeps both surfaces in lockstep without a second
+  // round-trip from the admin UI. The LEFT JOIN preserves rows with
+  // `group_id = NULL` (ungrouped connections) and returns `group_name =
+  // NULL` for them. The (id, org_id) join condition mirrors the
+  // composite-FK org scoping on `connection_groups`. The no-internal-DB
+  // branch (self-hosted single-tenant) and the empty-result branch both
+  // fall through with `groupId/groupName: null` on every row. Transient
+  // DB errors propagate via runHandler's classifyError — a flaky pool
+  // surfaces as a 500 here, no silent-success fallback.
+  let groupInfoByConnection = new Map<string, { groupId: string | null; groupName: string | null }>();
   if (hasInternalDB() && filtered.length > 0) {
     const ids = filtered.map((c) => c.id);
-    const rows = await internalQuery<{ id: string; group_id: string | null }>(
-      `SELECT id, group_id FROM connections WHERE org_id = $1 AND id = ANY($2::text[])`,
+    const rows = await internalQuery<{ id: string; group_id: string | null; group_name: string | null }>(
+      `SELECT c.id, c.group_id, g.name AS group_name
+         FROM connections c
+         LEFT JOIN connection_groups g
+           ON g.id = c.group_id AND g.org_id = c.org_id
+        WHERE c.org_id = $1 AND c.id = ANY($2::text[])`,
       [orgId, ids],
     );
-    groupIdByConnection = new Map(rows.map((r) => [r.id, r.group_id]));
+    groupInfoByConnection = new Map(
+      rows.map((r) => [r.id, { groupId: r.group_id, groupName: r.group_name }]),
+    );
   }
 
-  const decorated = filtered.map((c) => ({
-    ...c,
-    groupId: groupIdByConnection.get(c.id) ?? null,
-  }));
+  const decorated = filtered.map((c) => {
+    const info = groupInfoByConnection.get(c.id);
+    return {
+      ...c,
+      groupId: info?.groupId ?? null,
+      groupName: info?.groupName ?? null,
+    };
+  });
 
   return c.json({ connections: decorated }, 200);
 }));

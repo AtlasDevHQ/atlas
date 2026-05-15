@@ -35,6 +35,8 @@ import {
 import { useDemoReadonly } from "@/ui/hooks/use-demo-readonly";
 import { DemoBadge, DraftBadge } from "@/ui/components/admin/mode-badges";
 import { DEMO_CONNECTION_ID } from "./columns";
+import Link from "next/link";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Cable,
@@ -756,6 +758,16 @@ function labelForDbType(dbType: string): string {
   return DB_TYPES.find((t) => t.value === dbType)?.label ?? dbType;
 }
 
+/**
+ * Mirror of `stripGroupPrefix` in `columns.tsx` + `chat/env-picker.tsx`.
+ * The 0062 1:1 backfill names groups `g_<connId>` for legacy
+ * single-connection orgs; strip the prefix so the badge reads naturally.
+ * TODO(refactor): extract to a shared util — tracked in #2426.
+ */
+function stripGroupPrefix(name: string): string {
+  return name.startsWith("g_") ? name.slice(2) : name;
+}
+
 /** Short human label for a connection's health.status. */
 function healthLabel(status: ConnectionHealth["status"]): string {
   switch (status) {
@@ -1321,6 +1333,20 @@ function ConnectionCard({
 
       <DetailList>
         <DetailRow label="Provider" value={providerLabel} />
+        {conn.groupName ? (
+          <DetailRow
+            label="Environment"
+            value={
+              <Link
+                href="/admin/connections/groups"
+                className="inline-flex items-center"
+                aria-label={`View environment ${stripGroupPrefix(conn.groupName)}`}
+              >
+                <Badge variant="outline">{stripGroupPrefix(conn.groupName)}</Badge>
+              </Link>
+            }
+          />
+        ) : null}
         {conn.description ? (
           <DetailRow label="Description" value={conn.description} truncate />
         ) : null}

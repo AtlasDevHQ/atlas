@@ -205,6 +205,62 @@ describe("admin connections — org scoping", () => {
       const ids = body.connections.map((c: { id: string }) => c.id);
       expect(ids).toEqual(["default"]);
     });
+
+    it("decorates each row with groupId + groupName from the connection_groups JOIN", async () => {
+      // The list endpoint's second internalQuery call selects c.id, c.group_id
+      // and g.name via LEFT JOIN connection_groups. The visibility query runs
+      // first; we only return a group decoration for the visible row.
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT c.id FROM connections c WHERE c.org_id")) {
+          return Promise.resolve([{ id: "warehouse" }]);
+        }
+        if (sql.includes("LEFT JOIN connection_groups")) {
+          return Promise.resolve([
+            { id: "warehouse", group_id: "g_prod", group_name: "g_prod" },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections"),
+      );
+
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      const warehouse = body.connections.find((c: { id: string }) => c.id === "warehouse");
+      expect(warehouse).toBeDefined();
+      expect(warehouse.groupId).toBe("g_prod");
+      expect(warehouse.groupName).toBe("g_prod");
+    });
+
+    it("emits groupName: null when a visible connection has no group decoration", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT c.id FROM connections c WHERE c.org_id")) {
+          return Promise.resolve([{ id: "warehouse" }]);
+        }
+        // LEFT JOIN returns the row with NULL group_id/name when ungrouped.
+        if (sql.includes("LEFT JOIN connection_groups")) {
+          return Promise.resolve([
+            { id: "warehouse", group_id: null, group_name: null },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections"),
+      );
+
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      const warehouse = body.connections.find((c: { id: string }) => c.id === "warehouse");
+      expect(warehouse).toBeDefined();
+      expect(warehouse.groupId).toBeNull();
+      expect(warehouse.groupName).toBeNull();
+    });
   });
 
   // ─── 3. Update/delete 404 for wrong org ─────────────────────────────

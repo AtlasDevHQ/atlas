@@ -150,6 +150,16 @@ export function AddToDashboardDialog({
   // Auto-switch to "new" mode when we know there are no dashboards
   const effectiveMode = mode === "existing" && !loadingDashboards && !fetchError && dashboards.length === 0 ? "new" : mode;
 
+  // `connectionGroupId` is the user's picker selection ("" = workspace
+  // default). `boundGroupId` is what we send to the API: for single-env
+  // workspaces the picker is hidden, but we still materialize the
+  // binding so the card scopes to the group's primary member instead
+  // of silently falling through to `resolveCardConnectionId`'s
+  // workspace-default path (#2419, PRD #2342).
+  const groups = groupsData?.groups ?? [];
+  const soleGroup = groups.length === 1 ? groups[0] : null;
+  const boundGroupId = soleGroup ? soleGroup.id : connectionGroupId;
+
   // Filter chart recommendations to only storable types
   const storableRecommendations = chartResult.chartable
     ? chartResult.recommendations.filter((r) => STORABLE_CHART_TYPES.has(r.type))
@@ -216,7 +226,7 @@ export function AddToDashboardDialog({
           chartConfig: buildChartConfig(),
           cachedColumns: columns,
           cachedRows: rows.slice(0, MAX_CACHED_ROWS),
-          ...(connectionGroupId && { connectionGroupId }),
+          ...(boundGroupId && { connectionGroupId: boundGroupId }),
         },
       });
 
@@ -333,9 +343,13 @@ export function AddToDashboardDialog({
               {renderDashboardSelector()}
             </div>
 
-            {/* Environment (connection group) — hidden when the workspace
-                has at most one group (single-env orgs see no value here). */}
-            {(groupsData?.groups.length ?? 0) > 1 && (
+            {/* Environment (connection group). Multi-group workspaces get
+                the picker. Single-group workspaces get an auto-bound
+                readout (the binding is materialized via `boundGroupId`
+                — no UI choice to make, but the user sees the target).
+                Zero-group workspaces render nothing here and fall
+                through to the workspace default (pre-1.4.4 path). */}
+            {groups.length > 1 && (
               <div className="grid gap-2">
                 <Label htmlFor="connection-group">Environment</Label>
                 <Select
@@ -347,7 +361,7 @@ export function AddToDashboardDialog({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="__default__">Workspace default</SelectItem>
-                    {(groupsData?.groups ?? []).map((g) => (
+                    {groups.map((g) => (
                       <SelectItem key={g.id} value={g.id}>
                         {g.name} ({g.memberCount} connection{g.memberCount !== 1 ? "s" : ""})
                       </SelectItem>
@@ -355,7 +369,7 @@ export function AddToDashboardDialog({
                   </SelectContent>
                 </Select>
                 {connectionGroupId && (() => {
-                  const picked = groupsData?.groups.find((g) => g.id === connectionGroupId);
+                  const picked = groups.find((g) => g.id === connectionGroupId);
                   if (!picked) return null;
                   if (picked.memberCount === 0) {
                     return (
@@ -376,6 +390,17 @@ export function AddToDashboardDialog({
                   );
                 })()}
               </div>
+            )}
+            {soleGroup && (
+              soleGroup.memberCount === 0 ? (
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                  The <span className="font-medium">{soleGroup.name}</span> environment has no connections. Add one in Admin → Connection Groups before the card can refresh.
+                </p>
+              ) : (
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                  Card runs against the {soleGroup.primaryConnectionId ? "primary member" : "first member (no primary pinned)"} of the <span className="font-medium">{soleGroup.name}</span> environment.
+                </p>
+              )
             )}
 
             {/* Card title */}

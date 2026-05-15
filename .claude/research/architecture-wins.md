@@ -1665,3 +1665,34 @@ A new `boot-smoke` job in `.github/workflows/deploy-validation.yml` builds `depl
 - **All existing tests pass without behavioural assertions changing.** The `__mocks__/archive-restore.ts` shared stub picks up the new CTE shape (one edit serves admin-archive-restore.test.ts and admin-publish.test.ts). The overlay-queries-integration test adds the new column to its pg-mem fixture schema. No production test logic changes.
 
 **Category:** Schema-level data-model unification that fans out through a `column` parameter introduced one PR earlier. Same pattern as win #57's `ByotAdapter<Cred>` — preceding refactor sets up the type / interface so the structural change is parametric, not a sweep. Specific to this case: the `withGroupScope` helper's `column` option was added in #2338 specifically to make this slice a one-line-per-call-site change, and it did.
+
+## 60. Multi-group admin keystone — natural-key contract closes the loop (#2412)
+
+**Date:** 2026-05-15
+**Issue:** #2412 (1.4.4 closeout audit)
+**Milestone:** 1.4.4 — Multi-environment semantic layer
+**Branch:** `fix-2412-semantic-entities-group-scope`
+
+**Before:** win #59 made `(org_id, entity_type, name, connection_group_id)` the natural key at the SQL layer, but three helpers in the admin keystone stayed pre-group-aware. `getEntity` looked up by `(org, type, name)` and silently returned whichever row Postgres planned first when the same name lived in two environments; `deleteEntity` (dormant export) would have cross-group cascaded; `mergeAdminEntities` deduped admin tree rows by `name`, collapsing two-group orgs to one entry. The frontend file tree keyed React rows on `name` alone too, producing a React key collision and rendering only one of the duplicates. The schema invariant was tight; the application layer wasn't.
+
+**The win:** all three keystone helpers and the frontend file tree key on the same `(name, connection_group_id)` tuple the partial unique index does. `getEntity` accepts an optional `connectionGroupId`; omitting it triggers a unique-or-409 probe that throws `AmbiguousEntityError` (tagged via `Data.TaggedError`, registered in `ATLAS_ERROR_TAG_LIST`, mapped to HTTP 409 with the candidate groups in the body). The 409 response payload surfaces `groups: ["g_prod_eu", "g_prod_us"]` so the UI can prompt for disambiguation instead of guessing. The file tree keys on `${name}|${group}` so React renders one row per environment with the existing `entity-env-badge`; the URL gains a `group` query param so refresh + deep-link restore the exact row.
+
+- **`AmbiguousEntityError` is a structural circuit-breaker, not a string-match guard.** Adding a new variant to the `AtlasError` union without updating `ATLAS_ERROR_TAG_LIST` is a compile error (the `satisfies readonly AtlasErrorTag[]` clause). The `mapTaggedError` switch is exhaustive over the union, so the 409 mapping cannot drift. The route handler catches the same class instance, not a `err.message.includes("ambiguous")` string sniff.
+- **`deleteEntity` (dormant) is now structurally safe.** `connectionGroupId` is a required positional parameter — no live callers existed (the actual delete flow goes through `deleteDraftEntityForGroup` / `upsertTombstoneForGroup`), but the export survived for external test integration. A future caller that omits the group fails compilation, not silently cross-group cascades.
+- **One dedup key, two scopes.** `mergeAdminEntities` uses `${name}\0${group}` (NUL-delimited so no YAML name or group id can collide with another row's key) for DB-shadows-disk and the cross-group preservation case — same key, both passes. The sort comparator orders by `(name, group)` with null-group first, matching the backend's `DISTINCT ON … NULLS FIRST` so admin trees and overlay queries can't drift visually.
+- **Frontend type contract carries the group all the way to the URL.** `EntitySummary.connectionGroupId: string | null` (no `undefined` — null is the explicit legacy/unscoped value). `SemanticSelection` for entities gains optional `connectionGroupId`. `selectionToFileParam` + `selectionToGroupParam` split the file/group encoding so nuqs can drive both query params independently; `withGroupOnSelection` folds them back when reading. The detail / delete fetches forward the value through `?connectionGroupId=`.
+
+**What got unbundled:**
+- **"Did `getEntity` return the right row?" was a runtime question; now it's a type + status-code question.** A multi-group org cannot get a silently-wrong row out of `getEntity` — either the caller scoped it, or the call throws and the route serializes the candidate groups so the UI can pick.
+- **The 0063 partial index is no longer a tripwire that helpers can step around.** Every helper that touches a row passes the group through. The natural-key story is the same from index → DB function → route → frontend selection → URL → back.
+- **The frontend tree's "key={name}" React warning is gone because the data model fixes it, not a band-aid.** Composite key falls out of the new shape.
+
+**Impact:**
+- **3 backend functions** updated (`getEntity`, `deleteEntity`, `mergeAdminEntities`) + one new tagged error class.
+- **6 new unit tests** in `entities-group-scope.test.ts` covering ambiguity / scoped lookup / scope on delete against captured `internalQuery` calls.
+- **4 new admin-source tests** asserting cross-group preservation, DB-shadows-disk only on matching group, deterministic sort.
+- **2 new admin.test.ts tests** asserting `?connectionGroupId=` plumbing + 409 response shape.
+- **2 new file-tree tests** asserting one-row-per-group rendering + selection match honoring the group.
+- **Zero behavioural regressions** in the existing suite (174 admin tests, 126 affected api tests, 145 web tests all green).
+
+**Category:** Application-layer closure of a schema-invariant contract opened in win #59. The pattern: when a schema partial-unique-index changes the natural key, the helpers that read by the partial key need the same parameter set as the writers, and the frontend that displays the rows needs the same composite identity as the React keys. Caught by a multi-agent audit, not by passing tests — three of the four bug paths had test coverage that asserted the *current* (broken) shape.

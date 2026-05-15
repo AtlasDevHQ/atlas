@@ -208,6 +208,25 @@ export class UnsafeRegionMigrationResetError extends Data.TaggedError("UnsafeReg
   readonly sourceRegion: string;
 }> {}
 
+// ── Semantic Entities ──────────────────────────────────────────────
+
+/**
+ * `getEntity(orgId, type, name)` resolved more than one row because the
+ * same `(org, entity_type, name)` triple exists in multiple
+ * `connection_group_id` scopes (#2412). Callers must disambiguate by
+ * passing the group explicitly.
+ *
+ * Maps to HTTP 409 Conflict — the caller asked an ambiguous question.
+ * The route layer returns the candidate groups so the UI can prompt the
+ * admin to pick one (`POST` with `connectionGroupId` set).
+ */
+export class AmbiguousEntityError extends Data.TaggedError("AmbiguousEntityError")<{
+  readonly message: string;
+  readonly entityName: string;
+  readonly entityType: string;
+  readonly groups: ReadonlyArray<string | null>;
+}> {}
+
 // ── Scheduler ──────────────────────────────────────────────────────
 
 /** Scheduled task execution timed out. */
@@ -256,6 +275,7 @@ export type AtlasError =
   | ActionTimeoutError
   | ConversationBudgetExceededError
   | UnsafeRegionMigrationResetError
+  | AmbiguousEntityError
   | SchedulerTaskTimeoutError
   | SchedulerExecutionError
   | DeliveryError
@@ -294,6 +314,7 @@ export const ATLAS_ERROR_TAG_LIST = [
   "ActionTimeoutError",
   "ConversationBudgetExceededError",
   "UnsafeRegionMigrationResetError",
+  "AmbiguousEntityError",
   "SchedulerTaskTimeoutError",
   "SchedulerExecutionError",
   "DeliveryError",

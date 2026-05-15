@@ -81,6 +81,7 @@ type HttpErrorCode =
   | "forbidden"
   | "not_found"
   | "conflict"
+  | "entity_ambiguous"
   | "unprocessable_entity"
   | "rate_limited"
   | "conversation_budget_exceeded"
@@ -155,6 +156,12 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
     // ── 409 Conflict — operation rejected because of resource state ─
     case "UnsafeRegionMigrationResetError":
       return { status: 409, code: "conflict", message: error.message };
+    case "AmbiguousEntityError":
+      return {
+        status: 409,
+        code: "entity_ambiguous",
+        message: error.message,
+      };
 
     // ── 422 Unprocessable Entity — plugin rejected ───────────────
     case "PluginRejectedError":

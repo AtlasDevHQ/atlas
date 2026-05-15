@@ -4,7 +4,11 @@ import { SemanticFileTree, type SemanticSelection } from "../components/admin/se
 
 function makeProps(overrides?: Record<string, unknown>) {
   return {
-    entityNames: ["users", "orders", "products"],
+    entities: [
+      { name: "users", connectionGroupId: null, draft: false },
+      { name: "orders", connectionGroupId: null, draft: false },
+      { name: "products", connectionGroupId: null, draft: false },
+    ],
     metricFileNames: ["revenue", "engagement"],
     hasCatalog: true,
     hasGlossary: true,
@@ -76,7 +80,7 @@ describe("SemanticFileTree", () => {
 
   test("shows 'No entities' when entity list is empty", () => {
     const { container } = render(
-      <SemanticFileTree {...makeProps({ entityNames: [] })} />,
+      <SemanticFileTree {...makeProps({ entities: [] })} />,
     );
     expect(container.textContent).toContain("No entities");
   });
@@ -100,7 +104,11 @@ describe("SemanticFileTree", () => {
     const btn = findButton(container, "users.yml");
     expect(btn).not.toBeNull();
     fireEvent.click(btn!);
-    expect(onSelect).toHaveBeenCalledWith({ type: "entity", name: "users" });
+    expect(onSelect).toHaveBeenCalledWith({
+      type: "entity",
+      name: "users",
+      connectionGroupId: null,
+    });
   });
 
   test("highlights selected entity file", () => {

@@ -2,7 +2,13 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { useQueryStates } from "nuqs";
-import { semanticSearchParams, fileParamToSelection, selectionToFileParam } from "./search-params";
+import {
+  semanticSearchParams,
+  fileParamToSelection,
+  selectionToFileParam,
+  selectionToGroupParam,
+  withGroupOnSelection,
+} from "./search-params";
 import { useAtlasConfig } from "@/ui/context";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
@@ -56,17 +62,21 @@ import { SemanticPublishedBanner } from "@/ui/components/admin/semantic-publishe
 // ── Types ─────────────────────────────────────────────────────────
 
 interface EntitySummary {
+  /** Display name — the YAML `name:` if present, otherwise the table. */
+  name: string;
   table: string;
   description: string;
   columnCount: number;
   /**
-   * Group / environment label (#2340). Carries `connection_group_id`
-   * when set (e.g. `"g_prod"`), falling back to legacy `connection_id`
-   * during the dual-write transition. Multi-member groups now render
-   * as a single row scoped to the group, not N rows scoped to each
-   * member connection.
+   * `connection_group_id` for the entity row (#2340 / #2412). Multi-
+   * group orgs surface the same `name` under multiple groups; the file
+   * tree keys on `(name, connectionGroupId)` to render one row per
+   * environment with the group badge. `null` is the legacy / unscoped
+   * row (`__global__` demo + pre-backfill data).
    */
-  source?: string;
+  connectionGroupId: string | null;
+  /** True when the API row carries `status: "draft"`. */
+  draft: boolean;
 }
 
 interface GlossaryTerm {
@@ -368,7 +378,6 @@ export default function SemanticPage() {
   ]);
 
   const [entities, setEntities] = useState<EntitySummary[]>([]);
-  const [draftEntityNames, setDraftEntityNames] = useState<Set<string>>(() => new Set());
   const [selectedEntity, setSelectedEntity] = useState<EntityData | null>(null);
   const [glossary, setGlossary] = useState<GlossaryTerm[]>([]);
   const [metrics, setMetrics] = useState<MetricEntry[]>([]);
@@ -377,9 +386,11 @@ export default function SemanticPage() {
   const [error, setError] = useState<FetchError | null>(null);
   const [fetchKey, setFetchKey] = useState(0);
   const [detailError, setDetailError] = useState<string | null>(null);
-  const [{ file: fileParam, view: viewMode }, setParams] = useQueryStates(semanticSearchParams);
+  const [{ file: fileParam, view: viewMode, group: groupParam }, setParams] = useQueryStates(semanticSearchParams);
   const [, startTransition] = useTransition();
-  const selection = fileParamToSelection(fileParam);
+  // Compose the entity selection from the `file` + `group` query params
+  // so multi-group orgs can deep-link to a specific environment (#2412).
+  const selection = withGroupOnSelection(fileParamToSelection(fileParam), groupParam);
   const [rawYaml, setRawYaml] = useState<string | null>(null);
   const [rawYamlLoading, setRawYamlLoading] = useState(false);
 
@@ -466,18 +477,27 @@ export default function SemanticPage() {
       if (entitiesRes.status === "fulfilled") {
         const data = entitiesRes.value;
         const rawEntities = Array.isArray(data?.entities) ? data.entities : Array.isArray(data) ? data : [];
-        const normalized: EntitySummary[] = (rawEntities as Record<string, unknown>[]).map((e) => ({
-          table: typeof e.table === "string" ? e.table : (typeof e.name === "string" ? e.name : ""),
-          description: typeof e.description === "string" ? e.description : "",
-          columnCount: typeof e.columnCount === "number" ? e.columnCount : 0,
-          // `source` carries the environment label for the entity-list badge
-          // (#2340). Skip the `"default"` sentinel — pre-group orgs see one
-          // un-badged row, which is the right "no environment configured
-          // yet" UX. Multi-environment orgs land on the group_id (e.g.
-          // `g_prod`) until the connection-groups admin surface resolves it
-          // to a display name in a follow-up.
-          source: typeof e.source === "string" && e.source !== "default" ? e.source : undefined,
-        })).filter((e) => e.table.length > 0);
+        const normalized: EntitySummary[] = (rawEntities as Record<string, unknown>[]).map((e) => {
+          const tableField = typeof e.table === "string" ? e.table : "";
+          const nameField =
+            typeof e.name === "string" && e.name
+              ? e.name
+              : tableField;
+          // `connectionId` is the server's group-id slot (named that way
+          // because the response shape predates the rename). `null` /
+          // missing → legacy unscoped row. (#2412)
+          const rawGroup = e.connectionId;
+          const connectionGroupId =
+            typeof rawGroup === "string" && rawGroup.length > 0 ? rawGroup : null;
+          return {
+            name: nameField,
+            table: tableField || nameField,
+            description: typeof e.description === "string" ? e.description : "",
+            columnCount: typeof e.columnCount === "number" ? e.columnCount : 0,
+            connectionGroupId,
+            draft: e.status === "draft",
+          };
+        }).filter((e) => e.name.length > 0);
         const dropped = rawEntities.length - normalized.length;
         if (dropped > 0) {
           // Silent shape-drops would mask a server-side `entities` schema
@@ -488,14 +508,6 @@ export default function SemanticPage() {
           );
         }
         setEntities(normalized);
-
-        // Same payload carries `status`/`name` per entity, so draft
-        // accents are derived inline — no second request needed.
-        const drafts = new Set<string>();
-        for (const e of rawEntities as Array<{ name?: unknown; status?: unknown }>) {
-          if (typeof e.name === "string" && e.status === "draft") drafts.add(e.name);
-        }
-        setDraftEntityNames(drafts);
       } else {
         // `extractFetchError` returns a populated `FetchError`; any other
         // rejection (network abort, JSON parse failure inside .then) gets
@@ -537,7 +549,13 @@ export default function SemanticPage() {
 
   const handleSelect = (sel: SemanticSelection) => {
     startTransition(() => {
-      setParams({ file: selectionToFileParam(sel), view: "pretty" });
+      setParams({
+        file: selectionToFileParam(sel),
+        view: "pretty",
+        // Persist the group qualifier so refresh + back-button restore
+        // the same row in multi-group orgs (#2412).
+        group: selectionToGroupParam(sel),
+      });
     });
   };
 
@@ -552,10 +570,13 @@ export default function SemanticPage() {
     setDetailError(null);
     setSelectedEntity(null);
 
-    fetch(
-      `${apiUrl}/api/v1/admin/semantic/entities/${encodeURIComponent(selection.name)}`,
-      fetchOpts,
-    )
+    // Pass the group qualifier through so multi-group orgs hit the right
+    // row instead of getting a 409. Single-group / unset cases omit the
+    // param and use the backend's unique-or-409 default.
+    const detailUrl = selection.connectionGroupId
+      ? `${apiUrl}/api/v1/admin/semantic/entities/${encodeURIComponent(selection.name)}?connectionGroupId=${encodeURIComponent(selection.connectionGroupId)}`
+      : `${apiUrl}/api/v1/admin/semantic/entities/${encodeURIComponent(selection.name)}`;
+    fetch(detailUrl, fetchOpts)
       .then(async (r) => {
         // The backend's 500 response carries a tagged message + requestId
         // (`extractFetchError` reads both). Surfacing them lets the user
@@ -580,12 +601,12 @@ export default function SemanticPage() {
       });
 
     return () => { cancelled = true; };
-  }, [fileParam, apiUrl]);
+  }, [fileParam, groupParam, apiUrl]);
 
   // Reset raw YAML when file changes
   useEffect(() => {
     setRawYaml(null);
-  }, [fileParam]);
+  }, [fileParam, groupParam]);
 
   // Fetch raw YAML when switching to YAML view
   useEffect(() => {
@@ -651,8 +672,14 @@ export default function SemanticPage() {
 
   const handleDeleteEntity = async () => {
     if (!deleteTarget) return;
+    // Forward the active group qualifier so multi-group orgs delete the
+    // intended row instead of returning a 409 (#2412). Single-group orgs
+    // omit the param and the backend resolves uniquely.
+    const groupSuffix = selection?.type === "entity" && selection.connectionGroupId
+      ? `?connectionGroupId=${encodeURIComponent(selection.connectionGroupId)}`
+      : "";
     const result = await mutateDelete({
-      path: `/api/v1/admin/semantic/entities/edit/${encodeURIComponent(deleteTarget)}`,
+      path: `/api/v1/admin/semantic/entities/edit/${encodeURIComponent(deleteTarget)}${groupSuffix}`,
     });
     if (result.ok) {
       setDeleteTarget(null);
@@ -660,22 +687,29 @@ export default function SemanticPage() {
       // Clear selection if deleted entity was selected
       if (selection?.type === "entity" && selection.name === deleteTarget) {
         startTransition(() => {
-          setParams({ file: null, view: "pretty" });
+          setParams({ file: null, view: "pretty", group: null });
         });
       }
     }
   };
 
-  const entityNames = entities.map((e) => e.table).toSorted();
-  // entity name → environment / group label (#2340). Used by
-  // `<SemanticFileTree entitySources={...} />` to render a quiet trailing
-  // badge so admins can see which environment an entity belongs to
-  // without diving into the detail view. Entities without a group label
-  // (single-connection orgs, legacy demo) render unbadged.
-  const entitySources = new Map<string, string>();
-  for (const entity of entities) {
-    if (entity.source) entitySources.set(entity.table, entity.source);
-  }
+  // Tree entries keyed by `(name, connectionGroupId)` so multi-group orgs
+  // render one row per environment with a quiet group badge (#2412).
+  // Sort: name asc, then null-group first (legacy / unscoped row), then
+  // groups lexicographically — matches the backend dedup ordering.
+  const treeEntities = entities
+    .map((e) => ({
+      name: e.name,
+      connectionGroupId: e.connectionGroupId,
+      draft: e.draft,
+    }))
+    .toSorted((a, b) => {
+      const byName = a.name.localeCompare(b.name);
+      if (byName !== 0) return byName;
+      const ag = a.connectionGroupId ?? "";
+      const bg = b.connectionGroupId ?? "";
+      return ag.localeCompare(bg);
+    });
   const metricFileNames = (() => {
     const files = new Set<string>();
     for (const m of metrics) {
@@ -810,14 +844,12 @@ export default function SemanticPage() {
       <div className="flex flex-1 overflow-hidden">
         {/* File tree sidebar */}
         <SemanticFileTree
-          entityNames={entityNames}
+          entities={treeEntities}
           metricFileNames={metricFileNames}
           hasCatalog={catalog !== null}
           hasGlossary={glossary.length > 0}
           selection={selection}
           onSelect={handleSelect}
-          draftEntityNames={draftEntityNames}
-          entitySources={entitySources}
           className="w-64 shrink-0 border-r"
         />
 

@@ -26,7 +26,7 @@ import * as yaml from "js-yaml";
 import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { Effect, Duration } from "effect";
-import { normalizeError } from "@atlas/api/lib/effect/errors";
+import { normalizeError, AmbiguousEntityError } from "@atlas/api/lib/effect/errors";
 import {
   coalescedScopeColumn,
   matchScopeAcrossAliases,
@@ -720,41 +720,102 @@ export async function listEntitiesWithOverlay(
   );
 }
 
+/** Re-export for callers that want to catch the ambiguity 409 explicitly. */
+export { AmbiguousEntityError };
+
 /**
- * Get a single semantic entity by org, type, and name.
+ * Get a single semantic entity by org, type, name — optionally scoped to a
+ * specific `connection_group_id` (#2412).
+ *
+ * The 0063 partial unique index made `connection_group_id` part of the
+ * natural key. When the same `(org, entity_type, name)` triple exists in
+ * multiple groups (e.g. `users` in `g_prod_us` AND `g_prod_eu`), a lookup
+ * without a group predicate is ambiguous — Postgres returns whichever
+ * row planned first. Downstream writes / deletes then act on a row the
+ * caller never named.
+ *
+ * Contract:
+ * - `connectionGroupId === undefined` (omitted): backward-compatible
+ *   "find unique" — succeeds when exactly one or zero rows match. When
+ *   more than one match, throws `AmbiguousEntityError` (mapped to 409).
+ * - `connectionGroupId === string`: filters by the explicit group.
+ * - `connectionGroupId === null`: filters to legacy null-scope rows
+ *   (the `__global__` demo + pre-backfill rows). Uses
+ *   `IS NOT DISTINCT FROM` so the null match works.
  */
 export async function getEntity(
   orgId: string,
   entityType: SemanticEntityType,
   name: string,
+  connectionGroupId?: string | null,
 ): Promise<SemanticEntityRow | null> {
   if (!hasInternalDB()) return null;
+
+  if (connectionGroupId !== undefined) {
+    const rows = await internalQuery<SemanticEntityRow>(
+      `SELECT id, org_id, entity_type, name, yaml_content, connection_group_id, status, created_at, updated_at
+       FROM semantic_entities
+       WHERE org_id = $1 AND entity_type = $2 AND name = $3
+         AND connection_group_id IS NOT DISTINCT FROM $4
+       LIMIT 1`,
+      [orgId, entityType, name, connectionGroupId],
+    );
+    return rows[0] ?? null;
+  }
 
   const rows = await internalQuery<SemanticEntityRow>(
     `SELECT id, org_id, entity_type, name, yaml_content, connection_group_id, status, created_at, updated_at
      FROM semantic_entities
-     WHERE org_id = $1 AND entity_type = $2 AND name = $3`,
+     WHERE org_id = $1 AND entity_type = $2 AND name = $3
+     ORDER BY connection_group_id NULLS FIRST`,
     [orgId, entityType, name],
   );
-  return rows[0] ?? null;
+
+  if (rows.length <= 1) return rows[0] ?? null;
+
+  // Ambiguous — surface the candidate groups so the route layer can
+  // tell the caller exactly which scope they need to disambiguate to.
+  const groups = rows
+    .map((r) => r.connection_group_id ?? null)
+    .toSorted((a, b) => (a ?? "").localeCompare(b ?? ""));
+  throw new AmbiguousEntityError({
+    message:
+      `Entity "${name}" exists in ${rows.length} environments. ` +
+      `Pass connectionGroupId to disambiguate.`,
+    entityName: name,
+    entityType,
+    groups,
+  });
 }
 
 /**
- * Delete a semantic entity by org, type, and name.
+ * Delete a semantic entity by org, type, name, and group.
  * Returns true if a row was deleted.
+ *
+ * `connectionGroupId` is required (#2412) — the 0063 partial index made
+ * `connection_group_id` part of the natural key, so a delete without it
+ * would cascade across every group's copy of the entity. Pass `null` to
+ * delete a legacy null-scope row (matches `IS NOT DISTINCT FROM`).
+ *
+ * No live route calls this today — `deleteDraftEntityForGroup` /
+ * `upsertTombstoneForGroup` handle the actual delete flow — but the
+ * export survives for external callers and integration tests. Keeping
+ * the signature tight closes the foot-gun.
  */
 export async function deleteEntity(
   orgId: string,
   entityType: SemanticEntityType,
   name: string,
+  connectionGroupId: string | null,
 ): Promise<boolean> {
   if (!hasInternalDB()) return false;
 
   const rows = await internalQuery<{ id: string }>(
     `DELETE FROM semantic_entities
      WHERE org_id = $1 AND entity_type = $2 AND name = $3
+       AND connection_group_id IS NOT DISTINCT FROM $4
      RETURNING id`,
-    [orgId, entityType, name],
+    [orgId, entityType, name, connectionGroupId],
   );
   return rows.length > 0;
 }

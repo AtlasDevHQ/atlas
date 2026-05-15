@@ -50,6 +50,7 @@ import {
   AdminEntityYamlShapeError,
   type AdminEntityYamlError,
 } from "@atlas/api/lib/semantic/admin-source";
+import { AmbiguousEntityError } from "@atlas/api/lib/effect/errors";
 import { runDiff } from "@atlas/api/lib/semantic/diff";
 import { adminOrgs } from "./admin-orgs";
 import { adminAudit } from "./admin-audit";
@@ -602,15 +603,32 @@ const listEntitiesRoute = createRoute({
   },
 });
 
+const AmbiguousEntityResponseSchema = z.object({
+  error: z.literal("entity_ambiguous"),
+  message: z.string(),
+  groups: z.array(z.string().nullable()),
+  requestId: z.string(),
+});
+
 const getEntityRoute = createRoute({
   method: "get",
   path: "/semantic/entities/{name}",
   tags: ["Admin — Semantic"],
   summary: "Get entity detail",
-  description: "Returns the full parsed YAML for a single semantic entity.",
+  description:
+    "Returns the full parsed YAML for a single semantic entity. " +
+    "Pass `?connectionGroupId=<group>` to scope the lookup when the same " +
+    "entity name exists in multiple environments. Without it, multi-group " +
+    "matches return 409 with the candidate groups (#2412).",
   request: {
     params: z.object({
       name: z.string().min(1).openapi({ param: { name: "name", in: "path" }, example: "users" }),
+    }),
+    query: z.object({
+      connectionGroupId: z.string().optional().openapi({
+        param: { name: "connectionGroupId", in: "query" },
+        example: "g_prod_us",
+      }),
     }),
   },
   responses: {
@@ -622,6 +640,10 @@ const getEntityRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "Entity not found", content: { "application/json": { schema: ErrorSchema } } },
+    409: {
+      description: "Entity name exists in multiple groups — pass connectionGroupId to disambiguate",
+      content: { "application/json": { schema: AmbiguousEntityResponseSchema } },
+    },
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -1314,10 +1336,30 @@ admin.openapi(getEntityRoute, async (c) => {
   }
 
   const orgId = authResult.user?.activeOrganizationId;
+  // `?connectionGroupId=g_prod` scopes the lookup to that group (#2412).
+  // `?connectionGroupId=` (empty) scopes to legacy null-group rows.
+  // Omitting the param leaves disambiguation to `getEntity`'s unique-
+  // or-409 default — multi-group orgs with a duplicate name will get
+  // back a 409 with the candidate groups so the UI can prompt for one.
+  const rawGroup = c.req.query("connectionGroupId");
+  const connectionGroupId =
+    rawGroup === undefined ? undefined : rawGroup === "" ? null : rawGroup;
+
   let result: Awaited<ReturnType<typeof getAdminEntity>>;
   try {
-    result = await getAdminEntity({ name, orgId, requestId });
+    result = await getAdminEntity({ name, orgId, requestId, connectionGroupId });
   } catch (err) {
+    if (err instanceof AmbiguousEntityError) {
+      return c.json(
+        {
+          error: "entity_ambiguous" as const,
+          message: err.message,
+          groups: [...err.groups],
+          requestId,
+        },
+        409,
+      );
+    }
     if (err instanceof AdminEntityYamlParseError || err instanceof AdminEntityYamlShapeError) {
       return c.json({ error: "internal_error", message: adminEntityYamlMessage(err, name), requestId }, 500);
     }

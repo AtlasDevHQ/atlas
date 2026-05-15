@@ -150,15 +150,14 @@ export function AddToDashboardDialog({
   // Auto-switch to "new" mode when we know there are no dashboards
   const effectiveMode = mode === "existing" && !loadingDashboards && !fetchError && dashboards.length === 0 ? "new" : mode;
 
-  // `connectionGroupId` is the user's picker selection ("" = workspace
-  // default). `boundGroupId` is what we send to the API: for single-env
-  // workspaces the picker is hidden, but we still materialize the
-  // binding so the card scopes to the group's primary member instead
-  // of silently falling through to `resolveCardConnectionId`'s
-  // workspace-default path (#2419, PRD #2342).
+  // Single-env workspaces must still materialize the binding even
+  // though the picker is hidden — otherwise the card silently falls
+  // through to `connections.getDefault()` at refresh time instead of
+  // scoping to the group's primary member (#2419, PRD #2342).
   const groups = groupsData?.groups ?? [];
   const soleGroup = groups.length === 1 ? groups[0] : null;
   const boundGroupId = soleGroup ? soleGroup.id : connectionGroupId;
+  const boundGroup = boundGroupId ? groups.find((g) => g.id === boundGroupId) ?? null : null;
 
   // Filter chart recommendations to only storable types
   const storableRecommendations = chartResult.chartable
@@ -187,6 +186,17 @@ export function AddToDashboardDialog({
 
       if (!cardTitle.trim()) {
         setError("Card title is required.");
+        return;
+      }
+
+      // The picker / auto-bind readouts warn for empty groups, but a
+      // warning alone is a silent-failure on submit — the card would
+      // be created bound to a group that `resolveCardConnectionId`
+      // can't resolve at refresh time. Block here so the user fixes
+      // the membership before persisting (CLAUDE.md "Prefer errors
+      // over silent fallbacks").
+      if (boundGroup && boundGroup.memberCount === 0) {
+        setError(`The "${boundGroup.name}" environment has no connections. Add one in Admin → Connection Groups before adding a card.`);
         return;
       }
 

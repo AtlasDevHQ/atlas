@@ -2,15 +2,16 @@
  * Regression guard for #2419: single-group workspaces must auto-bind the
  * sole `connection_groups` row to the card on create. The pre-fix dialog
  * hid the picker when `groups.length <= 1` AND dropped `connectionGroupId`
- * from the POST payload, silently falling through to `resolveCardConnectionId`'s
- * workspace-default path (packages/api/src/lib/dashboards.ts:238). That
- * violates PRD #2342's "card-create form scopes by group" criterion —
- * the single-env case must materialize the binding even though there's
- * no UI choice to make.
+ * from the POST payload — `resolveCardConnectionId` returned `null`, and
+ * the auto-refresh call site (packages/api/src/lib/dashboards.ts:879)
+ * then fell through to `connections.getDefault()` so the card silently
+ * ran against the workspace default. That violates PRD #2342's
+ * "card-create form scopes by group" criterion — the single-env case
+ * must materialize the binding even though there's no UI choice to make.
  *
- * Pins all three cardinality regimes (one / zero / multi) plus the
- * single-env readout copy so a future refactor can't re-introduce the
- * silent fallthrough.
+ * Pins all three cardinality regimes (one / zero / multi), the
+ * single-env readout copy, and the zero-member submit guard so a future
+ * refactor can't re-introduce the silent fallthrough.
  */
 
 import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
@@ -100,8 +101,6 @@ afterEach(() => {
 });
 
 async function submitDialog(): Promise<void> {
-  // dashboards = [] forces effectiveMode → "new", which renders an
-  // Input instead of a Select for the dashboard target.
   const titleInput = screen.getByPlaceholderText("Dashboard title");
   fireEvent.change(titleInput, { target: { value: "My Dashboard" } });
   await act(async () => {
@@ -169,9 +168,6 @@ describe("AddToDashboardDialog — connection group binding (#2419)", () => {
     };
     render(React.createElement(AddToDashboardDialog, baseProps), { wrapper: Wrapper });
 
-    // The "Environment" label is the picker's anchor — its presence
-    // proves the picker rendered. Single-env readout copy must NOT
-    // appear in the multi-group case.
     expect(screen.queryByText("Environment")).not.toBeNull();
     expect(screen.queryByText(/Card runs against/)).toBeNull();
   });
@@ -214,11 +210,7 @@ describe("AddToDashboardDialog — connection group binding (#2419)", () => {
     expect(screen.getByText(/first member \(no primary pinned\)/i)).toBeTruthy();
   });
 
-  test("one-group with zero members: readout warns instead of silently binding to an empty group", () => {
-    // Auto-bind still materializes connectionGroupId so the API's
-    // NoGroupMembersError fires cleanly at refresh time — but the
-    // operator must see the warning at create time, not after the
-    // first failed refresh.
+  test("one-group with zero members: readout warns at create time", () => {
     groupsData = {
       groups: [
         {
@@ -233,5 +225,79 @@ describe("AddToDashboardDialog — connection group binding (#2419)", () => {
     render(React.createElement(AddToDashboardDialog, baseProps), { wrapper: Wrapper });
 
     expect(screen.getByText(/has no connections/i)).toBeTruthy();
+  });
+
+  test("one-group with zero members: submit is hard-blocked, not just warned (#2419 silent-failure follow-up)", async () => {
+    // A warning + an unblocked submit is still a silent failure — the
+    // card persists bound to a group `resolveCardConnectionId` can't
+    // resolve at refresh time. The guard in handleSubmit must fail
+    // closed.
+    groupsData = {
+      groups: [
+        {
+          id: "g_empty",
+          name: "ghost",
+          memberCount: 0,
+          primaryConnectionId: null,
+          resolvedConnectionId: null,
+        },
+      ],
+    };
+    render(React.createElement(AddToDashboardDialog, baseProps), { wrapper: Wrapper });
+
+    await submitDialog();
+
+    // No mutate calls fire at all — the guard short-circuits before
+    // createDashboard and addCard are reached.
+    expect(mutateCalls).toEqual([]);
+    // Submit error surfaces alongside the readout (two matches by
+    // design — readout warns ambiently, error banner appears post-submit).
+    expect(screen.queryAllByText(/has no connections/i).length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("multi-group, user picks a group, submit sends that group's id (regression for the unrelated boolean half of boundGroupId)", async () => {
+    // If `boundGroupId` ever stops falling back to `connectionGroupId`
+    // for multi-group workspaces (e.g. a refactor that wires it only
+    // to `soleGroup?.id`), the auto-bind case keeps passing but the
+    // user-pick case silently drops the binding. Pin both halves.
+    groupsData = {
+      groups: [
+        {
+          id: "g_prod",
+          name: "prod",
+          memberCount: 1,
+          primaryConnectionId: "c_prod",
+          resolvedConnectionId: "c_prod",
+        },
+        {
+          id: "g_staging",
+          name: "staging",
+          memberCount: 1,
+          primaryConnectionId: "c_staging",
+          resolvedConnectionId: "c_staging",
+        },
+      ],
+    };
+    render(React.createElement(AddToDashboardDialog, baseProps), { wrapper: Wrapper });
+
+    // Simulate the user picking "g_staging" from the env picker.
+    // shadcn's Select is a Radix combobox in the live tree; in jsdom
+    // we reach the underlying state via the change handler the
+    // SelectTrigger forwards. The trigger renders with the
+    // accessible name from SelectValue → use the combobox role.
+    const combobox = screen.getByRole("combobox");
+    fireEvent.click(combobox);
+    // Use the listbox option once the menu opens. Radix renders
+    // options with role="option" once open in jsdom.
+    await waitFor(() => expect(screen.queryByRole("option", { name: /staging/i })).not.toBeNull());
+    fireEvent.click(screen.getByRole("option", { name: /staging/i }));
+
+    await submitDialog();
+
+    await waitFor(() => {
+      const cardCall = mutateCalls.find((c) => c.path.endsWith("/cards"));
+      expect(cardCall).toBeDefined();
+      expect(cardCall?.body?.connectionGroupId).toBe("g_staging");
+    });
   });
 });

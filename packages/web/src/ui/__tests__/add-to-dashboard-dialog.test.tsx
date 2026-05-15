@@ -1,0 +1,303 @@
+/**
+ * Regression guard for #2419: single-group workspaces must auto-bind the
+ * sole `connection_groups` row to the card on create. The pre-fix dialog
+ * hid the picker when `groups.length <= 1` AND dropped `connectionGroupId`
+ * from the POST payload — `resolveCardConnectionId` returned `null`, and
+ * the auto-refresh call site (packages/api/src/lib/dashboards.ts:879)
+ * then fell through to `connections.getDefault()` so the card silently
+ * ran against the workspace default. That violates PRD #2342's
+ * "card-create form scopes by group" criterion — the single-env case
+ * must materialize the binding even though there's no UI choice to make.
+ *
+ * Pins all three cardinality regimes (one / zero / multi), the
+ * single-env readout copy, and the zero-member submit guard so a future
+ * refactor can't re-introduce the silent fallthrough.
+ */
+
+import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
+import React, { type ReactNode } from "react";
+import { render, screen, cleanup, fireEvent, act, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+interface ConnectionGroup {
+  id: string;
+  name: string;
+  memberCount: number;
+  primaryConnectionId: string | null;
+  resolvedConnectionId: string | null;
+}
+
+interface CapturedCall {
+  path: string;
+  method?: string;
+  body?: Record<string, unknown>;
+}
+
+let dashboardsData: { dashboards: Array<{ id: string; title: string; cardCount: number }>; total: number } = {
+  dashboards: [],
+  total: 0,
+};
+let groupsData: { groups: ConnectionGroup[] } | null = { groups: [] };
+let mutateCalls: CapturedCall[] = [];
+
+mock.module("@/ui/hooks/use-admin-fetch", () => ({
+  useAdminFetch: (path: string) => {
+    if (path === "/api/v1/dashboards") {
+      return { data: dashboardsData, loading: false, error: null, refetch: () => {} };
+    }
+    if (path === "/api/v1/admin/connection-groups") {
+      return { data: groupsData, loading: false, error: null, refetch: () => {} };
+    }
+    return { data: null, loading: false, error: null, refetch: () => {} };
+  },
+}));
+
+mock.module("@/ui/hooks/use-admin-mutation", () => ({
+  useAdminMutation: () => ({
+    mutate: async (opts: { path: string; method?: string; body?: Record<string, unknown> }) => {
+      mutateCalls.push({ path: opts.path, method: opts.method, body: opts.body });
+      if (opts.path.endsWith("/cards")) {
+        return { ok: true, data: { id: "card-1" } };
+      }
+      // createDashboard mutation
+      return {
+        ok: true,
+        data: { id: "dashboard-1", title: opts.body?.title ?? "Dash", cardCount: 0 },
+      };
+    },
+    saving: false,
+    error: null,
+    clearError: () => {},
+    reset: () => {},
+  }),
+}));
+
+const { AddToDashboardDialog } = await import("../components/chat/add-to-dashboard-dialog");
+
+function Wrapper({ children }: { children: ReactNode }) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return React.createElement(QueryClientProvider, { client }, children);
+}
+
+const noChartResult = { chartable: false as const, recommendations: [] };
+
+const baseProps = {
+  open: true,
+  onOpenChange: () => {},
+  sql: "SELECT 1",
+  columns: ["x"],
+  rows: [{ x: 1 }],
+  chartResult: noChartResult,
+};
+
+beforeEach(() => {
+  mutateCalls = [];
+  dashboardsData = { dashboards: [], total: 0 };
+  groupsData = { groups: [] };
+});
+
+afterEach(() => {
+  cleanup();
+});
+
+async function submitDialog(): Promise<void> {
+  const titleInput = screen.getByPlaceholderText("Dashboard title");
+  fireEvent.change(titleInput, { target: { value: "My Dashboard" } });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /Add to Dashboard/ }));
+  });
+}
+
+describe("AddToDashboardDialog — connection group binding (#2419)", () => {
+  test("one-group workspace: auto-binds the sole group in the POST payload", async () => {
+    groupsData = {
+      groups: [
+        {
+          id: "g_prod",
+          name: "prod",
+          memberCount: 1,
+          primaryConnectionId: "c_prod",
+          resolvedConnectionId: "c_prod",
+        },
+      ],
+    };
+    render(React.createElement(AddToDashboardDialog, baseProps), { wrapper: Wrapper });
+
+    await submitDialog();
+
+    await waitFor(() => {
+      const cardCall = mutateCalls.find((c) => c.path.endsWith("/cards"));
+      expect(cardCall).toBeDefined();
+      expect(cardCall?.body?.connectionGroupId).toBe("g_prod");
+    });
+  });
+
+  test("zero-group workspace: POST payload omits connectionGroupId (pre-1.4.4 fallthrough)", async () => {
+    groupsData = { groups: [] };
+    render(React.createElement(AddToDashboardDialog, baseProps), { wrapper: Wrapper });
+
+    await submitDialog();
+
+    await waitFor(() => {
+      const cardCall = mutateCalls.find((c) => c.path.endsWith("/cards"));
+      expect(cardCall).toBeDefined();
+    });
+    const cardCall = mutateCalls.find((c) => c.path.endsWith("/cards"));
+    expect(cardCall?.body).toBeDefined();
+    expect("connectionGroupId" in (cardCall!.body as object)).toBe(false);
+  });
+
+  test("multi-group workspace: env picker renders, no auto-binding", () => {
+    groupsData = {
+      groups: [
+        {
+          id: "g_prod",
+          name: "prod",
+          memberCount: 1,
+          primaryConnectionId: "c_prod",
+          resolvedConnectionId: "c_prod",
+        },
+        {
+          id: "g_staging",
+          name: "staging",
+          memberCount: 1,
+          primaryConnectionId: "c_staging",
+          resolvedConnectionId: "c_staging",
+        },
+      ],
+    };
+    render(React.createElement(AddToDashboardDialog, baseProps), { wrapper: Wrapper });
+
+    expect(screen.queryByText("Environment")).not.toBeNull();
+    expect(screen.queryByText(/Card runs against/)).toBeNull();
+  });
+
+  test("one-group with primary: readout copy surfaces the binding (picker stays hidden)", () => {
+    groupsData = {
+      groups: [
+        {
+          id: "g_prod",
+          name: "prod",
+          memberCount: 1,
+          primaryConnectionId: "c_prod",
+          resolvedConnectionId: "c_prod",
+        },
+      ],
+    };
+    render(React.createElement(AddToDashboardDialog, baseProps), { wrapper: Wrapper });
+
+    // Picker is hidden, readout is visible. The wording must name the
+    // group so single-env users can confirm the binding at a glance.
+    expect(screen.queryByText("Environment")).toBeNull();
+    expect(screen.getByText(/Card runs against the primary member of/i).textContent)
+      .toContain("prod");
+  });
+
+  test("one-group with no primary: readout falls back to 'first member' language", () => {
+    groupsData = {
+      groups: [
+        {
+          id: "g_only",
+          name: "warehouse",
+          memberCount: 2,
+          primaryConnectionId: null,
+          resolvedConnectionId: "c_first",
+        },
+      ],
+    };
+    render(React.createElement(AddToDashboardDialog, baseProps), { wrapper: Wrapper });
+
+    expect(screen.getByText(/first member \(no primary pinned\)/i)).toBeTruthy();
+  });
+
+  test("one-group with zero members: readout warns at create time", () => {
+    groupsData = {
+      groups: [
+        {
+          id: "g_empty",
+          name: "ghost",
+          memberCount: 0,
+          primaryConnectionId: null,
+          resolvedConnectionId: null,
+        },
+      ],
+    };
+    render(React.createElement(AddToDashboardDialog, baseProps), { wrapper: Wrapper });
+
+    expect(screen.getByText(/has no connections/i)).toBeTruthy();
+  });
+
+  test("one-group with zero members: submit is hard-blocked, not just warned (#2419 silent-failure follow-up)", async () => {
+    // A warning + an unblocked submit is still a silent failure — the
+    // card persists bound to a group `resolveCardConnectionId` can't
+    // resolve at refresh time. The guard in handleSubmit must fail
+    // closed.
+    groupsData = {
+      groups: [
+        {
+          id: "g_empty",
+          name: "ghost",
+          memberCount: 0,
+          primaryConnectionId: null,
+          resolvedConnectionId: null,
+        },
+      ],
+    };
+    render(React.createElement(AddToDashboardDialog, baseProps), { wrapper: Wrapper });
+
+    await submitDialog();
+
+    // No mutate calls fire at all — the guard short-circuits before
+    // createDashboard and addCard are reached.
+    expect(mutateCalls).toEqual([]);
+    // Submit error surfaces alongside the readout (two matches by
+    // design — readout warns ambiently, error banner appears post-submit).
+    expect(screen.queryAllByText(/has no connections/i).length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("multi-group, user picks a group, submit sends that group's id (regression for the unrelated boolean half of boundGroupId)", async () => {
+    // If `boundGroupId` ever stops falling back to `connectionGroupId`
+    // for multi-group workspaces (e.g. a refactor that wires it only
+    // to `soleGroup?.id`), the auto-bind case keeps passing but the
+    // user-pick case silently drops the binding. Pin both halves.
+    groupsData = {
+      groups: [
+        {
+          id: "g_prod",
+          name: "prod",
+          memberCount: 1,
+          primaryConnectionId: "c_prod",
+          resolvedConnectionId: "c_prod",
+        },
+        {
+          id: "g_staging",
+          name: "staging",
+          memberCount: 1,
+          primaryConnectionId: "c_staging",
+          resolvedConnectionId: "c_staging",
+        },
+      ],
+    };
+    render(React.createElement(AddToDashboardDialog, baseProps), { wrapper: Wrapper });
+
+    // Simulate the user picking "g_staging" from the env picker.
+    // shadcn's Select is a Radix combobox in the live tree; in jsdom
+    // we reach the underlying state via the change handler the
+    // SelectTrigger forwards. The trigger renders with the
+    // accessible name from SelectValue → use the combobox role.
+    const combobox = screen.getByRole("combobox");
+    fireEvent.click(combobox);
+    // Use the listbox option once the menu opens. Radix renders
+    // options with role="option" once open in jsdom.
+    await waitFor(() => expect(screen.queryByRole("option", { name: /staging/i })).not.toBeNull());
+    fireEvent.click(screen.getByRole("option", { name: /staging/i }));
+
+    await submitDialog();
+
+    await waitFor(() => {
+      const cardCall = mutateCalls.find((c) => c.path.endsWith("/cards"));
+      expect(cardCall).toBeDefined();
+      expect(cardCall?.body?.connectionGroupId).toBe("g_staging");
+    });
+  });
+});

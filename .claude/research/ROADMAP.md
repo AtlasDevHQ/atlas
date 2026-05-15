@@ -140,7 +140,7 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
 
 ## Active
 
-- **1.4.4 — Multi-environment semantic layer** ([milestone #45](https://github.com/AtlasDevHQ/atlas/milestones/45), original 11/11 shipped — **closeout audit reopened**) — PRD #2336; all foundation + content slices + deprecation tail merged through 2026-05-14. Post-merge 10-agent audit (#2407 tracker) surfaced 17 findings — env picker hidden for single-conn workspaces, four tautological backfill tests, env-delete tombstone bug, Codex scheduler cross-org leak, multi-group entity collapse, and more. Tier 1 closeout in flight: 5 shipped (#2408 ✅ / #2410 ✅ / #2411 ✅ / #2416 ✅ / #2421 ✅), 12 open (#2409, #2412–#2415, #2417–#2420, #2422–#2424, #2429).
+- **1.4.4 — Multi-environment semantic layer** ([milestone #45](https://github.com/AtlasDevHQ/atlas/milestones/45), original 11/11 shipped — **closeout audit reopened**) — PRD #2336; all foundation + content slices + deprecation tail merged through 2026-05-14. Post-merge 10-agent audit (#2407 tracker) surfaced 17 findings; closeout 7/17 shipped (#2408 / #2410 / #2411 / #2416 / #2417 / #2418 / #2421) — Codex slice cleanup complete. 10 closeout findings open (#2409, #2412–#2415, #2419–#2420, #2422–#2424) + 2 follow-ups (#2429 backfill smoke hardening, #2432 helper extraction).
 
 ## Planned
 

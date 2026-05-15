@@ -111,6 +111,7 @@ const mockResolveScheduledTaskConnection = mock(() => Promise.resolve("resolved-
 // empty-group path — `executor.empty-group.test.ts` covers that against
 // the real group-resolve module.
 class NoScheduledTaskGroupMembersErrorStub extends Error {
+  override readonly name = "NoScheduledTaskGroupMembersError";
   readonly groupId: string;
   readonly orgId: string | null;
   constructor(groupId: string, orgId: string | null) {

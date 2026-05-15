@@ -80,13 +80,13 @@ describe("selectScheduledTaskGroupMember", () => {
 // ── SQL-path coverage (#2416) ────────────────────────────────────────
 //
 // The in-memory picker tests above don't exercise loadScheduledTaskGroupSnapshot —
-// the function that actually issues SQL through internalQuery. PR #2398 shipped a
-// cross-org fallback there (silently widening the org filter to '__global__'
-// when a tenant's group had zero non-archived members) that no test caught
-// because the only callers in tests mocked the SQL-touching function away.
-// These tests run the real SQL builder against a captured mock pool so we can
-// assert tenant isolation: NO __global__ parameter ever flows to the DB for a
-// tenant caller, regardless of group/member state.
+// the function that issues SQL through internalQuery. An earlier cross-org
+// fallback widened the org filter to '__global__' when a tenant's group had
+// zero non-archived members; no test caught it because callers mocked the
+// SQL-touching function away. These tests run the real SQL builder against a
+// captured mock pool so tenant isolation is asserted on actual SQL: NO
+// __global__ parameter ever flows to the DB for a tenant caller, regardless
+// of group/member state.
 
 interface CapturedQuery {
   readonly sql: string;
@@ -183,9 +183,7 @@ describe("loadScheduledTaskGroupSnapshot (SQL path)", () => {
     expect(snap!.orgId).toBe("org-1");
     expect(snap!.members).toEqual([]);
 
-    // Critical multi-tenant isolation check: only the two scoped queries
-    // ran. The previous code path issued an additional Promise.all of
-    // __global__-bound queries here — those must NOT execute.
+    // Tenant isolation check: exactly two scoped queries — no __global__ peek.
     expect(queryCalls.length).toBe(2);
     for (const call of queryCalls) {
       expect(call.params).not.toContain("__global__");
@@ -264,6 +262,28 @@ describe("loadScheduledTaskGroupSnapshot (SQL path)", () => {
     const snap = await loadScheduledTaskGroupSnapshot("g_global", null);
     expect(snap).not.toBeNull();
     expect(snap!.orgId).toBeNull();
+    expect(snap!.members.map((m) => m.id)).toEqual(["g-conn"]);
+    expect(queryCalls.length).toBe(2);
+    for (const call of queryCalls) {
+      expect(call.params).toContain("__global__");
+    }
+  });
+
+  it("__global__ caller passing the literal string is identical to passing null", async () => {
+    // Production code coalesces orgId via `orgId ?? "__global__"`, so a
+    // caller that already holds the literal "__global__" string flows through
+    // the same SQL as a null caller. Asserting both shapes match prevents a
+    // future refactor (e.g. replacing the ?? with a strict null check) from
+    // silently splitting the global-org path in two.
+    enableInternalDB();
+    setResults(
+      { rows: [{ primary_connection_id: "g-conn" }] },
+      { rows: [{ id: "g-conn", created_at: "2026-04-01T00:00:00Z" }] },
+    );
+
+    const snap = await loadScheduledTaskGroupSnapshot("g_global", "__global__");
+    expect(snap).not.toBeNull();
+    expect(snap!.orgId).toBe("__global__");
     expect(snap!.members.map((m) => m.id)).toEqual(["g-conn"]);
     expect(queryCalls.length).toBe(2);
     for (const call of queryCalls) {

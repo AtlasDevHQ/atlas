@@ -517,7 +517,16 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       );
       expect(rows[0]?.connection_group_id).toBe(groupId);
     } finally {
-      await pool.query(`ALTER TABLE semantic_entities DROP COLUMN connection_id`);
+      // Cleanup must not shadow an in-`try` assertion error. If the DROP
+      // itself trips (pool closed mid-test, etc.), log and let the
+      // original failure propagate.
+      try {
+        await pool.query(`ALTER TABLE semantic_entities DROP COLUMN connection_id`);
+      } catch (err) {
+        console.warn(
+          `cleanup semantic_entities.connection_id DROP failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   }, PG_TEST_TIMEOUT_MS);
 
@@ -879,7 +888,16 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       );
       expect(rows[0]?.connection_group_id).toBe(groupId);
     } finally {
-      await pool.query(`ALTER TABLE pii_column_classifications DROP COLUMN connection_id`);
+      // Cleanup must not shadow an in-`try` assertion error. If the DROP
+      // itself trips (pool closed mid-test, etc.), log and let the
+      // original failure propagate.
+      try {
+        await pool.query(`ALTER TABLE pii_column_classifications DROP COLUMN connection_id`);
+      } catch (err) {
+        console.warn(
+          `cleanup pii_column_classifications.connection_id DROP failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   }, PG_TEST_TIMEOUT_MS);
 
@@ -1139,7 +1157,16 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       );
       expect(rows[0]?.connection_group_id).toBe(groupId);
     } finally {
-      await pool.query(`ALTER TABLE approval_queue DROP COLUMN connection_id`);
+      // Cleanup must not shadow an in-`try` assertion error. If the DROP
+      // itself trips (pool closed mid-test, etc.), log and let the
+      // original failure propagate.
+      try {
+        await pool.query(`ALTER TABLE approval_queue DROP COLUMN connection_id`);
+      } catch (err) {
+        console.warn(
+          `cleanup approval_queue.connection_id DROP failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   }, PG_TEST_TIMEOUT_MS);
 
@@ -1453,7 +1480,16 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       );
       expect(rows[0]?.connection_group_id).toBe(groupId);
     } finally {
-      await pool.query(`ALTER TABLE dashboard_cards DROP COLUMN connection_id`);
+      // Cleanup must not shadow an in-`try` assertion error. If the DROP
+      // itself trips (pool closed mid-test, etc.), log and let the
+      // original failure propagate.
+      try {
+        await pool.query(`ALTER TABLE dashboard_cards DROP COLUMN connection_id`);
+      } catch (err) {
+        console.warn(
+          `cleanup dashboard_cards.connection_id DROP failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   }, PG_TEST_TIMEOUT_MS);
 

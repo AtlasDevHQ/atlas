@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
+import { DELETE_GROUP_AND_ARCHIVED_CONNECTIONS_SQL } from "@atlas/api/lib/db/connection-groups-sql";
 
 // Real-Postgres migration smoke. Skips cleanly when TEST_DATABASE_URL
 // is unset so local dev that hasn't run `bun run db:up` is unaffected.
@@ -353,6 +354,132 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       [groupId, orgId],
     );
     expect(rows.length).toBe(0);
+  }, PG_TEST_TIMEOUT_MS);
+
+  // #2410 — env-delete CTE must drop both archived shapes. Reproduces
+  // the third-pass failure: PR #2405 added the cascading archived
+  // delete, PR #2406 tightened it to `url <> ''` to preserve global-hide
+  // tombstones (which it succeeded at — outside env-delete), but the
+  // env-delete path itself then 23503'd whenever the group contained a
+  // `url = ''` tombstone. The shape mirrors the per-org `__global__`
+  // hide INSERT written by the non-`ownRow` branch of
+  // `admin-connections.ts` DELETE /:id.
+  //
+  // Imports `DELETE_GROUP_AND_ARCHIVED_CONNECTIONS_SQL` so this test and
+  // the production route share the same canonical SQL — a regression
+  // that tightens the WHERE clause shows up in both files in the same
+  // diff and can't sneak through.
+  it("connections.group_id: env-delete CTE drops both archived shapes (#2410)", async () => {
+    const orgId = `org-tomb-${Date.now()}`;
+    const groupId = `g-tomb-${Date.now()}`;
+    const archivedOwnedConnId = `conn-archived-${Date.now()}`;
+    const tombstoneConnId = `conn-tomb-${Date.now()}`;
+
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'tombstone-env')`,
+      [groupId, orgId],
+    );
+
+    // Shape 1: archived in-place — org-owned row, real encrypted URL,
+    // `status = 'archived'`. This is what the `ownRow` branch of
+    // `admin-connections.ts` DELETE /:id produces when the admin
+    // deletes an org-owned connection.
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status, group_id)
+       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'archived', $3)`,
+      [archivedOwnedConnId, orgId, groupId],
+    );
+
+    // Shape 2: per-org `__global__` tombstone — `url = ''`,
+    // `status = 'archived'`, non-null `group_id`. This is what the
+    // non-`ownRow` branch of `admin-connections.ts` DELETE /:id
+    // produces when the admin hides a global connection. Pre-fix the
+    // env-delete CTE filtered `url <> ''`, so this row stayed put and
+    // the trailing `DELETE FROM connection_groups` 23503'd against the
+    // connections_group_id FK.
+    await pool.query(
+      `INSERT INTO connections (id, url, url_key_version, type, description, org_id, status, group_id)
+       VALUES ($1, '', 1, 'postgres', 'Hidden from this workspace', $2, 'archived', $3)`,
+      [tombstoneConnId, orgId, groupId],
+    );
+
+    // Sanity: run the *pre-fix* CTE (with `AND url <> ''`) and confirm
+    // it still 23503s with the tombstone present. This pins the exact
+    // regression mode — not the "raw delete fails" property of the FK
+    // (which has always been true and is already covered above by the
+    // 0062 RESTRICT test). If a future change accidentally tightens
+    // the production CTE again, the positive assertion below would
+    // catch the symptom; this sanity step locks the cause.
+    await expect(
+      pool.query(
+        `WITH deleted_archived_connections AS (
+           DELETE FROM connections
+            WHERE group_id = $1
+              AND org_id = $2
+              AND status = 'archived'
+              AND url <> ''
+           RETURNING id
+         )
+         DELETE FROM connection_groups WHERE id = $1 AND org_id = $2`,
+        [groupId, orgId],
+      ),
+    ).rejects.toMatchObject({ code: "23503" });
+
+    // The fixed CTE — imported from the production module so the test
+    // and the route share one source of truth.
+    await pool.query(DELETE_GROUP_AND_ARCHIVED_CONNECTIONS_SQL, [groupId, orgId]);
+
+    // Group is gone.
+    const groupRows = await pool.query<{ id: string }>(
+      `SELECT id FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [groupId, orgId],
+    );
+    expect(groupRows.rows.length).toBe(0);
+
+    // Both archived rows are gone — no orphans, no FK violations.
+    const connRows = await pool.query<{ id: string }>(
+      `SELECT id FROM connections WHERE org_id = $1 AND id IN ($2, $3)`,
+      [orgId, archivedOwnedConnId, tombstoneConnId],
+    );
+    expect(connRows.rows.length).toBe(0);
+  }, PG_TEST_TIMEOUT_MS);
+
+  // Adjacent shape: a group whose *only* archived row is a `url = ''`
+  // tombstone. This is the exact production path an admin hits when
+  // they hide a global into a fresh environment and then delete that
+  // environment without ever attaching an org-owned connection. The
+  // CTE handles it because the predicate is `status = 'archived'`, but
+  // a future "optimization" that reinstates `url <> ''` would let the
+  // multi-shape test above still pass on shape 1 while quietly failing
+  // closed on this one. The single-shape variant catches that drift.
+  it("connections.group_id: env-delete CTE drops a tombstone-only group (#2410)", async () => {
+    const orgId = `org-tomb-only-${Date.now()}`;
+    const groupId = `g-tomb-only-${Date.now()}`;
+    const tombstoneConnId = `conn-tomb-only-${Date.now()}`;
+
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'tombstone-only-env')`,
+      [groupId, orgId],
+    );
+    await pool.query(
+      `INSERT INTO connections (id, url, url_key_version, type, description, org_id, status, group_id)
+       VALUES ($1, '', 1, 'postgres', 'Hidden from this workspace', $2, 'archived', $3)`,
+      [tombstoneConnId, orgId, groupId],
+    );
+
+    await pool.query(DELETE_GROUP_AND_ARCHIVED_CONNECTIONS_SQL, [groupId, orgId]);
+
+    const groupRows = await pool.query<{ id: string }>(
+      `SELECT id FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [groupId, orgId],
+    );
+    expect(groupRows.rows.length).toBe(0);
+
+    const connRows = await pool.query<{ id: string }>(
+      `SELECT id FROM connections WHERE org_id = $1 AND id = $2`,
+      [orgId, tombstoneConnId],
+    );
+    expect(connRows.rows.length).toBe(0);
   }, PG_TEST_TIMEOUT_MS);
 
   // 0063 — semantic_entities.connection_group_id. Adds the group-scoped

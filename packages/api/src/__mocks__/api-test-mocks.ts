@@ -461,6 +461,16 @@ export function createApiTestMocks(
       removedTables: [],
       tableDiffs: [],
     })),
+    // Slice 1 of #2458 added a `runDriftDiff` companion that also reports
+    // the pre-whitelist introspection count. Admin route imports it
+    // alongside `runDiff`; without it here the loader throws
+    // "Export named 'runDriftDiff' not found" and the entire admin
+    // router fails to mount (404s on every admin route).
+    runDriftDiff: mock(async () => ({
+      diff: { newTables: [], removedTables: [], tableDiffs: [], unchangedCount: 0 },
+      introspectedTableCount: 0,
+      warnings: [] as string[],
+    })),
   }));
 
   // ── Cache ─────────────────────────────────────────────────────

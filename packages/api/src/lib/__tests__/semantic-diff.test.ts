@@ -10,8 +10,10 @@ import {
   mapSQLType,
   parseEntityYAML,
   computeDiff,
+  type DiffResult,
   type EntitySnapshot,
 } from "../semantic/diff";
+import { attachDrift } from "../semantic/drift";
 
 // ---------------------------------------------------------------------------
 // mapSQLType
@@ -300,5 +302,118 @@ describe("computeDiff", () => {
 
     const result = computeDiff(db, yaml);
     expect(result.newTables).toEqual(["alpha", "zebra"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// attachDrift — slice 1 of #2458 / issue #2459
+// ---------------------------------------------------------------------------
+
+function makeDiff(overrides: Partial<DiffResult> = {}): DiffResult {
+  return {
+    newTables: [],
+    removedTables: [],
+    tableDiffs: [],
+    unchangedCount: 0,
+    ...overrides,
+  };
+}
+
+describe("attachDrift", () => {
+  it("marks every entity in-sync when the diff is empty", () => {
+    const entities = [
+      { name: "users", table: "users" },
+      { name: "orders", table: "orders" },
+    ];
+    const result = attachDrift(entities, makeDiff(), { noIntrospectedTables: false });
+
+    expect(result.noIntrospectedTables).toBe(false);
+    expect(result.entities).toHaveLength(2);
+    expect(result.entities.every((e) => e.drift?.state === "in-sync")).toBe(true);
+    expect(result.entities[0].drift?.changeCount).toBeUndefined();
+  });
+
+  it("maps per-entity state from a mixed diff", () => {
+    const entities = [
+      { name: "users", table: "users" },        // unchanged
+      { name: "orders", table: "orders" },      // column drift
+      { name: "legacy", table: "legacy" },      // dropped from DB
+    ];
+    const diff = makeDiff({
+      removedTables: ["legacy"],
+      tableDiffs: [{
+        table: "orders",
+        addedColumns: [{ name: "shipping_zip", type: "string" }],
+        removedColumns: [{ name: "deprecated_total", type: "number" }],
+        typeChanges: [{ name: "status", yamlType: "string", dbType: "number" }],
+      }],
+    });
+
+    const result = attachDrift(entities, diff, { noIntrospectedTables: false });
+    const byName = Object.fromEntries(result.entities.map((e) => [e.name, e]));
+
+    expect(byName.users.drift).toEqual({ state: "in-sync" });
+    expect(byName.orders.drift).toEqual({ state: "changed", changeCount: 3 });
+    expect(byName.legacy.drift).toEqual({ state: "removed" });
+    expect(result.noIntrospectedTables).toBe(false);
+  });
+
+  it("nulls every drift field and flags noIntrospectedTables when the DB is empty", () => {
+    // The dogfood incident this slice exists to prevent: an introspection-
+    // empty DB used to make every YAML entity look "removed". Reads zero,
+    // shouts thirteen. attachDrift must short-circuit before the regular
+    // diff comparison runs.
+    const entities = [
+      { name: "users", table: "users" },
+      { name: "orders", table: "orders" },
+      { name: "products", table: "products" },
+    ];
+    // We pass a non-empty `removedTables` to prove the flag short-circuits
+    // — without the early return, every row would otherwise report `removed`.
+    const diff = makeDiff({ removedTables: ["users", "orders", "products"] });
+
+    const result = attachDrift(entities, diff, { noIntrospectedTables: true });
+
+    expect(result.noIntrospectedTables).toBe(true);
+    expect(result.entities).toHaveLength(3);
+    expect(result.entities.every((e) => e.drift === null)).toBe(true);
+  });
+
+  it("preserves caller fields on every entity", () => {
+    // attachDrift augments — it doesn't strip — so the file-tree projection
+    // can pass through `name`, `connectionGroupId`, `draft`, etc.
+    const entities = [
+      { name: "users", table: "users", connectionGroupId: "g_prod", draft: true },
+    ];
+    const result = attachDrift(entities, makeDiff(), { noIntrospectedTables: false });
+
+    expect(result.entities[0]).toMatchObject({
+      name: "users",
+      table: "users",
+      connectionGroupId: "g_prod",
+      draft: true,
+      drift: { state: "in-sync" },
+    });
+  });
+
+  it("omits changeCount for non-changed states", () => {
+    // changeCount only applies to `changed`; the other three states should
+    // carry the field absent so consumers can render "N column changes"
+    // without guarding undefined for in-sync / removed rows.
+    const entities = [
+      { name: "users", table: "users" },
+      { name: "legacy", table: "legacy" },
+    ];
+    const diff = makeDiff({ removedTables: ["legacy"] });
+    const result = attachDrift(entities, diff, { noIntrospectedTables: false });
+
+    expect(result.entities[0].drift).toEqual({ state: "in-sync" });
+    expect(result.entities[1].drift).toEqual({ state: "removed" });
+  });
+
+  it("handles an empty entity list cleanly", () => {
+    const result = attachDrift([], makeDiff(), { noIntrospectedTables: false });
+    expect(result.entities).toEqual([]);
+    expect(result.noIntrospectedTables).toBe(false);
   });
 });

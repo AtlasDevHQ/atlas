@@ -25,6 +25,20 @@ export type SemanticSelection =
   | null;
 
 /**
+ * Drift state surfaced on the file tree (#2459). `removed` and `changed`
+ * paint a quiet blue 2px left border; `in-sync` paints nothing. `new`
+ * isn't produced for YAML-side entities — kept here so slice 2's drawer
+ * can reuse the type without a second definition.
+ */
+export type SemanticTreeDriftState = "new" | "removed" | "changed" | "in-sync";
+
+export interface SemanticTreeDrift {
+  readonly state: SemanticTreeDriftState;
+  /** Total column-level changes; only present for `changed` rows. */
+  readonly changeCount?: number;
+}
+
+/**
  * Entry in the file-tree's entity list. Multi-group orgs surface the
  * same `name` under multiple `connectionGroupId`s — keying off the pair
  * keeps React keys unique and lets the badge tell the admin which
@@ -36,6 +50,12 @@ export interface SemanticTreeEntity {
   readonly connectionGroupId: string | null;
   /** `true` when the row carries a draft overlay; renders the amber accent. */
   readonly draft?: boolean;
+  /**
+   * Optional DB↔YAML drift signal (#2459). `null` (or omitted) when no
+   * drift check ran — the row paints no accent. Non-null is read-only in
+   * slice 1; slice 2 wires click → drawer for reconcile.
+   */
+  readonly drift?: SemanticTreeDrift | null;
 }
 
 interface SemanticFileTreeProps {
@@ -64,6 +84,28 @@ function isSelected(selection: SemanticSelection, target: SemanticSelection): bo
   return true;
 }
 
+function driftAriaFragment(drift: SemanticTreeDrift | null | undefined): string | null {
+  if (!drift || drift.state === "in-sync") return null;
+  if (drift.state === "removed") return "drift: removed from database";
+  if (drift.state === "changed") {
+    const n = drift.changeCount ?? 0;
+    return `drift: ${n} ${n === 1 ? "column change" : "column changes"}`;
+  }
+  // `new` is reserved for slice 2's DB-only rows; the YAML-side tree
+  // never receives it but a future caller might. Keep the fragment honest.
+  return "drift: new in database";
+}
+
+function driftTooltip(drift: SemanticTreeDrift | null | undefined): string | undefined {
+  if (!drift || drift.state === "in-sync") return undefined;
+  if (drift.state === "removed") return "Table missing from the database";
+  if (drift.state === "changed") {
+    const n = drift.changeCount ?? 0;
+    return `${n} column ${n === 1 ? "change" : "changes"} vs database`;
+  }
+  return "Table present in database but not in semantic layer";
+}
+
 function FileItem({
   name,
   selected,
@@ -71,6 +113,7 @@ function FileItem({
   indent = 0,
   draft = false,
   source,
+  drift,
 }: {
   name: string;
   selected: boolean;
@@ -86,8 +129,25 @@ function FileItem({
    * [g_prod]".
    */
   source?: string;
+  /**
+   * Optional drift signal (#2459). Renders a quiet blue 2px left border
+   * for `removed` / `changed` rows — informational, not a call to action.
+   * The amber draft accent wins border precedence when both states apply
+   * (you're actively editing, so "in-progress" reads louder than
+   * "DB diverged"), but the drift state still appears in aria-label +
+   * native title for screen readers + hover.
+   */
+  drift?: SemanticTreeDrift | null;
 }) {
   const sourceLabel = source?.startsWith("g_") ? source.slice(2) : source;
+  const driftFragment = driftAriaFragment(drift);
+  // Draft wins border precedence — see comment on the `drift` prop above.
+  const hasDriftBorder = !draft && driftFragment !== null;
+  const ariaParts: string[] = [];
+  if (draft) ariaParts.push("draft");
+  if (driftFragment) ariaParts.push(driftFragment);
+  if (sourceLabel) ariaParts.push(`environment: ${sourceLabel}`);
+  const ariaLabel = ariaParts.length > 0 ? `${name} (${ariaParts.join(", ")})` : undefined;
   return (
     <button
       onClick={onClick}
@@ -98,15 +158,15 @@ function FileItem({
         // doesn't change the row's baseline color/contrast — important since
         // published entities dominate the list visually.
         draft && "border-l-2 border-amber-400/60",
+        // Blue is one step quieter than amber: drift is informational
+        // ("DB diverged from YAML"), draft is action-pending ("you're
+        // editing this"). Same 2px width keeps the rhythm consistent.
+        hasDriftBorder && "border-l-2 border-sky-400/60",
       )}
       style={{ paddingLeft: `${8 + indent * 16}px` }}
-      aria-label={
-        sourceLabel
-          ? `${name} (${draft ? "draft, " : ""}environment: ${sourceLabel})`
-          : draft
-            ? `${name} (draft)`
-            : undefined
-      }
+      aria-label={ariaLabel}
+      title={driftTooltip(drift)}
+      data-drift-state={drift?.state}
     >
       <File className="size-4 shrink-0 opacity-60" />
       <span className="truncate">{name}</span>
@@ -208,6 +268,7 @@ export function SemanticFileTree({
                     indent={1}
                     draft={entry.draft ?? false}
                     source={entry.connectionGroupId ?? undefined}
+                    drift={entry.drift}
                   />
                 );
               })

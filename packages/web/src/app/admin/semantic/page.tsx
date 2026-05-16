@@ -40,6 +40,8 @@ import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surfa
 import {
   SemanticFileTree,
   type SemanticSelection,
+  type SemanticTreeDrift,
+  type SemanticTreeDriftState,
 } from "@/ui/components/admin/semantic-file-tree";
 import { type FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -77,6 +79,12 @@ interface EntitySummary {
   connectionGroupId: string | null;
   /** True when the API row carries `status: "draft"`. */
   draft: boolean;
+  /**
+   * Optional DB↔YAML drift signal (#2459). `null` when the API didn't
+   * compute drift (e.g. caller omitted `?connection`); a defined value
+   * is what slice 1 surfaces as the blue file-tree accent.
+   */
+  drift: SemanticTreeDrift | null;
 }
 
 interface GlossaryTerm {
@@ -312,6 +320,36 @@ function normalizeMetrics(raw: unknown): MetricEntry[] {
 // ── Helpers ───────────────────────────────────────────────────────
 
 /**
+ * Validate an untrusted `drift` payload from the entities-list response
+ * into the narrow `SemanticTreeDrift` shape the file tree expects (#2459).
+ * Unknown shapes / states drop silently to `null` so a server-side
+ * regression in the drift field can't crash the file tree — same defensive
+ * posture the rest of the page takes (see the `console.debug` on dropped
+ * entity rows above).
+ */
+const DRIFT_STATES: ReadonlySet<SemanticTreeDriftState> = new Set([
+  "new",
+  "removed",
+  "changed",
+  "in-sync",
+]);
+
+function normalizeDrift(raw: unknown): SemanticTreeDrift | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.state !== "string" || !DRIFT_STATES.has(r.state as SemanticTreeDriftState)) {
+    return null;
+  }
+  const state = r.state as SemanticTreeDriftState;
+  if (state === "changed") {
+    const n = typeof r.changeCount === "number" ? r.changeCount : 0;
+    return { state, changeCount: n };
+  }
+  return { state };
+}
+
+/**
  * Encode a `connectionGroupId` for the admin entity detail / delete /
  * save URLs (#2412). The trinary mapping mirrors the backend's
  * `parseConnectionGroupIdQuery`:
@@ -467,8 +505,13 @@ export default function SemanticPage() {
     let cancelled = false;
 
     async function fetchAll() {
+      // Slice 1 (#2459): `?connection=default` opts into per-entity drift +
+      // the noIntrospectedTables flag. The multi-environment toggle (slice 4)
+      // will swap in the selected connection id; for now everything on this
+      // page runs against the default connection.
+      const entitiesUrl = `${apiUrl}/api/v1/admin/semantic/entities?connection=default`;
       const [entitiesRes, glossaryRes, metricsRes, catalogRes] = await Promise.allSettled([
-        fetch(`${apiUrl}/api/v1/admin/semantic/entities`, fetchOpts).then(async (r) => {
+        fetch(entitiesUrl, fetchOpts).then(async (r) => {
           if (!r.ok) throw await extractFetchError(r);
           return r.json();
         }),
@@ -491,6 +534,10 @@ export default function SemanticPage() {
       if (entitiesRes.status === "fulfilled") {
         const data = entitiesRes.value;
         const rawEntities = Array.isArray(data?.entities) ? data.entities : Array.isArray(data) ? data : [];
+        // `noIntrospectedTables` is shipped in slice 1 for slice 3 to consume.
+        // We don't render anything off it yet — the file tree's drift accent
+        // already self-suppresses when every entity arrives with `drift: null`
+        // (the case `noIntrospectedTables` produces).
         const normalized: EntitySummary[] = (rawEntities as Record<string, unknown>[]).map((e) => {
           const tableField = typeof e.table === "string" ? e.table : "";
           const nameField =
@@ -510,6 +557,7 @@ export default function SemanticPage() {
             columnCount: typeof e.columnCount === "number" ? e.columnCount : 0,
             connectionGroupId,
             draft: e.status === "draft",
+            drift: normalizeDrift(e.drift),
           };
         }).filter((e) => e.name.length > 0);
         const dropped = rawEntities.length - normalized.length;
@@ -705,6 +753,7 @@ export default function SemanticPage() {
       name: e.name,
       connectionGroupId: e.connectionGroupId,
       draft: e.draft,
+      drift: e.drift,
     }))
     .toSorted((a, b) => {
       const byName = a.name.localeCompare(b.name);

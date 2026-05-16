@@ -158,6 +158,7 @@ Two queued milestones — next-up decision lives in `/next`.
 - [x] **Post-1.4.2 security + polish hygiene** (PRs #2353–#2358) — npm supply-chain worm hardening (#2353), CodeQL ReDoS/sanitization/URL/shell sweep (#2355 + #2357 + #2358), rail collapse-trigger + hover scoping (#2354), dashboards-rail remount flash (#2356).
 - [x] **SaaS sandbox = Vercel Sandbox exclusive** (#2382, #2383, #2387, #2389) — `deploy/api/atlas.config.ts` pins `["vercel-sandbox"]`; sidecar fallback removed so a Vercel outage hard-fails the explore tool rather than degrading isolation. Hardening tail (#2389) brands the Vercel token as `OpaqueSecret`, surfaces a SaaS hard-fail error when sandbox.priority backends all fail, and adds detector + credential-handoff tests — closes #2384/#2385/#2386.
 - [x] **Post-1.4.3 bug pass** (PRs #2388, #2390) — semantic-layer whitelist now accepts dialect-quoted reserved-keyword tables (`"user"`, `` `events` ``, `[Order]`); SaaS abuse-detector escalation ladder gated by per-step dwell time (`ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS`, default 60s) and short-circuited entirely on self-hosted (operator IS the user).
+- [x] **Post-1.4.4 multi-env tracer + page guard** (#2441, PR #2445) — real-API e2e against three local Postgres on 5433/5434/5435 with divergent seeds (10/100/1000 customers, prod-only `vip_tier`), shared `e2e/browser/lib/{totp,admin-auth}.ts` helpers, MFA-aware seed script, and an `Array.isArray()` defensive guard on `/admin/connections` for the prod render crash tracked at #2444 (root cause still open).
 
 ---
 

@@ -8,7 +8,6 @@ import { createConnectionMock } from "@atlas/api/testing/connection";
 
 let mockDatasourceUrl: string | null = null;
 let mockSemanticFiles: string[] | Error = ["orders.yml"];
-let mockPgConnectError: Error | null = null;
 let mockMysqlConnectError: Error | null = null;
 let mockConfigResult: Record<string, unknown> | null = { source: "env" };
 let mockConfigLoadError: Error | null = null;
@@ -42,7 +41,6 @@ mock.module("@atlas/api/lib/providers", () => ({
 mock.module("pg", () => ({
   Pool: class MockPool {
     async connect() {
-      if (mockPgConnectError) throw mockPgConnectError;
       return {
         release: () => {},
         query: async () => ({ rows: [{ "?column?": 1 }] }),
@@ -125,7 +123,6 @@ beforeEach(() => {
   process.env.ATLAS_PROVIDER = "ollama";
   mockDatasourceUrl = null;
   mockSemanticFiles = ["orders.yml"];
-  mockPgConnectError = null;
   mockMysqlConnectError = null;
   mockConfigResult = { source: "env" };
   mockConfigLoadError = null;

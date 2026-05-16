@@ -121,7 +121,6 @@ interface PIIClassification {
 }
 
 let mockGetClassification: PIIClassification | null = null;
-let mockGetClassificationError: Error | null = null;
 let mockUpdateResult: PIIClassification | null = null;
 let mockUpdateError: Error | null = null;
 let mockDeleteError: Error | null = null;
@@ -130,10 +129,7 @@ const mockInvalidate: Mock<(orgId: string) => void> = mock(() => {});
 mock.module("@atlas/ee/compliance/masking", () => ({
   ComplianceError: RealComplianceError,
   listPIIClassifications: () => Effect.succeed([]),
-  getPIIClassification: () => {
-    if (mockGetClassificationError) return Effect.fail(mockGetClassificationError);
-    return Effect.succeed(mockGetClassification);
-  },
+  getPIIClassification: () => Effect.succeed(mockGetClassification),
   updatePIIClassification: () => {
     if (mockUpdateError) return Effect.fail(mockUpdateError);
     return Effect.succeed(mockUpdateResult);
@@ -198,7 +194,6 @@ function makeClassification(
 
 function resetMocks(): void {
   mockGetClassification = null;
-  mockGetClassificationError = null;
   mockUpdateResult = null;
   mockUpdateError = null;
   mockDeleteError = null;

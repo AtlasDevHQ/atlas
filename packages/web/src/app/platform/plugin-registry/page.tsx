@@ -404,9 +404,7 @@ function PluginRow({
               variant="outline"
               size="sm"
               onClick={() => void loadSchema()}
-              disabled={schemaLoading}
             >
-              {schemaLoading && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
               Retry
             </Button>
           </div>

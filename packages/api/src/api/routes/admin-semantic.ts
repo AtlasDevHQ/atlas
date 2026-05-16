@@ -474,6 +474,71 @@ export const postRollbackRoute = createRoute({
 });
 
 // ---------------------------------------------------------------------------
+// Route definitions — drift-drawer reconcile (#2462 / PRD #2458 slice 3)
+// ---------------------------------------------------------------------------
+
+const ReconcileBodySchema = z.object({
+  action: z.enum(["sync_yaml", "remove", "create_from_db"]),
+  /**
+   * Connection alias for the introspection side of the diff (matches the
+   * drift fetch's `?connection=` query). Defaults to `"default"`.
+   */
+  connection: z.string().optional().default("default"),
+  /**
+   * Group scope for multi-environment orgs (#2412). Same encoding as the
+   * editor PUT/DELETE: omitted → unique-or-409 default, empty string →
+   * legacy null-scope row, non-empty → that group id.
+   */
+  connectionGroupId: z.string().optional(),
+});
+
+const ReconcileResponseSchema = z.object({
+  ok: z.boolean(),
+  action: z.enum(["sync_yaml", "remove", "create_from_db"]),
+  name: z.string(),
+  entity: z.object({ name: z.string(), yamlContent: z.string() }).nullable(),
+});
+
+export const postReconcileEntityRoute = createRoute({
+  method: "post",
+  path: "/semantic/entities/{name}/reconcile",
+  tags: ["Admin — Semantic"],
+  summary: "Reconcile a semantic entity against the introspected DB schema",
+  description:
+    "Dispatches one of three reconcile actions against `(name, connection)`:\n" +
+    "  - `sync_yaml`  — rewrite the entity's dimensions to match the DB columns; preserves user-authored fields\n" +
+    "  - `remove`     — drop the entity (mirrors the editor delete; stages as draft per #2177)\n" +
+    "  - `create_from_db` — introspect `name` as a table and write a starter entity\n\n" +
+    "All actions stage as drafts regardless of atlas mode (#2177); the admin publishes via " +
+    "`/api/v1/admin/publish` to make the change visible to end-users.",
+  request: {
+    params: createParamSchema("name", "users"),
+    body: {
+      content: {
+        "application/json": { schema: ReconcileBodySchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Reconcile applied",
+      content: { "application/json": { schema: ReconcileResponseSchema } },
+    },
+    400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: {
+      description:
+        "Action target doesn't make sense (e.g. `sync_yaml`/`remove` on an unknown entity, " +
+        "or `create_from_db` on a name that already exists or has no matching DB table)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    501: { description: "Internal database not available", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Auth function type
 // ---------------------------------------------------------------------------
 
@@ -933,6 +998,70 @@ export function registerSemanticEditorRoutes(
       });
 
       return c.json({ ok: true, name, versionNumber: newVersionNumber }, 200);
+    }),
+  );
+
+  // ---------------------------------------------------------------------------
+  // Reconcile actions (#2462 / PRD #2458 slice 3)
+  // ---------------------------------------------------------------------------
+
+  // POST /semantic/entities/{name}/reconcile — drift-drawer reconcile actions
+  //
+  // Auth gates match the semantic editor exactly: `admin:semantic`. There is
+  // no separate "demo + published → 403" check because the editor itself
+  // accepts demo writes in published mode (drafts handle staging per #2177).
+  // Staying consistent means the drift drawer's UX matches the editor's:
+  // the FE disables the action buttons via `useDemoReadonly` for demo orgs
+  // in published mode; the server stages drafts the same way it does for
+  // any other admin write.
+  admin.openapi(postReconcileEntityRoute, async (c) =>
+    runHandler(c, "reconcile semantic entity", async () => {
+      const { name } = c.req.valid("param");
+      const body = c.req.valid("json");
+      const { authResult, requestId } = await authFn(c, "admin:semantic");
+
+      const orgId = authResult.user?.activeOrganizationId;
+      if (!orgId) {
+        return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
+      }
+
+      if (!hasInternalDB()) {
+        return c.json({ error: "not_available", message: "Reconcile requires an internal database (DATABASE_URL).", requestId }, 501);
+      }
+
+      const atlasMode =
+        (c.get("atlasMode") as import("@useatlas/types/auth").AtlasMode | undefined) ?? "published";
+      const scope = parseConnectionGroupIdQuery(body.connectionGroupId);
+
+      const { reconcileEntity } = await import("@atlas/api/lib/semantic/reconcile");
+      const result = await reconcileEntity({
+        orgId,
+        name,
+        action: body.action,
+        atlasMode,
+        connection: body.connection,
+        connectionGroupId: scope,
+      });
+
+      if (result.status === "not_found" || result.status === "mismatch") {
+        return c.json({ error: "not_found", message: result.reason, requestId }, 404);
+      }
+      if (result.status === "not_available") {
+        return c.json({ error: "not_available", message: result.reason, requestId }, 501);
+      }
+
+      logAdminAction({
+        actionType:
+          result.action === "remove"
+            ? ADMIN_ACTIONS.semantic.deleteEntity
+            : ADMIN_ACTIONS.semantic.updateEntity,
+        targetType: "semantic",
+        targetId: name,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { name, source: "drift-reconcile", action: result.action },
+      });
+
+      return c.json({ ok: true, action: result.action, name, entity: result.entity }, 200);
     }),
   );
 }

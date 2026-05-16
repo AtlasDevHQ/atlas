@@ -31,6 +31,29 @@ mock.module("@/ui/hooks/use-admin-fetch", () => ({
   friendlyError: (err: { message?: string }) => err?.message ?? "error",
 }));
 
+// #2462: drawer now fires `useAdminMutation` for reconcile actions. Mock it
+// so the smoke tests don't need a live AtlasProvider for the API base URL —
+// the contract under test is the diff-render path, not the network layer.
+const mockReconcileMutate = mock(async () => ({ ok: true as const, data: undefined }));
+
+mock.module("@/ui/hooks/use-admin-mutation", () => ({
+  useAdminMutation: () => ({
+    mutate: mockReconcileMutate,
+    saving: false,
+    error: null,
+    errorsByItemId: {},
+    errorFor: () => undefined,
+    clearError: () => {},
+    clearErrorFor: () => {},
+    reset: () => {},
+    isMutating: () => false,
+  }),
+}));
+
+mock.module("@/ui/components/admin/mutation-error-surface", () => ({
+  MutationErrorSurface: () => null,
+}));
+
 mock.module("@/ui/lib/fetch-error", () => ({
   friendlyError: (err: { message?: string }) => err?.message ?? "error",
   friendlyErrorOrNull: (err: { message?: string } | null | undefined) =>

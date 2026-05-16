@@ -25,7 +25,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { BookOpen, BarChart3, FileText, FolderOpen, Code, LayoutDashboard, Terminal, Plus, Pencil, Trash2, History, Sparkles, Download } from "lucide-react";
+import { BookOpen, BarChart3, FileText, FolderOpen, Code, LayoutDashboard, Terminal, Plus, Pencil, Trash2, History, Sparkles, Download, DatabaseZap } from "lucide-react";
 import Link from "next/link";
 import { EntityDetail, type EntityData } from "@/ui/components/admin/entity-detail";
 import {
@@ -404,6 +404,12 @@ export default function SemanticPage() {
   ]);
 
   const [entities, setEntities] = useState<EntitySummary[]>([]);
+  // Slice 1 (#2459) signal: when the connection introspects zero tables we
+  // suppress the file-tree-renders-every-YAML-as-removed UX in favor of a
+  // targeted "we couldn't read any tables from this connection" panel
+  // (#2462). Initialise to `false` so the file tree renders normally until
+  // the entities fetch resolves; flip when the API confirms zero tables.
+  const [noIntrospectedTables, setNoIntrospectedTables] = useState(false);
   const [selectedEntity, setSelectedEntity] = useState<EntityData | null>(null);
   const [glossary, setGlossary] = useState<GlossaryTerm[]>([]);
   const [metrics, setMetrics] = useState<MetricEntry[]>([]);
@@ -553,6 +559,13 @@ export default function SemanticPage() {
           console.warn("admin/semantic: drift warnings from /api/v1/admin/semantic/entities", warnings);
         }
         setEntities(normalized);
+        // Slice 1 (#2459) → slice 3 (#2462) consumer. The flag is
+        // load-bearing: without it every YAML row renders as "removed"
+        // when the DB itself has zero tables (the 2026-05-16 dogfood
+        // false-positive). We trust the server's resolution rather
+        // than re-deriving — `drift.ts` already separates the
+        // "DB has no tables" vs "whitelist excluded every table" cases.
+        setNoIntrospectedTables(data?.noIntrospectedTables === true);
       } else {
         // `extractFetchError` returns a populated `FetchError`; any other
         // rejection (network abort, JSON parse failure inside .then) gets
@@ -827,13 +840,51 @@ export default function SemanticPage() {
         loadingMessage="Loading semantic layer..."
       >
       {/*
+        Zero-introspected-tables fix (#2462 slice 3, signal from #2459).
+        When the DB itself returns zero tables, the legacy file-tree path
+        would render every YAML entity as `removed` — the alarming
+        "N removed tables" UX surfaced by the 2026-05-16 dogfood pass.
+        Render a targeted empty state instead so admins see the real
+        signal: "we couldn't read any tables from this connection."
+
+        Falls below loading + above the empty / file-tree branches so it
+        wins over "no semantic entities yet" (the entities may still exist
+        in YAML — the introspection failure is the load-bearing fact).
+      */}
+      {!loading && noIntrospectedTables ? (
+        <div className="p-6" data-testid="semantic-no-introspected-tables">
+          <EmptyState
+            icon={DatabaseZap}
+            title="We couldn't read any tables from this connection."
+            description="The semantic layer compares your YAML against the database's schema. Test the connection or re-run introspection to see which tables exist."
+          >
+            <div className="mt-3 flex items-center justify-center gap-2">
+              <Link href="/admin/connections">
+                <Button variant="outline" size="sm" className="gap-1.5 text-xs">
+                  <DatabaseZap className="size-3.5" />
+                  Test connection
+                </Button>
+              </Link>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5 text-xs"
+                onClick={() => setFetchKey((k) => k + 1)}
+              >
+                <Sparkles className="size-3.5" />
+                Re-run introspection
+              </Button>
+            </div>
+          </EmptyState>
+        </div>
+      ) : /*
         Dev-mode empty: admin is in developer mode with no entity drafts and
         no published entities at all. Route them to /admin/connections — a
         connection must exist before entities can be imported. Short-circuits
         the file-tree layout below to avoid showing an empty tree next to
         the empty state.
-      */}
-      {showDevNoDrafts && entities.length === 0 ? (
+      */
+      showDevNoDrafts && entities.length === 0 ? (
         <div className="p-6">
           <DeveloperEmptyState
             icon={BookOpen}
@@ -1011,6 +1062,13 @@ export default function SemanticPage() {
           setDriftDrawerOpen(open);
           if (!open) setDriftDrawerEntity(null);
         }}
+        onReconciled={() => {
+          // Refetch the entities list so the drift signal updates after a
+          // successful reconcile (#2462). The drawer closes itself.
+          refetchAll();
+        }}
+        reconcileDisabled={demoReadOnly}
+        reconcileDisabledReason={DEMO_READONLY_TOOLTIP}
       />
 
       {/* Entity editor dialog */}

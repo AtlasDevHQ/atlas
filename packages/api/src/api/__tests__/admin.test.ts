@@ -3545,3 +3545,146 @@ describe("POST /api/v1/admin/connections/pool/orgs/:orgId/drain", () => {
     expect(body.error).toBe("drain_failed");
   });
 });
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/admin/semantic/entities/:name/reconcile (#2462)
+// ---------------------------------------------------------------------------
+
+describe("POST /api/v1/admin/semantic/entities/:name/reconcile (#2462)", () => {
+  const RECONCILE_PATH = "/api/v1/admin/semantic/entities/users/reconcile";
+
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockGetEntityAdmin.mockReset();
+    mockUpsertDraftEntityAdmin.mockReset();
+    mockUpsertDraftEntityAdmin.mockResolvedValue(undefined);
+    mockUpsertTombstoneAdmin.mockReset();
+    mockUpsertTombstoneAdmin.mockResolvedValue(undefined);
+    mockDeleteDraftEntityAdmin.mockReset();
+    mockDeleteDraftEntityAdmin.mockResolvedValue(true);
+    mockSyncEntityToDisk.mockReset();
+    mockSyncEntityDeleteFromDisk.mockReset();
+    mockRunDriftDiff.mockReset();
+    mockRunDriftDiff.mockResolvedValue({
+      diff: { newTables: [], removedTables: [], tableDiffs: [], unchangedCount: 0 },
+      introspectedTableCount: 1,
+      warnings: [] as string[],
+    });
+  });
+
+  it("returns 403 for a non-admin caller", async () => {
+    mockAuthenticateRequest.mockResolvedValue({
+      authenticated: true,
+      mode: "managed",
+      user: { id: "u-1", mode: "managed", label: "member@test", role: "member", activeOrganizationId: "org-1" },
+    });
+    mockCheckRateLimit.mockReturnValue({ allowed: true });
+    const res = await app.fetch(adminRequest(RECONCILE_PATH, "POST", { action: "sync_yaml" }));
+    expect(res.status).toBe(403);
+    expect(mockUpsertDraftEntityAdmin).not.toHaveBeenCalled();
+  });
+
+  it("returns 501 when the internal DB isn't configured", async () => {
+    setOrgAdmin("org-1");
+    mockHasInternalDB = false;
+    const res = await app.fetch(adminRequest(RECONCILE_PATH, "POST", { action: "sync_yaml" }));
+    expect(res.status).toBe(501);
+  });
+
+  it("sync_yaml: returns 200 and stages a draft when the entity exists", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "e-1", org_id: "org-1", entity_type: "entity", name: "users",
+      yaml_content: "table: users\ndimensions: []\n",
+      connection_group_id: null, status: "published",
+      created_at: "2026-05-16T00:00:00Z", updated_at: "2026-05-16T00:00:00Z",
+    });
+    const res = await app.fetch(adminRequest(RECONCILE_PATH, "POST", { action: "sync_yaml" }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.ok).toBe(true);
+    expect(body.action).toBe("sync_yaml");
+    expect(body.name).toBe("users");
+    // Always stages as draft regardless of atlasMode (#2177).
+    expect(mockUpsertDraftEntityAdmin).toHaveBeenCalledTimes(1);
+    expect(mockUpsertEntityAdmin).not.toHaveBeenCalled();
+  });
+
+  it("sync_yaml: returns 404 when the entity row doesn't exist", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue(null);
+    const res = await app.fetch(adminRequest(RECONCILE_PATH, "POST", { action: "sync_yaml" }));
+    expect(res.status).toBe(404);
+    expect(mockUpsertDraftEntityAdmin).not.toHaveBeenCalled();
+  });
+
+  it("remove: hard-deletes a draft entity", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "e-1", org_id: "org-1", entity_type: "entity", name: "users",
+      yaml_content: "table: users\n",
+      connection_group_id: null, status: "draft",
+      created_at: "2026-05-16T00:00:00Z", updated_at: "2026-05-16T00:00:00Z",
+    });
+    const res = await app.fetch(adminRequest(RECONCILE_PATH, "POST", { action: "remove" }));
+    expect(res.status).toBe(200);
+    expect(mockDeleteDraftEntityAdmin).toHaveBeenCalledTimes(1);
+    expect(mockUpsertTombstoneAdmin).not.toHaveBeenCalled();
+  });
+
+  it("remove: tombstones a published entity", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "e-1", org_id: "org-1", entity_type: "entity", name: "users",
+      yaml_content: "table: users\n",
+      connection_group_id: null, status: "published",
+      created_at: "2026-05-16T00:00:00Z", updated_at: "2026-05-16T00:00:00Z",
+    });
+    const res = await app.fetch(adminRequest(RECONCILE_PATH, "POST", { action: "remove" }));
+    expect(res.status).toBe(200);
+    expect(mockUpsertTombstoneAdmin).toHaveBeenCalledTimes(1);
+    expect(mockDeleteDraftEntityAdmin).not.toHaveBeenCalled();
+  });
+
+  it("remove: returns 404 when the entity doesn't exist", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue(null);
+    const res = await app.fetch(adminRequest(RECONCILE_PATH, "POST", { action: "remove" }));
+    expect(res.status).toBe(404);
+  });
+
+  it("create_from_db: returns 404 when an entity with that name already exists", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "e-1", org_id: "org-1", entity_type: "entity", name: "users",
+      yaml_content: "table: users\n",
+      connection_group_id: null, status: "published",
+      created_at: "2026-05-16T00:00:00Z", updated_at: "2026-05-16T00:00:00Z",
+    });
+    const res = await app.fetch(adminRequest(RECONCILE_PATH, "POST", { action: "create_from_db" }));
+    expect(res.status).toBe(404);
+    expect(mockUpsertDraftEntityAdmin).not.toHaveBeenCalled();
+  });
+
+  it("create_from_db: returns 404 when no DB table matches the requested name", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue(null);
+    // Default `getDBSchemaRaw` mock returns an empty Map — no table matches.
+    const res = await app.fetch(adminRequest(RECONCILE_PATH, "POST", { action: "create_from_db" }));
+    expect(res.status).toBe(404);
+    expect(mockUpsertDraftEntityAdmin).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown action with a client error", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(
+      adminRequest(RECONCILE_PATH, "POST", { action: "wat" }),
+    );
+    // Hono's zod-openapi validator emits 4xx on schema mismatch (Hono uses
+    // 400; the OpenAPI validator middleware may surface 422). Either is a
+    // valid contract — we just need to confirm we don't 500 or 200 on a
+    // body that fails the discriminator.
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBeLessThan(500);
+  });
+});

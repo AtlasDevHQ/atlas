@@ -429,8 +429,10 @@ function UnassignedRegionShell({
             <AlertDialogTitle>Confirm region assignment</AlertDialogTitle>
             <AlertDialogDescription>
               Pin this workspace to{" "}
-              <span className="font-semibold">{selectedLabel}</span>. This is
-              permanent — all workspace data will be stored in this region.
+              <span className="font-semibold">{selectedLabel}</span>. All workspace
+              data will be stored in this region. Migrating to another region later
+              is supported but requires a coordinated cross-region migration — plan
+              this assignment to match where your team operates most.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -494,7 +496,7 @@ function AssignedRegionShell({
       description={
         isSaas
           ? `All workspace data is stored and processed in ${displayLabel}.`
-          : "Region assignment is permanent. Contact support for cross-region migration."
+          : "Cross-region migration is supported — contact support to initiate."
       }
       status={shellStatus}
       trailing={pillFor ?? <StatusPill kind="connected" label="Live" />}

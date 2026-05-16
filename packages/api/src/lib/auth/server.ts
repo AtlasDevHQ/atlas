@@ -475,63 +475,10 @@ export function resolveBootstrapAdminConfig(
 }
 
 /**
- * Send the email verification message via Atlas's email delivery layer.
- *
- * Kept thin so the Better Auth `sendVerificationEmail` callback stays
- * simple and tests can mock this single function without standing up
- * the whole provider chain.
- *
- * Delivery failures are logged but never thrown — blocking the signup
- * or signin handler on a transient SMTP outage is worse UX than letting
- * the user retry via `/send-verification-email`, and Better Auth already
- * returns the same 200 response for new and existing emails regardless
- * of whether send succeeds (OWASP enumeration protection hinges on
- * response parity, not delivery).
- *
- * @internal — exported for testing.
- */
-export async function _sendVerificationEmail(opts: { to: string; url: string }): Promise<void> {
-  // All failure paths (dynamic import rejection, provider SDK throwing,
-  // template assembly) must be caught here. The Better Auth callback
-  // fires this function as fire-and-forget (with an outer `.catch(...)`
-  // for belt-and-suspenders) for timing-attack mitigation, and a
-  // floating rejection would either print to stderr with no correlation
-  // or, on `--unhandled-rejections=strict`, terminate the process —
-  // re-introducing the enumeration oracle through a 500 side channel.
-  try {
-    const { sendEmail } = await import("@atlas/api/lib/email/delivery");
-    const result = await sendEmail({
-      to: opts.to,
-      subject: "Verify your Atlas email address",
-      html: `<!doctype html>
-<html>
-  <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; color: #222;">
-    <p>Welcome to Atlas. Click the link below to verify your email address:</p>
-    <p><a href="${encodeAttributeValue(opts.url)}" style="color:#0ea5e9;">Verify email</a></p>
-    <p style="color:#666; font-size:13px;">If you did not try to create an account, you can safely ignore this message.</p>
-    <p>— Atlas</p>
-  </body>
-</html>`,
-    });
-    if (!result.success) {
-      log.warn(
-        { to: opts.to, provider: result.provider, error: result.error },
-        "Email verification delivery did not complete — user may need to retry via /send-verification-email",
-      );
-    }
-  } catch (err) {
-    log.warn(
-      { to: opts.to, err: errorMessage(err) },
-      "Email verification dispatch crashed — signup response is still 200 to preserve enumeration protection; user may need to retry via /send-verification-email",
-    );
-  }
-}
-
-/**
  * Send a verification OTP email via Atlas's email delivery layer.
  *
- * Mirrors {@link _sendVerificationEmail}'s fire-and-forget contract: the
- * Better Auth `emailOTP` plugin invokes this with `waitUntil`-style
+ * Fire-and-forget contract: the Better Auth `emailOTP` plugin invokes
+ * this with `waitUntil`-style
  * fire-and-forget semantics, so a thrown rejection here would either
  * spam stderr with no correlation or — under
  * `--unhandled-rejections=strict` — crash the process mid-signup. Wrap
@@ -967,18 +914,17 @@ export function buildPlugins() {
     }),
   ];
 
-  // Email OTP — replaces the default magic-link verification with an
-  // 8-character one-time code. `overrideDefaultEmailVerification: true`
-  // makes the plugin's OTP send win over Better Auth's built-in
-  // `emailVerification.sendVerificationEmail` (the magic-link path),
-  // including for the `sendOnSignIn: true` re-issue flow on blocked
-  // sign-ins. `sendVerificationOnSignUp: true` triggers the OTP send
-  // automatically as part of the signup pipeline so the frontend doesn't
-  // have to fire a follow-up call. `storeOTP: "hashed"` keeps the
-  // plaintext code out of the verification table — only the hash is
-  // persisted, the user-supplied code is hashed and compared at verify
-  // time. 10-minute expiry balances "long enough for a slow inbox" with
-  // "short enough that a leaked screenshot stops being usable fast."
+  // Email OTP — the only email-verification path Atlas ships. An
+  // 8-character one-time code, 10-minute expiry. With
+  // `overrideDefaultEmailVerification: true` the plugin's `init()`
+  // installs the OTP sender as `emailVerification.sendVerificationEmail`,
+  // which is why our config above intentionally does NOT wire a
+  // sendVerificationEmail callback — adding one would win the options
+  // merge and reintroduce a magic-link path. `sendVerificationOnSignUp:
+  // true` triggers the OTP send automatically as part of the signup
+  // pipeline. `storeOTP: "hashed"` keeps the plaintext code out of the
+  // verification table — only the hash is persisted, the user-supplied
+  // code is hashed and compared at verify time.
   plugins.push(
     emailOTP({
       otpLength: 8,
@@ -1642,17 +1588,10 @@ export interface BuildAuthOptionsDeps {
    */
   testOverrides?: {
     /**
-     * Replace the verification-email dispatcher. Tests use this to
-     * exercise the outer `.catch()` fallback on the Better Auth callback
-     * without rebinding module-local references.
-     */
-    sendVerificationEmail?: typeof _sendVerificationEmail;
-    /**
-     * Replace the password-reset-email dispatcher. Same shape as
-     * `sendVerificationEmail` and the test seam exists for the same
-     * reason — pin the outer `.catch()` so a future refactor can't
-     * silently turn rejections into floating promises that crash the
-     * process under `--unhandled-rejections=strict`.
+     * Replace the password-reset-email dispatcher. Pins the outer
+     * `.catch()` so a future refactor can't silently turn rejections
+     * into floating promises that crash the process under
+     * `--unhandled-rejections=strict`.
      */
     sendPasswordResetEmail?: typeof _sendPasswordResetEmail;
   };
@@ -1675,7 +1614,6 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
   const internalDbAvailable = deps.database !== undefined;
   const requireEmailVerification = resolveRequireEmailVerification(deps.env);
   const rateLimitConfig = resolveAuthRateLimitConfig(deps.env, internalDbAvailable);
-  const sendVerification = deps.testOverrides?.sendVerificationEmail ?? _sendVerificationEmail;
   const sendReset = deps.testOverrides?.sendPasswordResetEmail ?? _sendPasswordResetEmail;
   // Frontend origin for post-verify / post-reset redirects. Without this,
   // Better Auth's redirect lands on the API host and 404s. First trusted
@@ -1742,39 +1680,19 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
       },
     }),
     emailVerification: {
-      sendVerificationEmail: async (data: { user: User; url: string; token: string }) => {
-        const { user, url } = data;
-        // Do not await. Better Auth's enumeration protection depends on
-        // the signup/signin handler returning the same 200 response in
-        // the same time window regardless of whether the email exists;
-        // awaiting SMTP would extend the attacker's timing oracle and
-        // create a DoS vector (email provider outage => signup blocked).
-        //
-        // `.catch()` is belt-and-suspenders — `_sendVerificationEmail`
-        // already wraps everything in try/catch, but an unhandled
-        // rejection from any future refactor would either spam stderr
-        // with no correlation or (with --unhandled-rejections=strict)
-        // crash the process and reintroduce the enumeration oracle as
-        // a 500-vs-200 side channel.
-        sendVerification({
-          to: user.email,
-          url: rewriteVerificationCallbackURL(url, frontendOrigin),
-        }).catch((err: unknown) => {
-          log.warn(
-            { to: user.email, err: errorMessage(err) },
-            "Verification email dispatch threw — signup response is still 200 to preserve enumeration protection",
-          );
-        });
-      },
+      // No `sendVerificationEmail` callback: the `emailOTP` plugin's
+      // `init()` overrides this with the OTP sender when
+      // `overrideDefaultEmailVerification: true` (see plugin config
+      // below). Wiring a magic-link callback here would win on options
+      // merge and reintroduce the bug where signup sent a magic link
+      // instead of an OTP code while resend correctly sent a code.
+      //
+      // `_sendVerificationEmail` is retained in this file only as a
+      // tested helper for the rate-limit smoke tests; it has no live
+      // call site now that OTP is the sole verification path.
       autoSignInAfterVerification: true,
-      // Re-issue a verification link whenever an unverified user attempts
-      // sign-in. Without this, Better Auth throws EMAIL_NOT_VERIFIED but
-      // never re-sends the email — leaving any user grandfathered from
-      // before `requireEmailVerification` flipped on (or anyone who lost
-      // their original token) permanently locked out with no self-serve
-      // recovery. The dispatch goes through the same `sendVerification`
-      // path above, so enumeration timing and rate limits apply uniformly
-      // to signup, manual resend, and this branch.
+      // Re-issue a verification code whenever an unverified user attempts
+      // sign-in. The plugin's override turns this into an OTP send.
       sendOnSignIn: true,
     },
     socialProviders: deps.socialProviders,

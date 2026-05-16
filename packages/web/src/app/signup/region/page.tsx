@@ -151,8 +151,9 @@ export default function RegionPage() {
           <div className="flex items-start gap-2 rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground">
             <ShieldCheck className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
             <p>
-              Region assignment is permanent. Pick the region closest to your team — it
-              affects metadata latency, not where your source database lives.
+              Pick the region closest to your team — it affects metadata latency, not
+              where your source database lives. Region can be migrated later via the
+              admin console (Data Residency) if your team relocates.
             </p>
           </div>
 

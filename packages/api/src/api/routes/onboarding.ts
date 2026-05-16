@@ -961,8 +961,9 @@ const assignRegionRoute = createRoute({
   summary: "Assign data residency region during signup",
   description:
     "Assigns a data residency region to the user's workspace during the signup flow. " +
-    "This must be called before connecting a database. The region cannot be changed " +
-    "after assignment.",
+    "This must be called before connecting a database. Region can be migrated later " +
+    "via the admin Data Residency surface — pick the region that matches where your " +
+    "team operates to keep cross-region migrations rare.",
   request: {
     body: {
       content: { "application/json": { schema: AssignRegionBodySchema } },

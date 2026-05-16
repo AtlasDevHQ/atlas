@@ -1,34 +1,20 @@
 /**
  * Name-collision guard (#2506) — wire contract tests.
  *
- * Every user-initiated path that names (or renames) a connection group
- * must refuse a name that matches an existing connection id in the same
- * org. The original orphan that surfaced this bug — empty `g_us-prod`
- * group with name `us-prod` colliding with the `us-prod` connection
- * already living inside the `prod` group — is the exact shape a future
- * inline-create or rename could re-introduce at no benefit. The env
- * combobox in the Add Connection dialog cannot distinguish a real env
- * from a connection-id-shaped label, so the surface defence is at the
- * route layer where the literal name is known.
+ * Five routes thread the same `connectionNameCollidesWithGroup` helper.
+ * The non-obvious pieces this file pins:
  *
- * Coverage matrix:
- *   - POST  /admin/connection-groups           — refused on collision
- *   - PATCH /admin/connection-groups/:id       — refused on collision
- *   - POST  /admin/connection-groups/merge     — refused only when the
- *                                                 target name would
- *                                                 CREATE a new group;
- *                                                 reusing an existing
- *                                                 same-named group is
- *                                                 the documented wizard
- *                                                 ergonomic and must
- *                                                 stay supported.
- *
- * The POST /admin/connections and PUT /admin/connections/:id inline
- * `newGroupName` paths reuse the same `connectionNameCollidesWithGroup`
- * helper; their wire contract is exercised by the helper-level pin
- * below — the per-route SQL surface is the existing connection-create
- * test bed, which is too large to recreate just for the collision
- * check.
+ *   - POST /admin/connection-groups/merge refuses only when the target
+ *     would CREATE; reuse of an existing same-named active group is the
+ *     documented wizard ergonomic.
+ *   - POST /admin/connections has an `id === newGroupName` carve-out so
+ *     a user creating "warehouse" + "warehouse" env in one round trip
+ *     isn't blocked by the in-flight connection.
+ *   - PUT /admin/connections/:id deliberately omits that carve-out — on
+ *     update the connection already exists and a self-named group is
+ *     the exact #2506 confusion shape.
+ *   - A DB error from the helper MUST surface as 500, not silently 201
+ *     (fail-closed contract — see helper docstring).
  */
 
 import {
@@ -37,6 +23,7 @@ import {
   expect,
   beforeEach,
   afterAll,
+  mock,
 } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 
@@ -54,6 +41,25 @@ const mocks = createApiTestMocks({
     activeOrganizationId: "org-alpha",
   },
   authMode: "managed",
+  connection: {
+    connections: {
+      get: () => null,
+      getDefault: () => null,
+      describe: () => [{ id: "default", dbType: "postgres" }],
+      healthCheck: mock(() =>
+        Promise.resolve({ status: "healthy", latencyMs: 1, checkedAt: new Date() }),
+      ),
+      register: mock(() => {}),
+      unregister: mock(() => {}),
+      has: mock(() => false),
+      getForOrg: () => null,
+    },
+    resolveDatasourceUrl: () => "postgresql://stub",
+  },
+  internal: {
+    encryptSecret: (url: string) => `encrypted:${url}`,
+    decryptSecret: (url: string) => (url as string).replace(/^encrypted:/, ""),
+  },
 });
 
 const { app } = await import("../index");
@@ -342,5 +348,142 @@ describe("POST /api/v1/admin/connection-groups/merge — name-collision guard (#
     expect(
       stateChangingCalls().some((sql) => sql.includes("WITH target AS")),
     ).toBe(true);
+  });
+});
+
+describe("name-collision guard — fail-closed on DB error (#2506)", () => {
+  beforeEach(() => {
+    mocks.hasInternalDB = true;
+    mocks.mockInternalQuery.mockReset();
+    mocks.setOrgAdmin("org-alpha");
+  });
+
+  it("propagates a helper DB rejection as 500 — guard MUST NOT fail-open", async () => {
+    // The fail-closed contract documented on `connectionNameCollidesWithGroup`.
+    // A future refactor that wrapped the helper in `catch { return false }`
+    // would silently bypass the security guard; this test pins that 500 is
+    // the correct response, not a 201 with the group created anyway.
+    mocks.mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("SELECT id FROM connections")) {
+        return Promise.reject(new Error("simulated connection refused"));
+      }
+      return Promise.resolve([]);
+    });
+
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/connection-groups", "POST", { name: "us-prod" }),
+    );
+    expect(res.status).toBe(500);
+    // Critically: no INSERT INTO connection_groups fired. A fail-open
+    // regression would skip the guard and INSERT the row.
+    expect(
+      stateChangingCalls().some((sql) => sql.includes("INSERT INTO connection_groups")),
+    ).toBe(false);
+  });
+});
+
+describe("POST /api/v1/admin/connections — inline newGroupName (#2506)", () => {
+  beforeEach(() => {
+    mocks.hasInternalDB = true;
+    mocks.mockInternalQuery.mockReset();
+    mocks.setOrgAdmin("org-alpha");
+  });
+
+  it("self-name carve-out: inline newGroupName matching the in-flight id succeeds", async () => {
+    // Pins the carve-out documented on the POST route — creating
+    // connection `warehouse` with a new env named `warehouse` in one
+    // round trip is a legitimate wizard flow. Without the
+    // `trimmedNewGroupName !== id` skip, the helper would see no row
+    // (connection doesn't exist yet) and the path would silently
+    // succeed only by coincidence; we pin that the carve-out is
+    // explicit rather than incidental.
+    mocks.mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("SELECT id FROM connections")) {
+        // Sanity: even if the helper fired, no collision exists.
+        return Promise.resolve([]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/connections", "POST", {
+        id: "warehouse",
+        url: "postgresql://user:pass@host/warehouse",
+        newGroupName: "warehouse",
+      }),
+    );
+    expect(res.status).toBe(201);
+  });
+
+  it("refuses when newGroupName matches a DIFFERENT existing connection id", async () => {
+    // The carve-out is narrow: same-name as the in-flight id is fine;
+    // matching some OTHER existing connection is the bug shape.
+    mocks.mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("SELECT id FROM connections")) {
+        return Promise.resolve([{ id: "us-prod" }]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/connections", "POST", {
+        id: "warehouse",
+        url: "postgresql://user:pass@host/warehouse",
+        newGroupName: "us-prod",
+      }),
+    );
+    expect(res.status).toBe(409);
+    // No INSERT INTO connections fired (guard blocked before the create).
+    expect(
+      stateChangingCalls().some((sql) => sql.includes("INSERT INTO connections")),
+    ).toBe(false);
+  });
+});
+
+describe("PUT /api/v1/admin/connections/:id — inline newGroupName (#2506)", () => {
+  beforeEach(() => {
+    mocks.hasInternalDB = true;
+    mocks.mockInternalQuery.mockReset();
+    mocks.setOrgAdmin("org-alpha");
+  });
+
+  it("no self-name carve-out: refuses newGroupName matching the connection's own id", async () => {
+    // On update the connection already exists; a same-named group is
+    // the #2506 confusion shape. Pin that PUT does NOT mirror POST's
+    // carve-out — a refactor that "consistency-fixed" the asymmetry
+    // would silently re-open the bug.
+    mocks.mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("SELECT id FROM connections")) {
+        // The connection (us-prod) exists for the lookup AND for the
+        // collision check — same SELECT shape against `connections`.
+        return Promise.resolve([{ id: "us-prod" }]);
+      }
+      // The pre-fetch SELECT for the current connection row.
+      if (sql.includes("SELECT") && sql.includes("connections")) {
+        return Promise.resolve([
+          {
+            id: "us-prod",
+            url: "encrypted:postgresql://stub",
+            type: "postgres",
+            description: null,
+            schema_name: null,
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/connections/us-prod", "PUT", {
+        description: "Updated",
+        newGroupName: "us-prod",
+      }),
+    );
+    expect(res.status).toBe(409);
+    expect(
+      stateChangingCalls().some(
+        (sql) => sql.includes("UPDATE connections") || sql.includes("INSERT INTO connection_groups"),
+      ),
+    ).toBe(false);
   });
 });

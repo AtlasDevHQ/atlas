@@ -2,25 +2,32 @@
 --
 -- The 0062 1:1 backfill creates `connection_groups` rows shaped
 -- `id = 'g_' || conn.id`, `name = conn.id` for every existing connection.
--- When an admin later folds those singletons into a multi-region group via
--- the merge wizard (POST /admin/connection-groups/merge), the inline cleanup
--- CTE in `MERGE_CONNECTIONS_INTO_GROUP_SQL` deletes the now-empty source
--- groups in the same statement. Two paths leave a `g_<connId>` row behind
--- with zero members:
+-- Two production code paths can re-parent the connection out of that
+-- backfill group without cleaning up the now-empty source row:
 --
---   1. The merge ran before the codex #2437 fix landed. Pre-#2437 the
---      cleanup CTE's `EXISTS` guard against `connections` could not see the
---      sibling `moved` CTE's UPDATE (data-modifying CTEs share one
---      snapshot), so it concluded the source group was still occupied and
---      skipped the DELETE. The `moved` UPDATE still landed; the source
---      group survived as a 0-member orphan.
+--   A. Merge wizard skip-and-cleared (`MERGE_CONNECTIONS_INTO_GROUP_SQL`):
+--      the inline cleanup CTE in the merge route deletes auto-backfilled
+--      source groups in the same statement, but skips any source group
+--      that anchors a row in one of the seven content reference tables
+--      (`connections`, `approval_queue`, `scheduled_tasks`,
+--      `dashboard_cards`, `semantic_entities`, `pii_column_classifications`,
+--      `conversations`). The skipped id is surfaced in
+--      `skipped_group_ids` on the wire so the wizard can show what it
+--      preserved. If that reference is later cleared (approval expired,
+--      task disabled, semantic entity archived, dashboard card removed)
+--      no path re-evaluates the now-empty source group, and it survives
+--      indefinitely.
 --
---   2. The merge fired a `NOT EXISTS` guard against one of the seven
---      content reference tables (approval_queue, scheduled_tasks,
---      dashboard_cards, semantic_entities, pii_column_classifications,
---      conversations — `connections` is path 1). That reference has since
---      been cleared (approval expired, task disabled, etc.) but the now-
---      empty source group was never re-swept.
+--   B. Member-move endpoints with no cascade cleanup
+--      (`POST /admin/connection-groups/:id/members` and the
+--      `connectionGroupId` branch of `PUT /admin/connections/:id`):
+--      both re-parent a connection's `group_id` and stop there. When
+--      the connection's prior group was the 0062 backfill row, the
+--      source row stays in `connection_groups` with zero members. The
+--      merge wizard avoids this by re-parenting via the same CTE that
+--      sweeps the source; the member-move routes are simpler one-shot
+--      UPDATEs that predate the group lifecycle work and never picked
+--      up an equivalent cleanup.
 --
 -- Symptom on prod: `/admin/connections?groupBy=environment` surfaces a
 -- ghost `us-prod` group with "No connections yet"; the same name pollutes
@@ -47,46 +54,62 @@
 -- DELETE. The `LIKE 'g\_%'` predicate prevents the migration from ever
 -- touching admin-curated groups.
 --
--- Prevention for path 1 is already in place (codex #2437 landed in 1.4.4).
--- Prevention for path 2 (a stale reference clearing without re-sweeping the
--- group) is out of scope for this slice — adding a cleanup hook to every
--- reference-table delete would couple six surfaces to the group lifecycle.
--- Acceptable: backfill-shape orphans are a one-time historical artifact,
--- not a steady-state production occurrence — new groups are user-created
--- with `g_<random>` ids that this migration's predicate ignores by design.
+-- Permanent path-B prevention (cascading cleanup into the member-move
+-- endpoints, and likewise into the merge route's `skipped_group_ids`
+-- after the reference clears) is out of scope for this slice — adding
+-- the hook to every reference-table delete plus both member-move call
+-- sites would couple eight surfaces to the group lifecycle. Tracked as
+-- a follow-up at https://github.com/AtlasDevHQ/atlas/issues/2506
+-- comment thread; this migration sweeps existing orphans and the
+-- route-layer name-collision guard prevents new ones from being
+-- intentionally created.
 --
--- The follow-up surface defence (env combobox skips empty backfill
--- orphans, name-collision guard refuses new groups whose name matches an
--- existing connection id) ships alongside this migration.
+-- The surface defence (env combobox skips empty backfill orphans,
+-- name-collision guard refuses new groups whose name matches an existing
+-- connection id) ships alongside this migration.
+--
+-- Wrapped in a DO block so `RAISE NOTICE` emits a deleted-count line into
+-- the migration runner's Railway log. Destructive migrations without an
+-- audit signal are debugging hell when prod surfaces an unexpected drop.
 
-DELETE FROM connection_groups cg
- WHERE cg.id LIKE 'g\_%' ESCAPE '\'
-   AND cg.name = SUBSTRING(cg.id FROM 3)
-   AND NOT EXISTS (
-     SELECT 1 FROM connections c
-      WHERE c.group_id = cg.id AND c.org_id = cg.org_id
-   )
-   AND NOT EXISTS (
-     SELECT 1 FROM approval_queue aq
-      WHERE aq.connection_group_id = cg.id AND aq.org_id = cg.org_id
-   )
-   AND NOT EXISTS (
-     SELECT 1 FROM scheduled_tasks st
-      WHERE st.connection_group_id = cg.id AND st.org_id = cg.org_id
-   )
-   AND NOT EXISTS (
-     SELECT 1 FROM dashboard_cards dc
-      WHERE dc.connection_group_id = cg.id
-   )
-   AND NOT EXISTS (
-     SELECT 1 FROM semantic_entities se
-      WHERE se.connection_group_id = cg.id AND se.org_id = cg.org_id
-   )
-   AND NOT EXISTS (
-     SELECT 1 FROM pii_column_classifications pc
-      WHERE pc.connection_group_id = cg.id AND pc.org_id = cg.org_id
-   )
-   AND NOT EXISTS (
-     SELECT 1 FROM conversations cv
-      WHERE cv.connection_group_id = cg.id AND cv.org_id = cg.org_id
-   );
+DO $$
+DECLARE
+  deleted_count integer;
+BEGIN
+  WITH deleted AS (
+    DELETE FROM connection_groups cg
+     WHERE cg.id LIKE 'g\_%' ESCAPE '\'
+       AND cg.name = SUBSTRING(cg.id FROM 3)
+       AND NOT EXISTS (
+         SELECT 1 FROM connections c
+          WHERE c.group_id = cg.id AND c.org_id = cg.org_id
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM approval_queue aq
+          WHERE aq.connection_group_id = cg.id AND aq.org_id = cg.org_id
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM scheduled_tasks st
+          WHERE st.connection_group_id = cg.id AND st.org_id = cg.org_id
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM dashboard_cards dc
+          WHERE dc.connection_group_id = cg.id
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM semantic_entities se
+          WHERE se.connection_group_id = cg.id AND se.org_id = cg.org_id
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM pii_column_classifications pc
+          WHERE pc.connection_group_id = cg.id AND pc.org_id = cg.org_id
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM conversations cv
+          WHERE cv.connection_group_id = cg.id AND cv.org_id = cg.org_id
+       )
+     RETURNING cg.id, cg.org_id
+  )
+  SELECT count(*) INTO deleted_count FROM deleted;
+  RAISE NOTICE '[0072] cleanup_empty_synthetic_groups: deleted % orphan backfill group(s)', deleted_count;
+END $$;

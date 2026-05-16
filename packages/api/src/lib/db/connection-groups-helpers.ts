@@ -41,35 +41,18 @@ export function generateGroupId(): string {
 }
 
 /**
- * Narrow a thrown Postgres error to its `code` + `constraint` fields
- * without leaking `any`. `pg` populates both on driver-thrown errors;
- * non-driver throws come through with neither set, and the caller falls
- * through to its generic 500 path.
- *
- * Walks `.cause` chains so a wrapped pg error (Effect `Cause.fail`,
- * `new Error(msg, { cause: pgErr })`, retry-wrapping `internalQuery`)
- * still surfaces its driver fields — without this, the moment any
- * caller wraps the query, every 23505 disambiguation in this codebase
- * silently degrades to a generic 500. Depth-bounded at 5 to defend
- * against pathological cycles.
- */
-/**
  * True iff `name` would collide with an existing connection id in this org.
- * Centralised so every group-name entry surface refuses the same shape:
- *   - POST   /admin/connection-groups
- *   - PATCH  /admin/connection-groups/:id
- *   - POST   /admin/connection-groups/merge (only when the target name is
- *            new — reuse of an existing group by name is the documented
- *            wizard ergonomic and must not surface a collision error)
- *   - POST   /admin/connections             (inline `newGroupName`)
- *   - PUT    /admin/connections/:id         (inline `newGroupName`)
+ * Centralised so every group-name entry surface refuses the same shape;
+ * see the call-site enumeration in the test file
+ * (`admin-connection-groups-name-collision.test.ts`) for the canonical
+ * coverage matrix, including the merge-route reuse carve-out and the
+ * POST `/admin/connections` self-name carve-out.
  *
  * Rationale (#2506): the 0062 1:1 backfill creates groups shaped
- * `id = 'g_' || conn.id`, `name = conn.id`. When such a group is folded
- * into a multi-region env via the merge wizard and the cleanup CTE later
- * leaves the source group behind as a zero-member orphan (the two paths
- * documented in migration 0072), the env combobox surfaces a ghost
- * environment labelled identically to a real connection id. A
+ * `id = 'g_' || conn.id`, `name = conn.id`. Two production paths
+ * (documented in migration 0072) can leave one of those rows behind
+ * with zero members, surfacing in the env combobox as a ghost
+ * environment whose label collides with a real connection id. A
  * user-initiated create that lands the same literal collision would
  * re-introduce the same confusion at no benefit — the schema-vs-display
  * vocabulary divide ("connection group" ↔ "environment") means an admin
@@ -91,6 +74,16 @@ export function generateGroupId(): string {
  *     deliberately given a connection-named group a meaningful display
  *     label.
  *
+ * Error-propagation contract: callers MUST run inside `runHandler` (or
+ * an equivalent Effect → HTTP bridge). The helper deliberately does NOT
+ * try/catch a thrown `internalQuery` rejection — a local `catch { return
+ * false }` would silently fail-open, bypassing the guard on any DB
+ * blip. Letting the throw bubble produces a 500 with `requestId` and a
+ * structured log line, which is the right answer for a soft security
+ * check (CLAUDE.md "Prefer errors over silent fallbacks"). The
+ * fail-closed contract is pinned by a dedicated test in
+ * `admin-connection-groups-name-collision.test.ts`.
+ *
  * Returns true when a collision exists. Callers map true → 409 with a
  * friendly message; false → continue.
  */
@@ -109,6 +102,19 @@ export async function connectionNameCollidesWithGroup(
   return rows.length > 0;
 }
 
+/**
+ * Narrow a thrown Postgres error to its `code` + `constraint` fields
+ * without leaking `any`. `pg` populates both on driver-thrown errors;
+ * non-driver throws come through with neither set, and the caller falls
+ * through to its generic 500 path.
+ *
+ * Walks `.cause` chains so a wrapped pg error (Effect `Cause.fail`,
+ * `new Error(msg, { cause: pgErr })`, retry-wrapping `internalQuery`)
+ * still surfaces its driver fields — without this, the moment any
+ * caller wraps the query, every 23505 disambiguation in this codebase
+ * silently degrades to a generic 500. Depth-bounded at 5 to defend
+ * against pathological cycles.
+ */
 export function pgErrorMeta(err: unknown): { code?: string; constraint?: string } {
   let cursor: unknown = err;
   for (let depth = 0; depth < 5 && cursor instanceof Error; depth++) {

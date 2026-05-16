@@ -52,14 +52,10 @@ export function isAutoBackfilledSingleton(group: {
  * True when a group is the empty residue of a merged-out backfill
  * singleton (#2506): id matches the `g_<connId>` backfill shape, name
  * still equals the bare connection id, and the group has zero
- * non-archived members. Two paths produce this shape in the wild:
- *
- *   1. A merge wizard run pre-#2437 whose cleanup CTE couldn't see the
- *      sibling `moved` UPDATE (shared snapshot) and skipped the DELETE.
- *   2. A merge whose cleanup CTE fired a `NOT EXISTS` guard against
- *      one of the seven content reference tables — the reference has
- *      since been cleared but the now-empty source group was never
- *      re-swept.
+ * non-archived members. These survive when the merge wizard's cleanup
+ * CTE was blocked by a content reference that later cleared, or when
+ * a non-cascading member-move re-parented the connection out. See
+ * migration 0072 for the full path enumeration.
  *
  * Migration 0072 sweeps existing rows; this helper hides any orphan that
  * survives until then from the env combobox (Add / Edit Connection

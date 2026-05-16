@@ -61,6 +61,7 @@ import { useDevModeNoDrafts } from "@/ui/hooks/use-dev-mode-no-drafts";
 import { DeveloperEmptyState } from "@/ui/components/admin/developer-empty-state";
 import { SemanticPublishedBanner } from "@/ui/components/admin/semantic-published-banner";
 import { DriftDrawer } from "@/ui/components/admin/drift-drawer";
+import { driftDrawerTargetFor } from "./drift-routing";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -425,7 +426,7 @@ export default function SemanticPage() {
 
   // Drift drawer (#2461): opens overlaid when a drifted entity is clicked.
   // The underlying selection still updates so closing the drawer leaves the
-  // admin on the entity's detail view. Slice 3 (#2462) adds action buttons.
+  // admin on the entity's detail view. Reconcile actions land in #2462.
   const [driftDrawerEntity, setDriftDrawerEntity] = useState<string | null>(null);
   const [driftDrawerOpen, setDriftDrawerOpen] = useState(false);
 
@@ -602,17 +603,10 @@ export default function SemanticPage() {
     // #2461: opening the drift drawer on click for drifted entities.
     // We piggy-back on the existing selection update — closing the drawer
     // returns to the regular entity detail view, no extra navigation needed.
-    if (sel?.type === "entity") {
-      const match = entities.find(
-        (e) =>
-          e.name === sel.name &&
-          e.connectionGroupId === (sel.connectionGroupId ?? null),
-      );
-      const driftState = match?.drift?.state;
-      if (driftState === "changed" || driftState === "removed" || driftState === "new") {
-        setDriftDrawerEntity(sel.name);
-        setDriftDrawerOpen(true);
-      }
+    const driftTarget = driftDrawerTargetFor(sel, entities);
+    if (driftTarget) {
+      setDriftDrawerEntity(driftTarget);
+      setDriftDrawerOpen(true);
     }
   };
 
@@ -1010,7 +1004,6 @@ export default function SemanticPage() {
       )}
       </AdminContentWrapper>
 
-      {/* Drift drawer (#2461) — opens overlaid on drifted-entity clicks. */}
       <DriftDrawer
         entityName={driftDrawerEntity}
         open={driftDrawerOpen}

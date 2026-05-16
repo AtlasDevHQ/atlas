@@ -26,22 +26,21 @@ interface DriftDrawerProps {
   onOpenChange: (open: boolean) => void;
   /**
    * Connection alias passed to `/api/v1/admin/semantic/diff`. Defaults to
-   * `default` — the only alias the semantic page currently consults
-   * (slice 4 of #2458 will widen this once the env toggle lands).
+   * `"default"`; callers thread the active env through once multi-env
+   * routing is wired (#2460).
    */
   connection?: string;
 }
 
 /**
  * Right-side drawer that shows the per-table drift payload for a single
- * entity (#2461). Slice 2/5 of the admin IA reshape arc (PRD #2458) —
- * the read-only foundation that #2462 (reconcile actions) and #2463
- * (retire schema-diff) build on.
+ * entity (#2461). Read-only foundation; #2462 adds reconcile actions and
+ * #2463 retires the standalone schema-diff page.
  *
  * Reuses the existing `/api/v1/admin/semantic/diff` endpoint and filters
  * client-side rather than extending the API: drift payloads are bounded
  * by the workspace's entity count (10s, not 1000s), so the extra rows are
- * cheap and slice 5 retires the standalone diff route anyway. Hoisting
+ * cheap and #2463 retires the standalone diff route anyway. Hoisting
  * filtering server-side here would have made #2463 a backend change too.
  */
 export function DriftDrawer({
@@ -129,15 +128,22 @@ function DriftDrawerBody({
     );
   }
 
-  // No drift but the drawer was opened — fall back to a quiet "in sync"
-  // state instead of an empty body. Belt-and-braces; the page only opens
-  // the drawer for drifted entries, but this keeps the component honest.
+  // No matching diff entry — keep the copy descriptive, not affirmative.
+  // The page only opens the drawer for drifted rows, so reaching this branch
+  // means the entities list and the /diff response disagree (stale state in
+  // another tab, a backend warning swallowing tableDiffs, etc.). Logging
+  // matches the existing dev-console signal pattern in the semantic page for
+  // the same class of disagreement.
+  console.warn(
+    `drift-drawer: opened for "${entityName}" but no matching diff entry — drift/diff disagreement?`,
+  );
   return (
     <div className="flex items-start gap-2 rounded-md border border-green-500/30 bg-green-50/30 px-3 py-3 text-xs text-green-700 dark:bg-green-950/10 dark:text-green-400">
       <CheckCircle2 className="mt-0.5 size-3.5 shrink-0" />
       <span>
-        <code className="rounded bg-muted px-1 py-0.5 font-mono">{entityName}</code> is in sync
-        with the database.
+        No drift detected for{" "}
+        <code className="rounded bg-muted px-1 py-0.5 font-mono">{entityName}</code> in the
+        current diff payload.
       </span>
     </div>
   );

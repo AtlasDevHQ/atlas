@@ -91,12 +91,9 @@ describe("DriftDrawer (#2461)", () => {
 
     // Drawer renders to a portal — query document.body, not container.
     expect(document.body.textContent).toContain("orders");
-    // Added column surfaced from the fixture.
     expect(document.body.textContent).toContain("shipped_at");
-    // Type-change row uses the YAML → DB transition.
     expect(document.body.textContent).toContain("total");
     expect(document.body.textContent).toContain("decimal");
-    // Header sentence is the static drawer description.
     expect(document.body.textContent).toContain("Schema drift between database and YAML");
   });
 
@@ -115,20 +112,34 @@ describe("DriftDrawer (#2461)", () => {
     expect(document.body.textContent).toContain("no longer exists in the database");
   });
 
-  test("falls back to in-sync notice when the entity is not in the diff", () => {
+  test("falls back to no-drift notice when the entity is not in the diff", () => {
     // Defensive: the page only opens the drawer for drifted entities, but
-    // a manual open on a clean entity must not look broken.
-    mockData = makeDiff({
-      unchangedCount: 1,
-      summary: { total: 1, new: 0, removed: 0, changed: 0, unchanged: 1 },
-    });
+    // a manual open on a clean entity must not look broken. Drawer also
+    // logs a console.warn for this case (drift/diff disagreement signal) —
+    // capture and assert it fired so a future refactor can't silently drop
+    // the warning.
+    const originalWarn = console.warn;
+    const warned: string[] = [];
+    console.warn = (...args: unknown[]) => {
+      warned.push(args.map((a) => String(a)).join(" "));
+    };
 
-    render(
-      <DriftDrawer entityName="users" open={true} onOpenChange={() => {}} />,
-      { wrapper },
-    );
+    try {
+      mockData = makeDiff({
+        unchangedCount: 1,
+        summary: { total: 1, new: 0, removed: 0, changed: 0, unchanged: 1 },
+      });
 
-    expect(document.body.textContent).toContain("is in sync with the database");
+      render(
+        <DriftDrawer entityName="users" open={true} onOpenChange={() => {}} />,
+        { wrapper },
+      );
+
+      expect(document.body.textContent).toContain("No drift detected for");
+      expect(warned.some((m) => m.includes("drift-drawer") && m.includes("users"))).toBe(true);
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 
   test("does not fetch or render body when closed", () => {

@@ -8,6 +8,7 @@ import { NotebookCell } from "./notebook-cell";
 import { NotebookTextCell } from "./notebook-text-cell";
 import { NotebookEmptyState } from "./notebook-empty-state";
 import { AskComposer } from "../ask-composer";
+import { ConnectDataPrompt } from "../connect-data-prompt";
 import { DeleteCellDialog } from "./delete-cell-dialog";
 import { ForkBranchSelector } from "./fork-branch-selector";
 import { exportToMarkdown, exportToHTML, downloadFile } from "./notebook-export";
@@ -32,6 +33,14 @@ interface NotebookShellProps {
   focusCellId?: string;
   /** When provided, enables the "Share as Report" button. Returns the share token. */
   onShareAsReport?: () => Promise<string>;
+  /** Whether the current user has admin privileges — drives the no-data CTA. */
+  isAdmin?: boolean;
+  /**
+   * True only when the datasource summary has resolved with zero tables.
+   * In that state the empty state shows a "Connect data" CTA and the
+   * composer is hidden so the agent never gets a chance to fail downstream.
+   */
+  needsDataSetup?: boolean;
   /** Starter-prompts fetch config — forwarded to the empty-state query. */
   starterPrompts: {
     apiUrl: string;
@@ -41,7 +50,14 @@ interface NotebookShellProps {
   };
 }
 
-export function NotebookShell({ notebook, focusCellId, onShareAsReport, starterPrompts }: NotebookShellProps) {
+export function NotebookShell({
+  notebook,
+  focusCellId,
+  onShareAsReport,
+  isAdmin = false,
+  needsDataSetup = false,
+  starterPrompts,
+}: NotebookShellProps) {
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const anyRunning = notebook.cells.some((c) => c.status === "running");
   const editingCellId = notebook.cells.find((c) => c.editing)?.id ?? null;
@@ -262,13 +278,17 @@ export function NotebookShell({ notebook, focusCellId, onShareAsReport, starterP
           )}
 
           {notebook.cells.length === 0 ? (
-            <NotebookEmptyState
-              apiUrl={starterPrompts.apiUrl}
-              isCrossOrigin={starterPrompts.isCrossOrigin}
-              getHeaders={starterPrompts.getHeaders}
-              enabled={starterPrompts.enabled}
-              onSelectPrompt={(text) => notebook.appendCell(text)}
-            />
+            needsDataSetup ? (
+              <ConnectDataPrompt isAdmin={isAdmin} />
+            ) : (
+              <NotebookEmptyState
+                apiUrl={starterPrompts.apiUrl}
+                isCrossOrigin={starterPrompts.isCrossOrigin}
+                getHeaders={starterPrompts.getHeaders}
+                enabled={starterPrompts.enabled}
+                onSelectPrompt={(text) => notebook.appendCell(text)}
+              />
+            )
           ) : (
             <Sortable
               value={notebook.cells}
@@ -327,22 +347,24 @@ export function NotebookShell({ notebook, focusCellId, onShareAsReport, starterP
         </div>
       </div>
 
-      <div className="mx-auto w-full max-w-5xl px-4">
-        <AskComposer
-          value={notebook.input}
-          onChange={notebook.setInput}
-          onSubmit={() => {
-            if (notebook.input.trim()) {
-              notebook.appendCell(notebook.input.trim());
-            }
-          }}
-          disabled={anyRunning}
-          placeholder="Ask a question to add a new cell…"
-          multiline
-          helperText="Enter to send · Shift+Enter for newline"
-          inputAriaLabel="New cell question"
-        />
-      </div>
+      {!(needsDataSetup && notebook.cells.length === 0) && (
+        <div className="mx-auto w-full max-w-5xl px-4">
+          <AskComposer
+            value={notebook.input}
+            onChange={notebook.setInput}
+            onSubmit={() => {
+              if (notebook.input.trim()) {
+                notebook.appendCell(notebook.input.trim());
+              }
+            }}
+            disabled={anyRunning}
+            placeholder="Ask a question to add a new cell…"
+            multiline
+            helperText="Enter to send · Shift+Enter for newline"
+            inputAriaLabel="New cell question"
+          />
+        </div>
+      )}
 
       <DeleteCellDialog
         open={pendingDeleteIndex !== null}

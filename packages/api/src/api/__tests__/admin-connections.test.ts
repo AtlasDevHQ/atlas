@@ -67,6 +67,17 @@ const mocks = createApiTestMocks({
   },
 });
 
+// `getConfig` is `null` by default in the test factory. Override here so
+// tests can flip deployMode for the #2483 SaaS-gate branch on the
+// `default` connection fallback. Default `null` preserves the original
+// self-hosted-style behavior.
+let mockConfigOverride: { deployMode?: "saas" | "self-hosted" } | null = null;
+
+mock.module("@atlas/api/lib/config", () => ({
+  getConfig: () => mockConfigOverride,
+  defineConfig: (c: unknown) => c,
+}));
+
 // --- Import app after mocks ---
 
 const { app } = await import("../index");
@@ -106,6 +117,7 @@ describe("admin connections — org scoping", () => {
     mocks.mockInternalQuery.mockReset();
     mocks.mockInternalQuery.mockResolvedValue([]);
     mockHealthCheck.mockClear();
+    mockConfigOverride = null;
     setOrgAdmin("org-alpha");
   });
 
@@ -605,6 +617,38 @@ describe("admin connections — org scoping", () => {
       const body = (await res.json()) as any;
       const ids = body.connections.map((c: { id: string }) => c.id);
       expect(ids).toContain("default");
+    });
+
+    it("self-hosted (explicit deployMode) still surfaces 'default' when org owns no connections (#2483)", async () => {
+      // Same scenario as above, but with an explicit `deployMode: "self-hosted"`
+      // config so the SaaS-gate branch is exercised on the negative side.
+      mockConfigOverride = { deployMode: "self-hosted" };
+      mocks.mockInternalQuery.mockResolvedValue([]);
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      const ids = body.connections.map((c: { id: string }) => c.id);
+      expect(ids).toEqual(["default"]);
+    });
+
+    it("SaaS suppresses the 'default' fallback for a fresh-signup workspace (#2483)", async () => {
+      // SaaS smoking gun: a freshly-signed-up workspace has zero `connections`
+      // rows. The runtime registry has `default` bound to the shared
+      // ATLAS_DATASOURCE_URL demo service. Without the SaaS gate, that demo
+      // surfaces as "your default Atlas connection" in every fresh-signup
+      // workspace — a tenant-isolation smell and a chat-routing risk.
+      mockConfigOverride = { deployMode: "saas" };
+      mocks.mockInternalQuery.mockResolvedValue([]);
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      const ids = body.connections.map((c: { id: string }) => c.id);
+      expect(ids).not.toContain("default");
+      expect(ids).toEqual([]);
     });
 
     it("suppresses 'default' once the org has its own connections", async () => {

@@ -140,7 +140,7 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
 
 ## Active
 
-- **1.4.4 — Multi-environment semantic layer** ([milestone #45](https://github.com/AtlasDevHQ/atlas/milestones/45), original 11/11 shipped — **closeout audit reopened**) — PRD #2336; closeout 8/17 shipped (#2408 / #2410 / #2411 / #2412 / #2416 / #2417 / #2418 / #2421). Semantic-entity ACROSS-group collapse (#2412) closed in PR #2434 with architecture-wins #60 — overlay-aware ambiguity, uniform 409 `groups` payload, full route plumbing. 9 closeout findings open (#2409, #2413–#2415, #2419–#2420, #2422–#2424) + 2 follow-ups (#2429, #2432). Tracker: #2407.
+- **1.4.4 — Multi-environment semantic layer** ([milestone #45](https://github.com/AtlasDevHQ/atlas/milestones/45), original 11/11 shipped — **closeout audit reopened**) — PRD #2336; closeout 11/17 shipped, 6 findings open (#2413, #2414, #2420, #2422–#2424) + 1 follow-up (#2429). Tracker: #2407.
 
 ## Planned
 

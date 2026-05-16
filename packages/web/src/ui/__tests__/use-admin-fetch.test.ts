@@ -650,6 +650,28 @@ describe("useAdminFetch", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  // Pins the AND semantics (`enabled && !!path`) against a future refactor
+  // to `?? !!path` (which would let an explicit `enabled: true` override the
+  // path check and let the empty-path bug back in). The "short-circuits"
+  // test above happens to cover this via the default-true case, but only
+  // implicitly — this one asserts it explicitly.
+  test("explicit enabled: true with empty path still short-circuits", async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ value: 42 }), { status: 200 })),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { result } = renderHook(
+      () => useAdminFetch<{ value: number }>("", { enabled: true }),
+      { wrapper },
+    );
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   test("empty path flips to a real path to fire the request", async () => {
     const fetchMock = mock(() =>
       Promise.resolve(new Response(JSON.stringify({ value: 7 }), { status: 200 })),

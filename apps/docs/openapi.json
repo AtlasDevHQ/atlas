@@ -50557,6 +50557,225 @@
         "operationId": "postAdminConnectionGroupsByIdMembers"
       }
     },
+    "/api/v1/admin/connection-groups/merge": {
+      "post": {
+        "tags": [
+          "Admin — Connection Groups"
+        ],
+        "summary": "Merge connections into one environment",
+        "description": "Atomically re-parents N source connections into one target environment, optionally pinning a primary connection and cleaning up auto-backfilled `g_<connId>` singletons left empty by the move. Reuses an existing target group when one already exists under the requested name.",
+        "responses": {
+          "200": {
+            "description": "Merge complete",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "target": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "memberCount": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "primaryConnectionId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "resolvedConnectionId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "updatedAt": {
+                          "type": "string"
+                        },
+                        "created": {
+                          "type": "boolean",
+                          "description": "True when this merge actually created the target group; false when an existing group with the same name was reused."
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "memberCount",
+                        "primaryConnectionId",
+                        "resolvedConnectionId",
+                        "createdAt",
+                        "updatedAt",
+                        "created"
+                      ]
+                    },
+                    "movedConnectionIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "deletedGroupIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Auto-backfilled `g_<connId>` singletons cleaned up by this merge. Excludes user-created and admin-renamed groups even when empty after the move."
+                    },
+                    "skippedGroupIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Auto-backfilled candidates the server declined to delete because the group still anchors admin-curated content (approval queue rows, scheduled tasks, dashboards, semantic entities, PII classifications, or conversations). Surfaced so the wizard can reconcile its preview with the actual cleanup."
+                    }
+                  },
+                  "required": [
+                    "target",
+                    "movedConnectionIds",
+                    "deletedGroupIds",
+                    "skippedGroupIds"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "One or more source connections not found in this workspace (foreign-org ids appear here too — B2B isolation)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict — the merge could not complete atomically (PK collision on the generated target id, OR a source connection's state changed between pre-validation and the merge). Caller may retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminConnectionGroupsMerge"
+      }
+    },
     "/api/v1/admin/publish": {
       "post": {
         "tags": [

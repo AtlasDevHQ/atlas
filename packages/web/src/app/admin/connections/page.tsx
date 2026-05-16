@@ -35,6 +35,7 @@ import {
 import { useDemoReadonly } from "@/ui/hooks/use-demo-readonly";
 import { DemoBadge, DraftBadge } from "@/ui/components/admin/mode-badges";
 import { DEMO_CONNECTION_ID } from "./columns";
+import { stripGroupPrefix } from "@/ui/lib/strip-group-prefix";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -756,18 +757,6 @@ function descriptionForDbType(dbType: string): string {
 
 function labelForDbType(dbType: string): string {
   return DB_TYPES.find((t) => t.value === dbType)?.label ?? dbType;
-}
-
-/**
- * Mirror of `stripGroupPrefix` in `columns.tsx` + `chat/env-picker.tsx`.
- * Defensive strip for any group name an admin renames to `g_*` —
- * migration 0062 backfills `connection_groups.id` as `g_<connId>` but
- * stores `name = <connId>` (unprefixed), so this is a no-op on default
- * data and only fires for admin-set custom names.
- * TODO(refactor): extract to a shared util — tracked in #2426.
- */
-function stripGroupPrefix(name: string): string {
-  return name.startsWith("g_") ? name.slice(2) : name;
 }
 
 /** Short human label for a connection's health.status. */

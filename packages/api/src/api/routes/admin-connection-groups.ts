@@ -17,7 +17,10 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { internalQuery } from "@atlas/api/lib/db/internal";
-import { DELETE_GROUP_AND_ARCHIVED_CONNECTIONS_SQL } from "@atlas/api/lib/db/connection-groups-sql";
+import {
+  DELETE_GROUP_AND_ARCHIVED_CONNECTIONS_SQL,
+  MERGE_CONNECTIONS_INTO_GROUP_SQL,
+} from "@atlas/api/lib/db/connection-groups-sql";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
@@ -764,6 +767,335 @@ adminConnectionGroups.openapi(assignMemberRoute, async (c) =>
       metadata: { connectionId, groupId: targetGroupId },
     });
     return c.json({ connectionId, groupId: targetGroupId }, 200);
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// POST /merge — atomic N-into-1 environment merge (#2409)
+// ---------------------------------------------------------------------------
+
+/**
+ * Pre-validation result shape from `SELECT id, org_id, group_id FROM
+ * connections WHERE id = ANY(...)`. We capture the current `group_id` so
+ * cleanup of auto-backfilled source groups can fire in the same atomic
+ * statement that re-parents the connection.
+ */
+type SourceConnectionRow = {
+  id: string;
+  org_id: string;
+  group_id: string | null;
+};
+
+type MergeResultRow = {
+  target: {
+    id: string;
+    name: string;
+    primaryConnectionId: string | null;
+    createdAt: string;
+    updatedAt: string;
+    created: boolean;
+  } | null;
+  moved_connection_ids: string[];
+  deleted_group_ids: string[];
+  /** Auto-backfilled candidates the cleanup CTE chose NOT to delete because
+   * a NOT EXISTS guard fired. Surfaced so the wizard preview can reconcile
+   * its client-side cleanup estimate with the server's decision. */
+  skipped_group_ids: string[];
+};
+
+const mergeGroupsRoute = createRoute({
+  method: "post",
+  path: "/merge",
+  tags: ["Admin — Connection Groups"],
+  summary: "Merge connections into one environment",
+  description:
+    "Atomically re-parents N source connections into one target environment, optionally pinning a primary connection and cleaning up auto-backfilled `g_<connId>` singletons left empty by the move. Reuses an existing target group when one already exists under the requested name.",
+  responses: {
+    200: {
+      description: "Merge complete",
+      content: {
+        "application/json": {
+          schema: z.object({
+            target: ConnectionGroupSchema.extend({
+              created: z.boolean().describe(
+                "True when this merge actually created the target group; false when an existing group with the same name was reused.",
+              ),
+            }),
+            movedConnectionIds: z.array(z.string()),
+            deletedGroupIds: z.array(z.string()).describe(
+              "Auto-backfilled `g_<connId>` singletons cleaned up by this merge. Excludes user-created and admin-renamed groups even when empty after the move.",
+            ),
+            skippedGroupIds: z.array(z.string()).describe(
+              "Auto-backfilled candidates the server declined to delete because the group still anchors admin-curated content (approval queue rows, scheduled tasks, dashboards, semantic entities, PII classifications, or conversations). Surfaced so the wizard can reconcile its preview with the actual cleanup.",
+            ),
+          }),
+        },
+      },
+    },
+    400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "One or more source connections not found in this workspace (foreign-org ids appear here too — B2B isolation)", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Conflict — the merge could not complete atomically (PK collision on the generated target id, OR a source connection's state changed between pre-validation and the merge). Caller may retry.", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+adminConnectionGroups.openapi(mergeGroupsRoute, async (c) =>
+  runHandler(c, "merge connection groups", async () => {
+    const { orgId, requestId } = c.get("orgContext");
+    const authResult = c.get("authResult");
+
+    // ── Parse + validate body ─────────────────────────────────────────
+    const body = await c.req.json().catch((err: unknown) => {
+      log.warn({ err: errorMessage(err), requestId }, "Failed to parse JSON body in merge groups request");
+      return null;
+    });
+    if (!body || typeof body !== "object") {
+      return c.json({ error: "invalid_request", message: "Request body is required.", requestId }, 400);
+    }
+    const { targetName, sourceConnectionIds, primaryConnectionId } = body as Record<string, unknown>;
+
+    if (typeof targetName !== "string" || !GROUP_NAME_PATTERN.test(targetName.trim())) {
+      return c.json(
+        {
+          error: "invalid_request",
+          message:
+            "targetName must start with a letter or digit and may contain letters, digits, spaces, hyphens, or underscores (max 64 chars).",
+          requestId,
+        },
+        400,
+      );
+    }
+    const trimmedTargetName = targetName.trim();
+
+    if (
+      !Array.isArray(sourceConnectionIds) ||
+      sourceConnectionIds.length === 0 ||
+      !sourceConnectionIds.every((id) => typeof id === "string" && id.length > 0)
+    ) {
+      return c.json(
+        { error: "invalid_request", message: "sourceConnectionIds must be a non-empty array of strings.", requestId },
+        400,
+      );
+    }
+    // Dedupe up front — duplicate ids in the array would still resolve to
+    // one row in the pre-validate SELECT and only confuse `movedConnectionIds`
+    // for the caller.
+    const uniqueSourceIds = Array.from(new Set(sourceConnectionIds as string[]));
+
+    if (primaryConnectionId !== undefined && primaryConnectionId !== null) {
+      if (typeof primaryConnectionId !== "string") {
+        return c.json(
+          { error: "invalid_request", message: "primaryConnectionId must be a string when provided.", requestId },
+          400,
+        );
+      }
+      if (!uniqueSourceIds.includes(primaryConnectionId)) {
+        // Refuse a primary that isn't in the source set. The composite FK
+        // would reject it at the SQL layer with 23503, but the response
+        // shape is friendlier to the wizard with a 400 + reason.
+        return c.json(
+          {
+            error: "invalid_request",
+            message: "primaryConnectionId must be one of the sourceConnectionIds.",
+            requestId,
+          },
+          400,
+        );
+      }
+    }
+
+    // Default primary: first source. The wizard surfaces a picker so the
+    // admin can override.
+    const resolvedPrimary =
+      typeof primaryConnectionId === "string" ? primaryConnectionId : uniqueSourceIds[0];
+    const overridePrimary = typeof primaryConnectionId === "string";
+
+    // ── Pre-validate sources (existence within the caller's org) ─────
+    //
+    // The composite `(id, org_id)` PK on `connections` means SaaS tenants
+    // can legitimately share ids like `default`. A SELECT WHERE id = ANY
+    // without an org filter would return rows from EVERY org, inflating
+    // `sourceRows.length` past `uniqueSourceIds.length` and triggering a
+    // bogus "Connections not found" 404 on what should be a happy-path
+    // merge (codex review #2437).
+    //
+    // Org-scoping the SELECT also closes a B2B information leak: pre-fix
+    // the route returned 403 "belongs to another org" for foreign ids,
+    // which confirms to the caller that an id exists in some OTHER
+    // tenant. Treating foreign-org ids identically to ids that don't
+    // exist anywhere (both → 404) is the standard B2B isolation answer.
+    let sourceRows: SourceConnectionRow[];
+    try {
+      sourceRows = await internalQuery<SourceConnectionRow>(
+        `SELECT id, org_id, group_id FROM connections
+          WHERE id = ANY($1::text[])
+            AND org_id = $2
+            AND status != 'archived'`,
+        [uniqueSourceIds, orgId],
+      );
+    } catch (err) {
+      log.error({ err: errorMessage(err), requestId, orgId }, "Failed to pre-validate source connections for merge");
+      return c.json({ error: "internal_error", message: "Failed to validate source connections.", requestId }, 500);
+    }
+
+    // Existence check: every requested id must come back IN THIS ORG.
+    // Ids that exist only in another org appear "missing" here — that's
+    // the intended B2B isolation behavior.
+    if (sourceRows.length !== uniqueSourceIds.length) {
+      const found = new Set(sourceRows.map((r) => r.id));
+      const missing = uniqueSourceIds.filter((id) => !found.has(id));
+      return c.json(
+        {
+          error: "not_found",
+          message: `Connections not found in this workspace: ${missing.join(", ")}.`,
+          requestId,
+        },
+        404,
+      );
+    }
+
+    // Capture the source group ids for cleanup. NULL group_ids (which
+    // shouldn't exist post-0062 backfill but are technically valid) are
+    // excluded from the cleanup array — there's nothing to clean up.
+    const sourceGroupIds = Array.from(
+      new Set(sourceRows.map((r) => r.group_id).filter((g): g is string => typeof g === "string")),
+    );
+
+    // ── Atomic merge ──────────────────────────────────────────────────
+    const newTargetId = generateGroupId();
+    let result: MergeResultRow[];
+    try {
+      result = await internalQuery<MergeResultRow>(MERGE_CONNECTIONS_INTO_GROUP_SQL, [
+        newTargetId,
+        orgId,
+        trimmedTargetName,
+        resolvedPrimary,
+        overridePrimary,
+        uniqueSourceIds,
+        sourceGroupIds,
+      ]);
+    } catch (err) {
+      const meta = pgErrorMeta(err);
+      // 23505 paths reachable from the merge CTE:
+      //   (a) PK collision on the generated `g_<random>` target id —
+      //       vanishingly rare (~64 bits of entropy) but possible.
+      //   (b) Unique-name index — should NOT fire because
+      //       `ON CONFLICT (org_id, name) DO UPDATE` absorbs name
+      //       collisions non-fatally. If it does fire, that's a sign of
+      //       schema drift (e.g. the constraint name changed and the
+      //       CTE's ON CONFLICT no longer matches).
+      // Both paths map to 409 with a generic message so the wizard
+      // can resurface the form and the admin retries (either with a
+      // different name or a retry against the same name).
+      if (meta.code === "23505") {
+        log.warn(
+          { requestId, orgId, targetName: trimmedTargetName, constraint: meta.constraint ?? null },
+          "Merge hit 23505 (likely generated-id collision; investigate if constraint=" +
+            (meta.constraint ?? "unknown") +
+            ")",
+        );
+        return c.json(
+          {
+            error: "conflict",
+            message:
+              "Could not complete the merge — please retry. If this persists, try a different environment name.",
+            requestId,
+          },
+          409,
+        );
+      }
+      log.error(
+        { err: errorMessage(err), requestId, orgId, targetName: trimmedTargetName, sourceCount: uniqueSourceIds.length },
+        "Failed to merge connection groups",
+      );
+      return c.json(
+        { error: "internal_error", message: "Failed to merge connection groups. Try again.", requestId },
+        500,
+      );
+    }
+
+    const row = result[0];
+    if (!row || !row.target) {
+      // The CTE always returns one row; an empty result means the
+      // INSERT/ON CONFLICT path is broken in a way we don't recognise.
+      log.error({ requestId, orgId }, "Merge CTE returned no target row");
+      return c.json({ error: "internal_error", message: "Merge produced no target row.", requestId }, 500);
+    }
+
+    // Atomicity claim verification: the route advertises "all sources
+    // move into the target." The CTE updates `connections WHERE id =
+    // ANY($6) AND org_id = $2`, so if a source's `org_id` or `status`
+    // changed between the pre-validate SELECT (which checks
+    // status != 'archived') and the merge CTE, the `moved` branch
+    // silently drops it. Surface that as a 409 rather than a partial-
+    // success 200 — the wizard must refresh and retry rather than
+    // claim a merge that didn't fully happen.
+    if (row.moved_connection_ids.length !== uniqueSourceIds.length) {
+      const dropped = uniqueSourceIds.filter((id) => !row.moved_connection_ids.includes(id));
+      log.warn(
+        { requestId, orgId, requested: uniqueSourceIds, moved: row.moved_connection_ids, dropped },
+        "Merge moved fewer connections than requested — likely concurrent archive or org migration",
+      );
+      return c.json(
+        {
+          error: "conflict",
+          message: `One or more source connections changed state during the merge: ${dropped.join(", ")}. Refresh and try again.`,
+          requestId,
+        },
+        409,
+      );
+    }
+
+    log.info(
+      {
+        requestId,
+        orgId,
+        targetId: row.target.id,
+        targetName: row.target.name,
+        created: row.target.created,
+        movedConnectionIds: row.moved_connection_ids,
+        deletedGroupIds: row.deleted_group_ids,
+        actorId: authResult.user?.id,
+      },
+      "Connection groups merged",
+    );
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.connection_group.merge,
+      targetType: "connection_group",
+      targetId: row.target.id,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: {
+        targetName: row.target.name,
+        created: row.target.created,
+        sourceConnectionIds: uniqueSourceIds,
+        movedConnectionIds: row.moved_connection_ids,
+        deletedGroupIds: row.deleted_group_ids,
+        skippedGroupIds: row.skipped_group_ids,
+        primaryConnectionId: row.target.primaryConnectionId,
+        primaryOverridden: overridePrimary,
+      },
+    });
+
+    return c.json(
+      {
+        target: {
+          id: row.target.id,
+          name: row.target.name,
+          memberCount: row.moved_connection_ids.length,
+          primaryConnectionId: row.target.primaryConnectionId,
+          resolvedConnectionId: row.target.primaryConnectionId,
+          createdAt: row.target.createdAt,
+          updatedAt: row.target.updatedAt,
+          created: row.target.created,
+        },
+        movedConnectionIds: row.moved_connection_ids,
+        deletedGroupIds: row.deleted_group_ids,
+        skippedGroupIds: row.skipped_group_ids ?? [],
+      },
+      200,
+    );
   }),
 );
 

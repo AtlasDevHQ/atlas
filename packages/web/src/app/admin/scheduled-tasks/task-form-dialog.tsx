@@ -41,6 +41,7 @@ import type {
   DeliveryChannel,
   ActionApprovalMode,
 } from "@/ui/lib/types";
+import { stripGroupPrefix } from "@/ui/lib/strip-group-prefix";
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -49,26 +50,6 @@ interface ConnectionGroupInfo {
   name: string;
   memberCount: number;
   resolvedConnectionId: string | null;
-}
-
-// Strip residual migration-leak prefixes from a group's display name
-// before it lands in the environment dropdown.
-//
-//   - `__global__:` is the synthetic name 0065/0068 wrote for tenant
-//     mirrors of global groups. 0070 backfills almost all of these to
-//     the source group's real name, but rows whose target name collides
-//     with an existing tenant group are left as-is to keep
-//     UNIQUE (org_id, name) intact. This branch is unique to this
-//     dropdown — the synthetic name does not surface in env-picker or
-//     the connections table.
-//   - `g_` is the 0062 1:1-backfill id-as-name shape and the same strip
-//     lives in `env-picker.tsx` and `admin/connections/columns.tsx`.
-//
-// Consolidation across the three call sites is tracked in #2432.
-function stripGroupPrefix(name: string): string {
-  if (name.startsWith("__global__:")) return name.slice("__global__:".length);
-  if (name.startsWith("g_")) return name.slice(2);
-  return name;
 }
 
 // Form state (flat, before mapping to API shape)

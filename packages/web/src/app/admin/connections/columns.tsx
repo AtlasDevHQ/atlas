@@ -8,6 +8,7 @@ import { HealthBadge } from "@/ui/components/admin/health-badge";
 import { DemoBadge, DraftBadge } from "@/ui/components/admin/mode-badges";
 import { Fingerprint, Database, FileText, Activity, Clock, Layers } from "lucide-react";
 import type { ConnectionHealth, ConnectionInfo } from "@/ui/lib/types";
+import { stripGroupPrefix } from "@/ui/lib/strip-group-prefix";
 
 /** Reserved connection id for the onboarding demo dataset. */
 export const DEMO_CONNECTION_ID = "__demo__";
@@ -18,18 +19,6 @@ function mapHealthStatus(
   if (!status) return "unknown";
   if (status === "unhealthy") return "down";
   return status;
-}
-
-/**
- * Mirror of `stripGroupPrefix` in `chat/env-picker.tsx`. Defensive strip
- * for any group name an admin renames to `g_*` — migration 0062 backfills
- * `connection_groups.id` as `g_<connId>` but stores `name = <connId>`
- * (unprefixed), so the strip is a no-op on default data and only fires
- * if a custom name starts with `g_`.
- * TODO(refactor): extract to a shared util — tracked in #2426.
- */
-function stripGroupPrefix(name: string): string {
-  return name.startsWith("g_") ? name.slice(2) : name;
 }
 
 export function getConnectionColumns(): ColumnDef<ConnectionInfo>[] {

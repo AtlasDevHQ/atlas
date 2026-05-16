@@ -122,6 +122,14 @@ export const ADMIN_ACTIONS = {
     rename: "connection_group.rename",
     delete: "connection_group.delete",
     assignMember: "connection_group.assign_member",
+    /**
+     * Atomic merge of N source connections into one target environment
+     * (#2409). The action's `targetId` is the resulting target group id;
+     * `metadata` carries `{ sourceConnectionIds, deletedGroupIds,
+     * primaryConnectionId, created }` so the audit row reconstructs the
+     * full state change without a second query.
+     */
+    merge: "connection_group.merge",
   },
   user: {
     invite: "user.invite",

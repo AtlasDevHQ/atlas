@@ -598,7 +598,7 @@ export function TaskFormDialog({
                   group). Add one before scheduling a task.
                   {" "}
                   <Link
-                    href="/admin/connections"
+                    href="/admin/connections?groupBy=environment"
                     className="font-medium underline underline-offset-2"
                   >
                     Go to Environments

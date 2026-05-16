@@ -34,8 +34,11 @@ export const navGroups: NavGroup[] = [
       { href: "/admin/semantic", label: "Semantic Layer" },
       { href: "/admin/semantic/improve", label: "Improve Layer" },
       { href: "/admin/schema-diff", label: "Schema Diff" },
+      // Connections covers both raw connections and the environment
+      // groupings via a `?groupBy=type|environment` toggle (PRD #2458
+      // slice 4). The old `/admin/connections/groups` URL still works as
+      // a server-side redirect for bookmarked deep links.
       { href: "/admin/connections", label: "Connections" },
-      { href: "/admin/connections/groups", label: "Environments" },
       { href: "/admin/cache", label: "Cache" },
     ],
   },

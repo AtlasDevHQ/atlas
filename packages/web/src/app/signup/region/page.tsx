@@ -49,7 +49,7 @@ export default function RegionPage() {
     const base = getApiBase();
     fetch(`${base}/api/v1/onboarding/regions`, { credentials: getCredentials() })
       .then((res) => {
-        if (!res.ok) throw new Error(`Regions returned ${res.status}`);
+        if (!res.ok) throw new Error(`Regions returned ${res.status} ${res.statusText}`);
         return res.json();
       })
       .then((raw) => RegionsResponseSchema.parse(raw))
@@ -100,7 +100,7 @@ export default function RegionPage() {
       }
 
       if (!res.ok) {
-        setError((data.message as string) ?? "Failed to assign region");
+        setError(typeof data.message === "string" ? data.message : "Failed to assign region");
         return;
       }
 

@@ -220,6 +220,78 @@ export const MigrationLive: Layer.Layer<Migration, never, InternalDB> = Layer.ef
 );
 
 // ══════════════════════════════════════════════════════════════════════
+// ██  SaaS Trial Backfill Layer
+// ══════════════════════════════════════════════════════════════════════
+
+export interface BackfillSaasTrialShape {
+  /** Number of organization rows promoted from 'free' to 'trial' this boot. */
+  readonly updatedCount: number;
+}
+
+export class BackfillSaasTrial extends Context.Tag("BackfillSaasTrial")<
+  BackfillSaasTrial,
+  BackfillSaasTrialShape
+>() {}
+
+/**
+ * One-time idempotent backfill that promotes existing SaaS workspaces
+ * stuck on `plan_tier='free'` onto `'trial'` with `trial_ends_at = NOW()
+ * + 14d`. Pairs with the signup-time `assignSaasTrial` hook (#2465)
+ * which handles new orgs; this layer retires the legacy rows.
+ *
+ * Self-hosted is a no-op — the underlying function gates on
+ * `deployMode === 'saas'`. Idempotent: the `trial_ends_at IS NULL`
+ * clause makes subsequent boots find zero candidates.
+ *
+ * Depends on Migration so the `organization` table is guaranteed to
+ * exist before the UPDATE; depends on InternalDB to keep the pool
+ * ready. Non-fatal: errors logged but never fail the Layer.
+ */
+export const BackfillSaasTrialLive: Layer.Layer<
+  BackfillSaasTrial,
+  never,
+  InternalDB | Migration
+> = Layer.effect(
+  BackfillSaasTrial,
+  Effect.gen(function* () {
+    const db = yield* InternalDB;
+    const migration = yield* Migration;
+    if (!db.available || !migration.migrated) {
+      // Match MigrationLive's "logged-reason" pattern so an operator
+      // debugging "why didn't my SaaS region backfill?" can correlate
+      // without grepping for absences.
+      log.info(
+        { available: db.available, migrated: migration.migrated },
+        "SaaS trial backfill skipped — upstream gate (InternalDB or Migration) not satisfied",
+      );
+      return { updatedCount: 0 } satisfies BackfillSaasTrialShape;
+    }
+
+    const result = yield* Effect.tryPromise({
+      try: async () => {
+        const { backfillSaasTrial } = await import(
+          "@atlas/api/lib/billing/backfill-saas-trial"
+        );
+        return await backfillSaasTrial();
+      },
+      // Preserve the original Error (stack trace included) so pino's
+      // `err` serializer reports the throw site, not this catch site.
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(
+      Effect.catchAll((err) => {
+        // Only reachable if the dynamic import itself rejects (e.g.
+        // bundle artefact missing) — `backfillSaasTrial` catches its
+        // own errors and never throws.
+        log.error({ err }, "SaaS trial backfill threw");
+        return Effect.succeed({ updatedCount: 0 } satisfies BackfillSaasTrialShape);
+      }),
+    );
+
+    return { updatedCount: result.updatedCount } satisfies BackfillSaasTrialShape;
+  }),
+);
+
+// ══════════════════════════════════════════════════════════════════════
 // ██  Semantic Sync Layer
 // ══════════════════════════════════════════════════════════════════════
 
@@ -937,7 +1009,7 @@ export const MigrationGuardLive: Layer.Layer<never, MigrationsRequiredError, Con
  * Connection and plugin shutdown is handled imperatively in server.ts.
  */
 export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
-  Telemetry | Config | InternalDB | Migration | SemanticSync | Settings | Scheduler,
+  Telemetry | Config | InternalDB | Migration | BackfillSaasTrial | SemanticSync | Settings | Scheduler,
   Error
 > {
   const configLayer = Layer.succeed(Config, { config });
@@ -945,6 +1017,14 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
 
   // MigrationLive depends on InternalDB — provide it
   const migrationLayer = MigrationLive.pipe(Layer.provide(internalDBLayer));
+
+  // BackfillSaasTrialLive depends on Migration (so the `organization`
+  // table is guaranteed to exist) and InternalDB. Independent peer of
+  // the other layers — Effect's mergeAll doesn't order independent
+  // siblings, so the only real ordering is the Migration dependency.
+  const backfillSaasTrialLayer = BackfillSaasTrialLive.pipe(
+    Layer.provide(Layer.merge(internalDBLayer, migrationLayer)),
+  );
 
   // Independent layers (no Effect-level deps)
   const semanticSyncLayer = SemanticSyncLive;
@@ -984,6 +1064,7 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     configLayer,
     internalDBLayer,
     migrationLayer,
+    backfillSaasTrialLayer,
     semanticSyncLayer,
     settingsLayer,
     schedulerLayer,

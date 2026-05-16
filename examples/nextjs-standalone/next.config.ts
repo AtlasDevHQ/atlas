@@ -101,10 +101,10 @@ const nextConfig: NextConfig = {
       {
         // App shell HTML (issue #2488): force revalidation so a new deploy
         // invalidates the bundle on the next navigation. The negative lookahead
-        // excludes `/_next/static/*` (handled below) and `/api/*` (owned by the
-        // Hono API — widget loader caches for a day, SSE streams set their own
-        // `no-cache, no-transform`). Path-to-regexp negative lookahead syntax;
-        // see Next.js headers() docs.
+        // excludes `/_next/static/*` (handled below) and `/api/*` (the Hono API
+        // owns its own Cache-Control on each route). Path-to-regexp lookahead
+        // anchors at position 0, so this only excludes paths *beginning with*
+        // `_next/static` or `api/` — not paths that merely contain them.
         source: "/((?!_next/static|api/).*)",
         headers: [
           {

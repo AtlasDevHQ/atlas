@@ -136,10 +136,10 @@ describe("admin mutation error passthrough", () => {
     await waitFor(() => {
       expect(utils.container.textContent).toContain("Two-factor required");
     });
-    // Regression guard for #2486 — the bug was that the generic 403 path
-    // rendered "You need the admin role to access this page." behind the
-    // MFA dialog on /admin/model-config. The MFA-required branch must
-    // take precedence over the role-denied copy.
+    // Regression guard (#2486): on a 403 with `code:"mfa_enrollment_required"`,
+    // the MFA-required branch must take precedence over the generic
+    // role-denied copy ("You need the admin role to access this page.") —
+    // same FetchError shape, different user-facing message.
     expect(utils.container.textContent).not.toContain("admin role");
     expect(utils.container.textContent).not.toContain("Access denied");
     expect(utils.container.textContent).not.toContain("HTTP 403");

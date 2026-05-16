@@ -345,8 +345,11 @@ describe("GET /api/v1/admin/me/password-status", () => {
 
   // #2486 — primary acceptance: admin without MFA enrolled must surface
   // `mfaRequired:true` so the admin layout can block the entire admin tree.
-  // The route MUST NOT 403 — the carve-out in admin-mfa-required.ts:38–45
-  // depends on the layout being able to call password-status pre-enrollment.
+  // The route MUST NOT 403 — the "parent admin router" carve-out (item #2
+  // in the doc block at the top of `admin-mfa-required.ts`) depends on the
+  // layout being able to call password-status pre-enrollment. A future
+  // contributor mounting `mfaRequired` on the parent admin router would
+  // flip this assertion from 200 to 403 — fail-loud regression guard.
   it("returns mfaRequired:true for admin without TOTP or passkey", async () => {
     mockInternalQuery.mockResolvedValue([{ password_change_required: false }]);
     mockAuthenticateRequest.mockResolvedValue({
@@ -415,6 +418,23 @@ describe("GET /api/v1/admin/me/password-status", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as PasswordStatusBody;
     expect(body.mfaRequired).toBe(false);
+  });
+
+  // #2486 — wire-shape lock: every 200 response MUST emit exactly these
+  // three fields. The four `c.json(...)` sites (auth-not-managed,
+  // no-internal-db, user-not-found, happy-path) all need to stay in
+  // lockstep — if a future refactor drops `enrollmentUrl` from one branch,
+  // the client falls back to `DEFAULT_ENROLLMENT_URL` silently. This
+  // assertion (paired with the per-path `mfaRequired` / `enrollmentUrl`
+  // checks above) makes the contract drift fail loudly here instead.
+  it("locks the 200-body wire shape — exactly three fields, no leakage", async () => {
+    mockInternalQuery.mockResolvedValue([{ password_change_required: false }]);
+    const res = await app.fetch(req("/api/v1/admin/me/password-status"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(Object.keys(body).toSorted()).toEqual(
+      ["enrollmentUrl", "mfaRequired", "passwordChangeRequired"].toSorted(),
+    );
   });
 
   it("returns 500 on DB error (security fix: never silently bypass)", async () => {

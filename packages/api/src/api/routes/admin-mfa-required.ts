@@ -105,6 +105,11 @@ function isMfaEnrolled(c: Context<AuthEnv>): boolean {
   return isMfaEnrolledFromClaims(claims);
 }
 
+// Strict-boolean / strict-number narrowing is load-bearing security: a string
+// "true" or numeric 1 must NOT count as enrolled. Both the middleware and the
+// `shouldRequireMfaForAuthResult` helper depend on this single source of truth
+// so the two paths can't drift. See defensive coverage in
+// `admin-mfa-required.test.ts` (string-"true" + bogus-passkeyCount matrix).
 function isMfaEnrolledFromClaims(claims: Record<string, unknown> | undefined): boolean {
   if (!claims) return false;
   if (claims.twoFactorEnabled === true) return true;

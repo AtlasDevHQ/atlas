@@ -288,7 +288,26 @@ describe("AdminLayout", () => {
 
   test("renders enrollment page normally pre-MFA (exempt route)", async () => {
     mockPathname = "/admin/account-security";
-    mockMfaRequired200Fetch();
+    // Spy on fetch so we can assert the password-status round-trip actually
+    // resolved as mfa-required — without this, the test could pass for the
+    // wrong reason (e.g. a future "skip the fetch on exempt routes"
+    // optimization would silently pass without ever exercising the
+    // exempt-path branch). The assertion below proves we reached the
+    // `mfa-required` discriminant AND the layout chose not to render the
+    // gate because the pathname is exempt.
+    const fetchSpy = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            passwordChangeRequired: false,
+            mfaRequired: true,
+            enrollmentUrl: "/admin/account-security",
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
     mockSession = { data: { user: { email: "admin@test.com", role: "admin" } } };
     const { queryByTestId, queryByText } = renderLayout();
     await waitFor(() => {
@@ -296,6 +315,47 @@ describe("AdminLayout", () => {
       expect(queryByText("Admin page content")).not.toBeNull();
     });
     expect(queryByTestId("mfa-required-gate")).toBeNull();
+    // Prove the password-status fetch was consumed (no silent skip).
+    expect(fetchSpy).toHaveBeenCalled();
+    const calledWith = (fetchSpy.mock.calls as unknown[][])[0]?.[0];
+    expect(String(calledWith)).toContain("/api/v1/admin/me/password-status");
+  });
+
+  // #2486 — concurrent-load race regression guard. When the session
+  // resolves BEFORE the password-status fetch, the prior loading guard
+  // skipped the LoadingState (because `!session.data?.user` was false) and
+  // briefly rendered the page's children before the gate could fire. With
+  // the fix, `adminCheck === "pending"` always renders LoadingState so the
+  // children never flash pre-gate.
+  test("does NOT flash children while password-status is in-flight", async () => {
+    // Hold the fetch open so adminCheck stays "pending" for the assertion.
+    let resolveFetch!: (res: Response) => void;
+    const pendingFetch = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    globalThis.fetch = mock(() => pendingFetch) as unknown as typeof fetch;
+    mockSession = { data: { user: { email: "admin@test.com", role: "admin" } } };
+    const { container, queryByText } = renderLayout();
+
+    // Session is resolved but password-status is still pending — must
+    // render the LoadingState, NOT children, NOT the gate.
+    await waitFor(() => {
+      expect(container.textContent).toContain("Checking access");
+    });
+    expect(queryByText("Admin page content")).toBeNull();
+
+    // Cleanup — resolve the held fetch so the test doesn't leak a pending
+    // promise into the next test's QueryClient.
+    resolveFetch(
+      new Response(
+        JSON.stringify({
+          passwordChangeRequired: false,
+          mfaRequired: false,
+          enrollmentUrl: "/admin/account-security",
+        }),
+        { status: 200 },
+      ),
+    );
   });
 
   test("gate placeholder links to enrollment URL from the server", async () => {
@@ -313,7 +373,16 @@ describe("AdminLayout", () => {
   test("shows password change dialog when required", async () => {
     mockSession = { data: { user: { email: "admin@test.com", role: "admin" } } };
     globalThis.fetch = mock(() =>
-      Promise.resolve(new Response(JSON.stringify({ passwordChangeRequired: true }), { status: 200 })),
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            passwordChangeRequired: true,
+            mfaRequired: false,
+            enrollmentUrl: "/admin/account-security",
+          }),
+          { status: 200 },
+        ),
+      ),
     ) as unknown as typeof fetch;
     renderLayout();
     await waitFor(() => {

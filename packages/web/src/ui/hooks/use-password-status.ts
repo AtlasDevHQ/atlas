@@ -27,6 +27,19 @@ interface MfaErrorBody {
   enrollmentUrl?: string;
 }
 
+/**
+ * Hand-typed raw shape of the `/me/password-status` 200 body. Every field
+ * is optional here even though the server's OpenAPI schema declares them
+ * required, because:
+ *
+ * 1. The web is a pure HTTP client (no `@atlas/api` import), so the type
+ *    can't derive from the Zod schema and must be defensive against
+ *    deploy-version skew (newer web vs. older API mid-deploy).
+ * 2. Strict narrowing below (`mfaRequired === true`, `typeof` checks) lets
+ *    us treat a missing field as a contract regression and throw rather
+ *    than silently falling open. See `mfaRequired` handling at the bottom
+ *    of the queryFn.
+ */
 interface PasswordStatusBody {
   passwordChangeRequired?: boolean;
   mfaRequired?: boolean;
@@ -92,11 +105,25 @@ export function usePasswordStatus(enabled: boolean) {
       }
 
       const data: PasswordStatusBody = await res.json();
+      // #2486 — surface a missing `mfaRequired` field as an error rather
+      // than silently treating it as `allowed`. Server-side `mfaRequired`
+      // middleware still enforces the gate at the API boundary, so a
+      // contract regression here doesn't open a hole — but the
+      // layout-level gate this PR ships would disappear, which is a
+      // user-facing security regression worth failing loud on.
+      if (typeof data.mfaRequired !== "boolean") {
+        console.warn(
+          "password-status response missing required `mfaRequired` field — likely server/web version skew",
+        );
+        throw new Error(
+          "Server returned an unexpected response from /me/password-status. This is likely a version mismatch — contact your administrator or try again later.",
+        );
+      }
       // MFA takes precedence over passwordChangeRequired — an unenrolled
       // admin must complete enrollment before any other admin action, so
       // surface the gate signal first and defer the password-change check
       // until the next fetch after enrollment.
-      if (data.mfaRequired === true) {
+      if (data.mfaRequired) {
         return {
           kind: "mfa-required",
           enrollmentUrl: data.enrollmentUrl ?? DEFAULT_ENROLLMENT_URL,

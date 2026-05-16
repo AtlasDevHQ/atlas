@@ -27,15 +27,19 @@ import { usePasswordStatus } from "@/ui/hooks/use-password-status";
 
 /**
  * Routes that must render normally even when the admin is not yet enrolled
- * in MFA. The enrollment page itself is the only carve-out — if we blocked
+ * in MFA. The enrollment page is the only carve-out today — if we blocked
  * it, the admin would have nowhere to complete enrollment and would be
  * permanently locked out of the console.
  *
  * #2486 — keep this list minimal. Any new "safe pre-MFA" route is a
  * conscious decision: pre-enroll, admin/owner/platform_admin sessions
  * shouldn't see workspace-scoped data even if the page is read-only.
+ *
+ * Declared `as const` so the readonly tuple type makes accidental
+ * `.push("/admin/...")` from neighboring code a compile error rather than
+ * a runtime mutation that bypasses the policy comment.
  */
-const MFA_GATE_EXEMPT_PREFIXES = ["/admin/account-security"];
+const MFA_GATE_EXEMPT_PREFIXES = ["/admin/account-security"] as const;
 
 function isMfaGateExempt(pathname: string | null): boolean {
   if (!pathname) return false;
@@ -67,23 +71,48 @@ function AdminLayoutInner({ children }: { children: ReactNode }) {
     }
   }, [data, trigger]);
 
-  // Derive admin check state from the discriminated result.
+  // Derive admin check state from the discriminated result. The inner
+  // switch on `data.kind` is exhaustive (`never` check below) so a future
+  // arm added to `PasswordStatusResult` triggers a compile error instead
+  // of silently bucketing into "allowed" — which would silently open the
+  // gate (#2486 type-safety guard).
   let adminCheck: "pending" | "allowed" | "denied" | "mfa-required";
   if (!session.data?.user || isPending) {
     adminCheck = "pending";
   } else if (isError || !data) {
     adminCheck = "denied";
-  } else if (data.kind === "denied") {
-    adminCheck = "denied";
-  } else if (data.kind === "mfa-required") {
-    adminCheck = "mfa-required";
   } else {
-    adminCheck = "allowed";
+    switch (data.kind) {
+      case "denied":
+        adminCheck = "denied";
+        break;
+      case "mfa-required":
+        adminCheck = "mfa-required";
+        break;
+      case "allowed":
+        adminCheck = "allowed";
+        break;
+      default: {
+        const _exhaustive: never = data;
+        // Conservative runtime fallback if a future arm slips past the
+        // type check (e.g. dist drift on a published consumer of
+        // `PasswordStatusResult`): treat unknown as denied so we never
+        // render admin content for an unrecognized state.
+        void _exhaustive;
+        adminCheck = "denied";
+      }
+    }
   }
 
-  // Loading session — only show loading on hard navigation (no cached session).
-  // On client-side nav, session.data persists so we skip the flash.
-  if (!session.data?.user && (session.isPending || adminCheck === "pending")) {
+  // Loading state. Two cases:
+  //   1. Session is still resolving on hard load — show LoadingState so
+  //      we don't flash anything before we know who the user is.
+  //   2. Session resolved but password-status is still pending — also show
+  //      LoadingState so the gate-all promise (#2486) isn't briefly broken
+  //      by children rendering before the MFA signal arrives. TanStack
+  //      `isPending` is true only on the first fetch (no cached data); on
+  //      client-side nav the cache is hydrated and we skip the flash.
+  if (adminCheck === "pending") {
     return (
       <main id="main" tabIndex={-1} className="flex h-full items-center justify-center">
         <LoadingState message="Checking access..." />
@@ -168,10 +197,12 @@ function AdminLayoutInner({ children }: { children: ReactNode }) {
 
 /**
  * In-tree gate shown when an unenrolled admin lands on a /admin/* route
- * that isn't the enrollment page itself. The MFA enrollment dialog opens
- * on top (triggered by the useEffect in AdminLayoutInner); this card is
- * what backs it so a dismissed dialog doesn't reveal page content the
- * admin shouldn't see pre-enrollment.
+ * that isn't the enrollment page itself. This card replaces page content
+ * entirely so a dismissed dialog doesn't reveal admin data the user
+ * shouldn't see pre-enrollment. The MFA enrollment dialog opens on top
+ * (triggered by the useEffect in AdminLayoutInner) — its "Set up second
+ * factor" CTA mirrors the link below, so the user has two paths to
+ * enrollment even if the dialog fails to mount.
  */
 function MfaRequiredGate({ enrollmentUrl }: { enrollmentUrl: string }) {
   return (

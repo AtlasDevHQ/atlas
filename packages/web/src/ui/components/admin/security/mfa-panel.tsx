@@ -12,6 +12,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { authClient } from "@/lib/auth/client";
 import { getPasskeyClient, type Passkey } from "@/lib/auth/passkey-client";
 import { BackupCodesStatus } from "@/ui/components/admin/security/backup-codes-status";
@@ -40,6 +41,18 @@ export interface MfaPanelProps {
 
 export function MfaPanel({ reauthRedirectTo }: MfaPanelProps) {
   const session = authClient.useSession();
+  const queryClient = useQueryClient();
+
+  // #2486 — after enrollment, invalidate the layout's MFA-gate signal so a
+  // navigation away from /admin/account-security doesn't re-fire the gate
+  // from a stale `mfa-required` cache entry. Better Auth's session refetch
+  // updates the `twoFactorEnabled` / `passkeyCount` claims; this
+  // invalidation makes the next `usePasswordStatus` read consume them.
+  const invalidateMfaGateSignal = useCallback(() => {
+    void queryClient.invalidateQueries({
+      queryKey: ["admin", "me", "password-status"],
+    });
+  }, [queryClient]);
 
   // Better Auth's session reactivity is the source of truth for
   // `twoFactorEnabled`. The cast goes from the plugin-erased session shape
@@ -93,6 +106,7 @@ export function MfaPanel({ reauthRedirectTo }: MfaPanelProps) {
     // twoFactor.enable / disable; this hook gives downstream pages a
     // chance to refetch if they cache the flag.
     session.refetch?.();
+    invalidateMfaGateSignal();
   }
 
   function handlePasskeyChange() {
@@ -100,6 +114,7 @@ export function MfaPanel({ reauthRedirectTo }: MfaPanelProps) {
     // Session claims include `passkeyCount` — refetch so the MFA gate
     // sees the new count without a hard reload.
     session.refetch?.();
+    invalidateMfaGateSignal();
   }
 
   return (

@@ -247,6 +247,18 @@ export default function LoginPage() {
         setError(parseSignInError({ error: res.error, attemptedEmail: email }));
         return;
       }
+      // Force a session fetch before navigating so AuthGuard sees the
+      // just-established session on the next route; otherwise the in-memory
+      // store can still hold its pre-signin `null` snapshot and bounce us
+      // back to /login (#2487). The 2FA branch returns
+      // `twoFactorRedirect: true` (no session yet) — getSession is still safe
+      // there since it just returns null.
+      await authClient.getSession().catch((err: unknown) => {
+        console.debug(
+          "[login] getSession after signin failed:",
+          err instanceof Error ? err.message : String(err),
+        );
+      });
       router.push(getPostSignInRoute(res.data));
     } catch (err) {
       console.debug(

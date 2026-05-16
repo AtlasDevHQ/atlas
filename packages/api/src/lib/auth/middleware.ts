@@ -33,6 +33,7 @@ const windows = new Map<string, number[]>();
 
 let lastWarnedRpmValue: string | undefined;
 let lastWarnedChatRpmValue: string | undefined;
+let lastWarnedAdminRpmValue: string | undefined;
 
 function getRpmLimit(): number {
   const raw = getSetting("ATLAS_RATE_LIMIT_RPM");
@@ -58,8 +59,15 @@ function getRpmLimit(): number {
  * `max(5, RPM/4)` from the default. The carve-out keeps a 25-step LLM
  * call from depleting the same budget that serves trivial reads (F-74).
  *
+ * `admin` reads `ATLAS_RATE_LIMIT_RPM_ADMIN` when set, otherwise derives
+ * `max(60, RPM)` from the default — interactive admin forms (Add /
+ * Edit / Test Connection, etc.) burst easily past a low base RPM during
+ * a single dogfood session (#2485). Admin requests bucket separately so
+ * a sequence of DELETE + Test + Add doesn't deplete the same budget that
+ * serves chat / cheap reads.
+ *
  * Returning 0 means "disabled" (matching the existing semantics on the
- * default bucket); when the global limit is disabled the chat bucket is
+ * default bucket); when the global limit is disabled all sub-buckets are
  * also disabled regardless of override.
  */
 function getRpmLimitForBucket(bucket: RateLimitBucket): number {
@@ -67,28 +75,59 @@ function getRpmLimitForBucket(bucket: RateLimitBucket): number {
   if (bucket === "default") return baseLimit;
   if (baseLimit === 0) return 0;
 
-  const raw = getSetting("ATLAS_RATE_LIMIT_RPM_CHAT");
-  if (raw === undefined || raw === "") {
-    // Default: cap at 1/4 of the global RPM, with a floor of 5/min so a
-    // very low ATLAS_RATE_LIMIT_RPM doesn't push the chat ceiling to 0.
-    return Math.max(5, Math.floor(baseLimit / 4));
-  }
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) {
-    if (raw !== lastWarnedChatRpmValue) {
-      log.warn(
-        { value: raw },
-        "Invalid ATLAS_RATE_LIMIT_RPM_CHAT; falling back to derived default max(5, RPM/4)",
-      );
-      lastWarnedChatRpmValue = raw;
+  if (bucket === "chat") {
+    const raw = getSetting("ATLAS_RATE_LIMIT_RPM_CHAT");
+    if (raw === undefined || raw === "") {
+      // Default: cap at 1/4 of the global RPM, with a floor of 5/min so a
+      // very low ATLAS_RATE_LIMIT_RPM doesn't push the chat ceiling to 0.
+      return Math.max(5, Math.floor(baseLimit / 4));
     }
-    return Math.max(5, Math.floor(baseLimit / 4));
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) {
+      if (raw !== lastWarnedChatRpmValue) {
+        log.warn(
+          { value: raw },
+          "Invalid ATLAS_RATE_LIMIT_RPM_CHAT; falling back to derived default max(5, RPM/4)",
+        );
+        lastWarnedChatRpmValue = raw;
+      }
+      return Math.max(5, Math.floor(baseLimit / 4));
+    }
+    return Math.floor(n);
   }
-  return Math.floor(n);
+
+  if (bucket === "admin") {
+    const raw = getSetting("ATLAS_RATE_LIMIT_RPM_ADMIN");
+    if (raw === undefined || raw === "") {
+      // Default: at least 60/min — one request per second — so interactive
+      // admin forms aren't throttled at a base RPM tuned for public traffic.
+      return Math.max(60, baseLimit);
+    }
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) {
+      if (raw !== lastWarnedAdminRpmValue) {
+        log.warn(
+          { value: raw },
+          "Invalid ATLAS_RATE_LIMIT_RPM_ADMIN; falling back to derived default max(60, RPM)",
+        );
+        lastWarnedAdminRpmValue = raw;
+      }
+      return Math.max(60, baseLimit);
+    }
+    return Math.floor(n);
+  }
+
+  // Exhaustiveness gate — adding a fourth bucket to `RateLimitBucket`
+  // without adding an arm here is a TS error. Without it the new bucket
+  // would silently fall through to whatever the last branch happened to
+  // return (the admin path used to be a comment-only fall-through; this
+  // closes that door).
+  const _exhaustive: never = bucket;
+  throw new Error(`Unhandled rate-limit bucket: ${String(_exhaustive)}`);
 }
 
 /** Bucket categories for `checkRateLimit`. */
-export type RateLimitBucket = "default" | "chat";
+export type RateLimitBucket = "default" | "chat" | "admin";
 
 // `\x00` is illegal in user ids, IPs, and the "anon" fallback used by
 // chat.ts — so the chat-bucket prefix can never collide with a
@@ -97,6 +136,7 @@ export type RateLimitBucket = "default" | "chat";
 const BUCKET_PREFIX: Record<RateLimitBucket, string> = {
   default: "",
   chat: "\x00chat:",
+  admin: "\x00admin:",
 };
 
 /**
@@ -127,7 +167,7 @@ export function getClientIP(req: Request): string | null {
  * `{ allowed: false, retryAfterMs }` when the caller should back off.
  * Always allows when ATLAS_RATE_LIMIT_RPM is unset or "0".
  *
- * The optional `bucket` parameter selects between two independent
+ * The optional `bucket` parameter selects between three independent
  * sliding windows keyed on the same caller identity (user id or IP):
  *
  *   - `"default"` (omitted) — the original cheap-read bucket. Ceiling
@@ -136,6 +176,10 @@ export function getClientIP(req: Request): string | null {
  *     `ATLAS_RATE_LIMIT_RPM_CHAT`, defaulting to `max(5, RPM/4)`. A 25-step
  *     chat run debiting the chat bucket no longer drains the cheap-read
  *     allowance for the same caller.
+ *   - `"admin"` — the interactive admin-form carve-out (#2485). Ceiling
+ *     comes from `ATLAS_RATE_LIMIT_RPM_ADMIN`, defaulting to
+ *     `max(60, RPM)`. A burst of DELETE + Test + Add Connection no longer
+ *     depletes the cheap-read budget shared with chat.
  *
  * Note: this still limits API *requests*, not agent steps. Per-conversation
  * step accounting (F-77) is enforced separately on the chat handler.
@@ -181,6 +225,7 @@ export function resetRateLimits(): void {
   windows.clear();
   lastWarnedRpmValue = undefined;
   lastWarnedChatRpmValue = undefined;
+  lastWarnedAdminRpmValue = undefined;
 }
 
 /**

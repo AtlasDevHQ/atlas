@@ -67,7 +67,8 @@ import {
 } from "lucide-react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError } from "@/ui/lib/fetch-error";
+import { formatDialogError } from "./format-dialog-error";
+import type { FetchError } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   FormDialog,
@@ -232,6 +233,15 @@ function ConnectionFormDialog({
   const isEdit = !!editId;
   const [showUrl, setShowUrl] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  // Captures the most recent failed-submit error as an authoritative
+  // fallback to `saveMutation.error`. If the user closes mid-flight and
+  // re-opens the dialog before the request settles, `handleOpenChange`
+  // calls `saveMutation.reset()` (bumping the hook's generation) and the
+  // late catch in `use-admin-mutation.ts` skips its `setError` write —
+  // which would otherwise leave the dialog open with no banner. Reading
+  // the discriminant from the `mutate()` return value is independent of
+  // that generation gate, so the banner still renders.
+  const [submitError, setSubmitError] = useState<FetchError | null>(null);
 
   const testMutation = useAdminMutation<{ status: string; latencyMs?: number; message?: string }>({
     path: "/api/v1/admin/connections/test",
@@ -277,6 +287,7 @@ function ConnectionFormDialog({
       setTestResult(null);
       testMutation.reset();
       saveMutation.reset();
+      setSubmitError(null);
     }
     onOpenChange(nextOpen);
   }
@@ -299,10 +310,8 @@ function ConnectionFormDialog({
       body.schema = values.schema || undefined;
     }
 
-    // Map env state → mutually-exclusive body fields. `__none__` on
-    // Create is the default no-op; on Edit it means "move me back to
-    // auto-singleton" so the server reattaches to `g_<id>`. `__create__`
-    // sends `newGroupName`. Any other value is an existing env id.
+    // __none__ asymmetry: no-op on Create (server picks auto-singleton),
+    // explicit null on Edit (server reattaches to g_<id>).
     if (values.envSelection === ENV_SENTINEL_CREATE) {
       body.newGroupName = values.newGroupName.trim();
     } else if (values.envSelection === ENV_SENTINEL_NONE) {
@@ -311,12 +320,17 @@ function ConnectionFormDialog({
       body.connectionGroupId = values.envSelection;
     }
 
-    await saveMutation.mutate({
-      path,
-      method,
-      body,
-      onSuccess: () => onOpenChange(false),
-    });
+    // Gate close-on-success on `result.ok` so a non-2xx leaves the
+    // dialog open with the error inline (#2485). Capture `result.error`
+    // into local state so the banner survives the close-then-reopen
+    // race in use-admin-mutation.
+    setSubmitError(null);
+    const result = await saveMutation.mutate({ path, method, body });
+    if (result.ok) {
+      onOpenChange(false);
+    } else {
+      setSubmitError(result.error);
+    }
   }
 
   async function handleTest(url: string, schemaVal: string) {
@@ -357,7 +371,16 @@ function ConnectionFormDialog({
       onSubmit={handleSubmit}
       submitLabel={isEdit ? "Save Changes" : "Add Connection"}
       saving={saveMutation.saving}
-      serverError={saveMutation.error ? friendlyError(saveMutation.error) : null}
+      serverError={
+        // Prefer the hook-level slot (covers concurrent retries cleanly)
+        // and fall back to the locally-captured discriminant for the
+        // close-then-reopen race documented on `submitError`.
+        saveMutation.error
+          ? formatDialogError(saveMutation.error)
+          : submitError
+            ? formatDialogError(submitError)
+            : null
+      }
       className="sm:max-w-md"
       extraFooter={(form) => (
         <Button

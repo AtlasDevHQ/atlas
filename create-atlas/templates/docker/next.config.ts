@@ -88,6 +88,35 @@ const nextConfig: NextConfig = {
           },
         ],
       },
+      {
+        // App shell HTML (issue #2488): force revalidation so a new deploy
+        // invalidates the bundle on the next navigation. The negative lookahead
+        // excludes `/_next/static/*` (handled below) and `/api/*` (the Hono API
+        // owns its own Cache-Control on each route). Path-to-regexp lookahead
+        // anchors at position 0, so this only excludes paths *beginning with*
+        // `_next/static` or `api/` — not paths that merely contain them.
+        source: "/((?!_next/static|api/).*)",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "no-cache, must-revalidate",
+          },
+        ],
+      },
+      {
+        // Hashed asset URLs (`/_next/static/chunks/foo-<hash>.js`) are
+        // content-addressed and safe to cache forever. Next.js sets this by
+        // default for files it serves directly, but declaring it explicitly
+        // here keeps the policy stable regardless of how the standalone server
+        // is wrapped (Railway, Docker, reverse proxies).
+        source: "/_next/static/:path*",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "public, max-age=31536000, immutable",
+          },
+        ],
+      },
     ];
   },
   // SECURITY-HEADERS-END

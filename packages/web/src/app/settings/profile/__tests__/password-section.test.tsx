@@ -159,7 +159,11 @@ function mockFetch(opts: {
         return new Response("upstream down", { status: 500 });
       }
       return new Response(
-        JSON.stringify({ passwordChangeRequired: false }),
+        JSON.stringify({
+          passwordChangeRequired: false,
+          mfaRequired: false,
+          enrollmentUrl: "/admin/account-security",
+        }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
     }

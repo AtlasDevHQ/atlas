@@ -247,7 +247,19 @@ export default function LoginPage() {
         setError(parseSignInError({ error: res.error, attemptedEmail: email }));
         return;
       }
-      router.push(getPostSignInRoute(res.data));
+      const next = getPostSignInRoute(res.data);
+      // #2487: hydrate the Better Auth session store before navigating to a
+      // guarded route. Skip on the 2FA branch — no session exists yet and
+      // /login/two-factor doesn't gate on one.
+      if (next === "/") {
+        await authClient.getSession().catch((err: unknown) => {
+          console.warn(
+            "[login] getSession after signin failed:",
+            err instanceof Error ? err.message : String(err),
+          );
+        });
+      }
+      router.push(next);
     } catch (err) {
       console.debug(
         "Sign in failed:",

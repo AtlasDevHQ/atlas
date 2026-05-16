@@ -5,9 +5,17 @@ import { useAtlasConfig } from "@/ui/context";
 
 /**
  * Discriminated result so consumers can distinguish a "not admin" 403 from
- * an "MFA enrollment required" 403. The `mfa-required` branch is defensive
- * — the password-status endpoint is not currently behind `mfaRequired`,
- * but classifying the typed body keeps AdminLayout correct if that changes.
+ * an "MFA enrollment required" signal.
+ *
+ * `mfa-required` arrives via TWO paths:
+ *   1. A 200 response with `{ mfaRequired: true, enrollmentUrl }` — the
+ *      primary signal for #2486. The password-status route is the layout's
+ *      pre-gate fetch and deliberately stays unblocked by `mfaRequired`
+ *      middleware so the layout can read this field without being 403'd
+ *      itself. MFA takes precedence over `passwordChangeRequired` — the
+ *      user must complete enrollment before any other admin action.
+ *   2. A 403 with `{ error: "mfa_enrollment_required", enrollmentUrl }` —
+ *      defensive fallback if the carve-out is ever removed.
  */
 export type PasswordStatusResult =
   | { kind: "allowed"; passwordChangeRequired: boolean }
@@ -18,6 +26,27 @@ interface MfaErrorBody {
   error?: string;
   enrollmentUrl?: string;
 }
+
+/**
+ * Hand-typed raw shape of the `/me/password-status` 200 body. Every field
+ * is optional here even though the server's OpenAPI schema declares them
+ * required, because:
+ *
+ * 1. The web is a pure HTTP client (no `@atlas/api` import), so the type
+ *    can't derive from the Zod schema and must be defensive against
+ *    deploy-version skew (newer web vs. older API mid-deploy).
+ * 2. Strict narrowing below (`mfaRequired === true`, `typeof` checks) lets
+ *    us treat a missing field as a contract regression and throw rather
+ *    than silently falling open. See `mfaRequired` handling at the bottom
+ *    of the queryFn.
+ */
+interface PasswordStatusBody {
+  passwordChangeRequired?: boolean;
+  mfaRequired?: boolean;
+  enrollmentUrl?: string;
+}
+
+const DEFAULT_ENROLLMENT_URL = "/admin/account-security";
 
 /**
  * Checks admin access and password-change status via the password-status endpoint.
@@ -63,7 +92,7 @@ export function usePasswordStatus(enabled: boolean) {
         if (body.error === "mfa_enrollment_required") {
           return {
             kind: "mfa-required",
-            enrollmentUrl: body.enrollmentUrl ?? "/admin/account-security",
+            enrollmentUrl: body.enrollmentUrl ?? DEFAULT_ENROLLMENT_URL,
           };
         }
         return { kind: "denied" };
@@ -75,7 +104,31 @@ export function usePasswordStatus(enabled: boolean) {
         throw new Error(`Password status check: HTTP ${res.status}`);
       }
 
-      const data: { passwordChangeRequired?: boolean } = await res.json();
+      const data: PasswordStatusBody = await res.json();
+      // #2486 — surface a missing `mfaRequired` field as an error rather
+      // than silently treating it as `allowed`. Server-side `mfaRequired`
+      // middleware still enforces the gate at the API boundary, so a
+      // contract regression here doesn't open a hole — but the
+      // layout-level gate this PR ships would disappear, which is a
+      // user-facing security regression worth failing loud on.
+      if (typeof data.mfaRequired !== "boolean") {
+        console.warn(
+          "password-status response missing required `mfaRequired` field — likely server/web version skew",
+        );
+        throw new Error(
+          "Server returned an unexpected response from /me/password-status. This is likely a version mismatch — contact your administrator or try again later.",
+        );
+      }
+      // MFA takes precedence over passwordChangeRequired — an unenrolled
+      // admin must complete enrollment before any other admin action, so
+      // surface the gate signal first and defer the password-change check
+      // until the next fetch after enrollment.
+      if (data.mfaRequired) {
+        return {
+          kind: "mfa-required",
+          enrollmentUrl: data.enrollmentUrl ?? DEFAULT_ENROLLMENT_URL,
+        };
+      }
       return {
         kind: "allowed",
         passwordChangeRequired: !!data.passwordChangeRequired,

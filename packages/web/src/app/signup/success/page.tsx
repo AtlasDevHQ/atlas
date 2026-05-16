@@ -1,6 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { authClient } from "@/lib/auth/client";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -51,6 +52,21 @@ const STARTER_PROMPTS = [
 export default function SuccessPage() {
   const router = useRouter();
 
+  // #2487: hydrate the Better Auth session store before navigating to a
+  // guarded route. Without this, AuthGuard can read the pre-signup `null`
+  // snapshot and bounce the user back to /login.
+  async function openAtlas(destination: string) {
+    try {
+      await authClient.getSession();
+    } catch (err) {
+      console.warn(
+        "[signup/success] getSession before navigate failed:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    router.push(destination);
+  }
+
   return (
     <SignupShell step="done" width="wide">
       <Card>
@@ -74,7 +90,7 @@ export default function SuccessPage() {
                 <li key={prompt}>
                   <button
                     type="button"
-                    onClick={() => router.push(`/?prompt=${encodeURIComponent(prompt)}`)}
+                    onClick={() => openAtlas(`/?prompt=${encodeURIComponent(prompt)}`)}
                     className="group flex w-full items-center justify-between gap-3 rounded-md border bg-card px-3 py-2.5 text-left text-sm transition-colors hover:border-primary/40 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <span>{prompt}</span>
@@ -85,7 +101,7 @@ export default function SuccessPage() {
             </ul>
           </section>
 
-          <Button size="lg" className="w-full" onClick={() => router.push("/")}>
+          <Button size="lg" className="w-full" onClick={() => openAtlas("/")}>
             Open Atlas
           </Button>
 

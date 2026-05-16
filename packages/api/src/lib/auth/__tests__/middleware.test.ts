@@ -772,6 +772,145 @@ describe("checkRateLimit() — chat bucket (F-74)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// #2485 — admin bucket isolation
+// ---------------------------------------------------------------------------
+
+describe("checkRateLimit() — admin bucket (#2485)", () => {
+  const origRpm = process.env.ATLAS_RATE_LIMIT_RPM;
+  const origAdminRpm = process.env.ATLAS_RATE_LIMIT_RPM_ADMIN;
+
+  beforeEach(() => {
+    resetRateLimits();
+    process.env.ATLAS_RATE_LIMIT_RPM = "30";
+  });
+
+  afterEach(() => {
+    if (origRpm !== undefined) process.env.ATLAS_RATE_LIMIT_RPM = origRpm;
+    else delete process.env.ATLAS_RATE_LIMIT_RPM;
+    if (origAdminRpm !== undefined) process.env.ATLAS_RATE_LIMIT_RPM_ADMIN = origAdminRpm;
+    else delete process.env.ATLAS_RATE_LIMIT_RPM_ADMIN;
+    resetRateLimits();
+  });
+
+  it("derives default admin ceiling as max(60, RPM) when override unset", () => {
+    delete process.env.ATLAS_RATE_LIMIT_RPM_ADMIN;
+    // RPM=30 — admin ceiling lifts to 60 so an interactive admin form
+    // (DELETE + Test + Add in quick succession) doesn't burn through a
+    // budget tuned for cheap public reads.
+    process.env.ATLAS_RATE_LIMIT_RPM = "30";
+    resetRateLimits();
+
+    for (let i = 0; i < 60; i++) {
+      expect(checkRateLimit("u", { bucket: "admin" }).allowed).toBe(true);
+    }
+    expect(checkRateLimit("u", { bucket: "admin" }).allowed).toBe(false);
+  });
+
+  it("admin ceiling tracks RPM when RPM > 60", () => {
+    delete process.env.ATLAS_RATE_LIMIT_RPM_ADMIN;
+    process.env.ATLAS_RATE_LIMIT_RPM = "120";
+    resetRateLimits();
+
+    for (let i = 0; i < 120; i++) {
+      expect(checkRateLimit("u", { bucket: "admin" }).allowed).toBe(true);
+    }
+    expect(checkRateLimit("u", { bucket: "admin" }).allowed).toBe(false);
+  });
+
+  it("ATLAS_RATE_LIMIT_RPM_ADMIN override wins over the derived default", () => {
+    process.env.ATLAS_RATE_LIMIT_RPM = "30";
+    process.env.ATLAS_RATE_LIMIT_RPM_ADMIN = "3";
+    resetRateLimits();
+
+    expect(checkRateLimit("u", { bucket: "admin" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "admin" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "admin" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "admin" }).allowed).toBe(false);
+  });
+
+  it("disables admin bucket when ATLAS_RATE_LIMIT_RPM=0", () => {
+    process.env.ATLAS_RATE_LIMIT_RPM = "0";
+    process.env.ATLAS_RATE_LIMIT_RPM_ADMIN = "5";
+    resetRateLimits();
+
+    // When the global limit is off the admin bucket inherits "off" too —
+    // matches the chat-bucket semantics so self-hosted deployments don't
+    // need to also clear ATLAS_RATE_LIMIT_RPM_ADMIN to fully opt out.
+    for (let i = 0; i < 50; i++) {
+      expect(checkRateLimit("u", { bucket: "admin" }).allowed).toBe(true);
+    }
+  });
+
+  it("invalid ATLAS_RATE_LIMIT_RPM_ADMIN falls back to derived default", () => {
+    process.env.ATLAS_RATE_LIMIT_RPM = "30";
+    process.env.ATLAS_RATE_LIMIT_RPM_ADMIN = "abc";
+    resetRateLimits();
+
+    // Falls back to max(60, RPM) = 60.
+    for (let i = 0; i < 60; i++) {
+      expect(checkRateLimit("u", { bucket: "admin" }).allowed).toBe(true);
+    }
+    expect(checkRateLimit("u", { bucket: "admin" }).allowed).toBe(false);
+  });
+
+  // The whole point of #2485 — admin requests must not deplete the
+  // default bucket (and vice versa). Without isolation a dogfood session
+  // of admin clicks throttles the same caller's cheap reads / chat.
+  it("admin bucket exhaustion does not lock out the default bucket for the same key", () => {
+    process.env.ATLAS_RATE_LIMIT_RPM = "20";
+    process.env.ATLAS_RATE_LIMIT_RPM_ADMIN = "2";
+    resetRateLimits();
+
+    // Burn the admin ceiling.
+    expect(checkRateLimit("u", { bucket: "admin" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "admin" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "admin" }).allowed).toBe(false);
+
+    // Default bucket on the same key still has its full allowance.
+    for (let i = 0; i < 20; i++) {
+      expect(checkRateLimit("u").allowed).toBe(true);
+    }
+    expect(checkRateLimit("u").allowed).toBe(false);
+  });
+
+  it("default bucket exhaustion does not lock out the admin bucket for the same key", () => {
+    process.env.ATLAS_RATE_LIMIT_RPM = "2";
+    process.env.ATLAS_RATE_LIMIT_RPM_ADMIN = "5";
+    resetRateLimits();
+
+    // Burn the default ceiling.
+    expect(checkRateLimit("u").allowed).toBe(true);
+    expect(checkRateLimit("u").allowed).toBe(true);
+    expect(checkRateLimit("u").allowed).toBe(false);
+
+    // Admin bucket is unaffected — an admin can still complete the form
+    // even if their cheap-read budget has been spent elsewhere.
+    for (let i = 0; i < 5; i++) {
+      expect(checkRateLimit("u", { bucket: "admin" }).allowed).toBe(true);
+    }
+    expect(checkRateLimit("u", { bucket: "admin" }).allowed).toBe(false);
+  });
+
+  it("admin and chat buckets are independent", () => {
+    process.env.ATLAS_RATE_LIMIT_RPM = "20";
+    process.env.ATLAS_RATE_LIMIT_RPM_ADMIN = "3";
+    process.env.ATLAS_RATE_LIMIT_RPM_CHAT = "2";
+    resetRateLimits();
+
+    // Burn admin
+    expect(checkRateLimit("u", { bucket: "admin" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "admin" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "admin" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "admin" }).allowed).toBe(false);
+
+    // Chat still has its full allowance.
+    expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "chat" }).allowed).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // rateLimitCleanupTick
 // ---------------------------------------------------------------------------
 

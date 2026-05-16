@@ -119,6 +119,16 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     envVar: "ATLAS_RATE_LIMIT_RPM_CHAT",
     scope: "workspace",
   },
+  {
+    key: "ATLAS_RATE_LIMIT_RPM_ADMIN",
+    section: "Rate Limiting",
+    label: "Admin Rate Limit (RPM)",
+    description:
+      "Max admin requests per minute per user (defaults to max(60, RPM) so a burst of DELETE + Test + Add Connection during an interactive admin session does not throttle on a low base RPM tuned for public traffic)",
+    type: "number",
+    envVar: "ATLAS_RATE_LIMIT_RPM_ADMIN",
+    scope: "workspace",
+  },
 
   // Security
   {

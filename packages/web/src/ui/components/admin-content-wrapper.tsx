@@ -3,7 +3,11 @@
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { Search } from "lucide-react";
-import { EnterpriseUpsell, FeatureGate } from "@/ui/components/admin/feature-disabled";
+import {
+  EnterpriseUpsell,
+  FeatureGate,
+  MfaRequiredPlaceholder,
+} from "@/ui/components/admin/feature-disabled";
 import type { FeatureName } from "@/ui/components/admin/feature-registry";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
@@ -21,6 +25,18 @@ import { friendlyError, type FetchError } from "@/ui/hooks/use-admin-fetch";
  */
 function isEnterpriseRequired(error: FetchError): boolean {
   return error.code === "enterprise_required";
+}
+
+/**
+ * Detect a `mfaRequired` 403 surfaced from the admin-mfa-required
+ * middleware. Same code-only match as enterprise above so a future 403
+ * with a different cause whose message happens to mention "two-factor"
+ * doesn't get misrouted. The accompanying MFA enrollment dialog is
+ * opened by `useAdminFetch` independently of which placeholder we
+ * render here (#2486).
+ */
+function isMfaRequired(error: FetchError): boolean {
+  return error.code === "mfa_enrollment_required";
 }
 
 export interface AdminContentWrapperProps {
@@ -60,6 +76,14 @@ export function AdminContentWrapper({
     // enterprise plan" rather than a generic "Access denied" or error banner.
     if (isEnterpriseRequired(error)) {
       return <EnterpriseUpsell feature={feature} message={error.message} />;
+    }
+    // #2486 — MFA-required 403s used to render the misleading
+    // "You need the admin role" copy from the generic 403 path because
+    // FeatureGate doesn't distinguish role-403 from mfa-403. Route them
+    // to a neutral placeholder; the layout-level full-screen gate
+    // overlays this on every /admin/* route except the enrollment page.
+    if (isMfaRequired(error)) {
+      return <MfaRequiredPlaceholder feature={feature} />;
     }
     if (error.status && [401, 403, 404, 503].includes(error.status)) {
       return <FeatureGate status={error.status as 401 | 403 | 404 | 503} feature={feature} />;

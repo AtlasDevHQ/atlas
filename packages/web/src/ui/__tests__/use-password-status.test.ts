@@ -61,7 +61,11 @@ describe("usePasswordStatus discriminated result", () => {
   });
 
   test('200 → kind: "allowed" with passwordChangeRequired', async () => {
-    globalThis.fetch = mockResp(200, { passwordChangeRequired: true });
+    globalThis.fetch = mockResp(200, {
+      passwordChangeRequired: true,
+      mfaRequired: false,
+      enrollmentUrl: "/admin/account-security",
+    });
 
     const { result } = renderHook(() => usePasswordStatus(true), { wrapper });
     await waitFor(() => expect(result.current.isPending).toBe(false));
@@ -116,6 +120,104 @@ describe("usePasswordStatus discriminated result", () => {
     expect(result.current.data).toEqual({
       kind: "mfa-required",
       enrollmentUrl: "/admin/account-security",
+    });
+  });
+
+  // #2486 — the primary path. 200 + mfaRequired:true must produce the same
+  // `mfa-required` discriminant as the 403 fallback, so the layout's
+  // `data.kind === "mfa-required"` branch fires from either source.
+  test('200 mfaRequired:true → kind: "mfa-required" with enrollmentUrl', async () => {
+    globalThis.fetch = mockResp(200, {
+      passwordChangeRequired: false,
+      mfaRequired: true,
+      enrollmentUrl: "/admin/account-security",
+    });
+
+    const { result } = renderHook(() => usePasswordStatus(true), { wrapper });
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+
+    expect(result.current.data).toEqual({
+      kind: "mfa-required",
+      enrollmentUrl: "/admin/account-security",
+    });
+  });
+
+  test("200 mfaRequired:true takes precedence over passwordChangeRequired", async () => {
+    // An unenrolled admin who ALSO has a password change pending must hit
+    // the MFA gate first; the change-password dialog comes later, after
+    // enrollment unblocks the rest of the admin tree.
+    globalThis.fetch = mockResp(200, {
+      passwordChangeRequired: true,
+      mfaRequired: true,
+      enrollmentUrl: "/admin/account-security",
+    });
+
+    const { result } = renderHook(() => usePasswordStatus(true), { wrapper });
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+
+    expect(result.current.data).toEqual({
+      kind: "mfa-required",
+      enrollmentUrl: "/admin/account-security",
+    });
+  });
+
+  test("200 mfaRequired:true without enrollmentUrl → uses default URL", async () => {
+    globalThis.fetch = mockResp(200, {
+      passwordChangeRequired: false,
+      mfaRequired: true,
+    });
+
+    const { result } = renderHook(() => usePasswordStatus(true), { wrapper });
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+
+    expect(result.current.data).toEqual({
+      kind: "mfa-required",
+      enrollmentUrl: "/admin/account-security",
+    });
+  });
+
+  // #2486 — strict typeof rejection. If a future server build drops the
+  // `mfaRequired` field from the 200 body, the hook MUST throw instead of
+  // silently classifying as `allowed` — otherwise the layout-level gate
+  // would silently disappear (server-side middleware still enforces, so
+  // it's not a security hole, but the user-facing gate this PR ships
+  // would regress invisibly). Pair with the wire-shape lock on the API
+  // side that asserts the field is always emitted.
+  test("200 missing mfaRequired field → throws (contract regression)", async () => {
+    // Hook's TanStack `retry: 1` retries once before surfacing isError.
+    // Silence the expected console.warn so it doesn't pollute test output.
+    const originalWarn = console.warn;
+    console.warn = mock(() => {}) as typeof console.warn;
+    try {
+      globalThis.fetch = mockResp(200, {
+        passwordChangeRequired: false,
+        // mfaRequired intentionally omitted
+        enrollmentUrl: "/admin/account-security",
+      });
+
+      const { result } = renderHook(() => usePasswordStatus(true), { wrapper });
+      await waitFor(() => expect(result.current.isError).toBe(true), { timeout: 5000 });
+
+      expect(result.current.data).toBeUndefined();
+      expect(result.current.error?.message ?? "").toContain("unexpected response");
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  test('200 mfaRequired:false → kind: "allowed" (gate stays closed)', async () => {
+    globalThis.fetch = mockResp(200, {
+      passwordChangeRequired: false,
+      mfaRequired: false,
+      enrollmentUrl: "/admin/account-security",
+    });
+
+    const { result } = renderHook(() => usePasswordStatus(true), { wrapper });
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+
+    expect(result.current.data).toEqual({
+      kind: "allowed",
+      passwordChangeRequired: false,
     });
   });
 

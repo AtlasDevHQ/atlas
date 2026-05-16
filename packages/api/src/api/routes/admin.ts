@@ -95,6 +95,7 @@ import { adminPublish } from "./admin-publish";
 import { adminPublishPreview } from "./admin-publish-preview";
 import { adminArchive, adminRestore } from "./admin-archive";
 import { registerSemanticEditorRoutes } from "./admin-semantic";
+import { ENROLLMENT_URL as MFA_ENROLLMENT_URL, shouldRequireMfaForAuthResult } from "./admin-mfa-required";
 import { ErrorSchema, AuthErrorSchema, parsePagination, OrgRoleSchema, ORG_ROLE_ERROR_MESSAGE, SCIMManagedResponse } from "./shared-schemas";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { evaluateSCIMGuardAsync } from "@atlas/api/lib/auth/scim-provenance";
@@ -947,11 +948,31 @@ const getPasswordStatusRoute = createRoute({
   path: "/me/password-status",
   tags: ["Admin — Password"],
   summary: "Check password status",
-  description: "Checks if the current user must change their password. Requires authentication but not admin role.",
+  description:
+    "Checks if the current user must change their password and whether the admin MFA gate " +
+    "should block the admin tree. Requires authentication but not admin role. The `mfaRequired` " +
+    "field is the layout-level signal for #2486 — this route deliberately does NOT 403 on " +
+    "unenrolled admins so the admin layout can read the signal without being blocked by the " +
+    "`mfaRequired` middleware (which would defeat the carve-out documented in admin-mfa-required.ts).",
   responses: {
     200: {
       description: "Password status",
-      content: { "application/json": { schema: z.object({ passwordChangeRequired: z.boolean() }) } },
+      content: {
+        "application/json": {
+          schema: z.object({
+            passwordChangeRequired: z.boolean(),
+            // #2486 — true when this is a managed-mode admin/owner/platform_admin
+            // session with no second factor enrolled. The admin layout reads this
+            // to render a full-screen gate before any child page renders, so the
+            // gate fires consistently on every /admin/* route regardless of which
+            // backend endpoints the page happens to call.
+            mfaRequired: z.boolean(),
+            // Surfaced so clients don't hard-code the enrollment path. Always
+            // present so the wire shape stays stable regardless of `mfaRequired`.
+            enrollmentUrl: z.string(),
+          }),
+        },
+      },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — SSO enforcement active", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -1422,9 +1443,16 @@ admin.openapi(getEntityRoute, async (c) => {
   const connectionGroupId =
     rawGroup === undefined ? undefined : rawGroup === "" ? null : rawGroup;
 
+  const atlasMode = getAtlasMode(c);
+  const mode = atlasMode === "developer" ? "developer" : "published";
+
   let result: Awaited<ReturnType<typeof getAdminEntity>>;
   try {
-    result = await getAdminEntity({ name, orgId, requestId, connectionGroupId });
+    // `mode` mirrors the list handler at admin.ts:1326 — developer-mode
+    // admins see drafts overlaying published, published-mode (the default)
+    // sees only the published row. Aligns admin detail with admin list and
+    // with the public route's mode gate (#2481).
+    result = await getAdminEntity({ name, orgId, requestId, connectionGroupId, mode });
   } catch (err) {
     if (err instanceof AmbiguousEntityError) {
       return c.json(
@@ -2026,12 +2054,26 @@ admin.openapi(getPasswordStatusRoute, async (c) => {
     const code = authErrorCode(authResult.error);
     return c.json({ error: code, message: authResult.error, requestId }, authResult.status);
   }
+  // #2486 — surface the MFA gate signal so the admin layout can block the
+  // entire admin tree on unenrolled admins, rather than depending on each
+  // page's incidental fetch landing on a `mfaRequired`-gated endpoint.
+  // Computed from the same `AuthResult` the middleware uses; non-managed
+  // / non-enforced / already-enrolled sessions all resolve to `false`.
+  const mfaRequired = shouldRequireMfaForAuthResult(authResult);
   const user = authResult.user;
   if (authResult.mode !== "managed" || !user) {
-    return c.json({ passwordChangeRequired: false }, 200);
+    return c.json(
+      { passwordChangeRequired: false, mfaRequired, enrollmentUrl: MFA_ENROLLMENT_URL },
+      200,
+    );
   }
 
-  if (!hasInternalDB()) return c.json({ passwordChangeRequired: false }, 200);
+  if (!hasInternalDB()) {
+    return c.json(
+      { passwordChangeRequired: false, mfaRequired, enrollmentUrl: MFA_ENROLLMENT_URL },
+      200,
+    );
+  }
 
   return withRequestContext({ requestId, user }, async () => {
     try {
@@ -2039,7 +2081,14 @@ admin.openapi(getPasswordStatusRoute, async (c) => {
         `SELECT password_change_required FROM "user" WHERE id = $1`,
         [user.id],
       );
-      return c.json({ passwordChangeRequired: rows[0]?.password_change_required === true }, 200);
+      return c.json(
+        {
+          passwordChangeRequired: rows[0]?.password_change_required === true,
+          mfaRequired,
+          enrollmentUrl: MFA_ENROLLMENT_URL,
+        },
+        200,
+      );
     } catch (err) {
       log.error({ err: err instanceof Error ? err.message : String(err), userId: user.id, requestId }, "Failed to check password_change_required — returning 500 to avoid bypassing forced password change");
       return c.json({ error: "internal_error", message: "Unable to verify password status. Please try again." , requestId}, 500);

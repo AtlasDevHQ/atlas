@@ -113,3 +113,29 @@ export function FeatureGate({
     </div>
   );
 }
+
+/**
+ * Inline placeholder shown when an admin page fetch returns 403 with
+ * `error: "mfa_enrollment_required"` (#2486). Without this carve-out the
+ * generic FeatureGate would render "You need the admin role to access
+ * this page." — which is misleading copy for an MFA-not-yet-enrolled
+ * admin (the role check passed; only the second-factor check failed).
+ *
+ * On most routes the admin layout's full-screen gate covers this
+ * placeholder before the user sees it; the inline copy is the carve-out
+ * for the enrollment page itself (`/admin/account-security`), which the
+ * layout intentionally leaves un-gated so the user can finish setup.
+ */
+export function MfaRequiredPlaceholder({ feature }: { feature: FeatureName }) {
+  return (
+    <div className="flex h-full items-center justify-center">
+      <div className="text-center">
+        <ShieldCheck className="mx-auto size-10 text-primary/70" aria-hidden="true" />
+        <p className="mt-3 text-sm font-medium">Two-factor required</p>
+        <p className="mt-1 max-w-sm text-xs text-muted-foreground">
+          Enroll an authenticator app or passkey to access {feature}.
+        </p>
+      </div>
+    </div>
+  );
+}

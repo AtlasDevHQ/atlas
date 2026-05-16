@@ -10,13 +10,14 @@
  *
  *   InternalDBLayer         (no deps — creates pg.Pool via PgClient.layerFromPool)
  *   MigrationLayer          (depends on InternalDB — pool must be ready first)
+ *   ConnectionsHydrateLayer (depends on InternalDB + Migration — connections table must exist)
  *   TelemetryLayer          (no deps)
  *   ConfigLayer             (no deps — receives pre-resolved config via Layer.succeed)
  *   SemanticSyncLayer       (no deps)
  *   SettingsLayer           (no deps)
  *   SchedulerLayer          (no deps — receives config as function param)
  *
- *   AppLayer = mergeAll(Telemetry, Config, InternalDB, Migration, SemanticSync, Settings, Scheduler)
+ *   AppLayer = mergeAll(Telemetry, Config, InternalDB, Migration, ConnectionsHydrate, SemanticSync, Settings, Scheduler)
  *
  * Note: ConnectionLayer (P4) and PluginLayer (P5) live in services.ts
  * and are not yet part of AppLayer — they are wired imperatively in server.ts.
@@ -290,6 +291,141 @@ export const BackfillSaasTrialLive: Layer.Layer<
     return { updatedCount: result.updatedCount } satisfies BackfillSaasTrialShape;
   }),
 );
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  Connections Hydrate Layer
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * Discriminated outcome of the boot-time hydrate. Distinguishes
+ * "registry intentionally left empty" (skipped or no rows) from
+ * "hydrate threw and registry is empty when it shouldn't be" so a
+ * future `/health` or admin banner consumer can surface the latter
+ * without re-grepping logs.
+ */
+export type ConnectionsHydrateOutcome =
+  | "skipped-gate"
+  | "empty"
+  | "registered"
+  | "error";
+
+export interface ConnectionsHydrateShape {
+  /** Number of connections registered into the runtime registry. */
+  readonly count: number;
+  /** Wall-clock duration in ms. */
+  readonly durationMs: number;
+  /** Discriminates intentional zero (skip / empty) from a failure that produced zero. */
+  readonly outcome: ConnectionsHydrateOutcome;
+  /** Scrubbed error message when `outcome === "error"`. */
+  readonly error?: string;
+}
+
+export class ConnectionsHydrate extends Context.Tag("ConnectionsHydrate")<
+  ConnectionsHydrate,
+  ConnectionsHydrateShape
+>() {}
+
+/**
+ * Production loader. The Layer body is testable by passing a stub via
+ * `makeConnectionsHydrateLive(load)`; the default loader does the real
+ * dynamic import + DB read.
+ */
+const defaultLoadSavedConnections = async (): Promise<number> => {
+  const { loadSavedConnections } = await import(
+    "@atlas/api/lib/db/internal"
+  );
+  return loadSavedConnections();
+};
+
+/**
+ * Rebuild the runtime `ConnectionRegistry` from the internal `connections`
+ * table at boot. Reads every non-archived row, decrypts the URL via
+ * `decryptSecret`, and calls `connections.register(id, ...)` so that
+ * immediately after a deploy the in-memory registry matches the DB
+ * without any user PUT/onboarding round-trip.
+ *
+ * Depends on `Migration` (so the `connections` table is guaranteed to
+ * exist) and `InternalDB` (for the pool). Non-fatal: per-row decryption
+ * failures (key rotation, corrupted ciphertext) log a warning and skip
+ * the row — they never crash boot. The query also includes a
+ * `status != 'archived'` filter so the per-org tombstone rows from the
+ * delete-as-hide flow in `admin-connections.ts` don't feed their
+ * empty-string `url` marker to `decryptSecret`.
+ *
+ * Exposed as a factory so tests can inject a stub `load` to exercise
+ * the `Effect.catchAll` branch without module-level mocking. The
+ * exported `ConnectionsHydrateLive` binds the production loader.
+ */
+export function makeConnectionsHydrateLive(
+  load: () => Promise<number> = defaultLoadSavedConnections,
+): Layer.Layer<ConnectionsHydrate, never, InternalDB | Migration> {
+  return Layer.effect(
+    ConnectionsHydrate,
+    Effect.gen(function* () {
+      const start = performance.now();
+      const db = yield* InternalDB;
+      const migration = yield* Migration;
+      if (!db.available || !migration.migrated) {
+        const durationMs = Math.round(performance.now() - start);
+        log.info(
+          { available: db.available, migrated: migration.migrated, durationMs },
+          "Connections hydrate skipped — upstream gate (InternalDB or Migration) not satisfied",
+        );
+        return {
+          count: 0,
+          durationMs,
+          outcome: "skipped-gate",
+        } satisfies ConnectionsHydrateShape;
+      }
+
+      const result = yield* Effect.tryPromise({
+        try: load,
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.map((count) => ({ ok: true as const, count })),
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            const message = errorMessage(err);
+            log.error({ err: message }, "Connections hydrate threw — runtime registry left empty");
+            return { ok: false as const, error: message };
+          }),
+        ),
+      );
+      const durationMs = Math.round(performance.now() - start);
+
+      if (!result.ok) {
+        return {
+          count: 0,
+          durationMs,
+          outcome: "error",
+          error: result.error,
+        } satisfies ConnectionsHydrateShape;
+      }
+
+      if (result.count > 0) {
+        log.info(
+          { count: result.count, durationMs },
+          "Hydrated runtime ConnectionRegistry from internal DB",
+        );
+        return {
+          count: result.count,
+          durationMs,
+          outcome: "registered",
+        } satisfies ConnectionsHydrateShape;
+      }
+
+      log.debug({ durationMs }, "Connections hydrate complete — no rows registered");
+      return { count: 0, durationMs, outcome: "empty" } satisfies ConnectionsHydrateShape;
+    }),
+  );
+}
+
+/** Production binding — uses the real `loadSavedConnections()` from `db/internal.ts`. */
+export const ConnectionsHydrateLive: Layer.Layer<
+  ConnectionsHydrate,
+  never,
+  InternalDB | Migration
+> = makeConnectionsHydrateLive();
 
 // ══════════════════════════════════════════════════════════════════════
 // ██  Semantic Sync Layer
@@ -1009,7 +1145,7 @@ export const MigrationGuardLive: Layer.Layer<never, MigrationsRequiredError, Con
  * Connection and plugin shutdown is handled imperatively in server.ts.
  */
 export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
-  Telemetry | Config | InternalDB | Migration | BackfillSaasTrial | SemanticSync | Settings | Scheduler,
+  Telemetry | Config | InternalDB | Migration | BackfillSaasTrial | ConnectionsHydrate | SemanticSync | Settings | Scheduler,
   Error
 > {
   const configLayer = Layer.succeed(Config, { config });
@@ -1023,6 +1159,10 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
   // the other layers — Effect's mergeAll doesn't order independent
   // siblings, so the only real ordering is the Migration dependency.
   const backfillSaasTrialLayer = BackfillSaasTrialLive.pipe(
+    Layer.provide(Layer.merge(internalDBLayer, migrationLayer)),
+  );
+
+  const connectionsHydrateLayer = ConnectionsHydrateLive.pipe(
     Layer.provide(Layer.merge(internalDBLayer, migrationLayer)),
   );
 
@@ -1065,6 +1205,7 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     internalDBLayer,
     migrationLayer,
     backfillSaasTrialLayer,
+    connectionsHydrateLayer,
     semanticSyncLayer,
     settingsLayer,
     schedulerLayer,

@@ -6,6 +6,8 @@ import {
   Config,
   Migration,
   MigrationLive,
+  ConnectionsHydrate,
+  makeConnectionsHydrateLive,
   SemanticSync,
   SemanticSyncLive,
   Settings,
@@ -120,6 +122,88 @@ describe("MigrationLive", () => {
     );
 
     expect(result).toBe(false);
+  });
+});
+
+// ── ConnectionsHydrate (#2482) ─────────────────────────────────────
+
+describe("ConnectionsHydrateLive", () => {
+  function runHydrate(
+    load: () => Promise<number>,
+    gates: { available: boolean; migrated: boolean },
+  ) {
+    const layer = makeConnectionsHydrateLive(load).pipe(
+      Layer.provide(
+        Layer.merge(
+          createInternalDBTestLayer({ available: gates.available }),
+          makeTestMigrationLayer({ migrated: gates.migrated }),
+        ),
+      ),
+    );
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        return yield* ConnectionsHydrate;
+      }).pipe(Effect.provide(layer)),
+    );
+  }
+
+  test("outcome 'skipped-gate' when InternalDB is unavailable", async () => {
+    const result = await runHydrate(
+      async () => {
+        throw new Error("load should not run when gates fail");
+      },
+      { available: false, migrated: true },
+    );
+    expect(result.outcome).toBe("skipped-gate");
+    expect(result.count).toBe(0);
+    expect(result.error).toBeUndefined();
+  });
+
+  test("outcome 'skipped-gate' when Migration did not succeed", async () => {
+    const result = await runHydrate(
+      async () => {
+        throw new Error("load should not run when gates fail");
+      },
+      { available: true, migrated: false },
+    );
+    expect(result.outcome).toBe("skipped-gate");
+    expect(result.count).toBe(0);
+  });
+
+  test("outcome 'empty' when load returns zero rows", async () => {
+    const result = await runHydrate(async () => 0, {
+      available: true,
+      migrated: true,
+    });
+    expect(result.outcome).toBe("empty");
+    expect(result.count).toBe(0);
+    expect(result.error).toBeUndefined();
+  });
+
+  test("outcome 'registered' when load returns a positive count", async () => {
+    const result = await runHydrate(async () => 3, {
+      available: true,
+      migrated: true,
+    });
+    expect(result.outcome).toBe("registered");
+    expect(result.count).toBe(3);
+    expect(result.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  test("outcome 'error' when load throws — Effect.catchAll keeps boot non-fatal", async () => {
+    // Regression guard for the acceptance criterion "encryption-key rotation
+    // failures surface as logged warnings, not boot crash" — if a future
+    // refactor removes Effect.catchAll, this layer would fail and crash boot
+    // through buildAppLayer.
+    const result = await runHydrate(
+      async () => {
+        throw new Error("simulated hydrate failure");
+      },
+      { available: true, migrated: true },
+    );
+    expect(result.outcome).toBe("error");
+    expect(result.count).toBe(0);
+    expect(result.error).toContain("simulated hydrate failure");
   });
 });
 
@@ -426,6 +510,7 @@ describe("buildAppLayer", () => {
         const telemetry = yield* Telemetry;
         const configSvc = yield* Config;
         const migration = yield* Migration;
+        const hydrate = yield* ConnectionsHydrate;
         const semanticSync = yield* SemanticSync;
         const settings = yield* Settings;
         const scheduler = yield* Scheduler;
@@ -433,6 +518,7 @@ describe("buildAppLayer", () => {
           hasTelemetry: typeof telemetry.shutdown === "function",
           hasConfig: configSvc.config != null,
           hasMigration: typeof migration.migrated === "boolean",
+          hasHydrate: typeof hydrate.count === "number",
           hasSync: typeof semanticSync.reconciled === "boolean",
           hasSettings: typeof settings.loaded === "number",
           hasScheduler: typeof scheduler.backend === "string",
@@ -443,6 +529,7 @@ describe("buildAppLayer", () => {
     expect(result.hasTelemetry).toBe(true);
     expect(result.hasConfig).toBe(true);
     expect(result.hasMigration).toBe(true);
+    expect(result.hasHydrate).toBe(true);
     expect(result.hasSync).toBe(true);
     expect(result.hasSettings).toBe(true);
     expect(result.hasScheduler).toBe(true);

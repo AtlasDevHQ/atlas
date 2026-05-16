@@ -205,6 +205,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   deleteBranch: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   renameBranch: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   resolveGroupForConnection: mock(() => Promise.resolve(null)),
+  verifyGroupBelongsToOrg: mock(() => Promise.resolve("ok")),
 }));
 
 const mockCheckRateLimit: Mock<(key: string) => { allowed: boolean; retryAfterMs?: number }> = mock(() =>

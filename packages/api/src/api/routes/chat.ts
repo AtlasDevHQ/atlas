@@ -33,6 +33,7 @@ import { checkAbuseStatus } from "@atlas/api/lib/security/abuse";
 import { checkPlanLimits } from "@atlas/api/lib/billing/enforcement";
 import {
   createConversation,
+  verifyGroupBelongsToOrg,
   addMessage,
   getConversation,
   generateTitle,
@@ -698,6 +699,49 @@ chat.openapi(chatRoute, async (c) => {
         //      changed by per-turn overrides.
         let effectiveConnectionId: string | undefined = parsed.data.connectionId;
         let effectiveConnectionGroupId: string | undefined = parsed.data.connectionGroupId;
+
+        // #2424 — when the body supplies `connectionGroupId`, verify it
+        // belongs to the caller's active org BEFORE persisting it onto the
+        // conversation row. Migration 0067 intentionally omits the FK
+        // constraint; this layer is the org-ownership gate. Without it a
+        // stale agent / buggy plugin / malicious admin could write a cross-org
+        // pointer that downstream reads (#2422 territory) would surface as
+        // `null` while the bad pointer survives in the row.
+        //
+        // Only validate body-supplied values: `resolveGroupForConnection`
+        // below already org-scopes via the post-#2415 IS NOT DISTINCT FROM
+        // predicate, and the existing-conversation branch reads the value
+        // back from a row whose org-ownership was checked at create time.
+        if (parsed.data.connectionGroupId) {
+          const verdict = await verifyGroupBelongsToOrg(
+            parsed.data.connectionGroupId,
+            authResult.user?.activeOrganizationId,
+          );
+          if (verdict === "not_found") {
+            return c.json(
+              {
+                error: "invalid_connection_group",
+                message: "The requested environment is not available in this workspace.",
+                retryable: false,
+                requestId,
+              },
+              400,
+            );
+          }
+          if (verdict === "error") {
+            return c.json(
+              {
+                error: "internal_error",
+                message: "Could not verify environment ownership. Please retry.",
+                retryable: true,
+                requestId,
+              },
+              500,
+            );
+          }
+          // `no_db` falls through — self-hosted single-tenant without
+          // internal DB has no group concept to begin with.
+        }
 
         // Conversation persistence — Ownership verification blocks here (can 404); message writes are fire-and-forget via internalExecute.
         if (hasInternalDB()) {

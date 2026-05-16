@@ -901,6 +901,98 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     }
   }, PG_TEST_TIMEOUT_MS);
 
+  it("semantic_entities: 0063 backfill hardening — NULL stays NULL, __global__ resolves, multi-row, cross-org isolation", async () => {
+    // Follow-up to the headline backfill test above (#2429). Pins four typo
+    // classes that the single-row happy path can't catch:
+    //   1. NULL-stays-NULL — entities whose connection_id points at a
+    //      non-existent connection must keep connection_group_id = NULL so
+    //      they land in the COALESCE sentinel bucket. A future
+    //      `COALESCE(..., 'default')` typo in the SET clause would break this.
+    //   2. __global__ branch — entities in a tenant org whose connection_id
+    //      points at a __global__ connection must backfill via the
+    //      `OR c.org_id = '__global__'` clause. Dropping that OR clause
+    //      would orphan global / demo connections silently.
+    //   3. Multi-row — two entities for the same connection must both
+    //      backfill. A future `LIMIT 1` or correlated-subquery typo
+    //      would fail this.
+    //   4. Cross-org isolation — an entity in org-A whose connection_id
+    //      collides with a connection in org-B must NOT backfill (the
+    //      `c.org_id = se.org_id` clause is load-bearing).
+    const stamp = Date.now();
+    const orgA = `org-back-se-a-${stamp}`;
+    const orgB = `org-back-se-b-${stamp}`;
+    const connA = `conn-se-a-${stamp}`;
+    const connB = `conn-se-b-${stamp}`;
+    const connGlobal = `conn-se-g-${stamp}`;
+    const groupA = `g_${connA}`;
+    const groupB = `g_${connB}`;
+    const groupGlobal = `g_${connGlobal}`;
+    await pool.query(`ALTER TABLE semantic_entities ADD COLUMN connection_id TEXT`);
+    try {
+      await pool.query(
+        `INSERT INTO connection_groups (id, org_id, name) VALUES
+           ($1, $2, $3),
+           ($4, $5, $6),
+           ($7, '__global__', $8)`,
+        [groupA, orgA, connA, groupB, orgB, connB, groupGlobal, connGlobal],
+      );
+      await pool.query(
+        `INSERT INTO connections (id, url, type, org_id, status, group_id) VALUES
+           ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3),
+           ($4, 'enc:v1:iv:tag:ciphertext', 'postgres', $5, 'published', $6),
+           ($7, 'enc:v1:iv:tag:ciphertext', 'postgres', '__global__', 'published', $8)`,
+        [connA, orgA, groupA, connB, orgB, groupB, connGlobal, groupGlobal],
+      );
+      // (a) org-A row pointing at conn-A — should backfill to groupA.
+      // (b) org-A row pointing at same conn-A (different name) — also backfills.
+      // (c) org-A row pointing at a non-existent connection — stays NULL.
+      // (d) org-A row pointing at conn-Global (__global__) — backfills via OR clause.
+      // (e) org-A row pointing at conn-B (org-B's connection) — stays NULL (cross-org).
+      await pool.query(
+        `INSERT INTO semantic_entities
+           (org_id, entity_type, name, yaml_content, connection_id, connection_group_id, status) VALUES
+           ($1, 'entity', 'orders',  'table: orders',  $2, NULL, 'published'),
+           ($1, 'entity', 'users',   'table: users',   $2, NULL, 'published'),
+           ($1, 'entity', 'orphan',  'table: orphan',  'conn-does-not-exist', NULL, 'published'),
+           ($1, 'entity', 'global',  'table: global',  $3, NULL, 'published'),
+           ($1, 'entity', 'foreign', 'table: foreign', $4, NULL, 'published')`,
+        [orgA, connA, connGlobal, connB],
+      );
+      // Run the migration's actual backfill block (verbatim from 0063).
+      await pool.query(
+        `UPDATE semantic_entities se
+           SET connection_group_id = c.group_id
+           FROM connections c
+           WHERE se.connection_id IS NOT NULL
+             AND se.connection_group_id IS NULL
+             AND c.id = se.connection_id
+             AND (c.org_id = se.org_id OR c.org_id = '__global__')`,
+      );
+      const { rows } = await pool.query<{
+        name: string;
+        connection_group_id: string | null;
+      }>(
+        `SELECT name, connection_group_id FROM semantic_entities
+         WHERE org_id = $1 ORDER BY name`,
+        [orgA],
+      );
+      const byName = Object.fromEntries(rows.map((r) => [r.name, r.connection_group_id]));
+      expect(byName.foreign).toBeNull(); // cross-org isolation
+      expect(byName.global).toBe(groupGlobal); // __global__ branch
+      expect(byName.orders).toBe(groupA); // happy path (row 1)
+      expect(byName.orphan).toBeNull(); // NULL-stays-NULL
+      expect(byName.users).toBe(groupA); // happy path (row 2 — multi-row)
+    } finally {
+      try {
+        await pool.query(`ALTER TABLE semantic_entities DROP COLUMN connection_id`);
+      } catch (err) {
+        console.warn(
+          `cleanup semantic_entities.connection_id DROP failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }, PG_TEST_TIMEOUT_MS);
+
   it("semantic_entities: 0063 dedup CTE collapses pre-merged duplicates so the unique index builds", async () => {
     // Defensive case from the multi-env rollout: admins who pre-merged
     // multiple connections into one group (via #2339's admin UI) before
@@ -1428,6 +1520,85 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       // Cleanup must not shadow an in-`try` assertion error. If the DROP
       // itself trips (pool closed mid-test, etc.), log and let the
       // original failure propagate.
+      try {
+        await pool.query(`ALTER TABLE pii_column_classifications DROP COLUMN connection_id`);
+      } catch (err) {
+        console.warn(
+          `cleanup pii_column_classifications.connection_id DROP failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("pii_column_classifications: 0064 backfill hardening — NULL stays NULL, __global__ resolves, multi-row, cross-org isolation", async () => {
+    // Follow-up to the headline backfill test above (#2429). Pins the same
+    // four typo classes covered for 0063, applied to 0064's classification
+    // backfill. See the 0063 hardening comment for the per-case rationale.
+    const stamp = Date.now();
+    const orgA = `org-back-pii-a-${stamp}`;
+    const orgB = `org-back-pii-b-${stamp}`;
+    const connA = `conn-pii-a-${stamp}`;
+    const connB = `conn-pii-b-${stamp}`;
+    const connGlobal = `conn-pii-g-${stamp}`;
+    const groupA = `g_${connA}`;
+    const groupB = `g_${connB}`;
+    const groupGlobal = `g_${connGlobal}`;
+    await pool.query(`ALTER TABLE pii_column_classifications ADD COLUMN connection_id TEXT`);
+    try {
+      await pool.query(
+        `INSERT INTO connection_groups (id, org_id, name) VALUES
+           ($1, $2, $3),
+           ($4, $5, $6),
+           ($7, '__global__', $8)`,
+        [groupA, orgA, connA, groupB, orgB, connB, groupGlobal, connGlobal],
+      );
+      await pool.query(
+        `INSERT INTO connections (id, url, type, org_id, status, group_id) VALUES
+           ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3),
+           ($4, 'enc:v1:iv:tag:ciphertext', 'postgres', $5, 'published', $6),
+           ($7, 'enc:v1:iv:tag:ciphertext', 'postgres', '__global__', 'published', $8)`,
+        [connA, orgA, groupA, connB, orgB, groupB, connGlobal, groupGlobal],
+      );
+      // Seed five distinct (table, column) pairs in org-A so we can assert
+      // each case in isolation without tripping group-scoped uniqueness.
+      await pool.query(
+        `INSERT INTO pii_column_classifications
+           (org_id, table_name, column_name, connection_id, connection_group_id, category, confidence, masking_strategy) VALUES
+           ($1, 'users', 'email',  $2, NULL, 'email', 'high', 'partial'),
+           ($1, 'users', 'phone',  $2, NULL, 'phone', 'high', 'partial'),
+           ($1, 'orph',  'col',    'conn-does-not-exist', NULL, 'email', 'high', 'partial'),
+           ($1, 'glob',  'col',    $3, NULL, 'email', 'high', 'partial'),
+           ($1, 'frgn',  'col',    $4, NULL, 'email', 'high', 'partial')`,
+        [orgA, connA, connGlobal, connB],
+      );
+      await pool.query(
+        `UPDATE pii_column_classifications pc
+           SET connection_group_id = c.group_id
+           FROM connections c
+           WHERE pc.connection_id IS NOT NULL
+             AND pc.connection_group_id IS NULL
+             AND c.id = pc.connection_id
+             AND (c.org_id = pc.org_id OR c.org_id = '__global__')`,
+      );
+      const { rows } = await pool.query<{
+        table_name: string;
+        connection_group_id: string | null;
+      }>(
+        `SELECT table_name, connection_group_id FROM pii_column_classifications
+         WHERE org_id = $1 ORDER BY table_name, column_name`,
+        [orgA],
+      );
+      // Two `users` rows (email + phone) → both groupA (multi-row).
+      const usersRows = rows.filter((r) => r.table_name === "users");
+      expect(usersRows).toHaveLength(2);
+      expect(usersRows.every((r) => r.connection_group_id === groupA)).toBe(true);
+      const byTable = Object.fromEntries(
+        rows.filter((r) => r.table_name !== "users").map((r) => [r.table_name, r.connection_group_id]),
+      );
+      expect(byTable.frgn).toBeNull(); // cross-org
+      expect(byTable.glob).toBe(groupGlobal); // __global__
+      expect(byTable.orph).toBeNull(); // NULL-stays-NULL
+    } finally {
       try {
         await pool.query(`ALTER TABLE pii_column_classifications DROP COLUMN connection_id`);
       } catch (err) {
@@ -2020,6 +2191,87 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       // Cleanup must not shadow an in-`try` assertion error. If the DROP
       // itself trips (pool closed mid-test, etc.), log and let the
       // original failure propagate.
+      try {
+        await pool.query(`ALTER TABLE dashboard_cards DROP COLUMN connection_id`);
+      } catch (err) {
+        console.warn(
+          `cleanup dashboard_cards.connection_id DROP failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("dashboard_cards: 0066 backfill hardening — NULL stays NULL, __global__ resolves, multi-row, cross-org isolation", async () => {
+    // Follow-up to the headline backfill test above (#2429). Same four typo
+    // classes as 0063/0064, applied through 0066's three-table join (cards
+    // resolve org via parent dashboard).
+    const stamp = Date.now();
+    const orgA = `org-back-card-a-${stamp}`;
+    const orgB = `org-back-card-b-${stamp}`;
+    const connA = `conn-card-a-${stamp}`;
+    const connB = `conn-card-b-${stamp}`;
+    const connGlobal = `conn-card-g-${stamp}`;
+    const groupA = `g_${connA}`;
+    const groupB = `g_${connB}`;
+    const groupGlobal = `g_${connGlobal}`;
+    const ownerId = `owner-card-${stamp}`;
+    await pool.query(`ALTER TABLE dashboard_cards ADD COLUMN connection_id TEXT`);
+    try {
+      await pool.query(
+        `INSERT INTO connection_groups (id, org_id, name) VALUES
+           ($1, $2, $3),
+           ($4, $5, $6),
+           ($7, '__global__', $8)`,
+        [groupA, orgA, connA, groupB, orgB, connB, groupGlobal, connGlobal],
+      );
+      await pool.query(
+        `INSERT INTO connections (id, url, type, org_id, status, group_id) VALUES
+           ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3),
+           ($4, 'enc:v1:iv:tag:ciphertext', 'postgres', $5, 'published', $6),
+           ($7, 'enc:v1:iv:tag:ciphertext', 'postgres', '__global__', 'published', $8)`,
+        [connA, orgA, groupA, connB, orgB, groupB, connGlobal, groupGlobal],
+      );
+      // One dashboard in org-A holds five cards covering the four cases.
+      const dashRow = await pool.query<{ id: string }>(
+        `INSERT INTO dashboards (org_id, owner_id, title) VALUES ($1, $2, 'hardening') RETURNING id`,
+        [orgA, ownerId],
+      );
+      const dashId = dashRow.rows[0]?.id;
+      await pool.query(
+        `INSERT INTO dashboard_cards (dashboard_id, title, sql, connection_id, connection_group_id) VALUES
+           ($1, 'orders',  'SELECT 1', $2, NULL),
+           ($1, 'users',   'SELECT 1', $2, NULL),
+           ($1, 'orphan',  'SELECT 1', 'conn-does-not-exist', NULL),
+           ($1, 'global',  'SELECT 1', $3, NULL),
+           ($1, 'foreign', 'SELECT 1', $4, NULL)`,
+        [dashId, connA, connGlobal, connB],
+      );
+      // Run the migration's actual backfill block (verbatim from 0066).
+      await pool.query(
+        `UPDATE dashboard_cards dc
+           SET connection_group_id = c.group_id
+           FROM connections c, dashboards d
+           WHERE dc.dashboard_id = d.id
+             AND dc.connection_id IS NOT NULL
+             AND dc.connection_group_id IS NULL
+             AND c.id = dc.connection_id
+             AND (c.org_id = d.org_id OR c.org_id = '__global__')`,
+      );
+      const { rows } = await pool.query<{
+        title: string;
+        connection_group_id: string | null;
+      }>(
+        `SELECT title, connection_group_id FROM dashboard_cards
+         WHERE dashboard_id = $1 ORDER BY title`,
+        [dashId],
+      );
+      const byTitle = Object.fromEntries(rows.map((r) => [r.title, r.connection_group_id]));
+      expect(byTitle.foreign).toBeNull(); // cross-org
+      expect(byTitle.global).toBe(groupGlobal); // __global__
+      expect(byTitle.orders).toBe(groupA); // happy path
+      expect(byTitle.orphan).toBeNull(); // NULL-stays-NULL
+      expect(byTitle.users).toBe(groupA); // multi-row
+    } finally {
       try {
         await pool.query(`ALTER TABLE dashboard_cards DROP COLUMN connection_id`);
       } catch (err) {
@@ -2733,5 +2985,75 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     // (`__global__` case) is what flips red→green; this one guards the
     // cross-tenant boundary as a permanent invariant.
     expect(rows.length).toBe(0);
+  }, PG_TEST_TIMEOUT_MS);
+
+  // ─────────────────────────────────────────────────────────────────────
+  // #2424 — verifyGroupBelongsToOrg: cross-org rejection at the write
+  // gate. Conversations and dashboard_cards both write
+  // `connection_group_id` directly without a composite FK; this predicate
+  // is the application-layer gate. The matrix below mirrors the
+  // resolveGroupForConnection #2415 tests in shape so a regression in
+  // either predicate surfaces in the same diff.
+  // ─────────────────────────────────────────────────────────────────────
+
+  it("verifyGroupBelongsToOrg: rejects a group from a different tenant (#2424)", async () => {
+    // Org-A creates a group. Org-B tries to use it. Predicate must
+    // return zero rows so the helper returns "not_found" and the route
+    // 400-rejects.
+    const stamp = Date.now();
+    const groupA = `g_2424_a_${stamp}`;
+    const orgA = `org-a-${stamp}`;
+    const orgB = `org-b-${stamp}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'prod')`,
+      [groupA, orgA],
+    );
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT id FROM connection_groups
+        WHERE id = $1
+          AND (org_id IS NOT DISTINCT FROM $2 OR org_id = '__global__')
+        LIMIT 1`,
+      [groupA, orgB],
+    );
+    expect(rows.length).toBe(0);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("verifyGroupBelongsToOrg: allows a group owned by the caller's org (#2424)", async () => {
+    const stamp = Date.now();
+    const groupId = `g_2424_own_${stamp}`;
+    const orgId = `org-own-${stamp}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'prod')`,
+      [groupId, orgId],
+    );
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT id FROM connection_groups
+        WHERE id = $1
+          AND (org_id IS NOT DISTINCT FROM $2 OR org_id = '__global__')
+        LIMIT 1`,
+      [groupId, orgId],
+    );
+    expect(rows[0]?.id).toBe(groupId);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("verifyGroupBelongsToOrg: allows a __global__ group for any caller (#2424)", async () => {
+    // Built-in / demo groups live under __global__ and are intentionally
+    // visible to every tenant. The OR clause in the predicate is what
+    // keeps these reachable from a tenant write.
+    const stamp = Date.now();
+    const groupId = `g_2424_global_${stamp}`;
+    const tenantOrg = `tenant-q-${stamp}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, '__global__', $2)`,
+      [groupId, `demo-${stamp}`],
+    );
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT id FROM connection_groups
+        WHERE id = $1
+          AND (org_id IS NOT DISTINCT FROM $2 OR org_id = '__global__')
+        LIMIT 1`,
+      [groupId, tenantOrg],
+    );
+    expect(rows[0]?.id).toBe(groupId);
   }, PG_TEST_TIMEOUT_MS);
 });

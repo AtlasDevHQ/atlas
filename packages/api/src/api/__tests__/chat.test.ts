@@ -134,6 +134,11 @@ const mockReserveConversationBudget = mock(
 );
 const mockSettleConversationSteps = mock(() => {});
 const mockPersistAssistantSteps = mock(() => {});
+// #2424 — captured so individual tests can override with
+// `mockResolvedValueOnce("not_found")` to exercise the 400 reject path.
+const mockVerifyGroupBelongsToOrg = mock(
+  (): Promise<"ok" | "not_found" | "no_db" | "error"> => Promise.resolve("ok"),
+);
 
 mock.module("@atlas/api/lib/conversations", () => ({
   createConversation: mockCreateConversation,
@@ -157,6 +162,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   deleteBranch: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   renameBranch: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   resolveGroupForConnection: mock(() => Promise.resolve(null)),
+  verifyGroupBelongsToOrg: mockVerifyGroupBelongsToOrg,
 }));
 
 const mockGetPluginTools: Mock<() => unknown> = mock(() => undefined);
@@ -289,6 +295,64 @@ describe("POST /api/v1/chat", () => {
     expect(response.status).toBe(200);
     // Response is a UI message SSE stream, not plain text
     expect(response.headers.get("content-type")).toContain("text/event-stream");
+  });
+
+  it("returns 400 when body connectionGroupId belongs to a different org (#2424)", async () => {
+    // The chat handler verifies any body-supplied connectionGroupId against
+    // the caller's active org BEFORE persisting it onto the conversation.
+    // A "not_found" verdict means the group exists in some other tenant
+    // (or doesn't exist) — either way, we reject rather than write a
+    // cross-org pointer.
+    mockVerifyGroupBelongsToOrg.mockResolvedValueOnce("not_found");
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "hi" }] }],
+        connectionGroupId: "g_other_org_group",
+      }),
+    );
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toBe("invalid_connection_group");
+    // Never persisted — agent never ran either.
+    expect(mockCreateConversation).not.toHaveBeenCalled();
+    expect(mockRunAgent).not.toHaveBeenCalled();
+  });
+
+  it("propagates per-turn connectionId/connectionGroupId into the ALS frame the agent sees (#2414)", async () => {
+    // The central correctness claim of #2345: a per-turn override from the
+    // body lands in the `withRequestContext` frame around `runAgent`, so
+    // tools downstream (executeSQL, plugin tools) see the routing via
+    // `getRequestContext()`. Pre-this test there was no integration check
+    // — `conversations-group-routing.test.ts` exercises the ALS primitive
+    // and `resolveGroupForConnection` in isolation, but not the chat
+    // route's resolution flow that feeds them.
+    //
+    // We capture `getRequestContext()` at the moment runAgent is invoked,
+    // then assert the resolved fields match the body override (NOT the
+    // conversation's stored values).
+    const { getRequestContext } = await import("@atlas/api/lib/logger");
+    let capturedContext: ReturnType<typeof getRequestContext> | undefined;
+    mockRunAgent.mockImplementationOnce(() => {
+      capturedContext = getRequestContext();
+      return Promise.resolve({
+        toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
+        toUIMessageStream: () => new ReadableStream({ start(c) { c.close(); } }),
+        text: Promise.resolve("answer"),
+      } as unknown as Awaited<ReturnType<typeof mockRunAgent>>);
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "hi" }] }],
+        connectionId: "eu-conn-id",
+        connectionGroupId: "g_prod",
+      }),
+    );
+    expect(response.status).toBe(200);
+    // The captured frame must reflect the body override. If a future refactor
+    // reads from the persisted row instead, or drops one of the fields from
+    // the nested withRequestContext frame, this flips red.
+    expect(capturedContext?.connectionId).toBe("eu-conn-id");
+    expect(capturedContext?.connectionGroupId).toBe("g_prod");
   });
 
   // F-74 regression pin: the chat handler MUST pass `bucket: "chat"` so the

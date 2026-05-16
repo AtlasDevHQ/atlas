@@ -49,6 +49,32 @@ test.describe("Production Smoke Tests", () => {
     await expect(page.getByRole("button", { name: /create account/i })).toBeVisible();
   });
 
+  test("app shell sets no-cache so deploys invalidate the bundle (#2488)", async ({ page }) => {
+    // Regression guard for #2488: without `no-cache, must-revalidate` on the
+    // entry HTML, tabs open across a Railway deploy still reference the old
+    // bundle's hashed chunks (which no longer exist) and sign-in breaks until
+    // a hard refresh. Asserts the runtime contract that the canonical
+    // `headers()` policy in packages/web/next.config.ts is meant to enforce.
+    const response = await page.goto(PROD_APP_URL);
+    expect(response).not.toBeNull();
+    const cacheControl = response!.headers()["cache-control"] ?? "";
+    expect(cacheControl).toMatch(/no-cache/);
+    expect(cacheControl).toMatch(/must-revalidate/);
+  });
+
+  test("hashed assets stay immutable (#2488)", async ({ request }) => {
+    // Companion to the no-cache assertion above: hashed chunks under
+    // /_next/static must remain long-cacheable. If a future config change
+    // accidentally widens the no-cache rule to cover them, page loads
+    // would balloon in download cost without any user-visible failure.
+    const shell = await request.get(PROD_APP_URL);
+    const html = await shell.text();
+    const match = html.match(/\/_next\/static\/[^"']+\.(?:js|css)/);
+    test.skip(!match, "no hashed asset reference found in shell");
+    const asset = await request.get(`${PROD_APP_URL}${match![0]}`);
+    expect(asset.headers()["cache-control"] ?? "").toMatch(/immutable/);
+  });
+
   test("API health endpoint returns ok", async ({ request }) => {
     const response = await request.get(`${PROD_API_URL}/api/health`);
     expect(response.status()).toBe(200);

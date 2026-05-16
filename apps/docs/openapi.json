@@ -6766,7 +6766,7 @@
           "Semantic"
         ],
         "summary": "List semantic entities",
-        "description": "Returns a summary of all entity definitions from the semantic layer YAML files. Each entity includes table name, description, column count, join count, and type.",
+        "description": "Returns a summary of all entity definitions visible to the workspace — DB-overlay rows merged with on-disk YAML files. DB rows shadow disk entries on name collision. Each entity includes table name, description, column count, join count, and type.",
         "responses": {
           "200": {
             "description": "List of entity summaries",
@@ -6887,7 +6887,7 @@
           "Semantic"
         ],
         "summary": "Get entity details",
-        "description": "Returns the full parsed YAML content for a single semantic entity, including all dimensions, measures, joins, and query patterns.",
+        "description": "Returns the full parsed YAML content for a single semantic entity, including all dimensions, measures, joins, and query patterns. Resolves through the same overlay-aware path as the list endpoint — DB rows shadow disk entries on name collision.",
         "parameters": [
           {
             "schema": {
@@ -6994,6 +6994,45 @@
                   "required": [
                     "error",
                     "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Entity name exists in multiple connection groups — disambiguation is not yet exposed on the public route; use /admin/semantic to resolve.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "entity_ambiguous"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "groups": {
+                      "type": "array",
+                      "items": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message",
+                    "groups",
+                    "requestId"
                   ]
                 }
               }

@@ -29,10 +29,21 @@ const platformUser = {
 
 let authUser: typeof adminUser | typeof platformUser = adminUser;
 
+// Records calls to `checkRateLimit` so the bucket-routing tests at the
+// bottom of this file can assert which bucket each middleware debits.
+// Populated by every middleware run; `beforeEach` resets it.
+const checkRateLimitCalls: Array<{
+  key: string;
+  options?: { bucket?: string };
+}> = [];
+
 mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: () =>
     Promise.resolve({ authenticated: true, mode: "managed", user: authUser }),
-  checkRateLimit: () => ({ allowed: true }),
+  checkRateLimit: (key: string, options?: { bucket?: string }) => {
+    checkRateLimitCalls.push({ key, options });
+    return { allowed: true };
+  },
   getClientIP: () => "10.0.0.1",
   resetRateLimits: () => {},
   rateLimitCleanupTick: () => {},
@@ -128,6 +139,7 @@ function buildRequest(cookieHeader: string | null): Request {
 beforeEach(() => {
   authUser = adminUser;
   withRequestContextCalls = [];
+  checkRateLimitCalls.length = 0;
 });
 
 // ---------------------------------------------------------------------------
@@ -276,5 +288,51 @@ describe("withRequestId — populates trustDeviceIdentifier on Hono context + AL
     const lastCall =
       withRequestContextCalls[withRequestContextCalls.length - 1];
     expect(lastCall.trustDeviceIdentifier).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2485 — admin bucket wiring regression pin
+// ---------------------------------------------------------------------------
+
+/**
+ * Locks the bucket each auth middleware passes to `checkRateLimit`.
+ * Without this, a refactor that drops the `"admin"` arg from
+ * `rateLimitAndIPCheck`'s call sites in `adminAuth` / `platformAdminAuth`
+ * would silently regress #2485 — the bucket-primitive isolation tests
+ * in `lib/auth/__tests__/middleware.test.ts` exercise `checkRateLimit`
+ * directly and would all stay green even with the wiring broken.
+ * Mirrors the F-74 chat-bucket pin in `api/__tests__/chat.test.ts`.
+ */
+describe("auth middleware → checkRateLimit bucket routing (#2485, F-74)", () => {
+  it("adminAuth debits the admin bucket", async () => {
+    const c = fakeContext(buildRequest(null));
+
+    await adminAuth(c as never, async () => {});
+
+    expect(checkRateLimitCalls.length).toBe(1);
+    expect(checkRateLimitCalls[0]!.options).toEqual({ bucket: "admin" });
+  });
+
+  it("platformAdminAuth debits the admin bucket", async () => {
+    authUser = platformUser;
+    const c = fakeContext(buildRequest(null));
+
+    await platformAdminAuth(c as never, async () => {});
+
+    expect(checkRateLimitCalls.length).toBe(1);
+    expect(checkRateLimitCalls[0]!.options).toEqual({ bucket: "admin" });
+  });
+
+  it("standardAuth debits the default bucket (no options arg)", async () => {
+    const c = fakeContext(buildRequest(null));
+
+    await standardAuth(c as never, async () => {});
+
+    // `rateLimitAndIPCheck` calls `checkRateLimit(key, { bucket: "default" })`
+    // when invoked without an explicit bucket — the parameter default
+    // turns into an explicit option object at the call site.
+    expect(checkRateLimitCalls.length).toBe(1);
+    expect(checkRateLimitCalls[0]!.options).toEqual({ bucket: "default" });
   });
 });

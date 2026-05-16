@@ -22,6 +22,7 @@ import {
   authenticateRequest,
   checkRateLimit,
   getClientIP,
+  type RateLimitBucket,
 } from "@atlas/api/lib/auth/middleware";
 import { extractTrustDeviceIdentifier } from "@atlas/api/lib/auth/trust-device-cookie";
 import {
@@ -121,10 +122,11 @@ async function rateLimitAndIPCheck(
   req: Request,
   authResult: AuthResult & { authenticated: true },
   requestId: string,
+  bucket: RateLimitBucket = "default",
 ): Promise<{ body: Record<string, unknown>; status: number; headers?: Record<string, string> } | null> {
   const ip = getClientIP(req);
   const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
-  const rateCheck = checkRateLimit(rateLimitKey);
+  const rateCheck = checkRateLimit(rateLimitKey, { bucket });
   if (!rateCheck.allowed) {
     const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
     return {
@@ -266,7 +268,11 @@ export const adminAuth = createMiddleware<AuthEnv>(async (c, next) => {
     return c.json({ error: "forbidden_role", message: "Admin role required.", requestId }, 403);
   }
 
-  const blocked = await rateLimitAndIPCheck(c.req.raw, authResult, requestId);
+  // Admin namespace gets its own rate-limit bucket (#2485). Interactive
+  // forms (Add Connection, Test, Delete in quick succession) burst easily
+  // past a low base RPM; bucketing them separately keeps a dogfood session
+  // from depleting the cheap-read budget shared with chat.
+  const blocked = await rateLimitAndIPCheck(c.req.raw, authResult, requestId, "admin");
   if (blocked) {
     return c.json(blocked.body, blocked.status as 429, blocked.headers);
   }
@@ -317,7 +323,9 @@ export const platformAdminAuth = createMiddleware<AuthEnv>(async (c, next) => {
     return c.json({ error: "forbidden_role", message: "Platform admin role required.", requestId }, 403);
   }
 
-  const blocked = await rateLimitAndIPCheck(c.req.raw, authResult, requestId);
+  // Platform admin shares the admin bucket — same interactive-form access
+  // pattern (#2485). Cross-tenant operations still rate-limit per identity.
+  const blocked = await rateLimitAndIPCheck(c.req.raw, authResult, requestId, "admin");
   if (blocked) {
     return c.json(blocked.body, blocked.status as 429, blocked.headers);
   }

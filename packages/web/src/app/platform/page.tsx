@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { parseAsString, parseAsStringEnum, useQueryState } from "nuqs";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -36,8 +36,13 @@ import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surfa
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import { StatCard } from "@/ui/components/admin/stat-card";
+import {
+  ComponentHealthTiles,
+  type HealthComponents,
+} from "@/ui/components/admin/component-health-tiles";
 import { useAdminFetch, useInProgressSet } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { useAtlasConfig } from "@/ui/context";
 import {
   PlatformStatsSchema,
   PlatformWorkspacesResponseSchema,
@@ -58,6 +63,8 @@ import {
   ArrowUpDown,
   Loader2,
   Eye,
+  Database,
+  Puzzle,
 } from "lucide-react";
 import type {
   PlatformWorkspace,
@@ -160,6 +167,13 @@ function PlatformPageContent() {
     "/api/v1/platform/noisy-neighbors",
     { schema: PlatformNeighborsResponseSchema },
   );
+
+  // Deployment scaffold (#2489) — lives on platform because every workspace
+  // sees the same disk-bundled count. Component Health comes from
+  // `/api/health` (unauthenticated readiness target) rather than a
+  // platform-scoped overview, so we fetch it directly here.
+  const scaffold = usePlatformScaffold();
+  const health = useHealthComponents();
 
   // Workspace detail dialog
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -307,6 +321,38 @@ function PlatformPageContent() {
                   icon={<DollarSign className="size-4" />}
                 />
               </div>
+
+              {/* ── Component Health (lifted from /admin per #2489) ── */}
+              <section>
+                <h2 className="mb-3 text-sm font-medium text-muted-foreground">
+                  Component Health
+                </h2>
+                <ComponentHealthTiles
+                  components={health.components}
+                  loading={health.loading}
+                />
+              </section>
+
+              {/* ── Deployment scaffold (#2489) ─────────────────────── */}
+              <section>
+                <h2 className="mb-3 text-sm font-medium text-muted-foreground">
+                  Deployment scaffold
+                </h2>
+                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                  <StatCard
+                    title="Entities (bundled)"
+                    value={scaffold.loading ? "…" : (scaffold.data?.entities ?? 0)}
+                    icon={<Database className="size-4" />}
+                    description="Tables & views shipped on disk"
+                  />
+                  <StatCard
+                    title="Plugins"
+                    value={scaffold.loading ? "…" : (scaffold.data?.plugins ?? 0)}
+                    icon={<Puzzle className="size-4" />}
+                    description="Installed plugins"
+                  />
+                </div>
+              </section>
 
               {topWorkspaces.length > 0 && (
                 <Card className="shadow-none">
@@ -813,4 +859,103 @@ function PlatformPageContent() {
       </Dialog>
     </div>
   );
+}
+
+// ── Local hooks: scaffold + health ─────────────────────────────────
+//
+// Both endpoints lift their data into Dashboard tiles, but they have
+// different auth/contracts so neither rides through `useAdminFetch`'s
+// shared schema flow:
+//
+//   - `/api/v1/platform/overview` is platform-admin-only and currently
+//     returns an open record (the deployment-wide bits are still in flux
+//     post-#2489). When the shape stabilizes, move this to
+//     `useAdminFetch` with a zod schema.
+//   - `/api/health` is unauthenticated (a readiness target for probes),
+//     so a same-origin fetch is enough; no admin gate required to read.
+
+interface PlatformScaffoldData {
+  entities: number;
+  plugins: number;
+}
+
+function usePlatformScaffold(): {
+  data: PlatformScaffoldData | null;
+  loading: boolean;
+} {
+  const { apiUrl, isCrossOrigin } = useAtlasConfig();
+  const [data, setData] = useState<PlatformScaffoldData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const cancelledRef = useRef(false);
+
+  useEffect(() => {
+    cancelledRef.current = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const res = await fetch(`${apiUrl}/api/v1/platform/overview`, {
+          credentials: isCrossOrigin ? "include" : "same-origin",
+        });
+        if (cancelledRef.current) return;
+        if (!res.ok) {
+          setData(null);
+          return;
+        }
+        const json = (await res.json()) as Record<string, unknown>;
+        if (cancelledRef.current) return;
+        setData({
+          entities: typeof json.entities === "number" ? json.entities : 0,
+          plugins: typeof json.plugins === "number" ? json.plugins : 0,
+        });
+      } catch {
+        if (!cancelledRef.current) setData(null);
+      } finally {
+        if (!cancelledRef.current) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelledRef.current = true;
+    };
+  }, [apiUrl, isCrossOrigin]);
+
+  return { data, loading };
+}
+
+function useHealthComponents(): {
+  components: HealthComponents | null;
+  loading: boolean;
+} {
+  const { apiUrl, isCrossOrigin } = useAtlasConfig();
+  const [components, setComponents] = useState<HealthComponents | null>(null);
+  const [loading, setLoading] = useState(true);
+  const cancelledRef = useRef(false);
+
+  useEffect(() => {
+    cancelledRef.current = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const res = await fetch(`${apiUrl}/api/health`, {
+          credentials: isCrossOrigin ? "include" : "same-origin",
+        });
+        if (cancelledRef.current) return;
+        if (!res.ok) {
+          setComponents(null);
+          return;
+        }
+        const json = (await res.json()) as Record<string, unknown>;
+        if (cancelledRef.current) return;
+        setComponents((json.components as HealthComponents | undefined) ?? null);
+      } catch {
+        if (!cancelledRef.current) setComponents(null);
+      } finally {
+        if (!cancelledRef.current) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelledRef.current = true;
+    };
+  }, [apiUrl, isCrossOrigin]);
+
+  return { components, loading };
 }

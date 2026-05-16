@@ -93,6 +93,11 @@ export function createConnectionMock(overrides?: ConnectionMockOverrides) {
     recordQuery: () => {},
     recordSuccess: () => {},
     recordError: () => {},
+    // Read-only inspection of pool warnings (#2489). The platform overview
+    // route surfaces these; default to no warnings so the route can render
+    // without per-test setup. Override in tests that want to assert
+    // warning-pass-through.
+    getPoolWarnings: () => [] as string[],
     ...connectionsOverrides,
   };
 

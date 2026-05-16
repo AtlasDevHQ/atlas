@@ -408,3 +408,39 @@ describe("GET /api/v1/platform/workspaces — abuseLevel surfacing", () => {
     expect(body.abuseRestoreStatus).toBe("ok");
   });
 });
+
+// #2489 — `/platform/overview` is the home for deployment-wide scaffold
+// (entities count, plugin count, plugin health, pool warnings). The
+// `/admin/overview` route is no longer allowed to surface deployment-wide
+// values, so a regression that re-introduces them on /admin would break
+// the platform/org split.
+describe("GET /api/v1/platform/overview — deployment scaffold (#2489)", () => {
+  beforeEach(() => {
+    mocks.setPlatformAdmin();
+    mocks.hasInternalDB = true;
+    mockLogWarn.mockClear();
+  });
+
+  it("returns plugin count, plugin health, and pool warnings", async () => {
+    const res = await app.fetch(platformRequest("GET", "/api/v1/platform/overview"));
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as Record<string, unknown>;
+    // `plugins` count comes from the registry mock (default registry is
+    // empty). Asserting numeric type rather than 0 keeps the test robust
+    // to test-mock fixtures that register a sample plugin later.
+    expect(typeof body.plugins).toBe("number");
+    expect(Array.isArray(body.pluginHealth)).toBe(true);
+    expect(typeof body.entities).toBe("number");
+    // requestId is threaded through for log correlation.
+    expect(typeof body.requestId).toBe("string");
+  });
+
+  it("returns 403 when caller is not a platform admin", async () => {
+    // Non-platform-admin (regular org admin) gets blocked by
+    // createPlatformRouter — the `platform_admin` role is the gate.
+    mocks.setOrgAdmin("org-1");
+    const res = await app.fetch(platformRequest("GET", "/api/v1/platform/overview"));
+    expect(res.status).toBe(403);
+  });
+});

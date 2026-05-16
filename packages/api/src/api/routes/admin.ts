@@ -20,7 +20,13 @@ import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { connections } from "@atlas/api/lib/db/connection";
-import { hasInternalDB, internalQuery, getWorkspaceRegion } from "@atlas/api/lib/db/internal";
+import {
+  hasInternalDB,
+  internalQuery,
+  getWorkspaceRegion,
+  getWorkspaceDetails,
+} from "@atlas/api/lib/db/internal";
+import { getPlanDefinition } from "@atlas/api/lib/billing/plans";
 import { plugins } from "@atlas/api/lib/plugins/registry";
 import {
   getSettingsForAdmin,
@@ -571,11 +577,16 @@ const overviewRoute = createRoute({
   method: "get",
   path: "/overview",
   tags: ["Admin — Overview"],
-  summary: "Dashboard overview",
-  description: "Returns aggregate counts for connections, entities, metrics, glossary terms, plugins, and health warnings.",
+  summary: "Workspace dashboard overview",
+  description:
+    "Returns workspace-scoped overview data for the active organization: " +
+    "workspace identity (name, slug, plan tier, trial end), org-scoped " +
+    "connection and entity counts, queries in the last 24h, and pool " +
+    "warnings. Deployment-wide health and scaffold counts live on " +
+    "`/api/v1/platform/overview` (#2489).",
   responses: {
     200: {
-      description: "Dashboard overview data",
+      description: "Workspace overview data",
       content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -1302,40 +1313,92 @@ const deleteSettingRoute = createRoute({
 // -- Overview ---------------------------------------------------------------
 
 admin.openapi(overviewRoute, async (c) => {
-  await adminAuthAndContext(c);
-  const root = getSemanticRoot();
-  const { entities, warnings } = discoverEntities(root);
-  const metrics = discoverMetrics(root);
-  const glossary = loadGlossary(root);
-  const connList = connections.describe();
+  // `/admin` Overview is "your workspace at a glance" (#2489). Every count
+  // here is org-scoped — connections via `getVisibleConnectionIds` (so
+  // `__global__` fallback + the per-org `default` runtime registration are
+  // both honored), entities via the admin-source overlay (matches what
+  // `/admin/semantic` renders), and `queriesLast24h` from audit_log scoped
+  // to the active org. Deployment-wide Component Health + scaffold counts
+  // moved to `/api/v1/platform/overview`.
+  const { authResult } = await adminAuthAndContext(c);
+  const orgId = authResult.user?.activeOrganizationId ?? null;
+  const isPlatformAdmin = authResult.user?.role === "platform_admin";
+  const atlasMode = getAtlasMode(c);
+  const mode = atlasMode === "developer" ? "developer" : "published";
+
+  // Org-scoped connection visibility. Returns `null` only when the helper
+  // would otherwise leak cross-tenant rows — but the helper now always
+  // scopes to the active org since #2303, so a missing orgId on
+  // self-hosted / no-internal-DB still falls through to the runtime
+  // `default` registration when present.
+  const visibleConnectionIds = orgId
+    ? await getVisibleConnectionIds(orgId, isPlatformAdmin, atlasMode)
+    : null;
+  const connectionCount = visibleConnectionIds
+    ? visibleConnectionIds.size
+    : connections.describe().length;
+
+  // Org-scoped entity count via the same admin-source the
+  // `/admin/semantic/entities` route reads through — matches what the user
+  // sees on the Semantic page so Overview and that page can't disagree.
+  // `listAdminEntities` falls back to the disk root when no internal DB is
+  // configured (self-hosted dev) without ever crossing tenants.
+  const entityList = await listAdminEntities({
+    orgId: orgId ?? undefined,
+    mode,
+  });
+  const entityCount = entityList.entities.length;
+
+  // Plugin count — still globally registered today (plugins are deployment
+  // scaffold, not per-org). Left on `/admin` until plugins become per-org;
+  // surfaced in self-hosted only (the UI hides this tile on SaaS).
   const pluginList = plugins.describe();
 
-  // Count glossary terms
-  let glossaryTermCount = 0;
-  for (const g of glossary) {
-    const data = (g as { data: unknown }).data;
-    if (Array.isArray(data)) glossaryTermCount += data.length;
-    else if (data && typeof data === "object") {
-      const terms = (data as Record<string, unknown>).terms;
-      if (Array.isArray(terms)) glossaryTermCount += terms.length;
+  // Workspace identity for the new tiles. `getWorkspaceDetails` returns
+  // null on self-hosted / no internal DB or when the org row is missing,
+  // in which case the response omits the `workspace` field rather than
+  // shipping placeholder data the frontend would have to special-case.
+  const workspace = orgId ? await getWorkspaceDetails(orgId) : null;
+  const workspaceBlock = workspace
+    ? {
+        id: workspace.id,
+        name: workspace.name,
+        slug: workspace.slug,
+        planTier: workspace.plan_tier,
+        planDisplayName: getPlanDefinition(workspace.plan_tier).displayName,
+        trialEndsAt: workspace.trial_ends_at,
+        region: workspace.region,
+      }
+    : null;
+
+  // Org-scoped queries (24h) — same audit_log shape platform admin uses,
+  // but filtered to a single org. Skip the query when we have no orgId
+  // (self-hosted / no internal DB); the frontend renders "—" in that case.
+  let queriesLast24h: number | null = null;
+  if (orgId && hasInternalDB()) {
+    try {
+      const rows = await internalQuery<{ count: number }>(
+        `SELECT COUNT(*)::int as count FROM audit_log WHERE org_id = $1 AND timestamp > now() - interval '24 hours'`,
+        [orgId],
+      );
+      queriesLast24h = rows[0]?.count ?? 0;
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err : new Error(String(err)), orgId },
+        "Failed to compute queriesLast24h — omitting from overview",
+      );
     }
   }
 
   const poolWarnings = connections.getPoolWarnings();
 
   return c.json({
-    connections: connList.length,
-    entities: entities.length,
-    metrics: metrics.length,
-    glossaryTerms: glossaryTermCount,
+    connections: connectionCount,
+    entities: entityCount,
     plugins: pluginList.length,
-    pluginHealth: pluginList.map((p) => ({
-      id: p.id,
-      name: p.name,
-      types: p.types,
-      status: p.status,
-    })),
-    ...(warnings.length > 0 && { warnings }),
+    queriesLast24h,
+    workspace: workspaceBlock,
+    ...(entityList.warnings.length > 0 && { warnings: entityList.warnings }),
     ...(poolWarnings.length > 0 && { poolWarnings }),
   }, 200);
 });

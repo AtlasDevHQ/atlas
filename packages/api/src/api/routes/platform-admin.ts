@@ -59,6 +59,12 @@ import {
 } from "@useatlas/schemas";
 import { type AtlasRole } from "@atlas/api/lib/auth/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { connections } from "@atlas/api/lib/db/connection";
+import { plugins } from "@atlas/api/lib/plugins/registry";
+import {
+  getSemanticRoot,
+  discoverEntities,
+} from "@atlas/api/lib/semantic/files";
 
 const log = createLogger("platform-admin");
 
@@ -271,6 +277,29 @@ const platformStatsRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const platformOverviewRoute = createRoute({
+  method: "get",
+  path: "/overview",
+  tags: ["Platform Admin"],
+  summary: "Deployment-wide overview",
+  description:
+    "Platform admin only. Returns deployment-scaffold counts (entities, " +
+    "plugins, plugin health) plus pool warnings. Component Health (the " +
+    "datasource pool, internal DB, LLM provider, scheduler, sandbox) is " +
+    "served from `/api/health` — kept there so unauthenticated readiness " +
+    "probes still have a target. The deployment-scaffold counts live " +
+    "here, away from the per-workspace `/admin/overview` (#2489).",
+  responses: {
+    200: {
+      description: "Deployment-wide overview data",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -817,6 +846,44 @@ platformAdmin.openapi(platformStatsRoute, async (c) => {
       mrr,
     }, 200);
   }), { label: "compute platform stats" });
+});
+
+// ── Platform overview (deployment-wide scaffold + pool warnings) ───
+
+platformAdmin.openapi(platformOverviewRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+
+    // Deployment-scaffold entity discovery — what the API container ships
+    // on disk, NOT what any given workspace has imported. Workspace-scoped
+    // counts live on `/api/v1/admin/overview` and read through the
+    // admin-source overlay. The `__global__` org-id is intentional: it
+    // routes `getSemanticRoot` to the base disk root (no per-org overlay).
+    const root = getSemanticRoot();
+    const { entities, warnings } = discoverEntities(root);
+
+    // Plugin registry is process-global today (not per-org). Surfaced
+    // here so the operator-facing dashboard reflects what's loaded into
+    // the running container. `/admin/overview` also surfaces a plugin
+    // count for now — but that tile is hidden on SaaS (handled in web).
+    const pluginList = plugins.describe();
+
+    const poolWarnings = connections.getPoolWarnings();
+
+    return c.json({
+      entities: entities.length,
+      plugins: pluginList.length,
+      pluginHealth: pluginList.map((p) => ({
+        id: p.id,
+        name: p.name,
+        types: p.types,
+        status: p.status,
+      })),
+      ...(warnings.length > 0 && { warnings }),
+      ...(poolWarnings.length > 0 && { poolWarnings }),
+      requestId,
+    }, 200);
+  }), { label: "platform overview" });
 });
 
 // ── Noisy neighbors ──────────────────────────────────────────────────

@@ -811,9 +811,10 @@ describeIfPg("migrate-pg (real Postgres)", () => {
 
   it("0072: is idempotent — re-running after the sweep is a no-op", async () => {
     const orgId = `org-0072-idemp-${Date.now()}`;
+    const ghostId = `g_ghost-${Date.now()}`;
     await pool.query(
-      `INSERT INTO connection_groups (id, org_id, name) VALUES ('g_ghost-${Date.now()}', $1, 'ghost-${Date.now()}')`,
-      [orgId],
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, $3)`,
+      [ghostId, orgId, ghostId.slice(2)],
     );
 
     const migrationStatement = readFileSync(
@@ -821,16 +822,28 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       "utf8",
     );
 
-    // First pass — should delete the ghost row we just inserted.
-    const first = await pool.query(migrationStatement);
-    expect(first.rowCount ?? 0).toBeGreaterThanOrEqual(1);
+    // The migration body is a `DO $$ ... $$` anonymous PL/pgSQL block,
+    // so `pool.query()` returns no rowCount for the inner DELETE (DO is
+    // a procedural statement, not DML). Assert idempotency via a SELECT
+    // against the seeded ghost — first pass deletes it, second is a
+    // no-op against an empty candidate set.
+    async function ghostExists(): Promise<boolean> {
+      const { rows } = await pool.query<{ id: string }>(
+        `SELECT id FROM connection_groups WHERE id = $1 AND org_id = $2`,
+        [ghostId, orgId],
+      );
+      return rows.length > 0;
+    }
 
-    // Second pass against the now-cleaned set returns zero rows. The
+    expect(await ghostExists()).toBe(true);
+    await pool.query(migrationStatement);
+    expect(await ghostExists()).toBe(false);
+    // Second pass against the now-cleaned set is a 0-row DELETE. The
     // production migration is run once but the test runs the body
     // twice; idempotency is the contract that lets a re-run during a
     // partial-deploy retry land safely.
-    const second = await pool.query(migrationStatement);
-    expect(second.rowCount ?? 0).toBe(0);
+    await pool.query(migrationStatement);
+    expect(await ghostExists()).toBe(false);
   }, PG_TEST_TIMEOUT_MS);
 
   // 0063 — semantic_entities.connection_group_id. Adds the group-scoped

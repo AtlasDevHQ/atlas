@@ -132,16 +132,22 @@ Three shapes are accepted by the import endpoint
 
 | Producer | Wire shape | Imported as |
 | --- | --- | --- |
-| Pre-1.4.4 bundle | key omitted | `null` (legacy / unscoped row) |
-| Post-1.4.4 unscoped row | `connectionGroupId: null` | `null` |
-| Post-1.4.4 scoped row | `connectionGroupId: "g_prod"` | `"g_prod"` |
+| Producer with no group concept (pre-1.4.4 bundle, older SDK) | key omitted | `null` |
+| 1.4.4+ author chose no group, or legacy `connectionId` did not resolve to a live group | `connectionGroupId: null` | `null` |
+| 1.4.4+ scoped row | `connectionGroupId: "g_prod"` | `"g_prod"` |
+
+The first two shapes land in the same column value (`null`) but encode
+different producer intents — preserved in the wire format so the
+distinction can be inspected at the boundary even though it's lost
+once the row is stored.
 
 `0.1.0` shipped the field as `string | null` (required). Older SDK
 consumers and bundles produced before the column existed couldn't
 satisfy that shape, so import failed strict validation. `0.1.1` widens
 the type to `string | null | undefined` and coalesces omitted to `null`
 on import — additive on the wire, behavior-preserving for 1.4.4+
-producers.
+producers. Non-string, non-null values (e.g. `42`, `{}`, `""`) are
+rejected with a 400 instead of slipping through to pg.
 
 ### `PIIColumnClassification`
 

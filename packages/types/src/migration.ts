@@ -60,21 +60,18 @@ export interface ExportedSemanticEntity {
   entityType: string;
   yamlContent: string;
   /**
-   * Group scope (multi-environment semantic layer, #2340).
+   * Group scope (multi-environment semantic layer, #2340). Three accepted
+   * shapes:
+   * - **omitted** — producer with no group concept (pre-1.4.4 bundle).
+   *   Importers coalesce this to `null`.
+   * - **explicit `null`** — 1.4.4+ unscoped row (global / no binding), or a
+   *   bundle whose legacy `connectionId` no longer resolves to a live group.
+   * - **explicit string** — group id. One entity row per group; multi-member
+   *   groups share the same definition.
    *
-   * Three accepted shapes (#2423):
-   * - **omitted** — pre-1.4.4 bundle exported before the group column
-   *   existed. Importers coalesce this to `null`.
-   * - **explicit `null`** — post-1.4.4 unscoped row (global / no group
-   *   binding), or a bundle whose legacy `connectionId` no longer
-   *   resolves to a live group.
-   * - **explicit string** — group id. One entity row per group;
-   *   multi-member groups share the same definition.
-   *
-   * The field is optional because strict shape validation on import
-   * would otherwise reject pre-1.4.4 producers that have no concept
-   * of the column. Value-nullability alone wasn't enough — optionality
-   * is what makes the field additive on the wire.
+   * Optional because strict shape validation on import would otherwise reject
+   * producers that have no concept of the column. Value-nullability alone
+   * wasn't enough — optionality is what makes the field additive on the wire.
    */
   connectionGroupId?: string | null;
 }

@@ -260,36 +260,44 @@ describe("bundle round-trip shape", () => {
 // ---------------------------------------------------------------------------
 // ExportedSemanticEntity.connectionGroupId optionality (#2423)
 // ---------------------------------------------------------------------------
-//
-// The wire shape accepts three forms — omitted (legacy pre-1.4.4 bundle),
-// explicit null (post-1.4.4 unscoped row), and an explicit string (group id).
-// The importer must coalesce all three into the same INSERT parameter so a
-// pre-1.4.4 producer that simply omits the key doesn't break strict shape
-// validation or insert `undefined` into pg.
 
-/** Build an empty bundle with a single semantic entity for importer probing. */
-function bundleWithEntity(entity: ExportedSemanticEntity): ExportBundle {
+function bundleWithEntities(entities: ExportedSemanticEntity[]): ExportBundle {
   return {
     manifest: {
       version: 1,
       exportedAt: "2026-05-15T00:00:00Z",
       source: { label: "test" },
-      counts: { conversations: 0, messages: 0, semanticEntities: 1, learnedPatterns: 0, settings: 0 },
+      counts: { conversations: 0, messages: 0, semanticEntities: entities.length, learnedPatterns: 0, settings: 0 },
     },
     conversations: [],
-    semanticEntities: [entity],
+    semanticEntities: entities,
     learnedPatterns: [],
     settings: [],
   };
 }
 
-/** Capturing in-memory InternalPoolClient — records every (sql, params) tuple. */
-function captureClient(): { client: InternalPoolClient; calls: Array<{ sql: string; params: unknown[] }> } {
+function bundleWithEntity(entity: ExportedSemanticEntity): ExportBundle {
+  return bundleWithEntities([entity]);
+}
+
+/**
+ * Capture-only in-memory pool client. The `existing` map gates which probes
+ * return a row (key = `${entityType}::${name}`) so we can drive the importer
+ * down both the insert and the idempotent-skip branches without spinning up
+ * pg.
+ */
+function captureClient(existing: Set<string> = new Set()): {
+  client: InternalPoolClient;
+  calls: Array<{ sql: string; params: unknown[] }>;
+} {
   const calls: Array<{ sql: string; params: unknown[] }> = [];
   const client: InternalPoolClient = {
     query: async (sql: string, params?: unknown[]) => {
       calls.push({ sql, params: params ?? [] });
-      // existing-row probes return empty so the importer always inserts
+      if (sql.includes("SELECT id FROM semantic_entities")) {
+        const [, entityType, name] = (params ?? []) as [string, string, string];
+        if (existing.has(`${entityType}::${name}`)) return { rows: [{ id: "existing" }] };
+      }
       return { rows: [] };
     },
     release: () => {},
@@ -299,49 +307,45 @@ function captureClient(): { client: InternalPoolClient; calls: Array<{ sql: stri
 
 describe("ExportedSemanticEntity.connectionGroupId — three import shapes", () => {
   it("accepts the omitted shape at compile time and at runtime", () => {
-    // Compile-time: this must type-check without `connectionGroupId`.
+    // Compile-time: must type-check without `connectionGroupId`. Without
+    // optionality on the type, this assignment would error at TS level.
     const legacyEntity: ExportedSemanticEntity = {
       name: "users",
       entityType: "entity",
       yamlContent: "table: users\n",
     };
 
-    const bundle = bundleWithEntity(legacyEntity);
-    const result = validateBundle(bundle);
+    const result = validateBundle(bundleWithEntity(legacyEntity));
     expect(result.ok).toBe(true);
   });
 
   it("accepts explicit null", () => {
-    const bundle = bundleWithEntity({
+    const result = validateBundle(bundleWithEntity({
       name: "users",
       entityType: "entity",
       yamlContent: "table: users\n",
       connectionGroupId: null,
-    });
-    const result = validateBundle(bundle);
+    }));
     expect(result.ok).toBe(true);
   });
 
   it("accepts an explicit string", () => {
-    const bundle = bundleWithEntity({
+    const result = validateBundle(bundleWithEntity({
       name: "users",
       entityType: "entity",
       yamlContent: "table: users\n",
       connectionGroupId: "g_prod_us",
-    });
-    const result = validateBundle(bundle);
+    }));
     expect(result.ok).toBe(true);
   });
 
   it("coalesces omitted connectionGroupId to null in the INSERT", async () => {
     const { client, calls } = captureClient();
-    const bundle = bundleWithEntity({
+    await importBundle(client, bundleWithEntity({
       name: "users",
       entityType: "entity",
       yamlContent: "table: users\n",
-    });
-
-    await importBundle(client, bundle, "org-test");
+    }), "org-test");
 
     const insert = calls.find((c) => c.sql.includes("INSERT INTO semantic_entities"));
     expect(insert).toBeDefined();
@@ -351,14 +355,12 @@ describe("ExportedSemanticEntity.connectionGroupId — three import shapes", () 
 
   it("preserves explicit null in the INSERT", async () => {
     const { client, calls } = captureClient();
-    const bundle = bundleWithEntity({
+    await importBundle(client, bundleWithEntity({
       name: "users",
       entityType: "entity",
       yamlContent: "table: users\n",
       connectionGroupId: null,
-    });
-
-    await importBundle(client, bundle, "org-test");
+    }), "org-test");
 
     const insert = calls.find((c) => c.sql.includes("INSERT INTO semantic_entities"));
     expect(insert?.params[4]).toBeNull();
@@ -366,16 +368,98 @@ describe("ExportedSemanticEntity.connectionGroupId — three import shapes", () 
 
   it("forwards an explicit group id into the INSERT", async () => {
     const { client, calls } = captureClient();
-    const bundle = bundleWithEntity({
+    await importBundle(client, bundleWithEntity({
       name: "users",
       entityType: "entity",
       yamlContent: "table: users\n",
       connectionGroupId: "g_prod_us",
-    });
-
-    await importBundle(client, bundle, "org-test");
+    }), "org-test");
 
     const insert = calls.find((c) => c.sql.includes("INSERT INTO semantic_entities"));
     expect(insert?.params[4]).toBe("g_prod_us");
+  });
+
+  it("emits one INSERT per entity for a mixed-shape bundle, in order", async () => {
+    const { client, calls } = captureClient();
+    await importBundle(client, bundleWithEntities([
+      { name: "users", entityType: "entity", yamlContent: "table: users\n" },
+      { name: "orders", entityType: "entity", yamlContent: "table: orders\n", connectionGroupId: null },
+      { name: "events", entityType: "entity", yamlContent: "table: events\n", connectionGroupId: "g_prod_us" },
+    ]), "org-test");
+
+    const inserts = calls.filter((c) => c.sql.includes("INSERT INTO semantic_entities"));
+    expect(inserts).toHaveLength(3);
+    expect(inserts[0].params[2]).toBe("users");
+    expect(inserts[0].params[4]).toBeNull();
+    expect(inserts[1].params[2]).toBe("orders");
+    expect(inserts[1].params[4]).toBeNull();
+    expect(inserts[2].params[2]).toBe("events");
+    expect(inserts[2].params[4]).toBe("g_prod_us");
+  });
+
+  it("skips re-import when the entity already exists, regardless of wire shape", async () => {
+    const { client, calls } = captureClient(new Set(["entity::users"]));
+    const result = await importBundle(client, bundleWithEntity({
+      name: "users",
+      entityType: "entity",
+      yamlContent: "table: users\n",
+      // omitted connectionGroupId — confirms the skip path doesn't depend
+      // on the field being present.
+    }), "org-test");
+
+    const inserts = calls.filter((c) => c.sql.includes("INSERT INTO semantic_entities"));
+    expect(inserts).toHaveLength(0);
+    expect(result.semanticEntities.skipped).toBe(1);
+    expect(result.semanticEntities.imported).toBe(0);
+  });
+});
+
+describe("validateBundle — connectionGroupId type guard", () => {
+  // Optionality widens the field to `string | null | undefined`. Anything
+  // else is a producer bug and must surface as a 400 — never reach pg.
+  function bundleWithRawEntity(entity: Record<string, unknown>): unknown {
+    return {
+      manifest: { version: 1, exportedAt: "x", source: { label: "x" }, counts: { conversations: 0, messages: 0, semanticEntities: 1, learnedPatterns: 0, settings: 0 } },
+      conversations: [],
+      semanticEntities: [entity],
+      learnedPatterns: [],
+      settings: [],
+    };
+  }
+
+  function rejected(value: unknown): string | undefined {
+    const result = validateBundle(bundleWithRawEntity({
+      name: "users",
+      entityType: "entity",
+      yamlContent: "table: users\n",
+      connectionGroupId: value,
+    }));
+    return result.ok ? undefined : result.error;
+  }
+
+  it("rejects a numeric connectionGroupId", () => {
+    const err = rejected(42);
+    expect(err).toBeDefined();
+    expect(err).toContain("semanticEntities[0].connectionGroupId");
+  });
+
+  it("rejects an object connectionGroupId", () => {
+    expect(rejected({})).toContain("semanticEntities[0].connectionGroupId");
+  });
+
+  it("rejects an array connectionGroupId", () => {
+    expect(rejected([])).toContain("semanticEntities[0].connectionGroupId");
+  });
+
+  it("rejects an empty-string connectionGroupId", () => {
+    // Empty string would silently insert "" and fail the FK lookup later.
+    // Reject upfront so the producer sees a clear 400.
+    expect(rejected("")).toContain("semanticEntities[0].connectionGroupId");
+  });
+
+  it("accepts undefined, null, and a non-empty string", () => {
+    expect(rejected(undefined)).toBeUndefined();
+    expect(rejected(null)).toBeUndefined();
+    expect(rejected("g_prod_us")).toBeUndefined();
   });
 });

@@ -49,7 +49,7 @@ const nextConfig: NextConfig = {
   typescript: { ignoreBuildErrors: true },
   transpilePackages: ["@useatlas/react"],
   turbopack: {},
-  // Security headers (issue #1984) — applied to all responses.
+  // Security + cache headers (issues #1984, #2488) — applied to all responses.
   //
   // - HSTS pins HTTPS for a year. `preload` advertises eligibility; submission
   //   is a separate operator decision.
@@ -66,7 +66,15 @@ const nextConfig: NextConfig = {
   // Browsers ignore X-Frame-Options when CSP `frame-ancestors` is present, so
   // setting both globally is safe — the embed override wins where it matches.
   //
-  // The `headers()` function below is the canonical security-header policy.
+  // Cache-Control (issue #2488): the entry HTML must never be served stale
+  // across deploys — a tab on the previous bundle would request hashed chunks
+  // that no longer exist, breaking sign-in until a hard refresh. Hashed asset
+  // URLs in `/_next/static/*` are content-addressed and stay `immutable`, so
+  // chunk caching is preserved. `/api/*` is excluded so the Hono API keeps
+  // ownership of its own Cache-Control (widget loader, SSE streams,
+  // `.well-known/openid-configuration`, etc.).
+  //
+  // The `headers()` function below is the canonical response-header policy.
   // It is mirrored byte-for-byte into the scaffold next.config.ts files —
   // see `scripts/check-security-headers-drift.sh`, which fails CI on drift.
   // SECURITY-HEADERS-START
@@ -125,6 +133,35 @@ const nextConfig: NextConfig = {
               }
               return replaced;
             })(),
+          },
+        ],
+      },
+      {
+        // App shell HTML (issue #2488): force revalidation so a new deploy
+        // invalidates the bundle on the next navigation. The negative lookahead
+        // excludes `/_next/static/*` (handled below) and `/api/*` (owned by the
+        // Hono API — widget loader caches for a day, SSE streams set their own
+        // `no-cache, no-transform`). Path-to-regexp negative lookahead syntax;
+        // see Next.js headers() docs.
+        source: "/((?!_next/static|api/).*)",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "no-cache, must-revalidate",
+          },
+        ],
+      },
+      {
+        // Hashed asset URLs (`/_next/static/chunks/foo-<hash>.js`) are
+        // content-addressed and safe to cache forever. Next.js sets this by
+        // default for files it serves directly, but declaring it explicitly
+        // here keeps the policy stable regardless of how the standalone server
+        // is wrapped (Railway, Docker, reverse proxies).
+        source: "/_next/static/:path*",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "public, max-age=31536000, immutable",
           },
         ],
       },

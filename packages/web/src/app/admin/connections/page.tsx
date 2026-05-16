@@ -861,10 +861,14 @@ export default function ConnectionsPage() {
   );
 
   const [localConnections, setLocalConnections] = useState<ConnectionInfo[] | null>(null);
-  // `useAdminFetch` is typed as `ConnectionInfo[]` but has returned
-  // wrapped envelopes under schema drift; guard with `Array.isArray`
-  // so the for-of below keeps the page renderable, and emit a warning
-  // when the fallback fires so the regression has a breadcrumb.
+  // `useAdminFetch` is typed as `ConnectionInfo[]` but defense-in-depth
+  // matters here: the TanStack Query cache is keyed by path, not by schema,
+  // so any future admin page that fetches `/api/v1/admin/connections`
+  // through a non-array-transforming schema would poison this page's cache
+  // entry (see #2444 — `/admin/audit` parsed an object envelope and the
+  // connections page crashed with "O is not iterable" when audit was
+  // visited first). The known cross-schema caller was retired in that PR;
+  // this guard keeps the page renderable if the class of bug recurs.
   const displayConnections: ConnectionInfo[] = Array.isArray(localConnections)
     ? localConnections
     : Array.isArray(connections)
@@ -872,7 +876,7 @@ export default function ConnectionsPage() {
       : [];
   if (connections != null && !Array.isArray(connections)) {
     console.warn(
-      "[admin/connections] useAdminFetch returned non-array data — falling back to [].",
+      "[admin/connections] useAdminFetch returned non-array data — falling back to []. Another admin page is likely fetching /api/v1/admin/connections with a non-canonical schema (see #2444).",
       { typeof: typeof connections },
     );
   }

@@ -149,12 +149,12 @@ export const AuditFacetsSchema = z.object({
   columns: z.array(z.string()),
 });
 
-export const AuditConnectionMetaSchema = z.object({
-  connections: z.array(z.object({
-    id: z.string(),
-    description: z.string().optional(),
-  })),
-});
+// `AuditConnectionMetaSchema` removed in #2444 — the audit page now reuses
+// the canonical `ConnectionsResponseSchema` so every consumer of
+// `/api/v1/admin/connections` shares the same TanStack Query cache shape
+// (an array, not an object envelope). The old subset schema cached an
+// `{ connections: [...] }` shape that crashed `/admin/connections` when the
+// audit page populated the cache first.
 
 /**
  * Subset of `/api/v1/admin/oauth-clients` consumed by the audit-log

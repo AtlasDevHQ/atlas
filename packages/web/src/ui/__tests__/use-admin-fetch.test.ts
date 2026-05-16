@@ -649,6 +649,99 @@ describe("useAdminFetch", () => {
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  // #2444 — `/admin/connections` crashed in prod with "O is not iterable" when
+  // a user visited `/admin/audit` first. Audit parsed the response with a
+  // schema that returns `{ connections: [...] }` (object envelope); the
+  // connections page expects the array `ConnectionsResponseSchema` returns.
+  // Both share the queryKey `["admin-fetch", "/api/v1/admin/connections"]`,
+  // so within `staleTime` TanStack returns the cached parse — the audit
+  // page's object envelope — to the connections page without re-running its
+  // queryFn. The for-of over `displayConnections` then iterated an object.
+  //
+  // The fix in PR/#2444 was to retire the bespoke audit schema so every
+  // caller of /api/v1/admin/connections agrees on the array shape. This
+  // pair of tests pins both halves: the first reproduces the cache
+  // collision; the second proves that aligning both callers on the
+  // transform schema makes the cache safe.
+  test("same path with different schemas shares cache entry (cross-page collision)", async () => {
+    const ObjectEnvelopeSchema = z.object({
+      connections: z.array(z.object({ id: z.string() })),
+    });
+    const ArrayTransformSchema = z
+      .object({ connections: z.array(z.object({ id: z.string() })).optional() })
+      .transform((r) => r.connections ?? []);
+
+    globalThis.fetch = mock(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ connections: [{ id: "a" }] }), { status: 200 }),
+      ),
+    ) as unknown as typeof fetch;
+
+    // First mount uses the object-envelope schema (audit's pre-#2444 shape).
+    const { result: first, unmount: unmountFirst } = renderHook(
+      () => useAdminFetch("/api/v1/admin/connections", { schema: ObjectEnvelopeSchema }),
+      { wrapper },
+    );
+    await waitFor(() => {
+      expect(first.current.loading).toBe(false);
+    });
+    expect(first.current.data).toEqual({ connections: [{ id: "a" }] });
+    unmountFirst();
+
+    // Second mount uses the array-transform schema (connections page shape).
+    // With the cache primed, TanStack returns the cached parse without
+    // re-running this mount's queryFn — so the connections page sees
+    // `{ connections: [{ id: "a" }] }`, not the array it expects. The
+    // page-level Array.isArray guard exists exactly to keep the page
+    // rendering when this happens.
+    const { result: second } = renderHook(
+      () => useAdminFetch("/api/v1/admin/connections", { schema: ArrayTransformSchema }),
+      { wrapper },
+    );
+    await waitFor(() => {
+      expect(second.current.loading).toBe(false);
+    });
+
+    expect(second.current.data).toEqual({ connections: [{ id: "a" }] });
+    expect(Array.isArray(second.current.data)).toBe(false);
+  });
+
+  // #2444 root-cause fix: when both callers parse with the canonical
+  // transform schema, the cache entry holds the array shape and the second
+  // caller sees it correctly even though TanStack skipped its queryFn.
+  test("same path with the same transform schema yields a consistent array shape", async () => {
+    const ArrayTransformSchema = z
+      .object({ connections: z.array(z.object({ id: z.string() })).optional() })
+      .transform((r) => r.connections ?? []);
+
+    globalThis.fetch = mock(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ connections: [{ id: "a" }] }), { status: 200 }),
+      ),
+    ) as unknown as typeof fetch;
+
+    const { result: first, unmount: unmountFirst } = renderHook(
+      () => useAdminFetch("/api/v1/admin/connections", { schema: ArrayTransformSchema }),
+      { wrapper },
+    );
+    await waitFor(() => {
+      expect(first.current.loading).toBe(false);
+    });
+    expect(first.current.data).toEqual([{ id: "a" }]);
+    unmountFirst();
+
+    const { result: second } = renderHook(
+      () => useAdminFetch("/api/v1/admin/connections", { schema: ArrayTransformSchema }),
+      { wrapper },
+    );
+    await waitFor(() => {
+      expect(second.current.loading).toBe(false);
+    });
+
+    expect(Array.isArray(second.current.data)).toBe(true);
+    expect(second.current.data).toEqual([{ id: "a" }]);
+  });
 });
 
 /* ------------------------------------------------------------------ */

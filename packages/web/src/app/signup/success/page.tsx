@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth/client";
 import { Button } from "@/components/ui/button";
@@ -52,24 +51,20 @@ const STARTER_PROMPTS = [
 
 export default function SuccessPage() {
   const router = useRouter();
-  const [opening, setOpening] = useState(false);
 
-  // Force the Better Auth session store to fetch the just-established session
-  // before navigating to a guarded route. Without this, the in-memory store
-  // can hold the pre-signup `null` snapshot, AuthGuard reads `!isSignedIn`,
-  // and bounces the user to /login (#2487).
+  // #2487: hydrate the Better Auth session store before navigating to a
+  // guarded route. Without this, AuthGuard can read the pre-signup `null`
+  // snapshot and bounce the user back to /login.
   async function openAtlas(destination: string) {
-    setOpening(true);
     try {
       await authClient.getSession();
     } catch (err) {
-      console.debug(
+      console.warn(
         "[signup/success] getSession before navigate failed:",
         err instanceof Error ? err.message : String(err),
       );
-    } finally {
-      router.push(destination);
     }
+    router.push(destination);
   }
 
   return (
@@ -96,8 +91,7 @@ export default function SuccessPage() {
                   <button
                     type="button"
                     onClick={() => openAtlas(`/?prompt=${encodeURIComponent(prompt)}`)}
-                    disabled={opening}
-                    className="group flex w-full items-center justify-between gap-3 rounded-md border bg-card px-3 py-2.5 text-left text-sm transition-colors hover:border-primary/40 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                    className="group flex w-full items-center justify-between gap-3 rounded-md border bg-card px-3 py-2.5 text-left text-sm transition-colors hover:border-primary/40 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <span>{prompt}</span>
                     <ArrowRight className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-foreground" aria-hidden="true" />
@@ -107,13 +101,8 @@ export default function SuccessPage() {
             </ul>
           </section>
 
-          <Button
-            size="lg"
-            className="w-full"
-            disabled={opening}
-            onClick={() => openAtlas("/")}
-          >
-            {opening ? "Opening Atlas…" : "Open Atlas"}
+          <Button size="lg" className="w-full" onClick={() => openAtlas("/")}>
+            Open Atlas
           </Button>
 
           <section aria-labelledby="next-heading" className="space-y-3 border-t pt-6">

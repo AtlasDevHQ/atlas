@@ -10,9 +10,9 @@
  * a too-tight WHERE clause (e.g. `AND url <> ''`) shows up in *both* the
  * route and the test in the same diff, so it can't ship green.
  *
- * The Phase 4 cascade (PRD #2336 / issue #2413) extends the same pattern:
+ * The group-archive cascade follows the same discipline: the
  * `CASCADE_ARCHIVE_GROUP_*` statements below are imported by both the
- * archive route handler and the migrate-pg smoke. Any regression that
+ * archive route handler and the migrate-pg smoke. A regression that
  * relaxes the `org_id` predicate or skips a content table shows up in
  * both call sites in the same diff.
  */
@@ -207,7 +207,7 @@ export const MERGE_CONNECTIONS_INTO_GROUP_SQL = `
 `;
 
 // ---------------------------------------------------------------------------
-// Phase 4 — group-archive cascade (PRD #2336 / issue #2413)
+// Group-archive cascade
 // ---------------------------------------------------------------------------
 //
 // Archiving a connection group atomically retires every content row scoped
@@ -218,11 +218,10 @@ export const MERGE_CONNECTIONS_INTO_GROUP_SQL = `
 //
 // Vocabulary mismatch between this slice and the rest of the schema:
 //
-//   - `connection_groups.status` uses the new `active` / `archived`
-//     enum introduced in migration 0071. The mode-system tables
-//     reuse the existing `published` / `draft` / `archived` lifecycle
-//     (`semantic_entities` additionally has `draft_delete` for its
-//     tombstone overlay).
+//   - `connection_groups.status` uses an `active` / `archived` enum.
+//     The mode-system tables reuse the existing `published` / `draft`
+//     / `archived` lifecycle (`semantic_entities` additionally has
+//     `draft_delete` for its tombstone overlay).
 //   - `scheduled_tasks` has no `status` column — it carries an
 //     `enabled` boolean that already serves the same intent. The
 //     existing `cascadeWorkspaceDelete` flow in `lib/db/internal.ts`
@@ -255,11 +254,12 @@ export const MERGE_CONNECTIONS_INTO_GROUP_SQL = `
 // The route caller wraps them in BEGIN/COMMIT so the whole bundle is
 // atomic.
 
-/**
- * Flip every `semantic_entities` row scoped to the group to
- * `status = 'archived'`. Skips rows already archived so re-runs are
- * no-ops. Returns one row per archived entity for the count.
- */
+// Per-table cascade statements. Each takes `$1 = group id, $2 = org id`,
+// returns `id` per touched row for the count, and is idempotent (a re-run
+// against an already-cascaded group flips zero rows). The terminal state
+// per table is captured by the umbrella vocabulary-mismatch block above;
+// names are self-describing, so no per-constant JSDoc.
+
 export const CASCADE_ARCHIVE_GROUP_ENTITIES_SQL = `
   UPDATE semantic_entities
      SET status = 'archived', updated_at = NOW()
@@ -269,14 +269,6 @@ export const CASCADE_ARCHIVE_GROUP_ENTITIES_SQL = `
   RETURNING id
 `;
 
-/**
- * Disable every `scheduled_tasks` row scoped to the group. Uses
- * `enabled = false` rather than `status = 'archived'` because the table
- * has no status column — see vocabulary mismatch comment above. The
- * scheduler's `idx_scheduled_tasks_next_run` partial index already
- * filters on `enabled = true`, so a disabled task stops firing without
- * any further read-path changes.
- */
 export const CASCADE_ARCHIVE_GROUP_TASKS_SQL = `
   UPDATE scheduled_tasks
      SET enabled = false, updated_at = NOW()
@@ -286,14 +278,6 @@ export const CASCADE_ARCHIVE_GROUP_TASKS_SQL = `
   RETURNING id
 `;
 
-/**
- * Expire every pending `approval_queue` row scoped to the group. Uses
- * `status = 'expired'` because `chk_approval_status` does not allow
- * `'archived'`; `'expired'` is the matching semantic that the existing
- * `expireStaleRequests` flow uses for the same intent. Re-running this
- * is a no-op (WHERE filters on `status = 'pending'`); approved /
- * denied / expired rows are left as-is so audit history resolves intact.
- */
 export const CASCADE_ARCHIVE_GROUP_APPROVALS_SQL = `
   UPDATE approval_queue
      SET status = 'expired'
@@ -303,13 +287,9 @@ export const CASCADE_ARCHIVE_GROUP_APPROVALS_SQL = `
   RETURNING id
 `;
 
-/**
- * Flip the group itself to `status = 'archived'`. RETURNING the id is
- * how the route detects "this caller actually flipped state" vs
- * "already archived by a prior call"; the route maps the latter to a
- * typed 409 with the existing group id so the admin sees a meaningful
- * error rather than a silent no-op.
- */
+// `WHERE status = 'active'` is load-bearing — it converts a concurrent
+// duplicate flip into a 0-row no-op rather than a 23505 / silent
+// duplicate audit. The route maps RETURNING [] to 409.
 export const ARCHIVE_GROUP_SQL = `
   UPDATE connection_groups
      SET status = 'archived', updated_at = NOW()

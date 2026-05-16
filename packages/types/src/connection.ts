@@ -134,22 +134,41 @@ export interface ConnectionDetail {
  * - `archived` — read-only tombstone. The group's content was
  *                cascade-archived; renames, member assignments, and
  *                re-archives are refused server-side.
+ *
+ * Runtime tuple + derived type mirrors {@link CONNECTION_STATUSES} so
+ * schemas can `z.enum(CONNECTION_GROUP_STATUSES)` instead of restating
+ * the literals in each call site.
  */
-export type ConnectionGroupStatus = "active" | "archived";
+export const CONNECTION_GROUP_STATUSES = ["active", "archived"] as const;
+export type ConnectionGroupStatus = (typeof CONNECTION_GROUP_STATUSES)[number];
 
 export interface ConnectionGroup {
   id: string;
   name: string;
-  /** Lifecycle. Optional at the type level so older SDK consumers
-   * compiled against pre-status wire types still typecheck after a
-   * `@useatlas/types` bump — `0.0.x` exact-pin semver means a required
-   * field is a breaking change for every dependent. New backends
-   * always populate it; consumers should treat `undefined` as `active`. */
+  /** Lifecycle. Optional so a consumer pinned to a pre-status wire
+   * type still typechecks; consumers should treat `undefined` as
+   * `active`. */
   status?: ConnectionGroupStatus;
   /** Number of connections currently assigned to this group. */
   memberCount: number;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * Counts surfaced by the group-archive cascade. The HTTP status encodes
+ * the win/lose discriminant (200 = this caller archived; 409 = a
+ * concurrent admin won, or the group was already archived). The body
+ * just reports cascade scope.
+ *
+ * Heterogeneous terminal states: entities flip to `archived`, tasks to
+ * `enabled=false`, approvals to `expired`. The counts are uniform; the
+ * underlying lifecycle vocabulary is not.
+ */
+export interface GroupArchiveCounts {
+  entities: number;
+  tasks: number;
+  approvals: number;
 }
 
 /**

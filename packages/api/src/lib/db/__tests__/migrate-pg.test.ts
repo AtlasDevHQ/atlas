@@ -2369,7 +2369,7 @@ describeIfPg("migrate-pg (real Postgres)", () => {
   }, PG_TEST_TIMEOUT_MS);
 
   // ---------------------------------------------------------------------
-  // 0071 — connection_groups.status + Phase 4 archive cascade (#2413)
+  // connection_groups.status + group-archive cascade
   // ---------------------------------------------------------------------
   //
   // Real-Postgres assertions for the canonical cascade SQL imported from
@@ -2478,11 +2478,19 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       expect(groupRes.rowCount).toBe(1);
       await client.query("COMMIT");
     } catch (err) {
-      await client.query("ROLLBACK");
+      // Swallow ROLLBACK failures so the *original* assertion error
+      // propagates — a failed ROLLBACK on top would mask the actual
+      // cascade bug and make debugging nightmarish. The release-with-err
+      // below still destroys the poisoned socket.
+      let rbErr: unknown = null;
+      await client.query("ROLLBACK").catch((e) => {
+        rbErr = e;
+      });
+      client.release(rbErr instanceof Error ? rbErr : undefined);
       throw err;
-    } finally {
-      client.release();
     }
+    // On the happy path the COMMIT path already ran; release cleanly.
+    client.release();
 
     // Post-commit assertions: every flip stuck.
     const entity = await pool.query<{ status: string }>(
@@ -2596,6 +2604,7 @@ describeIfPg("migrate-pg (real Postgres)", () => {
 
     const client = await pool.connect();
     let caught: unknown = null;
+    let rollbackErr: Error | null = null;
     try {
       await client.query("BEGIN");
       await client.query(CASCADE_ARCHIVE_GROUP_ENTITIES_SQL, [groupId, orgId]);
@@ -2609,9 +2618,14 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       await client.query("COMMIT");
     } catch (err) {
       caught = err;
-      await client.query("ROLLBACK");
+      // Guard ROLLBACK so a dead socket doesn't mask the 23514 we're
+      // actually asserting on. `client.release(rollbackErr)` destroys
+      // the poisoned socket so the next pool borrower isn't affected.
+      await client.query("ROLLBACK").catch((rbErr: unknown) => {
+        rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
+      });
     } finally {
-      client.release();
+      client.release(rollbackErr ?? undefined);
     }
     expect(caught).toMatchObject({ code: "23514" });
 
@@ -2628,6 +2642,66 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
     expect(entity.rows[0]?.status).toBe("published");
     expect(group.rows[0]?.status).toBe("active");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("archive cascade: dashboard_cards are intentionally NOT touched", async () => {
+    // The cascade slice deliberately leaves dashboard_cards alone: the
+    // table has no status column, and adding one would change the read
+    // path for every dashboard surface. A future contributor adding a
+    // CASCADE_ARCHIVE_GROUP_CARDS_SQL would silently break the docs
+    // promise that cards keep rendering until manually edited. This
+    // test pins that contract.
+    const orgId = `org-cards-${Date.now()}`;
+    const groupId = `g-cards-${Date.now()}`;
+    // Seed a parent dashboard so dashboard_cards.dashboard_id FK
+    // resolves. The dashboards table requires owner_id, share_mode,
+    // org_id, and slug; pass the minimum.
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'cards-target')`,
+      [groupId, orgId],
+    );
+    const dashboardInsert = await pool.query<{ id: string }>(
+      `INSERT INTO dashboards (org_id, owner_id, name, slug, share_mode)
+       VALUES ($1, 'owner', 'card-test', 'card-test-${Date.now()}', 'org')
+       RETURNING id`,
+      [orgId],
+    );
+    const dashboardId = dashboardInsert.rows[0]!.id;
+    const cardInsert = await pool.query<{ id: string }>(
+      `INSERT INTO dashboard_cards (dashboard_id, position, title, sql, connection_group_id)
+       VALUES ($1, 0, 'count rows', 'select 1', $2)
+       RETURNING id`,
+      [dashboardId, groupId],
+    );
+    const cardId = cardInsert.rows[0]!.id;
+
+    // Run the full cascade (entities + tasks + approvals + group).
+    await pool.query(CASCADE_ARCHIVE_GROUP_ENTITIES_SQL, [groupId, orgId]);
+    await pool.query(CASCADE_ARCHIVE_GROUP_TASKS_SQL, [groupId, orgId]);
+    await pool.query(CASCADE_ARCHIVE_GROUP_APPROVALS_SQL, [groupId, orgId]);
+    await pool.query(ARCHIVE_GROUP_SQL, [groupId, orgId]);
+
+    // Group is archived; the card is untouched (still points at the
+    // archived group). Reads at view time SHOULD eventually surface
+    // the archived state, but that's a separate slice.
+    const group = await pool.query<{ status: string }>(
+      `SELECT status FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [groupId, orgId],
+    );
+    expect(group.rows[0]?.status).toBe("archived");
+    const card = await pool.query<{
+      id: string;
+      connection_group_id: string | null;
+    }>(
+      `SELECT id, connection_group_id FROM dashboard_cards WHERE id = $1`,
+      [cardId],
+    );
+    expect(card.rows[0]?.connection_group_id).toBe(groupId);
+    // The card row itself was not deleted, NULLed, or otherwise
+    // touched. If a future contributor adds a card cascade, this row
+    // count would change and the test would flag the docs / dialog
+    // copy update too.
+    expect(card.rows.length).toBe(1);
   }, PG_TEST_TIMEOUT_MS);
 
   it("resolveGroupForConnection: does NOT resolve when caller orgId is null and connections.org_id is a different tenant (#2415)", async () => {

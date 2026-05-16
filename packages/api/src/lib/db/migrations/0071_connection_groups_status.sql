@@ -1,4 +1,4 @@
--- 0071 — connection_groups.status (PRD #2336 § "Phase 4 archive cascade", issue #2413).
+-- 0071 — connection_groups.status.
 --
 -- Adds a lifecycle column to `connection_groups` so the multi-environment
 -- admin surface can retire a whole region atomically. The cascade UPDATEs

@@ -6,7 +6,13 @@
 
 import type { ShareMode } from "@useatlas/types";
 
-export { AUTH_MODES, ATLAS_MODES, ADMIN_ROLES, DB_TYPES } from "@useatlas/types";
+export {
+  AUTH_MODES,
+  ATLAS_MODES,
+  ADMIN_ROLES,
+  DB_TYPES,
+  CONNECTION_GROUP_STATUSES,
+} from "@useatlas/types";
 export type {
   AdminRole,
   AtlasMode,
@@ -26,7 +32,9 @@ export type {
   ConnectionInfo,
   ConnectionDetail,
   ConnectionGroup,
+  ConnectionGroupStatus,
   ConnectionGroupMember,
+  GroupArchiveCounts,
   ConnectionStatus,
   PoolMetrics,
   ChatErrorCode,

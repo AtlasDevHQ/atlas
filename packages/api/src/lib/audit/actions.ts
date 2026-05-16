@@ -131,9 +131,9 @@ export const ADMIN_ACTIONS = {
      */
     merge: "connection_group.merge",
     /**
-     * Phase 4 archive cascade (#2413). The action's `targetId` is the
-     * archived group id; `metadata` carries `{ archivedCounts }` so the
-     * audit row reconstructs the cascade scope without re-querying.
+     * Group-archive cascade. The action's `targetId` is the archived
+     * group id; `metadata` carries `{ archivedCounts }` so the audit
+     * row reconstructs the cascade scope without re-querying.
      */
     archive: "connection_group.archive",
   },

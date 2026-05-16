@@ -54,7 +54,11 @@ import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surfa
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { Loader2, Plus, Pencil, Trash2, Layers, GitMerge, Archive } from "lucide-react";
-import type { ConnectionGroup } from "@/ui/lib/types";
+import {
+  CONNECTION_GROUP_STATUSES,
+  type ConnectionGroup,
+  type GroupArchiveCounts,
+} from "@/ui/lib/types";
 import {
   stripGroupPrefix,
   isAutoBackfilledSingleton,
@@ -66,11 +70,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 const GroupSchema = z.object({
   id: z.string(),
   name: z.string(),
-  // `default("active")` keeps decode tolerant of the brief window between
-  // a backend deploy that surfaces `status` and a frontend rebuild that
-  // doesn't — old-shape responses still pass schema decode and render
-  // as `active`. New deploys always populate the field server-side.
-  status: z.enum(["active", "archived"]).default("active"),
+  // `default("active")` keeps decode tolerant of a deploy-skew window —
+  // an older API surface without a status field still decodes.
+  status: z.enum(CONNECTION_GROUP_STATUSES).default("active"),
   memberCount: z.number().int().nonnegative(),
   primaryConnectionId: z.string().nullable().optional(),
   resolvedConnectionId: z.string().nullable().optional(),
@@ -652,17 +654,11 @@ function DeleteGroupDialog({
 }
 
 // ---------------------------------------------------------------------------
-// Archive group (Phase 4 cascade — #2413)
+// Archive group (cascade)
 // ---------------------------------------------------------------------------
 
 interface ArchiveResponse {
-  archivedCounts: {
-    entities: number;
-    tasks: number;
-    approvals: number;
-    /** 1 when this caller flipped state; 0 when a concurrent admin won. */
-    group: number;
-  };
+  archivedCounts: GroupArchiveCounts;
 }
 
 /**
@@ -670,14 +666,6 @@ interface ArchiveResponse {
  * runs the cascade in one transaction, so a confirm click is the only
  * destructive moment; if it fails, nothing flipped and the dialog
  * surfaces the error inline.
- *
- * The preview deliberately doesn't pre-fetch the exact counts — wiring a
- * `/admin/connection-groups/:id/archive-preview` endpoint would double
- * the route surface for a confirmation banner. The dialog instead
- * surfaces what the cascade WILL do (entities + tasks + approvals
- * archived; cards retained as broken until manually edited) in plain
- * language; the response renders the actual counts post-archive so the
- * admin can audit the scope.
  */
 function ArchiveGroupDialog({
   group,

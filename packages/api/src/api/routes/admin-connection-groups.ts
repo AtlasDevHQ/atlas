@@ -13,8 +13,13 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
+import {
+  CONNECTION_GROUP_STATUSES,
+  type ConnectionGroupStatus,
+  type GroupArchiveCounts,
+} from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
-import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { logAdminAction, logAdminActionAwait, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { internalQuery, getInternalDB } from "@atlas/api/lib/db/internal";
 import {
@@ -60,19 +65,26 @@ type GroupRow = {
 
 /**
  * Narrow a DB-derived status to the canonical wire enum. The CHECK on
- * `connection_groups.status` already rejects anything outside
- * `'active' | 'archived'`, but the column is typed `text` at the driver
- * layer; this helper keeps the wire schema honest without re-validating.
+ * `connection_groups.status` already rejects anything outside the enum
+ * at write time, so a value outside the tuple here is real corruption
+ * (CHECK dropped in a future migration, or a hand-edited row). Log it
+ * and fall back to `'active'` so the list endpoint doesn't tank, but
+ * leave a breadcrumb so the drift surfaces in production telemetry.
  */
-function safeStatus(value: unknown): "active" | "archived" {
-  return value === "archived" ? "archived" : "active";
+function projectStatus(value: unknown, ctx: { groupId: string; orgId: string }): ConnectionGroupStatus {
+  if (value === "active" || value === "archived") return value;
+  log.warn(
+    { groupId: ctx.groupId, orgId: ctx.orgId, observed: value },
+    "connection_groups.status outside enum — falling back to 'active'",
+  );
+  return "active";
 }
 
-function rowToWire(row: GroupRow) {
+function rowToWire(row: GroupRow, orgId: string) {
   return {
     id: row.id,
     name: row.name,
-    status: safeStatus(row.status),
+    status: projectStatus(row.status, { groupId: row.id, orgId }),
     memberCount: safeMemberCount(row.member_count),
     primaryConnectionId: row.primary_connection_id ?? null,
     /** Resolved "executes against" target: primary if set, else first
@@ -140,10 +152,10 @@ function generateGroupId(): string {
 const ConnectionGroupSchema = z.object({
   id: z.string(),
   name: z.string(),
-  /** 0071 — lifecycle. UI hides archived groups behind a "Show archived"
+  /** Lifecycle. UI hides archived groups behind a "Show archived"
    * toggle; archived groups are read-only and cannot be renamed,
    * assigned new members, or re-archived. */
-  status: z.enum(["active", "archived"]),
+  status: z.enum(CONNECTION_GROUP_STATUSES),
   memberCount: z.number().int().nonnegative(),
   /** 0066 — admin-pinned primary member. NULL means "fall back to
    * first member by (created_at, id)" — see lib/dashboards-group-resolve.ts. */
@@ -356,7 +368,7 @@ adminConnectionGroups.openapi(listGroupsRoute, async (c) =>
          ORDER BY g.name ASC`,
         [orgId],
       );
-      return c.json({ groups: rows.map(rowToWire) }, 200);
+      return c.json({ groups: rows.map((r) => rowToWire(r, orgId)) }, 200);
     } catch (err) {
       log.error({ err: errorMessage(err), requestId, orgId }, "Failed to list connection groups");
       return c.json({ error: "internal_error", message: "Failed to list connection groups.", requestId }, 500);
@@ -411,7 +423,7 @@ adminConnectionGroups.openapi(getGroupRoute, async (c) =>
       );
       return c.json(
         {
-          ...rowToWire(rows[0]),
+          ...rowToWire(rows[0], orgId),
           members: members.map((m) => ({
             connectionId: m.id,
             dbType: m.type,
@@ -490,7 +502,7 @@ adminConnectionGroups.openapi(createGroupRoute, async (c) =>
        FROM connection_groups WHERE id = $1 AND org_id = $2`,
       [id, orgId],
     );
-    return c.json(rowToWire(created[0]), 201);
+    return c.json(rowToWire(created[0], orgId), 201);
   }),
 );
 
@@ -561,7 +573,7 @@ adminConnectionGroups.openapi(renameGroupRoute, async (c) =>
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
       metadata: { name: trimmedName },
     });
-    return c.json(rowToWire(updated[0]), 200);
+    return c.json(rowToWire(updated[0], orgId), 200);
   }),
 );
 
@@ -1150,12 +1162,11 @@ adminConnectionGroups.openapi(mergeGroupsRoute, async (c) =>
         target: {
           id: row.target.id,
           name: row.target.name,
-          // Merge always lands the target as `active` — the merge CTE
-          // INSERTs without an explicit status, so the column default
-          // (`'active'`, per migration 0071) governs. Hardcoded here so
-          // the wire response stays in lockstep with the schema instead
-          // of round-tripping the column for one field.
-          status: "active" as const,
+          // The merge CTE INSERTs without an explicit status (default
+          // governs) and the pre-validate refuses an archived-name
+          // collision (409) before the CTE runs, so the target is
+          // always active by construction.
+          status: "active" as ConnectionGroupStatus,
           memberCount: row.moved_connection_ids.length,
           primaryConnectionId: row.target.primaryConnectionId,
           resolvedConnectionId: row.target.primaryConnectionId,
@@ -1173,9 +1184,12 @@ adminConnectionGroups.openapi(mergeGroupsRoute, async (c) =>
 );
 
 // ---------------------------------------------------------------------------
-// POST /:id/archive — Phase 4 group-archive cascade (#2413)
+// POST /:id/archive — group-archive cascade
 // ---------------------------------------------------------------------------
 
+/** Mirrors {@link GroupArchiveCounts} in `@useatlas/types`. The
+ * `satisfies` check below pins the two definitions in lockstep — if
+ * either side drifts, TS errors at module load. */
 const ArchiveCountsSchema = z.object({
   /** semantic_entities flipped from non-archived to `'archived'`. */
   entities: z.number().int().nonnegative(),
@@ -1183,15 +1197,17 @@ const ArchiveCountsSchema = z.object({
   tasks: z.number().int().nonnegative(),
   /** approval_queue rows flipped from `'pending'` to `'expired'`. */
   approvals: z.number().int().nonnegative(),
-  /** 1 when this caller flipped the group itself; 0 when it was already archived. */
-  group: z.number().int().min(0).max(1),
 });
+// Compile-time pin: the inferred Zod type must match the shared wire
+// type. Drift in either file fails type-check.
+const _archiveCountsTypeCheck: GroupArchiveCounts = {} as z.infer<typeof ArchiveCountsSchema>;
+void _archiveCountsTypeCheck;
 
 const archiveGroupRoute = createRoute({
   method: "post",
   path: "/{id}/archive",
   tags: ["Admin — Connection Groups"],
-  summary: "Archive connection group (Phase 4 cascade)",
+  summary: "Archive connection group (cascade)",
   description:
     "Atomically marks the group `status = 'archived'` and cascades to every content row scoped to it: semantic entities → `archived`, scheduled tasks → `enabled = false`, pending approvals → `expired`. All four flips happen in one transaction — any sub-step failure rolls every flip back. Idempotent: re-archiving a group returns a 409 with the current archived state rather than double-counting.",
   request: {
@@ -1253,7 +1269,7 @@ adminConnectionGroups.openapi(archiveGroupRoute, async (c) =>
     const pool = getInternalDB();
     const client = await pool.connect();
     let rollbackErr: Error | null = null;
-    let archivedCounts: { entities: number; tasks: number; approvals: number; group: number };
+    let archivedCounts: GroupArchiveCounts;
     try {
       await client.query("BEGIN");
       const entitiesRes = await client.query(CASCADE_ARCHIVE_GROUP_ENTITIES_SQL, [id, orgId]);
@@ -1286,18 +1302,26 @@ adminConnectionGroups.openapi(archiveGroupRoute, async (c) =>
         entities: entitiesRes.rows.length,
         tasks: tasksRes.rows.length,
         approvals: approvalsRes.rows.length,
-        group: groupRes.rows.length,
       };
     } catch (err) {
+      const triggeringErr = errorMessage(err);
       await client.query("ROLLBACK").catch((rbErr: unknown) => {
         rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
+        // Both errors logged together — the rollback failure is the
+        // proximate "client will be destroyed" cause, the triggering
+        // failure is the why-we-rolled-back. Correlating both in one
+        // line beats two warnings that future me has to stitch by
+        // timestamp.
         log.warn(
-          { requestId, orgId, groupId: id, err: rollbackErr.message },
+          { requestId, orgId, groupId: id, rollbackErr, triggeringErr },
           "ROLLBACK failed during connection-group archive — client will be destroyed",
         );
       });
       log.error(
-        { err: errorMessage(err), requestId, orgId, groupId: id },
+        // Pass the structured error (not just `.message`) so the
+        // logger keeps the stack. `errorMessage` is reserved for
+        // user-visible scrubbed messages.
+        { err, requestId, orgId, groupId: id },
         "Failed to archive connection group",
       );
       return c.json(
@@ -1312,13 +1336,36 @@ adminConnectionGroups.openapi(archiveGroupRoute, async (c) =>
       { requestId, orgId, groupId: id, archivedCounts, actorId: authResult.user?.id },
       "Connection group archived",
     );
-    logAdminAction({
-      actionType: ADMIN_ACTIONS.connection_group.archive,
-      targetType: "connection_group",
-      targetId: id,
-      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-      metadata: { archivedCounts },
-    });
+    // Await the audit write so an internal-DB outage surfaces as a 500
+    // rather than a silent gap. The cascade is high-blast-radius (every
+    // entity / task / approval scoped to the group) and the audit row
+    // IS the forensic trail. If the audit fails after COMMIT, a retry
+    // hits the pre-check's 409 (group is already archived), so the
+    // 500 doesn't double-flip — it just makes the audit gap visible to
+    // the admin instead of swallowing it.
+    try {
+      await logAdminActionAwait({
+        actionType: ADMIN_ACTIONS.connection_group.archive,
+        targetType: "connection_group",
+        targetId: id,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { archivedCounts },
+      });
+    } catch (auditErr) {
+      log.error(
+        { err: auditErr, requestId, orgId, groupId: id, archivedCounts },
+        "Connection group archive committed but audit log write failed — operator action required",
+      );
+      return c.json(
+        {
+          error: "internal_error",
+          message:
+            "The environment was archived but the audit log write failed. The state IS archived (a retry will see 409); operators have been alerted.",
+          requestId,
+        },
+        500,
+      );
+    }
     return c.json({ archivedCounts }, 200);
   }),
 );

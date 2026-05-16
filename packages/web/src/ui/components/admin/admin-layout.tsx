@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { useEffect } from "react";
+import { usePathname } from "next/navigation";
 import { toast } from "sonner";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
@@ -13,7 +14,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { ShieldX } from "lucide-react";
+import { ShieldCheck, ShieldX } from "lucide-react";
 import Link from "next/link";
 import { AdminSidebar } from "./admin-sidebar";
 import { AdminTopBar } from "./admin-top-bar";
@@ -25,6 +26,23 @@ import { MfaEnrollmentDialog } from "./mfa-enrollment-dialog";
 import { usePasswordStatus } from "@/ui/hooks/use-password-status";
 
 /**
+ * Routes that must render normally even when the admin is not yet enrolled
+ * in MFA. The enrollment page itself is the only carve-out — if we blocked
+ * it, the admin would have nowhere to complete enrollment and would be
+ * permanently locked out of the console.
+ *
+ * #2486 — keep this list minimal. Any new "safe pre-MFA" route is a
+ * conscious decision: pre-enroll, admin/owner/platform_admin sessions
+ * shouldn't see workspace-scoped data even if the page is read-only.
+ */
+const MFA_GATE_EXEMPT_PREFIXES = ["/admin/account-security"];
+
+function isMfaGateExempt(pathname: string | null): boolean {
+  if (!pathname) return false;
+  return MFA_GATE_EXEMPT_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+}
+
+/**
  * Inner layout — runs inside `MfaGateProvider` so it can dispatch the
  * gate when password-status returns `mfa-required`. Splitting the provider
  * out from the layout content keeps the trigger effect colocated with the
@@ -34,13 +52,15 @@ function AdminLayoutInner({ children }: { children: ReactNode }) {
   const { authClient } = useAtlasConfig();
   const session = authClient.useSession();
   const { trigger } = useMfaGate();
+  const pathname = usePathname();
 
   // Shared with AtlasChat — TanStack deduplicates to a single request.
   const { data, isPending, isError } = usePasswordStatus(!!session.data?.user);
 
-  // The password-status endpoint is not behind `mfaRequired` today — the
-  // dispatch is defensive so the gate fires correctly if that ever changes,
-  // instead of falling through to the denied Card below.
+  // Dispatch the MFA dialog when password-status surfaces the gate signal
+  // (#2486 — primary path is the 200 body `mfaRequired:true`; the hook also
+  // maps a defensive 403 fallback). The dialog itself opens on top of the
+  // layout-level gate render below.
   useEffect(() => {
     if (data?.kind === "mfa-required") {
       trigger(data.enrollmentUrl);
@@ -72,7 +92,7 @@ function AdminLayoutInner({ children }: { children: ReactNode }) {
   }
 
   // Signed in but not admin — inline forbidden UI using shadcn.
-  // mfa-required falls through — the dialog below is the gating UI, not this Card.
+  // `mfa-required` is handled below as a full-tree gate (#2486), not here.
   if (adminCheck === "denied") {
     return (
       <main id="main" tabIndex={-1} className="flex h-full items-center justify-center bg-background p-4">
@@ -111,12 +131,30 @@ function AdminLayoutInner({ children }: { children: ReactNode }) {
     );
   }
 
+  // #2486 — gate-all posture. When the admin is not yet enrolled in MFA,
+  // every /admin/* route blocks rendering of its content and shows the
+  // enrollment gate instead. The enrollment page is exempt so the user can
+  // complete setup. We keep the sidebar + top bar mounted so the user has
+  // navigation context (Sign out, jump to /admin/account-security, etc.)
+  // and so the page chrome doesn't flash blank between the check and the
+  // dialog opening.
+  const enrollmentUrl =
+    data?.kind === "mfa-required" ? data.enrollmentUrl : "/admin/account-security";
+  const gateBlocking =
+    adminCheck === "mfa-required" && !isMfaGateExempt(pathname);
+
   return (
     <SidebarProvider className="!min-h-0 h-full">
       <AdminSidebar />
       <SidebarInset id="main" tabIndex={-1}>
         <AdminTopBar />
-        <ScrollArea className="flex-1">{children}</ScrollArea>
+        <ScrollArea className="flex-1">
+          {gateBlocking ? (
+            <MfaRequiredGate enrollmentUrl={enrollmentUrl} />
+          ) : (
+            children
+          )}
+        </ScrollArea>
       </SidebarInset>
 
       <ChangePasswordDialog
@@ -125,6 +163,39 @@ function AdminLayoutInner({ children }: { children: ReactNode }) {
       />
       <MfaEnrollmentDialog />
     </SidebarProvider>
+  );
+}
+
+/**
+ * In-tree gate shown when an unenrolled admin lands on a /admin/* route
+ * that isn't the enrollment page itself. The MFA enrollment dialog opens
+ * on top (triggered by the useEffect in AdminLayoutInner); this card is
+ * what backs it so a dismissed dialog doesn't reveal page content the
+ * admin shouldn't see pre-enrollment.
+ */
+function MfaRequiredGate({ enrollmentUrl }: { enrollmentUrl: string }) {
+  return (
+    <main
+      className="flex h-full items-center justify-center bg-background p-4"
+      data-testid="mfa-required-gate"
+    >
+      <Card className="w-full max-w-sm">
+        <CardHeader className="text-center">
+          <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-lg bg-primary/10">
+            <ShieldCheck className="size-6 text-primary" />
+          </div>
+          <CardTitle className="text-2xl">Two-factor required</CardTitle>
+          <CardDescription>
+            Enroll an authenticator app or passkey to access the admin console.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Button asChild className="w-full">
+            <Link href={enrollmentUrl}>Set up two-factor</Link>
+          </Button>
+        </CardContent>
+      </Card>
+    </main>
   );
 }
 

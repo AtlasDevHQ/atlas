@@ -5,9 +5,17 @@ import { useAtlasConfig } from "@/ui/context";
 
 /**
  * Discriminated result so consumers can distinguish a "not admin" 403 from
- * an "MFA enrollment required" 403. The `mfa-required` branch is defensive
- * — the password-status endpoint is not currently behind `mfaRequired`,
- * but classifying the typed body keeps AdminLayout correct if that changes.
+ * an "MFA enrollment required" signal.
+ *
+ * `mfa-required` arrives via TWO paths:
+ *   1. A 200 response with `{ mfaRequired: true, enrollmentUrl }` — the
+ *      primary signal for #2486. The password-status route is the layout's
+ *      pre-gate fetch and deliberately stays unblocked by `mfaRequired`
+ *      middleware so the layout can read this field without being 403'd
+ *      itself. MFA takes precedence over `passwordChangeRequired` — the
+ *      user must complete enrollment before any other admin action.
+ *   2. A 403 with `{ error: "mfa_enrollment_required", enrollmentUrl }` —
+ *      defensive fallback if the carve-out is ever removed.
  */
 export type PasswordStatusResult =
   | { kind: "allowed"; passwordChangeRequired: boolean }
@@ -18,6 +26,14 @@ interface MfaErrorBody {
   error?: string;
   enrollmentUrl?: string;
 }
+
+interface PasswordStatusBody {
+  passwordChangeRequired?: boolean;
+  mfaRequired?: boolean;
+  enrollmentUrl?: string;
+}
+
+const DEFAULT_ENROLLMENT_URL = "/admin/account-security";
 
 /**
  * Checks admin access and password-change status via the password-status endpoint.
@@ -63,7 +79,7 @@ export function usePasswordStatus(enabled: boolean) {
         if (body.error === "mfa_enrollment_required") {
           return {
             kind: "mfa-required",
-            enrollmentUrl: body.enrollmentUrl ?? "/admin/account-security",
+            enrollmentUrl: body.enrollmentUrl ?? DEFAULT_ENROLLMENT_URL,
           };
         }
         return { kind: "denied" };
@@ -75,7 +91,17 @@ export function usePasswordStatus(enabled: boolean) {
         throw new Error(`Password status check: HTTP ${res.status}`);
       }
 
-      const data: { passwordChangeRequired?: boolean } = await res.json();
+      const data: PasswordStatusBody = await res.json();
+      // MFA takes precedence over passwordChangeRequired — an unenrolled
+      // admin must complete enrollment before any other admin action, so
+      // surface the gate signal first and defer the password-change check
+      // until the next fetch after enrollment.
+      if (data.mfaRequired === true) {
+        return {
+          kind: "mfa-required",
+          enrollmentUrl: data.enrollmentUrl ?? DEFAULT_ENROLLMENT_URL,
+        };
+      }
       return {
         kind: "allowed",
         passwordChangeRequired: !!data.passwordChangeRequired,

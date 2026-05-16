@@ -119,6 +119,75 @@ describe("usePasswordStatus discriminated result", () => {
     });
   });
 
+  // #2486 — the primary path. 200 + mfaRequired:true must produce the same
+  // `mfa-required` discriminant as the 403 fallback, so the layout's
+  // `data.kind === "mfa-required"` branch fires from either source.
+  test('200 mfaRequired:true → kind: "mfa-required" with enrollmentUrl', async () => {
+    globalThis.fetch = mockResp(200, {
+      passwordChangeRequired: false,
+      mfaRequired: true,
+      enrollmentUrl: "/admin/account-security",
+    });
+
+    const { result } = renderHook(() => usePasswordStatus(true), { wrapper });
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+
+    expect(result.current.data).toEqual({
+      kind: "mfa-required",
+      enrollmentUrl: "/admin/account-security",
+    });
+  });
+
+  test("200 mfaRequired:true takes precedence over passwordChangeRequired", async () => {
+    // An unenrolled admin who ALSO has a password change pending must hit
+    // the MFA gate first; the change-password dialog comes later, after
+    // enrollment unblocks the rest of the admin tree.
+    globalThis.fetch = mockResp(200, {
+      passwordChangeRequired: true,
+      mfaRequired: true,
+      enrollmentUrl: "/admin/account-security",
+    });
+
+    const { result } = renderHook(() => usePasswordStatus(true), { wrapper });
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+
+    expect(result.current.data).toEqual({
+      kind: "mfa-required",
+      enrollmentUrl: "/admin/account-security",
+    });
+  });
+
+  test("200 mfaRequired:true without enrollmentUrl → uses default URL", async () => {
+    globalThis.fetch = mockResp(200, {
+      passwordChangeRequired: false,
+      mfaRequired: true,
+    });
+
+    const { result } = renderHook(() => usePasswordStatus(true), { wrapper });
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+
+    expect(result.current.data).toEqual({
+      kind: "mfa-required",
+      enrollmentUrl: "/admin/account-security",
+    });
+  });
+
+  test('200 mfaRequired:false → kind: "allowed" (gate stays closed)', async () => {
+    globalThis.fetch = mockResp(200, {
+      passwordChangeRequired: false,
+      mfaRequired: false,
+      enrollmentUrl: "/admin/account-security",
+    });
+
+    const { result } = renderHook(() => usePasswordStatus(true), { wrapper });
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+
+    expect(result.current.data).toEqual({
+      kind: "allowed",
+      passwordChangeRequired: false,
+    });
+  });
+
   test("500 throws → isError, no data", async () => {
     // The hook configures `retry: 1` so a 500 retries once before erroring.
     // Bump waitFor's timeout above the default 1s to cover the retry window.

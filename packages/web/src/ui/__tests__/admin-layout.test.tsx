@@ -8,9 +8,12 @@ let mockSession: {
 } = { data: null };
 const mockSignOut = mock(() => Promise.resolve());
 
-// Mock next/navigation
+// Mock next/navigation — `mockPathname` is mutable so a single test can
+// simulate landing on `/admin/account-security` (the MFA-gate exempt
+// route) without re-mocking the module per test.
+let mockPathname = "/admin";
 mock.module("next/navigation", () => ({
-  usePathname: () => "/admin",
+  usePathname: () => mockPathname,
   useRouter: () => ({ push: () => {}, replace: () => {}, back: () => {} }),
   useSearchParams: () => new URLSearchParams(),
   useParams: () => ({}),
@@ -95,7 +98,36 @@ const originalFetch = globalThis.fetch;
 /** Mock fetch that returns 200 with password-status (admin allowed). */
 function mockAdminFetch() {
   globalThis.fetch = mock(() =>
-    Promise.resolve(new Response(JSON.stringify({ passwordChangeRequired: false }), { status: 200 })),
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          passwordChangeRequired: false,
+          mfaRequired: false,
+          enrollmentUrl: "/admin/account-security",
+        }),
+        { status: 200 },
+      ),
+    ),
+  ) as unknown as typeof fetch;
+}
+
+/**
+ * #2486 — primary path. 200 response carries `mfaRequired: true` so the
+ * admin layout blocks the entire admin tree without depending on a child
+ * page's incidental fetch landing on a `mfaRequired`-gated endpoint.
+ */
+function mockMfaRequired200Fetch() {
+  globalThis.fetch = mock(() =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          passwordChangeRequired: false,
+          mfaRequired: true,
+          enrollmentUrl: "/admin/account-security",
+        }),
+        { status: 200 },
+      ),
+    ),
   ) as unknown as typeof fetch;
 }
 
@@ -128,6 +160,7 @@ describe("AdminLayout", () => {
       defaultOptions: { queries: { retry: false, gcTime: 0 } },
     });
     mockSession = { data: null };
+    mockPathname = "/admin";
     mockSignOut.mockClear();
     mockAdminFetch();
   });
@@ -213,7 +246,8 @@ describe("AdminLayout", () => {
     // routed to the "Access denied. Admin role required." Card. The
     // discriminated `usePasswordStatus` result keeps the Card in front of
     // genuine role failures only; missing-second-factor 403s fall through
-    // to the normal layout where the dialog can render.
+    // to the gate-all path (#2486) where the full-screen gate + dialog
+    // render together.
     mockMfaRequiredFetch();
     mockSession = { data: { user: { email: "admin@test.com", role: "admin" } } };
     const { container } = renderLayout();
@@ -231,6 +265,49 @@ describe("AdminLayout", () => {
       expect(document.body.textContent).toContain("Two-factor authentication required");
     });
     expect(document.body.textContent).toContain("Set up second factor");
+  });
+
+  // #2486 — gate-all behavior. The three tests below cover:
+  //   1. 200 body `mfaRequired:true` is the primary signal (no 403 needed).
+  //   2. Page content is replaced by the gate placeholder.
+  //   3. /admin/account-security is exempt so the user can complete setup.
+
+  test("blocks admin tree with full-screen gate when mfaRequired:true in 200 body", async () => {
+    mockMfaRequired200Fetch();
+    mockSession = { data: { user: { email: "admin@test.com", role: "admin" } } };
+    const { container, queryByTestId, queryByText } = renderLayout();
+    await waitFor(() => {
+      expect(queryByTestId("mfa-required-gate")).not.toBeNull();
+    });
+    // The child page content must NOT render — that's the gate-all promise.
+    expect(queryByText("Admin page content")).toBeNull();
+    // Sidebar / top bar stay mounted so the user has navigation context.
+    expect(container.textContent).toContain("Admin Console");
+    expect(container.textContent).toContain("Two-factor required");
+  });
+
+  test("renders enrollment page normally pre-MFA (exempt route)", async () => {
+    mockPathname = "/admin/account-security";
+    mockMfaRequired200Fetch();
+    mockSession = { data: { user: { email: "admin@test.com", role: "admin" } } };
+    const { queryByTestId, queryByText } = renderLayout();
+    await waitFor(() => {
+      // The exempt route must render its own content, not the gate.
+      expect(queryByText("Admin page content")).not.toBeNull();
+    });
+    expect(queryByTestId("mfa-required-gate")).toBeNull();
+  });
+
+  test("gate placeholder links to enrollment URL from the server", async () => {
+    mockMfaRequired200Fetch();
+    mockSession = { data: { user: { email: "admin@test.com", role: "admin" } } };
+    const { container } = renderLayout();
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="mfa-required-gate"]')).not.toBeNull();
+    });
+    const link = container.querySelector('[data-testid="mfa-required-gate"] a');
+    expect(link).not.toBeNull();
+    expect(link!.getAttribute("href")).toBe("/admin/account-security");
   });
 
   test("shows password change dialog when required", async () => {

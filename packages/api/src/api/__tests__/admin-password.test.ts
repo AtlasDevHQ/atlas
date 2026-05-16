@@ -269,6 +269,12 @@ function setManagedUser(overrides?: Record<string, unknown>): void {
 // GET /me/password-status
 // ---------------------------------------------------------------------------
 
+interface PasswordStatusBody {
+  passwordChangeRequired: boolean;
+  mfaRequired: boolean;
+  enrollmentUrl: string;
+}
+
 describe("GET /api/v1/admin/me/password-status", () => {
   beforeEach(() => {
     mockAuthenticateRequest.mockReset();
@@ -282,8 +288,12 @@ describe("GET /api/v1/admin/me/password-status", () => {
 
     const res = await app.fetch(req("/api/v1/admin/me/password-status"));
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { passwordChangeRequired: boolean };
+    const body = (await res.json()) as PasswordStatusBody;
     expect(body.passwordChangeRequired).toBe(true);
+    // #2486 — every 200 carries the gate fields so the wire shape stays
+    // stable. A member-role user is never gated.
+    expect(body.mfaRequired).toBe(false);
+    expect(body.enrollmentUrl).toBe("/admin/account-security");
   });
 
   it("returns false when password_change_required is not set", async () => {
@@ -291,8 +301,10 @@ describe("GET /api/v1/admin/me/password-status", () => {
 
     const res = await app.fetch(req("/api/v1/admin/me/password-status"));
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { passwordChangeRequired: boolean };
+    const body = (await res.json()) as PasswordStatusBody;
     expect(body.passwordChangeRequired).toBe(false);
+    expect(body.mfaRequired).toBe(false);
+    expect(body.enrollmentUrl).toBe("/admin/account-security");
   });
 
   it("returns false for non-managed auth (simple-key mode)", async () => {
@@ -304,8 +316,10 @@ describe("GET /api/v1/admin/me/password-status", () => {
 
     const res = await app.fetch(req("/api/v1/admin/me/password-status"));
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { passwordChangeRequired: boolean };
+    const body = (await res.json()) as PasswordStatusBody;
     expect(body.passwordChangeRequired).toBe(false);
+    // simple-key mode is not interactive — MFA gate doesn't apply.
+    expect(body.mfaRequired).toBe(false);
   });
 
   it("returns false when no internal DB is available", async () => {
@@ -313,8 +327,10 @@ describe("GET /api/v1/admin/me/password-status", () => {
 
     const res = await app.fetch(req("/api/v1/admin/me/password-status"));
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { passwordChangeRequired: boolean };
+    const body = (await res.json()) as PasswordStatusBody;
     expect(body.passwordChangeRequired).toBe(false);
+    expect(body.mfaRequired).toBe(false);
+    expect(body.enrollmentUrl).toBe("/admin/account-security");
   });
 
   it("returns false when user row not found in DB", async () => {
@@ -322,8 +338,83 @@ describe("GET /api/v1/admin/me/password-status", () => {
 
     const res = await app.fetch(req("/api/v1/admin/me/password-status"));
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { passwordChangeRequired: boolean };
+    const body = (await res.json()) as PasswordStatusBody;
     expect(body.passwordChangeRequired).toBe(false);
+    expect(body.mfaRequired).toBe(false);
+  });
+
+  // #2486 — primary acceptance: admin without MFA enrolled must surface
+  // `mfaRequired:true` so the admin layout can block the entire admin tree.
+  // The route MUST NOT 403 — the carve-out in admin-mfa-required.ts:38–45
+  // depends on the layout being able to call password-status pre-enrollment.
+  it("returns mfaRequired:true for admin without TOTP or passkey", async () => {
+    mockInternalQuery.mockResolvedValue([{ password_change_required: false }]);
+    mockAuthenticateRequest.mockResolvedValue({
+      authenticated: true,
+      mode: "managed",
+      user: {
+        id: "user-1",
+        mode: "managed",
+        label: "Admin",
+        role: "admin",
+        claims: { twoFactorEnabled: false, passkeyCount: 0 },
+      },
+    });
+
+    const res = await app.fetch(req("/api/v1/admin/me/password-status"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as PasswordStatusBody;
+    expect(body.mfaRequired).toBe(true);
+    expect(body.enrollmentUrl).toBe("/admin/account-security");
+  });
+
+  it("returns mfaRequired:false for admin with TOTP enrolled", async () => {
+    mockInternalQuery.mockResolvedValue([{ password_change_required: false }]);
+    mockAuthenticateRequest.mockResolvedValue({
+      authenticated: true,
+      mode: "managed",
+      user: {
+        id: "user-1",
+        mode: "managed",
+        label: "Admin",
+        role: "admin",
+        claims: { twoFactorEnabled: true, passkeyCount: 0 },
+      },
+    });
+
+    const res = await app.fetch(req("/api/v1/admin/me/password-status"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as PasswordStatusBody;
+    expect(body.mfaRequired).toBe(false);
+  });
+
+  it("returns mfaRequired:false for admin with a passkey on file", async () => {
+    mockInternalQuery.mockResolvedValue([{ password_change_required: false }]);
+    mockAuthenticateRequest.mockResolvedValue({
+      authenticated: true,
+      mode: "managed",
+      user: {
+        id: "user-1",
+        mode: "managed",
+        label: "Admin",
+        role: "admin",
+        claims: { twoFactorEnabled: false, passkeyCount: 2 },
+      },
+    });
+
+    const res = await app.fetch(req("/api/v1/admin/me/password-status"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as PasswordStatusBody;
+    expect(body.mfaRequired).toBe(false);
+  });
+
+  it("returns mfaRequired:false for member role even without MFA (gate is admin-only)", async () => {
+    mockInternalQuery.mockResolvedValue([{ password_change_required: false }]);
+    // Default setManagedUser sets role: "member" with no claims.
+    const res = await app.fetch(req("/api/v1/admin/me/password-status"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as PasswordStatusBody;
+    expect(body.mfaRequired).toBe(false);
   });
 
   it("returns 500 on DB error (security fix: never silently bypass)", async () => {

@@ -17,8 +17,8 @@ mock.module("../notebook-empty-state", () => ({
   NotebookEmptyState: () =>
     React.createElement("div", { "data-testid": "notebook-empty-state-stub" }, "Empty"),
 }));
-mock.module("../notebook-input-bar", () => ({
-  NotebookInputBar: () => React.createElement("div", { "data-testid": "notebook-input-bar-stub" }),
+mock.module("../../ask-composer", () => ({
+  AskComposer: () => React.createElement("div", { "data-testid": "ask-composer-stub" }),
 }));
 mock.module("../fork-branch-selector", () => ({
   ForkBranchSelector: () =>

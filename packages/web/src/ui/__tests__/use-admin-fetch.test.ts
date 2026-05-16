@@ -628,6 +628,50 @@ describe("useAdminFetch", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  // #2502 — `/platform` page issued two CORS-blocked fetches to the bare API
+  // origin per load because a detail-dialog `useAdminFetch` passed an empty
+  // path when `detailId` was null. The hook now short-circuits on falsy path
+  // so this whole class of "conditional-empty-path" bugs can't escape.
+  test("empty path short-circuits the request (no fetch, loading=false)", async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ value: 42 }), { status: 200 })),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { result } = renderHook(
+      () => useAdminFetch<{ value: number }>(""),
+      { wrapper },
+    );
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(result.current.data).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test("empty path flips to a real path to fire the request", async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ value: 7 }), { status: 200 })),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { result, rerender } = renderHook(
+      ({ path }: { path: string }) => useAdminFetch<{ value: number }>(path),
+      { wrapper, initialProps: { path: "" } },
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.current.loading).toBe(false);
+
+    rerender({ path: "/api/test" });
+
+    await waitFor(() => {
+      expect(result.current.data).toEqual({ value: 7 });
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   test("enabled flips from false to true to fire the request", async () => {
     const fetchMock = mock(() =>
       Promise.resolve(new Response(JSON.stringify({ value: 7 }), { status: 200 })),

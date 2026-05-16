@@ -3,44 +3,43 @@
  *
  * Mounted at /api/v1/semantic. Available to all authenticated users (not admin-gated).
  * Provides read-only access to entity metadata, enabling the schema explorer UI.
- * Returns all entities defined in the semantic layer YAML files on disk.
+ *
+ * Reads via `listAdminEntities` / `getAdminEntity` so the file-tree, the
+ * `/admin/semantic` editor, and the chat schema explorer all stay in
+ * lockstep on what counts as a queryable entity. DB rows win on `name`
+ * collision per `mergeAdminEntities`'s shadow rule.
  */
-
-import * as path from "path";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { Effect } from "effect";
-import { runEffect } from "@atlas/api/lib/effect/hono";
-import { RequestContext } from "@atlas/api/lib/effect/services";
+import {
+  listAdminEntities,
+  getAdminEntity,
+  AdminEntityYamlParseError,
+  AdminEntityYamlShapeError,
+} from "@atlas/api/lib/semantic/admin-source";
+// Import from the effect/errors barrel (where the class is defined), not
+// from the `entities.ts` re-export. Partial-mock tests in adjacent test
+// files already cover the effect/errors path; importing from entities would
+// require every one of those tests to add an `AmbiguousEntityError` stub.
+import { AmbiguousEntityError } from "@atlas/api/lib/effect/errors";
+import { isValidEntityName } from "@atlas/api/lib/semantic/files";
 import { validationHook } from "./validation-hook";
 import { createLogger } from "@atlas/api/lib/logger";
-import {
-  getSemanticRoot as getBaseSemanticRoot,
-  isValidEntityName,
-  readYamlFile,
-  discoverEntities,
-  findEntityFile,
-} from "@atlas/api/lib/semantic/files";
-// Org-aware variant: returns `<base>/.orgs/<orgId>/` when an orgId is present
-// so SaaS workspaces read their own entities instead of the shipped demo.
-import { getSemanticRoot as getOrgSemanticRoot } from "@atlas/api/lib/semantic/sync";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
-/**
- * Resolve the semantic root for this request — org-scoped when the caller's
- * session has an active org, base root otherwise (self-hosted single-tenant).
- *
- * The pre-fix behavior used the base root unconditionally, which meant every
- * SaaS workspace saw the shipped demo entities (NovaMart) on the chat schema
- * explorer regardless of their own org-scoped data on disk.
- */
-function resolveRoot(c: { get: (k: "authResult") => { user?: { activeOrganizationId?: string } } | undefined }): string {
-  const authResult = c.get("authResult");
-  const orgId = authResult?.user?.activeOrganizationId;
-  return orgId ? getOrgSemanticRoot(orgId) : getBaseSemanticRoot();
-}
-
 const log = createLogger("semantic-routes");
+
+/**
+ * Effective mode for the public route. Mirrors admin.ts's reader: defaults
+ * to `published` when the middleware-published value is absent, and lets
+ * admins/owners read drafts when their session has elected developer mode.
+ * Non-admin requests resolve to `published` regardless of cookie/header
+ * (enforced by `resolveMode` in middleware.ts).
+ */
+const getAtlasMode = (c: { get(key: string): unknown }): "developer" | "published" => {
+  const raw = c.get("atlasMode") as string | undefined;
+  return raw === "developer" ? "developer" : "published";
+};
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -61,6 +60,13 @@ const EntityDetailResponseSchema = z.object({
   entity: z.unknown(),
 });
 
+const AmbiguousEntityResponseSchema = z.object({
+  error: z.literal("entity_ambiguous"),
+  message: z.string(),
+  groups: z.array(z.string().nullable()),
+  requestId: z.string(),
+});
+
 
 // ---------------------------------------------------------------------------
 // Route definitions
@@ -72,7 +78,7 @@ const listEntitiesRoute = createRoute({
   tags: ["Semantic"],
   summary: "List semantic entities",
   description:
-    "Returns a summary of all entity definitions from the semantic layer YAML files. Each entity includes table name, description, column count, join count, and type.",
+    "Returns a summary of all entity definitions visible to the workspace — DB-overlay rows merged with on-disk YAML files. DB rows shadow disk entries on name collision. Each entity includes table name, description, column count, join count, and type.",
   responses: {
     200: {
       description: "List of entity summaries",
@@ -103,7 +109,7 @@ const getEntityRoute = createRoute({
   tags: ["Semantic"],
   summary: "Get entity details",
   description:
-    "Returns the full parsed YAML content for a single semantic entity, including all dimensions, measures, joins, and query patterns.",
+    "Returns the full parsed YAML content for a single semantic entity, including all dimensions, measures, joins, and query patterns. Resolves through the same overlay-aware path as the list endpoint — DB rows shadow disk entries on name collision.",
   request: {
     params: z.object({
       name: z.string().openapi({ param: { name: "name", in: "path" }, example: "orders" }),
@@ -118,6 +124,10 @@ const getEntityRoute = createRoute({
       description: "Invalid entity name",
       content: { "application/json": { schema: ErrorSchema } },
     },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
     403: {
       description: "Access denied (path traversal attempt)",
       content: { "application/json": { schema: ErrorSchema } },
@@ -126,9 +136,10 @@ const getEntityRoute = createRoute({
       description: "Entity not found",
       content: { "application/json": { schema: ErrorSchema } },
     },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    409: {
+      description:
+        "Entity name exists in multiple connection groups — disambiguation is not yet exposed on the public route; use /admin/semantic to resolve.",
+      content: { "application/json": { schema: AmbiguousEntityResponseSchema } },
     },
     429: {
       description: "Rate limit exceeded",
@@ -152,45 +163,83 @@ semantic.use(requestContext);
 
 // GET /entities — list all entities (public summary: drops measureCount, connection, source)
 semantic.openapi(listEntitiesRoute, async (c) => {
-  return runEffect(c, Effect.sync(() => {
-    const root = resolveRoot(c);
-    const discovered = discoverEntities(root);
-    const entities = discovered.entities.map(({ table, description, columnCount, joinCount, type }) => ({
-      table, description, columnCount, joinCount, type: type ?? "",
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
+  const orgId = authResult?.user?.activeOrganizationId;
+  const mode = getAtlasMode(c);
+
+  try {
+    const result = await listAdminEntities({ orgId, mode });
+    const entities = result.entities.map(({ table, description, columnCount, joinCount, type }) => ({
+      table,
+      description,
+      columnCount,
+      joinCount,
+      type: type ?? "",
     }));
     return c.json({
       entities,
-      ...(discovered.warnings.length > 0 && { warnings: discovered.warnings }),
+      ...(result.warnings.length > 0 && { warnings: result.warnings }),
     }, 200);
-  }), { label: "load entity list" });
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)), orgId, mode, requestId },
+      "Failed to list semantic entities",
+    );
+    return c.json({ error: "internal_error", message: "Failed to load entity list.", requestId }, 500);
+  }
 });
 
 // GET /entities/{name} — full entity detail
 semantic.openapi(getEntityRoute, async (c) => {
-  return runEffect(c, Effect.gen(function* () {
-    const { requestId } = yield* RequestContext;
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
+  const orgId = authResult?.user?.activeOrganizationId;
+  const { name } = c.req.valid("param");
 
-    const { name } = c.req.valid("param");
+  if (!isValidEntityName(name)) {
+    log.warn({ requestId, name }, "Rejected invalid entity name");
+    return c.json({ error: "invalid_request", message: "Invalid entity name.", requestId }, 400);
+  }
 
-    if (!isValidEntityName(name)) {
-      log.warn({ requestId, name }, "Rejected invalid entity name");
-      return c.json({ error: "invalid_request", message: "Invalid entity name." }, 400);
+  try {
+    const result = await getAdminEntity({ name, orgId, requestId });
+    if (!result) {
+      return c.json({ error: "not_found", message: `Entity "${name}" not found.`, requestId }, 404);
     }
-
-    const root = resolveRoot(c);
-    const filePath = findEntityFile(root, name);
-    if (!filePath) {
-      return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
+    return c.json({ entity: result.entity }, 200);
+  } catch (err) {
+    if (err instanceof AmbiguousEntityError) {
+      // Multi-group orgs need to disambiguate via the admin endpoint — the
+      // public surface intentionally doesn't carry a `connectionGroupId`
+      // param. Surface 409 with the same shape the admin route uses so a
+      // future schema-explorer enhancement can react.
+      return c.json(
+        {
+          error: "entity_ambiguous" as const,
+          message: err.message,
+          groups: [...err.groups],
+          requestId,
+        },
+        409,
+      );
     }
-
-    // Defense-in-depth: verify resolved path is within semantic root
-    const resolved = path.resolve(filePath);
-    if (!resolved.startsWith(path.resolve(root))) {
-      log.error({ requestId, name, resolved, root }, "Resolved entity path escaped semantic root");
-      return c.json({ error: "forbidden", message: "Access denied.", requestId }, 403);
+    if (err instanceof AdminEntityYamlParseError || err instanceof AdminEntityYamlShapeError) {
+      const message = err instanceof AdminEntityYamlParseError
+        ? (err.entitySource === "db"
+            ? `Failed to parse entity content for "${name}".`
+            : `Failed to parse entity file for "${name}".`)
+        : `Entity content for "${name}" is malformed.`;
+      log.error(
+        { err, entityName: name, source: err.entitySource, requestId },
+        "Public detail: admin entity yaml error",
+      );
+      return c.json({ error: "internal_error", message, requestId }, 500);
     }
-
-    const raw = readYamlFile(filePath);
-    return c.json({ entity: raw }, 200);
-  }), { label: "parse entity file" });
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)), entityName: name, orgId, requestId },
+      "Failed to resolve entity",
+    );
+    return c.json({ error: "internal_error", message: `Failed to load entity "${name}".`, requestId }, 500);
+  }
 });

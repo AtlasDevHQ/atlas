@@ -8,11 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { connectionsSearchParams } from "./search-params";
-import {
-  bucketizeConnections,
-  type GroupByDimension,
-} from "./group-by";
+import { GROUP_BY_VALUES, connectionsSearchParams, isGroupByDimension } from "./search-params";
+import { ENVIRONMENT_VIEW_HREF, bucketizeConnections } from "./group-by";
 import { ConnectionGroupsSection } from "./connection-groups-section";
 import {
   Select,
@@ -838,10 +835,10 @@ export default function ConnectionsPage() {
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
   const { readOnly: demoReadOnly } = useDemoReadonly();
 
-  // URL-encoded so admins can deep-link directly to the Environment view
-  // (or land here from the legacy `/admin/connections/groups` server-side
-  // redirect). `useQueryStates` keeps the toggle SSR-safe — the segmented
-  // control reflects whichever value the URL ships with on first paint.
+  // `useQueryStates` so the segmented control reflects whichever value
+  // the URL ships with on first paint — keeps the legacy
+  // `/admin/connections/groups` redirect landing on the right view and
+  // makes `?groupBy=environment` deep-linkable.
   const [{ groupBy }, setParams] = useQueryStates(connectionsSearchParams);
 
   const testMutation = useAdminMutation<ConnectionHealth>({ method: "POST" });
@@ -954,12 +951,11 @@ export default function ConnectionsPage() {
     refetch();
   }
 
-  // Bucketize by the selected dimension. For `type`, fold the resulting
-  // buckets back into a map keyed by `dbType` so the provider rendering
-  // below (which iterates over DB_TYPES to surface disconnected providers
-  // with a "Connect" CTA) still receives the same shape it always has.
-  // The pure module exists so the bucketization rule is unit-testable —
-  // see `connections-group-by.test.ts`.
+  // Always bucketize by type, even when the user picked Environment:
+  // the provider rendering walks DB_TYPES so disconnected providers can
+  // show a "Connect" CTA, and that loop needs a `dbType → connections`
+  // map shape regardless of the active grouping. The environment view
+  // is rendered by a separate component below.
   const typeBuckets = bucketizeConnections(displayConnections, "type");
   const byType = new Map<string, ConnectionInfo[]>(
     typeBuckets.map((b) => [b.key, b.connections]),
@@ -973,10 +969,6 @@ export default function ConnectionsPage() {
     live: displayConnections.filter((c) => c.health?.status === "healthy").length,
     total: displayConnections.length,
   };
-
-  function handleGroupByChange(next: GroupByDimension) {
-    void setParams({ groupBy: next });
-  }
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-10">
@@ -1005,18 +997,26 @@ export default function ConnectionsPage() {
               type="single"
               size="sm"
               value={groupBy}
-              onValueChange={(v) => { if (v) handleGroupByChange(v as GroupByDimension); }}
+              // Radix emits "" when the active toggle is clicked to
+              // deselect; the type-predicate narrow drops that (and any
+              // future stray value) without an unchecked cast.
+              onValueChange={(v) => {
+                if (isGroupByDimension(v)) void setParams({ groupBy: v });
+              }}
               aria-label="Group connections by"
               data-testid="connections-group-by"
             >
-              <ToggleGroupItem value="type" className="gap-1.5 text-xs" data-testid="connections-group-by-type">
-                <Database className="size-3" />
-                Type
-              </ToggleGroupItem>
-              <ToggleGroupItem value="environment" className="gap-1.5 text-xs" data-testid="connections-group-by-environment">
-                <Layers className="size-3" />
-                Environment
-              </ToggleGroupItem>
+              {GROUP_BY_VALUES.map((value) => (
+                <ToggleGroupItem
+                  key={value}
+                  value={value}
+                  className="gap-1.5 text-xs"
+                  data-testid={`connections-group-by-${value}`}
+                >
+                  {value === "type" ? <Database className="size-3" /> : <Layers className="size-3" />}
+                  {value === "type" ? "Type" : "Environment"}
+                </ToggleGroupItem>
+              ))}
             </ToggleGroup>
           {demoReadOnly ? (
             <TooltipProvider>
@@ -1056,14 +1056,16 @@ export default function ConnectionsPage() {
           <PoolStatsSection onError={setMutationError} />
 
           {groupBy === "environment" ? (
-            // The Environments view embeds the connection-groups admin
-            // surface — same fetch (`/api/v1/admin/connection-groups`), every
-            // feature (create / rename / delete / archive cascade / merge
-            // wizard / auto-detected toggles) preserved. Per slice 4 of PRD
-            // #2458 this replaces the standalone `/admin/connections/groups`
-            // page as the canonical home; the old URL server-side-redirects
-            // here.
-            <ConnectionGroupsSection />
+            // The environments view reuses the parent's connections fetch
+            // — sharing one request avoids a React Query cache-key
+            // collision on `[path]` between two callers passing different
+            // schemas (transformed array vs `{ connections: [...] }`),
+            // which would otherwise read the wrong shape from cache and
+            // render empty member rosters.
+            <ConnectionGroupsSection
+              connections={displayConnections}
+              refetchConnections={refetch}
+            />
           ) : (
             <AdminContentWrapper
               loading={loading}
@@ -1392,7 +1394,7 @@ function ConnectionCard({
             label="Environment"
             value={
               <Link
-                href="/admin/connections?groupBy=environment"
+                href={ENVIRONMENT_VIEW_HREF}
                 className="inline-flex items-center"
                 aria-label={`View environment ${stripGroupPrefix(conn.groupName)}`}
               >

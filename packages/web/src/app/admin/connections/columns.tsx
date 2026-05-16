@@ -9,6 +9,7 @@ import { DemoBadge, DraftBadge } from "@/ui/components/admin/mode-badges";
 import { Fingerprint, Database, FileText, Activity, Clock, Layers } from "lucide-react";
 import type { ConnectionHealth, ConnectionInfo } from "@/ui/lib/types";
 import { stripGroupPrefix } from "@/ui/lib/strip-group-prefix";
+import { ENVIRONMENT_VIEW_HREF } from "./group-by";
 
 /** Reserved connection id for the onboarding demo dataset. */
 export const DEMO_CONNECTION_ID = "__demo__";
@@ -86,7 +87,7 @@ export function getConnectionColumns(): ColumnDef<ConnectionInfo>[] {
         }
         return (
           <Link
-            href="/admin/connections?groupBy=environment"
+            href={ENVIRONMENT_VIEW_HREF}
             className="inline-flex items-center"
             aria-label={`View environment ${stripGroupPrefix(groupName)}`}
           >

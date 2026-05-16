@@ -1,15 +1,16 @@
 "use client";
 
 /**
- * The environment / connection-groups admin surface, extracted so it can
- * render both at `/admin/connections?groupBy=environment` (the new home,
- * slice 4 of PRD #2458) and via the legacy `/admin/connections/groups`
- * server-side redirect that lands users on the same query string.
+ * The connection-groups / environments admin surface. Mounted under
+ * `/admin/connections?groupBy=environment` and reached via a server-side
+ * redirect from the legacy `/admin/connections/groups` URL.
  *
- * Every feature of the standalone page lives here unchanged — create,
- * rename, delete, archive (with cascade preview), member roster, merge
- * wizard, and the auto-detected-singleton / archived toggles. The IA
- * change is purely "where this lives", not "what this does".
+ * Receives the connection list and a refetch fn from the parent so the
+ * page can ship a single `/api/v1/admin/connections` request — wiring
+ * our own `useAdminFetch` against the same path would collide with the
+ * parent on React Query's `[path]` cache key while disagreeing on the
+ * cached shape (transformed array vs `{ connections: [...] }`), and the
+ * environments view would render empty member rosters.
  */
 
 import { useState } from "react";
@@ -54,7 +55,7 @@ import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surfa
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { Loader2, Plus, Pencil, Trash2, Layers, GitMerge, Archive } from "lucide-react";
-import type { ConnectionGroup, GroupArchiveCounts } from "@/ui/lib/types";
+import type { ConnectionGroup, ConnectionInfo, GroupArchiveCounts } from "@/ui/lib/types";
 import {
   stripGroupPrefix,
   isAutoBackfilledSingleton,
@@ -83,30 +84,22 @@ const GroupListSchema = z.object({
   groups: z.array(GroupSchema),
 });
 
-const ConnectionListSchema = z.object({
-  connections: z.array(
-    z.object({
-      id: z.string(),
-      dbType: z.string().optional(),
-      description: z.string().nullable().optional(),
-      groupId: z.string().nullable().optional(),
-    }),
-  ),
-});
+interface ConnectionGroupsSectionProps {
+  /** Live connections list owned by the parent page so we share one fetch. */
+  connections: ReadonlyArray<ConnectionInfo>;
+  /** Re-runs the parent's connections fetch after a member assign / merge. */
+  refetchConnections: () => void;
+}
 
-export function ConnectionGroupsSection() {
+export function ConnectionGroupsSection({
+  connections,
+  refetchConnections,
+}: ConnectionGroupsSectionProps) {
   const { data, loading, error, refetch } = useAdminFetch(
     "/api/v1/admin/connection-groups",
     { schema: GroupListSchema },
   );
-  const {
-    data: connList,
-    refetch: refetchConnections,
-  } = useAdminFetch("/api/v1/admin/connections", {
-    schema: ConnectionListSchema,
-  });
   const groups = data?.groups ?? [];
-  const connections = connList?.connections ?? [];
 
   const [createOpen, setCreateOpen] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
@@ -276,7 +269,7 @@ function GroupCard({
   onArchive,
 }: {
   group: ConnectionGroup;
-  connections: Array<{ id: string; groupId?: string | null; dbType?: string; description?: string | null }>;
+  connections: ReadonlyArray<ConnectionInfo>;
   refetchGroups: () => void;
   refetchConnections: () => void;
   onRename: () => void;
@@ -776,13 +769,6 @@ function ArchiveGroupDialog({
 // Merge wizard (#2409)
 // ---------------------------------------------------------------------------
 
-interface MergeConnection {
-  id: string;
-  dbType?: string;
-  description?: string | null;
-  groupId?: string | null;
-}
-
 interface MergeResponse {
   target: ConnectionGroup & { created: boolean };
   movedConnectionIds: string[];
@@ -806,7 +792,7 @@ function MergeGroupsDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  connections: ReadonlyArray<MergeConnection>;
+  connections: ReadonlyArray<ConnectionInfo>;
   groups: ReadonlyArray<ConnectionGroup>;
   onMerged: (result: MergeResponse) => void;
 }) {

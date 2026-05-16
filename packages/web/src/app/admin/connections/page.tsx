@@ -98,6 +98,7 @@ import { cn } from "@/lib/utils";
 import { formatDateTime } from "@/lib/format";
 import {
   DB_TYPES,
+  isBillable,
   type ConnectionHealth,
   type ConnectionInfo,
   type ConnectionDetail,
@@ -1169,14 +1170,12 @@ export default function ConnectionsPage() {
     ...Array.from(byType.keys()).filter((k) => !DB_TYPES.some((t) => t.value === k)),
   ];
 
-  // Header "X / Y live" mirrors the /admin/billing usage panel's source
-  // of truth — only count connections that map to a per-org `connections`
-  // row (#2490). The lazy `default` fallback on self-hosted demo deploys
-  // reports `billable: false` and stays out of both the numerator and the
-  // denominator so the header agrees with billing. Connections from an
-  // older API response that predates the field fall back to "count it"
-  // via the `!== false` check, preserving pre-#2490 behavior.
-  const billableConnections = displayConnections.filter((c) => c.billable !== false);
+  // Header "X / Y live" mirrors the /admin/billing usage panel — the
+  // lazy `default` fallback on self-hosted demo deploys reports
+  // `billable: false` and stays out of both numerator and denominator
+  // (#2490). `isBillable` encodes the wire-compat fallback for older
+  // API servers that omit the field.
+  const billableConnections = displayConnections.filter(isBillable);
   const stats = {
     live: billableConnections.filter((c) => c.health?.status === "healthy").length,
     total: billableConnections.length,

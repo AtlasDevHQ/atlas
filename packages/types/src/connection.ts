@@ -51,19 +51,13 @@ export interface ConnectionInfo {
    */
   groupName?: string | null;
   /**
-   * Whether this connection counts toward billing/trial resource limits.
+   * Mirrors the `/admin/billing` usage-panel predicate
+   * (`connections WHERE org_id = $1 AND status != 'archived'`).
    *
-   * Mirrors the predicate `/admin/billing` uses
-   * (`connections WHERE org_id = $1 AND status != 'archived'`): true iff
-   * this connection has a real row in the per-org `connections` table.
-   * `__global__`-sourced rows (e.g. the shared `__demo__`) and the
-   * runtime-registered `default` fallback (self-hosted demo with no rows
-   * yet) report `billable: false` so the connections-page header agrees
-   * with the billing usage panel.
-   *
-   * Optional for wire compatibility: older serializers omit the field;
-   * consumers should treat `undefined` as "unknown — count it" to
-   * preserve pre-#2490 behavior on a mixed-version deploy.
+   * Optional for wire compatibility: consumers must treat `undefined`
+   * as "count it" so a mixed-version deploy preserves pre-#2490
+   * behavior. The `isBillable()` helper in `packages/web/src/ui/lib/types.ts`
+   * encodes this convention — prefer it over reading the field directly.
    */
   billable?: boolean;
 }

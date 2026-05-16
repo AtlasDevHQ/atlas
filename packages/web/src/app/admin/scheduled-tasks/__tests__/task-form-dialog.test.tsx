@@ -157,7 +157,7 @@ describe("TaskFormDialog — zero-environment guard (#2418)", () => {
     });
   });
 
-  test("surfaces an empty-state banner pointing to /admin/connections when no environments exist", async () => {
+  test("surfaces an empty-state banner pointing to the Environments view when no environments exist", async () => {
     // The disabled button alone is a dead end — surfacing *why* it's
     // disabled and *where* to go closes the loop for a first-time admin.
     // Copy bound here so a future banner-redesign that drops the link
@@ -176,8 +176,12 @@ describe("TaskFormDialog — zero-environment guard (#2418)", () => {
     await waitFor(() => {
       expect(container.textContent).toContain("Create an environment first");
     });
+    // PRD #2458 slice 4 collapsed `/admin/connections/groups` into the
+    // `?groupBy=environment` deep link on the connections page — the
+    // empty-state CTA points directly at that view so the admin lands
+    // on the Environments tab, not the default Type tab.
     const link = container.querySelector<HTMLAnchorElement>(
-      'a[href="/admin/connections"]',
+      'a[href="/admin/connections?groupBy=environment"]',
     );
     expect(link).not.toBeNull();
   });

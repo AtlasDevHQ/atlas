@@ -1,11 +1,19 @@
 "use client";
 
 import { toast } from "sonner";
+import { useQueryStates } from "nuqs";
 import { z } from "zod";
 import { useAtlasConfig } from "@/ui/context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { connectionsSearchParams } from "./search-params";
+import {
+  bucketizeConnections,
+  type GroupByDimension,
+} from "./group-by";
+import { ConnectionGroupsSection } from "./connection-groups-section";
 import {
   Select,
   SelectContent,
@@ -57,6 +65,7 @@ import {
   Snowflake,
   Cloud,
   HardDrive,
+  Layers,
   RefreshCw,
 } from "lucide-react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
@@ -829,6 +838,12 @@ export default function ConnectionsPage() {
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
   const { readOnly: demoReadOnly } = useDemoReadonly();
 
+  // URL-encoded so admins can deep-link directly to the Environment view
+  // (or land here from the legacy `/admin/connections/groups` server-side
+  // redirect). `useQueryStates` keeps the toggle SSR-safe — the segmented
+  // control reflects whichever value the URL ships with on first paint.
+  const [{ groupBy }, setParams] = useQueryStates(connectionsSearchParams);
+
   const testMutation = useAdminMutation<ConnectionHealth>({ method: "POST" });
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [testStatus, setTestStatus] = useState<Record<string, "success" | "error">>({});
@@ -939,16 +954,16 @@ export default function ConnectionsPage() {
     refetch();
   }
 
-  // Group connections by dbType so each provider gets a row and each existing
-  // connection gets its own IntegrationShell under that provider. Then append
-  // any plugin-registered dbTypes that don't appear in DB_TYPES so they still
-  // surface in the UI.
-  const byType = new Map<string, ConnectionInfo[]>();
-  for (const c of displayConnections) {
-    const list = byType.get(c.dbType) ?? [];
-    list.push(c);
-    byType.set(c.dbType, list);
-  }
+  // Bucketize by the selected dimension. For `type`, fold the resulting
+  // buckets back into a map keyed by `dbType` so the provider rendering
+  // below (which iterates over DB_TYPES to surface disconnected providers
+  // with a "Connect" CTA) still receives the same shape it always has.
+  // The pure module exists so the bucketization rule is unit-testable —
+  // see `connections-group-by.test.ts`.
+  const typeBuckets = bucketizeConnections(displayConnections, "type");
+  const byType = new Map<string, ConnectionInfo[]>(
+    typeBuckets.map((b) => [b.key, b.connections]),
+  );
   const providerOrder: string[] = [
     ...DB_TYPES.map((t) => t.value),
     ...Array.from(byType.keys()).filter((k) => !DB_TYPES.some((t) => t.value === k)),
@@ -958,6 +973,10 @@ export default function ConnectionsPage() {
     live: displayConnections.filter((c) => c.health?.status === "healthy").length,
     total: displayConnections.length,
   };
+
+  function handleGroupByChange(next: GroupByDimension) {
+    void setParams({ groupBy: next });
+  }
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-10">
@@ -981,6 +1000,24 @@ export default function ConnectionsPage() {
             Datasources Atlas can query. Each provider below is either connected or
             ready to connect.
           </p>
+          <div className="flex items-center gap-3">
+            <ToggleGroup
+              type="single"
+              size="sm"
+              value={groupBy}
+              onValueChange={(v) => { if (v) handleGroupByChange(v as GroupByDimension); }}
+              aria-label="Group connections by"
+              data-testid="connections-group-by"
+            >
+              <ToggleGroupItem value="type" className="gap-1.5 text-xs" data-testid="connections-group-by-type">
+                <Database className="size-3" />
+                Type
+              </ToggleGroupItem>
+              <ToggleGroupItem value="environment" className="gap-1.5 text-xs" data-testid="connections-group-by-environment">
+                <Layers className="size-3" />
+                Environment
+              </ToggleGroupItem>
+            </ToggleGroup>
           {demoReadOnly ? (
             <TooltipProvider>
               <Tooltip>
@@ -1001,6 +1038,7 @@ export default function ConnectionsPage() {
               Add connection
             </Button>
           )}
+          </div>
         </div>
       </header>
 
@@ -1017,52 +1055,63 @@ export default function ConnectionsPage() {
 
           <PoolStatsSection onError={setMutationError} />
 
-          <AdminContentWrapper
-            loading={loading}
-            error={error}
-            feature="Connections"
-            onRetry={refetch}
-            loadingMessage="Loading connections..."
-            emptyIcon={Cable}
-            emptyTitle="No datasource connections"
-            emptyDescription="Add a connection to start querying your data"
-            emptyAction={{ label: "Add connection", onClick: () => handleAdd() }}
-            isEmpty={!loading && displayConnections.length === 0}
-          >
-            {/*
-              Connections aren't draft-publishable content the way prompts or
-              entities are: CREATE in developer mode produces a draft, but
-              UPDATE and DELETE are immediate, and the demo-hide flow is a
-              per-org archived tombstone that doesn't go through publish. So we
-              don't wrap in `<PublishedContextWrapper>` — doing so traps admins
-              in dev-mode-no-drafts behind an `inert` overlay and prevents the
-              very actions (test / hide demo / drain pool) that don't require
-              drafting in the first place.
-            */}
-            <section>
-              <SectionHeading title="Datasources" description="Providers Atlas can read from" />
-              <div className="space-y-2">
-                {providerOrder.map((dbType) => {
-                  const conns = byType.get(dbType) ?? [];
-                  return (
-                    <ProviderBlock
-                      key={dbType}
-                      dbType={dbType}
-                      connections={conns}
-                      demoReadOnly={demoReadOnly}
-                      loadingDetail={loadingDetail}
-                      testMutation={testMutation}
-                      testStatus={testStatus}
-                      onTest={testConnection}
-                      onEdit={handleEdit}
-                      onDelete={handleDelete}
-                      onAdd={handleAdd}
-                    />
-                  );
-                })}
-              </div>
-            </section>
-          </AdminContentWrapper>
+          {groupBy === "environment" ? (
+            // The Environments view embeds the connection-groups admin
+            // surface — same fetch (`/api/v1/admin/connection-groups`), every
+            // feature (create / rename / delete / archive cascade / merge
+            // wizard / auto-detected toggles) preserved. Per slice 4 of PRD
+            // #2458 this replaces the standalone `/admin/connections/groups`
+            // page as the canonical home; the old URL server-side-redirects
+            // here.
+            <ConnectionGroupsSection />
+          ) : (
+            <AdminContentWrapper
+              loading={loading}
+              error={error}
+              feature="Connections"
+              onRetry={refetch}
+              loadingMessage="Loading connections..."
+              emptyIcon={Cable}
+              emptyTitle="No datasource connections"
+              emptyDescription="Add a connection to start querying your data"
+              emptyAction={{ label: "Add connection", onClick: () => handleAdd() }}
+              isEmpty={!loading && displayConnections.length === 0}
+            >
+              {/*
+                Connections aren't draft-publishable content the way prompts or
+                entities are: CREATE in developer mode produces a draft, but
+                UPDATE and DELETE are immediate, and the demo-hide flow is a
+                per-org archived tombstone that doesn't go through publish. So we
+                don't wrap in `<PublishedContextWrapper>` — doing so traps admins
+                in dev-mode-no-drafts behind an `inert` overlay and prevents the
+                very actions (test / hide demo / drain pool) that don't require
+                drafting in the first place.
+              */}
+              <section>
+                <SectionHeading title="Datasources" description="Providers Atlas can read from" />
+                <div className="space-y-2">
+                  {providerOrder.map((dbType) => {
+                    const conns = byType.get(dbType) ?? [];
+                    return (
+                      <ProviderBlock
+                        key={dbType}
+                        dbType={dbType}
+                        connections={conns}
+                        demoReadOnly={demoReadOnly}
+                        loadingDetail={loadingDetail}
+                        testMutation={testMutation}
+                        testStatus={testStatus}
+                        onTest={testConnection}
+                        onEdit={handleEdit}
+                        onDelete={handleDelete}
+                        onAdd={handleAdd}
+                      />
+                    );
+                  })}
+                </div>
+              </section>
+            </AdminContentWrapper>
+          )}
         </div>
       </ErrorBoundary>
 
@@ -1343,7 +1392,7 @@ function ConnectionCard({
             label="Environment"
             value={
               <Link
-                href="/admin/connections/groups"
+                href="/admin/connections?groupBy=environment"
                 className="inline-flex items-center"
                 aria-label={`View environment ${stripGroupPrefix(conn.groupName)}`}
               >

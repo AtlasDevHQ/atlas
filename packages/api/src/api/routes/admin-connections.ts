@@ -12,6 +12,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+import { getConfig } from "@atlas/api/lib/config";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery, encryptSecret, decryptSecret, type URLSecret } from "@atlas/api/lib/db/internal";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
@@ -51,12 +52,16 @@ function getAtlasMode(c: { get(key: string): unknown }): import("@useatlas/types
  *
  * The runtime-registered `default` connection (sourced from
  * `ATLAS_DATASOURCE_URL`) is only surfaced when the org has zero rows of its
- * own in `connections`. On SaaS every onboarded org owns either `__demo__` or
- * a wizard-created connection that aliases the same physical DB as `default`,
- * so seeding `default` unconditionally produced a phantom duplicate in the
- * Connections list and the Semantic page connection picker. Self-hosted
- * single-tenant deployments still see `default` because they have no
- * `connections` rows at all.
+ * own in `connections` AND the deployment is not SaaS. On SaaS every
+ * onboarded org owns either `__demo__` or a wizard-created connection that
+ * aliases the same physical DB as `default`, so seeding `default`
+ * unconditionally produced a phantom duplicate in the Connections list and
+ * the Semantic page connection picker. The SaaS gate further protects any
+ * SaaS workspace whose `connections` rowset is empty (#2483) — without it,
+ * the shared `ATLAS_DATASOURCE_URL` service rendered as "their default
+ * Atlas connection," a single-tenant lazy-registration leaking into
+ * multi-tenant. Self-hosted single-tenant deployments still see `default`
+ * because they have no `connections` rows at all.
  *
  * @param mode - Atlas mode. Published mode sees only published connections;
  *   developer mode additionally sees drafts. Archived connections are hidden
@@ -98,7 +103,11 @@ export async function getVisibleConnectionIds(
     }
   }
 
-  if (visible.size === 0 && connections.has("default")) {
+  // SaaS gate: on SaaS the `default` registration is the shared demo service
+  // from `ATLAS_DATASOURCE_URL`, not a per-org connection, so never auto-
+  // surface it (#2483).
+  const isSaas = getConfig()?.deployMode === "saas";
+  if (visible.size === 0 && connections.has("default") && !isSaas) {
     visible.add("default");
   }
 

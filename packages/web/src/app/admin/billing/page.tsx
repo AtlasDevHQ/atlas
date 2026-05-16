@@ -28,6 +28,10 @@ import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
+import {
+  TrialCountdownBanner,
+  TRIAL_BANNER_PLAN_ANCHOR_ID,
+} from "@/ui/components/admin/trial-countdown-banner";
 import { BillingStatusSchema } from "@/ui/lib/admin-schemas";
 import { ModelProviderSection } from "@/ui/components/admin/model-provider-section";
 import { formatDate, formatNumber } from "@/lib/format";
@@ -154,7 +158,8 @@ export default function BillingPage() {
         >
           {data && (
             <div className="space-y-10">
-              <section>
+              <TrialCountdownBanner plan={data.plan} />
+              <section id={TRIAL_BANNER_PLAN_ANCHOR_ID} className="scroll-mt-6">
                 <SectionHeading
                   title="Plan"
                   description="Your current subscription and limits"

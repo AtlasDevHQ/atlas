@@ -535,6 +535,42 @@ test.describe("chat env/member picker (#2345)", () => {
     await expect(page.getByTestId("chat-env-picker-member-staging-us")).toBeVisible();
   });
 
+  /**
+   * Regression guard for #2504. The previous shape of these tests only
+   * verified the picker exists in the empty-state composer — which is
+   * what #2504 actually broke when the `/` route migrated to the
+   * `(workspace)` shell and dropped the wire-up. To catch the next
+   * regression early, this test explicitly asserts the picker stays
+   * visible in BOTH the empty state AND the active-conversation state,
+   * so a future refactor that conditions the render on
+   * `messages.length === 0` (or vice versa) still fails the build.
+   */
+  test("#2504 — picker is visible in BOTH empty state and active conversation", async ({ page }) => {
+    const captured = { lastChatBody: null as Record<string, unknown> | null };
+    await installChatEnvMocks(page, buildChatEnvFixture(), captured);
+
+    await page.goto("/");
+
+    // Empty state — picker is present before any message has been sent.
+    const trigger = page.getByTestId("chat-env-picker-trigger");
+    await expect(trigger, "picker missing in empty state (#2504)").toBeVisible();
+
+    // Send a turn so the surface transitions from empty-state hero to an
+    // active-conversation view. The mock streams a single text-delta
+    // frame and finishes; `waitForResponse` blocks until the POST is in
+    // flight, then the assertion below confirms the picker survived the
+    // state transition.
+    await page.locator("textarea, input[type=text]").first().fill("hi");
+    await page.keyboard.press("Enter");
+    await page.waitForResponse(/\/api\/v1\/chat$/);
+
+    // Active conversation — picker is still present. This is the half of
+    // the assertion that #2504's original "passing" test missed: the
+    // empty-state assertion alone passed even with the picker gone, so
+    // long as the trigger was somewhere in DOM during the goto wait.
+    await expect(trigger, "picker missing in active conversation (#2504)").toBeVisible();
+  });
+
   test("per-turn override stamps connectionId into the chat request body", async ({ page }) => {
     const captured = { lastChatBody: null as Record<string, unknown> | null };
     await installChatEnvMocks(page, buildChatEnvFixture(), captured);

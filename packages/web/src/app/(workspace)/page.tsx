@@ -23,6 +23,7 @@ import { ToolPart } from "@/ui/components/chat/tool-part";
 import { Markdown } from "@/ui/components/chat/markdown";
 import { TypingIndicator } from "@/ui/components/chat/typing-indicator";
 import { ShareDialog } from "@/ui/components/chat/share-dialog";
+import { ChatEnvPicker, useChatEnvGroups } from "@/ui/components/chat/env-picker";
 import { parseSuggestions } from "@/ui/lib/helpers";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
@@ -62,6 +63,13 @@ function ChatPage() {
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [fetchErrorDismissed, setFetchErrorDismissed] = useState(false);
+  // #2345 / #2504 — chat env/member picker state. Group is the *content
+  // scope* the server persists on the conversation row; connection id is
+  // the *per-turn execution target* (override-only, not persisted). Both
+  // default to `null` so legacy single-connection workspaces continue
+  // through the un-picked routing path.
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
   // Adaptive empty-chat starter surface — backend composes the ranked
   // prompt list from favorites / popular / library tiers (#1474).
   const [starterPrompts, setStarterPrompts] = useState<
@@ -115,6 +123,12 @@ function ChatPage() {
         });
       }, 500);
     },
+    // #2345 / #2504 — forward picker selection on every chat request.
+    // The transport reads these refs at fetch time so a mid-conversation
+    // override reaches the agent on the very next turn without rebuilding
+    // the transport.
+    getConnectionId: () => selectedConnectionId,
+    getConnectionGroupId: () => selectedGroupId,
   });
 
   const convos = useConversations({
@@ -139,6 +153,25 @@ function ChatPage() {
   // into setting up a connection before the agent gets a chance to run
   // and fail confusingly downstream.
   const needsDataSetup = datasource.data?.tableCount === 0;
+
+  // #2345 / #2504 — env/member picker feed. Gated on auth so the request
+  // doesn't 401 on first paint. The picker self-hides for legacy
+  // single-connection workspaces, so leaving the hook always-on is safe.
+  const envGroupsQuery = useChatEnvGroups({
+    apiUrl: getApiUrl(),
+    enabled: authResolved && isSignedIn,
+    getHeaders,
+    getCredentials,
+  });
+
+  // Mirror the env-picker.tsx visibility predicate at the page level so
+  // the wrapper row collapses cleanly (no stray hairline border) when
+  // the picker self-hides on a 1×1 workspace. Stays a single source of
+  // shape in env-picker.tsx — this is purely for layout.
+  const showEnvPicker =
+    (envGroupsQuery.groups.length === 0 && envGroupsQuery.reason !== null) ||
+    envGroupsQuery.groups.length > 1 ||
+    (envGroupsQuery.groups[0]?.members.length ?? 0) > 1;
 
   const refreshConvosRef = useRef(convos.refresh);
   refreshConvosRef.current = convos.refresh;
@@ -397,14 +430,35 @@ function ChatPage() {
             )}
           >
             <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col overflow-hidden px-4 pt-4">
-              {conversationId && (
-                <div className="mb-3 flex items-center justify-end border-b border-zinc-100 pb-2 dark:border-zinc-800/60">
-                  <ShareDialog
-                    conversationId={conversationId}
-                    onShare={handleShare}
-                    onUnshare={handleUnshare}
-                    onGetShareStatus={handleGetShareStatus}
-                  />
+              {/* Top control row — env picker (left) + share dialog (right).
+                  Renders only when at least one child is visible, so the
+                  hairline border doesn't appear on the empty-state hero
+                  of a legacy 1×1 workspace. The picker itself is the
+                  user's only way to scope or override the agent's choice
+                  mid-stream (per #2345); the prior workspace shell shipped
+                  without it, which is the regression #2504 fixed. */}
+              {(showEnvPicker || conversationId) && (
+                <div className="mb-3 flex items-center justify-between gap-2 border-b border-zinc-100 pb-2 dark:border-zinc-800/60">
+                  <div className="flex items-center gap-2">
+                    <ChatEnvPicker
+                      groups={envGroupsQuery.groups}
+                      emptyReason={envGroupsQuery.reason}
+                      activeGroupId={selectedGroupId}
+                      activeConnectionId={selectedConnectionId}
+                      onSelect={({ groupId, connectionId }) => {
+                        setSelectedGroupId(groupId);
+                        setSelectedConnectionId(connectionId);
+                      }}
+                    />
+                  </div>
+                  {conversationId && (
+                    <ShareDialog
+                      conversationId={conversationId}
+                      onShare={handleShare}
+                      onUnshare={handleUnshare}
+                      onGetShareStatus={handleGetShareStatus}
+                    />
+                  )}
                 </div>
               )}
 

@@ -44,6 +44,11 @@ export default function ModelConfigPage() {
   // failure behind "Platform default" copy.
   const billingFailed = !!billingError && !billingMissing;
   const platformModel = billing?.currentModel ?? billing?.plan.defaultModel ?? null;
+  // Free-tier workspaces with no ATLAS_MODEL setting fall through to the
+  // `"user-configured"` placeholder from `plans.ts`. Render an actionable CTA
+  // instead of leaking the placeholder string into the title.
+  const freeTierUnconfigured =
+    billing?.plan.tier === "free" && platformModel === "user-configured";
 
   return (
     <div className="p-6">
@@ -78,6 +83,13 @@ export default function ModelConfigPage() {
                     Retry
                   </Button>
                 }
+              />
+            ) : freeTierUnconfigured ? (
+              <CompactRow
+                icon={Cpu}
+                title="No default model configured"
+                description="Set ATLAS_MODEL in your environment or pick a model below."
+                status="disconnected"
               />
             ) : (
               <CompactRow

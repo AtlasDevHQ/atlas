@@ -46,13 +46,20 @@ mock.module("@/ui/context", () => ({
   }),
 }));
 
-// All three useAdminFetch call sites in the page wrapper + the embedded
+// All useAdminFetch call sites in the page wrapper + the embedded
 // ModelProviderSection (billing, model-config GET, gateway catalog, etc.)
-// resolve through this single mock. Tests below only care about routing,
-// not render content — a benign empty payload keeps the page mounted
-// without firing real network requests.
+// resolve through this single mock. Routing tests only care that the page
+// mounts — benign empty payloads suffice. Content tests (e.g. the
+// free-tier-unconfigured CTA below) override `billingData` per-test so
+// only the `/api/v1/billing` call returns shaped data; siblings stay null.
+let billingData: unknown = null;
 mock.module("@/ui/hooks/use-admin-fetch", () => ({
-  useAdminFetch: () => ({ data: null, loading: false, error: null, refetch: () => {} }),
+  useAdminFetch: (path: string) => ({
+    data: path === "/api/v1/billing" ? billingData : null,
+    loading: false,
+    error: null,
+    refetch: () => {},
+  }),
   friendlyError: (err: { message?: string }) => err?.message ?? "error",
 }));
 mock.module("@/ui/hooks/use-admin-mutation", () => ({
@@ -76,6 +83,7 @@ afterEach(() => {
   cleanup();
   mockReplace.mockClear();
   mockSession = { data: { user: { role: "admin" } }, isPending: false };
+  billingData = null;
 });
 
 describe("/admin/model-config — workspace-scoped, no platform guard", () => {
@@ -103,5 +111,78 @@ describe("/admin/model-config — workspace-scoped, no platform guard", () => {
     mockSession = { data: undefined, isPending: true };
     render(createElement(ModelConfigPage), { wrapper });
     expect(mockReplace).not.toHaveBeenCalled();
+  });
+});
+
+describe("/admin/model-config — free-tier placeholder copy (#2468)", () => {
+  // Regression guard. The free-tier plan default in `plans.ts` is the literal
+  // sentinel `"user-configured"`. The API returns it as `currentModel` when no
+  // ATLAS_MODEL setting exists, and pre-fix the page rendered that string as
+  // the platform-baseline title. If `plans.ts` renames the sentinel, or the
+  // page's tier check tightens incorrectly, this test surfaces the regression.
+  test("free-tier workspace with no ATLAS_MODEL renders the CTA, not the placeholder", () => {
+    billingData = {
+      workspaceId: "ws_test",
+      plan: {
+        tier: "free",
+        displayName: "Self-Hosted",
+        pricePerSeat: 0,
+        defaultModel: "user-configured",
+        byot: false,
+        trialEndsAt: null,
+      },
+      limits: { tokenBudgetPerSeat: null, totalTokenBudget: null, maxSeats: null, maxConnections: null },
+      usage: {
+        queryCount: 0,
+        tokenCount: 0,
+        seatCount: 1,
+        tokenUsagePercent: 0,
+        tokenOverageStatus: "ok",
+        periodStart: "2026-05-01T00:00:00.000Z",
+        periodEnd: "2026-06-01T00:00:00.000Z",
+      },
+      seats: { count: 1, max: null },
+      connections: { count: 0, max: null },
+      currentModel: "user-configured",
+      overagePerMillionTokens: 0,
+      subscription: null,
+    };
+    const { container } = render(createElement(ModelConfigPage), { wrapper });
+    expect(container.textContent).toContain("No default model configured");
+    expect(container.textContent).toContain("Set ATLAS_MODEL");
+    expect(container.textContent).not.toContain("user-configured");
+  });
+
+  test("free-tier workspace with ATLAS_MODEL set renders the configured model", () => {
+    billingData = {
+      workspaceId: "ws_test",
+      plan: {
+        tier: "free",
+        displayName: "Self-Hosted",
+        pricePerSeat: 0,
+        defaultModel: "user-configured",
+        byot: false,
+        trialEndsAt: null,
+      },
+      limits: { tokenBudgetPerSeat: null, totalTokenBudget: null, maxSeats: null, maxConnections: null },
+      usage: {
+        queryCount: 0,
+        tokenCount: 0,
+        seatCount: 1,
+        tokenUsagePercent: 0,
+        tokenOverageStatus: "ok",
+        periodStart: "2026-05-01T00:00:00.000Z",
+        periodEnd: "2026-06-01T00:00:00.000Z",
+      },
+      seats: { count: 1, max: null },
+      connections: { count: 0, max: null },
+      currentModel: "anthropic/claude-haiku-4.5",
+      overagePerMillionTokens: 0,
+      subscription: null,
+    };
+    const { container } = render(createElement(ModelConfigPage), { wrapper });
+    expect(container.textContent).toContain("Haiku 4.5");
+    expect(container.textContent).not.toContain("No default model configured");
+    expect(container.textContent).not.toContain("user-configured");
   });
 });

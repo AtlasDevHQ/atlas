@@ -32,6 +32,45 @@ export interface LoadEntitiesFromDBResult {
 }
 
 /**
+ * Project a parsed YAML record into a `ParsedEntity`. Shared by every entity
+ * loader (DB, disk, merged) so the three views always agree on field shape
+ * and fallback ordering. `fallbackName` covers rows/files where the YAML
+ * itself omits `name` (DB → `row.name`, disk → filename without extension);
+ * `fallbackConnection` is the DB-row `connection_group_id` carried through
+ * when the YAML doesn't carry an explicit `connection:` field.
+ */
+function projectParsedEntity(
+  parsed: Record<string, unknown>,
+  opts: { fallbackName: string; fallbackConnection?: string | null },
+): ParsedEntity {
+  const name = typeof parsed.name === "string" && parsed.name
+    ? parsed.name
+    : String(parsed.table ?? opts.fallbackName);
+  return {
+    name,
+    table: String(parsed.table ?? opts.fallbackName),
+    description: typeof parsed.description === "string" ? parsed.description : undefined,
+    dimensions: Array.isArray(parsed.dimensions) ? parsed.dimensions as ParsedEntity["dimensions"] : [],
+    measures: Array.isArray(parsed.measures) ? parsed.measures as ParsedEntity["measures"] : [],
+    joins: Array.isArray(parsed.joins) ? parsed.joins as ParsedEntity["joins"] : [],
+    query_patterns: Array.isArray(parsed.query_patterns) ? parsed.query_patterns as ParsedEntity["query_patterns"] : [],
+    connection: typeof parsed.connection === "string" ? parsed.connection : (opts.fallbackConnection ?? undefined),
+  };
+}
+
+/** Log the "all rows failed parse" diagnostic when every DB row was corrupt.
+ * Kept as a helper so `loadEntitiesFromDB` and `loadEntitiesForOrg` log the
+ * same shape — operators see one consistent signal. */
+function logIfAllRowsCorrupt(orgId: string, totalRows: number, parseFailures: number): void {
+  if (parseFailures > 0 && parseFailures === totalRows) {
+    log.error(
+      { orgId, totalRows, parseFailures },
+      "All org entity rows failed YAML parse — semantic layer is corrupt",
+    );
+  }
+}
+
+/**
  * Load entities for an org from the internal DB.
  *
  * Preferred whenever the caller has both an org context and an internal DB
@@ -70,6 +109,10 @@ export async function loadEntitiesFromDB(
         parseFailures++;
         continue;
       }
+      // NOTE: ignores `parsed.name` (keys off `parsed.table ?? row.name`) —
+      // preserved verbatim from pre-#2503 to avoid changing the schedule-tick
+      // semantics. `loadEntitiesForOrg` honors `parsed.name` because the
+      // admin merge path keys dedup by it.
       entities.push({
         name: String(parsed.table ?? row.name),
         table: String(parsed.table ?? row.name),
@@ -89,13 +132,7 @@ export async function loadEntitiesFromDB(
     }
   }
 
-  if (parseFailures > 0 && parseFailures === rows.length) {
-    log.error(
-      { orgId, totalRows: rows.length, parseFailures },
-      "All org entity rows failed YAML parse — semantic layer is corrupt",
-    );
-  }
-
+  logIfAllRowsCorrupt(orgId, rows.length, parseFailures);
   return { entities, totalRows: rows.length, parseFailures };
 }
 
@@ -147,6 +184,7 @@ export async function loadEntitiesForOrg(
   // admin-source.ts`): `${name}\0${groupId ?? ""}`. `\0` is illegal in both
   // YAML names and connection-group ids, so it can't collide with a real key.
   const seen = new Set<string>();
+  const dedupKey = (name: string, groupId: string | null): string => `${name}\0${groupId ?? ""}`;
   let parseFailures = 0;
 
   for (const row of rows) {
@@ -156,23 +194,15 @@ export async function loadEntitiesForOrg(
         parseFailures++;
         continue;
       }
-      const nameField = typeof parsed.name === "string" && parsed.name
-        ? parsed.name
-        : String(parsed.table ?? row.name);
       const groupId = row.connection_group_id ?? null;
-      const key = `${nameField}\0${groupId ?? ""}`;
+      const entity = projectParsedEntity(parsed, {
+        fallbackName: row.name,
+        fallbackConnection: groupId,
+      });
+      const key = dedupKey(entity.name, groupId);
       if (seen.has(key)) continue;
       seen.add(key);
-      entities.push({
-        name: nameField,
-        table: String(parsed.table ?? row.name),
-        description: typeof parsed.description === "string" ? parsed.description : undefined,
-        dimensions: Array.isArray(parsed.dimensions) ? parsed.dimensions as ParsedEntity["dimensions"] : [],
-        measures: Array.isArray(parsed.measures) ? parsed.measures as ParsedEntity["measures"] : [],
-        joins: Array.isArray(parsed.joins) ? parsed.joins as ParsedEntity["joins"] : [],
-        query_patterns: Array.isArray(parsed.query_patterns) ? parsed.query_patterns as ParsedEntity["query_patterns"] : [],
-        connection: typeof parsed.connection === "string" ? parsed.connection : (groupId ?? undefined),
-      });
+      entities.push(entity);
     } catch (err) {
       parseFailures++;
       log.warn(
@@ -196,23 +226,13 @@ export async function loadEntitiesForOrg(
         const parsed = yaml.load(content) as Record<string, unknown> | null;
         if (!parsed || typeof parsed !== "object") continue;
 
-        const baseName = file.replace(/\.ya?ml$/, "");
-        const nameField = typeof parsed.name === "string" && parsed.name
-          ? parsed.name
-          : String(parsed.table ?? baseName);
-        const key = `${nameField}\0`;
+        const entity = projectParsedEntity(parsed, {
+          fallbackName: file.replace(/\.ya?ml$/, ""),
+        });
+        const key = dedupKey(entity.name, null);
         if (seen.has(key)) continue;
         seen.add(key);
-        entities.push({
-          name: nameField,
-          table: String(parsed.table ?? baseName),
-          description: typeof parsed.description === "string" ? parsed.description : undefined,
-          dimensions: Array.isArray(parsed.dimensions) ? parsed.dimensions as ParsedEntity["dimensions"] : [],
-          measures: Array.isArray(parsed.measures) ? parsed.measures as ParsedEntity["measures"] : [],
-          joins: Array.isArray(parsed.joins) ? parsed.joins as ParsedEntity["joins"] : [],
-          query_patterns: Array.isArray(parsed.query_patterns) ? parsed.query_patterns as ParsedEntity["query_patterns"] : [],
-          connection: typeof parsed.connection === "string" ? parsed.connection : undefined,
-        });
+        entities.push(entity);
       } catch (err) {
         log.warn(
           { err: err instanceof Error ? err.message : String(err), file, orgId },
@@ -222,12 +242,7 @@ export async function loadEntitiesForOrg(
     }
   }
 
-  if (parseFailures > 0 && parseFailures === rows.length) {
-    log.error(
-      { orgId, totalRows: rows.length, parseFailures },
-      "All org entity rows failed YAML parse — semantic layer is corrupt",
-    );
-  }
+  logIfAllRowsCorrupt(orgId, rows.length, parseFailures);
 
   // `totalRows` is the count of merged entities (DB + disk after dedup) — the
   // canonical "what the user sees" number that lines up with `listAdminEntities`.

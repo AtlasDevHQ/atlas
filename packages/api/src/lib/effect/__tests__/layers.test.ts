@@ -7,7 +7,7 @@ import {
   Migration,
   MigrationLive,
   ConnectionsHydrate,
-  ConnectionsHydrateLive,
+  makeConnectionsHydrateLive,
   SemanticSync,
   SemanticSyncLive,
   Settings,
@@ -128,73 +128,82 @@ describe("MigrationLive", () => {
 // ── ConnectionsHydrate (#2482) ─────────────────────────────────────
 
 describe("ConnectionsHydrateLive", () => {
-  test("returns zero count when InternalDB is unavailable", async () => {
-    const testInternalDB = createInternalDBTestLayer({ available: false });
-    const testMigration = makeTestMigrationLayer({ migrated: true });
-
-    const result = await Effect.runPromise(
-      Effect.gen(function* () {
-        const hydrate = yield* ConnectionsHydrate;
-        return hydrate;
-      }).pipe(
-        Effect.provide(
-          ConnectionsHydrateLive.pipe(
-            Layer.provide(Layer.merge(testInternalDB, testMigration)),
-          ),
+  function runHydrate(
+    load: () => Promise<number>,
+    gates: { available: boolean; migrated: boolean },
+  ) {
+    const layer = makeConnectionsHydrateLive(load).pipe(
+      Layer.provide(
+        Layer.merge(
+          createInternalDBTestLayer({ available: gates.available }),
+          makeTestMigrationLayer({ migrated: gates.migrated }),
         ),
       ),
     );
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        return yield* ConnectionsHydrate;
+      }).pipe(Effect.provide(layer)),
+    );
+  }
 
+  test("outcome 'skipped-gate' when InternalDB is unavailable", async () => {
+    const result = await runHydrate(
+      async () => {
+        throw new Error("load should not run when gates fail");
+      },
+      { available: false, migrated: true },
+    );
+    expect(result.outcome).toBe("skipped-gate");
     expect(result.count).toBe(0);
-    expect(typeof result.durationMs).toBe("number");
+    expect(result.error).toBeUndefined();
   });
 
-  test("returns zero count when Migration did not succeed", async () => {
-    const testInternalDB = createInternalDBTestLayer({ available: true });
-    const testMigration = makeTestMigrationLayer({ migrated: false });
-
-    const result = await Effect.runPromise(
-      Effect.gen(function* () {
-        const hydrate = yield* ConnectionsHydrate;
-        return hydrate;
-      }).pipe(
-        Effect.provide(
-          ConnectionsHydrateLive.pipe(
-            Layer.provide(Layer.merge(testInternalDB, testMigration)),
-          ),
-        ),
-      ),
+  test("outcome 'skipped-gate' when Migration did not succeed", async () => {
+    const result = await runHydrate(
+      async () => {
+        throw new Error("load should not run when gates fail");
+      },
+      { available: true, migrated: false },
     );
-
+    expect(result.outcome).toBe("skipped-gate");
     expect(result.count).toBe(0);
   });
 
-  test("invokes loadSavedConnections when upstream gates are satisfied", async () => {
-    // When InternalDB.available + Migration.migrated are both true, the
-    // Layer reaches the loadSavedConnections call. In this unit context
-    // there is no real DB so loadSavedConnections falls into its inner
-    // catch ("table may not exist yet") and returns 0 — the assertion
-    // we care about is "the layer ran end-to-end and produced a result".
-    const testInternalDB = createInternalDBTestLayer({ available: true });
-    const testMigration = makeTestMigrationLayer({ migrated: true });
+  test("outcome 'empty' when load returns zero rows", async () => {
+    const result = await runHydrate(async () => 0, {
+      available: true,
+      migrated: true,
+    });
+    expect(result.outcome).toBe("empty");
+    expect(result.count).toBe(0);
+    expect(result.error).toBeUndefined();
+  });
 
-    const result = await Effect.runPromise(
-      Effect.gen(function* () {
-        const hydrate = yield* ConnectionsHydrate;
-        return hydrate;
-      }).pipe(
-        Effect.provide(
-          ConnectionsHydrateLive.pipe(
-            Layer.provide(Layer.merge(testInternalDB, testMigration)),
-          ),
-        ),
-      ),
-    );
-
-    expect(typeof result.count).toBe("number");
-    expect(result.count).toBeGreaterThanOrEqual(0);
-    expect(typeof result.durationMs).toBe("number");
+  test("outcome 'registered' when load returns a positive count", async () => {
+    const result = await runHydrate(async () => 3, {
+      available: true,
+      migrated: true,
+    });
+    expect(result.outcome).toBe("registered");
+    expect(result.count).toBe(3);
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  test("outcome 'error' when load throws — Effect.catchAll keeps boot non-fatal", async () => {
+    // Regression guard for the acceptance criterion "encryption-key rotation
+    // failures surface as logged warnings, not boot crash" — if a future
+    // refactor removes Effect.catchAll, this layer would fail and crash boot
+    // through buildAppLayer.
+    const result = await runHydrate(
+      async () => {
+        throw new Error("simulated hydrate failure");
+      },
+      { available: true, migrated: true },
+    );
+    expect(result.outcome).toBe("error");
+    expect(result.count).toBe(0);
+    expect(result.error).toContain("simulated hydrate failure");
   });
 });
 

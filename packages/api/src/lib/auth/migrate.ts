@@ -36,7 +36,7 @@ export function getMigrationError(): string | null {
  *   1. Better Auth migrations — create `organization`, `user`, `session`, etc.
  *   2. Atlas internal DB migrations — can ALTER `organization` (e.g. 0027) now
  *      that Better Auth has created it.
- *   3. Load saved connections, plugin settings, abuse state.
+ *   3. Load plugin settings, abuse state.
  *   4. Bootstrap admin, seed dev user, backfill password-change flag.
  *
  * Step 1 must precede step 2 — see #1472. In non-managed mode step 1 is
@@ -94,12 +94,6 @@ export async function migrateAuthTables(): Promise<void> {
       _migrationError = "Connected to the internal database but migration failed. Check database permissions (CREATE TABLE, CREATE INDEX).";
       // Don't block server start — audit will fall back to pino-only
     }
-
-    // 3. Saved-connection hydrate moved to ConnectionsHydrateLive in
-    //    lib/effect/layers.ts (#2482). The Effect Layer DAG runs the
-    //    hydrate as a first-class boot phase after InternalDB +
-    //    Migration are up — keeping a duplicate call here would double-
-    //    fire decryption warnings on key-rotation errors.
 
     // Load plugin settings (enabled/disabled state from DB)
     try {

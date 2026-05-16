@@ -296,11 +296,28 @@ export const BackfillSaasTrialLive: Layer.Layer<
 // ██  Connections Hydrate Layer
 // ══════════════════════════════════════════════════════════════════════
 
+/**
+ * Discriminated outcome of the boot-time hydrate. Distinguishes
+ * "registry intentionally left empty" (skipped or no rows) from
+ * "hydrate threw and registry is empty when it shouldn't be" so a
+ * future `/health` or admin banner consumer can surface the latter
+ * without re-grepping logs.
+ */
+export type ConnectionsHydrateOutcome =
+  | "skipped-gate"
+  | "empty"
+  | "registered"
+  | "error";
+
 export interface ConnectionsHydrateShape {
-  /** Number of connections registered into the runtime registry at boot. */
+  /** Number of connections registered into the runtime registry. */
   readonly count: number;
-  /** Wall-clock duration in ms of the hydrate operation. */
+  /** Wall-clock duration in ms. */
   readonly durationMs: number;
+  /** Discriminates intentional zero (skip / empty) from a failure that produced zero. */
+  readonly outcome: ConnectionsHydrateOutcome;
+  /** Scrubbed error message when `outcome === "error"`. */
+  readonly error?: string;
 }
 
 export class ConnectionsHydrate extends Context.Tag("ConnectionsHydrate")<
@@ -309,21 +326,23 @@ export class ConnectionsHydrate extends Context.Tag("ConnectionsHydrate")<
 >() {}
 
 /**
+ * Production loader. The Layer body is testable by passing a stub via
+ * `makeConnectionsHydrateLive(load)`; the default loader does the real
+ * dynamic import + DB read.
+ */
+const defaultLoadSavedConnections = async (): Promise<number> => {
+  const { loadSavedConnections } = await import(
+    "@atlas/api/lib/db/internal"
+  );
+  return loadSavedConnections();
+};
+
+/**
  * Rebuild the runtime `ConnectionRegistry` from the internal `connections`
  * table at boot. Reads every non-archived row, decrypts the URL via
  * `decryptSecret`, and calls `connections.register(id, ...)` so that
  * immediately after a deploy the in-memory registry matches the DB
  * without any user PUT/onboarding round-trip.
- *
- * Without this Layer, every `connections.register(...)` site lives inside
- * a user-driven write path. After any API restart (Railway deploy,
- * region failover, autoscale event) the runtime registry stays empty
- * until users re-touch each connection one-by-one — meanwhile the rows
- * are still in the DB, `getVisibleConnectionIds` still returns them,
- * and `/admin/connections` shows "No datasource connections" because
- * visible-set ∩ in-memory-set is empty. Plausibly the root cause of
- * #2444; the defensive `Array.isArray` guard in #2445 papered over the
- * symptom, this fixes the underlying gap (#2482).
  *
  * Depends on `Migration` (so the `connections` table is guaranteed to
  * exist) and `InternalDB` (for the pool). Non-fatal: per-row decryption
@@ -332,61 +351,81 @@ export class ConnectionsHydrate extends Context.Tag("ConnectionsHydrate")<
  * `status != 'archived'` filter so the per-org tombstone rows from the
  * delete-as-hide flow in `admin-connections.ts` don't feed their
  * empty-string `url` marker to `decryptSecret`.
+ *
+ * Exposed as a factory so tests can inject a stub `load` to exercise
+ * the `Effect.catchAll` branch without module-level mocking. The
+ * exported `ConnectionsHydrateLive` binds the production loader.
  */
+export function makeConnectionsHydrateLive(
+  load: () => Promise<number> = defaultLoadSavedConnections,
+): Layer.Layer<ConnectionsHydrate, never, InternalDB | Migration> {
+  return Layer.effect(
+    ConnectionsHydrate,
+    Effect.gen(function* () {
+      const start = performance.now();
+      const db = yield* InternalDB;
+      const migration = yield* Migration;
+      if (!db.available || !migration.migrated) {
+        const durationMs = Math.round(performance.now() - start);
+        log.info(
+          { available: db.available, migrated: migration.migrated, durationMs },
+          "Connections hydrate skipped — upstream gate (InternalDB or Migration) not satisfied",
+        );
+        return {
+          count: 0,
+          durationMs,
+          outcome: "skipped-gate",
+        } satisfies ConnectionsHydrateShape;
+      }
+
+      const result = yield* Effect.tryPromise({
+        try: load,
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.map((count) => ({ ok: true as const, count })),
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            const message = errorMessage(err);
+            log.error({ err: message }, "Connections hydrate threw — runtime registry left empty");
+            return { ok: false as const, error: message };
+          }),
+        ),
+      );
+      const durationMs = Math.round(performance.now() - start);
+
+      if (!result.ok) {
+        return {
+          count: 0,
+          durationMs,
+          outcome: "error",
+          error: result.error,
+        } satisfies ConnectionsHydrateShape;
+      }
+
+      if (result.count > 0) {
+        log.info(
+          { count: result.count, durationMs },
+          "Hydrated runtime ConnectionRegistry from internal DB",
+        );
+        return {
+          count: result.count,
+          durationMs,
+          outcome: "registered",
+        } satisfies ConnectionsHydrateShape;
+      }
+
+      log.debug({ durationMs }, "Connections hydrate complete — no rows registered");
+      return { count: 0, durationMs, outcome: "empty" } satisfies ConnectionsHydrateShape;
+    }),
+  );
+}
+
+/** Production binding — uses the real `loadSavedConnections()` from `db/internal.ts`. */
 export const ConnectionsHydrateLive: Layer.Layer<
   ConnectionsHydrate,
   never,
   InternalDB | Migration
-> = Layer.effect(
-  ConnectionsHydrate,
-  Effect.gen(function* () {
-    const db = yield* InternalDB;
-    const migration = yield* Migration;
-    if (!db.available || !migration.migrated) {
-      log.info(
-        { available: db.available, migrated: migration.migrated },
-        "Connections hydrate skipped — upstream gate (InternalDB or Migration) not satisfied",
-      );
-      return { count: 0, durationMs: 0 } satisfies ConnectionsHydrateShape;
-    }
-
-    const start = performance.now();
-    const count = yield* Effect.tryPromise({
-      try: async () => {
-        const { loadSavedConnections } = await import(
-          "@atlas/api/lib/db/internal"
-        );
-        return await loadSavedConnections();
-      },
-      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-    }).pipe(
-      Effect.catchAll((err) =>
-        Effect.sync(() => {
-          log.error(
-            { err: errorMessage(err) },
-            "Connections hydrate threw — runtime registry left empty",
-          );
-          return 0;
-        }),
-      ),
-    );
-    const durationMs = Math.round(performance.now() - start);
-
-    if (count > 0) {
-      log.info(
-        { count, durationMs },
-        "Hydrated runtime ConnectionRegistry from internal DB",
-      );
-    } else {
-      log.debug(
-        { durationMs },
-        "Connections hydrate complete — no rows registered",
-      );
-    }
-
-    return { count, durationMs } satisfies ConnectionsHydrateShape;
-  }),
-);
+> = makeConnectionsHydrateLive();
 
 // ══════════════════════════════════════════════════════════════════════
 // ██  Semantic Sync Layer
@@ -1123,11 +1162,6 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     Layer.provide(Layer.merge(internalDBLayer, migrationLayer)),
   );
 
-  // ConnectionsHydrateLive depends on Migration (so the `connections`
-  // table is guaranteed to exist) and InternalDB. Rebuilds the runtime
-  // ConnectionRegistry from the internal DB so the registry mirrors the
-  // table after a deploy without waiting for users to re-touch each
-  // connection. See #2482.
   const connectionsHydrateLayer = ConnectionsHydrateLive.pipe(
     Layer.provide(Layer.merge(internalDBLayer, migrationLayer)),
   );

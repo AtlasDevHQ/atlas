@@ -1,4 +1,4 @@
-import { describe, expect, test, mock, beforeEach } from "bun:test";
+import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
 import React, { type ReactNode } from "react";
 
 // Mock the dropdown-menu primitives so portal'd content renders inline.
@@ -32,8 +32,12 @@ mock.module("@/components/ui/dropdown-menu", () => {
   };
 });
 
-import { render, cleanup } from "@testing-library/react";
-import { ChatEnvPicker, type ChatEnvGroup } from "../components/chat/env-picker";
+import { render, renderHook, waitFor, cleanup } from "@testing-library/react";
+import {
+  ChatEnvPicker,
+  useChatEnvGroups,
+  type ChatEnvGroup,
+} from "../components/chat/env-picker";
 
 beforeEach(() => {
   cleanup();
@@ -401,5 +405,116 @@ describe("ChatEnvPicker chip label collapse (#2408)", () => {
       '[data-testid="chat-env-picker-label"]',
     );
     expect(label?.textContent).toBe("prod / us-int");
+  });
+});
+
+// ── useChatEnvGroups hook ────────────────────────────────────────────
+//
+// `useChatEnvGroups` is the only place the wire `reason` actually
+// enters the web app. The component-layer tests above lock the render
+// branches, but the hook itself has three behaviors a regression could
+// quietly break: echoing a known reason through to state, falling back
+// to null when the server omits the field (forward-compat with older
+// API), and resetting reason to null on transport failure so a flaky
+// network can't pin a stale chip on screen. See #2422.
+
+const originalFetch = globalThis.fetch;
+
+function mockFetch(
+  handler: () => Response | Promise<Response>,
+): () => number {
+  let calls = 0;
+  globalThis.fetch = mock(async () => {
+    calls += 1;
+    return await handler();
+  }) as unknown as typeof fetch;
+  return () => calls;
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+describe("useChatEnvGroups (#2422)", () => {
+  const opts = {
+    apiUrl: "http://atlas.test",
+    enabled: true,
+    getHeaders: () => ({}),
+    getCredentials: () => "same-origin" as RequestCredentials,
+  };
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    cleanup();
+  });
+
+  test("echoes a known reason through to state on a successful empty response", async () => {
+    mockFetch(() => jsonResponse({ groups: [], reason: "no_internal_db" }));
+    const { result } = renderHook(() => useChatEnvGroups(opts));
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(result.current.groups).toEqual([]);
+    expect(result.current.reason).toBe("no_internal_db");
+    expect(result.current.error).toBeNull();
+  });
+
+  test("falls back to reason: null when the server omits the field (forward-compat with older API)", async () => {
+    mockFetch(() => jsonResponse({ groups: [] }));
+    const { result } = renderHook(() => useChatEnvGroups(opts));
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(result.current.reason).toBeNull();
+  });
+
+  test("narrows an unrecognized reason to null instead of leaking it to the chip", async () => {
+    // A server bug or a forward-version drift could emit a reason the
+    // frontend hasn't been built to render. Indexing into the copy
+    // table with that value would render `undefined` as visible text.
+    // The hook must narrow before passing it on.
+    mockFetch(() =>
+      jsonResponse({ groups: [], reason: "no_active_token" /* not in union */ }),
+    );
+    const { result } = renderHook(() => useChatEnvGroups(opts));
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(result.current.reason).toBeNull();
+  });
+
+  test("resets reason to null on transport failure so a flaky network can't pin a stale chip", async () => {
+    // Silence the console.warn we now emit on transport failure; the
+    // test is asserting state shape, not log output, and an
+    // unexpected warn would flag a CLAUDE.md "no silent swallows"
+    // regression elsewhere.
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      mockFetch(() => {
+        throw new Error("network down");
+      });
+      const { result } = renderHook(() => useChatEnvGroups(opts));
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+      expect(result.current.groups).toEqual([]);
+      expect(result.current.reason).toBeNull();
+      expect(result.current.error).toContain("network down");
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  test("does not fetch when enabled is false (signed-out / auth not resolved)", async () => {
+    const callCount = mockFetch(() => jsonResponse({ groups: [], reason: null }));
+    renderHook(() => useChatEnvGroups({ ...opts, enabled: false }));
+    // Microtask flush — give the effect a chance to fire if it were
+    // going to.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(callCount()).toBe(0);
   });
 });

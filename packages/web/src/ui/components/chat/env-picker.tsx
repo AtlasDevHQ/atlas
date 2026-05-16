@@ -79,6 +79,17 @@ const EMPTY_REASON_COPY: Record<MeConnectionGroupsEmptyReason, string> = {
     "Multi-environment features require an internal database. Self-hosters: set DATABASE_URL.",
 };
 
+/**
+ * Runtime narrow against the closed reason union. A server emitting an
+ * unrecognized value (forward-compat scenario, or a bug) would
+ * otherwise index into `EMPTY_REASON_COPY` and render `undefined` as
+ * visible chip text. Treat unknowns as "no reason" so the picker
+ * falls back to its hide-on-empty default.
+ */
+function isKnownEmptyReason(value: unknown): value is MeConnectionGroupsEmptyReason {
+  return typeof value === "string" && value in EMPTY_REASON_COPY;
+}
+
 export function ChatEnvPicker({
   groups,
   emptyReason = null,
@@ -87,9 +98,9 @@ export function ChatEnvPicker({
   onSelect,
 }: ChatEnvPickerProps): React.ReactElement | null {
   // Empty list + a reason ⇒ render a diagnostic chip instead of
-  // silently hiding. This is the #2422 fix: a mid-org-switch or
-  // unassigned user used to see a blank picker, hiding the 1.4.4
-  // multi-env feature behind a silent fallback.
+  // silently hiding. Hiding here would conceal a real degraded state
+  // (org switch in flight, self-host missing DATABASE_URL) and is
+  // exactly the failure mode #2422 traced.
   if (groups.length === 0 && emptyReason) {
     return (
       <div
@@ -276,16 +287,24 @@ export function useChatEnvGroups(
         }
         const body = (await res.json()) as {
           groups?: ChatEnvGroup[];
-          reason?: MeConnectionGroupsEmptyReason | null;
+          reason?: unknown;
         };
         if (!cancelled) {
           setGroups(body.groups ?? []);
-          setReason(body.reason ?? null);
+          // Narrow unknown / unrecognized reason values to `null` —
+          // never index into `EMPTY_REASON_COPY` with a value the
+          // frontend hasn't been built to render.
+          setReason(isKnownEmptyReason(body.reason) ? body.reason : null);
         }
       })
       .catch((err: unknown) => {
         if (!cancelled) {
           const msg = err instanceof Error ? err.message : String(err);
+          // Surface to the console so a persistent 5xx or CORS
+          // regression leaves a breadcrumb. CLAUDE.md: every catch
+          // must log or rethrow — silent swallowing is what #2422
+          // existed to fix.
+          console.warn("[atlas-chat] failed to load connection groups", msg);
           setError(msg);
           setGroups([]);
           // Don't synthesize a `reason` on transport failure — the

@@ -195,6 +195,6 @@ export type ShareStatus =
  * cross-package consumer yet (web is the only caller). If the SDK or
  * another package starts consuming this, promote the type to
  * `@useatlas/types` and re-export it via this file. See CLAUDE.md
- * "Frontend is a pure HTTP client" and the user note on prompt 3.
+ * "Frontend is a pure HTTP client".
  */
 export type MeConnectionGroupsEmptyReason = "no_active_org" | "no_internal_db";

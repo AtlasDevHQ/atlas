@@ -98,9 +98,9 @@ meConnectionGroups.openapi(listRoute, async (c) => {
   // Pick the most operator-actionable diagnostic when both signals are
   // degraded. `no_internal_db` points at the deploy-side fix (set
   // DATABASE_URL); `no_active_org` is the per-user case the topbar
-  // surfaces anyway. See the dedicated test in
-  // `me-connection-groups.test.ts` for why this is a single signal and
-  // not a state machine.
+  // surfaces anyway. See `me-connection-groups.test.ts` →
+  // "prefers 'no_internal_db' over 'no_active_org' when both apply"
+  // for the load-bearing test on this precedence.
   if (!hasInternalDB()) {
     return c.json(
       { groups: [], reason: "no_internal_db" as const },
@@ -108,6 +108,14 @@ meConnectionGroups.openapi(listRoute, async (c) => {
     );
   }
   if (!orgId) {
+    // Leave a breadcrumb so support can correlate "empty picker" user
+    // reports to a real auth-state issue without having to repro the
+    // mid-org-switch race. Debug-level: this is expected during normal
+    // org switches and would flood at info.
+    log.debug(
+      { requestId, userId: auth?.user?.id, reason: "no_active_org" },
+      "me/connection-groups: no active organization for user",
+    );
     return c.json(
       { groups: [], reason: "no_active_org" as const },
       200,

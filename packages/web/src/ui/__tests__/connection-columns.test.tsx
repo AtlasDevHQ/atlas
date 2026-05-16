@@ -83,7 +83,7 @@ describe("connection columns — environment cell", () => {
     expect(container.querySelector("a")).toBeNull();
   });
 
-  test("renders a badge linking to /admin/connections/groups when groupName is present", () => {
+  test("renders a badge deep-linking to the embedded Environments view when groupName is present", () => {
     const { container } = renderEnvironmentCell({
       id: "warehouse",
       dbType: "postgres",
@@ -96,7 +96,10 @@ describe("connection columns — environment cell", () => {
     expect(container.textContent).not.toContain("g_prod");
     const link = container.querySelector("a");
     expect(link).not.toBeNull();
-    expect(link?.getAttribute("href")).toBe("/admin/connections/groups");
+    // PRD #2458 slice 4: the standalone /admin/connections/groups page is
+    // a server-side redirect; chips now deep-link directly to the
+    // embedded view to avoid a one-frame redirect flash.
+    expect(link?.getAttribute("href")).toBe("/admin/connections?groupBy=environment");
   });
 
   test("does not strip non-prefix names", () => {

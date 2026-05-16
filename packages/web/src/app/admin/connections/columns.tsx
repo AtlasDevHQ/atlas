@@ -86,7 +86,7 @@ export function getConnectionColumns(): ColumnDef<ConnectionInfo>[] {
         }
         return (
           <Link
-            href="/admin/connections/groups"
+            href="/admin/connections?groupBy=environment"
             className="inline-flex items-center"
             aria-label={`View environment ${stripGroupPrefix(groupName)}`}
           >

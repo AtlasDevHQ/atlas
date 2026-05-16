@@ -251,6 +251,9 @@ let mockHasInternalDB = true;
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
   () => Promise.resolve([]),
 );
+const mockGetWorkspaceDetails: Mock<(orgId: string) => Promise<Record<string, unknown> | null>> = mock(
+  async () => null,
+);
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   InternalDB: MockInternalDB,
@@ -282,7 +285,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   deleteSuggestion: mock(() => Promise.resolve(false)),
   getAuditLogQueries: mock(() => Promise.resolve([])),
   getWorkspaceStatus: mock(async () => "active"),
-  getWorkspaceDetails: mock(async () => null),
+  getWorkspaceDetails: mockGetWorkspaceDetails,
   getWorkspaceNamesByIds: mock(async () => new Map<string, string | null>()),
   updateWorkspaceStatus: mock(async () => true),
   updateWorkspacePlanTier: mock(async () => true),
@@ -704,41 +707,136 @@ describe("Admin routes — auth enforcement", () => {
 describe("GET /api/v1/admin/overview", () => {
   beforeEach(() => {
     mockAuthenticateRequest.mockReset();
+    mockInternalQuery.mockReset();
+    mockInternalQuery.mockResolvedValue([]);
+    mockGetWorkspaceDetails.mockReset();
+    mockGetWorkspaceDetails.mockResolvedValue(null);
     setAdmin();
   });
 
-  it("returns overview data with correct shape", async () => {
+  // Reset sticky `mockImplementation` so later describes (e.g.
+  // /admin/connections) don't inherit org-overlay rows from our tests.
+  afterEach(() => {
+    mockInternalQuery.mockReset();
+    mockInternalQuery.mockResolvedValue([]);
+  });
+
+  it("returns workspace-scoped overview shape (#2489)", async () => {
     const res = await app.fetch(adminRequest("/api/v1/admin/overview"));
     expect(res.status).toBe(200);
 
+    const body = (await res.json()) as Record<string, unknown>;
+    // Org-scoped connection count via `getVisibleConnectionIds`. Without
+    // an org context the helper falls through to runtime `default` (which
+    // exists in the test mock), so we still see 1.
+    expect(body.connections).toBe(1);
+    // 2 disk entities (companies + warehouse/orders) via `listAdminEntities`.
+    expect(body.entities).toBe(2);
+    expect(body.plugins).toBe(1);
+    // Deployment-scaffold tiles (metrics, glossaryTerms, pluginHealth)
+    // moved to /api/v1/platform/overview per #2489 — assert they're gone
+    // so the split doesn't accidentally regress.
+    expect(body.metrics).toBeUndefined();
+    expect(body.glossaryTerms).toBeUndefined();
+    expect(body.pluginHealth).toBeUndefined();
+  });
+
+  it("connection count is org-scoped — leaks no rows when query returns []", async () => {
+    setOrgScopedAdmin("org-test-1");
+    // Internal DB returns no connection rows for this org → helper falls
+    // back to runtime `default` (#2483 SaaS-gate is off here since
+    // deployMode isn't 'saas').
+    mockInternalQuery.mockResolvedValue([]);
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/overview"));
+    expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.connections).toBe(1);
-    // 2 entities: companies (default) + orders (warehouse)
-    expect(body.entities).toBe(2);
-    expect(body.metrics).toBe(1);
-    expect(body.glossaryTerms).toBe(2);
-    expect(body.plugins).toBe(1);
-    expect(Array.isArray(body.pluginHealth)).toBe(true);
   });
 
-  it("omits poolWarnings when none", async () => {
-    mockGetPoolWarnings.mockReturnValue([]);
+  it("populates queriesLast24h and workspace block when an org context is present", async () => {
+    setOrgScopedAdmin("org-test-1");
+    // `getVisibleConnectionIds` runs against `internalQuery` (connections
+    // table) and the 24h tile runs against audit_log. `getWorkspaceDetails`
+    // is mocked separately because it doesn't go through internalQuery
+    // here — the lib export is shadowed by the module mock above.
+    mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("FROM audit_log")) return [{ count: 42 }];
+      return [];
+    });
+    mockGetWorkspaceDetails.mockResolvedValue({
+      id: "org-test-1",
+      name: "Acme Co",
+      slug: "acme",
+      workspace_status: "active",
+      plan_tier: "trial",
+      byot: false,
+      stripe_customer_id: null,
+      trial_ends_at: "2026-06-01T00:00:00Z",
+      suspended_at: null,
+      deleted_at: null,
+      region: "us-east",
+      region_assigned_at: null,
+      createdAt: "2026-01-01T00:00:00Z",
+    });
+
     const res = await app.fetch(adminRequest("/api/v1/admin/overview"));
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body.poolWarnings).toBeUndefined();
+    expect(body.queriesLast24h).toBe(42);
+    const workspace = body.workspace as Record<string, unknown> | null;
+    expect(workspace?.name).toBe("Acme Co");
+    expect(workspace?.planTier).toBe("trial");
+    expect(workspace?.trialEndsAt).toBe("2026-06-01T00:00:00Z");
   });
 
-  it("includes poolWarnings when capacity is over-provisioned", async () => {
+  it("does not surface poolWarnings — deployment-wide leak guard (#2489)", async () => {
+    // `poolWarnings` exposes capacity config (maxOrgs × maxConns × ...) that
+    // workspace admins shouldn't see. It now lives only on
+    // `/api/v1/platform/overview`. A regression that re-introduced it here
+    // would silently expose deployment shape to every workspace admin.
     mockGetPoolWarnings.mockReturnValue([
       "Org pool capacity (50 orgs × 5 conns × 1 datasources = 250 slots) exceeds maxTotalConnections (100) by 2.5×.",
     ]);
     const res = await app.fetch(adminRequest("/api/v1/admin/overview"));
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(Array.isArray(body.poolWarnings)).toBe(true);
-    expect((body.poolWarnings as string[]).length).toBe(1);
-    expect((body.poolWarnings as string[])[0]).toContain("exceeds maxTotalConnections");
+    expect(body.poolWarnings).toBeUndefined();
+  });
+
+  it("falls back to queriesLast24h=null when the audit_log query throws", async () => {
+    // The handler catches internalQuery failures and emits a log.warn —
+    // the tile renders "—". Without this test, a future refactor letting
+    // the error bubble could 500 the page, or — worse — silently default
+    // to 0 ("no queries today") when the audit DB is wedged.
+    setOrgScopedAdmin("org-test-1");
+    mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("FROM audit_log")) throw new Error("audit DB down");
+      return [];
+    });
+    const res = await app.fetch(adminRequest("/api/v1/admin/overview"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.queriesLast24h).toBeNull();
+    // Other fields still populated — the failure is scoped to the tile.
+    expect(typeof body.connections).toBe("number");
+    expect(typeof body.entities).toBe("number");
+  });
+
+  it("counts __global__ overlay connection rows in the org-scoped tile", async () => {
+    // Onboarded SaaS workspaces inherit demo/shared connections via the
+    // `__global__` overlay in `getVisibleConnectionIds`. The tile must
+    // count them, not just per-org rows. Dropping the UNION branch would
+    // silently report `connections: 0` for every onboarded workspace.
+    setOrgScopedAdmin("org-test-1");
+    mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("FROM connections")) return [{ id: "__demo__" }];
+      return [];
+    });
+    const res = await app.fetch(adminRequest("/api/v1/admin/overview"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.connections).toBe(1);
   });
 });
 

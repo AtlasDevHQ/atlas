@@ -87,6 +87,38 @@ export interface PlatformStats {
   mrr: number;
 }
 
+/**
+ * Per-plugin health snapshot included in `PlatformOverview.pluginHealth`.
+ * Mirrors the in-memory registry's `describe()` shape, narrowed to what
+ * the dashboard needs.
+ */
+export interface PlatformPluginHealth {
+  id: string;
+  name: string;
+  types: string[];
+  status: string;
+}
+
+/**
+ * Wire shape for `GET /api/v1/platform/overview` (#2489). Deployment-wide
+ * scaffold the workspace `/admin` Overview must NOT surface:
+ * disk-bundled entities, plugin registry, plugin health, and the pool
+ * capacity warnings string.
+ */
+export interface PlatformOverview {
+  /** Deployment-scaffold entity count from `discoverEntities(root)`. */
+  entities: number;
+  /** Plugin registry size. */
+  plugins: number;
+  pluginHealth: PlatformPluginHealth[];
+  /** Disk-scan warnings (per-file YAML parse failures). */
+  warnings?: string[];
+  /** Pool capacity warnings — deployment-wide config; never on /admin. */
+  poolWarnings?: string[];
+  /** Echoed from the request for log correlation. */
+  requestId: string;
+}
+
 export interface NoisyNeighbor {
   workspaceId: string;
   workspaceName: string;

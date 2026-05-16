@@ -36,7 +36,11 @@ import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surfa
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import { StatCard } from "@/ui/components/admin/stat-card";
-import { useAdminFetch, useInProgressSet } from "@/ui/hooks/use-admin-fetch";
+import {
+  ComponentHealthTiles,
+  type HealthComponents,
+} from "@/ui/components/admin/component-health-tiles";
+import { useAdminFetch, useInProgressSet, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import {
   PlatformStatsSchema,
@@ -44,6 +48,7 @@ import {
   PlatformNeighborsResponseSchema,
   PlatformWorkspaceDetailResponseSchema,
 } from "@/ui/lib/admin-schemas";
+import { PlatformOverviewSchema } from "@useatlas/schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   Building2,
@@ -58,6 +63,8 @@ import {
   ArrowUpDown,
   Loader2,
   Eye,
+  Database,
+  Puzzle,
 } from "lucide-react";
 import type {
   PlatformWorkspace,
@@ -160,6 +167,30 @@ function PlatformPageContent() {
     "/api/v1/platform/noisy-neighbors",
     { schema: PlatformNeighborsResponseSchema },
   );
+
+  // Deployment scaffold (#2489) — lives on platform because every workspace
+  // sees the same disk-bundled count. Pinned through `PlatformOverviewSchema`
+  // from `@useatlas/schemas` so an API field rename fails parse here
+  // instead of rendering blank tiles in production.
+  const scaffoldQuery = useAdminFetch("/api/v1/platform/overview", {
+    schema: PlatformOverviewSchema,
+  });
+  const scaffold = {
+    data: scaffoldQuery.data,
+    loading: scaffoldQuery.loading,
+    error: scaffoldQuery.error ? friendlyError(scaffoldQuery.error) : null,
+  };
+  const healthQuery = useAdminFetch<HealthComponents | null>("/api/health", {
+    transform: (json) => {
+      const j = json as Record<string, unknown>;
+      return (j.components as HealthComponents | undefined) ?? null;
+    },
+  });
+  const health = {
+    components: healthQuery.data,
+    loading: healthQuery.loading,
+    error: healthQuery.error ? friendlyError(healthQuery.error) : null,
+  };
 
   // Workspace detail dialog
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -307,6 +338,84 @@ function PlatformPageContent() {
                   icon={<DollarSign className="size-4" />}
                 />
               </div>
+
+              {/* ── Component Health (lifted from /admin per #2489) ── */}
+              <section>
+                <h2 className="mb-3 text-sm font-medium text-muted-foreground">
+                  Component Health
+                </h2>
+                {!health.loading && health.error ? (
+                  // Loud surface — Component Health hidden during an
+                  // outage is the exact thing operators need to see.
+                  <div
+                    role="alert"
+                    className="flex items-start gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm"
+                  >
+                    <AlertTriangle className="mt-0.5 size-4 text-destructive shrink-0" />
+                    <div>
+                      <p className="font-medium text-destructive">
+                        {health.error}
+                      </p>
+                      <p className="text-destructive/90">
+                        Tile data is unavailable. The API may be down or
+                        misconfigured — check the API logs and retry.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <ComponentHealthTiles
+                    components={health.components}
+                    loading={health.loading}
+                  />
+                )}
+              </section>
+
+              {/* ── Deployment scaffold (#2489) ─────────────────────── */}
+              <section>
+                <h2 className="mb-3 text-sm font-medium text-muted-foreground">
+                  Deployment scaffold
+                </h2>
+                {!scaffold.loading && scaffold.error && (
+                  <div
+                    role="alert"
+                    className="mb-3 flex items-start gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm"
+                  >
+                    <AlertTriangle className="mt-0.5 size-4 text-destructive shrink-0" />
+                    <p className="font-medium text-destructive">
+                      {scaffold.error}
+                    </p>
+                  </div>
+                )}
+                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                  <StatCard
+                    title="Entities (bundled)"
+                    // Render "—" on error so a fetch failure doesn't pose
+                    // as a legitimate zero count (which would silently
+                    // mislead operators).
+                    value={
+                      scaffold.loading
+                        ? "…"
+                        : scaffold.error
+                          ? "—"
+                          : (scaffold.data?.entities ?? 0)
+                    }
+                    icon={<Database className="size-4" />}
+                    description="Tables & views shipped on disk"
+                  />
+                  <StatCard
+                    title="Plugins"
+                    value={
+                      scaffold.loading
+                        ? "…"
+                        : scaffold.error
+                          ? "—"
+                          : (scaffold.data?.plugins ?? 0)
+                    }
+                    icon={<Puzzle className="size-4" />}
+                    description="Installed plugins"
+                  />
+                </div>
+              </section>
 
               {topWorkspaces.length > 0 && (
                 <Card className="shadow-none">
@@ -814,3 +923,4 @@ function PlatformPageContent() {
     </div>
   );
 }
+

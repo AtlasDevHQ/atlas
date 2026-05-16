@@ -56945,11 +56945,11 @@
         "tags": [
           "Admin — Overview"
         ],
-        "summary": "Dashboard overview",
-        "description": "Returns aggregate counts for connections, entities, metrics, glossary terms, plugins, and health warnings.",
+        "summary": "Workspace dashboard overview",
+        "description": "Returns workspace-scoped overview data for the active organization: workspace identity (name, slug, plan tier, trial end), org-scoped connection and entity counts, queries in the last 24h, and pool warnings. Deployment-wide health and scaffold counts live on `/api/v1/platform/overview` (#2489).",
         "responses": {
           "200": {
-            "description": "Dashboard overview data",
+            "description": "Workspace overview data",
             "content": {
               "application/json": {
                 "schema": {
@@ -62254,6 +62254,133 @@
           }
         },
         "operationId": "getPlatformStats"
+      }
+    },
+    "/api/v1/platform/overview": {
+      "get": {
+        "tags": [
+          "Platform Admin"
+        ],
+        "summary": "Deployment-wide overview",
+        "description": "Platform admin only. Returns deployment-scaffold counts (entities, plugins, plugin health) plus pool warnings. Component Health (the datasource pool, internal DB, LLM provider, scheduler, sandbox) is served from `/api/health` — kept there so unauthenticated readiness probes still have a target. The deployment-scaffold counts live here, away from the per-workspace `/admin/overview` (#2489).",
+        "responses": {
+          "200": {
+            "description": "Deployment-wide overview data",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entities": {
+                      "type": "number"
+                    },
+                    "plugins": {
+                      "type": "number"
+                    },
+                    "pluginHealth": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "types": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "status": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "types",
+                          "status"
+                        ]
+                      }
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "poolWarnings": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "entities",
+                    "plugins",
+                    "pluginHealth",
+                    "requestId"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getPlatformOverview"
       }
     },
     "/api/v1/platform/noisy-neighbors": {

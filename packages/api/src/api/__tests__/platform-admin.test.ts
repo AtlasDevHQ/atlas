@@ -408,3 +408,42 @@ describe("GET /api/v1/platform/workspaces — abuseLevel surfacing", () => {
     expect(body.abuseRestoreStatus).toBe("ok");
   });
 });
+
+// #2489 — `/platform/overview` is the home for deployment-wide scaffold
+// (entities count, plugin count, plugin health, pool warnings). The
+// `/admin/overview` route is no longer allowed to surface deployment-wide
+// values, so a regression that re-introduces them on /admin would break
+// the platform/org split.
+describe("GET /api/v1/platform/overview — deployment scaffold (#2489)", () => {
+  beforeEach(() => {
+    mocks.setPlatformAdmin();
+    mocks.hasInternalDB = true;
+    mockLogWarn.mockClear();
+  });
+
+  it("returns a response matching PlatformOverviewSchema", async () => {
+    // Pin the contract end-to-end through the canonical schema —
+    // without this, a route rename of `pluginHealth` (or a type drift
+    // on `plugins`) would slip through the test that only spot-checks
+    // a handful of fields.
+    const { PlatformOverviewSchema } = await import("@useatlas/schemas");
+    const res = await app.fetch(platformRequest("GET", "/api/v1/platform/overview"));
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    const parsed = PlatformOverviewSchema.safeParse(body);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) {
+      // Surface zod issues if the schema regresses.
+      console.error(parsed.error.issues);
+    }
+  });
+
+  it("returns 403 when caller is not a platform admin", async () => {
+    // Non-platform-admin (regular org admin) gets blocked by
+    // createPlatformRouter — the `platform_admin` role is the gate.
+    mocks.setOrgAdmin("org-1");
+    const res = await app.fetch(platformRequest("GET", "/api/v1/platform/overview"));
+    expect(res.status).toBe(403);
+  });
+});

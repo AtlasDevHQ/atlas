@@ -59,9 +59,16 @@ export function useAdminFetch<T>(
   // Manual error override — exposed via setError for backward compatibility.
   const [errorOverride, setErrorOverride] = useState<FetchError | null>(null);
 
+  // Short-circuit when path is empty/falsy. Without this guard, an empty path
+  // would resolve to `fetch(\`${apiUrl}\`)` — the bare API origin — which has
+  // no CORS headers and logs a console error per render. The pattern that
+  // triggers it: a conditional path expression like `id ? "/api/.../" + id : ""`
+  // for a detail dialog that's only valid once an id is picked. #2502.
+  const enabledOption = (opts?.enabled ?? true) && !!path;
+
   const query = useQuery<T, FetchError>({
     queryKey: [ADMIN_FETCH_QUERY_KEY, path, ...(opts?.deps ?? [])],
-    enabled: opts?.enabled ?? true,
+    enabled: enabledOption,
     queryFn: async ({ signal }) => {
       // Clear any manual error override when a real fetch starts.
       setErrorOverride(null);
@@ -125,11 +132,11 @@ export function useAdminFetch<T>(
 
   // Derive the return value to match the original interface exactly.
   const error = errorOverride ?? query.error ?? null;
-  // When `enabled: false`, react-query keeps `isPending` true even though no
-  // fetch is in flight — that would render an infinite spinner in callers
-  // that gate on `loading`. Treat the disabled query as idle so the caller
-  // can render its own empty / placeholder state.
-  const enabledOption = opts?.enabled ?? true;
+  // When `enabled: false` (explicit or via the empty-path short-circuit),
+  // react-query keeps `isPending` true even though no fetch is in flight —
+  // that would render an infinite spinner in callers that gate on `loading`.
+  // Treat the disabled query as idle so the caller can render its own empty /
+  // placeholder state.
   const loading = enabledOption ? query.isPending : false;
 
   return {

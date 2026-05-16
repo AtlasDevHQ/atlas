@@ -26,6 +26,12 @@ import {
   CASCADE_ARCHIVE_GROUP_APPROVALS_SQL,
   ARCHIVE_GROUP_SQL,
 } from "@atlas/api/lib/db/connection-groups-sql";
+import {
+  GROUP_NAME_PATTERN,
+  UNIQUE_NAME_CONSTRAINT,
+  generateGroupId,
+  pgErrorMeta,
+} from "@atlas/api/lib/db/connection-groups-helpers";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
@@ -35,15 +41,6 @@ const log = createLogger("admin-connection-groups");
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Validation regex matching the existing connection-id rule. Reused so a
- * group renamed to a value that would later collide with a connection id
- * stays predictable; group rename also normalizes through this so the
- * `name` column cannot accumulate trailing whitespace that would shadow a
- * legitimate value.
- */
-const GROUP_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}$/;
 
 type GroupRow = {
   id: string;
@@ -111,35 +108,7 @@ function safeMemberCount(value: string | null | undefined): number {
   return parseMemberCount(value) ?? 0;
 }
 
-/**
- * Narrow a thrown Postgres error to its `code` + `constraint` fields without
- * leaking `any`. `pg` populates both on driver-thrown errors; non-driver
- * throws (TypeErrors, network blips) come through with neither set, and the
- * caller falls through to the generic 500 path.
- */
-function pgErrorMeta(err: unknown): { code?: string; constraint?: string } {
-  if (!(err instanceof Error)) return {};
-  const code = "code" in err && typeof err.code === "string" ? err.code : undefined;
-  const constraint =
-    "constraint" in err && typeof err.constraint === "string" ? err.constraint : undefined;
-  return { code, constraint };
-}
-
-/** Constraint name from migration 0062. Centralised so a future rename
- * surfaces in this one spot rather than in three string-equality checks. */
-const UNIQUE_NAME_CONSTRAINT = "uq_connection_groups_org_name";
 const CONNECTIONS_GROUP_FK = "fk_connections_group";
-
-function generateGroupId(): string {
-  // Random hex tag avoids collisions with the `g_<connection_id>` shape the
-  // backfill uses for 1:1 legacy groups. The (id, org_id) PK is the final
-  // collision check — at ~64 bits of entropy a retry-on-23505 path isn't
-  // load-bearing but is wired correctly below so the user never sees a
-  // misleading "name conflict" for what was actually a PK collision.
-  return `g_${Math.random().toString(36).slice(2, 10)}${Math.random()
-    .toString(36)
-    .slice(2, 10)}`;
-}
 
 // ---------------------------------------------------------------------------
 // Route definitions

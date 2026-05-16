@@ -82,8 +82,9 @@ describe("runMigrations", () => {
     // 64 base + 0064 (PII, #2341) + 0065 (approvals, #2344) + 0066 (dashboards, #2342)
     // + 0067 (conversations, #2345) + 0068 (scheduled tasks, #2343)
     // + 0069 (drop legacy connection_id scopes, #2347)
-    // + 0070 (rename synthetic __global__ group names, #2417) = 71.
-    expect(count).toBe(71);
+    // + 0070 (rename synthetic __global__ group names, #2417)
+    // + 0071 (connection_groups.status enum, Phase 4 archive cascade, #2413) = 72.
+    expect(count).toBe(72);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -183,6 +184,7 @@ describe("runMigrations", () => {
         "0068_scheduled_tasks_group.sql",
         "0069_drop_legacy_connection_id_scope.sql",
         "0070_rename_synthetic_global_group_names.sql",
+        "0071_connection_groups_status.sql",
       ],
     });
 

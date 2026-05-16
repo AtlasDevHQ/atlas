@@ -7,6 +7,10 @@ import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
 import {
   DELETE_GROUP_AND_ARCHIVED_CONNECTIONS_SQL,
   MERGE_CONNECTIONS_INTO_GROUP_SQL,
+  CASCADE_ARCHIVE_GROUP_ENTITIES_SQL,
+  CASCADE_ARCHIVE_GROUP_TASKS_SQL,
+  CASCADE_ARCHIVE_GROUP_APPROVALS_SQL,
+  ARCHIVE_GROUP_SQL,
 } from "@atlas/api/lib/db/connection-groups-sql";
 
 // Real-Postgres migration smoke. Skips cleanly when TEST_DATABASE_URL
@@ -2362,6 +2366,268 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       [connId, null],
     );
     expect(rows[0]?.group_id).toBe(groupId);
+  }, PG_TEST_TIMEOUT_MS);
+
+  // ---------------------------------------------------------------------
+  // 0071 — connection_groups.status + Phase 4 archive cascade (#2413)
+  // ---------------------------------------------------------------------
+  //
+  // Real-Postgres assertions for the canonical cascade SQL imported from
+  // `lib/db/connection-groups-sql.ts`. The route handler and these tests
+  // share the same constants, so a regression that loosens a predicate
+  // (e.g. drops the `org_id` filter, archives wrong-tenant rows) shows up
+  // in both files in the same diff and can't sneak through.
+  //
+  // What we guard:
+  //   1. Migration shape — `status` column exists, default `active`,
+  //      CHECK rejects unknown values, partial index covers the
+  //      `(org_id, active)` hot path.
+  //   2. Happy-path cascade — group with one entity / one task / one
+  //      pending approval, archive flips all four atomically.
+  //   3. Org isolation — running the cascade against group A does not
+  //      touch group B's content, even when both groups live in the
+  //      same org (the `connection_group_id = $1` predicate is the
+  //      contract).
+  //   4. Cross-org isolation — running the cascade with org-A's group
+  //      id against org-B's id never touches org-A's content (the
+  //      `org_id = $2` predicate is the contract).
+  //   5. Rollback — when one cascade UPDATE fails inside a transaction,
+  //      every sibling UPDATE rolls back too (the route's atomicity
+  //      claim). Simulated by injecting a CHECK violation in a sibling
+  //      statement and asserting nothing flipped.
+
+  it("connection_groups.status: column exists with CHECK + default 'active'", async () => {
+    const { rows } = await pool.query<{ column_default: string | null; is_nullable: string; data_type: string }>(
+      `SELECT column_default, is_nullable, data_type
+       FROM information_schema.columns
+       WHERE table_name = 'connection_groups'
+         AND column_name = 'status'
+         AND table_schema = current_schema()`,
+    );
+    expect(rows[0]?.data_type).toBe("text");
+    expect(rows[0]?.is_nullable).toBe("NO");
+    expect(rows[0]?.column_default).toContain("active");
+
+    // CHECK rejects unknown statuses with 23514.
+    const orgId = `org-status-${Date.now()}`;
+    await expect(
+      pool.query(
+        `INSERT INTO connection_groups (id, org_id, name, status) VALUES ($1, $2, 'check-status', 'bogus')`,
+        [`g-status-${Date.now()}`, orgId],
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+
+    // Default backfilled to `active` for any row inserted without an
+    // explicit value (no historical archives — multi-env launch is
+    // still pre-SaaS).
+    const defaultRow = await pool.query<{ status: string }>(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'default-status')
+       RETURNING status`,
+      [`g-status-default-${Date.now()}`, orgId],
+    );
+    expect(defaultRow.rows[0]?.status).toBe("active");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("archive cascade: happy path — entities, tasks, approvals, group all flip atomically", async () => {
+    const orgId = `org-arch-happy-${Date.now()}`;
+    const groupId = `g-arch-${Date.now()}`;
+    const connId = `conn-arch-${Date.now()}`;
+
+    // Seed: group + member connection + one entity + one task + one
+    // pending approval, all scoped to the same group.
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'archive-target')`,
+      [groupId, orgId],
+    );
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status, group_id)
+       VALUES ($1, 'enc:v1:iv:tag:ciphertext', 'postgres', $2, 'published', $3)`,
+      [connId, orgId, groupId],
+    );
+    await pool.query(
+      `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
+       VALUES ($1, 'entity', 'users', 'table: users', $2, 'published')`,
+      [orgId, groupId],
+    );
+    await pool.query(
+      `INSERT INTO scheduled_tasks
+         (owner_id, org_id, name, question, cron_expression, delivery_channel, recipients,
+          connection_group_id, enabled)
+       VALUES ('owner', $1, 'daily metrics', 'how many?', '0 9 * * *', 'webhook', '[]'::jsonb, $2, true)`,
+      [orgId, groupId],
+    );
+    await pool.query(
+      `INSERT INTO approval_queue
+         (org_id, rule_id, rule_name, requester_id, query_sql, connection_group_id, status)
+       VALUES ($1, gen_random_uuid(), 'cost-cap', 'requester', 'select 1', $2, 'pending')`,
+      [orgId, groupId],
+    );
+
+    // Drive the cascade inside one transaction — mirrors the route
+    // handler's BEGIN/COMMIT shape.
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const entitiesRes = await client.query(CASCADE_ARCHIVE_GROUP_ENTITIES_SQL, [groupId, orgId]);
+      const tasksRes = await client.query(CASCADE_ARCHIVE_GROUP_TASKS_SQL, [groupId, orgId]);
+      const approvalsRes = await client.query(CASCADE_ARCHIVE_GROUP_APPROVALS_SQL, [groupId, orgId]);
+      const groupRes = await client.query(ARCHIVE_GROUP_SQL, [groupId, orgId]);
+      expect(entitiesRes.rowCount).toBe(1);
+      expect(tasksRes.rowCount).toBe(1);
+      expect(approvalsRes.rowCount).toBe(1);
+      expect(groupRes.rowCount).toBe(1);
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    // Post-commit assertions: every flip stuck.
+    const entity = await pool.query<{ status: string }>(
+      `SELECT status FROM semantic_entities WHERE connection_group_id = $1 AND org_id = $2`,
+      [groupId, orgId],
+    );
+    const task = await pool.query<{ enabled: boolean }>(
+      `SELECT enabled FROM scheduled_tasks WHERE connection_group_id = $1 AND org_id = $2`,
+      [groupId, orgId],
+    );
+    const approval = await pool.query<{ status: string }>(
+      `SELECT status FROM approval_queue WHERE connection_group_id = $1 AND org_id = $2`,
+      [groupId, orgId],
+    );
+    const group = await pool.query<{ status: string }>(
+      `SELECT status FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [groupId, orgId],
+    );
+    expect(entity.rows[0]?.status).toBe("archived");
+    expect(task.rows[0]?.enabled).toBe(false);
+    expect(approval.rows[0]?.status).toBe("expired");
+    expect(group.rows[0]?.status).toBe("archived");
+
+    // Re-running each statement is idempotent — no rows match the
+    // filter, so RETURNING is empty and nothing changes.
+    const reRun = await pool.query(CASCADE_ARCHIVE_GROUP_ENTITIES_SQL, [groupId, orgId]);
+    expect(reRun.rowCount).toBe(0);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("archive cascade: sibling group's content untouched (same org)", async () => {
+    const orgId = `org-arch-iso-${Date.now()}`;
+    const groupA = `g-arch-a-${Date.now()}`;
+    const groupB = `g-arch-b-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'target'), ($3, $2, 'sibling')`,
+      [groupA, orgId, groupB],
+    );
+    await pool.query(
+      `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
+       VALUES ($1, 'entity', 'shared_users', 'table: u', $2, 'published'),
+              ($1, 'entity', 'shared_orders', 'table: o', $3, 'published')`,
+      [orgId, groupA, groupB],
+    );
+
+    await pool.query(CASCADE_ARCHIVE_GROUP_ENTITIES_SQL, [groupA, orgId]);
+
+    const aRow = await pool.query<{ status: string }>(
+      `SELECT status FROM semantic_entities WHERE connection_group_id = $1`,
+      [groupA],
+    );
+    const bRow = await pool.query<{ status: string }>(
+      `SELECT status FROM semantic_entities WHERE connection_group_id = $1`,
+      [groupB],
+    );
+    expect(aRow.rows[0]?.status).toBe("archived");
+    // The sibling group keeps its published row — the `connection_group_id = $1`
+    // predicate is the org-internal isolation guard.
+    expect(bRow.rows[0]?.status).toBe("published");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("archive cascade: cross-org content untouched even with same group id (B2B isolation)", async () => {
+    // A SaaS tenant can collide on group ids (e.g. both orgs auto-backfill
+    // `g_default`). The `org_id = $2` predicate is the cross-tenant
+    // isolation guard — without it, archiving org-A's `g_default` would
+    // archive org-B's `g_default` content too.
+    const orgA = `org-arch-orgA-${Date.now()}`;
+    const orgB = `org-arch-orgB-${Date.now()}`;
+    const sharedGroupId = `g-shared-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'a'), ($1, $3, 'b')`,
+      [sharedGroupId, orgA, orgB],
+    );
+    await pool.query(
+      `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
+       VALUES ($1, 'entity', 'users', 'a', $3, 'published'),
+              ($2, 'entity', 'users', 'b', $3, 'published')`,
+      [orgA, orgB, sharedGroupId],
+    );
+
+    await pool.query(CASCADE_ARCHIVE_GROUP_ENTITIES_SQL, [sharedGroupId, orgA]);
+
+    const aRow = await pool.query<{ status: string }>(
+      `SELECT status FROM semantic_entities WHERE org_id = $1 AND connection_group_id = $2`,
+      [orgA, sharedGroupId],
+    );
+    const bRow = await pool.query<{ status: string }>(
+      `SELECT status FROM semantic_entities WHERE org_id = $1 AND connection_group_id = $2`,
+      [orgB, sharedGroupId],
+    );
+    expect(aRow.rows[0]?.status).toBe("archived");
+    expect(bRow.rows[0]?.status).toBe("published");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("archive cascade: a transactional failure rolls back all sibling flips", async () => {
+    // Atomicity contract: the route promises "all-or-nothing". If one
+    // cascade UPDATE fails, every sibling UPDATE must roll back too. We
+    // simulate the failure by injecting a CHECK-violating UPDATE in the
+    // same transaction; nothing observable post-ROLLBACK should have
+    // flipped.
+    const orgId = `org-arch-rollback-${Date.now()}`;
+    const groupId = `g-arch-rb-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'rb-target')`,
+      [groupId, orgId],
+    );
+    await pool.query(
+      `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
+       VALUES ($1, 'entity', 'rollback_subject', 'yaml', $2, 'published')`,
+      [orgId, groupId],
+    );
+
+    const client = await pool.connect();
+    let caught: unknown = null;
+    try {
+      await client.query("BEGIN");
+      await client.query(CASCADE_ARCHIVE_GROUP_ENTITIES_SQL, [groupId, orgId]);
+      // Inject a deterministic failure. The CHECK on `connection_groups.status`
+      // rejects `'bogus'` with 23514 — same shape as a typo making it to
+      // prod. Any failure here must roll back the entity flip above.
+      await client.query(
+        `UPDATE connection_groups SET status = 'bogus' WHERE id = $1 AND org_id = $2`,
+        [groupId, orgId],
+      );
+      await client.query("COMMIT");
+    } catch (err) {
+      caught = err;
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
+    expect(caught).toMatchObject({ code: "23514" });
+
+    // Post-rollback: the entity is still `published` and the group is
+    // still `active`. If either had flipped, the route's atomicity claim
+    // would be a lie.
+    const entity = await pool.query<{ status: string }>(
+      `SELECT status FROM semantic_entities WHERE connection_group_id = $1 AND org_id = $2`,
+      [groupId, orgId],
+    );
+    const group = await pool.query<{ status: string }>(
+      `SELECT status FROM connection_groups WHERE id = $1 AND org_id = $2`,
+      [groupId, orgId],
+    );
+    expect(entity.rows[0]?.status).toBe("published");
+    expect(group.rows[0]?.status).toBe("active");
   }, PG_TEST_TIMEOUT_MS);
 
   it("resolveGroupForConnection: does NOT resolve when caller orgId is null and connections.org_id is a different tenant (#2415)", async () => {

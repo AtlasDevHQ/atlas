@@ -1,13 +1,20 @@
 /**
- * SQL fragments for connection-group deletion shared between the
- * `admin-connection-groups` route and the real-Postgres migration smoke
- * test. Centralised here because the same statement has now caused #2410
- * three times (#2405 → #2406 → #2410) — drift between route and test was
- * the root cause of #2410 going unnoticed under the #2406 patch.
+ * SQL fragments for connection-group deletion and archive cascade,
+ * shared between the `admin-connection-groups` route and the real-Postgres
+ * migration smoke test. Centralised here because the same statement has
+ * now caused #2410 three times (#2405 → #2406 → #2410) — drift between
+ * route and test was the root cause of #2410 going unnoticed under the
+ * #2406 patch.
  *
  * Keeping the canonical SQL here means a regression that re-introduces
  * a too-tight WHERE clause (e.g. `AND url <> ''`) shows up in *both* the
  * route and the test in the same diff, so it can't ship green.
+ *
+ * The Phase 4 cascade (PRD #2336 / issue #2413) extends the same pattern:
+ * `CASCADE_ARCHIVE_GROUP_*` statements below are imported by both the
+ * archive route handler and the migrate-pg smoke. Any regression that
+ * relaxes the `org_id` predicate or skips a content table shows up in
+ * both call sites in the same diff.
  */
 
 /**
@@ -197,4 +204,113 @@ export const MERGE_CONNECTIONS_INTO_GROUP_SQL = `
         WHERE id NOT IN (SELECT id FROM cleanup)),
       ARRAY[]::text[]
     ) AS skipped_group_ids
+`;
+
+// ---------------------------------------------------------------------------
+// Phase 4 — group-archive cascade (PRD #2336 / issue #2413)
+// ---------------------------------------------------------------------------
+//
+// Archiving a connection group atomically retires every content row scoped
+// to it. The cascade runs in one transaction owned by the caller (see
+// `POST /admin/connection-groups/:id/archive` in
+// `admin-connection-groups.ts`) — any sub-step failure rolls every row
+// back, so a partial archive is never observable.
+//
+// Vocabulary mismatch between this slice and the rest of the schema:
+//
+//   - `connection_groups.status` uses the new `active` / `archived` enum
+//     introduced in migration 0071. The mode-system tables
+//     (`semantic_entities`, `connections`, `prompt_collections`,
+//     `query_suggestions`) reuse the existing
+//     `published` / `draft` / `draft_delete` / `archived` lifecycle.
+//   - `scheduled_tasks` has no `status` column — it carries an
+//     `enabled` boolean that already serves the same intent. The
+//     existing `cascadeWorkspaceDelete` flow in `lib/db/internal.ts`
+//     also uses `enabled = false` as the archive-cascade semantic;
+//     mirror it here so reads downstream stay in lockstep.
+//   - `approval_queue.status` is a CHECK-constrained enum (`pending`,
+//     `approved`, `denied`, `expired`). `archived` would 23514. The
+//     existing `expireStaleRequests` in `ee/src/governance/approval.ts`
+//     flips pending requests to `expired` when their owning resource
+//     goes away; we mirror that semantic here so a pending request
+//     can't survive its target group.
+//   - `dashboard_cards` has neither `status` nor `enabled`. Cards
+//     continue to reference the archived group; the group's
+//     `status = 'archived'` is the read-side signal (resolved at
+//     view time by `lib/dashboards-group-resolve.ts`). Cascading
+//     cards is intentionally out of scope for this slice — adding a
+//     status column would change the read path for every existing
+//     dashboard surface and belongs in a dedicated follow-up.
+//
+// Each statement takes the same parameters:
+//   $1 = group id
+//   $2 = org id
+//
+// All four UPDATEs are idempotent: a re-run on an already-archived group
+// flips zero rows (the source predicates filter to the non-archived set).
+// The route caller wraps them in BEGIN/COMMIT so the whole bundle is
+// atomic.
+
+/**
+ * Flip every `semantic_entities` row scoped to the group to
+ * `status = 'archived'`. Skips rows already archived so re-runs are
+ * no-ops. Returns one row per archived entity for the count.
+ */
+export const CASCADE_ARCHIVE_GROUP_ENTITIES_SQL = `
+  UPDATE semantic_entities
+     SET status = 'archived', updated_at = NOW()
+   WHERE connection_group_id = $1
+     AND org_id = $2
+     AND status != 'archived'
+  RETURNING id
+`;
+
+/**
+ * Disable every `scheduled_tasks` row scoped to the group. Uses
+ * `enabled = false` rather than `status = 'archived'` because the table
+ * has no status column — see vocabulary mismatch comment above. The
+ * scheduler's `idx_scheduled_tasks_next_run` partial index already
+ * filters on `enabled = true`, so a disabled task stops firing without
+ * any further read-path changes.
+ */
+export const CASCADE_ARCHIVE_GROUP_TASKS_SQL = `
+  UPDATE scheduled_tasks
+     SET enabled = false, updated_at = NOW()
+   WHERE connection_group_id = $1
+     AND org_id = $2
+     AND enabled = true
+  RETURNING id
+`;
+
+/**
+ * Expire every pending `approval_queue` row scoped to the group. Uses
+ * `status = 'expired'` rather than `'archived'` because `chk_approval_status`
+ * (set in 0028) does not include `archived` — see vocabulary mismatch
+ * comment above. Re-running this is a no-op because the WHERE filters
+ * on `status = 'pending'`; approved/denied/expired rows are left as-is
+ * so audit history resolves intact.
+ */
+export const CASCADE_ARCHIVE_GROUP_APPROVALS_SQL = `
+  UPDATE approval_queue
+     SET status = 'expired'
+   WHERE connection_group_id = $1
+     AND org_id = $2
+     AND status = 'pending'
+  RETURNING id
+`;
+
+/**
+ * Flip the group itself to `status = 'archived'`. RETURNING the id is
+ * how the route detects "this caller actually flipped state" vs
+ * "already archived by a prior call"; the route maps the latter to a
+ * typed 409 with the existing group id so the admin sees a meaningful
+ * error rather than a silent no-op.
+ */
+export const ARCHIVE_GROUP_SQL = `
+  UPDATE connection_groups
+     SET status = 'archived', updated_at = NOW()
+   WHERE id = $1
+     AND org_id = $2
+     AND status = 'active'
+  RETURNING id
 `;

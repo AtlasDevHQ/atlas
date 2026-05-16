@@ -140,7 +140,7 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
 
 ## Active
 
-- **1.4.4 — Multi-environment semantic layer** ([milestone #45](https://github.com/AtlasDevHQ/atlas/milestones/45), original 11/11 shipped — **closeout audit reopened**) — PRD #2336; closeout 11/17 shipped, 6 findings open (#2413, #2414, #2420, #2422–#2424) + 1 follow-up (#2429). Tracker: #2407.
+- **1.4.4 — Multi-environment semantic layer** ([milestone #45](https://github.com/AtlasDevHQ/atlas/milestones/45), original 11/11 shipped — **closeout audit reopened**) — PRD #2336; closeout 12/17 shipped (Phase 4 archive cascade #2413 shipped — `POST /admin/connection-groups/:id/archive` flips group + cascades entities/tasks/approvals in one transaction; migration 0071 adds `connection_groups.status` enum; admin UI exposes archive CTA + cascade preview), 5 findings open (#2414, #2420, #2422–#2424) + 1 follow-up (#2429). Tracker: #2407.
 
 ## Planned
 

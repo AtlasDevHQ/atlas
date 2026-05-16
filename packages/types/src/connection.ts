@@ -126,9 +126,24 @@ export interface ConnectionDetail {
  * projection (snapshot at query time) — split into a dedicated summary
  * shape once a second read site needs a different denormalization.
  */
+/**
+ * Group lifecycle (migration 0071, Phase 4 archive cascade — #2413).
+ *
+ * - `active`   — default. Group accepts new members, content writes,
+ *                and chat routing.
+ * - `archived` — read-only tombstone. The POST
+ *                `/admin/connection-groups/:id/archive` cascade flipped
+ *                this; the group's content was archived too. Renames,
+ *                member assignments, and re-archives are refused.
+ */
+export type ConnectionGroupStatus = "active" | "archived";
+
 export interface ConnectionGroup {
   id: string;
   name: string;
+  /** Lifecycle. Defaults to `active` for any group that pre-dates the
+   * 0071 migration backfill. The wire field is always populated. */
+  status: ConnectionGroupStatus;
   /** Number of connections currently assigned to this group. */
   memberCount: number;
   createdAt: string;

@@ -554,3 +554,90 @@ test.describe("chat env/member picker (#2345)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Phase 4 archive cascade — real-integration test (#2413)
+// ---------------------------------------------------------------------------
+//
+// Unlike the page-level route-mock tests above, this exercises the LIVE
+// admin API through `page.request`. The other tests in this file use
+// route mocks because they assert UI behaviour against deterministic
+// fixtures; #2420 flagged that pattern as "route-mock theater" for any
+// test that's supposed to verify wire-level guarantees. The archive
+// cascade falls in the latter bucket — its whole value is the atomic
+// transaction across four tables, which a mock can fake into success.
+//
+// Scope guard: this test does NOT migrate the existing route-mock tests
+// to real integration (per the issue brief). It only fixes the new
+// surface. The DB-level cascade is exhaustively covered by
+// `migrate-pg.test.ts` (happy path + sibling-group isolation +
+// cross-tenant isolation + rollback); the test below covers the route
+// wiring end-to-end and the audit / response contract.
+
+test.describe("archive group cascade (real integration — #2413)", () => {
+  test("@llm POST /:id/archive flips status and returns archivedCounts", async ({ page }) => {
+    // Per-test name so concurrent re-runs / parallel shards don't
+    // collide on the unique-name constraint. Dropping the dialog after
+    // run also avoids polluting the workspace's environment list.
+    const groupName = `archive-cascade-${Date.now()}`;
+
+    // 1. Create an empty test group through the real admin API. The
+    //    storage-state cookie from global-setup.ts carries the admin
+    //    session, so `page.request` is admin-authed automatically.
+    const createRes = await page.request.post(
+      "/api/v1/admin/connection-groups",
+      { data: { name: groupName } },
+    );
+    expect(createRes.status()).toBe(201);
+    const createdBody = (await createRes.json()) as {
+      id: string;
+      name: string;
+      status: "active" | "archived";
+    };
+    expect(createdBody.status).toBe("active");
+    const groupId = createdBody.id;
+
+    try {
+      // 2. Archive the group. With no group-scoped content seeded, the
+      //    cascade counts are all zero — the wire test is about the
+      //    response shape, the status flip, and the atomicity contract;
+      //    `migrate-pg.test.ts` covers the SQL-level cascade rows.
+      const archiveRes = await page.request.post(
+        `/api/v1/admin/connection-groups/${groupId}/archive`,
+      );
+      expect(archiveRes.status()).toBe(200);
+      const archived = (await archiveRes.json()) as {
+        archivedCounts: { entities: number; tasks: number; approvals: number; group: number };
+      };
+      expect(archived.archivedCounts).toEqual({
+        entities: 0,
+        tasks: 0,
+        approvals: 0,
+        group: 1,
+      });
+
+      // 3. The group itself flipped to archived. Reading it back should
+      //    surface the new status — without this assertion, the cascade
+      //    response could lie and the test would pass.
+      const detailRes = await page.request.get(
+        `/api/v1/admin/connection-groups/${groupId}`,
+      );
+      expect(detailRes.status()).toBe(200);
+      const detail = (await detailRes.json()) as { status: "active" | "archived" };
+      expect(detail.status).toBe("archived");
+
+      // 4. Re-archiving an already-archived group must 409 (the route's
+      //    idempotency contract).
+      const reArchive = await page.request.post(
+        `/api/v1/admin/connection-groups/${groupId}/archive`,
+      );
+      expect(reArchive.status()).toBe(409);
+    } finally {
+      // Cleanup: archived empty groups can be deleted (the DELETE path
+      // guards on member_count, not on status). The `archived = false`
+      // tombstone branch of `DELETE_GROUP_AND_ARCHIVED_CONNECTIONS_SQL`
+      // still safely no-ops here because there are no archived
+      // connection rows in this group.
+      await page.request.delete(`/api/v1/admin/connection-groups/${groupId}`);
+    }
+  });
+});

@@ -2163,3 +2163,54 @@ Closed 2026-05-12. Milestone [#44](https://github.com/AtlasDevHQ/atlas/milestone
 Architecture-wins ledger: #54 (`useSession()` widened), #55 (`URLSecret` / `OpaqueSecret` brands), #56 + #57 (`WorkspaceCredentials` union + `ByotAdapter<Cred>` dispatch).
 
 ---
+
+## 1.4.4 — Multi-environment semantic layer — CODE-COMPLETE
+
+Code-complete 2026-05-16. Milestone [#45](https://github.com/AtlasDevHQ/atlas/milestones/45), 11 original issues shipped + 17-finding closeout audit + 1 hardening follow-up. GitHub milestone close gated on manual verification [#2443](https://github.com/AtlasDevHQ/atlas/issues/2443). Lets a single workspace point a single semantic layer at multiple connections (dev/staging/prod, US/EU/APAC) with group-scoped content (entities, dashboards, scheduled tasks, approvals, PII, prompts) and atomic publish + atomic archive cascade.
+
+### Connection groups foundation
+
+- [x] Connection groups schema + 1:1 backfill on existing connections ([#2338](https://github.com/AtlasDevHQ/atlas/issues/2338), [#2339](https://github.com/AtlasDevHQ/atlas/issues/2339), migration 0062) — `connection_groups` table with composite FK; every pre-1.4.4 connection backfilled into a singleton `g_<connId>` group so the post-migration shape always routes through a group. `withGroupScope` Effect helper exported from `connection-groups-sql.ts` for downstream content layers. Architecture-wins #58.
+- [x] Admin Environments page CRUD + member management ([#2339](https://github.com/AtlasDevHQ/atlas/issues/2339)) — `/admin/connections/groups` lists, creates, renames, manages members, sets `primary_connection_id`. UI surfaces `g_*` prefix stripping via shared `stripGroupPrefix` util.
+- [x] Admin merge-into-group wizard + `g_*` synthetic name strip ([#2409](https://github.com/AtlasDevHQ/atlas/issues/2409), [PR #2437](https://github.com/AtlasDevHQ/atlas/pull/2437)) — `POST /admin/connection-groups/merge` consolidates N source connections into one target environment within a single CTE-driven transaction. Source `g_*` singleton groups deleted in the same statement. Cross-org sources 403; rollback is automatic on any sub-step failure. Closes #2432 (shared `stripGroupPrefix` util extraction) as part of the same PR.
+- [x] Environment column on `/admin/connections` ([#2421](https://github.com/AtlasDevHQ/atlas/issues/2421), [PR #2431](https://github.com/AtlasDevHQ/atlas/pull/2431)) — each connection row shows its group; ungrouped rows render unbadged.
+- [x] Phase 4 group-archive cascade ([#2413](https://github.com/AtlasDevHQ/atlas/issues/2413), [PR #2440](https://github.com/AtlasDevHQ/atlas/pull/2440), migration 0071) — `POST /admin/connection-groups/:id/archive` atomically flips the group + cascades to semantic entities, dashboard cards, scheduled tasks, approval queue. Admin UI exposes archive CTA + cascade preview. Rollback on any cascade-table failure.
+
+### Group-scoped content layers
+
+- [x] Group-scoped semantic entities + atomic publish extension ([#2340](https://github.com/AtlasDevHQ/atlas/issues/2340), migration 0063) — entities key on `connection_group_id`; the publish-transaction in `admin-publish.ts` promotes group-scoped drafts in the same atomic step. Mode middleware overlays `status IN ('draft', 'published')` per-group when admin is in developer mode.
+- [x] Group-scoped PII classifications ([#2341](https://github.com/AtlasDevHQ/atlas/issues/2341), migration 0064) — `pii_column_classifications.connection_group_id` keys masking decisions on the group, not the underlying connection. Group-scoped uniqueness on `(org, table, column, group)` so a multi-member group shares one classification.
+- [x] Group-scoped dashboard cards ([#2342](https://github.com/AtlasDevHQ/atlas/issues/2342), migration 0066) — cards bind to a group via `connection_group_id`; refresh executes against the group's `primary_connection_id`. Card create dialog auto-binds for single-group workspaces ([#2419](https://github.com/AtlasDevHQ/atlas/issues/2419), [PR #2436](https://github.com/AtlasDevHQ/atlas/pull/2436)) so the binding becomes real rather than implicit.
+- [x] Group-scoped scheduled tasks ([#2343](https://github.com/AtlasDevHQ/atlas/issues/2343), migration 0068) — tasks key on `connection_group_id`; the scheduler resolves the primary member at run-time without crossing tenant→`__global__` boundaries ([#2416](https://github.com/AtlasDevHQ/atlas/issues/2416), [PR #2428](https://github.com/AtlasDevHQ/atlas/pull/2428)).
+- [x] Group-scoped approval queue ([#2344](https://github.com/AtlasDevHQ/atlas/issues/2344), migration 0065) — destructive-action approvals key on the group; resolutions run against the right member. Wired through `ee/src/governance/approval.ts`.
+
+### Chat routing + per-turn override
+
+- [x] Group-aware conversation routing + env picker ([#2345](https://github.com/AtlasDevHQ/atlas/issues/2345), migration 0067) — `conversations.connection_group_id` persists the content scope; chat header picker exposes per-turn `connectionId` override layered on top. Per-turn override flows via `withRequestContext` → ALS → tools (executeSQL, plugin tools).
+- [x] Null-safe `resolveGroupForConnection` predicate ([#2415](https://github.com/AtlasDevHQ/atlas/issues/2415), [PR #2435](https://github.com/AtlasDevHQ/atlas/pull/2435)) — `IS NOT DISTINCT FROM` replaces `=` so self-hosted callers with `orgId = null` no longer silently collapse to `org_id = '__global__'`. Replaces the mock-theater regression test with a real-pg fixture matrix.
+- [x] `/me/connection-groups` explicit empty-state reason ([#2422](https://github.com/AtlasDevHQ/atlas/issues/2422), [PR #2438](https://github.com/AtlasDevHQ/atlas/pull/2438)) — returns `{ groups: [], reason: "no_active_org" | "no_internal_db" | null }`; chat picker renders inline copy when reason is set rather than rendering blank.
+- [x] Env picker visible for single-singleton workspaces ([#2408](https://github.com/AtlasDevHQ/atlas/issues/2408), [PR #2425](https://github.com/AtlasDevHQ/atlas/pull/2425)) — fixed visibility predicate so single-connection workspaces don't lose the picker.
+
+### Cross-cutting hardening
+
+- [x] Semantic-entity ACROSS-group collapse + 409 overlay payload ([#2412](https://github.com/AtlasDevHQ/atlas/issues/2412), [PR #2434](https://github.com/AtlasDevHQ/atlas/pull/2434)) — `getEntity` / `deleteEntity` now scope by `connection_group_id`. Overlay-aware ambiguity surfaces a uniform 409 `groups` payload when an entity exists at multiple scopes. Architecture-wins #60.
+- [x] Application-layer FK gate for cross-org `connection_group_id` writes ([#2424](https://github.com/AtlasDevHQ/atlas/issues/2424), [PR #2442](https://github.com/AtlasDevHQ/atlas/pull/2442)) — new `verifyGroupBelongsToOrg(groupId, orgId)` helper (same predicate as resolveGroupForConnection — null-safe, `__global__` visible to all tenants). Wired into chat conversation create + dashboards `addCard` route; cross-org pointers reject with `400 invalid_connection_group`. Migrations 0066 + 0067 intentionally lack DB-level FK; this is the org-ownership gate they deferred to.
+- [x] Env-delete cleans `url=''` tombstones ([#2410](https://github.com/AtlasDevHQ/atlas/issues/2410), [PR #2430](https://github.com/AtlasDevHQ/atlas/pull/2430)) — closes the 23503 FK-on-delete failure mode after #2405/#2406. Shared SQL constant in `connection-groups-sql.ts` keeps the route + migrate-pg smoke in lockstep.
+- [x] Codex scheduler synthetic-name cleanup + zero-group footguns ([#2417](https://github.com/AtlasDevHQ/atlas/issues/2417), [#2418](https://github.com/AtlasDevHQ/atlas/issues/2418), [PR #2433](https://github.com/AtlasDevHQ/atlas/pull/2433)) — migration 0070 renames `__global__:<id>` synthetic names; scheduled-task form + PATCH reject empty-group writes.
+
+### Wire shape + types
+
+- [x] `@useatlas/types` major bump to 0.1.0 — drop legacy `connectionId` ([#2346](https://github.com/AtlasDevHQ/atlas/issues/2346), [PR #2400](https://github.com/AtlasDevHQ/atlas/pull/2400)) — type-system enforcement of the post-1.4.4 group-scoped shape. SDK / react / templates ref-bumped to `^0.1.0` in follow-up commit after publish.
+- [x] Drop legacy `connection_id` columns from group-scoped tables ([#2347](https://github.com/AtlasDevHQ/atlas/issues/2347), migration 0069, [PR #2404](https://github.com/AtlasDevHQ/atlas/pull/2404)) — final breaking shape change. Migrate-pg smoke re-adds the column inside each backfill test so the verbatim UPDATE block stays exercisable post-drop.
+- [x] `ExportedSemanticEntity.connectionGroupId` optional for back-compat ([#2423](https://github.com/AtlasDevHQ/atlas/issues/2423), [PR #2439](https://github.com/AtlasDevHQ/atlas/pull/2439)) — pre-0.1.1 export bundles that omit the key import cleanly via `connectionGroupId?: string | null`. Types bumped to 0.1.1.
+
+### Test hardening
+
+- [x] Honest backfill tests for migrations 0063–0066 ([#2411](https://github.com/AtlasDevHQ/atlas/issues/2411), [PR #2427](https://github.com/AtlasDevHQ/atlas/pull/2427)) — replaced four tautological backfill smoke tests with real insert-then-backfill assertions against the verbatim UPDATE SQL.
+- [x] Backfill hardening — NULL / `__global__` / multi-row / cross-org ([#2429](https://github.com/AtlasDevHQ/atlas/issues/2429), [PR #2442](https://github.com/AtlasDevHQ/atlas/pull/2442)) — extends 0063/0064/0066 tests to pin four typo classes the headline rewrite couldn't catch.
+- [x] Integration test for per-turn env override through executeSQL streaming ([#2414](https://github.com/AtlasDevHQ/atlas/issues/2414), [PR #2442](https://github.com/AtlasDevHQ/atlas/pull/2442)) — captures `getRequestContext()` at runAgent invocation time, asserts body override (`connectionId` + `connectionGroupId`) reaches the ALS frame.
+- [x] Honest re-scope of `multi-env-admin.spec.ts` ([#2420](https://github.com/AtlasDevHQ/atlas/issues/2420), [PR #2442](https://github.com/AtlasDevHQ/atlas/pull/2442)) — renamed to `*.integration.spec.ts` (it's UI integration via `page.route` mocks, not e2e); stripped misused `@llm` tags. Real route-level e2e for PII / approvals / scheduled-tasks / chat routing deferred to [#2441](https://github.com/AtlasDevHQ/atlas/issues/2441).
+
+Architecture-wins ledger: #58 (`withGroupScope` prep), #59 (`connection_groups` foundation), #60 (semantic-entity overlay-aware ambiguity).
+
+---

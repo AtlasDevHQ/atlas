@@ -140,7 +140,7 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
 
 ## Active
 
-- **1.4.4 — Multi-environment semantic layer** ([milestone #45](https://github.com/AtlasDevHQ/atlas/milestones/45), original 11/11 shipped — **closeout audit reopened**) — PRD #2336; closeout 14/17 shipped, 3 findings open (#2414, #2420, #2424) + 1 follow-up (#2429). Tracker: #2407.
+- **1.4.4 — Multi-environment semantic layer** ([milestone #45](https://github.com/AtlasDevHQ/atlas/milestones/45), original 11/11 shipped — **closeout audit reopened**) — PRD #2336; closeout 17/17 shipped, real route-level e2e for PII/approvals/scheduled-tasks/chat-routing deferred to #2441. Tracker: #2407.
 
 ## Planned
 

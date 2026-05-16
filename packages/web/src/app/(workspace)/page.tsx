@@ -26,8 +26,9 @@ import { ShareDialog } from "@/ui/components/chat/share-dialog";
 import { parseSuggestions } from "@/ui/lib/helpers";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Send } from "lucide-react";
+import { AskComposer } from "@/ui/components/ask-composer";
+import { ConnectDataPrompt } from "@/ui/components/connect-data-prompt";
+import { EmptyAskHero } from "@/ui/components/empty-ask-hero";
 import { useDashboardCanvasStore, type ProposedDashboardSpec } from "@/lib/stores/dashboard-canvas-store";
 import { DashboardCanvas } from "@/ui/components/dashboards/dashboard-canvas";
 import { getToolResult, isToolComplete } from "@/ui/lib/helpers";
@@ -131,6 +132,13 @@ function ChatPage() {
     getHeaders,
     enabled: authResolved && isSignedIn,
   });
+
+  // True only when the summary has resolved (not in-flight, not an error
+  // soft-fail to null) AND there are zero queryable tables. The composer
+  // and starter prompts are hidden in this state so the user is funneled
+  // into setting up a connection before the agent gets a chance to run
+  // and fail confusingly downstream.
+  const needsDataSetup = datasource.data?.tableCount === 0;
 
   const refreshConvosRef = useRef(convos.refresh);
   refreshConvosRef.current = convos.refresh;
@@ -420,43 +428,44 @@ function ChatPage() {
 
               {/* Messages */}
               <ScrollArea viewportRef={scrollRef} className="min-h-0 flex-1">
-                <div className="space-y-4 pb-4 pr-3">
+                <div className="space-y-4 pb-4">
                   {messages.length === 0 && !chatError && (
-                    <div className="flex h-full flex-col items-center justify-center gap-6">
-                      <div className="flex flex-col items-center gap-2 text-center">
-                        <p className="text-lg font-medium text-zinc-800 dark:text-zinc-100">
-                          Ask Atlas about your data.
-                        </p>
-                        {datasource.data && datasource.data.tableCount > 0 ? (
-                          <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                            Grounded in your semantic layer —{" "}
-                            <span className="font-medium text-primary">
-                              {datasource.data.tableCount} table
-                              {datasource.data.tableCount === 1 ? "" : "s"}
-                            </span>{" "}
-                            ready to query.
-                          </p>
-                        ) : (
-                          <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                            Every answer cites the table it queried.
-                          </p>
+                    needsDataSetup ? (
+                      <ConnectDataPrompt isAdmin={isAdmin} />
+                    ) : (
+                      <EmptyAskHero
+                        heading="Ask Atlas about your data."
+                        subhead={
+                          datasource.data && datasource.data.tableCount > 0 ? (
+                            <>
+                              Grounded in your semantic layer —{" "}
+                              <span className="font-medium text-primary">
+                                {datasource.data.tableCount} table
+                                {datasource.data.tableCount === 1 ? "" : "s"}
+                              </span>{" "}
+                              ready to query.
+                            </>
+                          ) : (
+                            "Every answer cites the table it queried."
+                          )
+                        }
+                      >
+                        {starterPrompts.length > 0 && (
+                          <div className="grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2">
+                            {starterPrompts.map((prompt) => (
+                              <Button
+                                key={prompt.id}
+                                variant="outline"
+                                onClick={() => handleSend(prompt.text)}
+                                className="h-auto whitespace-normal justify-start rounded-lg px-3 py-2.5 text-left text-sm"
+                              >
+                                {prompt.text}
+                              </Button>
+                            ))}
+                          </div>
                         )}
-                      </div>
-                      {starterPrompts.length > 0 && (
-                        <div className="grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2">
-                          {starterPrompts.map((prompt) => (
-                            <Button
-                              key={prompt.id}
-                              variant="outline"
-                              onClick={() => handleSend(prompt.text)}
-                              className="h-auto whitespace-normal justify-start rounded-lg px-3 py-2.5 text-left text-sm"
-                            >
-                              {prompt.text}
-                            </Button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
+                      </EmptyAskHero>
+                    )
                   )}
 
                   {messages.map((m, msgIndex) => {
@@ -588,42 +597,18 @@ function ChatPage() {
                 />
               )}
 
-              {/* Input */}
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  handleSend(input);
-                }}
-                className="flex flex-none gap-2 border-t border-zinc-100 py-4 dark:border-zinc-800"
-              >
-                <Input
+              {/* Input — hidden when the workspace has no data so the user
+                   sets up a connection before the agent can run. */}
+              {!(needsDataSetup && messages.length === 0) && (
+                <AskComposer
                   value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    // Cmd/Ctrl-Enter alias for users coming from tools where
-                    // Enter inserts a newline. Plain Enter still submits via
-                    // the form's default behavior.
-                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                      e.preventDefault();
-                      handleSend(input);
-                    }
-                  }}
+                  onChange={setInput}
+                  onSubmit={() => handleSend(input)}
+                  disabled={isLoading}
                   placeholder="Ask a question about your data… ⌘K for commands"
-                  className="min-w-0 flex-1 py-3 text-base sm:text-sm"
-                  disabled={isLoading}
-                  aria-label="Chat message"
+                  inputAriaLabel="Chat message"
                 />
-                <Button
-                  type="submit"
-                  size="icon"
-                  disabled={isLoading}
-                  aria-disabled={!isLoading && !input.trim() ? true : undefined}
-                  aria-label="Send"
-                  className="size-10 shrink-0"
-                >
-                  <Send className="size-4" />
-                </Button>
-              </form>
+              )}
             </div>
           </div>
 

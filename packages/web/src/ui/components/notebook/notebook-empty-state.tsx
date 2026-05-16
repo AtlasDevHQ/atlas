@@ -1,6 +1,7 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
+import { EmptyAskHero } from "../empty-ask-hero";
 import { StarterPromptList } from "../chat/starter-prompt-list";
 import { useStarterPromptsQuery } from "@/ui/hooks/use-starter-prompts-query";
 
@@ -33,10 +34,7 @@ export function NotebookEmptyState({
   const prompts = query.data ?? [];
 
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-6 p-8 text-center">
-      <h2 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
-        Start your analysis
-      </h2>
+    <EmptyAskHero heading="Start your analysis">
       {query.isError ? (
         // The hook intentionally throws on 4xx (auth / rate limit) so the
         // user sees a retry path rather than the generic cold-start CTA,
@@ -62,6 +60,6 @@ export function NotebookEmptyState({
           coldStartMessage="No starters yet — your first question seeds the suggestion list."
         />
       )}
-    </div>
+    </EmptyAskHero>
   );
 }

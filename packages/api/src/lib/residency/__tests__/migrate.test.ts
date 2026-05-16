@@ -5,13 +5,12 @@
  * failure handling, retry, cancel, stale detection, cleanup detection, and edge cases.
  */
 
-import { describe, it, expect, beforeEach, mock, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, mock, afterEach, afterAll } from "bun:test";
 
 // ── Mocks ────────────────────────────────────────────────────────────
 
 let mockHasInternalDB = true;
 let mockQueryResults: Record<string, unknown[]> = {};
-let mockQueryError: Error | null = null;
 // Per-SQL injection: when set, internalQuery rejects on the first call whose
 // SQL contains the pattern. Used to exercise transient-failure paths on a
 // specific statement without breaking unrelated queries.
@@ -39,7 +38,6 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   }),
   internalQuery: (sql: string, params: unknown[]) => {
     capturedQueries.push({ sql, params });
-    if (mockQueryError) return Promise.reject(mockQueryError);
     if (mockInternalQueryRejectPattern && sql.includes(mockInternalQueryRejectPattern.pattern)) {
       return Promise.reject(mockInternalQueryRejectPattern.error);
     }
@@ -107,6 +105,12 @@ globalThis.fetch = ((url: string | URL | Request, options?: RequestInit) => {
   } as Response);
 }) as typeof fetch;
 
+// Restore the real fetch once after every test in this file has run.
+// (Doing it in afterEach would clobber the mock between tests.)
+afterAll(() => {
+  globalThis.fetch = _originalFetch;
+});
+
 // ── Import after mocks ──────────────────────────────────────────────
 
 const {
@@ -122,7 +126,6 @@ const {
 function resetMocks() {
   mockHasInternalDB = true;
   mockQueryResults = {};
-  mockQueryError = null;
   mockInternalQueryRejectPattern = null;
   mockPoolQueryResult = { rows: [{ id: "org-1" }] };
   mockPoolQueryError = null;

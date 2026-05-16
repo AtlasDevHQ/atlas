@@ -53,8 +53,8 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { Loader2, Plus, Pencil, Trash2, Layers, GitMerge } from "lucide-react";
-import type { ConnectionGroup } from "@/ui/lib/types";
+import { Loader2, Plus, Pencil, Trash2, Layers, GitMerge, Archive } from "lucide-react";
+import type { ConnectionGroup, GroupArchiveCounts } from "@/ui/lib/types";
 import {
   stripGroupPrefix,
   isAutoBackfilledSingleton,
@@ -66,6 +66,12 @@ import { Checkbox } from "@/components/ui/checkbox";
 const GroupSchema = z.object({
   id: z.string(),
   name: z.string(),
+  // `default("active")` keeps decode tolerant of a deploy-skew window —
+  // an older API surface without a status field still decodes. Enum
+  // inlined rather than imported as a value from `@useatlas/types` so
+  // scaffold smoke tests don't fail against the published types
+  // package (see `feedback_useatlas_types_scaffold_gotcha`).
+  status: z.enum(["active", "archived"]).default("active"),
   memberCount: z.number().int().nonnegative(),
   primaryConnectionId: z.string().nullable().optional(),
   resolvedConnectionId: z.string().nullable().optional(),
@@ -106,12 +112,25 @@ export default function ConnectionGroupsPage() {
   const [mergeOpen, setMergeOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<ConnectionGroup | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ConnectionGroup | null>(null);
+  const [archiveTarget, setArchiveTarget] = useState<ConnectionGroup | null>(null);
   const [showAutoDetected, setShowAutoDetected] = useState(false);
+  // Archived groups are hidden by default — they're read-only tombstones
+  // and would otherwise pad the list during normal admin work. The
+  // toggle is opt-in per session (no nuqs state — the surface is small
+  // and there's no deep-link need).
+  const [showArchived, setShowArchived] = useState(false);
 
-  const autoDetectedGroups = groups.filter(isAutoBackfilledSingleton);
-  const curatedGroups = groups.filter((g) => !isAutoBackfilledSingleton(g));
-  const visibleGroups = showAutoDetected ? groups : curatedGroups;
+  // Filter by lifecycle FIRST so the auto-detected counts below reflect
+  // only the visible (active) population — otherwise a workspace with
+  // mostly archived singletons would surface a misleading "Show 12
+  // auto-detected singletons" line while none of them render.
+  const liveGroups = showArchived ? groups : groups.filter((g) => g.status !== "archived");
+  const archivedGroups = groups.filter((g) => g.status === "archived");
+  const autoDetectedGroups = liveGroups.filter(isAutoBackfilledSingleton);
+  const curatedGroups = liveGroups.filter((g) => !isAutoBackfilledSingleton(g));
+  const visibleGroups = showAutoDetected ? liveGroups : curatedGroups;
   const hasAutoDetected = autoDetectedGroups.length > 0;
+  const hasArchived = archivedGroups.length > 0;
 
   return (
     <AdminContentWrapper loading={loading} error={error} onRetry={refetch}>
@@ -157,6 +176,20 @@ export default function ConnectionGroupsPage() {
                 {autoDetectedGroups.length === 1 ? "" : "s"}
               </Label>
             ) : null}
+            {hasArchived ? (
+              <Label
+                className="flex items-center gap-2 text-xs text-muted-foreground"
+                htmlFor="env-show-archived"
+              >
+                <Switch
+                  id="env-show-archived"
+                  checked={showArchived}
+                  onCheckedChange={setShowArchived}
+                  data-testid="env-show-archived"
+                />
+                Show {archivedGroups.length} archived
+              </Label>
+            ) : null}
           </div>
         </header>
 
@@ -182,6 +215,7 @@ export default function ConnectionGroupsPage() {
                 refetchConnections={refetchConnections}
                 onRename={() => setRenameTarget(group)}
                 onDelete={() => setDeleteTarget(group)}
+                onArchive={() => setArchiveTarget(group)}
               />
             ))}
           </div>
@@ -217,6 +251,13 @@ export default function ConnectionGroupsPage() {
           onDeleted={refetch}
         />
       ) : null}
+      {archiveTarget ? (
+        <ArchiveGroupDialog
+          group={archiveTarget}
+          onClose={() => setArchiveTarget(null)}
+          onArchived={refetch}
+        />
+      ) : null}
     </AdminContentWrapper>
   );
 }
@@ -232,6 +273,7 @@ function GroupCard({
   refetchConnections,
   onRename,
   onDelete,
+  onArchive,
 }: {
   group: ConnectionGroup;
   connections: Array<{ id: string; groupId?: string | null; dbType?: string; description?: string | null }>;
@@ -239,7 +281,9 @@ function GroupCard({
   refetchConnections: () => void;
   onRename: () => void;
   onDelete: () => void;
+  onArchive: () => void;
 }) {
+  const isArchived = group.status === "archived";
   const members = connections.filter((c) => c.groupId === group.id);
   const ungrouped = connections.filter((c) => !c.groupId || c.groupId === null);
 
@@ -272,10 +316,25 @@ function GroupCard({
   const showRawId = !group.id.startsWith("g_");
 
   return (
-    <Card data-testid={`env-card-${group.id}`}>
+    <Card
+      data-testid={`env-card-${group.id}`}
+      data-status={group.status}
+      className={isArchived ? "opacity-70 border-dashed" : undefined}
+    >
       <CardHeader className="flex flex-row items-start justify-between gap-2">
-        <div>
-          <CardTitle className="text-base">{displayName}</CardTitle>
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <CardTitle className="text-base">{displayName}</CardTitle>
+            {isArchived ? (
+              <Badge
+                variant="outline"
+                className="text-[10px] uppercase tracking-wide text-muted-foreground"
+                data-testid={`env-archived-badge-${group.id}`}
+              >
+                Archived
+              </Badge>
+            ) : null}
+          </div>
           {showRawId ? (
             <CardDescription className="text-xs font-mono">{group.id}</CardDescription>
           ) : null}
@@ -287,8 +346,25 @@ function GroupCard({
             onClick={onRename}
             data-testid={`env-rename-${group.id}`}
             aria-label={`Rename ${displayName}`}
+            // Renames flip a label users see — refused on an archived
+            // tombstone so the audit log's "renamed to X" history can't
+            // contradict the archived snapshot.
+            disabled={isArchived}
           >
             <Pencil className="size-4" />
+          </Button>
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={onArchive}
+            data-testid={`env-archive-${group.id}`}
+            aria-label={`Archive ${displayName}`}
+            // Archive is the all-content retirement path — only enabled
+            // for active groups, since re-archiving is a no-op the
+            // server refuses with 409.
+            disabled={isArchived}
+          >
+            <Archive className="size-4" />
           </Button>
           <Button
             size="icon"
@@ -296,7 +372,10 @@ function GroupCard({
             onClick={onDelete}
             data-testid={`env-delete-${group.id}`}
             aria-label={`Delete ${displayName}`}
-            disabled={members.length > 0}
+            // Delete only fires on empty groups (member_count = 0); the
+            // route returns 409 otherwise. Archived groups may still
+            // carry members, so delete stays disabled there too.
+            disabled={members.length > 0 || isArchived}
           >
             <Trash2 className="size-4" />
           </Button>
@@ -315,46 +394,60 @@ function GroupCard({
                 data-testid={`env-member-${group.id}-${c.id}`}
               >
                 {c.id}
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="size-4 -mr-1"
-                  onClick={() => handleRemove(c.id)}
-                  aria-label={`Remove ${c.id} from ${displayName}`}
-                >
-                  ×
-                </Button>
+                {isArchived ? null : (
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="size-4 -mr-1"
+                    onClick={() => handleRemove(c.id)}
+                    aria-label={`Remove ${c.id} from ${displayName}`}
+                  >
+                    ×
+                  </Button>
+                )}
               </Badge>
             ))
           )}
         </div>
-        <div className="flex items-center gap-2">
-          <Select
-            value=""
-            onValueChange={handleAdd}
-            disabled={ungrouped.length === 0}
+        {isArchived ? (
+          <p
+            className="text-xs text-muted-foreground"
+            data-testid={`env-archived-notice-${group.id}`}
           >
-            <SelectTrigger
-              className="h-8 w-[220px] text-xs"
-              data-testid={`env-add-trigger-${group.id}`}
-            >
-              <SelectValue placeholder={ungrouped.length === 0 ? "No ungrouped connections" : "Add a connection…"} />
-            </SelectTrigger>
-            <SelectContent>
-              {ungrouped.map((c) => (
-                <SelectItem key={c.id} value={c.id}>
-                  {c.id}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {assignMutation.saving ? <Loader2 className="size-4 animate-spin" /> : null}
-        </div>
-        <MutationErrorSurface
-          error={assignMutation.error}
-          feature="Environments"
-          onRetry={assignMutation.clearError}
-        />
+            This environment is archived. Content scoped to it has been
+            retired and member assignments are read-only.
+          </p>
+        ) : (
+          <>
+            <div className="flex items-center gap-2">
+              <Select
+                value=""
+                onValueChange={handleAdd}
+                disabled={ungrouped.length === 0}
+              >
+                <SelectTrigger
+                  className="h-8 w-[220px] text-xs"
+                  data-testid={`env-add-trigger-${group.id}`}
+                >
+                  <SelectValue placeholder={ungrouped.length === 0 ? "No ungrouped connections" : "Add a connection…"} />
+                </SelectTrigger>
+                <SelectContent>
+                  {ungrouped.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.id}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {assignMutation.saving ? <Loader2 className="size-4 animate-spin" /> : null}
+            </div>
+            <MutationErrorSurface
+              error={assignMutation.error}
+              feature="Environments"
+              onRetry={assignMutation.clearError}
+            />
+          </>
+        )}
       </CardContent>
     </Card>
   );
@@ -553,6 +646,126 @@ function DeleteGroupDialog({
           >
             {del.saving ? <Loader2 className="size-4 animate-spin" /> : "Delete"}
           </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Archive group (cascade)
+// ---------------------------------------------------------------------------
+
+interface ArchiveResponse {
+  archivedCounts: GroupArchiveCounts;
+}
+
+/**
+ * Two-step archive: a count preview, then the confirmation. The server
+ * runs the cascade in one transaction, so a confirm click is the only
+ * destructive moment; if it fails, nothing flipped and the dialog
+ * surfaces the error inline.
+ */
+function ArchiveGroupDialog({
+  group,
+  onClose,
+  onArchived,
+}: {
+  group: ConnectionGroup;
+  onClose: () => void;
+  onArchived: () => void;
+}) {
+  const [archived, setArchived] = useState<ArchiveResponse | null>(null);
+  const archive = useAdminMutation<ArchiveResponse>({
+    path: `/api/v1/admin/connection-groups/${group.id}/archive`,
+    method: "POST",
+    invalidates: onArchived,
+  });
+
+  const displayName = stripGroupPrefix(group.name);
+
+  const confirm = async () => {
+    const result = await archive.mutate();
+    if (result.ok && result.data) {
+      setArchived(result.data);
+    }
+  };
+
+  return (
+    <AlertDialog open onOpenChange={(open) => !open && onClose()}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            {archived ? `Archived "${displayName}"` : `Archive "${displayName}"?`}
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            {archived
+              ? "The cascade completed. The environment and its content are now read-only."
+              : "This retires the environment and the content scoped to it. The action runs in one transaction — every step succeeds or rolls back together."}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+
+        {archived ? (
+          <ul
+            className="rounded-md border bg-muted/30 p-3 text-sm flex flex-col gap-1"
+            data-testid={`env-archive-result-${group.id}`}
+          >
+            <li>
+              <strong>{archived.archivedCounts.entities}</strong> semantic
+              entit{archived.archivedCounts.entities === 1 ? "y" : "ies"}{" "}
+              archived.
+            </li>
+            <li>
+              <strong>{archived.archivedCounts.tasks}</strong> scheduled task
+              {archived.archivedCounts.tasks === 1 ? "" : "s"} disabled.
+            </li>
+            <li>
+              <strong>{archived.archivedCounts.approvals}</strong> pending
+              approval{archived.archivedCounts.approvals === 1 ? "" : "s"}{" "}
+              expired.
+            </li>
+          </ul>
+        ) : (
+          <ul className="rounded-md border bg-muted/30 p-3 text-sm flex flex-col gap-1">
+            <li>Semantic entities scoped to this environment will archive.</li>
+            <li>Scheduled tasks scoped to this environment will stop firing.</li>
+            <li>Pending approval requests for this environment will expire.</li>
+            <li>
+              Dashboard cards scoped to this environment are NOT touched
+              automatically — they'll keep rendering against the archived
+              environment until you edit or remove them.
+            </li>
+          </ul>
+        )}
+
+        <MutationErrorSurface
+          error={archive.error}
+          feature="Environments"
+          onRetry={archive.clearError}
+        />
+
+        <AlertDialogFooter>
+          {archived ? (
+            <AlertDialogAction
+              onClick={onClose}
+              data-testid={`env-archive-close-${group.id}`}
+            >
+              Done
+            </AlertDialogAction>
+          ) : (
+            <>
+              <AlertDialogCancel data-testid={`env-archive-cancel-${group.id}`}>
+                Cancel
+              </AlertDialogCancel>
+              <AlertDialogAction
+                onClick={confirm}
+                disabled={archive.saving}
+                data-testid={`env-archive-confirm-${group.id}`}
+              >
+                {archive.saving ? <Loader2 className="size-4 animate-spin" /> : "Archive"}
+              </AlertDialogAction>
+            </>
+          )}
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

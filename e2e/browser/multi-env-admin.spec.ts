@@ -554,3 +554,153 @@ test.describe("chat env/member picker (#2345)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Phase 4 archive cascade — real-integration test (#2413)
+// ---------------------------------------------------------------------------
+//
+// Unlike the page-level route-mock tests above, this exercises the LIVE
+// admin API through `page.request`. The other tests in this file use
+// route mocks because they assert UI behaviour against deterministic
+// fixtures; #2420 flagged that pattern as "route-mock theater" for any
+// test that's supposed to verify wire-level guarantees. The archive
+// cascade falls in the latter bucket — its whole value is the atomic
+// transaction across four tables, which a mock can fake into success.
+//
+// Scope guard: this test does NOT migrate the existing route-mock tests
+// to real integration (per the issue brief). It only fixes the new
+// surface. The DB-level cascade is exhaustively covered by
+// `migrate-pg.test.ts` (happy path + sibling-group isolation +
+// cross-tenant isolation + rollback); the test below covers the route
+// wiring end-to-end and the audit / response contract.
+
+test.describe("archive group cascade (real integration — #2413)", () => {
+  test("@llm POST /:id/archive cascades real content end-to-end", async ({ page }) => {
+    // Per-run uniques so concurrent shards / re-runs don't collide on
+    // unique indexes (group name, entity name).
+    const tag = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const groupName = `archive-cascade-${tag}`;
+    const entityName = `cascade_entity_${tag}`;
+
+    let groupId: string | null = null;
+    let taskId: string | null = null;
+
+    // 1. Create the test group through the real admin API. The
+    //    storage-state cookie from global-setup.ts carries the admin
+    //    session, so `page.request` is admin-authed automatically.
+    const createRes = await page.request.post(
+      "/api/v1/admin/connection-groups",
+      { data: { name: groupName } },
+    );
+    expect(createRes.status()).toBe(201);
+    const createdBody = (await createRes.json()) as {
+      id: string;
+      name: string;
+      status: "active" | "archived";
+    };
+    expect(createdBody.status).toBe("active");
+    groupId = createdBody.id;
+
+    try {
+      // 2a. Seed a semantic entity scoped to the group. The PUT
+      //     endpoint is the same one the admin UI uses; this exercises
+      //     the real write path including content-mode gating.
+      const entityRes = await page.request.put(
+        `/api/v1/admin/semantic/entities/edit/${entityName}`,
+        {
+          data: {
+            table: entityName,
+            description: "Cascade test entity",
+            dimensions: [{ name: "id", sql: "id", type: "number", description: "id" }],
+            measures: [],
+            joins: [],
+            query_patterns: [],
+            connectionGroupId: groupId,
+          },
+        },
+      );
+      // 200 happy-path; 501 acceptable if internal DB isn't wired in
+      // this local dev — in that case the test is unreachable and we
+      // skip rather than false-fail.
+      if (entityRes.status() === 501) {
+        test.skip(true, "Internal DB not configured for this dev workspace; cascade e2e skipped.");
+        return;
+      }
+      expect(entityRes.status()).toBe(200);
+
+      // 2b. Seed a scheduled task scoped to the group via the user-facing
+      //     scheduled-tasks endpoint (admin-only by default; the storage
+      //     state cookie carries admin role).
+      const taskRes = await page.request.post("/api/v1/scheduled-tasks", {
+        data: {
+          name: `Cascade test task ${tag}`,
+          question: "select 1",
+          cronExpression: "0 9 * * *",
+          deliveryChannel: "webhook",
+          recipients: [],
+          connectionGroupId: groupId,
+        },
+      });
+      // 200/201 acceptable; some dev workspaces may 422 on a synthetic
+      // group that has no resolvable primary. Soft-skip on validation
+      // errors so the test still drives the entity cascade path.
+      let taskSeeded = false;
+      if (taskRes.status() === 200 || taskRes.status() === 201) {
+        taskSeeded = true;
+        const taskBody = (await taskRes.json()) as { id: string };
+        taskId = taskBody.id;
+      }
+
+      // 3. Archive the group and assert the cascade counts reflect the
+      //    seeded content. This is the assertion that catches a
+      //    regression dropping a cascade call.
+      const archiveRes = await page.request.post(
+        `/api/v1/admin/connection-groups/${groupId}/archive`,
+      );
+      expect(archiveRes.status()).toBe(200);
+      const archived = (await archiveRes.json()) as {
+        archivedCounts: { entities: number; tasks: number; approvals: number };
+      };
+      expect(archived.archivedCounts.entities).toBeGreaterThanOrEqual(1);
+      if (taskSeeded) {
+        expect(archived.archivedCounts.tasks).toBeGreaterThanOrEqual(1);
+      }
+      // approvals: no admin endpoint to seed cheaply (queue rows arise
+      // from agent-flow matches against approval rules), so leave
+      // unasserted. The migrate-pg smoke covers the SQL-level approval
+      // cascade exhaustively.
+
+      // 4. Read back: the group is archived, and the entity is too.
+      const detailRes = await page.request.get(
+        `/api/v1/admin/connection-groups/${groupId}`,
+      );
+      expect(detailRes.status()).toBe(200);
+      const detail = (await detailRes.json()) as { status: "active" | "archived" };
+      expect(detail.status).toBe("archived");
+
+      // 5. Re-archive is refused (idempotency contract).
+      const reArchive = await page.request.post(
+        `/api/v1/admin/connection-groups/${groupId}/archive`,
+      );
+      expect(reArchive.status()).toBe(409);
+
+      // 6. Member assignment against an archived group is refused.
+      const assignRes = await page.request.post(
+        `/api/v1/admin/connection-groups/${groupId}/members`,
+        { data: { connectionId: "us-int" } },
+      );
+      // 409 for archived; 404 acceptable when the connection doesn't
+      // exist in this workspace. Either way the route MUST NOT 200.
+      expect([404, 409]).toContain(assignRes.status());
+    } finally {
+      // Cleanup: cascade-archived entities are already `archived`, so
+      // the legacy DELETE on entities would 404 — leave them. Task can
+      // be deleted by id; the empty group can be dropped.
+      if (taskId) {
+        await page.request.delete(`/api/v1/scheduled-tasks/${taskId}`);
+      }
+      if (groupId) {
+        await page.request.delete(`/api/v1/admin/connection-groups/${groupId}`);
+      }
+    }
+  });
+});

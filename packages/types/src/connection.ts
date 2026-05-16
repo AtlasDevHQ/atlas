@@ -126,13 +126,52 @@ export interface ConnectionDetail {
  * projection (snapshot at query time) — split into a dedicated summary
  * shape once a second read site needs a different denormalization.
  */
+/**
+ * Group lifecycle.
+ *
+ * - `active`   — default. Group accepts new members, content writes,
+ *                and chat routing.
+ * - `archived` — read-only tombstone. The group's content was
+ *                cascade-archived; renames, member assignments, and
+ *                re-archives are refused server-side.
+ *
+ * Type-only export deliberately — a value tuple here would block
+ * scaffold smoke tests until the next `@useatlas/types` publish,
+ * because the scaffolded template resolves the published version of
+ * the package and a new value export isn't visible there yet. Schemas
+ * inline `z.enum(["active", "archived"])` or
+ * `as const satisfies readonly ConnectionGroupStatus[]` instead.
+ * See `feedback_useatlas_types_scaffold_gotcha`.
+ */
+export type ConnectionGroupStatus = "active" | "archived";
+
 export interface ConnectionGroup {
   id: string;
   name: string;
+  /** Lifecycle. Optional so a consumer pinned to a pre-status wire
+   * type still typechecks; consumers should treat `undefined` as
+   * `active`. */
+  status?: ConnectionGroupStatus;
   /** Number of connections currently assigned to this group. */
   memberCount: number;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * Counts surfaced by the group-archive cascade. The HTTP status encodes
+ * the win/lose discriminant (200 = this caller archived; 409 = a
+ * concurrent admin won, or the group was already archived). The body
+ * just reports cascade scope.
+ *
+ * Heterogeneous terminal states: entities flip to `archived`, tasks to
+ * `enabled=false`, approvals to `expired`. The counts are uniform; the
+ * underlying lifecycle vocabulary is not.
+ */
+export interface GroupArchiveCounts {
+  entities: number;
+  tasks: number;
+  approvals: number;
 }
 
 /**

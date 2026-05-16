@@ -235,6 +235,10 @@ export const connectionGroups = pgTable(
     // `migrate-pg.test.ts` pins the FK shape so drift here surfaces
     // explicitly rather than as a silently dropped constraint.
     primaryConnectionId: text("primary_connection_id"),
+    // 0071 — group lifecycle. `active` = normal; `archived` = retired
+    // region (cascade ran). See PRD #2336 § "Phase 4 archive cascade"
+    // and the POST /admin/connection-groups/:id/archive route.
+    status: text("status").notNull().default("active"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -243,6 +247,10 @@ export const connectionGroups = pgTable(
     index("idx_connection_groups_org").on(t.orgId),
     uniqueIndex("uq_connection_groups_org_name").on(t.orgId, t.name),
     index("idx_connection_groups_primary").on(t.primaryConnectionId, t.orgId),
+    // 0071 — partial index supports the list handler's hot path
+    // (`WHERE org_id = $1 AND status = 'active'`).
+    index("idx_connection_groups_active").on(t.orgId).where(sql`status = 'active'`),
+    check("chk_connection_groups_status", sql`status IN ('active', 'archived')`),
   ],
 );
 

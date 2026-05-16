@@ -130,6 +130,12 @@ export const ADMIN_ACTIONS = {
      * full state change without a second query.
      */
     merge: "connection_group.merge",
+    /**
+     * Group-archive cascade. The action's `targetId` is the archived
+     * group id; `metadata` carries `{ archivedCounts }` so the audit
+     * row reconstructs the cascade scope without re-querying.
+     */
+    archive: "connection_group.archive",
   },
   user: {
     invite: "user.invite",

@@ -316,6 +316,7 @@ describe("migrateAuthTables", () => {
             { name: "0068_scheduled_tasks_group.sql" },
             { name: "0069_drop_legacy_connection_id_scope.sql" },
             { name: "0070_rename_synthetic_global_group_names.sql" },
+            { name: "0071_connection_groups_status.sql" },
           ],
         };
       }

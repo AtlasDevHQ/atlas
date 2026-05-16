@@ -17,7 +17,42 @@ Manage groups under **Admin → Connections → Groups**:
 
 - **Create a group** — give it a name and add connections as members. Multiple members must share a schema (the whole point is that they're replicas).
 - **Rename a group** — names are display labels. The underlying id is the foreign key, so a rename does not ripple through your entity files.
+- **Archive a group** — retire a whole region. The cascade atomically archives every semantic entity, scheduled task, and pending approval scoped to the group; the group itself flips to a read-only tombstone. See [Archiving a group](#archiving-a-group) below.
 - **Delete a group** — the group must be empty. Move connections out (or delete them) first.
+
+## Archiving a group
+
+When a region retires (e.g. an EU replica goes away or a `staging` environment shuts down), archiving the group is the all-content retirement path. The action is atomic — every step succeeds together or rolls back together.
+
+`POST /api/v1/admin/connection-groups/:id/archive` does the following in one transaction:
+
+1. Flips every `semantic_entities` row scoped to the group to `status = 'archived'`.
+2. Disables every `scheduled_tasks` row scoped to the group (`enabled = false` — the scheduler skips disabled tasks on its next sweep).
+3. Expires every pending `approval_queue` row scoped to the group (`status = 'expired'`).
+4. Flips the group itself to `status = 'archived'`.
+
+The response carries the cascade counts so the audit log reconstructs the full scope:
+
+```json
+{
+  "archivedCounts": {
+    "entities": 3,
+    "tasks": 1,
+    "approvals": 0,
+    "group": 1
+  }
+}
+```
+
+**Idempotency.** Re-archiving an already-archived group returns `409 conflict`; the cascade does not double-count. Restoring an archived group is intentionally not exposed yet — the tombstone is permanent for now.
+
+**Dashboard cards.** Cards keep their `connection_group_id` reference AND keep rendering against the archived environment — the dashboard read path does not filter on group status today. This is intentional for the initial cascade slice: adding a per-card status or threading a group-status filter through every dashboard surface is a dedicated follow-up. If you archive a group, plan to edit or remove the cards that reference it.
+
+**Member connections.** Connections themselves are not touched. Their `connections.status` stays whatever it was (likely `published`). If you want to archive the underlying physical connections too, run the per-connection archive flow under **Admin → Connections** afterwards.
+
+<Callout type="warn">
+An archived group cannot be renamed, assigned new members (the API returns 409), or re-archived. Semantic-entity reads filter archived rows from the published view (`status != 'archived'`); a developer-mode overlay still surfaces them so an admin can audit the snapshot post-archive. Dashboard cards are the exception — they continue to render against the archived group until manually edited.
+</Callout>
 
 <Callout type="info">
 Vocabulary: code calls these **connection groups**. The UI says **environments**. They mean the same thing.

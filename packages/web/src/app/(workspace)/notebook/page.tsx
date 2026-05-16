@@ -8,6 +8,7 @@ import { notebookSearchParams } from "./search-params";
 import { useNotebook } from "@/ui/components/notebook/use-notebook";
 import { NotebookShell } from "@/ui/components/notebook/notebook-shell";
 import { useConversations, transformMessages } from "@/ui/hooks/use-conversations";
+import { useDatasourceSummary } from "@/ui/hooks/use-datasource-summary";
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { useAtlasTransport } from "@/ui/hooks/use-atlas-transport";
 import { authClient } from "@/lib/auth/client";
@@ -85,6 +86,17 @@ function NotebookContent() {
     getHeaders,
     getCredentials,
   });
+
+  // Block the composer when the workspace has no queryable tables — same gate
+  // as the chat empty state so an agent never gets a chance to fail downstream
+  // for the "no data yet" case.
+  const datasource = useDatasourceSummary({
+    apiUrl: getApiUrl(),
+    isCrossOrigin: isCrossOrigin(),
+    getHeaders,
+    enabled: authResolved && isSignedIn,
+  });
+  const needsDataSetup = datasource.data?.tableCount === 0;
 
   const refreshConvosRef = useRef(convos.refresh);
   refreshConvosRef.current = convos.refresh;
@@ -329,6 +341,8 @@ function NotebookContent() {
           notebook={notebook}
           focusCellId={focusCellId}
           onShareAsReport={handleShareAsReport}
+          isAdmin={isAdmin}
+          needsDataSetup={needsDataSetup}
           starterPrompts={{
             apiUrl: getApiUrl(),
             isCrossOrigin: isCrossOrigin(),

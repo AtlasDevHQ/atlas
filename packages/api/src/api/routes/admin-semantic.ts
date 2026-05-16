@@ -474,6 +474,59 @@ export const postRollbackRoute = createRoute({
 });
 
 // ---------------------------------------------------------------------------
+// Reconcile route (#2462) — drift-drawer actions
+// ---------------------------------------------------------------------------
+
+const ReconcileBodySchema = z.object({
+  action: z.enum(["sync_yaml", "remove", "create_from_db"]),
+  connection: z.string().optional().default("default"),
+  // Same trinary encoding as the editor PUT/DELETE (#2412).
+  connectionGroupId: z.string().optional(),
+});
+
+const ReconcileResponseSchema = z.object({
+  ok: z.boolean(),
+  action: z.enum(["sync_yaml", "remove", "create_from_db"]),
+  name: z.string(),
+  entity: z.object({ name: z.string(), yamlContent: z.string() }).nullable(),
+});
+
+export const postReconcileEntityRoute = createRoute({
+  method: "post",
+  path: "/semantic/entities/{name}/reconcile",
+  tags: ["Admin — Semantic"],
+  summary: "Reconcile a semantic entity against the introspected DB schema",
+  description:
+    "Dispatches `sync_yaml`, `remove`, or `create_from_db` against `(name, connection)`. " +
+    "All actions stage as drafts (#2177); admins publish via `/api/v1/admin/publish`.",
+  request: {
+    params: createParamSchema("name", "users"),
+    body: {
+      content: {
+        "application/json": { schema: ReconcileBodySchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Reconcile applied",
+      content: { "application/json": { schema: ReconcileResponseSchema } },
+    },
+    400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: {
+      description:
+        "Either the entity to sync/remove doesn't exist (`error: \"not_found\"`), " +
+        "or `create_from_db` was called on a name that already exists or has no matching DB table (`error: \"mismatch\"`).",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    501: { description: "Internal database not available", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Auth function type
 // ---------------------------------------------------------------------------
 
@@ -933,6 +986,64 @@ export function registerSemanticEditorRoutes(
       });
 
       return c.json({ ok: true, name, versionNumber: newVersionNumber }, 200);
+    }),
+  );
+
+  // POST /semantic/entities/{name}/reconcile — drift-drawer reconcile (#2462).
+  // Matches the editor's draft-staging contract (#2177); demo+published is
+  // gated FE-side via `useDemoReadonly`, same as the editor's edit/delete.
+  admin.openapi(postReconcileEntityRoute, async (c) =>
+    runHandler(c, "reconcile semantic entity", async () => {
+      const { name } = c.req.valid("param");
+      const body = c.req.valid("json");
+      const { authResult, requestId } = await authFn(c, "admin:semantic");
+
+      const orgId = authResult.user?.activeOrganizationId;
+      if (!orgId) {
+        return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
+      }
+
+      if (!hasInternalDB()) {
+        return c.json({ error: "not_available", message: "Reconcile requires an internal database (DATABASE_URL).", requestId }, 501);
+      }
+
+      const atlasMode =
+        (c.get("atlasMode") as import("@useatlas/types/auth").AtlasMode | undefined) ?? "published";
+      const scope = parseConnectionGroupIdQuery(body.connectionGroupId);
+
+      const { reconcileEntity } = await import("@atlas/api/lib/semantic/reconcile");
+      const result = await reconcileEntity({
+        orgId,
+        name,
+        action: body.action,
+        atlasMode,
+        connection: body.connection,
+        connectionGroupId: scope,
+      });
+
+      if (result.status === "not_found") {
+        return c.json({ error: "not_found", message: result.reason, requestId }, 404);
+      }
+      if (result.status === "mismatch") {
+        return c.json({ error: "mismatch", message: result.reason, requestId }, 404);
+      }
+      if (result.status === "not_available") {
+        return c.json({ error: "not_available", message: result.reason, requestId }, 501);
+      }
+
+      logAdminAction({
+        actionType:
+          result.action === "remove"
+            ? ADMIN_ACTIONS.semantic.deleteEntity
+            : ADMIN_ACTIONS.semantic.updateEntity,
+        targetType: "semantic",
+        targetId: name,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { name, source: "drift-reconcile", action: result.action },
+      });
+
+      const entity = result.action === "remove" ? null : result.entity;
+      return c.json({ ok: true, action: result.action, name, entity }, 200);
     }),
   );
 }

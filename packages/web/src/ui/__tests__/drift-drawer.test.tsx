@@ -31,6 +31,29 @@ mock.module("@/ui/hooks/use-admin-fetch", () => ({
   friendlyError: (err: { message?: string }) => err?.message ?? "error",
 }));
 
+// #2462: drawer now fires `useAdminMutation` for reconcile actions. Mock it
+// so the smoke tests don't need a live AtlasProvider for the API base URL —
+// the contract under test is the diff-render path, not the network layer.
+const mockReconcileMutate = mock(async () => ({ ok: true as const, data: undefined }));
+
+mock.module("@/ui/hooks/use-admin-mutation", () => ({
+  useAdminMutation: () => ({
+    mutate: mockReconcileMutate,
+    saving: false,
+    error: null,
+    errorsByItemId: {},
+    errorFor: () => undefined,
+    clearError: () => {},
+    clearErrorFor: () => {},
+    reset: () => {},
+    isMutating: () => false,
+  }),
+}));
+
+mock.module("@/ui/components/admin/mutation-error-surface", () => ({
+  MutationErrorSurface: () => null,
+}));
+
 mock.module("@/ui/lib/fetch-error", () => ({
   friendlyError: (err: { message?: string }) => err?.message ?? "error",
   friendlyErrorOrNull: (err: { message?: string } | null | undefined) =>
@@ -64,6 +87,8 @@ beforeEach(() => {
   mockData = null;
   mockLoading = false;
   mockError = null;
+  mockReconcileMutate.mockClear();
+  mockReconcileMutate.mockImplementation(async () => ({ ok: true as const, data: undefined }));
 });
 
 afterEach(() => {
@@ -228,5 +253,78 @@ describe("DriftDrawer (#2461)", () => {
     );
 
     expect(document.body.textContent).toContain("Loading drift");
+  });
+
+  test("clicking the sync action fires reconcile mutate, onReconciled, and closes", async () => {
+    mockData = makeDiff({
+      tableDiffs: [
+        {
+          table: "orders",
+          addedColumns: [{ name: "shipped_at", type: "timestamp" }],
+          removedColumns: [],
+          typeChanges: [],
+        },
+      ],
+      summary: { total: 1, new: 0, removed: 0, changed: 1, unchanged: 0 },
+    });
+
+    const opens: boolean[] = [];
+    const reconciledCalls: number[] = [];
+
+    render(
+      <DriftDrawer
+        entityName="orders"
+        open={true}
+        onOpenChange={(o) => opens.push(o)}
+        onReconciled={() => reconciledCalls.push(1)}
+      />,
+      { wrapper },
+    );
+
+    const syncBtn = document.querySelector('[data-testid="drift-action-sync_yaml"]') as HTMLButtonElement | null;
+    expect(syncBtn).not.toBeNull();
+    fireEvent.click(syncBtn!);
+
+    // Mutate is async; flush microtasks.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockReconcileMutate).toHaveBeenCalledTimes(1);
+    const callArg = (mockReconcileMutate.mock.calls[0] as unknown as [{ body: { action: string; connection: string } }])[0];
+    expect(callArg.body.action).toBe("sync_yaml");
+    expect(callArg.body.connection).toBe("default");
+    expect(reconciledCalls).toHaveLength(1);
+    expect(opens).toContain(false);
+  });
+
+  test("reconcileDisabled disables every action button and surfaces the reason via title", () => {
+    mockData = makeDiff({
+      tableDiffs: [
+        {
+          table: "orders",
+          addedColumns: [{ name: "shipped_at", type: "timestamp" }],
+          removedColumns: [],
+          typeChanges: [],
+        },
+      ],
+      summary: { total: 1, new: 0, removed: 0, changed: 1, unchanged: 0 },
+    });
+
+    render(
+      <DriftDrawer
+        entityName="orders"
+        open={true}
+        onOpenChange={() => {}}
+        reconcileDisabled
+        reconcileDisabledReason="Switch to developer mode"
+      />,
+      { wrapper },
+    );
+
+    const syncBtn = document.querySelector('[data-testid="drift-action-sync_yaml"]') as HTMLButtonElement | null;
+    const removeBtn = document.querySelector('[data-testid="drift-action-remove"]') as HTMLButtonElement | null;
+    expect(syncBtn?.disabled).toBe(true);
+    expect(removeBtn?.disabled).toBe(true);
+    expect(syncBtn?.getAttribute("title")).toBe("Switch to developer mode");
   });
 });

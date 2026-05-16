@@ -41,8 +41,8 @@ import {
   SemanticFileTree,
   type SemanticSelection,
   type SemanticTreeDrift,
-  type SemanticTreeDriftState,
 } from "@/ui/components/admin/semantic-file-tree";
+import { normalizeDrift } from "./normalize-drift";
 import { type FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyErrorOrNull, buildFetchError, extractFetchError } from "@/ui/lib/fetch-error";
@@ -320,36 +320,6 @@ function normalizeMetrics(raw: unknown): MetricEntry[] {
 // ── Helpers ───────────────────────────────────────────────────────
 
 /**
- * Validate an untrusted `drift` payload from the entities-list response
- * into the narrow `SemanticTreeDrift` shape the file tree expects (#2459).
- * Unknown shapes / states drop silently to `null` so a server-side
- * regression in the drift field can't crash the file tree — same defensive
- * posture the rest of the page takes (see the `console.debug` on dropped
- * entity rows above).
- */
-const DRIFT_STATES: ReadonlySet<SemanticTreeDriftState> = new Set([
-  "new",
-  "removed",
-  "changed",
-  "in-sync",
-]);
-
-function normalizeDrift(raw: unknown): SemanticTreeDrift | null {
-  if (raw === null || raw === undefined) return null;
-  if (typeof raw !== "object") return null;
-  const r = raw as Record<string, unknown>;
-  if (typeof r.state !== "string" || !DRIFT_STATES.has(r.state as SemanticTreeDriftState)) {
-    return null;
-  }
-  const state = r.state as SemanticTreeDriftState;
-  if (state === "changed") {
-    const n = typeof r.changeCount === "number" ? r.changeCount : 0;
-    return { state, changeCount: n };
-  }
-  return { state };
-}
-
-/**
  * Encode a `connectionGroupId` for the admin entity detail / delete /
  * save URLs (#2412). The trinary mapping mirrors the backend's
  * `parseConnectionGroupIdQuery`:
@@ -534,10 +504,6 @@ export default function SemanticPage() {
       if (entitiesRes.status === "fulfilled") {
         const data = entitiesRes.value;
         const rawEntities = Array.isArray(data?.entities) ? data.entities : Array.isArray(data) ? data : [];
-        // `noIntrospectedTables` is shipped in slice 1 for slice 3 to consume.
-        // We don't render anything off it yet — the file tree's drift accent
-        // already self-suppresses when every entity arrives with `drift: null`
-        // (the case `noIntrospectedTables` produces).
         const normalized: EntitySummary[] = (rawEntities as Record<string, unknown>[]).map((e) => {
           const tableField = typeof e.table === "string" ? e.table : "";
           const nameField =
@@ -568,6 +534,15 @@ export default function SemanticPage() {
           console.debug(
             `admin/semantic: dropped ${dropped} entities with unrecognized shape from /api/v1/admin/semantic/entities`,
           );
+        }
+        // The drift route returns 200-with-warnings when the diff itself
+        // fails (DB outage, unsupported driver). Without surfacing them
+        // the file tree looks "clean" and an operator can't tell drift is
+        // unavailable. Slice 3 will land a proper banner; for now console
+        // is the minimum-viable signal that something's wrong.
+        const warnings = Array.isArray(data?.warnings) ? data.warnings : [];
+        if (warnings.length > 0) {
+          console.warn("admin/semantic: drift warnings from /api/v1/admin/semantic/entities", warnings);
         }
         setEntities(normalized);
       } else {

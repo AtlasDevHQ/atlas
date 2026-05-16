@@ -32,11 +32,13 @@ export type SemanticSelection =
  */
 export type SemanticTreeDriftState = "new" | "removed" | "changed" | "in-sync";
 
-export interface SemanticTreeDrift {
-  readonly state: SemanticTreeDriftState;
-  /** Total column-level changes; only present for `changed` rows. */
-  readonly changeCount?: number;
-}
+/**
+ * Discriminated union mirrors the API's `EntityDrift` — only `changed`
+ * carries `changeCount`. Consumers narrow on `state` before reading.
+ */
+export type SemanticTreeDrift =
+  | { readonly state: "changed"; readonly changeCount: number }
+  | { readonly state: "removed" | "in-sync" | "new" };
 
 /**
  * Entry in the file-tree's entity list. Multi-group orgs surface the
@@ -88,7 +90,7 @@ function driftAriaFragment(drift: SemanticTreeDrift | null | undefined): string 
   if (!drift || drift.state === "in-sync") return null;
   if (drift.state === "removed") return "drift: removed from database";
   if (drift.state === "changed") {
-    const n = drift.changeCount ?? 0;
+    const n = drift.changeCount;
     return `drift: ${n} ${n === 1 ? "column change" : "column changes"}`;
   }
   // `new` is reserved for slice 2's DB-only rows; the YAML-side tree
@@ -100,7 +102,7 @@ function driftTooltip(drift: SemanticTreeDrift | null | undefined): string | und
   if (!drift || drift.state === "in-sync") return undefined;
   if (drift.state === "removed") return "Table missing from the database";
   if (drift.state === "changed") {
-    const n = drift.changeCount ?? 0;
+    const n = drift.changeCount;
     return `${n} column ${n === 1 ? "change" : "changes"} vs database`;
   }
   return "Table present in database but not in semantic layer";
@@ -141,7 +143,6 @@ function FileItem({
 }) {
   const sourceLabel = source?.startsWith("g_") ? source.slice(2) : source;
   const driftFragment = driftAriaFragment(drift);
-  // Draft wins border precedence — see comment on the `drift` prop above.
   const hasDriftBorder = !draft && driftFragment !== null;
   const ariaParts: string[] = [];
   if (draft) ariaParts.push("draft");

@@ -598,7 +598,10 @@ const listEntitiesRoute = createRoute({
     "drift accent (#2459).",
   request: {
     query: z.object({
-      connection: z.string().optional().openapi({
+      // `.min(1)` rejects `?connection=` (empty string). Without it the
+      // empty case would fall through to the missing-connection branch and
+      // mute drift for what's almost certainly a malformed client.
+      connection: z.string().min(1).optional().openapi({
         param: { name: "connection", in: "query" },
         example: "default",
       }),
@@ -1350,6 +1353,7 @@ admin.openapi(listEntitiesRoute, async (c) => {
       return c.json({
         entities: result.entities.map((e) => ({ ...e, drift: null })),
         noIntrospectedTables: true,
+        requestId,
         ...(result.warnings.length > 0 && { warnings: result.warnings }),
       }, 200);
     }
@@ -1362,12 +1366,18 @@ admin.openapi(listEntitiesRoute, async (c) => {
       return c.json({
         entities: envelope.entities,
         noIntrospectedTables: envelope.noIntrospectedTables,
+        requestId,
         ...(mergedWarnings.length > 0 && { warnings: mergedWarnings }),
       }, 200);
     } catch (err) {
       // Connection-side failure: don't fail the entire list — drift is a
-      // progressive enhancement. Drop drift, surface a warning so support
-      // sees it, keep the file tree usable.
+      // progressive enhancement. Drop drift, surface a generic warning so
+      // the file tree stays usable.
+      //
+      // The full err goes to `log.warn` with the requestId for correlation;
+      // the user-visible warning string is intentionally generic because pg
+      // / mysql2 driver errors can leak host, schema, or role names. The
+      // requestId is the support handoff.
       log.warn(
         {
           err: err instanceof Error ? err : new Error(String(err)),
@@ -1378,10 +1388,13 @@ admin.openapi(listEntitiesRoute, async (c) => {
         },
         "Drift diff failed — returning entities without drift attachment",
       );
-      const message = err instanceof Error ? err.message : String(err);
       return c.json({
         entities: result.entities.map((e) => ({ ...e, drift: null })),
-        warnings: [...result.warnings, `Drift check failed: ${message}`],
+        requestId,
+        warnings: [
+          ...result.warnings,
+          `Drift check failed (requestId: ${requestId}). See server logs.`,
+        ],
       }, 200);
     }
   } catch (err) {

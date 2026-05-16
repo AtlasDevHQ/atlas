@@ -5,10 +5,10 @@
  * Pure module: given a `DiffResult` and a list of entity rows, returns the
  * same rows with a `drift` field per row plus a `noIntrospectedTables` flag.
  *
- * The flag is the load-bearing dogfood fix from 2026-05-16: when DB
- * introspection returns zero tables every YAML entity would otherwise show
- * as `removed`. Slice 3 consumes the flag to render a targeted empty
- * state on the unified semantic page rather than "13 removed tables".
+ * The flag is the load-bearing dogfood fix: when DB introspection returns
+ * zero tables every YAML entity would otherwise show as `removed`. Slice 3
+ * consumes the flag to render a targeted empty state on the unified
+ * semantic page rather than the alarming "N removed tables" UX.
  *
  * Slice 2 (the drift drawer) will reuse `attachDrift` from the per-entity
  * detail endpoint — keeping this pure lets both call sites test in isolation
@@ -19,17 +19,19 @@ import type { DiffResult } from "./diff";
 
 export type DriftState = "new" | "removed" | "changed" | "in-sync";
 
-export interface EntityDrift {
-  state: DriftState;
-  /**
-   * Total column changes (added + removed + type changes) for `changed`
-   * rows. Omitted for the other three states — `in-sync` has nothing to
-   * count, `removed` rows aren't in the DB to compare against, and `new`
-   * doesn't apply to entities the YAML side already has (kept in the type
-   * for the slice-2 drawer which will surface DB-only rows).
-   */
-  changeCount?: number;
-}
+/**
+ * Discriminated union — only `changed` carries a `changeCount`. The
+ * weaker `{ state; changeCount?: number }` shape used to allow nonsensical
+ * `{ state: "in-sync", changeCount: 7 }`; consumers narrow on `state`
+ * first so the type now mirrors what the producer actually emits.
+ *
+ * `new` is reserved for slice 2's drawer (DB-only rows that have no YAML
+ * counterpart). `attachDrift` narrows its return below to exclude `new`
+ * so today's call sites can't see it; the drawer will widen back.
+ */
+export type EntityDrift =
+  | { state: "changed"; changeCount: number }
+  | { state: "removed" | "in-sync" | "new" };
 
 interface HasTable {
   readonly table: string;
@@ -40,20 +42,27 @@ interface HasTable {
  * `JSONValue` rejects readonly arrays. The drift attachment is itself
  * pure (no mutation in `attachDrift`); the contract just exposes a shape
  * the route handler can hand straight to `c.json()` without spread copies.
+ *
+ * The generic `D` defaults to the full `EntityDrift` union but `attachDrift`
+ * narrows it to `Exclude<EntityDrift, { state: "new" }>` so YAML-side
+ * call sites don't have to handle a variant the producer never emits.
  */
-export interface DriftEnvelope<T> {
-  entities: (T & { drift: EntityDrift | null })[];
+export interface DriftEnvelope<T, D extends EntityDrift = EntityDrift> {
+  entities: (T & { drift: D | null })[];
   /** `true` when DB introspection returned zero tables (NOT "the connection failed"). */
   noIntrospectedTables: boolean;
 }
+
+/** The variants `attachDrift` can actually produce — drops `new`. */
+export type YamlSideDrift = Exclude<EntityDrift, { state: "new" }>;
 
 /**
  * Attach per-entity drift state to an entity list.
  *
  * When `meta.noIntrospectedTables` is true, every entity gets `drift: null`
  * because the diff is meaningless — the DB itself has zero tables, so every
- * YAML row would otherwise show as `removed`, the dogfood false-positive
- * this slice exists to prevent.
+ * YAML row would otherwise show as `removed` (the dogfood false-positive
+ * this slice exists to prevent).
  *
  * Otherwise, each entity's drift is derived from where its `table` shows up
  * in the diff:
@@ -61,15 +70,14 @@ export interface DriftEnvelope<T> {
  *   - in `diff.tableDiffs` → `changed` (with `changeCount`)
  *   - otherwise → `in-sync`
  *
- * `new` is reserved for the slice-2 drawer that surfaces DB-only rows
- * (tables present in `diff.newTables` with no YAML counterpart). This
- * function never returns it because the input is the YAML-side entity list.
+ * The return type narrows to `YamlSideDrift` so consumers don't have to
+ * handle the `new` variant the producer never emits.
  */
 export function attachDrift<T extends HasTable>(
   entities: readonly T[],
   diff: DiffResult,
   meta: { readonly noIntrospectedTables: boolean },
-): DriftEnvelope<T> {
+): DriftEnvelope<T, YamlSideDrift> {
   if (meta.noIntrospectedTables) {
     return {
       entities: entities.map((e) => ({ ...e, drift: null })),
@@ -89,7 +97,7 @@ export function attachDrift<T extends HasTable>(
   return {
     entities: entities.map((e) => {
       const count = changeCounts.get(e.table);
-      let drift: EntityDrift;
+      let drift: YamlSideDrift;
       if (removedSet.has(e.table)) {
         drift = { state: "removed" };
       } else if (count !== undefined) {

@@ -142,7 +142,7 @@ mock.module("@atlas/api/lib/db/connection", () => ({
 // Imports under test — mock.module registrations above take effect here
 // ---------------------------------------------------------------------------
 
-const { filterSnapshotsByWhitelist, runDiff, getDBSchema } = await import("../semantic/diff");
+const { filterSnapshotsByWhitelist, runDiff, runDriftDiff, getDBSchema } = await import("../semantic/diff");
 const { _resetOrgWhitelists } = await import("../semantic/whitelist");
 
 // ---------------------------------------------------------------------------
@@ -540,5 +540,71 @@ describe("runDiff — org+mode scoping (#1431)", () => {
     // well-formed response.
     expect(result).toBeDefined();
     expect(result.connection).toBe("default");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runDriftDiff — `introspectedTableCount` must be the PRE-whitelist count
+// (#2459). If someone "tidies" the implementation to use the filtered
+// dbSnapshots count, the dogfood "13 removed tables" bug returns.
+// ---------------------------------------------------------------------------
+
+describe("runDriftDiff — introspected count is pre-whitelist (#2459)", () => {
+  beforeEach(() => {
+    _resetOrgWhitelists();
+    entityRows = [];
+    internalDBAvailable = true;
+    mockListEntities.mockClear();
+    mockListEntitiesWithOverlay.mockClear();
+  });
+
+  it("reports the unfiltered table count even when the whitelist excludes all of them", async () => {
+    // DB has 5 tables; whitelist allows only 1. introspectedTableCount must
+    // still be 5 (truth: "the DB has tables, just not yours"). Returning 1
+    // here would mis-classify a whitelist-emptied diff as "DB is empty" and
+    // trigger the slice-3 empty state in the wrong scenario.
+    setDBTables({
+      users: { id: "integer" },
+      orders: { id: "integer" },
+      products: { id: "integer" },
+      shipments: { id: "integer" },
+      invoices: { id: "integer" },
+    });
+    entityRows = [
+      { name: "users", table: "users", status: "published", org_id: "scoped-org" },
+    ];
+
+    const result = await runDriftDiff("default", { orgId: "scoped-org", atlasMode: "published" });
+    expect(result.introspectedTableCount).toBe(5);
+  });
+
+  it("reports 0 when the DB itself has no tables (dogfood empty-DB case)", async () => {
+    setDBTables({});
+    entityRows = [
+      { name: "users", table: "users", status: "published", org_id: "empty-db-org" },
+    ];
+
+    const result = await runDriftDiff("default", { orgId: "empty-db-org", atlasMode: "published" });
+    expect(result.introspectedTableCount).toBe(0);
+  });
+
+  it("DiffResult is filtered to the whitelist (count signal is independent of diff scope)", async () => {
+    // Confirms the two outputs ARE distinct: count reflects DB reality,
+    // diff reflects the user's whitelisted scope. Without this assertion,
+    // a future "simplification" could merge the two counts and silently
+    // change semantics.
+    setDBTables({
+      users: { id: "integer" },
+      phantom: { id: "integer" },
+    });
+    entityRows = [
+      { name: "users", table: "users", status: "published", org_id: "scoped-org" },
+    ];
+
+    const result = await runDriftDiff("default", { orgId: "scoped-org", atlasMode: "published" });
+    expect(result.introspectedTableCount).toBe(2);
+    // diff side only sees the whitelisted table — phantom doesn't appear
+    // as `new` because it was filtered out before computeDiff ran.
+    expect(result.diff.newTables).not.toContain("phantom");
   });
 });

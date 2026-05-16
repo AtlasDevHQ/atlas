@@ -207,6 +207,8 @@ const mockGetPoolWarnings: Mock<() => string[]> = mock(() => []);
 const mockRegister: Mock<(id: string, opts: unknown) => void> = mock(() => {});
 const mockUnregister: Mock<(id: string) => void> = mock(() => {});
 
+const mockConnectionsHas: Mock<(id: string) => boolean> = mock(() => true);
+
 mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
     getDB: () => mockDBConnection,
@@ -216,6 +218,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
       describe: () => [
         { id: "default", dbType: "postgres", description: "Test DB" },
       ],
+      has: mockConnectionsHas,
       healthCheck: mockHealthCheck,
       register: mockRegister,
       unregister: mockUnregister,
@@ -485,14 +488,19 @@ const mockRunDiff: Mock<(connectionId?: string) => Promise<unknown>> = mock(() =
   }),
 );
 
+// `mockRunDriftDiff` is module-scoped so per-test setups can override its
+// return via `.mockResolvedValueOnce` / `.mockRejectedValueOnce`. Default
+// is the in-sync envelope (zero introspected tables → drift fully muted).
+const mockRunDriftDiff: Mock<(connectionId?: string) => Promise<unknown>> = mock(async () => ({
+  diff: { newTables: [], removedTables: [], tableDiffs: [], unchangedCount: 0 },
+  introspectedTableCount: 0,
+  warnings: [] as string[],
+}));
+
 mock.module("@atlas/api/lib/semantic/diff", () => ({
   runDiff: mockRunDiff,
   // #2459: matches the admin route's new import alongside runDiff.
-  runDriftDiff: mock(async () => ({
-    diff: { newTables: [], removedTables: [], tableDiffs: [], unchangedCount: 0 },
-    introspectedTableCount: 0,
-    warnings: [] as string[],
-  })),
+  runDriftDiff: mockRunDriftDiff,
   mapSQLType: (t: string) => t,
   parseEntityYAML: () => ({ table: "", columns: new Map(), foreignKeys: new Set() }),
   computeDiff: () => ({ newTables: [], removedTables: [], tableDiffs: [], unchangedCount: 0 }),
@@ -844,6 +852,138 @@ describe("GET /api/v1/admin/semantic/entities — DB branch + mode fan-out", () 
     expect(body.error).toBe("internal_error");
     expect(typeof body.requestId).toBe("string");
     expect(body.requestId).not.toBe("");
+  });
+});
+
+// #2459 — drift attachment via `?connection=<id>`. Covers the four
+// response shapes of the route: no `?connection` (legacy), unknown
+// connection (noIntrospectedTables true), `runDriftDiff` failure (warning
+// string + entities still rendered), and success (envelope from
+// `attachDrift`). Each branch is exercised once — `attachDrift` itself
+// has pure-function coverage in `semantic-diff.test.ts`.
+describe("GET /api/v1/admin/semantic/entities — drift via ?connection (#2459)", () => {
+  beforeEach(() => {
+    mockAuthenticateRequest.mockReset();
+    setAdmin();
+    mockConnectionsHas.mockReset();
+    mockConnectionsHas.mockReturnValue(true);
+    mockRunDriftDiff.mockReset();
+    mockRunDriftDiff.mockResolvedValue({
+      diff: { newTables: [], removedTables: [], tableDiffs: [], unchangedCount: 0 },
+      introspectedTableCount: 0,
+      warnings: [] as string[],
+    });
+  });
+
+  it("legacy path: no ?connection → no drift field, no noIntrospectedTables flag", async () => {
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { entities: Record<string, unknown>[]; noIntrospectedTables?: boolean };
+    expect(body.noIntrospectedTables).toBeUndefined();
+    expect(body.entities[0]?.drift).toBeUndefined();
+    expect(mockRunDriftDiff).not.toHaveBeenCalled();
+  });
+
+  it("unknown connection → 200 with all drift null + noIntrospectedTables true + requestId", async () => {
+    // Critical contract: don't 500 the list when an admin lands before any
+    // connection is registered. The file tree must still render.
+    mockConnectionsHas.mockReturnValue(false);
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities?connection=ghost"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      entities: Array<{ drift: unknown }>;
+      noIntrospectedTables: boolean;
+      requestId: string;
+    };
+    expect(body.noIntrospectedTables).toBe(true);
+    expect(body.entities.length).toBeGreaterThan(0);
+    expect(body.entities.every((e) => e.drift === null)).toBe(true);
+    expect(typeof body.requestId).toBe("string");
+    expect(body.requestId.length).toBeGreaterThan(0);
+    expect(mockRunDriftDiff).not.toHaveBeenCalled();
+  });
+
+  it("drift success → entities carry drift state from attachDrift envelope", async () => {
+    mockRunDriftDiff.mockResolvedValueOnce({
+      diff: {
+        newTables: [],
+        removedTables: ["companies"],
+        tableDiffs: [{
+          table: "orders",
+          addedColumns: [{ name: "shipping_zip", type: "string" }],
+          removedColumns: [],
+          typeChanges: [{ name: "status", yamlType: "string", dbType: "number" }],
+        }],
+        unchangedCount: 0,
+      },
+      introspectedTableCount: 5,
+      warnings: [] as string[],
+    });
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities?connection=default"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      entities: Array<{ table: string; drift: { state: string; changeCount?: number } | null }>;
+      noIntrospectedTables: boolean;
+    };
+    expect(body.noIntrospectedTables).toBe(false);
+    const byTable = Object.fromEntries(body.entities.map((e) => [e.table, e.drift]));
+    expect(byTable.companies).toEqual({ state: "removed" });
+    expect(byTable.orders).toEqual({ state: "changed", changeCount: 2 });
+  });
+
+  it("zero introspected tables → flag flips true even with populated diff", async () => {
+    // Dogfood regression guard: if introspectedTableCount is 0, attachDrift
+    // must short-circuit to all-null drift regardless of diff contents.
+    mockRunDriftDiff.mockResolvedValueOnce({
+      diff: {
+        newTables: [],
+        removedTables: ["companies", "orders"],
+        tableDiffs: [],
+        unchangedCount: 0,
+      },
+      introspectedTableCount: 0,
+      warnings: [] as string[],
+    });
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities?connection=default"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      entities: Array<{ drift: unknown }>;
+      noIntrospectedTables: boolean;
+    };
+    expect(body.noIntrospectedTables).toBe(true);
+    expect(body.entities.every((e) => e.drift === null)).toBe(true);
+  });
+
+  it("drift failure → 200 with generic warning + requestId, NOT raw err.message", async () => {
+    // Driver errors can leak host / schema / role names. The user-visible
+    // warning must be generic; the requestId is the support handoff.
+    mockRunDriftDiff.mockRejectedValueOnce(
+      new Error("connection refused at internal-prod-host.us-east-1:5432 for role atlas_admin"),
+    );
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities?connection=default"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      entities: Array<{ drift: unknown }>;
+      warnings: string[];
+      requestId: string;
+    };
+    expect(body.entities.every((e) => e.drift === null)).toBe(true);
+    expect(body.warnings).toBeDefined();
+    const driftWarning = body.warnings.find((w) => w.includes("Drift check failed"));
+    expect(driftWarning).toBeDefined();
+    expect(driftWarning).not.toContain("internal-prod-host");
+    expect(driftWarning).not.toContain("atlas_admin");
+    expect(driftWarning).toContain(body.requestId);
+  });
+
+  it("rejects empty ?connection= via .min(1)", async () => {
+    // `z.string().min(1)` is the express-intent guard — empty string isn't
+    // a valid connection id. Hono's Zod validator returns 422 for the
+    // schema mismatch (not 400) — the point is "rejected before the
+    // handler runs", not a particular status code.
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities?connection="));
+    expect(res.status).toBe(422);
+    expect(mockRunDriftDiff).not.toHaveBeenCalled();
   });
 });
 

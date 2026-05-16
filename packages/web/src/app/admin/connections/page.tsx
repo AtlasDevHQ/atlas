@@ -40,7 +40,7 @@ import {
 import { useDemoReadonly } from "@/ui/hooks/use-demo-readonly";
 import { DemoBadge, DraftBadge } from "@/ui/components/admin/mode-badges";
 import { DEMO_CONNECTION_ID } from "./columns";
-import { stripGroupPrefix, isAutoBackfilledSingleton } from "@/ui/lib/strip-group-prefix";
+import { stripGroupPrefix, isAutoBackfilledSingleton, isEmptyBackfillOrphan } from "@/ui/lib/strip-group-prefix";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -258,9 +258,16 @@ function ConnectionFormDialog({
   // Env dropdown only surfaces user-named envs. Auto-`g_<id>` singletons
   // are hidden so the dropdown doesn't leak migration-0062's
   // implementation detail to single-DB admins. Same predicate the
-  // Environments tab uses to collapse the auto-detected noise.
+  // Environments tab uses to collapse the auto-detected noise. Empty
+  // backfill orphans (#2506) are also hidden — a ghost `g_<connId>`
+  // group with zero members and a name matching a real connection id
+  // is the exact confusion this dialog must not surface; migration
+  // 0072 sweeps existing rows, this guards new surfaces.
   const selectableEnvs = envGroups.filter(
-    (g) => g.status !== "archived" && !isAutoBackfilledSingleton(g),
+    (g) =>
+      g.status !== "archived" &&
+      !isAutoBackfilledSingleton(g) &&
+      !isEmptyBackfillOrphan(g),
   );
 
   // Default env selection:

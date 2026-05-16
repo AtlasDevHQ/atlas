@@ -29,6 +29,7 @@ import {
 import {
   GROUP_NAME_PATTERN,
   UNIQUE_NAME_CONSTRAINT,
+  connectionNameCollidesWithGroup,
   generateGroupId,
   pgErrorMeta,
 } from "@atlas/api/lib/db/connection-groups-helpers";
@@ -432,6 +433,22 @@ adminConnectionGroups.openapi(createGroupRoute, async (c) =>
     }
     const trimmedName = name.trim();
 
+    // Name-collision guard (#2506). A literal match against an existing
+    // connection id in this org is refused — the env combobox would
+    // otherwise render a real connection id as a selectable environment
+    // label, indistinguishable from the legacy backfill orphans this
+    // guard exists to prevent.
+    if (await connectionNameCollidesWithGroup(orgId, trimmedName)) {
+      return c.json(
+        {
+          error: "conflict",
+          message: `A connection named "${trimmedName}" already exists in this workspace. Choose a different environment name.`,
+          requestId,
+        },
+        409,
+      );
+    }
+
     const id = generateGroupId();
     try {
       await internalQuery(
@@ -499,6 +516,20 @@ adminConnectionGroups.openapi(renameGroupRoute, async (c) =>
       );
     }
     const trimmedName = name.trim();
+
+    // Name-collision guard (#2506). Same rationale as POST /; refusing
+    // here as well so an admin can't rename an existing group into the
+    // backfill-orphan shape after the fact.
+    if (await connectionNameCollidesWithGroup(orgId, trimmedName)) {
+      return c.json(
+        {
+          error: "conflict",
+          message: `A connection named "${trimmedName}" already exists in this workspace. Choose a different environment name.`,
+          requestId,
+        },
+        409,
+      );
+    }
 
     let updated: GroupRow[];
     try {
@@ -1003,6 +1034,30 @@ adminConnectionGroups.openapi(mergeGroupsRoute, async (c) =>
         {
           error: "conflict",
           message: `An archived environment named "${trimmedTargetName}" already exists. Choose a different name.`,
+          requestId,
+        },
+        409,
+      );
+    }
+
+    // Name-collision guard (#2506). The wizard intentionally allows
+    // reusing an existing active group by name (`ON CONFLICT (org_id,
+    // name) DO UPDATE` in the merge CTE); the guard fires only when
+    // the merge would CREATE a new group whose label matches an
+    // existing connection id. Skipping the check when a same-named
+    // group already exists preserves the documented "reuse if present"
+    // wizard ergonomic.
+    const existingTarget = await internalQuery<{ id: string }>(
+      `SELECT id FROM connection_groups
+        WHERE org_id = $1 AND name = $2 AND status = 'active'
+        LIMIT 1`,
+      [orgId, trimmedTargetName],
+    );
+    if (existingTarget.length === 0 && (await connectionNameCollidesWithGroup(orgId, trimmedTargetName))) {
+      return c.json(
+        {
+          error: "conflict",
+          message: `A connection named "${trimmedTargetName}" already exists in this workspace. Choose a different environment name.`,
           requestId,
         },
         409,

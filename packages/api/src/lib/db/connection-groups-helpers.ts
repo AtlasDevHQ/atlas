@@ -7,6 +7,8 @@
  * api/routes/").
  */
 
+import { internalQuery } from "@atlas/api/lib/db/internal";
+
 /**
  * Validation regex matching the existing connection-id rule. Reused so a
  * group renamed to a value that would later collide with a connection id
@@ -36,6 +38,68 @@ export function generateGroupId(): string {
   return `g_${Math.random().toString(36).slice(2, 10)}${Math.random()
     .toString(36)
     .slice(2, 10)}`;
+}
+
+/**
+ * True iff `name` would collide with an existing connection id in this org.
+ * Centralised so every group-name entry surface refuses the same shape;
+ * see the call-site enumeration in the test file
+ * (`admin-connection-groups-name-collision.test.ts`) for the canonical
+ * coverage matrix, including the merge-route reuse carve-out and the
+ * POST `/admin/connections` self-name carve-out.
+ *
+ * Rationale (#2506): the 0062 1:1 backfill creates groups shaped
+ * `id = 'g_' || conn.id`, `name = conn.id`. Two production paths
+ * (documented in migration 0072) can leave one of those rows behind
+ * with zero members, surfacing in the env combobox as a ghost
+ * environment whose label collides with a real connection id. A
+ * user-initiated create that lands the same literal collision would
+ * re-introduce the same confusion at no benefit — the schema-vs-display
+ * vocabulary divide ("connection group" ↔ "environment") means an admin
+ * is not consciously typing a connection id into the env name field;
+ * matches are typo-grade.
+ *
+ * Scope is intentionally narrow:
+ *   - Only refuses LITERAL equality with an existing connection id.
+ *     A group named "Production" with members `us-prod` / `eu-prod` is
+ *     fine — the name does not match any connection id.
+ *   - Org-scoped via `connections.org_id`. The composite-PK shape
+ *     `(id, org_id)` means a SaaS tenant can share an id like `default`
+ *     with another tenant; this check only sees the caller's own
+ *     connections.
+ *   - Does NOT touch existing rows. Pre-fix groups that already collide
+ *     (i.e. the orphan this guard exists to prevent) are cleaned up by
+ *     migration 0072. Retroactively renaming or refusing them would
+ *     break legitimate single-region setups where the admin has
+ *     deliberately given a connection-named group a meaningful display
+ *     label.
+ *
+ * Error-propagation contract: callers MUST run inside `runHandler` (or
+ * an equivalent Effect → HTTP bridge). The helper deliberately does NOT
+ * try/catch a thrown `internalQuery` rejection — a local `catch { return
+ * false }` would silently fail-open, bypassing the guard on any DB
+ * blip. Letting the throw bubble produces a 500 with `requestId` and a
+ * structured log line, which is the right answer for a soft security
+ * check (CLAUDE.md "Prefer errors over silent fallbacks"). The
+ * fail-closed contract is pinned by a dedicated test in
+ * `admin-connection-groups-name-collision.test.ts`.
+ *
+ * Returns true when a collision exists. Callers map true → 409 with a
+ * friendly message; false → continue.
+ */
+export async function connectionNameCollidesWithGroup(
+  orgId: string,
+  name: string,
+): Promise<boolean> {
+  const rows = await internalQuery<{ id: string }>(
+    `SELECT id FROM connections
+      WHERE org_id = $1
+        AND id = $2
+        AND status != 'archived'
+      LIMIT 1`,
+    [orgId, name],
+  );
+  return rows.length > 0;
 }
 
 /**

@@ -56650,6 +56650,232 @@
         "operationId": "postAdminSemanticEntitiesByNameRollback"
       }
     },
+    "/api/v1/admin/semantic/entities/{name}/reconcile": {
+      "post": {
+        "tags": [
+          "Admin — Semantic"
+        ],
+        "summary": "Reconcile a semantic entity against the introspected DB schema",
+        "description": "Dispatches `sync_yaml`, `remove`, or `create_from_db` against `(name, connection)`. All actions stage as drafts (#2177); admins publish via `/api/v1/admin/publish`.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "example": "users"
+            },
+            "required": true,
+            "name": "name",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "sync_yaml",
+                      "remove",
+                      "create_from_db"
+                    ]
+                  },
+                  "connection": {
+                    "type": "string",
+                    "default": "default"
+                  },
+                  "connectionGroupId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "action"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Reconcile applied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "action": {
+                      "type": "string",
+                      "enum": [
+                        "sync_yaml",
+                        "remove",
+                        "create_from_db"
+                      ]
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "entity": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "yamlContent": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "yamlContent"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "action",
+                    "name",
+                    "entity"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Either the entity to sync/remove doesn't exist (`error: \"not_found\"`), or `create_from_db` was called on a name that already exists or has no matching DB table (`error: \"mismatch\"`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Internal database not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminSemanticEntitiesByNameReconcile"
+      }
+    },
     "/api/v1/admin/overview": {
       "get": {
         "tags": [

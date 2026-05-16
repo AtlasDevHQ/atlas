@@ -56,12 +56,12 @@ function getAtlasMode(c: { get(key: string): unknown }): import("@useatlas/types
  * onboarded org owns either `__demo__` or a wizard-created connection that
  * aliases the same physical DB as `default`, so seeding `default`
  * unconditionally produced a phantom duplicate in the Connections list and
- * the Semantic page connection picker. The SaaS gate further protects
- * fresh-signup workspaces that skip the demo step from seeing the shared
- * `ATLAS_DATASOURCE_URL` service as "their default Atlas connection"
- * (#2483 — single-tenant lazy-registration leaking into multi-tenant). Self-
- * hosted single-tenant deployments still see `default` because they have no
- * `connections` rows at all.
+ * the Semantic page connection picker. The SaaS gate further protects any
+ * SaaS workspace whose `connections` rowset is empty (#2483) — without it,
+ * the shared `ATLAS_DATASOURCE_URL` service rendered as "their default
+ * Atlas connection," a single-tenant lazy-registration leaking into
+ * multi-tenant. Self-hosted single-tenant deployments still see `default`
+ * because they have no `connections` rows at all.
  *
  * @param mode - Atlas mode. Published mode sees only published connections;
  *   developer mode additionally sees drafts. Archived connections are hidden
@@ -103,10 +103,9 @@ export async function getVisibleConnectionIds(
     }
   }
 
-  // SaaS gate: never auto-surface the runtime-registered `default` to a
-  // fresh-signup workspace. On SaaS the `default` registration is the shared
-  // demo service from `ATLAS_DATASOURCE_URL`, not a per-org connection — see
-  // #2483. Self-hosted deployments retain the single-tenant fallback.
+  // SaaS gate: on SaaS the `default` registration is the shared demo service
+  // from `ATLAS_DATASOURCE_URL`, not a per-org connection, so never auto-
+  // surface it (#2483).
   const isSaas = getConfig()?.deployMode === "saas";
   if (visible.size === 0 && connections.has("default") && !isSaas) {
     visible.add("default");

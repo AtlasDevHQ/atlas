@@ -651,6 +651,28 @@ describe("admin connections — org scoping", () => {
       expect(ids).toEqual([]);
     });
 
+    it("SaaS gate is orthogonal to owned-rows — owned connections still surface on SaaS (#2483)", async () => {
+      // Closes the gate × owned-rows matrix: confirms the SaaS gate only
+      // suppresses the `visible.size === 0` fallback branch and does not
+      // interfere with the org's own connections. Guards against an inverted-
+      // boolean regression (e.g. `if (visible.size === 0 || !isSaas)`) that
+      // would accidentally drop owned rows on SaaS.
+      mockConfigOverride = { deployMode: "saas" };
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT c.id FROM connections c WHERE c.org_id")) {
+          return Promise.resolve([{ id: "warehouse" }]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      const ids = body.connections.map((c: { id: string }) => c.id);
+      expect(ids).toEqual(["warehouse"]);
+    });
+
     it("suppresses 'default' once the org has its own connections", async () => {
       // SaaS path: dhamra owns __demo__ (or wizard-created), so the runtime-
       // registered `default` should not surface alongside it.

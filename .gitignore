@@ -3,6 +3,11 @@ node_modules/
 data/*.db
 .env
 .env.local
+.env*.local
+
+# Multi-env tracer state (local-dev only — scripts/seed-multi-env.ts).
+.atlas/
+
 next-env.d.ts
 tsconfig.tsbuildinfo
 .claude/*
@@ -28,6 +33,8 @@ packages/api/src/lib/db/migrations/meta/
 routeTree.gen.ts
 e2e/browser/storage-state.json
 e2e/browser/test-results/
+# Playwright dumps test-results/ at cwd when run from repo root.
+/test-results/
 .playwright-mcp/
 # k6 load-test artifacts — `loadtest.sh` writes one summary per run.
 # Pre-launch we keep the history out of git; once #2129 lands the

@@ -34,7 +34,16 @@ export default defineConfig({
         storageState: STORAGE_STATE,
       },
       dependencies: ["setup"],
-      testIgnore: /production\.spec\.ts/,
+      testIgnore: [/production\.spec\.ts/, /multi-env-tracer\.spec\.ts/],
+    },
+    // Multi-env tracer — does its own sign-in (incl. MFA via .atlas/mfa-secret)
+    // so it doesn't depend on the storage-state shared by `chromium`. Lets the
+    // tracer run standalone after `bun run db:multi-env:up` + `seed-multi-env`
+    // without requiring the web dev server to be up for global-setup to pass.
+    {
+      name: "multi-env",
+      use: { ...devices["Desktop Chrome"] },
+      testMatch: /multi-env-tracer\.spec\.ts/,
     },
     // Production smoke tests (no auth, uses absolute URLs from env vars)
     {

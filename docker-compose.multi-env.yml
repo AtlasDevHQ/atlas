@@ -1,0 +1,66 @@
+# Multi-env overlay — three Postgres instances simulating dev/staging/prod
+# environments for the 1.4.4 connection-groups e2e suite.
+#
+# Usage (alongside the base compose so the internal DB + sandbox stay up):
+#   docker compose -f docker-compose.yml -f docker-compose.multi-env.yml up -d
+#   bun run db:multi-env:seed
+#
+# Stop just the multi-env trio (keep internal DB + sandbox running):
+#   docker compose -f docker-compose.multi-env.yml down
+#
+# Each container mounts a tiny **divergent** seed (different row counts +
+# one extra column in prod) so a routing bug — e.g. the env picker silently
+# falls through to dev — surfaces as a row-count mismatch in tests rather
+# than as identical-success false greens.
+
+services:
+  pg-dev:
+    image: postgres:16-alpine
+    container_name: atlas-multi-env-dev
+    environment:
+      POSTGRES_DB: atlas_env
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: atlas
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./scripts/multi-env-seeds/dev.sql:/docker-entrypoint-initdb.d/00-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas -d atlas_env"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  pg-staging:
+    image: postgres:16-alpine
+    container_name: atlas-multi-env-staging
+    environment:
+      POSTGRES_DB: atlas_env
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: atlas
+    ports:
+      - "5434:5432"
+    volumes:
+      - ./scripts/multi-env-seeds/staging.sql:/docker-entrypoint-initdb.d/00-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas -d atlas_env"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  pg-prod:
+    image: postgres:16-alpine
+    container_name: atlas-multi-env-prod
+    environment:
+      POSTGRES_DB: atlas_env
+      POSTGRES_USER: atlas
+      POSTGRES_PASSWORD: atlas
+    ports:
+      - "5435:5432"
+    volumes:
+      - ./scripts/multi-env-seeds/prod.sql:/docker-entrypoint-initdb.d/00-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atlas -d atlas_env"]
+      interval: 3s
+      timeout: 3s
+      retries: 10

@@ -332,3 +332,21 @@ For `0.0.x` semver, `^0.0.2` pins EXACTLY to `0.0.2` — consumers won't get `0.
 ## Environment Variables
 
 See `.env.example` for the full list with defaults and descriptions. Key vars: `ATLAS_PROVIDER`, `ATLAS_MODEL`, `ATLAS_DATASOURCE_URL`, `DATABASE_URL`, `ATLAS_AUTH_MODE`, `BETTER_AUTH_SECRET`.
+
+## Agent skills
+
+### Workflow
+
+How Atlas commands (`/next`, `/tidy`, `/investigate`, `/kickoff`, `/closeout`, `/ci`, `/pr`) compose with the Matt Pocock engineering skills (`/diagnose`, `/tdd`, `/to-prd`, `/to-issues`, `/triage`, `/grill-with-docs`, `/improve-codebase-architecture`, `/zoom-out`, `/prototype`, `/handoff`). See `docs/agents/workflow.md`.
+
+### Issue tracker
+
+GitHub issues at `AtlasDevHQ/atlas` via the `gh` CLI (always with `-R AtlasDevHQ/atlas`). Every issue uses the Atlas body format (`## Key files / ## Acceptance criteria / ## Dependencies`) and carries labels on **two axes**: kind+location (`bug`/`feature`/… + `area: *`) AND triage state. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Canonical defaults (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). Skill creates them lazily on first triage run. State labels are orthogonal to kind/area — both apply. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context — one `CONTEXT.md` + `docs/adr/` at the repo root. Neither exists yet; `/grill-with-docs` and `/teach-impeccable` produce them lazily. See `docs/agents/domain.md`.

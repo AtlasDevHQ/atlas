@@ -2,6 +2,12 @@ Investigate something you've noticed — a bug, tech debt, rough edge, or idea �
 
 **Input:** $ARGUMENTS (describe what you noticed — e.g., "the explore tool doesn't handle symlinks", "sql validation lets UNION through", "we should add retry logic to sidecar calls")
 
+**Pick the right tool first:**
+- **One-issue-sized finding** (bug, tech debt, small feature, < half a day of work) — stay here, use `/investigate`
+- **Milestone-sized direction or architectural change** — stop and use `/to-prd` instead; it synthesises the conversation into a PRD issue that `/to-issues` can then break into vertical slices
+- **You have a plan but want it stress-tested first** — `/grill-me` (plain interview) or `/grill-with-docs` (interview + update CONTEXT.md / ADRs inline) before filing
+- See `docs/agents/workflow.md` for the full decision tree
+
 ---
 
 **Step 1: Research the issue**

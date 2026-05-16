@@ -228,6 +228,58 @@ export async function resolveGroupForConnection(
 }
 
 /**
+ * #2424 — verify a `connection_group_id` belongs to the caller's org (or
+ * `__global__`) BEFORE writing it onto a content row. The migrations for
+ * `conversations.connection_group_id` (0067) and `dashboard_cards.connection_group_id`
+ * (0066) intentionally don't carry FK constraints onto the org/group composite
+ * — comments at those sites say "org scope is enforced one layer up". This
+ * helper is that layer.
+ *
+ * Without this check, a stale agent, buggy plugin, or malicious admin could
+ * write a content row whose `connection_group_id` points at another org's
+ * group. Downstream reads filter by `group.org_id = caller.org_id` so the
+ * row reads as a silent `null`/`undefined` group binding (#2422 territory),
+ * but the cross-org pointer survives in the row.
+ *
+ * Returns:
+ *   - `"ok"` when the group exists in the caller's org or `__global__`.
+ *   - `"not_found"` when no such group exists (caller may 400-reject).
+ *   - `"no_db"` when the internal DB is unavailable — caller decides whether
+ *     to fail open (legacy single-tenant self-host without internal DB) or
+ *     closed.
+ *   - `"error"` when the query itself fails (logged; caller should fail
+ *     closed and surface a 500).
+ *
+ * Uses `IS NOT DISTINCT FROM` for the org comparison so a self-hosted caller
+ * passing `orgId = null` matches groups whose `org_id IS NULL` (vs the
+ * pre-#2415 `= NULL` collapse).
+ */
+export type GroupOwnershipResult = "ok" | "not_found" | "no_db" | "error";
+
+export async function verifyGroupBelongsToOrg(
+  connectionGroupId: string,
+  orgId?: string | null,
+): Promise<GroupOwnershipResult> {
+  if (!hasInternalDB()) return "no_db";
+  try {
+    const rows = await internalQuery<{ id: string }>(
+      `SELECT id FROM connection_groups
+        WHERE id = $1
+          AND (org_id IS NOT DISTINCT FROM $2 OR org_id = '__global__')
+        LIMIT 1`,
+      [connectionGroupId, orgId ?? null],
+    );
+    return rows.length > 0 ? "ok" : "not_found";
+  } catch (err) {
+    log.warn(
+      { err: errorMessage(err), connectionGroupId },
+      "verifyGroupBelongsToOrg failed",
+    );
+    return "error";
+  }
+}
+
+/**
  * Fire-and-forget: persist assistant text + tool results after the agent stream completes.
  * Iterates steps, builds a content array, and calls addMessage. Skips
  * persistence with an error log if no text or tool results are found.

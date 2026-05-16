@@ -143,6 +143,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   // connection_group_id = null. Tests exercising the routing path
   // override this mock locally.
   resolveGroupForConnection: mock(() => Promise.resolve(null)),
+  verifyGroupBelongsToOrg: mock(() => Promise.resolve("ok")),
   // Type exports (no runtime value — needed so mock.module doesn't break re-exports)
 }));
 

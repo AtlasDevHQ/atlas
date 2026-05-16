@@ -174,6 +174,12 @@ const mockGetSharedDashboard = mock((): Promise<unknown> =>
   Promise.resolve({ ok: false, reason: "not_found" }),
 );
 
+// #2424 — captured so individual tests can override with
+// `mockResolvedValueOnce("not_found")` to exercise the 400 reject path.
+const mockVerifyGroupBelongsToOrg = mock(
+  (): Promise<"ok" | "not_found" | "no_db" | "error"> => Promise.resolve("ok"),
+);
+
 // Re-import the real CardLayoutSchema + rowToCard so the mock is otherwise complete
 // per CLAUDE.md ("Mock all exports — partial mocks cause SyntaxError").
 const realDashboards = await import("@atlas/api/lib/dashboards");
@@ -237,6 +243,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   reserveConversationBudget: mock(() => Promise.resolve({ status: "ok" as const, totalStepsBefore: 0 })),
   settleConversationSteps: mock(() => {}),
   resolveGroupForConnection: mock(() => Promise.resolve(null)),
+  verifyGroupBelongsToOrg: mockVerifyGroupBelongsToOrg,
 }));
 
 mock.module("@atlas/api/lib/semantic", () => ({
@@ -591,6 +598,29 @@ describe("dashboard routes", () => {
         }),
       );
       expect(response.status).toBe(404);
+    });
+
+    it("returns 400 when connectionGroupId belongs to a different org (#2424)", async () => {
+      // The route looks up the dashboard's org, then verifies the supplied
+      // connection_group_id is owned by that org. A "not_found" verdict from
+      // verifyGroupBelongsToOrg means the group exists in some other tenant
+      // (or doesn't exist at all) — either way, persisting it would write
+      // a cross-org pointer onto the card.
+      mockVerifyGroupBelongsToOrg.mockResolvedValueOnce("not_found");
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "Test",
+            sql: "SELECT 1",
+            connectionGroupId: "g_other_org_group",
+          }),
+        }),
+      );
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).toBe("invalid_connection_group");
     });
   });
 

@@ -1,21 +1,31 @@
 import { test, expect, type Page, type Route } from "@playwright/test";
 
 /**
- * Browser e2e for the multi-environment semantic-layer admin surface
- * (#2340). Asserts the key user-visible promise of the multi-env work:
- * a 3-member group's entities collapse to one row in `/admin/semantic`
- * and carry an environment badge that names the group (not the
- * underlying connection).
+ * Browser **integration** test for the multi-environment semantic-layer
+ * admin surface (#2340). Renamed from `multi-env-admin.spec.ts` per
+ * #2420 — the previous name claimed e2e but every API call is stubbed
+ * via `page.route`, so the rendered UI is exercised against a
+ * deterministic in-test fixture. That's UI integration, not e2e.
  *
- * Mirrors the page-level route-mock pattern from
- * `admin-connection-groups.spec.ts` and `admin-cache.spec.ts` — the
- * mock state is built up-front and the test exercises the rendered UI
- * against a deterministic fixture, so this spec is self-contained and
- * needs no live server.
+ * What this file covers honestly:
+ *   - Admin Semantic page renders multi-member groups as one collapsed
+ *     row with an environment badge.
+ *   - Connection-groups page renders + handles archive cascade flow.
+ *   - Chat env picker stamps `connectionId` / `connectionGroupId` into
+ *     the request body (verifies the picker → body wiring, NOT the
+ *     server's downstream routing — that lives in api-layer tests).
  *
- * Tagged `@llm` to match the milestone segmentation convention even
- * though no model call is made; CI tier selectors that key on `@llm`
- * still pick this up alongside the other admin-flow e2es.
+ * What this file does NOT cover (follow-up issue captures the gap):
+ *   - PII (#2341) group-scoping at the route level.
+ *   - Approvals (#2344) group-scoping at the route level.
+ *   - Scheduled tasks (#2343) group-scoping at the route level.
+ *   - Real end-to-end: HTTP → Hono → Postgres → assert SQL ran against
+ *     the eu connection vs apac connection.
+ *
+ * The `@llm` Playwright tag was removed from this file's tests — they
+ * make no model calls, and CI tier selection mis-routed them into the
+ * LLM shard. Per Atlas convention, `@llm` is reserved for specs that
+ * exercise the agent loop end-to-end.
  */
 
 interface MockEntity {
@@ -127,7 +137,7 @@ async function installMocks(page: Page, entities: MockEntity[]): Promise<void> {
 }
 
 test.describe("admin semantic — multi-environment", () => {
-  test("@llm multi-member group collapses to one row with environment badge", async ({ page }) => {
+  test("multi-member group collapses to one row with environment badge", async ({ page }) => {
     const fixture = buildFixture();
     await installMocks(page, fixture);
 
@@ -154,7 +164,7 @@ test.describe("admin semantic — multi-environment", () => {
     await expect(kpiRow.getByTestId("entity-env-badge")).toHaveCount(0);
   });
 
-  test("@llm draft accent and environment badge coexist", async ({ page }) => {
+  test("draft accent and environment badge coexist", async ({ page }) => {
     const fixture = buildFixture();
     await installMocks(page, fixture);
 
@@ -307,7 +317,7 @@ async function pageFetch<T>(page: Page, url: string, init?: PageFetchInit): Prom
 }
 
 test.describe("dashboards — group-scoped card retarget (#2342)", () => {
-  test("@llm three-member group: card retargets when primary moves, no card edit", async ({ page }) => {
+  test("three-member group: card retargets when primary moves, no card edit", async ({ page }) => {
     // Initial: us-int is the primary. Resolver returns us-int.
     const state: DashboardMockState = {
       group: {
@@ -372,7 +382,7 @@ test.describe("dashboards — group-scoped card retarget (#2342)", () => {
     expect(fallback.groups[0]?.resolvedConnectionId).toBe("us-int");
   });
 
-  test("@llm empty group surfaces an admin-actionable hint", async ({ page }) => {
+  test("empty group surfaces an admin-actionable hint", async ({ page }) => {
     // Group exists but has zero members — the resolver would throw
     // NoGroupMembersError on the server. The card-create dialog
     // surfaces this client-side via the `memberCount === 0` branch so
@@ -504,7 +514,7 @@ async function installChatEnvMocks(
 }
 
 test.describe("chat env/member picker (#2345)", () => {
-  test("@llm three-member group surfaces three options under one 'prod' label", async ({ page }) => {
+  test("three-member group surfaces three options under one 'prod' label", async ({ page }) => {
     const captured = { lastChatBody: null as Record<string, unknown> | null };
     await installChatEnvMocks(page, buildChatEnvFixture(), captured);
 
@@ -525,7 +535,7 @@ test.describe("chat env/member picker (#2345)", () => {
     await expect(page.getByTestId("chat-env-picker-member-staging-us")).toBeVisible();
   });
 
-  test("@llm per-turn override stamps connectionId into the chat request body", async ({ page }) => {
+  test("per-turn override stamps connectionId into the chat request body", async ({ page }) => {
     const captured = { lastChatBody: null as Record<string, unknown> | null };
     await installChatEnvMocks(page, buildChatEnvFixture(), captured);
 
@@ -574,7 +584,7 @@ test.describe("chat env/member picker (#2345)", () => {
 // wiring end-to-end and the audit / response contract.
 
 test.describe("archive group cascade (real integration — #2413)", () => {
-  test("@llm POST /:id/archive cascades real content end-to-end", async ({ page }) => {
+  test("POST /:id/archive cascades real content end-to-end", async ({ page }) => {
     // Per-run uniques so concurrent shards / re-runs don't collide on
     // unique indexes (group name, entity name).
     const tag = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;

@@ -603,6 +603,7 @@ export function createApiTestMocks(
     // conversations with `connection_group_id = NULL`. Tests that
     // exercise the routing override this mock locally via mock.module.
     resolveGroupForConnection: mock(() => Promise.resolve(null)),
+  verifyGroupBelongsToOrg: mock(() => Promise.resolve("ok")),
   }));
 
   // ── Security ──────────────────────────────────────────────────

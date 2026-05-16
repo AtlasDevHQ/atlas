@@ -12,6 +12,7 @@ import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { z } from "zod";
 import { createLogger, hashShareToken } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { verifyGroupBelongsToOrg } from "@atlas/api/lib/conversations";
 import {
   createDashboard,
   getDashboard,
@@ -765,6 +766,26 @@ authed.openapi(
       }
 
       const parsed = c.req.valid("json");
+      // #2424 — same gate as chat.ts: verify the supplied connectionGroupId
+      // is owned by the caller's org before persisting it onto the card.
+      // Migration 0066's comment explicitly defers org enforcement here.
+      if (parsed.connectionGroupId) {
+        const verdict = yield* Effect.promise(() =>
+          verifyGroupBelongsToOrg(parsed.connectionGroupId!, orgId),
+        );
+        if (verdict === "not_found") {
+          return c.json(
+            { error: "invalid_connection_group", message: "The requested environment is not available in this workspace.", requestId },
+            400,
+          );
+        }
+        if (verdict === "error") {
+          return c.json(
+            { error: "internal_error", message: "Could not verify environment ownership. Please retry.", requestId },
+            500,
+          );
+        }
+      }
       const result = yield* Effect.promise(() => addCard({
         dashboardId: id,
         title: parsed.title,

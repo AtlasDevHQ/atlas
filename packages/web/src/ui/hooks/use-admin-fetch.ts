@@ -59,11 +59,11 @@ export function useAdminFetch<T>(
   // Manual error override — exposed via setError for backward compatibility.
   const [errorOverride, setErrorOverride] = useState<FetchError | null>(null);
 
-  // Short-circuit when path is empty/falsy. Callers often pass a conditional
-  // path (`id ? `/api/.../${id}` : ""`) for a detail-dialog query that's only
-  // valid once an id is picked. Without this guard the empty path resolves to
-  // the bare API origin (`https://api.useatlas.dev/`), which has no CORS
-  // headers and produces a console error per render. #2502.
+  // Short-circuit when path is empty/falsy. Without this guard, an empty path
+  // would resolve to `fetch(\`${apiUrl}\`)` — the bare API origin — which has
+  // no CORS headers and logs a console error per render. The pattern that
+  // triggers it: a conditional path expression like `id ? "/api/.../" + id : ""`
+  // for a detail dialog that's only valid once an id is picked. #2502.
   const enabledOption = (opts?.enabled ?? true) && !!path;
 
   const query = useQuery<T, FetchError>({

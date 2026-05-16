@@ -628,10 +628,9 @@ describe("useAdminFetch", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  // #2502 — `/platform` page issued two CORS-blocked fetches to the bare API
-  // origin per load because a detail-dialog `useAdminFetch` passed an empty
-  // path when `detailId` was null. The hook now short-circuits on falsy path
-  // so this whole class of "conditional-empty-path" bugs can't escape.
+  // #2502 — empty path used to resolve to the bare API origin and emit a
+  // CORS error per render. The hook now short-circuits on falsy path so any
+  // "conditional-empty-path" caller pattern (`id ? "/api/..." : ""`) is safe.
   test("empty path short-circuits the request (no fetch, loading=false)", async () => {
     const fetchMock = mock(() =>
       Promise.resolve(new Response(JSON.stringify({ value: 42 }), { status: 200 })),

@@ -13,6 +13,7 @@ import { describe, it, expect } from "bun:test";
 import {
   stripGroupPrefix,
   isAutoBackfilledSingleton,
+  isEmptyBackfillOrphan,
 } from "@/ui/lib/strip-group-prefix";
 
 describe("stripGroupPrefix", () => {
@@ -88,6 +89,65 @@ describe("isAutoBackfilledSingleton", () => {
       isAutoBackfilledSingleton({
         id: "g_warehouse",
         name: "warehouse",
+        memberCount: 0,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("isEmptyBackfillOrphan", () => {
+  it("returns true for the exact #2506 ghost shape (g_<connId>, name=connId, 0 members)", () => {
+    // This is the prod orphan that pollutes the env combobox: the
+    // `us-prod` connection has been merged into the `prod` group, but
+    // its source backfill row survived as a 0-member group whose label
+    // still collides with the live connection id.
+    expect(
+      isEmptyBackfillOrphan({
+        id: "g_us-prod",
+        name: "us-prod",
+        memberCount: 0,
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false when membership is non-zero (live or singleton)", () => {
+    expect(
+      isEmptyBackfillOrphan({ id: "g_us-prod", name: "us-prod", memberCount: 1 }),
+    ).toBe(false);
+    expect(
+      isEmptyBackfillOrphan({ id: "g_us-prod", name: "us-prod", memberCount: 3 }),
+    ).toBe(false);
+  });
+
+  it("returns false for a user-created `g_<random>` group whose admin emptied it", () => {
+    // A user-created group that's been emptied (every member moved out)
+    // still has a meaningful name the admin assigned — preserve so the
+    // wizard can rehydrate it. Disambiguation is the same `name == id
+    // suffix` rule that gates `isAutoBackfilledSingleton`.
+    expect(
+      isEmptyBackfillOrphan({
+        id: "g_abc123def",
+        name: "Production",
+        memberCount: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false for an admin-renamed singleton emptied to zero members", () => {
+    expect(
+      isEmptyBackfillOrphan({
+        id: "g_warehouse",
+        name: "Warehouse",
+        memberCount: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false for groups whose id does not match the g_ backfill prefix", () => {
+    expect(
+      isEmptyBackfillOrphan({
+        id: "prod",
+        name: "prod",
         memberCount: 0,
       }),
     ).toBe(false);

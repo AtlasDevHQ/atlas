@@ -7,6 +7,8 @@
  * api/routes/").
  */
 
+import { internalQuery } from "@atlas/api/lib/db/internal";
+
 /**
  * Validation regex matching the existing connection-id rule. Reused so a
  * group renamed to a value that would later collide with a connection id
@@ -51,6 +53,62 @@ export function generateGroupId(): string {
  * silently degrades to a generic 500. Depth-bounded at 5 to defend
  * against pathological cycles.
  */
+/**
+ * True iff `name` would collide with an existing connection id in this org.
+ * Centralised so every group-name entry surface refuses the same shape:
+ *   - POST   /admin/connection-groups
+ *   - PATCH  /admin/connection-groups/:id
+ *   - POST   /admin/connection-groups/merge (only when the target name is
+ *            new — reuse of an existing group by name is the documented
+ *            wizard ergonomic and must not surface a collision error)
+ *   - POST   /admin/connections             (inline `newGroupName`)
+ *   - PUT    /admin/connections/:id         (inline `newGroupName`)
+ *
+ * Rationale (#2506): the 0062 1:1 backfill creates groups shaped
+ * `id = 'g_' || conn.id`, `name = conn.id`. When such a group is folded
+ * into a multi-region env via the merge wizard and the cleanup CTE later
+ * leaves the source group behind as a zero-member orphan (the two paths
+ * documented in migration 0072), the env combobox surfaces a ghost
+ * environment labelled identically to a real connection id. A
+ * user-initiated create that lands the same literal collision would
+ * re-introduce the same confusion at no benefit — the schema-vs-display
+ * vocabulary divide ("connection group" ↔ "environment") means an admin
+ * is not consciously typing a connection id into the env name field;
+ * matches are typo-grade.
+ *
+ * Scope is intentionally narrow:
+ *   - Only refuses LITERAL equality with an existing connection id.
+ *     A group named "Production" with members `us-prod` / `eu-prod` is
+ *     fine — the name does not match any connection id.
+ *   - Org-scoped via `connections.org_id`. The composite-PK shape
+ *     `(id, org_id)` means a SaaS tenant can share an id like `default`
+ *     with another tenant; this check only sees the caller's own
+ *     connections.
+ *   - Does NOT touch existing rows. Pre-fix groups that already collide
+ *     (i.e. the orphan this guard exists to prevent) are cleaned up by
+ *     migration 0072. Retroactively renaming or refusing them would
+ *     break legitimate single-region setups where the admin has
+ *     deliberately given a connection-named group a meaningful display
+ *     label.
+ *
+ * Returns true when a collision exists. Callers map true → 409 with a
+ * friendly message; false → continue.
+ */
+export async function connectionNameCollidesWithGroup(
+  orgId: string,
+  name: string,
+): Promise<boolean> {
+  const rows = await internalQuery<{ id: string }>(
+    `SELECT id FROM connections
+      WHERE org_id = $1
+        AND id = $2
+        AND status != 'archived'
+      LIMIT 1`,
+    [orgId, name],
+  );
+  return rows.length > 0;
+}
+
 export function pgErrorMeta(err: unknown): { code?: string; constraint?: string } {
   let cursor: unknown = err;
   for (let depth = 0; depth < 5 && cursor instanceof Error; depth++) {

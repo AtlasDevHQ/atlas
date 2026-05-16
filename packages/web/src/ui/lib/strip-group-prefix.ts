@@ -47,3 +47,36 @@ export function isAutoBackfilledSingleton(group: {
   if (!group.id.startsWith("g_")) return false;
   return group.name === group.id.slice(2);
 }
+
+/**
+ * True when a group is the empty residue of a merged-out backfill
+ * singleton (#2506): id matches the `g_<connId>` backfill shape, name
+ * still equals the bare connection id, and the group has zero
+ * non-archived members. Two paths produce this shape in the wild:
+ *
+ *   1. A merge wizard run pre-#2437 whose cleanup CTE couldn't see the
+ *      sibling `moved` UPDATE (shared snapshot) and skipped the DELETE.
+ *   2. A merge whose cleanup CTE fired a `NOT EXISTS` guard against
+ *      one of the seven content reference tables — the reference has
+ *      since been cleared but the now-empty source group was never
+ *      re-swept.
+ *
+ * Migration 0072 sweeps existing rows; this helper hides any orphan that
+ * survives until then from the env combobox (Add / Edit Connection
+ * dialog) so the admin cannot accidentally re-anchor a new connection
+ * to a ghost group whose label collides with a real connection id.
+ *
+ * Distinct from `isAutoBackfilledSingleton` (member-count 1) so the
+ * Environments tab's "auto-detected singletons" toggle keeps its
+ * literal meaning — empty orphans surface in the curated list with the
+ * "No connections yet" affordance the admin can act on.
+ */
+export function isEmptyBackfillOrphan(group: {
+  id: string;
+  name: string;
+  memberCount: number;
+}): boolean {
+  if (group.memberCount !== 0) return false;
+  if (!group.id.startsWith("g_")) return false;
+  return group.name === group.id.slice(2);
+}

@@ -23,6 +23,7 @@ import { checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
 import {
   GROUP_NAME_PATTERN,
   UNIQUE_NAME_CONSTRAINT,
+  connectionNameCollidesWithGroup,
   generateGroupId,
   pgErrorMeta,
 } from "@atlas/api/lib/db/connection-groups-helpers";
@@ -735,6 +736,26 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
     trimmedNewGroupName = newGroupName.trim();
   }
 
+  // Name-collision guard (#2506) on the inline-create path. Refuses a
+  // newGroupName that matches an existing connection id in this org.
+  // Skipped when `id === trimmedNewGroupName` because the connection
+  // doesn't exist yet — we're still creating it — and would otherwise
+  // double-count the in-flight create as its own collision.
+  if (
+    trimmedNewGroupName !== null &&
+    trimmedNewGroupName !== id &&
+    (await connectionNameCollidesWithGroup(orgId, trimmedNewGroupName))
+  ) {
+    return c.json(
+      {
+        error: "conflict",
+        message: `A connection named "${trimmedNewGroupName}" already exists in this workspace. Choose a different environment name.`,
+        requestId,
+      },
+      409,
+    );
+  }
+
   // Pre-validate cross-org so a foreign-org id surfaces as 404 here
   // rather than a 23503 FK violation inside the CTE. Mirrors the
   // merge-route source-row pre-validation in admin-connection-groups.ts.
@@ -1012,6 +1033,27 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
     }
     trimmedNewGroupName = newGroupName.trim();
   }
+
+  // Name-collision guard (#2506). On update, `id` is the existing
+  // connection being edited — a self-named group ("Production") for
+  // a same-named connection ("Production") is still a collision the
+  // env combobox would surface confusingly, so we don't carve out a
+  // self-match here (in contrast to POST, where the connection
+  // doesn't exist yet).
+  if (
+    trimmedNewGroupName !== null &&
+    (await connectionNameCollidesWithGroup(orgId, trimmedNewGroupName))
+  ) {
+    return c.json(
+      {
+        error: "conflict",
+        message: `A connection named "${trimmedNewGroupName}" already exists in this workspace. Choose a different environment name.`,
+        requestId,
+      },
+      409,
+    );
+  }
+
   if (typeof connectionGroupId === "string") {
     const groupRows = await internalQuery<{ id: string; status: string }>(
       `SELECT id, status FROM connection_groups WHERE id = $1 AND org_id = $2`,

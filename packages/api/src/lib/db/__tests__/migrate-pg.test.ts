@@ -726,6 +726,113 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows[0].target.primaryConnectionId).toBe(conn1);
   }, PG_TEST_TIMEOUT_MS);
 
+  // 0072 — empty-backfill-orphan sweep (#2506).
+  //
+  // The migration deletes connection_groups whose id/name match the
+  // 0062 backfill shape AND have zero non-archived references across
+  // the seven content tables. Validated end-to-end here because the
+  // mock-pool tests cannot exercise the seven `NOT EXISTS` subqueries
+  // against real schemas.
+  it("0072: sweeps empty backfill orphans but preserves curated and live groups (#2506)", async () => {
+    const orgId = `org-0072-sweep-${Date.now()}`;
+
+    // Seed five canary groups covering every branch the migration must
+    // discriminate. Each row is constructed against the row state the
+    // production migration meets.
+    //
+    //   orphan       — id=g_us-prod, name=us-prod, 0 members, no refs.
+    //                  Migration MUST delete.
+    //   live         — id=g_warehouse, name=warehouse, 1 member.
+    //                  Migration MUST preserve (member exists).
+    //   renamed      — id=g_billing, name='Billing', 0 members.
+    //                  Migration MUST preserve (name diverged from id).
+    //   user         — id=g_abc123def4, name='Production', 0 members.
+    //                  Migration MUST preserve (user-shaped id, custom
+    //                  name).
+    //   ref-task     — id=g_legacy-task, name=legacy-task, 0 members,
+    //                  carries an enabled scheduled_tasks reference.
+    //                  Migration MUST preserve (live content reference).
+    //
+    // All five share the same orgId so the predicate is exercised
+    // against a heterogeneous candidate set rather than five
+    // independent runs.
+    const liveConn = `conn-live-0072-${Date.now()}`;
+
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES
+         ('g_us-prod', $1, 'us-prod'),
+         ('g_warehouse', $1, 'warehouse'),
+         ('g_billing', $1, 'Billing'),
+         ('g_abc123def4', $1, 'Production'),
+         ('g_legacy-task', $1, 'legacy-task')`,
+      [orgId],
+    );
+    await pool.query(
+      `INSERT INTO connections (id, url, type, org_id, status, group_id) VALUES
+         ($1, 'postgresql://stub', 'postgres', $2, 'published', 'g_warehouse')`,
+      [liveConn, orgId],
+    );
+    await pool.query(
+      `INSERT INTO scheduled_tasks (owner_id, name, question, cron_expression, connection_id, connection_group_id, org_id)
+       VALUES ('admin-1', 'legacy task', 'select 1', '0 0 * * *', $1, 'g_legacy-task', $2)`,
+      [liveConn, orgId],
+    );
+
+    // Apply the migration body. The smoke runs the full migration set
+    // up front (see "runs every migration end-to-end" above), so this
+    // test re-runs the predicate via the same SQL text the migration
+    // file ships — keeping the test idempotent under repeated runs in
+    // the same schema and verifying the SQL is still the load-bearing
+    // predicate post-deploy.
+    // node-pg accepts comments inline — the migration is one DELETE
+    // statement so a verbatim pool.query() against the file body is the
+    // tightest pin between test and migration.
+    const migrationStatement = readFileSync(
+      join(import.meta.dir, "..", "migrations", "0072_cleanup_empty_synthetic_groups.sql"),
+      "utf8",
+    );
+    await pool.query(migrationStatement);
+
+    const survivors = await pool.query<{ id: string }>(
+      `SELECT id FROM connection_groups WHERE org_id = $1 ORDER BY id`,
+      [orgId],
+    );
+    const survivingIds = survivors.rows.map((r) => r.id);
+
+    expect(survivingIds).toEqual([
+      "g_abc123def4",
+      "g_billing",
+      "g_legacy-task",
+      "g_warehouse",
+    ]);
+    // g_us-prod is gone — that's the whole point.
+    expect(survivingIds).not.toContain("g_us-prod");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0072: is idempotent — re-running after the sweep is a no-op", async () => {
+    const orgId = `org-0072-idemp-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ('g_ghost-${Date.now()}', $1, 'ghost-${Date.now()}')`,
+      [orgId],
+    );
+
+    const migrationStatement = readFileSync(
+      join(import.meta.dir, "..", "migrations", "0072_cleanup_empty_synthetic_groups.sql"),
+      "utf8",
+    );
+
+    // First pass — should delete the ghost row we just inserted.
+    const first = await pool.query(migrationStatement);
+    expect(first.rowCount ?? 0).toBeGreaterThanOrEqual(1);
+
+    // Second pass against the now-cleaned set returns zero rows. The
+    // production migration is run once but the test runs the body
+    // twice; idempotency is the contract that lets a re-run during a
+    // partial-deploy retry land safely.
+    const second = await pool.query(migrationStatement);
+    expect(second.rowCount ?? 0).toBe(0);
+  }, PG_TEST_TIMEOUT_MS);
+
   // 0063 — semantic_entities.connection_group_id. Adds the group-scoped
   // natural key the multi-environment semantic layer (#2336 / #2340) lives
   // on. The three partial unique indexes from 0028 are dropped and recreated

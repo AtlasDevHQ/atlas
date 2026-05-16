@@ -38,8 +38,9 @@ import { onVerificationCreated } from "@atlas/api/lib/auth/trusted-device-hook";
 import { isEnterpriseEnabled } from "@atlas/ee/index";
 import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from "@atlas/api/lib/auth/org-permissions";
 import { adminAccessControl, adminRole as adminUserRole, platformAdminRole } from "@atlas/api/lib/auth/admin-permissions";
-import { getStripePlans, resolvePlanTierFromPriceId } from "@atlas/api/lib/billing/plans";
+import { getStripePlans, resolvePlanTierFromPriceId, TRIAL_DAYS } from "@atlas/api/lib/billing/plans";
 import { invalidatePlanCache, checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
+import { getConfig } from "@atlas/api/lib/config";
 
 /**
  * Build the socialProviders config from environment variables.
@@ -152,6 +153,75 @@ export async function promoteOrgOwnerToAdmin(args: {
     log.error(
       { err: errorMessage(err), userId: user.id, orgId: org.id },
       "Failed to promote org owner to admin — Better Auth admin APIs will return 403",
+    );
+  }
+}
+
+/**
+ * Flip a newly-created SaaS workspace from the DB default `plan_tier='free'`
+ * onto `'trial'` with `trial_ends_at = NOW() + TRIAL_DAYS`. Self-hosted
+ * orgs stay on `'free'` — the deploy-mode guard is the only thing
+ * separating "Atlas as the free self-hosted product" from "Atlas as the
+ * hosted SaaS trial". Without this hook, every SaaS workspace lands on
+ * the free-tier definition and `/admin/model-config` renders the literal
+ * `"user-configured"` sentinel from `plans.ts`.
+ *
+ * Wired alongside {@link promoteOrgOwnerToAdmin} into
+ * `organizationHooks.afterCreateOrganization` in {@link buildPlugins}.
+ * Better Auth runs hooks sequentially via the composed `async` wrapper —
+ * each hook catches its own errors so a failure in either doesn't poison
+ * org creation.
+ *
+ * Idempotent: SELECT-then-UPDATE pattern with a guard that re-asserts
+ * `plan_tier = 'free'` in the WHERE clause. Re-invocations on an already-
+ * promoted org are a no-op. A platform-admin override that pre-seeded the
+ * org with a non-default tier is also preserved.
+ *
+ * Exported for direct unit testing — the org plugin closes over its
+ * options, so the only way to assert this hook's contract from outside
+ * the plugin is to test the function in isolation.
+ *
+ * @internal
+ */
+export async function assignSaasTrial(args: {
+  user: { id: string };
+  organization: { id: string };
+}): Promise<void> {
+  const { user, organization: org } = args;
+  try {
+    if (!hasInternalDB()) return;
+    if (getConfig()?.deployMode !== "saas") return;
+
+    // Re-check current tier before writing. A pre-seeded non-default tier
+    // (test fixtures, platform-admin provisioning) wins — we don't clobber
+    // it back to 'trial'. The WHERE clause on the UPDATE is belt-and-
+    // suspenders so a TOCTOU race between SELECT and UPDATE can't downgrade
+    // a paid org.
+    const existing = await internalQuery<{ plan_tier: PlanTier }>(
+      `SELECT plan_tier FROM organization WHERE id = $1 LIMIT 1`,
+      [org.id],
+    );
+    if (existing[0]?.plan_tier !== "free") return;
+
+    const trialEndsAt = new Date(Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
+    await internalQuery(
+      `UPDATE organization SET plan_tier = 'trial', trial_ends_at = $1
+       WHERE id = $2 AND plan_tier = 'free'`,
+      [trialEndsAt.toISOString(), org.id],
+    );
+    log.info(
+      { userId: user.id, orgId: org.id, trialEndsAt: trialEndsAt.toISOString() },
+      "Assigned SaaS trial to new workspace",
+    );
+  } catch (err) {
+    // log.error parallels promoteOrgOwnerToAdmin — sustained failures
+    // indicate a regression in the hook contract (Better Auth option
+    // rename, DB connectivity loss, etc.). Org creation continues; the
+    // workspace just stays on plan_tier='free' until the next signup
+    // hook fires or an operator runs the backfill manually.
+    log.error(
+      { err: errorMessage(err), userId: user.id, orgId: org.id },
+      "Failed to assign SaaS trial — workspace stays on plan_tier='free'",
     );
   }
 }
@@ -888,7 +958,14 @@ export function buildPlugins() {
         // because the org plugin inserts the initial owner-member through
         // its own internal context, which bypasses user-defined
         // `databaseHooks` — the previous wiring fired zero times in prod.
-        afterCreateOrganization: promoteOrgOwnerToAdmin,
+        //
+        // Better Auth accepts a single function. Both hooks catch their
+        // own errors so sequencing them is safe — neither will throw
+        // back into org creation.
+        afterCreateOrganization: async (args) => {
+          await promoteOrgOwnerToAdmin(args);
+          await assignSaasTrial(args);
+        },
       },
       async sendInvitationEmail(data) {
         log.warn(

@@ -22,6 +22,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { getConfig } from "@atlas/api/lib/config";
 import type { HealthStatus } from "@atlas/api/lib/connection-types";
 
 export type { HealthStatus } from "@atlas/api/lib/connection-types";
@@ -1357,8 +1358,14 @@ export function getDB(): DBConnection {
  * Check whether a connection is visible to an org in the given atlas mode.
  *
  * Visibility rules:
- * - `"default"` — config-managed, not stored in the connections table;
- *   always visible regardless of mode.
+ * - `"default"` — config-managed, not stored in the connections table.
+ *   Self-hosted: always visible (it IS the operator's connection). SaaS:
+ *   never visible to an org session — the runtime-registered `default`
+ *   sources from the shared `ATLAS_DATASOURCE_URL` demo service, not a
+ *   per-org connection. Surfacing it to a workspace would let the agent
+ *   silently hit the demo with the `connectionId ?? "default"` fallback
+ *   in `runUserQueryPipeline` and return demo data labeled as the user's
+ *   (#2505 — paired with the agent-prompt filter in `agent.ts`).
  * - Published mode — only `status = 'published'` rows are visible.
  * - Developer mode — `status IN ('published', 'draft')` rows are visible;
  *   drafts appear alongside published connections.
@@ -1375,7 +1382,9 @@ export async function isConnectionVisibleInMode(
   connectionId: string,
   mode: AtlasMode,
 ): Promise<boolean> {
-  if (connectionId === "default") return true;
+  if (connectionId === "default") {
+    return getConfig()?.deployMode !== "saas";
+  }
   if (!hasInternalDB()) return true;
 
   const statusClause = mode === "developer"

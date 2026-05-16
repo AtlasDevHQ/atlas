@@ -4,6 +4,8 @@ Reconcile recent work (commits, PRs) against GitHub issues and ROADMAP. Fix drif
 
 **Run after a burst of work** — merging PRs, shipping features, fixing bugs — to keep tracking in sync.
 
+**Companion command:** `/triage` (Matt Pocock skill) processes **inbound** issues through a state machine (`needs-triage` → `needs-info` → `ready-for-agent` / `ready-for-human` / `wontfix`). `/tidy` reconciles **already-tracked** work. When Atlas opens to community contributions, run `/triage` first (move new issues through the funnel), then `/tidy` (reconcile shipped work against ROADMAP). Today, where almost every issue is self-filed by the maintainer with a clear next step, `/triage` is rarely needed — but the state labels are reserved and will be created lazily on first use. See `docs/agents/workflow.md`.
+
 ---
 
 **Step 1: Gather current state**

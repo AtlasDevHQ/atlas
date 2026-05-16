@@ -628,6 +628,71 @@ describe("useAdminFetch", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  // #2502 — empty path used to resolve to the bare API origin and emit a
+  // CORS error per render. The hook now short-circuits on falsy path so any
+  // "conditional-empty-path" caller pattern (`id ? "/api/..." : ""`) is safe.
+  test("empty path short-circuits the request (no fetch, loading=false)", async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ value: 42 }), { status: 200 })),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { result } = renderHook(
+      () => useAdminFetch<{ value: number }>(""),
+      { wrapper },
+    );
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(result.current.data).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // Pins the AND semantics (`enabled && !!path`) against a future refactor
+  // to `?? !!path` (which would let an explicit `enabled: true` override the
+  // path check and let the empty-path bug back in). The "short-circuits"
+  // test above happens to cover this via the default-true case, but only
+  // implicitly — this one asserts it explicitly.
+  test("explicit enabled: true with empty path still short-circuits", async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ value: 42 }), { status: 200 })),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { result } = renderHook(
+      () => useAdminFetch<{ value: number }>("", { enabled: true }),
+      { wrapper },
+    );
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test("empty path flips to a real path to fire the request", async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ value: 7 }), { status: 200 })),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { result, rerender } = renderHook(
+      ({ path }: { path: string }) => useAdminFetch<{ value: number }>(path),
+      { wrapper, initialProps: { path: "" } },
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.current.loading).toBe(false);
+
+    rerender({ path: "/api/test" });
+
+    await waitFor(() => {
+      expect(result.current.data).toEqual({ value: 7 });
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   test("enabled flips from false to true to fire the request", async () => {
     const fetchMock = mock(() =>
       Promise.resolve(new Response(JSON.stringify({ value: 7 }), { status: 200 })),

@@ -158,7 +158,7 @@ function SLAPageContent() {
   const [detailId, setDetailId] = useState<string | null>(null);
   const { data: detailData, loading: detailLoading, error: detailError } = useAdminFetch(
     detailId ? `/api/v1/platform/sla/${detailId}` : "",
-    { schema: WorkspaceSLADetailSchema, deps: [detailId] },
+    { schema: WorkspaceSLADetailSchema, deps: [detailId], enabled: !!detailId },
   );
 
   // Threshold edit dialog

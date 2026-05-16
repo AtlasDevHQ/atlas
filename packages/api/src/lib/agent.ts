@@ -152,6 +152,21 @@ function dialectName(dbType: DBType): string {
   return DIALECT_DISPLAY_NAMES[dbType] ?? dbType.charAt(0).toUpperCase() + dbType.slice(1);
 }
 
+/**
+ * Filter the connection registry to the set the agent should see in its tool
+ * context. On SaaS the runtime-registered `default` connection sources from
+ * the shared `ATLAS_DATASOURCE_URL` demo service (NovaMart), not a per-org
+ * connection — surfacing it to the agent let it run the workspace's first
+ * query against the demo and label demo data as the user's (#2505). #2483
+ * gated the admin VIEW; this is the agent-context half. Self-hosted single-
+ * tenant deployments keep `default` because it IS their operator connection.
+ */
+function filterAgentVisibleSources(sources: ConnectionMetadata[]): ConnectionMetadata[] {
+  const isSaas = getConfig()?.deployMode === "saas";
+  if (!isSaas) return sources;
+  return sources.filter((s) => s.id !== "default");
+}
+
 function buildMultiSourceSection(
   sources: ConnectionMetadata[],
 ): string {
@@ -246,7 +261,7 @@ function buildSystemPrompt(registry: ToolRegistry, orgSemanticIndex?: string, le
   if (fragments.length > 0) {
     base += "\n\n" + fragments.join("\n\n");
   }
-  const meta = connections.describe();
+  const meta = filterAgentVisibleSources(connections.describe());
 
   // Single-connection: identical to pre-v0.7 behavior
   if (meta.length <= 1) {

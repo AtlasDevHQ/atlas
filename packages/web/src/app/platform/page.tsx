@@ -196,7 +196,7 @@ function PlatformPageContent() {
   const [detailId, setDetailId] = useState<string | null>(null);
   const { data: detailData, loading: detailLoading, error: detailError } = useAdminFetch(
     detailId ? `/api/v1/platform/workspaces/${detailId}` : "",
-    { schema: PlatformWorkspaceDetailResponseSchema, deps: [detailId] },
+    { schema: PlatformWorkspaceDetailResponseSchema, deps: [detailId], enabled: !!detailId },
   );
 
   // Confirmation dialog

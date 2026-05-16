@@ -28,7 +28,6 @@ export interface OverviewData {
    */
   queriesLast24h: number | null;
   workspace: WorkspaceBlock | null;
-  poolWarnings: string[];
 }
 
 export const FALLBACK_OVERVIEW: OverviewData = {
@@ -37,7 +36,6 @@ export const FALLBACK_OVERVIEW: OverviewData = {
   plugins: 0,
   queriesLast24h: null,
   workspace: null,
-  poolWarnings: [],
 };
 
 export function parseOverview(json: Record<string, unknown>): OverviewData {
@@ -60,8 +58,5 @@ export function parseOverview(json: Record<string, unknown>): OverviewData {
           region: typeof ws.region === "string" ? ws.region : null,
         }
       : null,
-    poolWarnings: Array.isArray(json.poolWarnings)
-      ? (json.poolWarnings as string[])
-      : [],
   };
 }

@@ -421,19 +421,22 @@ describe("GET /api/v1/platform/overview — deployment scaffold (#2489)", () => 
     mockLogWarn.mockClear();
   });
 
-  it("returns plugin count, plugin health, and pool warnings", async () => {
+  it("returns a response matching PlatformOverviewSchema", async () => {
+    // Pin the contract end-to-end through the canonical schema —
+    // without this, a route rename of `pluginHealth` (or a type drift
+    // on `plugins`) would slip through the test that only spot-checks
+    // a handful of fields.
+    const { PlatformOverviewSchema } = await import("@useatlas/schemas");
     const res = await app.fetch(platformRequest("GET", "/api/v1/platform/overview"));
     expect(res.status).toBe(200);
 
-    const body = (await res.json()) as Record<string, unknown>;
-    // `plugins` count comes from the registry mock (default registry is
-    // empty). Asserting numeric type rather than 0 keeps the test robust
-    // to test-mock fixtures that register a sample plugin later.
-    expect(typeof body.plugins).toBe("number");
-    expect(Array.isArray(body.pluginHealth)).toBe(true);
-    expect(typeof body.entities).toBe("number");
-    // requestId is threaded through for log correlation.
-    expect(typeof body.requestId).toBe("string");
+    const body = await res.json();
+    const parsed = PlatformOverviewSchema.safeParse(body);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) {
+      // Surface zod issues if the schema regresses.
+      console.error(parsed.error.issues);
+    }
   });
 
   it("returns 403 when caller is not a platform admin", async () => {

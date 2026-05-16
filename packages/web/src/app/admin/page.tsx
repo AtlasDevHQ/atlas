@@ -27,7 +27,11 @@ import {
 async function safeJson(response: Response): Promise<Record<string, unknown> | null> {
   try {
     return await response.json();
-  } catch {
+  } catch (err) {
+    // Log a breadcrumb so an unparseable response is debuggable from the
+    // browser console — losing this trail was the gap the silent-failure
+    // audit flagged.
+    console.warn("admin overview: failed to parse JSON response", err);
     return null;
   }
 }
@@ -70,7 +74,11 @@ export default function AdminOverview() {
 
       setData(parseOverview(json));
       setError(null);
-    } catch {
+    } catch (err) {
+      // Log the underlying error so the user-facing "API unreachable"
+      // message has a breadcrumb in the browser console — losing this
+      // trail was the gap the silent-failure audit flagged.
+      console.warn("admin overview fetch failed", err);
       if (!cancelledRef.current) {
         setData(FALLBACK_OVERVIEW);
         setError(
@@ -95,7 +103,8 @@ export default function AdminOverview() {
     setRefreshing(true);
     try {
       await fetchOverview();
-    } catch {
+    } catch (err) {
+      console.warn("admin overview refresh failed", err);
       setData(FALLBACK_OVERVIEW);
       setError("Refresh failed. Check that your API server is running.");
     } finally {

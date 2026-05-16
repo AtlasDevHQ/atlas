@@ -1390,7 +1390,10 @@ admin.openapi(overviewRoute, async (c) => {
     }
   }
 
-  const poolWarnings = connections.getPoolWarnings();
+  // `poolWarnings` exposes deployment-wide capacity config (the
+  // maxOrgs × maxConnections × numDatasources string) — a leak for a
+  // workspace-scoped surface (#2489 code review). It now lives only on
+  // `/api/v1/platform/overview`.
 
   return c.json({
     connections: connectionCount,
@@ -1399,7 +1402,6 @@ admin.openapi(overviewRoute, async (c) => {
     queriesLast24h,
     workspace: workspaceBlock,
     ...(entityList.warnings.length > 0 && { warnings: entityList.warnings }),
-    ...(poolWarnings.length > 0 && { poolWarnings }),
   }, 200);
 });
 

@@ -85,12 +85,15 @@ describe("parseOverview", () => {
     expect(parsed.queriesLast24h).toBeNull();
   });
 
-  test("poolWarnings round-trip — string array when present, empty array otherwise", () => {
-    expect(parseOverview({}).poolWarnings).toEqual([]);
-    expect(
-      parseOverview({
-        poolWarnings: ["over-provisioned 2.5×"],
-      }).poolWarnings,
-    ).toEqual(["over-provisioned 2.5×"]);
+  test("poolWarnings are not lifted onto the workspace tile (#2489 platform leak guard)", () => {
+    // `poolWarnings` exposes deployment-wide capacity config
+    // (maxOrgs × maxConnections × numDatasources). Even if the API
+    // accidentally surfaces it on /admin/overview, the parser must not
+    // lift it onto the workspace tile data. Lives only on /platform.
+    const parsed = parseOverview({
+      connections: 1,
+      poolWarnings: ["over-provisioned 2.5×"],
+    });
+    expect(parsed).not.toHaveProperty("poolWarnings");
   });
 });

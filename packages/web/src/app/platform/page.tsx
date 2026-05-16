@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import dynamic from "next/dynamic";
 import { parseAsString, parseAsStringEnum, useQueryState } from "nuqs";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -40,15 +40,15 @@ import {
   ComponentHealthTiles,
   type HealthComponents,
 } from "@/ui/components/admin/component-health-tiles";
-import { useAdminFetch, useInProgressSet } from "@/ui/hooks/use-admin-fetch";
+import { useAdminFetch, useInProgressSet, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { useAtlasConfig } from "@/ui/context";
 import {
   PlatformStatsSchema,
   PlatformWorkspacesResponseSchema,
   PlatformNeighborsResponseSchema,
   PlatformWorkspaceDetailResponseSchema,
 } from "@/ui/lib/admin-schemas";
+import { PlatformOverviewSchema } from "@useatlas/schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   Building2,
@@ -169,11 +169,28 @@ function PlatformPageContent() {
   );
 
   // Deployment scaffold (#2489) — lives on platform because every workspace
-  // sees the same disk-bundled count. Component Health comes from
-  // `/api/health` (unauthenticated readiness target) rather than a
-  // platform-scoped overview, so we fetch it directly here.
-  const scaffold = usePlatformScaffold();
-  const health = useHealthComponents();
+  // sees the same disk-bundled count. Pinned through `PlatformOverviewSchema`
+  // from `@useatlas/schemas` so an API field rename fails parse here
+  // instead of rendering blank tiles in production.
+  const scaffoldQuery = useAdminFetch("/api/v1/platform/overview", {
+    schema: PlatformOverviewSchema,
+  });
+  const scaffold = {
+    data: scaffoldQuery.data,
+    loading: scaffoldQuery.loading,
+    error: scaffoldQuery.error ? friendlyError(scaffoldQuery.error) : null,
+  };
+  const healthQuery = useAdminFetch<HealthComponents | null>("/api/health", {
+    transform: (json) => {
+      const j = json as Record<string, unknown>;
+      return (j.components as HealthComponents | undefined) ?? null;
+    },
+  });
+  const health = {
+    components: healthQuery.data,
+    loading: healthQuery.loading,
+    error: healthQuery.error ? friendlyError(healthQuery.error) : null,
+  };
 
   // Workspace detail dialog
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -327,10 +344,30 @@ function PlatformPageContent() {
                 <h2 className="mb-3 text-sm font-medium text-muted-foreground">
                   Component Health
                 </h2>
-                <ComponentHealthTiles
-                  components={health.components}
-                  loading={health.loading}
-                />
+                {!health.loading && health.error ? (
+                  // Loud surface — Component Health hidden during an
+                  // outage is the exact thing operators need to see.
+                  <div
+                    role="alert"
+                    className="flex items-start gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm"
+                  >
+                    <AlertTriangle className="mt-0.5 size-4 text-destructive shrink-0" />
+                    <div>
+                      <p className="font-medium text-destructive">
+                        {health.error}
+                      </p>
+                      <p className="text-destructive/90">
+                        Tile data is unavailable. The API may be down or
+                        misconfigured — check the API logs and retry.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <ComponentHealthTiles
+                    components={health.components}
+                    loading={health.loading}
+                  />
+                )}
               </section>
 
               {/* ── Deployment scaffold (#2489) ─────────────────────── */}
@@ -338,16 +375,42 @@ function PlatformPageContent() {
                 <h2 className="mb-3 text-sm font-medium text-muted-foreground">
                   Deployment scaffold
                 </h2>
+                {!scaffold.loading && scaffold.error && (
+                  <div
+                    role="alert"
+                    className="mb-3 flex items-start gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm"
+                  >
+                    <AlertTriangle className="mt-0.5 size-4 text-destructive shrink-0" />
+                    <p className="font-medium text-destructive">
+                      {scaffold.error}
+                    </p>
+                  </div>
+                )}
                 <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                   <StatCard
                     title="Entities (bundled)"
-                    value={scaffold.loading ? "…" : (scaffold.data?.entities ?? 0)}
+                    // Render "—" on error so a fetch failure doesn't pose
+                    // as a legitimate zero count (which would silently
+                    // mislead operators).
+                    value={
+                      scaffold.loading
+                        ? "…"
+                        : scaffold.error
+                          ? "—"
+                          : (scaffold.data?.entities ?? 0)
+                    }
                     icon={<Database className="size-4" />}
                     description="Tables & views shipped on disk"
                   />
                   <StatCard
                     title="Plugins"
-                    value={scaffold.loading ? "…" : (scaffold.data?.plugins ?? 0)}
+                    value={
+                      scaffold.loading
+                        ? "…"
+                        : scaffold.error
+                          ? "—"
+                          : (scaffold.data?.plugins ?? 0)
+                    }
                     icon={<Puzzle className="size-4" />}
                     description="Installed plugins"
                   />
@@ -861,101 +924,3 @@ function PlatformPageContent() {
   );
 }
 
-// ── Local hooks: scaffold + health ─────────────────────────────────
-//
-// Both endpoints lift their data into Dashboard tiles, but they have
-// different auth/contracts so neither rides through `useAdminFetch`'s
-// shared schema flow:
-//
-//   - `/api/v1/platform/overview` is platform-admin-only and currently
-//     returns an open record (the deployment-wide bits are still in flux
-//     post-#2489). When the shape stabilizes, move this to
-//     `useAdminFetch` with a zod schema.
-//   - `/api/health` is unauthenticated (a readiness target for probes),
-//     so a same-origin fetch is enough; no admin gate required to read.
-
-interface PlatformScaffoldData {
-  entities: number;
-  plugins: number;
-}
-
-function usePlatformScaffold(): {
-  data: PlatformScaffoldData | null;
-  loading: boolean;
-} {
-  const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const [data, setData] = useState<PlatformScaffoldData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const cancelledRef = useRef(false);
-
-  useEffect(() => {
-    cancelledRef.current = false;
-    setLoading(true);
-    (async () => {
-      try {
-        const res = await fetch(`${apiUrl}/api/v1/platform/overview`, {
-          credentials: isCrossOrigin ? "include" : "same-origin",
-        });
-        if (cancelledRef.current) return;
-        if (!res.ok) {
-          setData(null);
-          return;
-        }
-        const json = (await res.json()) as Record<string, unknown>;
-        if (cancelledRef.current) return;
-        setData({
-          entities: typeof json.entities === "number" ? json.entities : 0,
-          plugins: typeof json.plugins === "number" ? json.plugins : 0,
-        });
-      } catch {
-        if (!cancelledRef.current) setData(null);
-      } finally {
-        if (!cancelledRef.current) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelledRef.current = true;
-    };
-  }, [apiUrl, isCrossOrigin]);
-
-  return { data, loading };
-}
-
-function useHealthComponents(): {
-  components: HealthComponents | null;
-  loading: boolean;
-} {
-  const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const [components, setComponents] = useState<HealthComponents | null>(null);
-  const [loading, setLoading] = useState(true);
-  const cancelledRef = useRef(false);
-
-  useEffect(() => {
-    cancelledRef.current = false;
-    setLoading(true);
-    (async () => {
-      try {
-        const res = await fetch(`${apiUrl}/api/health`, {
-          credentials: isCrossOrigin ? "include" : "same-origin",
-        });
-        if (cancelledRef.current) return;
-        if (!res.ok) {
-          setComponents(null);
-          return;
-        }
-        const json = (await res.json()) as Record<string, unknown>;
-        if (cancelledRef.current) return;
-        setComponents((json.components as HealthComponents | undefined) ?? null);
-      } catch {
-        if (!cancelledRef.current) setComponents(null);
-      } finally {
-        if (!cancelledRef.current) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelledRef.current = true;
-    };
-  }, [apiUrl, isCrossOrigin]);
-
-  return { components, loading };
-}

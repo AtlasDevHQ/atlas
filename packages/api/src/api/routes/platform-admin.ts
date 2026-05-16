@@ -56,6 +56,7 @@ import {
   PlatformWorkspaceSchema,
   PlatformWorkspaceUserSchema,
   NoisyNeighborSchema,
+  PlatformOverviewSchema,
 } from "@useatlas/schemas";
 import { type AtlasRole } from "@atlas/api/lib/auth/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -296,7 +297,7 @@ const platformOverviewRoute = createRoute({
   responses: {
     200: {
       description: "Deployment-wide overview data",
-      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+      content: { "application/json": { schema: PlatformOverviewSchema } },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -870,14 +871,18 @@ platformAdmin.openapi(platformOverviewRoute, async (c) => {
 
     const poolWarnings = connections.getPoolWarnings();
 
+    // `types` and `status` come back from the registry as branded enums;
+    // widen to plain strings to match `PlatformOverviewSchema`'s wire
+    // shape (the schema can't depend on plugin-SDK types — they're not
+    // exported through `@useatlas/types`).
     return c.json({
       entities: entities.length,
       plugins: pluginList.length,
       pluginHealth: pluginList.map((p) => ({
         id: p.id,
         name: p.name,
-        types: p.types,
-        status: p.status,
+        types: [...p.types] as string[],
+        status: p.status as string,
       })),
       ...(warnings.length > 0 && { warnings }),
       ...(poolWarnings.length > 0 && { poolWarnings }),

@@ -36,6 +36,8 @@ import {
   type PlatformWorkspace,
   type PlatformWorkspaceUser,
   type NoisyNeighbor,
+  type PlatformOverview,
+  type PlatformPluginHealth,
 } from "@useatlas/types";
 
 const WorkspaceStatusEnum = z.enum(WORKSPACE_STATUSES);
@@ -88,6 +90,22 @@ export const PlatformWorkspaceUserSchema = z.object({
   role: AtlasRoleEnum,
   createdAt: z.string(),
 }) satisfies z.ZodType<PlatformWorkspaceUser>;
+
+export const PlatformPluginHealthSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  types: z.array(z.string()),
+  status: z.string(),
+}) satisfies z.ZodType<PlatformPluginHealth>;
+
+export const PlatformOverviewSchema = z.object({
+  entities: z.number(),
+  plugins: z.number(),
+  pluginHealth: z.array(PlatformPluginHealthSchema),
+  warnings: z.array(z.string()).optional(),
+  poolWarnings: z.array(z.string()).optional(),
+  requestId: z.string(),
+}) satisfies z.ZodType<PlatformOverview>;
 
 export const NoisyNeighborSchema = z.object({
   workspaceId: z.string(),

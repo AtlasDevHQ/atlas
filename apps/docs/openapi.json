@@ -58887,7 +58887,7 @@
           "Admin — Password"
         ],
         "summary": "Check password status",
-        "description": "Checks if the current user must change their password. Requires authentication but not admin role.",
+        "description": "Checks if the current user must change their password and whether the admin MFA gate should block the admin tree. Requires authentication but not admin role. The `mfaRequired` field is the layout-level signal for #2486 — this route deliberately does NOT 403 on unenrolled admins so the admin layout can read the signal without being blocked by the `mfaRequired` middleware (which would defeat the carve-out documented in admin-mfa-required.ts).",
         "responses": {
           "200": {
             "description": "Password status",
@@ -58898,10 +58898,18 @@
                   "properties": {
                     "passwordChangeRequired": {
                       "type": "boolean"
+                    },
+                    "mfaRequired": {
+                      "type": "boolean"
+                    },
+                    "enrollmentUrl": {
+                      "type": "string"
                     }
                   },
                   "required": [
-                    "passwordChangeRequired"
+                    "passwordChangeRequired",
+                    "mfaRequired",
+                    "enrollmentUrl"
                   ]
                 }
               }

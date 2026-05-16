@@ -39,7 +39,7 @@ mock.module("@atlas/api/lib/logger", () => {
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { createMiddleware } from "hono/factory";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
-import { mfaRequired } from "../admin-mfa-required";
+import { mfaRequired, shouldRequireMfaForAuthResult } from "../admin-mfa-required";
 import type { AuthEnv } from "../middleware";
 
 // ---------------------------------------------------------------------------
@@ -444,5 +444,145 @@ describe("mfaRequired middleware", () => {
     const body = (await res.json()) as { error: string; requestId: string };
     expect(body.error).toBe("auth_misconfigured");
     expect(body.requestId).toBe("test-req-id");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shouldRequireMfaForAuthResult — pure helper used by the /me/password-status
+// route (#2486) to surface the same gate signal the middleware enforces,
+// without 403'ing the layout's pre-MFA fetch. The matrix mirrors the
+// middleware tests above to keep the two enforcement paths in lockstep.
+// ---------------------------------------------------------------------------
+
+describe("shouldRequireMfaForAuthResult helper", () => {
+  it("returns true for managed admin without TOTP or passkey", () => {
+    expect(
+      shouldRequireMfaForAuthResult(
+        fakeAuthResult({ role: "admin", twoFactorEnabled: false, passkeyCount: 0 }),
+      ),
+    ).toBe(true);
+  });
+
+  it("returns true for managed platform_admin without MFA", () => {
+    expect(
+      shouldRequireMfaForAuthResult(
+        fakeAuthResult({ role: "platform_admin", twoFactorEnabled: false }),
+      ),
+    ).toBe(true);
+  });
+
+  it("returns true for managed owner without MFA", () => {
+    expect(
+      shouldRequireMfaForAuthResult(
+        fakeAuthResult({ role: "owner", twoFactorEnabled: false }),
+      ),
+    ).toBe(true);
+  });
+
+  it("returns false for managed admin with TOTP enrolled", () => {
+    expect(
+      shouldRequireMfaForAuthResult(
+        fakeAuthResult({ role: "admin", twoFactorEnabled: true }),
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false for managed admin with a passkey on file", () => {
+    expect(
+      shouldRequireMfaForAuthResult(
+        fakeAuthResult({ role: "admin", twoFactorEnabled: false, passkeyCount: 1 }),
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false for member role (gate is admin-only)", () => {
+    expect(
+      shouldRequireMfaForAuthResult(
+        fakeAuthResult({ role: "member", twoFactorEnabled: false }),
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false for mode:'none' (local-dev carve-out)", () => {
+    expect(shouldRequireMfaForAuthResult(fakeNoneAuthResult())).toBe(false);
+  });
+
+  it("returns false for simple-key admin (programmatic, no interactive login)", () => {
+    expect(
+      shouldRequireMfaForAuthResult({
+        authenticated: true,
+        mode: "simple-key",
+        user: {
+          id: "ci-bot",
+          mode: "simple-key",
+          label: "ci-bot",
+          role: "admin",
+          activeOrganizationId: "org-1",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false for byot admin (MFA delegated to JWT issuer)", () => {
+    expect(
+      shouldRequireMfaForAuthResult({
+        authenticated: true,
+        mode: "byot",
+        user: {
+          id: "jwt-user",
+          mode: "byot",
+          label: "jwt@example.com",
+          role: "admin",
+          activeOrganizationId: "org-1",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false for unauthenticated results", () => {
+    expect(
+      shouldRequireMfaForAuthResult({
+        authenticated: false,
+        mode: "managed",
+        status: 401,
+        error: "No session",
+      }),
+    ).toBe(false);
+  });
+
+  it("treats missing claims as not-enrolled (fail closed)", () => {
+    expect(
+      shouldRequireMfaForAuthResult({
+        authenticated: true,
+        mode: "managed",
+        user: {
+          id: "user-1",
+          mode: "managed",
+          label: "test@atlas.dev",
+          role: "admin",
+          activeOrganizationId: "org-1",
+          // no claims at all
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("only opens the gate on strict boolean true twoFactorEnabled", () => {
+    // Mirrors the defensive test above — a string "true" must keep the gate
+    // closed, same as in the middleware path.
+    expect(
+      shouldRequireMfaForAuthResult({
+        authenticated: true,
+        mode: "managed",
+        user: {
+          id: "user-1",
+          mode: "managed",
+          label: "test@atlas.dev",
+          role: "admin",
+          activeOrganizationId: "org-1",
+          claims: Object.freeze({ twoFactorEnabled: "true", passkeyCount: 0 }),
+        },
+      }),
+    ).toBe(true);
   });
 });

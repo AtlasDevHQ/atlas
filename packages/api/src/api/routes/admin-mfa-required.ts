@@ -59,6 +59,7 @@ import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { AuthEnv } from "@atlas/api/api/routes/middleware";
+import type { AuthResult } from "@atlas/api/lib/auth/types";
 
 const log = createLogger("middleware:mfa");
 
@@ -101,10 +102,45 @@ export const MFA_ENROLLMENT_REQUIRED = "mfa_enrollment_required";
  */
 function isMfaEnrolled(c: Context<AuthEnv>): boolean {
   const claims = c.get("authResult")?.user?.claims;
+  return isMfaEnrolledFromClaims(claims);
+}
+
+// Strict-boolean / strict-number narrowing is load-bearing security: a string
+// "true" or numeric 1 must NOT count as enrolled. Both the middleware and the
+// `shouldRequireMfaForAuthResult` helper depend on this single source of truth
+// so the two paths can't drift. See defensive coverage in
+// `admin-mfa-required.test.ts` (string-"true" + bogus-passkeyCount matrix).
+function isMfaEnrolledFromClaims(claims: Record<string, unknown> | undefined): boolean {
   if (!claims) return false;
   if (claims.twoFactorEnabled === true) return true;
   const count = claims.passkeyCount;
   return typeof count === "number" && count > 0;
+}
+
+/**
+ * Decide whether an `AuthResult` should be blocked on MFA enrollment.
+ *
+ * Mirrors the `mfaRequired` middleware's role + mode + factor gate, but
+ * operates on a raw `AuthResult` so the carve-out routes (#2486 —
+ * `/me/password-status`) can surface the same signal in their response
+ * body without 403'ing themselves and breaking the layout's pre-MFA
+ * password-check fetch.
+ *
+ * Returns `true` only when ALL of:
+ *   - the request is authenticated,
+ *   - via managed mode (the only flow where MFA can be collected),
+ *   - the role is enforced (`admin` / `owner` / `platform_admin`),
+ *   - and no acceptable second factor is on file.
+ *
+ * Member-role users, simple-key / byot / none modes, and unauthenticated
+ * results all return `false` — same exemptions as the middleware.
+ */
+export function shouldRequireMfaForAuthResult(authResult: AuthResult): boolean {
+  if (!authResult.authenticated) return false;
+  if (authResult.mode !== "managed" || !authResult.user) return false;
+  const role = authResult.user.role;
+  if (!role || !ENFORCED_ROLES.has(role)) return false;
+  return !isMfaEnrolledFromClaims(authResult.user.claims);
 }
 
 /**

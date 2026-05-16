@@ -120,6 +120,31 @@ describe("admin mutation error passthrough", () => {
     expect(utils.container.textContent).not.toContain("HTTP 403");
   });
 
+  test("403 + mfa_enrollment_required renders MfaRequiredPlaceholder, not 'admin role' copy (#2486)", async () => {
+    mockFailure(403, {
+      message: "Two-factor authentication is required for admin accounts.",
+      error: "mfa_enrollment_required",
+      enrollmentUrl: "/admin/account-security",
+      requestId: "req-mfa-123",
+    });
+
+    let utils!: ReturnType<typeof render>;
+    await act(async () => {
+      utils = render(<MutationHarness feature="AI Provider" />, { wrapper: Wrapper });
+    });
+
+    await waitFor(() => {
+      expect(utils.container.textContent).toContain("Two-factor required");
+    });
+    // Regression guard (#2486): on a 403 with `code:"mfa_enrollment_required"`,
+    // the MFA-required branch must take precedence over the generic
+    // role-denied copy ("You need the admin role to access this page.") —
+    // same FetchError shape, different user-facing message.
+    expect(utils.container.textContent).not.toContain("admin role");
+    expect(utils.container.textContent).not.toContain("Access denied");
+    expect(utils.container.textContent).not.toContain("HTTP 403");
+  });
+
   test("403 (no enterprise code) renders friendlyError admin-role copy, not 'HTTP 403'", async () => {
     mockFailure(403, { message: "Forbidden" });
 

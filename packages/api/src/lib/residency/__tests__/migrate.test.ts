@@ -5,7 +5,7 @@
  * failure handling, retry, cancel, stale detection, cleanup detection, and edge cases.
  */
 
-import { describe, it, expect, beforeEach, mock, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, mock, afterEach, afterAll } from "bun:test";
 
 // ── Mocks ────────────────────────────────────────────────────────────
 
@@ -104,6 +104,12 @@ globalThis.fetch = ((url: string | URL | Request, options?: RequestInit) => {
     json: () => Promise.resolve(mockFetchResponse.body ?? {}),
   } as Response);
 }) as typeof fetch;
+
+// Restore the real fetch once after every test in this file has run.
+// (Doing it in afterEach would clobber the mock between tests.)
+afterAll(() => {
+  globalThis.fetch = _originalFetch;
+});
 
 // ── Import after mocks ──────────────────────────────────────────────
 

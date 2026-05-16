@@ -123,7 +123,7 @@ async function enrollMfa(password: string): Promise<void> {
     body: { code, trustDevice: true },
   });
   if (verify.status !== 200) {
-    throw new Error(`two-factor/verify-totp (first enrol) failed: ${verify.status} ${JSON.stringify(verify.body)}`);
+    throw new Error(`two-factor/verify-totp (first enroll) failed: ${verify.status} ${JSON.stringify(verify.body)}`);
   }
   await mkdir(dirname(SECRET_FILE), { recursive: true });
   await writeFile(SECRET_FILE, secret + "\n", { mode: 0o600 });

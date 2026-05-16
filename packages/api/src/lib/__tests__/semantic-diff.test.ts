@@ -330,7 +330,10 @@ describe("attachDrift", () => {
     expect(result.noIntrospectedTables).toBe(false);
     expect(result.entities).toHaveLength(2);
     expect(result.entities.every((e) => e.drift?.state === "in-sync")).toBe(true);
-    expect(result.entities[0].drift?.changeCount).toBeUndefined();
+    // The discriminated union prevents `changeCount` from existing on
+    // `in-sync` rows — confirm the runtime shape matches that contract.
+    const first = result.entities[0].drift;
+    expect(first && "changeCount" in first).toBe(false);
   });
 
   it("maps per-entity state from a mixed diff", () => {

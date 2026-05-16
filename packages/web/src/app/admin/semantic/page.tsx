@@ -60,6 +60,8 @@ import { useDemoReadonly, demoIndustryLabel } from "@/ui/hooks/use-demo-readonly
 import { useDevModeNoDrafts } from "@/ui/hooks/use-dev-mode-no-drafts";
 import { DeveloperEmptyState } from "@/ui/components/admin/developer-empty-state";
 import { SemanticPublishedBanner } from "@/ui/components/admin/semantic-published-banner";
+import { DriftDrawer } from "@/ui/components/admin/drift-drawer";
+import { driftDrawerTargetFor } from "./drift-routing";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -422,6 +424,12 @@ export default function SemanticPage() {
   const [editingEntityName, setEditingEntityName] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
+  // Drift drawer (#2461): opens overlaid when a drifted entity is clicked.
+  // The underlying selection still updates so closing the drawer leaves the
+  // admin on the entity's detail view. Reconcile actions land in #2462.
+  const [driftDrawerEntity, setDriftDrawerEntity] = useState<string | null>(null);
+  const [driftDrawerOpen, setDriftDrawerOpen] = useState(false);
+
   const fetchOpts: RequestInit = {
     credentials: isCrossOrigin ? "include" : "same-origin",
   };
@@ -592,6 +600,14 @@ export default function SemanticPage() {
         group: selectionToGroupParam(sel),
       });
     });
+    // #2461: opening the drift drawer on click for drifted entities.
+    // We piggy-back on the existing selection update — closing the drawer
+    // returns to the regular entity detail view, no extra navigation needed.
+    const driftTarget = driftDrawerTargetFor(sel, entities);
+    if (driftTarget) {
+      setDriftDrawerEntity(driftTarget);
+      setDriftDrawerOpen(true);
+    }
   };
 
   // Fetch entity detail when selection changes (including from URL on mount)
@@ -987,6 +1003,15 @@ export default function SemanticPage() {
       </>
       )}
       </AdminContentWrapper>
+
+      <DriftDrawer
+        entityName={driftDrawerEntity}
+        open={driftDrawerOpen}
+        onOpenChange={(open) => {
+          setDriftDrawerOpen(open);
+          if (!open) setDriftDrawerEntity(null);
+        }}
+      />
 
       {/* Entity editor dialog */}
       <EntityEditorDialog

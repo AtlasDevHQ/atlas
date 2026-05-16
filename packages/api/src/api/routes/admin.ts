@@ -51,7 +51,8 @@ import {
   type AdminEntityYamlError,
 } from "@atlas/api/lib/semantic/admin-source";
 import { AmbiguousEntityError } from "@atlas/api/lib/effect/errors";
-import { runDiff } from "@atlas/api/lib/semantic/diff";
+import { runDiff, runDriftDiff } from "@atlas/api/lib/semantic/diff";
+import { attachDrift } from "@atlas/api/lib/semantic/drift";
 import { adminOrgs } from "./admin-orgs";
 import { adminAudit } from "./admin-audit";
 import { adminLearnedPatterns } from "./admin-learned-patterns";
@@ -590,10 +591,25 @@ const listEntitiesRoute = createRoute({
   path: "/semantic/entities",
   tags: ["Admin — Semantic"],
   summary: "List semantic entities",
-  description: "Returns all discovered semantic layer entities from YAML files.",
+  description:
+    "Returns all discovered semantic layer entities from YAML files. " +
+    "Pass `?connection=<id>` to attach a per-entity `drift` field (DB↔YAML " +
+    "comparison) and a top-level `noIntrospectedTables` flag for the file-tree " +
+    "drift accent (#2459).",
+  request: {
+    query: z.object({
+      // `.min(1)` rejects `?connection=` (empty string). Without it the
+      // empty case would fall through to the missing-connection branch and
+      // mute drift for what's almost certainly a malformed client.
+      connection: z.string().min(1).optional().openapi({
+        param: { name: "connection", in: "query" },
+        example: "default",
+      }),
+    }),
+  },
   responses: {
     200: {
-      description: "Entity list with optional warnings",
+      description: "Entity list with optional warnings and drift signal",
       content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -1312,12 +1328,75 @@ admin.openapi(listEntitiesRoute, async (c) => {
   const orgId = authResult.user?.activeOrganizationId;
   const atlasMode = getAtlasMode(c);
   const mode = atlasMode === "developer" ? "developer" : "published";
+  const { connection: connectionId } = c.req.valid("query");
   try {
     const result = await listAdminEntities({ orgId, mode });
-    return c.json({
-      entities: result.entities,
-      ...(result.warnings.length > 0 && { warnings: result.warnings }),
-    }, 200);
+
+    // Backwards-compat path: no `?connection=` → return the existing shape.
+    // Drift attachment is opt-in so legacy callers (the entity tab on the
+    // /admin/semantic page before slice 1, the SDK, integration tests) keep
+    // working unchanged.
+    if (!connectionId) {
+      return c.json({
+        entities: result.entities,
+        ...(result.warnings.length > 0 && { warnings: result.warnings }),
+      }, 200);
+    }
+
+    // Drift path. We compute drift even on a missing / unsupported connection
+    // by treating those as "no introspected tables" — the file tree's blue
+    // accent is suppressed and slice 3 will render the targeted empty state.
+    // Surfacing a 500 for "default connection isn't registered yet" would
+    // break the existing list rendering, which is worse than a quiet drift
+    // signal.
+    if (!connections.has(connectionId)) {
+      return c.json({
+        entities: result.entities.map((e) => ({ ...e, drift: null })),
+        noIntrospectedTables: true,
+        requestId,
+        ...(result.warnings.length > 0 && { warnings: result.warnings }),
+      }, 200);
+    }
+
+    try {
+      const driftDiff = await runDriftDiff(connectionId, { orgId, atlasMode });
+      const noIntrospectedTables = driftDiff.introspectedTableCount === 0;
+      const envelope = attachDrift(result.entities, driftDiff.diff, { noIntrospectedTables });
+      const mergedWarnings = [...result.warnings, ...driftDiff.warnings];
+      return c.json({
+        entities: envelope.entities,
+        noIntrospectedTables: envelope.noIntrospectedTables,
+        requestId,
+        ...(mergedWarnings.length > 0 && { warnings: mergedWarnings }),
+      }, 200);
+    } catch (err) {
+      // Connection-side failure: don't fail the entire list — drift is a
+      // progressive enhancement. Drop drift, surface a generic warning so
+      // the file tree stays usable.
+      //
+      // The full err goes to `log.warn` with the requestId for correlation;
+      // the user-visible warning string is intentionally generic because pg
+      // / mysql2 driver errors can leak host, schema, or role names. The
+      // requestId is the support handoff.
+      log.warn(
+        {
+          err: err instanceof Error ? err : new Error(String(err)),
+          orgId,
+          connectionId,
+          atlasMode,
+          requestId,
+        },
+        "Drift diff failed — returning entities without drift attachment",
+      );
+      return c.json({
+        entities: result.entities.map((e) => ({ ...e, drift: null })),
+        requestId,
+        warnings: [
+          ...result.warnings,
+          `Drift check failed (requestId: ${requestId}). See server logs.`,
+        ],
+      }, 200);
+    }
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err : new Error(String(err)), orgId, mode, requestId },

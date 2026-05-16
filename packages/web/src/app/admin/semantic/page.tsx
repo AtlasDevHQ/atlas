@@ -40,7 +40,9 @@ import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surfa
 import {
   SemanticFileTree,
   type SemanticSelection,
+  type SemanticTreeDrift,
 } from "@/ui/components/admin/semantic-file-tree";
+import { normalizeDrift } from "./normalize-drift";
 import { type FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyErrorOrNull, buildFetchError, extractFetchError } from "@/ui/lib/fetch-error";
@@ -77,6 +79,12 @@ interface EntitySummary {
   connectionGroupId: string | null;
   /** True when the API row carries `status: "draft"`. */
   draft: boolean;
+  /**
+   * Optional DB↔YAML drift signal (#2459). `null` when the API didn't
+   * compute drift (e.g. caller omitted `?connection`); a defined value
+   * is what slice 1 surfaces as the blue file-tree accent.
+   */
+  drift: SemanticTreeDrift | null;
 }
 
 interface GlossaryTerm {
@@ -467,8 +475,13 @@ export default function SemanticPage() {
     let cancelled = false;
 
     async function fetchAll() {
+      // Slice 1 (#2459): `?connection=default` opts into per-entity drift +
+      // the noIntrospectedTables flag. The multi-environment toggle (slice 4)
+      // will swap in the selected connection id; for now everything on this
+      // page runs against the default connection.
+      const entitiesUrl = `${apiUrl}/api/v1/admin/semantic/entities?connection=default`;
       const [entitiesRes, glossaryRes, metricsRes, catalogRes] = await Promise.allSettled([
-        fetch(`${apiUrl}/api/v1/admin/semantic/entities`, fetchOpts).then(async (r) => {
+        fetch(entitiesUrl, fetchOpts).then(async (r) => {
           if (!r.ok) throw await extractFetchError(r);
           return r.json();
         }),
@@ -510,6 +523,7 @@ export default function SemanticPage() {
             columnCount: typeof e.columnCount === "number" ? e.columnCount : 0,
             connectionGroupId,
             draft: e.status === "draft",
+            drift: normalizeDrift(e.drift),
           };
         }).filter((e) => e.name.length > 0);
         const dropped = rawEntities.length - normalized.length;
@@ -520,6 +534,15 @@ export default function SemanticPage() {
           console.debug(
             `admin/semantic: dropped ${dropped} entities with unrecognized shape from /api/v1/admin/semantic/entities`,
           );
+        }
+        // The drift route returns 200-with-warnings when the diff itself
+        // fails (DB outage, unsupported driver). Without surfacing them
+        // the file tree looks "clean" and an operator can't tell drift is
+        // unavailable. Slice 3 will land a proper banner; for now console
+        // is the minimum-viable signal that something's wrong.
+        const warnings = Array.isArray(data?.warnings) ? data.warnings : [];
+        if (warnings.length > 0) {
+          console.warn("admin/semantic: drift warnings from /api/v1/admin/semantic/entities", warnings);
         }
         setEntities(normalized);
       } else {
@@ -705,6 +728,7 @@ export default function SemanticPage() {
       name: e.name,
       connectionGroupId: e.connectionGroupId,
       draft: e.draft,
+      drift: e.drift,
     }))
     .toSorted((a, b) => {
       const byName = a.name.localeCompare(b.name);

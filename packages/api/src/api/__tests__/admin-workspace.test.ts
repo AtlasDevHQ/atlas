@@ -301,6 +301,14 @@ mock.module("@atlas/api/lib/plugins/settings", () => ({
 
 mock.module("@atlas/api/lib/semantic/diff", () => ({
   runDiff: mock(async () => ({ connection: "default", newTables: [], removedTables: [], tableDiffs: [] })),
+  // #2459: admin route imports runDriftDiff alongside runDiff. Without it
+  // in this partial mock the admin router fails to mount under bun's
+  // module loader.
+  runDriftDiff: mock(async () => ({
+    diff: { newTables: [], removedTables: [], tableDiffs: [], unchangedCount: 0 },
+    introspectedTableCount: 0,
+    warnings: [] as string[],
+  })),
 }));
 
 // --- Import app after mocks ---

@@ -235,6 +235,13 @@ mock.module("@atlas/api/lib/plugins/settings", () => ({
 
 mock.module("@atlas/api/lib/semantic/diff", () => ({
   runDiff: mock(async () => ({ connection: "default", newTables: [], removedTables: [], tableDiffs: [] })),
+  // #2459 added to the diff module surface; the admin route imports it
+  // alongside runDiff so the partial mock must cover it.
+  runDriftDiff: mock(async () => ({
+    diff: { newTables: [], removedTables: [], tableDiffs: [], unchangedCount: 0 },
+    introspectedTableCount: 0,
+    warnings: [] as string[],
+  })),
 }));
 
 // --- Import app after mocks ---

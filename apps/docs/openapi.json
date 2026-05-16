@@ -56737,10 +56737,22 @@
           "Admin — Semantic"
         ],
         "summary": "List semantic entities",
-        "description": "Returns all discovered semantic layer entities from YAML files.",
+        "description": "Returns all discovered semantic layer entities from YAML files. Pass `?connection=<id>` to attach a per-entity `drift` field (DB↔YAML comparison) and a top-level `noIntrospectedTables` flag for the file-tree drift accent (#2459).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "default"
+            },
+            "required": false,
+            "name": "connection",
+            "in": "query"
+          }
+        ],
         "responses": {
           "200": {
-            "description": "Entity list with optional warnings",
+            "description": "Entity list with optional warnings and drift signal",
             "content": {
               "application/json": {
                 "schema": {

@@ -209,15 +209,16 @@ export function filterSnapshotsByWhitelist(
 
 /**
  * Query information_schema for table/column metadata for a connection.
+ * Returns the unfiltered map — every table the DB reports for the active
+ * schema. The "drift" path (#2458 slice 1) needs the unfiltered count to
+ * tell "DB has no tables" apart from "whitelist excluded every table" —
+ * those are very different signals to the admin.
  *
- * When `allowedTables` is provided, the result map is filtered to only include
- * tables present in the whitelist (both bare and schema-qualified matches).
- * When omitted, every table in the DB is returned (legacy behavior — retained
- * for callers that do their own scoping).
+ * Callers that want to scope to the semantic whitelist should use
+ * `getDBSchema` (thin wrapper) or call `filterSnapshotsByWhitelist` themselves.
  */
-export async function getDBSchema(
+export async function getDBSchemaRaw(
   connectionId: string = "default",
-  allowedTables?: Set<string>,
 ): Promise<Map<string, EntitySnapshot>> {
   const conn = connections.get(connectionId);
   const dbType = connections.getDBType(connectionId);
@@ -251,6 +252,22 @@ export async function getDBSchema(
     snapshots.get(tableName)!.columns.set(columnName, mapSQLType(dataType));
   }
 
+  return snapshots;
+}
+
+/**
+ * Query information_schema for table/column metadata for a connection.
+ *
+ * When `allowedTables` is provided, the result map is filtered to only include
+ * tables present in the whitelist (both bare and schema-qualified matches).
+ * When omitted, every table in the DB is returned (legacy behavior — retained
+ * for callers that do their own scoping).
+ */
+export async function getDBSchema(
+  connectionId: string = "default",
+  allowedTables?: Set<string>,
+): Promise<Map<string, EntitySnapshot>> {
+  const snapshots = await getDBSchemaRaw(connectionId);
   return filterSnapshotsByWhitelist(snapshots, allowedTables);
 }
 
@@ -406,56 +423,66 @@ export interface DiffOptions {
   atlasMode?: AtlasMode;
 }
 
-export async function runDiff(
-  connectionId: string = "default",
-  options: DiffOptions = {},
-): Promise<SemanticDiffResponse> {
+/**
+ * Internal: resolve the mode-aware allowed-tables whitelist for an org +
+ * connection, falling back to the file-based whitelist when no org context
+ * is available (self-hosted CLI / single-tenant). Fails closed on whitelist
+ * load errors to avoid leaking the whole DB schema across tenants.
+ */
+async function resolveAllowedTables(
+  connectionId: string,
+  options: DiffOptions,
+): Promise<Set<string> | undefined> {
   const { orgId, atlasMode } = options;
-
-  // Resolve the mode-aware whitelist for this org+connection. Falls back to
-  // the file-based whitelist when no org context is available (self-hosted).
-  let allowedTables: Set<string> | undefined;
   if (orgId && hasInternalDB()) {
     try {
       await loadOrgWhitelist(orgId, atlasMode);
-      allowedTables = getOrgWhitelistedTables(orgId, connectionId, atlasMode);
+      return getOrgWhitelistedTables(orgId, connectionId, atlasMode);
     } catch (err) {
-      // Fail closed — an empty allowed set means the diff returns no tables,
-      // which is safer than leaking the whole DB schema across tenants.
       log.error(
         { orgId, connectionId, atlasMode, err: err instanceof Error ? err.message : String(err) },
         "Failed to load org whitelist — scoping diff to empty set",
       );
-      allowedTables = new Set();
+      return new Set();
     }
-  } else {
-    allowedTables = getWhitelistedTables(connectionId);
   }
+  return getWhitelistedTables(connectionId);
+}
 
-  const dbSnapshots = await getDBSchema(connectionId, allowedTables);
-  // SaaS orgs persist their semantic layer in the internal DB, not on disk.
-  // Prefer the DB-backed loader when we have an org context; fall back to
-  // the disk loader for self-hosted (no internal DB) or legacy CLI callers.
-  // Self-hosted-with-internal-DB-and-disk-only-YAML: when the DB query yields
-  // zero entries we re-try the disk loader so an admin who hand-edits files
-  // still gets a meaningful diff. Disk warnings are merged in.
-  let yamlSnapshots: Map<string, EntitySnapshot>;
-  let warnings: string[];
+/**
+ * Internal: resolve the YAML snapshot side of the diff, preferring DB-backed
+ * entities (SaaS workspaces) and falling back to disk-backed entities for
+ * self-hosted-with-no-internal-DB or legacy CLI callers. The disk fallback
+ * also kicks in for self-hosted-with-internal-DB-and-disk-only-YAML — when
+ * the DB query yields zero entries we re-try the disk loader so an admin who
+ * hand-edits files still gets a meaningful diff.
+ */
+async function resolveYAMLSnapshots(
+  connectionId: string,
+  options: DiffOptions,
+): Promise<{ snapshots: Map<string, EntitySnapshot>; warnings: string[] }> {
+  const { orgId, atlasMode } = options;
   if (orgId && hasInternalDB()) {
     const dbResult = await getYAMLSnapshotsFromDB(orgId, connectionId, atlasMode);
     if (dbResult.snapshots.size === 0) {
       const diskResult = getYAMLSnapshots(connectionId);
-      yamlSnapshots = diskResult.snapshots;
-      warnings = [...dbResult.warnings, ...diskResult.warnings];
-    } else {
-      yamlSnapshots = dbResult.snapshots;
-      warnings = dbResult.warnings;
+      return {
+        snapshots: diskResult.snapshots,
+        warnings: [...dbResult.warnings, ...diskResult.warnings],
+      };
     }
-  } else {
-    const diskResult = getYAMLSnapshots(connectionId);
-    yamlSnapshots = diskResult.snapshots;
-    warnings = diskResult.warnings;
+    return { snapshots: dbResult.snapshots, warnings: dbResult.warnings };
   }
+  return getYAMLSnapshots(connectionId);
+}
+
+export async function runDiff(
+  connectionId: string = "default",
+  options: DiffOptions = {},
+): Promise<SemanticDiffResponse> {
+  const allowedTables = await resolveAllowedTables(connectionId, options);
+  const dbSnapshots = await getDBSchema(connectionId, allowedTables);
+  const { snapshots: yamlSnapshots, warnings } = await resolveYAMLSnapshots(connectionId, options);
 
   const diff = computeDiff(dbSnapshots, yamlSnapshots);
 
@@ -476,4 +503,33 @@ export async function runDiff(
     },
     ...(warnings.length > 0 && { warnings }),
   };
+}
+
+/**
+ * Drift-check variant of `runDiff` for the admin entities-list endpoint
+ * (#2458 slice 1). Returns the raw `DiffResult` (not the public response
+ * envelope) plus the introspected table count BEFORE whitelist filtering.
+ *
+ * The pre-filter count is the load-bearing bit: an empty `introspectedTables`
+ * means "the database itself has no tables", which the file tree should
+ * surface as a targeted empty state instead of showing every YAML entry
+ * as drifted-removed. A non-empty unfiltered set with an empty filtered
+ * set means "tables exist but the whitelist excluded all of them" — a
+ * very different signal that the existing diff machinery already handles.
+ */
+export async function runDriftDiff(
+  connectionId: string = "default",
+  options: DiffOptions = {},
+): Promise<{
+  diff: DiffResult;
+  introspectedTableCount: number;
+  warnings: string[];
+}> {
+  const allowedTables = await resolveAllowedTables(connectionId, options);
+  const rawDBSnapshots = await getDBSchemaRaw(connectionId);
+  const dbSnapshots = filterSnapshotsByWhitelist(rawDBSnapshots, allowedTables);
+  const { snapshots: yamlSnapshots, warnings } = await resolveYAMLSnapshots(connectionId, options);
+
+  const diff = computeDiff(dbSnapshots, yamlSnapshots);
+  return { diff, introspectedTableCount: rawDBSnapshots.size, warnings };
 }

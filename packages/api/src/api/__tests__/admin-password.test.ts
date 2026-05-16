@@ -187,10 +187,17 @@ mock.module("@atlas/api/lib/agent", () => ({
 mock.module("@atlas/api/lib/tools/actions", () => ({}));
 mock.module("@atlas/api/lib/semantic/diff", () => ({
   runDiff: mock(() => Promise.resolve({})),
+  // #2459: matches the admin route's new import alongside runDiff.
+  runDriftDiff: mock(async () => ({
+    diff: { newTables: [], removedTables: [], tableDiffs: [], unchangedCount: 0 },
+    introspectedTableCount: 0,
+    warnings: [] as string[],
+  })),
   mapSQLType: (t: string) => t,
   parseEntityYAML: () => ({ table: "", columns: new Map(), foreignKeys: new Set() }),
   computeDiff: () => ({ newTables: [], removedTables: [], tableDiffs: [], unchangedCount: 0 }),
   getDBSchema: async () => new Map(),
+  getDBSchemaRaw: async () => new Map(),
   getYAMLSnapshots: () => ({ snapshots: new Map(), warnings: [] }),
 }));
 

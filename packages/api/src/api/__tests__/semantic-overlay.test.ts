@@ -38,6 +38,13 @@ import type { AdminEntitySummary, AdminEntityListResult } from "@atlas/api/lib/s
 // --- Mutable fixture state ---------------------------------------------------
 
 // Each test sets these to control the route's view of the world.
+// IMPORTANT: do not move these to `it.concurrent` or otherwise run tests
+// in this file concurrently — the module-scoped mutables are reset in
+// `beforeEach` and would race under concurrent execution. The isolated
+// test runner (`bun run scripts/test-isolated.ts`) runs each file in its
+// own subprocess, which is what makes the shared closure safe here.
+let listOpts: { orgId?: string; mode?: string } | null = null;
+let detailOpts: { name?: string; orgId?: string; mode?: string; connectionGroupId?: unknown } | null = null;
 let listResult: AdminEntityListResult = { entities: [], warnings: [] };
 let detailResult: { entity: Record<string, unknown>; status: string; source: string } | null = null;
 let detailThrow: Error | null = null;
@@ -157,8 +164,12 @@ class _AdminEntityYamlErrorBase extends Error {
 }
 
 mock.module("@atlas/api/lib/semantic/admin-source", () => ({
-  listAdminEntities: async () => listResult,
-  getAdminEntity: async () => {
+  listAdminEntities: async (opts: { orgId?: string; mode?: string }) => {
+    listOpts = opts;
+    return listResult;
+  },
+  getAdminEntity: async (opts: { name?: string; orgId?: string; mode?: string; connectionGroupId?: unknown }) => {
+    detailOpts = opts;
     if (detailThrow) throw detailThrow;
     return detailResult;
   },
@@ -345,6 +356,8 @@ beforeEach(() => {
   listResult = { entities: [], warnings: [] };
   detailResult = null;
   detailThrow = null;
+  listOpts = null;
+  detailOpts = null;
 });
 
 // ---------------------------------------------------------------------------
@@ -492,5 +505,87 @@ describe("GET /api/v1/semantic/entities/{name} — DB overlay", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.error).toBe("internal_error");
     expect(body.requestId).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mode-gating — non-admin callers must never see drafts via the public route.
+//
+// `getAdminEntity` does the actual filtering against the DB; here we verify
+// the route plumbing — that the public route resolves `atlasMode` from
+// middleware context and passes `mode: "published"` to the helper for
+// non-admin callers, `mode: "developer"` only when an admin elected
+// developer mode via cookie/header.
+// ---------------------------------------------------------------------------
+
+describe("Public semantic route — mode gating (#2481)", () => {
+  it("passes mode='published' to listAdminEntities for a member caller", async () => {
+    const res = await app.fetch(apiRequest("/api/v1/semantic/entities"));
+    expect(res.status).toBe(200);
+    expect(listOpts?.mode).toBe("published");
+  });
+
+  it("passes mode='published' to getAdminEntity for a member caller", async () => {
+    detailResult = {
+      entity: { table: "orders", description: "x", dimensions: {} },
+      status: "published",
+      source: "db",
+    };
+    const res = await app.fetch(apiRequest("/api/v1/semantic/entities/orders"));
+    expect(res.status).toBe(200);
+    expect(detailOpts?.mode).toBe("published");
+  });
+
+  it("upgrades to mode='developer' when an admin elects developer mode via cookie", async () => {
+    // Simulate the admin session that the developer-mode toggle produces:
+    // `atlas_mode=developer` cookie + admin-level role on the user.
+    mockAuthenticateRequest.mockResolvedValueOnce({
+      authenticated: true,
+      mode: "simple-key",
+      user: {
+        id: "admin-1",
+        mode: "simple-key",
+        label: "Admin",
+        role: "admin",
+        activeOrganizationId: "org-1",
+      },
+    });
+
+    const req = new Request("http://localhost/api/v1/semantic/entities/orders", {
+      method: "GET",
+      headers: {
+        Authorization: "Bearer test-key",
+        Cookie: "atlas-mode=developer",
+      },
+    });
+    detailResult = {
+      entity: { table: "orders", description: "x", dimensions: {} },
+      status: "draft",
+      source: "db",
+    };
+    const res = await app.fetch(req);
+    expect(res.status).toBe(200);
+    expect(detailOpts?.mode).toBe("developer");
+  });
+
+  it("downgrades to mode='published' when a non-admin requests developer mode (security gate)", async () => {
+    // Member role with the developer-mode cookie set — `resolveMode` in
+    // middleware.ts must downgrade. Without this gate any user could read
+    // unpublished entity content by setting a cookie.
+    const req = new Request("http://localhost/api/v1/semantic/entities/orders", {
+      method: "GET",
+      headers: {
+        Authorization: "Bearer test-key",
+        Cookie: "atlas-mode=developer",
+      },
+    });
+    detailResult = {
+      entity: { table: "orders", description: "x", dimensions: {} },
+      status: "published",
+      source: "db",
+    };
+    const res = await app.fetch(req);
+    expect(res.status).toBe(200);
+    expect(detailOpts?.mode).toBe("published");
   });
 });

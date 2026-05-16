@@ -359,6 +359,17 @@ interface GetAdminEntityOptions {
    * rows, omit to use the unique-or-409 default.
    */
   readonly connectionGroupId?: string | null;
+  /**
+   * Content-mode gate (#2481). `published` restricts the DB lookup to
+   * `status = 'published'` so non-admin callers never see drafts even
+   * when an admin is mid-edit in developer mode. `developer` returns
+   * the overlay-effective row (draft shadows published). Defaults to
+   * `developer` to preserve the pre-#2481 admin-route behavior.
+   *
+   * Disk entries are always considered published; the gate only affects
+   * the DB fallback branch.
+   */
+  readonly mode?: "developer" | "published";
 }
 
 /**
@@ -382,6 +393,7 @@ interface GetAdminEntityOptions {
  */
 export async function getAdminEntity(opts: GetAdminEntityOptions): Promise<AdminEntityDetail | null> {
   const { name, orgId, requestId, connectionGroupId } = opts;
+  const mode = opts.mode ?? "developer";
 
   if (!isValidEntityName(name)) {
     log.warn({ requestId, name }, "getAdminEntity: rejected invalid entity name");
@@ -413,7 +425,9 @@ export async function getAdminEntity(opts: GetAdminEntityOptions): Promise<Admin
     // Pass `connectionGroupId` through verbatim — `undefined` triggers
     // the unique-or-409 path in `getEntity`, an explicit `null` or
     // string scopes to that group. The route layer decides which.
-    const row = await getEntity(orgId, "entity", name, connectionGroupId);
+    // `mode` gates draft visibility — published-mode SQL restricts to
+    // `status = 'published'`, developer-mode returns the overlay row.
+    const row = await getEntity(orgId, "entity", name, connectionGroupId, mode);
     if (!row) return null;
 
     const detail = parseEntityYaml(name, "db", () => yaml.load(row.yaml_content), requestId);

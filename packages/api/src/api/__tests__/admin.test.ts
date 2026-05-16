@@ -1073,7 +1073,10 @@ describe("GET /api/v1/admin/semantic/entities/:name — org-scoped + DB overlay"
     // base-root probe. Catches a silent revert of the fallback branch.
     // The 4th arg (`connectionGroupId`) is undefined when the request
     // omits the disambiguation query param (#2412).
-    expect(mockGetEntityAdmin).toHaveBeenCalledWith("org-saas-1", "entity", "apikey", undefined);
+    // 5th arg is the content-mode gate (#2481): admin route resolves
+    // `atlasMode` from middleware context; in the test default the cookie
+    // is not set so resolveMode produces "published".
+    expect(mockGetEntityAdmin).toHaveBeenCalledWith("org-saas-1", "entity", "apikey", undefined, "published");
   });
 
   it("returns 404 with requestId when both disk and DB miss", async () => {
@@ -1163,7 +1166,7 @@ describe("GET /api/v1/admin/semantic/entities/:name — org-scoped + DB overlay"
       adminRequest("/api/v1/admin/semantic/entities/users?connectionGroupId=g_prod_us"),
     );
     expect(res.status).toBe(200);
-    expect(mockGetEntityAdmin).toHaveBeenCalledWith("org-saas-1", "entity", "users", "g_prod_us");
+    expect(mockGetEntityAdmin).toHaveBeenCalledWith("org-saas-1", "entity", "users", "g_prod_us", "published");
   });
 
   it("returns 409 with candidate groups when the name is ambiguous (#2412)", async () => {

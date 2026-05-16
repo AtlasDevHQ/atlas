@@ -17,7 +17,6 @@ import * as path from "path";
 let mockHasInternalDB = false;
 let mockInternalQueryRows: Record<string, unknown>[] = [];
 let mockInternalQueryError: Error | null = null;
-let mockSemanticRootError: Error | null = null;
 let mockScannedEntities: Array<{
   filePath: string;
   sourceName: string;
@@ -26,10 +25,7 @@ let mockScannedEntities: Array<{
 let mockSettings: Record<string, string | undefined> = {};
 
 mock.module("@atlas/api/lib/semantic/files", () => ({
-  getSemanticRoot: () => {
-    if (mockSemanticRootError) throw mockSemanticRootError;
-    return "/tmp/atlas-test-semantic";
-  },
+  getSemanticRoot: () => "/tmp/atlas-test-semantic",
 }));
 
 mock.module("@atlas/api/lib/semantic/scanner", () => ({
@@ -72,7 +68,6 @@ beforeEach(() => {
   mockHasInternalDB = false;
   mockInternalQueryRows = [];
   mockInternalQueryError = null;
-  mockSemanticRootError = null;
   mockScannedEntities = [];
   mockSettings = {};
 });

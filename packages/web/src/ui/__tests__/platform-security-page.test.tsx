@@ -29,15 +29,14 @@ mock.module("next/navigation", () => ({
 }));
 
 let mockData: PlatformSecurityMetrics | null = null;
-let mockError: { message: string; status?: number; code?: string } | null = null;
 let mockLoading = false;
 let guardBlocked = false;
 
 mock.module("@/ui/hooks/use-admin-fetch", () => ({
   useAdminFetch: () => ({
-    data: mockError ? null : mockData,
+    data: mockData,
     loading: mockLoading,
-    error: mockError,
+    error: null,
     setError: () => {},
     refetch: () => Promise.resolve(),
   }),
@@ -89,7 +88,6 @@ function workspace(
 afterEach(() => {
   cleanup();
   mockData = null;
-  mockError = null;
   mockLoading = false;
   guardBlocked = false;
 });

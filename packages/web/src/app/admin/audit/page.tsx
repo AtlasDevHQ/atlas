@@ -33,7 +33,7 @@ import { extractFetchError } from "@/ui/lib/fetch-error";
 import {
   AuditStatsSchema,
   AuditFacetsSchema,
-  AuditConnectionMetaSchema,
+  ConnectionsResponseSchema,
   AuditOAuthClientsSchema,
 } from "@/ui/lib/admin-schemas";
 import { AuditFilterBar, type ActorKindFilter } from "@/ui/components/admin/audit/filter-bar";
@@ -114,12 +114,19 @@ export default function AuditPage() {
   const [analyticsFrom, setAnalyticsFrom] = useState("");
   const [analyticsTo, setAnalyticsTo] = useState("");
 
-  // Connection list for filter dropdown
+  // Connection list for filter dropdown. Shares `ConnectionsResponseSchema`
+  // with /admin/connections + /admin/schema-diff so the TanStack Query cache
+  // entry keyed on this path always holds the same shape — a previously
+  // distinct `AuditConnectionMetaSchema` parsed `{ connections: [...] }` as
+  // an object envelope while the other two transform to the array, and the
+  // shared queryKey meant whichever page mounted first poisoned the cache
+  // for the others (#2444 — /admin/connections crashed with "O is not
+  // iterable" when an admin visited /admin/audit first).
   const { data: connectionsData, error: connectionsError } = useAdminFetch(
     "/api/v1/admin/connections",
-    { schema: AuditConnectionMetaSchema },
+    { schema: ConnectionsResponseSchema },
   );
-  const connectionList = connectionsData?.connections ?? [];
+  const connectionList = connectionsData ?? [];
 
   // Facets for table/column filter dropdowns
   const { data: facetsData, error: facetsError } = useAdminFetch(

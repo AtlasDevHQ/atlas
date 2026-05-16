@@ -1365,7 +1365,7 @@ export function getDB(): DBConnection {
  *   per-org connection. Surfacing it to a workspace would let the agent
  *   silently hit the demo with the `connectionId ?? "default"` fallback
  *   in `runUserQueryPipeline` and return demo data labeled as the user's
- *   (#2505 — paired with the agent-prompt filter in `agent.ts`).
+ *   (#2505 — paired with `filterAgentVisibleSources` in `agent.ts`).
  * - Published mode — only `status = 'published'` rows are visible.
  * - Developer mode — `status IN ('published', 'draft')` rows are visible;
  *   drafts appear alongside published connections.

@@ -135,12 +135,15 @@ export interface ConnectionDetail {
  *                cascade-archived; renames, member assignments, and
  *                re-archives are refused server-side.
  *
- * Runtime tuple + derived type mirrors {@link CONNECTION_STATUSES} so
- * schemas can `z.enum(CONNECTION_GROUP_STATUSES)` instead of restating
- * the literals in each call site.
+ * Type-only export deliberately — a value tuple here would block
+ * scaffold smoke tests until the next `@useatlas/types` publish,
+ * because the scaffolded template resolves the published version of
+ * the package and a new value export isn't visible there yet. Schemas
+ * inline `z.enum(["active", "archived"])` or
+ * `as const satisfies readonly ConnectionGroupStatus[]` instead.
+ * See `feedback_useatlas_types_scaffold_gotcha`.
  */
-export const CONNECTION_GROUP_STATUSES = ["active", "archived"] as const;
-export type ConnectionGroupStatus = (typeof CONNECTION_GROUP_STATUSES)[number];
+export type ConnectionGroupStatus = "active" | "archived";
 
 export interface ConnectionGroup {
   id: string;

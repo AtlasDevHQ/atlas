@@ -11,7 +11,6 @@ export {
   ATLAS_MODES,
   ADMIN_ROLES,
   DB_TYPES,
-  CONNECTION_GROUP_STATUSES,
 } from "@useatlas/types";
 export type {
   AdminRole,

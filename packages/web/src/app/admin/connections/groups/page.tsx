@@ -54,11 +54,7 @@ import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surfa
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { Loader2, Plus, Pencil, Trash2, Layers, GitMerge, Archive } from "lucide-react";
-import {
-  CONNECTION_GROUP_STATUSES,
-  type ConnectionGroup,
-  type GroupArchiveCounts,
-} from "@/ui/lib/types";
+import type { ConnectionGroup, GroupArchiveCounts } from "@/ui/lib/types";
 import {
   stripGroupPrefix,
   isAutoBackfilledSingleton,
@@ -71,8 +67,11 @@ const GroupSchema = z.object({
   id: z.string(),
   name: z.string(),
   // `default("active")` keeps decode tolerant of a deploy-skew window —
-  // an older API surface without a status field still decodes.
-  status: z.enum(CONNECTION_GROUP_STATUSES).default("active"),
+  // an older API surface without a status field still decodes. Enum
+  // inlined rather than imported as a value from `@useatlas/types` so
+  // scaffold smoke tests don't fail against the published types
+  // package (see `feedback_useatlas_types_scaffold_gotcha`).
+  status: z.enum(["active", "archived"]).default("active"),
   memberCount: z.number().int().nonnegative(),
   primaryConnectionId: z.string().nullable().optional(),
   resolvedConnectionId: z.string().nullable().optional(),

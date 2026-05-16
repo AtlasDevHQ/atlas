@@ -13,11 +13,7 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import {
-  CONNECTION_GROUP_STATUSES,
-  type ConnectionGroupStatus,
-  type GroupArchiveCounts,
-} from "@useatlas/types";
+import type { ConnectionGroupStatus, GroupArchiveCounts } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, logAdminActionAwait, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
@@ -154,8 +150,10 @@ const ConnectionGroupSchema = z.object({
   name: z.string(),
   /** Lifecycle. UI hides archived groups behind a "Show archived"
    * toggle; archived groups are read-only and cannot be renamed,
-   * assigned new members, or re-archived. */
-  status: z.enum(CONNECTION_GROUP_STATUSES),
+   * assigned new members, or re-archived. Enum inlined rather than
+   * referencing a `@useatlas/types` value tuple to keep scaffold CI
+   * green (see `feedback_useatlas_types_scaffold_gotcha`). */
+  status: z.enum(["active", "archived"]),
   memberCount: z.number().int().nonnegative(),
   /** 0066 — admin-pinned primary member. NULL means "fall back to
    * first member by (created_at, id)" — see lib/dashboards-group-resolve.ts. */

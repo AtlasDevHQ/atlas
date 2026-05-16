@@ -41,13 +41,24 @@ export function generateGroupId(): string {
 /**
  * Narrow a thrown Postgres error to its `code` + `constraint` fields
  * without leaking `any`. `pg` populates both on driver-thrown errors;
- * non-driver throws (TypeErrors, network blips) come through with neither
- * set, and the caller falls through to its generic 500 path.
+ * non-driver throws come through with neither set, and the caller falls
+ * through to its generic 500 path.
+ *
+ * Walks `.cause` chains so a wrapped pg error (Effect `Cause.fail`,
+ * `new Error(msg, { cause: pgErr })`, retry-wrapping `internalQuery`)
+ * still surfaces its driver fields — without this, the moment any
+ * caller wraps the query, every 23505 disambiguation in this codebase
+ * silently degrades to a generic 500. Depth-bounded at 5 to defend
+ * against pathological cycles.
  */
 export function pgErrorMeta(err: unknown): { code?: string; constraint?: string } {
-  if (!(err instanceof Error)) return {};
-  const code = "code" in err && typeof err.code === "string" ? err.code : undefined;
-  const constraint =
-    "constraint" in err && typeof err.constraint === "string" ? err.constraint : undefined;
-  return { code, constraint };
+  let cursor: unknown = err;
+  for (let depth = 0; depth < 5 && cursor instanceof Error; depth++) {
+    const code = "code" in cursor && typeof cursor.code === "string" ? cursor.code : undefined;
+    const constraint =
+      "constraint" in cursor && typeof cursor.constraint === "string" ? cursor.constraint : undefined;
+    if (code || constraint) return { code, constraint };
+    cursor = "cause" in cursor ? cursor.cause : undefined;
+  }
+  return {};
 }

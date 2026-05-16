@@ -683,22 +683,12 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
     return c.json({ error: "invalid_request", message: "Connection URL is required.", requestId }, 400);
   }
 
-  // ── Env field (#2484) ─────────────────────────────────────────────
-  // Three branches resolved up front so the CTE selection below is
-  // unambiguous:
-  //   - `connectionGroupId` (string) → attach to an existing env owned
-  //     by this org. Cross-org ids resolve to 404 (B2B isolation —
-  //     foreign-org ids look identical to ids that don't exist anywhere).
-  //   - `newGroupName` (string) → create an env inline. The new row gets
-  //     `primary_connection_id = <new connection id>` so the UI's
-  //     `isAutoBackfilledSingleton` filter treats it as user-named the
-  //     moment it lands.
-  //   - neither → keep the existing auto-`g_<id>` self-group behavior
-  //     so the migration-0062 invariant (every connection has a group)
-  //     stays intact for the single-DB user who never opens the env
-  //     picker.
-  // Both fields together is an invalid_request — the dialog enforces
-  // exclusivity client-side, but a direct API caller could send both.
+  // Foreign-org connectionGroupId resolves to 404, not 403 — B2B
+  // isolation: a foreign-org id is indistinguishable from a missing id
+  // from the caller's perspective. The auto-`g_<id>` fallback preserves
+  // the migration-0062 invariant that every connection has a group.
+  // Both fields together is invalid_request: the dialog enforces
+  // exclusivity client-side but a direct API caller could send both.
   if (connectionGroupId !== undefined && newGroupName !== undefined) {
     return c.json(
       {
@@ -727,11 +717,9 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
     trimmedNewGroupName = newGroupName.trim();
   }
 
-  // Pre-validate `connectionGroupId` cross-org BEFORE the connection
-  // INSERT so a foreign-org id surfaces as 404 here instead of a FK
-  // violation 23503 inside the CTE (which would leak to the user as a
-  // generic 500). Mirrors the merge-route pattern at
-  // `admin-connection-groups.ts` source-row pre-validation.
+  // Pre-validate cross-org so a foreign-org id surfaces as 404 here
+  // rather than a 23503 FK violation inside the CTE. Mirrors the
+  // merge-route source-row pre-validation in admin-connection-groups.ts.
   if (typeof connectionGroupId === "string") {
     const groupRows = await internalQuery<{ id: string; status: string }>(
       `SELECT id, status FROM connection_groups WHERE id = $1 AND org_id = $2`,
@@ -816,20 +804,14 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
   // `/api/v1/admin/publish` endpoint instead of flipping a mode toggle first.
   const status = "draft";
 
-  // `resolvedGroupId` is what eventually lands in `connections.group_id`.
-  // Populated in the inline-create / attach branches; left null when the
-  // CTE auto-creates `g_<id>` for the single-DB default path. Surfaced
-  // in the response so the UI can render the env chip without a
-  // re-fetch.
+  // Surfaced in the response so the UI can render the env chip without
+  // a re-fetch.
   let resolvedGroupId: string | null = null;
   try {
     const urlKeyVersion = activeKeyVersion();
     if (revivingArchived) {
       // The archived row owns the PK — revive it in place so we preserve
-      // audit/version history rather than stranding it. Reviving honors
-      // the env field too: an explicit `connectionGroupId` / `newGroupName`
-      // re-targets the revived row to that env; missing leaves the
-      // existing group_id untouched (resolve below from RETURNING).
+      // audit/version history rather than stranding it.
       if (typeof connectionGroupId === "string") {
         resolvedGroupId = connectionGroupId;
         await internalQuery(
@@ -855,8 +837,6 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
         );
       }
     } else if (typeof connectionGroupId === "string") {
-      // Attach branch — no group_row CTE; the env already exists and
-      // was cross-org validated above. group_id assigned directly.
       resolvedGroupId = connectionGroupId;
       await internalQuery(
         `INSERT INTO connections (id, url, url_key_version, type, description, schema_name, org_id, status, group_id)
@@ -864,11 +844,10 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
         [id, encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null, orgId, status, urlKeyVersion, connectionGroupId],
       );
     } else if (trimmedNewGroupName !== null) {
-      // Inline-create branch — atomic CTE creates the env with
-      // `primary_connection_id = <new connection id>` so the UI's
-      // `isAutoBackfilledSingleton` heuristic treats it as user-named.
-      // A 23505 on `uq_connection_groups_org_name` rolls the whole
-      // statement back (no half-created connection without its env).
+      // Atomic CTE: a 23505 on uq_connection_groups_org_name rolls the
+      // connection INSERT back too — no half-created connection without
+      // its env. primary_connection_id = <new id> makes the env
+      // user-named to isAutoBackfilledSingleton (web) the moment it lands.
       const newGroupId = generateGroupId();
       resolvedGroupId = newGroupId;
       await internalQuery(
@@ -882,8 +861,8 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
         [id, encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null, orgId, status, urlKeyVersion, newGroupId, trimmedNewGroupName],
       );
     } else {
-      // Default branch — preserve migration-0062 invariant that every
-      // connection has a group, even when the caller doesn't specify one.
+      // Preserve migration-0062 invariant: every connection has a group,
+      // even when the caller doesn't specify one.
       resolvedGroupId = `g_${id}`;
       await internalQuery(
         `WITH group_row AS (
@@ -899,9 +878,10 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
     }
   } catch (err) {
     connections.unregister(id);
-    // Disambiguate the inline-create name-conflict path from the
-    // generic 500 fallthrough so the UI can render "name already in use"
-    // alongside the field rather than a generic server-error toast.
+    // 23505 on the unique-name index gets field-targeted 409 copy
+    // instead of a generic 500 toast. Log `constraint` on the fallthrough
+    // so post-hoc triage can tell unique-name from PK-collision from
+    // FK-violation without re-running with a stack trace.
     const meta = pgErrorMeta(err);
     if (meta.code === "23505" && meta.constraint === UNIQUE_NAME_CONSTRAINT && trimmedNewGroupName !== null) {
       return c.json(
@@ -909,7 +889,7 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
         409,
       );
     }
-    log.error({ err: errorMessage(err), connectionId: id, requestId }, "Failed to persist connection");
+    log.error({ err: errorMessage(err), connectionId: id, requestId, pgCode: meta.code, pgConstraint: meta.constraint }, "Failed to persist connection");
     return c.json({ error: "internal_error", message: "Failed to save connection.", requestId }, 500);
   }
 
@@ -921,11 +901,11 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
 
   log.info({ requestId, connectionId: id, dbType, orgId, groupId: resolvedGroupId, actorId: authResult.user?.id }, "Connection created");
 
-  // Audit metadata stays in lockstep with `wizard.ts` to preserve the
-  // F-34 #1789 parity invariant (see admin-wizard-save-audit.test.ts) —
-  // compliance queries filter on this exact key set regardless of
-  // entry path. `groupId` rides on the structured log + the structured
-  // response, not on the audit row, so no shape divergence.
+  // Audit metadata stays in lockstep with wizard.ts to preserve the
+  // F-34 #1789 parity invariant (admin-wizard-save-audit.test.ts is the
+  // gate). Compliance queries filter on this exact key set regardless
+  // of entry path. groupId rides on the structured log + response, not
+  // on the audit row.
   logAdminAction({
     actionType: ADMIN_ACTIONS.connection.create,
     targetType: "connection",
@@ -984,13 +964,9 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
   const { url, description, schema, connectionGroupId, newGroupName } = body as Record<string, unknown>;
   const current = existing[0];
 
-  // ── Env reassign (#2484) ──────────────────────────────────────────
-  // Symmetric to POST:
-  //   - field absent     → no group change
-  //   - `connectionGroupId` (string)   → re-attach to that env (cross-org rejected)
-  //   - `connectionGroupId: null`      → re-attach to auto `g_<id>` (ungroup)
-  //   - `newGroupName` (string)        → inline-create + re-attach atomically
-  //   - both fields together           → 400 invalid_request
+  // Symmetric to POST: connectionGroupId string attaches, null
+  // re-attaches to auto-`g_<id>`, newGroupName creates inline. Cross-org
+  // rejected like POST. Both fields = 400.
   if (connectionGroupId !== undefined && newGroupName !== undefined) {
     return c.json(
       {
@@ -1099,7 +1075,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
       connections.register(id, { url: currentUrl, description: current.description ?? undefined, schema: current.schema_name ?? undefined });
     } catch (restoreErr) {
       rollbackFailed = true;
-      log.error({ connectionId: id, requestId, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after encryption failure — connection unregistered");
+      log.error({ connectionId: id, requestId, err: errorMessage(restoreErr) }, "Failed to restore previous connection after encryption failure — connection unregistered");
       connections.unregister(id);
     }
     log.error({ err: errorMessage(err), connectionId: id, requestId }, "Failed to encrypt connection URL");
@@ -1109,10 +1085,9 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
     return c.json({ error: "encryption_failed", message: encMsg, requestId }, 500);
   }
 
-  // Resolve the env reassignment target so the UPDATE below carries
-  // `group_id` in lockstep with the URL/description/schema diff. Both
-  // changes fail together — no half-committed "URL updated but env
-  // didn't move" state observable to the caller.
+  // group_id rides on the same UPDATE as URL/description/schema so
+  // both changes fail together — no half-committed "URL updated but
+  // env didn't move" state observable to the caller.
   let resolvedGroupId: string | null = current.group_id;
   try {
     const urlKeyVersion = activeKeyVersion();
@@ -1166,12 +1141,10 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
       connections.register(id, { url: currentUrl, description: current.description ?? undefined, schema: current.schema_name ?? undefined });
     } catch (restoreErr) {
       rollbackFailed = true;
-      log.error({ connectionId: id, requestId, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after DB update failure — connection unregistered");
+      log.error({ connectionId: id, requestId, err: errorMessage(restoreErr) }, "Failed to restore previous connection after DB update failure — connection unregistered");
       connections.unregister(id);
     }
-    // Disambiguate the inline-create name-conflict path. Mirrors the
-    // POST handler — same 23505 unique-name constraint surfaces a 409
-    // with field-targeted copy instead of a generic 500 toast.
+    // Mirrors POST — 23505 on inline-create → 409 with field-targeted copy.
     const meta = pgErrorMeta(err);
     if (meta.code === "23505" && meta.constraint === UNIQUE_NAME_CONSTRAINT && trimmedNewGroupName !== null) {
       return c.json(
@@ -1179,7 +1152,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
         409,
       );
     }
-    log.error({ err: errorMessage(err), connectionId: id, requestId }, "Failed to update connection in DB");
+    log.error({ err: errorMessage(err), connectionId: id, requestId, pgCode: meta.code, pgConstraint: meta.constraint }, "Failed to update connection in DB");
     const updateMsg = rollbackFailed
       ? "Failed to update connection. The connection may need a server restart to restore."
       : "Failed to update connection.";

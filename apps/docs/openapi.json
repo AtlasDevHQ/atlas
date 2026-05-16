@@ -49221,7 +49221,7 @@
           "Admin — Connections"
         ],
         "summary": "Update connection",
-        "description": "Updates an existing connection's URL, description, or schema. Scoped to active organization.",
+        "description": "Updates an existing connection's URL, description, schema, or environment attachment. Scoped to active organization.",
         "parameters": [
           {
             "schema": {
@@ -49308,7 +49308,32 @@
             }
           },
           "404": {
-            "description": "Connection not found",
+            "description": "Connection or environment not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Environment name already in use, or target environment is archived",
             "content": {
               "application/json": {
                 "schema": {

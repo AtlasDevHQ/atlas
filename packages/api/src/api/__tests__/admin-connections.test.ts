@@ -28,6 +28,11 @@ const mockHealthCheck = mock(() =>
   Promise.resolve({ status: "healthy", latencyMs: 3, checkedAt: new Date() }),
 );
 
+// Captured so tests can assert on register-call sequences (e.g. the
+// registry-rollback contract on PUT). Without a captured reference,
+// inline `mock(() => {})` is unobservable from `.mock.calls`.
+const mockRegister = mock(() => {});
+
 const mocks = createApiTestMocks({
   authUser: {
     id: "admin-1",
@@ -47,7 +52,7 @@ const mocks = createApiTestMocks({
         { id: "other-org-conn", dbType: "mysql", description: "Other org connection" },
       ],
       healthCheck: mockHealthCheck,
-      register: mock(() => {}),
+      register: mockRegister,
       unregister: mock(() => false),
       has: (id: string) => ["default", "warehouse", "other-org-conn"].includes(id),
       list: () => ["default", "warehouse", "other-org-conn"],
@@ -1313,6 +1318,122 @@ describe("admin connections — org scoping", () => {
 
       expect(res.status).toBe(400);
     });
+
+    it("attach to an archived env: 409 with restore guidance, no INSERT fires", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT id, status FROM connection_groups")) {
+          return Promise.resolve([{ id: "g_stale", status: "archived" }]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections", "POST", {
+          id: "analytics",
+          url: "postgresql://user:pass@host/db",
+          connectionGroupId: "g_stale",
+        }),
+      );
+
+      expect(res.status).toBe(409);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.error).toBe("conflict");
+      expect(body.message).toContain("archived");
+
+      const insertCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) => typeof sql === "string" && sql.includes("INSERT INTO connections"),
+      );
+      expect(insertCall).toBeUndefined();
+    });
+
+    it("revive archived row with newGroupName: UPDATE-with-CTE branch with primary_connection_id set", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        // PK-collision SELECT — archived row already owns the id.
+        if (sql.includes("SELECT status FROM connections")) {
+          return Promise.resolve([{ status: "archived" }]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections", "POST", {
+          id: "analytics",
+          url: "postgresql://user:pass@host/db",
+          newGroupName: "Production",
+        }),
+      );
+
+      expect(res.status).toBe(201);
+      const updateCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) =>
+          typeof sql === "string" &&
+          sql.startsWith("WITH group_row AS") &&
+          sql.includes("INSERT INTO connection_groups") &&
+          sql.includes("primary_connection_id") &&
+          sql.includes("UPDATE connections"),
+      );
+      expect(updateCall).toBeDefined();
+      expect(updateCall![1]).toContain("Production");
+      expect(updateCall![1]).toContain("analytics");
+    });
+
+    it("revive archived row with connectionGroupId: UPDATE includes group_id, no group CTE", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT status FROM connections")) {
+          return Promise.resolve([{ status: "archived" }]);
+        }
+        if (sql.includes("SELECT id, status FROM connection_groups")) {
+          return Promise.resolve([{ id: "g_prod", status: "active" }]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections", "POST", {
+          id: "analytics",
+          url: "postgresql://user:pass@host/db",
+          connectionGroupId: "g_prod",
+        }),
+      );
+
+      expect(res.status).toBe(201);
+      const updateCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) =>
+          typeof sql === "string" &&
+          sql.startsWith("UPDATE connections") &&
+          sql.includes("group_id"),
+      );
+      expect(updateCall).toBeDefined();
+      expect(updateCall![1]).toContain("g_prod");
+    });
+
+    it("revive archived row with no env field: UPDATE preserves existing group_id (no group_id clause)", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT status FROM connections")) {
+          return Promise.resolve([{ status: "archived" }]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections", "POST", {
+          id: "analytics",
+          url: "postgresql://user:pass@host/db",
+        }),
+      );
+
+      expect(res.status).toBe(201);
+      const updateCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) =>
+          typeof sql === "string" &&
+          sql.startsWith("UPDATE connections"),
+      );
+      expect(updateCall).toBeDefined();
+      // No `group_id =` in the SET list — preserves whatever the archived
+      // row already pointed at.
+      expect(updateCall![0]).not.toContain("group_id =");
+    });
   });
 
   describe("PUT /connections/:id — env field (#2484)", () => {
@@ -1473,6 +1594,98 @@ describe("admin connections — org scoping", () => {
         ([sql]) => typeof sql === "string" && sql.startsWith("UPDATE connections"),
       );
       expect(updateCall).toBeUndefined();
+    });
+
+    it("attach to an archived env on edit: 409 with restore guidance, no UPDATE fires", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT id, url, type, description, schema_name, group_id FROM connections")) {
+          return Promise.resolve([
+            {
+              id: "warehouse",
+              url: "encrypted:postgresql://old",
+              type: "postgres",
+              description: null,
+              schema_name: null,
+              group_id: "g_warehouse",
+            },
+          ]);
+        }
+        if (sql.includes("SELECT id, status FROM connection_groups")) {
+          return Promise.resolve([{ id: "g_stale", status: "archived" }]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/warehouse", "PUT", {
+          connectionGroupId: "g_stale",
+        }),
+      );
+
+      expect(res.status).toBe(409);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.error).toBe("conflict");
+      expect(body.message).toContain("archived");
+
+      const updateCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) => typeof sql === "string" && sql.startsWith("UPDATE connections"),
+      );
+      expect(updateCall).toBeUndefined();
+    });
+
+    it("DB UPDATE throws on env reassign: registry rolls back to previous URL", async () => {
+      // Asserts the registry-rollback contract holds when the new env-branch
+      // UPDATE fails after `urlChanged` has already swapped the registry to
+      // the new URL. A regression that moves the env UPDATE outside the
+      // rollback try (or replaces register-with-current with bare
+      // unregister) would silently strand the registry on the new URL
+      // while the DB carries the old one — the agent would query the
+      // wrong DB. Catching that here is more valuable than asserting
+      // the 500 status alone.
+      mockRegister.mockClear();
+
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT id, url, type, description, schema_name, group_id FROM connections")) {
+          return Promise.resolve([
+            {
+              id: "warehouse",
+              url: "encrypted:postgresql://old",
+              type: "postgres",
+              description: "old desc",
+              schema_name: null,
+              group_id: "g_warehouse",
+            },
+          ]);
+        }
+        if (sql.includes("SELECT id, status FROM connection_groups")) {
+          return Promise.resolve([{ id: "g_prod", status: "active" }]);
+        }
+        if (typeof sql === "string" && sql.startsWith("UPDATE connections")) {
+          return Promise.reject(new Error("transient pool failure"));
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/warehouse", "PUT", {
+          url: "postgresql://new",
+          connectionGroupId: "g_prod",
+        }),
+      );
+
+      expect(res.status).toBe(500);
+      // The handler runs `register` twice on a urlChanged + UPDATE-fails
+      // path: once with the new URL (line 1064), once to rollback with
+      // the previous URL (line 1098 or 1158). The second call is the
+      // rollback we want to assert fired.
+      const registerCalls = mockRegister.mock.calls;
+      expect(registerCalls.length).toBeGreaterThanOrEqual(2);
+      const rollbackCall = registerCalls[registerCalls.length - 1] as Array<unknown>;
+      // Args are [id, { url, description, schema }]; rollback uses the
+      // pre-edit URL so the registry returns to a coherent state.
+      const rollbackOpts = rollbackCall[1] as { url?: string };
+      expect(rollbackOpts.url).toBe("postgresql://old");
     });
 
     it("inline-create name conflict on edit: 23505 → 409, no UPDATE persisted", async () => {

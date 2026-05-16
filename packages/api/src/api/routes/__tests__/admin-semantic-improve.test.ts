@@ -220,12 +220,15 @@ describe("admin-semantic-improve", () => {
     // load-bearing assertion is "loadEntitiesForOrg wins when both are
     // present", above.
 
-    it("entityCount surfaces what loadEntitiesForOrg returned (parity with Overview)", async () => {
+    it("entityCount surfaces the merged entities count, totalRows surfaces DB rows (parity with Overview)", async () => {
       // #2503: the Health card's "X entities" caption must match the count
       // the file tree above it renders. Both flow from `listAdminEntities`'s
       // DB+disk merge; `loadEntitiesForOrg` is the route's adapter to that
-      // same shape. If a future refactor swaps it for a DB-only loader the
-      // Health caption silently drifts again — this test fails first.
+      // same shape. The two numbers below are deliberately distinct: 10 DB
+      // rows + 36 disk-mirror entries = 46 merged entities. The route must
+      // surface entityCount=46 (merged → user-facing) and totalRows=10
+      // (DB-only → corrupt-discriminator denominator). A refactor that
+      // collapses either side fails here first.
       mockHasInternalDB = true;
       mock.module("@atlas/api/lib/semantic/expert/context-loader", () => ({
         loadEntitiesForOrg: async () => ({
@@ -237,7 +240,7 @@ describe("admin-semantic-improve", () => {
             joins: [],
             query_patterns: [],
           })),
-          totalRows: 46,
+          totalRows: 10,
           parseFailures: 0,
         }),
         loadEntitiesFromDisk: async () => [],
@@ -247,7 +250,39 @@ describe("admin-semantic-improve", () => {
       expect(res.status).toBe(200);
       const body = (await res.json()) as { entityCount: number; totalRows: number };
       expect(body.entityCount).toBe(46);
-      expect(body.totalRows).toBe(46);
+      expect(body.totalRows).toBe(10);
+    });
+
+    it("corrupt status still fires when disk mirror has entries but all DB rows failed parse", async () => {
+      // #2503 review (silent-failure-hunter): pre-fix, the route's `corrupt`
+      // discriminator compared `parseFailures === entities.length`. A
+      // workspace whose every DB row was unparseable but whose disk mirror
+      // had healthy entries would have `entities.length > parseFailures` →
+      // status degraded to `ok`, hiding the corruption. The route now gates
+      // `corrupt` on `totalRows` (DB-rows-considered), so the disk fill-in
+      // can't mask the signal.
+      mockHasInternalDB = true;
+      mock.module("@atlas/api/lib/semantic/expert/context-loader", () => ({
+        loadEntitiesForOrg: async () => ({
+          // 5 disk entries merged in despite all DB rows being corrupt.
+          entities: Array.from({ length: 5 }, (_, i) => ({
+            name: `d${i}`,
+            table: `d${i}`,
+            dimensions: [],
+            measures: [],
+            joins: [],
+            query_patterns: [],
+          })),
+          totalRows: 3,
+          parseFailures: 3,
+        }),
+        loadEntitiesFromDisk: async () => [],
+        loadGlossaryFromDisk: async () => [],
+      }));
+      const res = await adminSemanticImprove.request("/health");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { status: string };
+      expect(body.status).toBe("corrupt");
     });
 
     it("response includes a status discriminator distinguishing empty from corrupt", async () => {

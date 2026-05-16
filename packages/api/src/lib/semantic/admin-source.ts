@@ -30,6 +30,7 @@ import {
 import { getSemanticRoot as resolveSemanticRoot } from "./sync";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { EntityShape, type EntityShapeT } from "./shapes";
+import { dedupKey } from "./dedup-key";
 
 const log = createLogger("semantic-admin-source");
 
@@ -270,11 +271,9 @@ function diskToAdminSummary(e: EntitySummary): AdminEntitySummary {
  * left-to-right in a stable order; disk entries (null group) sort before
  * any named group when names match.
  */
-function dedupKey(name: string, groupId: string | null): string {
-  // `\0` is illegal in YAML names and connection-group ids, so it's a safe
-  // delimiter — `users` + `g_users` cannot collide with another row.
-  return `${name}\0${groupId ?? ""}`;
-}
+// The `(name, connection_group_id)` dedup key now lives in `dedup-key.ts`
+// so `loadEntitiesForOrg` can import it without pulling the larger admin-
+// source surface into its test fixtures (#2503 review).
 
 export function mergeAdminEntities(input: {
   readonly dbRows: readonly SemanticEntityRow[];

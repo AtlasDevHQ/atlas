@@ -21,8 +21,14 @@ import * as path from "path";
 let internalDBAvailable = true;
 
 interface FakeDBRow {
+  /** Row `name` column — also the default display name unless `yamlName` overrides. */
   readonly name: string;
   readonly table: string;
+  /** Optional explicit `name:` line in the YAML content. When set and distinct
+   * from `table`, the parser surfaces a divergent display name (the case the
+   * disk-dedup test exercises). When omitted, the YAML has no `name:` field
+   * so the display name falls back to `table` — matching the common case. */
+  readonly yamlName?: string;
   readonly description?: string;
   readonly connection_group_id?: string | null;
   readonly status?: "published" | "draft";
@@ -53,6 +59,7 @@ function toSemanticRow(r: FakeDBRow) {
   ).join("");
   const yamlContent =
     `table: ${r.table}\n` +
+    (r.yamlName ? `name: ${r.yamlName}\n` : "") +
     (r.description ? `description: ${r.description}\n` : "") +
     (dims ? `dimensions:\n${dims}` : "") +
     (measures ? `measures:\n${measures}` : "") +
@@ -143,7 +150,13 @@ describe("loadEntitiesForOrg", () => {
     writeDiskEntity("users", "table: users\ndescription: From disk\n");
 
     const result = await loadEntitiesForOrg(ORG_ID, "published");
-    expect(result.totalRows).toBe(2);
+    // `entities.length` is the merged count (DB + disk after dedup); the
+    // 1 DB row + 1 disk-mirror entry survive as 2 distinct entries because
+    // the named-group DB key doesn't collide with the null-group disk key.
+    expect(result.entities).toHaveLength(2);
+    // `totalRows` is DB-rows-considered (#2503 review) — kept distinct from
+    // `entities.length` so the route's `corrupt` discriminator stays sound.
+    expect(result.totalRows).toBe(1);
     expect(result.entities.map((e) => e.name).toSorted()).toEqual(["users", "users"]);
   });
 
@@ -171,9 +184,62 @@ describe("loadEntitiesForOrg", () => {
     writeDiskEntity("users", "table: users\ndescription: From disk\n");
 
     const result = await loadEntitiesForOrg(ORG_ID, "published");
-    expect(result.totalRows).toBe(3);
+    expect(result.entities).toHaveLength(3);
+    expect(result.totalRows).toBe(2); // 2 DB rows considered
     const descriptions = result.entities.map((e) => e.description).toSorted();
     expect(descriptions).toEqual(["EU", "From disk", "US"]);
+  });
+
+  it("disk entries dedup on `parsed.table` not `parsed.name` (matches diskToAdminSummary)", async () => {
+    // #2503 review: a disk YAML with `name: mrr` over `table: subscription_events`
+    // and a DB row with the same YAML are genuinely different things in
+    // `mergeAdminEntities`'s book — DB keys on (`mrr`, group), disk keys on
+    // (`subscription_events`, null). They don't collide and both appear.
+    // The earlier draft of this loader keyed disk on `parsed.name` and would
+    // have falsely collapsed them in a single-group null-scope workspace.
+    publishedRows = [{
+      name: "mrr",
+      yamlName: "mrr",
+      table: "subscription_events",
+      connection_group_id: null,
+      description: "From DB",
+    }];
+    writeDiskEntity(
+      "subscription_events",
+      "table: subscription_events\nname: mrr\ndescription: From disk\n",
+    );
+
+    const result = await loadEntitiesForOrg(ORG_ID, "published");
+    // DB key = (`mrr`, null). Disk key = (`subscription_events`, null).
+    // Different keys → both appear. (Same outcome as `mergeAdminEntities`'s
+    // "dedup key is summary `name`, not DB row `name`" test.)
+    expect(result.entities).toHaveLength(2);
+    const descriptions = result.entities.map((e) => e.description).toSorted();
+    expect(descriptions).toEqual(["From DB", "From disk"]);
+  });
+
+  it("walks per-source disk subdirectories (matches discoverEntities traversal)", async () => {
+    // `mergeAdminEntities` reads disk via `discoverEntities`, which walks
+    // both `entities/` AND `{source}/entities/` subdirectories (#2503 review).
+    // A loader that only walked flat `entities/` would silently undercount
+    // when an admin manually places per-source files.
+    const orgDir = path.join(tmpRoot, ".orgs", ORG_ID);
+    fs.mkdirSync(path.join(orgDir, "entities"), { recursive: true });
+    fs.writeFileSync(
+      path.join(orgDir, "entities", "users.yml"),
+      "table: users\n",
+    );
+    fs.mkdirSync(path.join(orgDir, "warehouse", "entities"), { recursive: true });
+    fs.writeFileSync(
+      path.join(orgDir, "warehouse", "entities", "fact_orders.yml"),
+      "table: fact_orders\n",
+    );
+
+    const result = await loadEntitiesForOrg(ORG_ID, "published");
+    expect(result.entities.map((e) => e.name).toSorted()).toEqual([
+      "fact_orders",
+      "users",
+    ]);
   });
 
   it("counts dimensions, measures, and joins on each entity for computeSemanticHealth", async () => {
@@ -214,5 +280,26 @@ describe("loadEntitiesForOrg", () => {
     const result = await loadEntitiesForOrg(ORG_ID, "published");
     expect(result.entities.map((e) => e.name)).toEqual(["good"]);
     expect(result.parseFailures).toBe(1);
+  });
+
+  it("disk parse failures do NOT increment parseFailures (DB-only contract)", async () => {
+    // #2503 review (test-analyzer): the previous `parseFailures` test
+    // exercised only the DB-corruption path. Without a disk-corruption case
+    // a regression that adds `parseFailures++` to the disk catch block
+    // would silently flip the `corrupt` discriminator's semantics and the
+    // existing tests would still pass. Pin the asymmetry explicitly.
+    publishedRows = [{ name: "good", table: "good", connection_group_id: null }];
+    writeDiskEntity("bad", "{{{ not yaml at all");
+    writeDiskEntity("also_bad", "- just\n- a\n- list\n"); // parses but not an object
+
+    const result = await loadEntitiesForOrg(ORG_ID, "published");
+    expect(result.entities.map((e) => e.name)).toEqual(["good"]);
+    // Disk parse failure (`scanEntities` returns it in `warnings`, the
+    // file simply doesn't appear in `entities`) does not increment
+    // parseFailures.
+    expect(result.parseFailures).toBe(0);
+    // `totalRows` stays the DB-rows-considered count (just the one healthy
+    // DB row), confirming the disk side never contributes to it.
+    expect(result.totalRows).toBe(1);
   });
 });

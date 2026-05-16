@@ -145,21 +145,30 @@ export async function loadEntitiesFromDB(
  * empty state, and the `/admin/semantic` file tree — those three all read
  * through `listAdminEntities`. Reading only DB rows (`loadEntitiesFromDB`)
  * left the Health card displaying a smaller number when the org's DB rows
- * carry a non-null `connection_group_id` (post-1.4.4 backfill) and the disk-
- * mirror entries — written with no group scope — no longer share the dedup
- * key. Result was visible drift: file tree showed 46 rows, Health caption
- * read "23 entities."
+ * carry a non-null `connection_group_id` (introduced by migration 0063 /
+ * #2412) and the disk-mirror entries — written with no group scope — no
+ * longer share the dedup key. Result was visible drift: file tree showed
+ * roughly twice the row count the Health caption did.
  *
- * This helper mirrors `listAdminEntities`'s merge logic but returns the full
- * `ParsedEntity[]` `computeSemanticHealth` needs. DB rows are parsed once
- * here (no extra YAML pass); disk entries are read from the org-scoped
- * `.orgs/<orgId>/entities/` directory so a SaaS pod never falls through to
- * the image's bundled fixture.
+ * Three invariants this helper holds in lockstep with `mergeAdminEntities`
+ * (#2503 review):
+ *   1. Dedup key is built via `dedupKey()` re-exported from `admin-source.ts`
+ *      — not a hand-maintained copy — so the formula can never silently drift.
+ *   2. Disk entries key on `(parsed.table, null)`, mirroring
+ *      `diskToAdminSummary` which ignores YAML `name:` for disk rows. DB rows
+ *      key on `(parsed.name ?? parsed.table, group)`, mirroring
+ *      `parseRowToAdminSummary`.
+ *   3. Disk traversal goes through `scanEntities` so per-source
+ *      `{source}/entities/` subdirectories are walked (matches
+ *      `discoverEntities`). The dual-write sync writes flat under
+ *      `entities/` today, but the file tree also surfaces per-source files,
+ *      and the Health count must include them or the gap reopens.
  *
- * Dedup is `(name, connection_group_id)` — same key `mergeAdminEntities`
- * uses, so the count matches by construction. Multi-group orgs surface the
- * same name once per group; disk entries (group = `null`) survive only when
- * no DB row already covers `(name, null)`.
+ * `totalRows` stays DB-rows-scoped (matches `loadEntitiesFromDB`'s contract)
+ * so the route's `corrupt` discriminator (`parseFailures === totalRows &&
+ * totalRows > 0`) still fires when every DB row fails parse, even if the
+ * disk mirror has healthy entries that would otherwise mask the corruption.
+ * `entities.length` is the merged user-facing count.
  *
  * `parseFailures` counts only DB rows that failed YAML parsing — disk parse
  * failures bubble through the file-level `try/catch` and are surfaced via
@@ -174,17 +183,15 @@ export async function loadEntitiesForOrg(
 
   const { listEntityRows, listEntitiesWithOverlay } = await import("@atlas/api/lib/semantic/entities");
   const { getSemanticRoot: getOrgSemanticRoot } = await import("@atlas/api/lib/semantic/sync");
+  const { scanEntities } = await import("@atlas/api/lib/semantic/scanner");
+  const { dedupKey } = await import("@atlas/api/lib/semantic/dedup-key");
 
   const rows = mode === "developer"
     ? await listEntitiesWithOverlay(orgId, "entity")
     : await listEntityRows(orgId, "entity", "published");
 
   const entities: ParsedEntity[] = [];
-  // Dedup key matches `mergeAdminEntities` (`packages/api/src/lib/semantic/
-  // admin-source.ts`): `${name}\0${groupId ?? ""}`. `\0` is illegal in both
-  // YAML names and connection-group ids, so it can't collide with a real key.
   const seen = new Set<string>();
-  const dedupKey = (name: string, groupId: string | null): string => `${name}\0${groupId ?? ""}`;
   let parseFailures = 0;
 
   for (const row of rows) {
@@ -199,6 +206,8 @@ export async function loadEntitiesForOrg(
         fallbackName: row.name,
         fallbackConnection: groupId,
       });
+      // DB rows key on the YAML display name (matches
+      // `parseRowToAdminSummary` in admin-source.ts).
       const key = dedupKey(entity.name, groupId);
       if (seen.has(key)) continue;
       seen.add(key);
@@ -212,45 +221,42 @@ export async function loadEntitiesForOrg(
     }
   }
 
-  // Disk mirror — org-scoped under `.orgs/<orgId>/entities/`. `discoverEntities`
-  // walks the per-source subdirectories too, but the dual-write sync writes flat
-  // under `entities/` regardless of group, so disk entries always key on the
-  // null group. Matches `diskToAdminSummary` in `admin-source.ts`.
+  // Disk mirror — org-scoped under `.orgs/<orgId>/entities/` (and any
+  // `{source}/entities/` subdirectories scanEntities walks). `scanEntities`
+  // is the same traversal `discoverEntities` uses, so the Health count
+  // includes every file the admin file tree renders.
   const diskRoot = getOrgSemanticRoot(orgId);
-  const entitiesDir = path.join(diskRoot, "entities");
-  if (fs.existsSync(entitiesDir)) {
-    for (const file of fs.readdirSync(entitiesDir)) {
-      if (!file.endsWith(".yml") && !file.endsWith(".yaml")) continue;
-      try {
-        const content = fs.readFileSync(path.join(entitiesDir, file), "utf-8");
-        const parsed = yaml.load(content) as Record<string, unknown> | null;
-        if (!parsed || typeof parsed !== "object") continue;
-
-        const entity = projectParsedEntity(parsed, {
-          fallbackName: file.replace(/\.ya?ml$/, ""),
-        });
-        const key = dedupKey(entity.name, null);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        entities.push(entity);
-      } catch (err) {
-        log.warn(
-          { err: err instanceof Error ? err.message : String(err), file, orgId },
-          "Failed to parse entity YAML from disk",
-        );
-      }
+  if (fs.existsSync(diskRoot)) {
+    const { entities: scanned } = scanEntities(diskRoot);
+    for (const { raw, filePath } of scanned) {
+      // `scanEntities` already filtered out files whose YAML failed to
+      // parse or didn't produce an object — those surface via its
+      // `warnings`. We additionally require a `table:` field so we match
+      // `discoverEntities`'s "skip files missing required `table`" gate
+      // (files.ts:88), keeping the disk count in lockstep with the
+      // admin file tree.
+      if (typeof raw.table !== "string" || !raw.table) continue;
+      const entity = projectParsedEntity(raw, {
+        fallbackName: path.basename(filePath).replace(/\.ya?ml$/, ""),
+      });
+      // Disk entries key on `parsed.table` (not the display name).
+      // `diskToAdminSummary` in admin-source.ts produces
+      // `summary.name = e.table` for disk entries — keying on `entity.name`
+      // here would diverge when a disk file authors a distinct YAML `name:`.
+      const key = dedupKey(String(raw.table), null);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      entities.push(entity);
     }
   }
 
   logIfAllRowsCorrupt(orgId, rows.length, parseFailures);
 
-  // `totalRows` is the count of merged entities (DB + disk after dedup) — the
-  // canonical "what the user sees" number that lines up with `listAdminEntities`.
-  // `parseFailures` is still rows-scoped (DB only) so the existing `corrupt`
-  // discriminator in the route stays meaningful: a workspace whose DB rows all
-  // fail parse is `parseFailures === rows.length && rows.length > 0`, regardless
-  // of how many disk entries merged in.
-  return { entities, totalRows: entities.length, parseFailures };
+  // `totalRows = rows.length` (DB-only) — see header comment. Merged count
+  // is `entities.length`, available to the caller via the entities array;
+  // `computeSemanticHealth` derives `entityCount` from `entities.length` so
+  // the user-facing number is still the merged total.
+  return { entities, totalRows: rows.length, parseFailures };
 }
 
 /**

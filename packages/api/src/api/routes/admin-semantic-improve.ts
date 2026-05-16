@@ -955,9 +955,17 @@ adminSemanticImprove.openapi(healthScoreRoute, async (c) =>
     // empty case (`no_entities`) from the corruption case (`corrupt` —
     // every entity row failed parse) instead of conflating both with a
     // 0% score that gives no actionable signal.
+    //
+    // `corrupt` gates on `totalRows` (DB-rows-considered) so a workspace
+    // whose every DB row fails YAML parse still trips the signal even when
+    // the disk mirror has healthy entries that would otherwise pad
+    // `entities.length` past `parseFailures`. `no_entities` gates on the
+    // merged `entities.length` because a workspace with 0 DB rows but a
+    // populated disk mirror genuinely has entities to query — flagging it
+    // empty would be the same misleading signal in reverse (#2503 review).
     const status = parseFailures > 0 && parseFailures === totalRows && totalRows > 0
       ? ("corrupt" as const)
-      : totalRows === 0
+      : entities.length === 0
         ? ("no_entities" as const)
         : ("ok" as const);
 

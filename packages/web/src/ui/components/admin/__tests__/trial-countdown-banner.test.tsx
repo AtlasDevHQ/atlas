@@ -8,10 +8,13 @@ import type { BillingPlan } from "@useatlas/schemas";
  *
  *   tier !== "trial"      → null (regression check — paid tiers see nothing)
  *   trialEndsAt === null  → null
- *   trialEndsAt unparseable → null
+ *   trialEndsAt unparseable → danger (fail-closed — show upgrade nudge)
  *   daysLeft > 3          → info / blue tone, secondary Upgrade
  *   daysLeft 1..3         → warning / amber tone, primary Upgrade
  *   trialEndsAt < now     → danger / red tone, primary Upgrade
+ *
+ * The day=3 vs day=4 boundary is explicitly pinned so a refactor of the
+ * `<= 3` comparator can't silently shift the copy.
  *
  * Each test injects a fixed `now` so the day math is deterministic.
  */
@@ -47,11 +50,16 @@ describe("TrialCountdownBanner", () => {
     expect(container.textContent).toBe("");
   });
 
-  test("hidden when trialEndsAt is unparseable", () => {
+  test("unparseable trialEndsAt fails closed into the expired (danger) state", () => {
+    // Documents the deliberate fail-closed behavior: an upstream Zod-schema
+    // bug ships a malformed date, the user still sees the upgrade nudge
+    // instead of a silently-skipped banner.
     const { container } = render(
       <TrialCountdownBanner plan={plan({ trialEndsAt: "not-a-date" })} now={NOW} />,
     );
-    expect(container.textContent).toBe("");
+    const banner = container.querySelector('[data-testid="trial-countdown-banner"]');
+    expect(banner?.getAttribute("data-tone")).toBe("danger");
+    expect(container.textContent).toContain("Your trial has expired. Upgrade to keep using Atlas.");
   });
 
   test("info tone with secondary Upgrade for >3 days remaining", () => {
@@ -99,6 +107,36 @@ describe("TrialCountdownBanner", () => {
     const banner = container.querySelector('[data-testid="trial-countdown-banner"]');
     expect(banner?.getAttribute("data-tone")).toBe("warning");
     expect(container.textContent).toContain("Trial ending in 3 days.");
+  });
+
+  test("exactly 3 days out lives in the warning bucket (boundary pin)", () => {
+    // The `<= 3` predicate is the inclusive edge — pin it so a refactor
+    // to `< 3` shifts a regression into a failing assertion instead of
+    // silently flipping the copy.
+    const { container } = render(
+      <TrialCountdownBanner
+        plan={plan({ trialEndsAt: new Date(NOW + 3 * DAY).toISOString() })}
+        now={NOW}
+      />,
+    );
+    const banner = container.querySelector('[data-testid="trial-countdown-banner"]');
+    expect(banner?.getAttribute("data-tone")).toBe("warning");
+    expect(container.textContent).toContain("Trial ending in 3 days.");
+  });
+
+  test("3 days + 1ms crosses into the info bucket (boundary pin)", () => {
+    // Math.ceil takes (3*DAY + 1ms) / DAY → 4, which exceeds 3 and
+    // routes to early. Pinning the +1ms edge guards the inverse refactor
+    // (changing `<= 3` to `<= 4`) from silently widening the amber band.
+    const { container } = render(
+      <TrialCountdownBanner
+        plan={plan({ trialEndsAt: new Date(NOW + 3 * DAY + 1).toISOString() })}
+        now={NOW}
+      />,
+    );
+    const banner = container.querySelector('[data-testid="trial-countdown-banner"]');
+    expect(banner?.getAttribute("data-tone")).toBe("info");
+    expect(container.textContent).toContain("You're on a 14-day Atlas trial. 4 days left.");
   });
 
   test("danger tone with expired copy when trialEndsAt < now", () => {

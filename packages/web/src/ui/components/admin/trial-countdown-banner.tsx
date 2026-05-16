@@ -9,11 +9,12 @@ import type { BillingPlan } from "@useatlas/schemas";
  * Trial countdown banner (PRD #2464 slice 3/4, issue #2467).
  *
  * Renders above the plan card on `/admin/billing` when the workspace is on
- * a trial. Three visual states keyed on days remaining:
+ * a trial. Three visual states keyed on days remaining (Math.ceil rounds
+ * up, so a remainder of exactly 3.0 days routes to the amber bucket):
  *
- *   >3 days  → neutral/blue, secondary "Upgrade"
- *   ≤3 days  → amber, primary "Upgrade"
- *   expired  → red, primary "Upgrade"
+ *   > 3 days left → info / blue, secondary "Upgrade"
+ *   1–3 days left → warning / amber, primary "Upgrade"
+ *   expired       → danger / red, primary "Upgrade"
  *
  * Hidden for any non-trial tier so paid workspaces don't see trial copy.
  *
@@ -21,8 +22,9 @@ import type { BillingPlan } from "@useatlas/schemas";
  * plan card already on the page. Stripe Checkout wiring is v2.
  *
  * Visual chrome matches the raw-div + tone-classed pattern used by
- * IncidentBanner and BackupMethodBanner; the shadcn Alert primitive's
- * grid layout fights a horizontal title-vs-button row.
+ * IncidentBanner and BackupMethodBanner; the shadcn Alert primitive pins
+ * title/description into `col-start-2` of its grid, which fights a
+ * trailing right-aligned button.
  */
 
 const MS_PER_DAY = 86_400_000;
@@ -35,10 +37,14 @@ type BannerState =
   | { kind: "ending"; daysLeft: number }
   | { kind: "expired" };
 
-function resolveState(trialEndsAt: string, now: number): BannerState | null {
+// Total — never returns null. An unparseable `trialEndsAt` (would only
+// happen on an upstream Zod-schema bug, since `BillingPlanSchema` types it
+// as `z.string().nullable()` without `.datetime()`) fails closed into the
+// `expired` state so the user still sees the upgrade nudge rather than a
+// silently-skipped banner.
+function resolveState(trialEndsAt: string, now: number): BannerState {
   const endMs = Date.parse(trialEndsAt);
-  if (!Number.isFinite(endMs)) return null;
-  if (endMs < now) return { kind: "expired" };
+  if (!Number.isFinite(endMs) || endMs < now) return { kind: "expired" };
   const daysLeft = Math.ceil((endMs - now) / MS_PER_DAY);
   if (daysLeft <= 3) return { kind: "ending", daysLeft };
   return { kind: "early", daysLeft };
@@ -59,7 +65,6 @@ export interface TrialCountdownBannerProps {
 export function TrialCountdownBanner({ plan, now }: TrialCountdownBannerProps) {
   if (plan.tier !== "trial" || !plan.trialEndsAt) return null;
   const state = resolveState(plan.trialEndsAt, now ?? Date.now());
-  if (!state) return null;
 
   if (state.kind === "early") {
     return (

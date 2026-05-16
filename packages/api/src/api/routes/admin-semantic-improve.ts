@@ -914,20 +914,26 @@ adminSemanticImprove.openapi(reviewAmendmentRoute, async (c) =>
 adminSemanticImprove.openapi(healthScoreRoute, async (c) =>
   runHandler(c, "semantic-health-score", async () => {
     const { orgId } = c.get("orgContext");
-    const { loadEntitiesFromDB, loadEntitiesFromDisk, loadGlossaryFromDisk } =
+    const { loadEntitiesForOrg, loadEntitiesFromDisk, loadGlossaryFromDisk } =
       await import("@atlas/api/lib/semantic/expert/context-loader");
     const { hasInternalDB } = await import("@atlas/api/lib/db/internal");
     const { computeSemanticHealth } = await import("@atlas/api/lib/semantic/expert/health");
 
-    // Prefer DB-backed entities when we have an org context + internal DB.
-    // Reading bundled YAML for every workspace would show "13 entities,
-    // 100% coverage" for orgs whose `semantic_entities` is empty — a
-    // misleading score that hides broken workspaces from operators.
+    // `loadEntitiesForOrg` merges DB rows with the per-org disk mirror under
+    // the same `(name, connection_group_id)` dedup the Overview tile + chat
+    // empty state + semantic file tree all read through (#2503). Reading only
+    // DB rows here used to drop the disk-mirror half of the merge, leaving the
+    // Health caption "23 entities" next to a file tree showing 46.
+    //
+    // The no-DB / no-orgId branch still falls back to bundled YAML — the
+    // self-hosted stdio loop and bare CLI scenario. On SaaS this path can't
+    // trigger: an authenticated admin request always carries an orgId, and
+    // SaaS always runs with an internal DB.
     let entities: Awaited<ReturnType<typeof loadEntitiesFromDisk>>;
     let parseFailures = 0;
     let totalRows: number;
     if (orgId && hasInternalDB()) {
-      const dbResult = await loadEntitiesFromDB(orgId, "published");
+      const dbResult = await loadEntitiesForOrg(orgId, "published");
       entities = dbResult.entities;
       parseFailures = dbResult.parseFailures;
       totalRows = dbResult.totalRows;
@@ -949,9 +955,17 @@ adminSemanticImprove.openapi(healthScoreRoute, async (c) =>
     // empty case (`no_entities`) from the corruption case (`corrupt` —
     // every entity row failed parse) instead of conflating both with a
     // 0% score that gives no actionable signal.
+    //
+    // `corrupt` gates on `totalRows` (DB-rows-considered) so a workspace
+    // whose every DB row fails YAML parse still trips the signal even when
+    // the disk mirror has healthy entries that would otherwise pad
+    // `entities.length` past `parseFailures`. `no_entities` gates on the
+    // merged `entities.length` because a workspace with 0 DB rows but a
+    // populated disk mirror genuinely has entities to query — flagging it
+    // empty would be the same misleading signal in reverse (#2503 review).
     const status = parseFailures > 0 && parseFailures === totalRows && totalRows > 0
       ? ("corrupt" as const)
-      : totalRows === 0
+      : entities.length === 0
         ? ("no_entities" as const)
         : ("ok" as const);
 

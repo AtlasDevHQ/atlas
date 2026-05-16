@@ -64,6 +64,14 @@ export function validateBundle(body: unknown): { ok: true; bundle: ExportBundle 
     if (!e || typeof e !== "object" || typeof e.name !== "string" || typeof e.entityType !== "string" || typeof e.yamlContent !== "string") {
       return { ok: false, error: `semanticEntities[${i}]: must have 'name', 'entityType', and 'yamlContent' (strings).` };
     }
+    // `connectionGroupId` is optional (#2423). When present it must be either
+    // null or a non-empty string — anything else (numbers, objects, "") would
+    // pass the `?? null` coalesce and reach pg as junk.
+    if ("connectionGroupId" in e && e.connectionGroupId !== null && e.connectionGroupId !== undefined) {
+      if (typeof e.connectionGroupId !== "string" || e.connectionGroupId.length === 0) {
+        return { ok: false, error: `semanticEntities[${i}].connectionGroupId: must be a non-empty string, null, or omitted.` };
+      }
+    }
   }
 
   // Validate required fields on each learned pattern
@@ -225,10 +233,13 @@ export async function importBundle(
       continue;
     }
 
+    // `connectionGroupId` is optional on the wire — bundles from producers
+    // that have no concept of the column omit the key entirely. Coalesce to
+    // null so omitted and explicit-null land in the same column shape.
     await client.query(
       `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id)
        VALUES ($1, $2, $3, $4, $5)`,
-      [orgId, entity.entityType, entity.name, entity.yamlContent, entity.connectionGroupId],
+      [orgId, entity.entityType, entity.name, entity.yamlContent, entity.connectionGroupId ?? null],
     );
     result.semanticEntities.imported++;
   }

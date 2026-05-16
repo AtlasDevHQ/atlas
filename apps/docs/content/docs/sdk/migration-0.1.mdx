@@ -111,21 +111,43 @@ const entity: ExportedSemanticEntity = {
   connectionId: "warehouse-prod-1", // ← removed
 };
 
-// 0.1.0
+// 0.1.1
 const entity: ExportedSemanticEntity = {
   name: "users",
   entityType: "entity",
   yamlContent: "…",
-  connectionGroupId: "g_prod",
+  connectionGroupId: "g_prod", // optional — see below
 };
 ```
 
 Export bundles produced by `atlas export` (CLI) and
 `/api/v1/admin/migrate/export` (API) now exclusively carry
-`connectionGroupId`. Pre-1.4.4 bundles that only have `connectionId`
-need to be re-exported from a 1.4.4+ instance before they can be
-imported into 0.1.0 consumers — the `0066` backfill populates the new
-column from the legacy one during a one-time migration.
+`connectionGroupId`. The `0066` backfill populates the new column from
+the legacy `connectionId` during a one-time migration on the source
+instance.
+
+**`connectionGroupId` is optional on the wire (#2423, since `@useatlas/types@0.1.1`).**
+Three shapes are accepted by the import endpoint
+`/api/v1/admin/migrate/import`:
+
+| Producer | Wire shape | Imported as |
+| --- | --- | --- |
+| Producer with no group concept (pre-1.4.4 bundle, older SDK) | key omitted | `null` |
+| 1.4.4+ author chose no group, or legacy `connectionId` did not resolve to a live group | `connectionGroupId: null` | `null` |
+| 1.4.4+ scoped row | `connectionGroupId: "g_prod"` | `"g_prod"` |
+
+The first two shapes land in the same column value (`null`) but encode
+different producer intents — preserved in the wire format so the
+distinction can be inspected at the boundary even though it's lost
+once the row is stored.
+
+`0.1.0` shipped the field as `string | null` (required). Older SDK
+consumers and bundles produced before the column existed couldn't
+satisfy that shape, so import failed strict validation. `0.1.1` widens
+the type to `string | null | undefined` and coalesces omitted to `null`
+on import — additive on the wire, behavior-preserving for 1.4.4+
+producers. Non-string, non-null values (e.g. `42`, `{}`, `""`) are
+rejected with a 400 instead of slipping through to pg.
 
 ### `PIIColumnClassification`
 

@@ -91,14 +91,15 @@ describe("connection columns — environment cell", () => {
       groupId: "g_prod",
       groupName: "g_prod",
     });
-    // Strip the legacy `g_` prefix so the chip reads naturally.
+    // `stripGroupPrefix` strips the legacy `g_` / `__global__:` backfill
+    // artifacts so the chip reads naturally.
     expect(container.textContent).toContain("prod");
     expect(container.textContent).not.toContain("g_prod");
     const link = container.querySelector("a");
     expect(link).not.toBeNull();
-    // PRD #2458 slice 4: the standalone /admin/connections/groups page is
-    // a server-side redirect; chips now deep-link directly to the
-    // embedded view to avoid a one-frame redirect flash.
+    // Chips deep-link straight to `?groupBy=environment` rather than the
+    // legacy `/admin/connections/groups` URL — the latter still works as
+    // a server-side redirect, but going direct avoids a one-frame flash.
     expect(link?.getAttribute("href")).toBe("/admin/connections?groupBy=environment");
   });
 

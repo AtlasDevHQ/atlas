@@ -176,10 +176,9 @@ describe("TaskFormDialog — zero-environment guard (#2418)", () => {
     await waitFor(() => {
       expect(container.textContent).toContain("Create an environment first");
     });
-    // PRD #2458 slice 4 collapsed `/admin/connections/groups` into the
-    // `?groupBy=environment` deep link on the connections page — the
-    // empty-state CTA points directly at that view so the admin lands
-    // on the Environments tab, not the default Type tab.
+    // The CTA must point at the env grouping directly, not the bare
+    // `/admin/connections` URL — otherwise a first-time admin lands on
+    // the default Type tab and still can't see where to add an env.
     const link = container.querySelector<HTMLAnchorElement>(
       'a[href="/admin/connections?groupBy=environment"]',
     );

@@ -28,6 +28,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import Link from "next/link";
 import { AlertTriangle, Loader2, Plus, X, Clock } from "lucide-react";
+import { ENVIRONMENT_VIEW_HREF } from "../connections/group-by";
 import {
   CRON_PRESETS,
   presetFromCron,
@@ -598,7 +599,7 @@ export function TaskFormDialog({
                   group). Add one before scheduling a task.
                   {" "}
                   <Link
-                    href="/admin/connections?groupBy=environment"
+                    href={ENVIRONMENT_VIEW_HREF}
                     className="font-medium underline underline-offset-2"
                   >
                     Go to Environments

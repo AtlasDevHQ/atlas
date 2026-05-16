@@ -746,16 +746,38 @@ export { AmbiguousEntityError };
  * - `connectionGroupId === null`: filters to legacy null-scope rows
  *   (the `__global__` demo + pre-backfill rows). Uses
  *   `IS NOT DISTINCT FROM` so the null match works.
+ *
+ * `mode`:
+ * - `"developer"` (default, preserves pre-#2481 behavior): returns the
+ *   overlay-effective row — drafts shadow published, tombstones hide.
+ * - `"published"`: restricts the SQL to `status = 'published'`. Used by
+ *   read handlers that expose content to non-admins (the public
+ *   `/api/v1/semantic/entities/{name}` route, post-#2481). Required to
+ *   stop draft bodies from leaking to members when an admin is editing
+ *   an entity in developer mode.
  */
 export async function getEntity(
   orgId: string,
   entityType: SemanticEntityType,
   name: string,
   connectionGroupId?: string | null,
+  mode: "developer" | "published" = "developer",
 ): Promise<SemanticEntityRow | null> {
   if (!hasInternalDB()) return null;
 
   if (connectionGroupId !== undefined) {
+    if (mode === "published") {
+      const rows = await internalQuery<SemanticEntityRow>(
+        `SELECT id, org_id, entity_type, name, yaml_content, connection_group_id, status, created_at, updated_at
+         FROM semantic_entities
+         WHERE org_id = $1 AND entity_type = $2 AND name = $3
+           AND connection_group_id IS NOT DISTINCT FROM $4
+           AND status = 'published'
+         LIMIT 1`,
+        [orgId, entityType, name, connectionGroupId],
+      );
+      return rows[0] ?? null;
+    }
     // Scoped lookup. Prefer the overlay-effective row when both draft
     // and published exist for the same group: order by draft_delete=0,
     // draft=1, published=2 so the LIMIT 1 returns draft over published.
@@ -789,7 +811,20 @@ export async function getEntity(
   // collapses each group to its overlay-effective row (draft_delete >
   // draft > published in the inner ORDER BY) before the outer query
   // counts distinct groups.
-  const rows = await internalQuery<SemanticEntityRow>(
+  //
+  // In `published` mode the outer overlay is degenerate — we restrict
+  // the inner set to published rows only, so each group contributes at
+  // most one row and the ambiguity check still works.
+  const rows = mode === "published"
+    ? await internalQuery<SemanticEntityRow>(
+        `SELECT id, org_id, entity_type, name, yaml_content, connection_group_id, status, created_at, updated_at
+         FROM semantic_entities
+         WHERE org_id = $1 AND entity_type = $2 AND name = $3
+           AND status = 'published'
+         ORDER BY connection_group_id NULLS FIRST`,
+        [orgId, entityType, name],
+      )
+    : await internalQuery<SemanticEntityRow>(
     `SELECT id, org_id, entity_type, name, yaml_content, connection_group_id, status, created_at, updated_at
      FROM (
        SELECT DISTINCT ON (connection_group_id)

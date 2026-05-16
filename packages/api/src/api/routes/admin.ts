@@ -1422,9 +1422,16 @@ admin.openapi(getEntityRoute, async (c) => {
   const connectionGroupId =
     rawGroup === undefined ? undefined : rawGroup === "" ? null : rawGroup;
 
+  const atlasMode = getAtlasMode(c);
+  const mode = atlasMode === "developer" ? "developer" : "published";
+
   let result: Awaited<ReturnType<typeof getAdminEntity>>;
   try {
-    result = await getAdminEntity({ name, orgId, requestId, connectionGroupId });
+    // `mode` mirrors the list handler at admin.ts:1326 — developer-mode
+    // admins see drafts overlaying published, published-mode (the default)
+    // sees only the published row. Aligns admin detail with admin list and
+    // with the public route's mode gate (#2481).
+    result = await getAdminEntity({ name, orgId, requestId, connectionGroupId, mode });
   } catch (err) {
     if (err instanceof AmbiguousEntityError) {
       return c.json(

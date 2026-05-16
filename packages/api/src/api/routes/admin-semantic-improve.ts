@@ -914,20 +914,26 @@ adminSemanticImprove.openapi(reviewAmendmentRoute, async (c) =>
 adminSemanticImprove.openapi(healthScoreRoute, async (c) =>
   runHandler(c, "semantic-health-score", async () => {
     const { orgId } = c.get("orgContext");
-    const { loadEntitiesFromDB, loadEntitiesFromDisk, loadGlossaryFromDisk } =
+    const { loadEntitiesForOrg, loadEntitiesFromDisk, loadGlossaryFromDisk } =
       await import("@atlas/api/lib/semantic/expert/context-loader");
     const { hasInternalDB } = await import("@atlas/api/lib/db/internal");
     const { computeSemanticHealth } = await import("@atlas/api/lib/semantic/expert/health");
 
-    // Prefer DB-backed entities when we have an org context + internal DB.
-    // Reading bundled YAML for every workspace would show "13 entities,
-    // 100% coverage" for orgs whose `semantic_entities` is empty — a
-    // misleading score that hides broken workspaces from operators.
+    // `loadEntitiesForOrg` merges DB rows with the per-org disk mirror under
+    // the same `(name, connection_group_id)` dedup the Overview tile + chat
+    // empty state + semantic file tree all read through (#2503). Reading only
+    // DB rows here used to drop the disk-mirror half of the merge, leaving the
+    // Health caption "23 entities" next to a file tree showing 46.
+    //
+    // The no-DB / no-orgId branch still falls back to bundled YAML — the
+    // self-hosted stdio loop and bare CLI scenario. On SaaS this path can't
+    // trigger: an authenticated admin request always carries an orgId, and
+    // SaaS always runs with an internal DB.
     let entities: Awaited<ReturnType<typeof loadEntitiesFromDisk>>;
     let parseFailures = 0;
     let totalRows: number;
     if (orgId && hasInternalDB()) {
-      const dbResult = await loadEntitiesFromDB(orgId, "published");
+      const dbResult = await loadEntitiesForOrg(orgId, "published");
       entities = dbResult.entities;
       parseFailures = dbResult.parseFailures;
       totalRows = dbResult.totalRows;

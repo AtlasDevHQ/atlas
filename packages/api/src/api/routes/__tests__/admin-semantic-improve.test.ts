@@ -165,17 +165,20 @@ describe("admin-semantic-improve", () => {
 
   describe("GET /health — DB vs disk source selection", () => {
     // Pin the load-bearing branch: when there's an org context + internal
-    // DB the endpoint must read from `loadEntitiesFromDB`. A refactor that
-    // flips back to disk would silently restore the conflation that made
-    // empty-DB SaaS workspaces show "13 entities, 100% coverage".
-    let dbCalls = 0;
+    // DB the endpoint must read from `loadEntitiesForOrg` (which merges DB
+    // rows with the per-org disk mirror under the same dedup `listAdminEntities`
+    // applies). A refactor that flips back to a DB-only or bundled-disk source
+    // would either restore the "13 entities, 100% coverage" conflation that
+    // hid empty-DB SaaS workspaces from operators, or re-open the #2503
+    // divergence between the Health card and the file tree it lives next to.
+    let orgCalls = 0;
     let diskCalls = 0;
     beforeEach(() => {
-      dbCalls = 0;
+      orgCalls = 0;
       diskCalls = 0;
       mock.module("@atlas/api/lib/semantic/expert/context-loader", () => ({
-        loadEntitiesFromDB: async () => {
-          dbCalls++;
+        loadEntitiesForOrg: async () => {
+          orgCalls++;
           return { entities: [], totalRows: 0, parseFailures: 0 };
         },
         loadEntitiesFromDisk: async () => {
@@ -185,25 +188,27 @@ describe("admin-semantic-improve", () => {
         loadGlossaryFromDisk: async () => [],
       }));
       mock.module("@atlas/api/lib/semantic/expert/health", () => ({
-        computeSemanticHealth: () => ({
+        computeSemanticHealth: (ctx: { entities: unknown[]; glossary: unknown[] }) => ({
           overall: 0,
           coverage: 0,
           descriptionQuality: 0,
           measureCoverage: 0,
           joinCoverage: 0,
-          entityCount: 0,
+          // Pass through the merged entity count so the parity guard below
+          // can assert it against `loadEntitiesForOrg`'s output.
+          entityCount: ctx.entities.length,
           dimensionCount: 0,
           measureCount: 0,
-          glossaryTermCount: 0,
+          glossaryTermCount: ctx.glossary.length,
         }),
       }));
     });
 
-    it("prefers loadEntitiesFromDB when org context + internal DB present", async () => {
+    it("prefers loadEntitiesForOrg when org context + internal DB present", async () => {
       mockHasInternalDB = true;
       const res = await adminSemanticImprove.request("/health");
       expect(res.status).toBe(200);
-      expect(dbCalls).toBe(1);
+      expect(orgCalls).toBe(1);
       expect(diskCalls).toBe(0);
     });
 
@@ -211,14 +216,45 @@ describe("admin-semantic-improve", () => {
     // routing past requireOrgContext which itself depends on the internal
     // DB — exercising that path needs deeper middleware mocking than this
     // suite carries. The branch is small enough that the type system + the
-    // single conditional in admin-semantic-improve.ts:923 keeps it honest;
-    // the load-bearing assertion is "DB wins when both are present", above.
+    // single conditional in admin-semantic-improve.ts keeps it honest; the
+    // load-bearing assertion is "loadEntitiesForOrg wins when both are
+    // present", above.
+
+    it("entityCount surfaces what loadEntitiesForOrg returned (parity with Overview)", async () => {
+      // #2503: the Health card's "X entities" caption must match the count
+      // the file tree above it renders. Both flow from `listAdminEntities`'s
+      // DB+disk merge; `loadEntitiesForOrg` is the route's adapter to that
+      // same shape. If a future refactor swaps it for a DB-only loader the
+      // Health caption silently drifts again — this test fails first.
+      mockHasInternalDB = true;
+      mock.module("@atlas/api/lib/semantic/expert/context-loader", () => ({
+        loadEntitiesForOrg: async () => ({
+          entities: Array.from({ length: 46 }, (_, i) => ({
+            name: `e${i}`,
+            table: `t${i}`,
+            dimensions: [],
+            measures: [],
+            joins: [],
+            query_patterns: [],
+          })),
+          totalRows: 46,
+          parseFailures: 0,
+        }),
+        loadEntitiesFromDisk: async () => [],
+        loadGlossaryFromDisk: async () => [],
+      }));
+      const res = await adminSemanticImprove.request("/health");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { entityCount: number; totalRows: number };
+      expect(body.entityCount).toBe(46);
+      expect(body.totalRows).toBe(46);
+    });
 
     it("response includes a status discriminator distinguishing empty from corrupt", async () => {
       mockHasInternalDB = true;
       // Override loader to return totalRows=2, parseFailures=2 (full corruption)
       mock.module("@atlas/api/lib/semantic/expert/context-loader", () => ({
-        loadEntitiesFromDB: async () => ({ entities: [], totalRows: 2, parseFailures: 2 }),
+        loadEntitiesForOrg: async () => ({ entities: [], totalRows: 2, parseFailures: 2 }),
         loadEntitiesFromDisk: async () => [],
         loadGlossaryFromDisk: async () => [],
       }));

@@ -115,12 +115,12 @@ export default function AuditPage() {
   const [analyticsTo, setAnalyticsTo] = useState("");
 
   // Connection list for filter dropdown. Shares `ConnectionsResponseSchema`
-  // with /admin/connections + /admin/schema-diff so the TanStack Query cache
+  // with /admin/connections so the TanStack Query cache
   // entry keyed on this path always holds the same shape — a previously
   // distinct `AuditConnectionMetaSchema` parsed `{ connections: [...] }` as
-  // an object envelope while the other two transform to the array, and the
+  // an object envelope while the other transformed to the array, and the
   // shared queryKey meant whichever page mounted first poisoned the cache
-  // for the others (#2444 — /admin/connections crashed with "O is not
+  // for the other (#2444 — /admin/connections crashed with "O is not
   // iterable" when an admin visited /admin/audit first).
   const { data: connectionsData, error: connectionsError } = useAdminFetch(
     "/api/v1/admin/connections",

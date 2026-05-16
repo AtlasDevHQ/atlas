@@ -60,7 +60,6 @@ export interface PublishedContextWrapperProps {
  * | `/admin/connections` | **removed** (#2310) | No — DELETE = per-org archived tombstone; demo-hide bypasses publish | was active; mitigated |
  * | `/admin/prompts` | yes (conditional) | Yes — CREATE/PATCH/DELETE all set `status='draft'` in dev mode | none |
  * | `/admin/semantic` | hook only (no wrapper) | Yes — entity edits/deletes go through the overlay tables | none |
- * | `/admin/schema-diff` | hook only (no wrapper) | n/a — read-only page | none |
  *
  * The table is a snapshot — the decision rule below is what's load-bearing.
  * To re-audit, list every current caller:
@@ -83,8 +82,7 @@ export interface PublishedContextWrapperProps {
  * If the page is unsafe to wrap but still wants the dev-mode-no-drafts
  * banner counts to stay accurate, call `useDevModeNoDrafts(["surface"])`
  * directly — the hook drives the global banner without overlaying the
- * page. See `/admin/schema-diff/page.tsx` for the read-only variant of
- * this pattern.
+ * page.
  *
  * The constraint is enforced by the backend handlers, not the type system —
  * adding the wrapper to a page whose handlers mutate immediately will type-

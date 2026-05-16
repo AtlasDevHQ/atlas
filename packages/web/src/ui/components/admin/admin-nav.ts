@@ -33,7 +33,6 @@ export const navGroups: NavGroup[] = [
     items: [
       { href: "/admin/semantic", label: "Semantic Layer" },
       { href: "/admin/semantic/improve", label: "Improve Layer" },
-      { href: "/admin/schema-diff", label: "Schema Diff" },
       // One entry covers both raw connections and environment groupings —
       // the page hosts a `?groupBy=type|environment` toggle and the legacy
       // `/admin/connections/groups` URL server-side-redirects in.

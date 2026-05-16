@@ -57,7 +57,6 @@ export const FEATURE_NAMES = [
   "Query Analytics",
   "Sandbox",
   "SCIM",
-  "Schema Diff",
   "Scheduled Tasks",
   "Scheduler",
   "Security Adoption",

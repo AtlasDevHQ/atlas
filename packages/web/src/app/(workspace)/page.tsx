@@ -23,7 +23,11 @@ import { ToolPart } from "@/ui/components/chat/tool-part";
 import { Markdown } from "@/ui/components/chat/markdown";
 import { TypingIndicator } from "@/ui/components/chat/typing-indicator";
 import { ShareDialog } from "@/ui/components/chat/share-dialog";
-import { ChatEnvPicker, useChatEnvGroups } from "@/ui/components/chat/env-picker";
+import {
+  ChatEnvPicker,
+  shouldRenderEnvPicker,
+  useChatEnvGroups,
+} from "@/ui/components/chat/env-picker";
 import { parseSuggestions } from "@/ui/lib/helpers";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
@@ -63,11 +67,12 @@ function ChatPage() {
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [fetchErrorDismissed, setFetchErrorDismissed] = useState(false);
-  // #2345 / #2504 — chat env/member picker state. Group is the *content
-  // scope* the server persists on the conversation row; connection id is
-  // the *per-turn execution target* (override-only, not persisted). Both
-  // default to `null` so legacy single-connection workspaces continue
-  // through the un-picked routing path.
+  // #2345 / #2504 — chat env/member picker state, client-side. Group id
+  // is the content scope the server later persists on the conversation
+  // row; connection id is a per-turn execution-target override the
+  // server reads off the request body and does not persist. Both start
+  // `null` so an un-picked workspace sends an unset body and the server
+  // applies default routing.
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
   // Adaptive empty-chat starter surface — backend composes the ranked
@@ -124,9 +129,9 @@ function ChatPage() {
       }, 500);
     },
     // #2345 / #2504 — forward picker selection on every chat request.
-    // The transport reads these refs at fetch time so a mid-conversation
-    // override reaches the agent on the very next turn without rebuilding
-    // the transport.
+    // The transport reads these refs at fetch time so a selection change
+    // reaches the agent on the next turn without rebuilding the
+    // transport.
     getConnectionId: () => selectedConnectionId,
     getConnectionGroupId: () => selectedGroupId,
   });
@@ -164,14 +169,13 @@ function ChatPage() {
     getCredentials,
   });
 
-  // Mirror the env-picker.tsx visibility predicate at the page level so
-  // the wrapper row collapses cleanly (no stray hairline border) when
-  // the picker self-hides on a 1×1 workspace. Stays a single source of
-  // shape in env-picker.tsx — this is purely for layout.
-  const showEnvPicker =
-    (envGroupsQuery.groups.length === 0 && envGroupsQuery.reason !== null) ||
-    envGroupsQuery.groups.length > 1 ||
-    (envGroupsQuery.groups[0]?.members.length ?? 0) > 1;
+  // Collapse the wrapper row's hairline border when the picker hides
+  // itself on a legacy 1×1 workspace.
+  const showEnvPicker = shouldRenderEnvPicker({
+    groups: envGroupsQuery.groups,
+    reason: envGroupsQuery.reason,
+    error: envGroupsQuery.error,
+  });
 
   const refreshConvosRef = useRef(convos.refresh);
   refreshConvosRef.current = convos.refresh;
@@ -431,18 +435,17 @@ function ChatPage() {
           >
             <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col overflow-hidden px-4 pt-4">
               {/* Top control row — env picker (left) + share dialog (right).
-                  Renders only when at least one child is visible, so the
-                  hairline border doesn't appear on the empty-state hero
-                  of a legacy 1×1 workspace. The picker itself is the
-                  user's only way to scope or override the agent's choice
-                  mid-stream (per #2345); the prior workspace shell shipped
-                  without it, which is the regression #2504 fixed. */}
+                  Renders only when at least one child is visible so the
+                  hairline border doesn't appear on a legacy 1×1 workspace.
+                  The picker is how the user re-scopes a conversation on
+                  the next turn (#2345); restoring it here is #2504. */}
               {(showEnvPicker || conversationId) && (
                 <div className="mb-3 flex items-center justify-between gap-2 border-b border-zinc-100 pb-2 dark:border-zinc-800/60">
                   <div className="flex items-center gap-2">
                     <ChatEnvPicker
                       groups={envGroupsQuery.groups}
                       emptyReason={envGroupsQuery.reason}
+                      transportError={envGroupsQuery.error}
                       activeGroupId={selectedGroupId}
                       activeConnectionId={selectedConnectionId}
                       onSelect={({ groupId, connectionId }) => {

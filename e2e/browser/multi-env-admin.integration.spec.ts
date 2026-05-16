@@ -536,14 +536,12 @@ test.describe("chat env/member picker (#2345)", () => {
   });
 
   /**
-   * Regression guard for #2504. The previous shape of these tests only
-   * verified the picker exists in the empty-state composer — which is
-   * what #2504 actually broke when the `/` route migrated to the
-   * `(workspace)` shell and dropped the wire-up. To catch the next
-   * regression early, this test explicitly asserts the picker stays
-   * visible in BOTH the empty state AND the active-conversation state,
-   * so a future refactor that conditions the render on
-   * `messages.length === 0` (or vice versa) still fails the build.
+   * Regression guard for #2504. The empty-state half already catches
+   * the canonical case (picker missing from `(workspace)/page.tsx`
+   * after the shell migration); the active-conversation half is the
+   * forward-looking guard against the most likely future regression
+   * shape — wrapping the render in a `messages.length === 0`
+   * (or inverse) condition.
    */
   test("#2504 — picker is visible in BOTH empty state and active conversation", async ({ page }) => {
     const captured = { lastChatBody: null as Record<string, unknown> | null };
@@ -564,10 +562,8 @@ test.describe("chat env/member picker (#2345)", () => {
     await page.keyboard.press("Enter");
     await page.waitForResponse(/\/api\/v1\/chat$/);
 
-    // Active conversation — picker is still present. This is the half of
-    // the assertion that #2504's original "passing" test missed: the
-    // empty-state assertion alone passed even with the picker gone, so
-    // long as the trigger was somewhere in DOM during the goto wait.
+    // Active conversation — picker is still present. Fails any future
+    // refactor that conditions the render on `messages.length === 0`.
     await expect(trigger, "picker missing in active conversation (#2504)").toBeVisible();
   });
 

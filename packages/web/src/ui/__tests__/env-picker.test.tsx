@@ -35,6 +35,7 @@ mock.module("@/components/ui/dropdown-menu", () => {
 import { render, renderHook, waitFor, cleanup } from "@testing-library/react";
 import {
   ChatEnvPicker,
+  shouldRenderEnvPicker,
   useChatEnvGroups,
   type ChatEnvGroup,
 } from "../components/chat/env-picker";
@@ -516,5 +517,121 @@ describe("useChatEnvGroups (#2422)", () => {
     // going to.
     await new Promise((r) => setTimeout(r, 0));
     expect(callCount()).toBe(0);
+  });
+});
+
+const oneMember = [{ connectionId: "a", dbType: "postgres", description: null }] as const;
+const twoMembers = [
+  { connectionId: "a", dbType: "postgres", description: null },
+  { connectionId: "b", dbType: "postgres", description: null },
+] as const;
+
+describe("shouldRenderEnvPicker truth table (#2504)", () => {
+  test("hides on empty groups with no reason and no error (legacy single-connection workspace)", () => {
+    expect(shouldRenderEnvPicker({ groups: [], reason: null })).toBe(false);
+    expect(shouldRenderEnvPicker({ groups: [], reason: null, error: null })).toBe(false);
+  });
+
+  test("renders on empty groups when a reason is set (#2422 diagnostic chip path)", () => {
+    expect(shouldRenderEnvPicker({ groups: [], reason: "no_internal_db" })).toBe(true);
+    expect(shouldRenderEnvPicker({ groups: [], reason: "no_active_org" })).toBe(true);
+  });
+
+  test("renders on empty groups when a transport error is set (#2504 connection-failure chip)", () => {
+    expect(shouldRenderEnvPicker({ groups: [], reason: null, error: "HTTP 500" })).toBe(true);
+  });
+
+  test("hides the trivial 1×1 case (one group, one member)", () => {
+    expect(
+      shouldRenderEnvPicker({ groups: [{ members: oneMember }], reason: null }),
+    ).toBe(false);
+  });
+
+  test("renders when one group has 2+ members (the legitimate multi-env case)", () => {
+    expect(
+      shouldRenderEnvPicker({ groups: [{ members: twoMembers }], reason: null }),
+    ).toBe(true);
+  });
+
+  test("renders on 2+ groups even when every group is a singleton (0062 1:1 backfill)", () => {
+    expect(
+      shouldRenderEnvPicker({
+        groups: [{ members: oneMember }, { members: oneMember }],
+        reason: null,
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("ChatEnvPicker transportError (#2504)", () => {
+  test("renders an inline 'connection error' chip when groups is empty and transportError is set", () => {
+    const { container } = render(
+      <ChatEnvPicker
+        groups={[]}
+        transportError="HTTP 500"
+        activeGroupId={null}
+        activeConnectionId={null}
+        onSelect={noop}
+      />,
+    );
+    const chip = container.querySelector(
+      '[data-testid="chat-env-picker-transport-error"]',
+    );
+    expect(chip).not.toBeNull();
+    // The raw error string must not leak into user-visible copy — only
+    // the degraded-state signal.
+    expect(chip?.textContent).not.toContain("HTTP 500");
+    expect(chip?.textContent).toContain("unavailable");
+  });
+
+  test("emptyReason takes precedence over transportError when both are set", () => {
+    // The reason path is the server's authoritative diagnostic
+    // (#2422). The transport-error chip is the fallback when the
+    // server couldn't reach a usable response shape at all, so a
+    // populated `emptyReason` strictly wins.
+    const { container } = render(
+      <ChatEnvPicker
+        groups={[]}
+        emptyReason="no_internal_db"
+        transportError="HTTP 500"
+        activeGroupId={null}
+        activeConnectionId={null}
+        onSelect={noop}
+      />,
+    );
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-empty-reason"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-transport-error"]'),
+    ).toBeNull();
+  });
+
+  test("ignores transportError when groups is non-empty (the fetch eventually succeeded)", () => {
+    const groups: ChatEnvGroup[] = [
+      {
+        id: "g_prod",
+        name: "prod",
+        members: [
+          { connectionId: "us-int", dbType: "postgres", description: null },
+          { connectionId: "eu-int", dbType: "postgres", description: null },
+        ],
+      },
+    ];
+    const { container } = render(
+      <ChatEnvPicker
+        groups={groups}
+        transportError="HTTP 500"
+        activeGroupId="g_prod"
+        activeConnectionId="us-int"
+        onSelect={noop}
+      />,
+    );
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-transport-error"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-trigger"]'),
+    ).not.toBeNull();
   });
 });

@@ -60,6 +60,13 @@ export interface ChatEnvPickerProps {
    * #2422.
    */
   readonly emptyReason?: MeConnectionGroupsEmptyReason | null;
+  /**
+   * Non-null when the `/api/v1/me/connection-groups` fetch failed
+   * (4xx/5xx, CORS, network). Swaps the silent hide for an inline
+   * "unavailable" chip — the silent hide is what #2504 was. The raw
+   * message is not surfaced ("Failed to fetch" helps nobody).
+   */
+  readonly transportError?: string | null;
   /** Currently active group id. `null` ⇒ no group context yet. */
   readonly activeGroupId: string | null;
   /** Currently active member (execution target). `null` ⇒ inherit from group's first member. */
@@ -71,6 +78,24 @@ export interface ChatEnvPickerProps {
    * (also update the conversation row on the next request).
    */
   readonly onSelect: (next: { groupId: string; connectionId: string }) => void;
+}
+
+/**
+ * Single source of truth for the picker's visibility shape. Parent
+ * layouts use it to collapse their own wrapper row (hairline border)
+ * when the picker self-hides — exporting keeps the predicate from
+ * drifting against a future #2408-style tweak.
+ */
+export interface ShouldRenderEnvPickerArgs {
+  readonly groups: ReadonlyArray<{ readonly members: ReadonlyArray<unknown> }>;
+  readonly reason: MeConnectionGroupsEmptyReason | null;
+  readonly error?: string | null;
+}
+
+export function shouldRenderEnvPicker(args: ShouldRenderEnvPickerArgs): boolean {
+  if (args.groups.length === 0) return args.reason !== null || args.error != null;
+  if (args.groups.length > 1) return true;
+  return (args.groups[0]?.members.length ?? 0) > 1;
 }
 
 const EMPTY_REASON_COPY: Record<MeConnectionGroupsEmptyReason, string> = {
@@ -93,6 +118,7 @@ function isKnownEmptyReason(value: unknown): value is MeConnectionGroupsEmptyRea
 export function ChatEnvPicker({
   groups,
   emptyReason = null,
+  transportError = null,
   activeGroupId,
   activeConnectionId,
   onSelect,
@@ -115,13 +141,24 @@ export function ChatEnvPicker({
     );
   }
 
-  // Hide only the truly trivial 1×1 case: one group with one member.
-  // The 0062 1:1 backfill emits N singleton groups for N legacy
-  // connections, so anything ≥ 2 groups (even all singletons) is a
-  // legitimate environment fan-out we want to surface — otherwise the
-  // 1.4.4 marquee feature stays invisible on the dev/demo setup. See
-  // #2408.
-  if (groups.length < 2 && (groups[0]?.members.length ?? 0) < 2) return null;
+  // Transport failure with no cached groups — emptyReason takes
+  // precedence above, so this is the "server unreachable" fallback.
+  if (groups.length === 0 && transportError) {
+    return (
+      <div
+        className="flex h-8 items-center gap-1.5 rounded-full border border-red-200 bg-red-50 px-2.5 text-xs font-medium text-red-900 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-200"
+        role="status"
+        data-testid="chat-env-picker-transport-error"
+      >
+        <AlertCircle className="size-3.5" aria-hidden />
+        <span>Environments unavailable — connection error.</span>
+      </div>
+    );
+  }
+
+  if (!shouldRenderEnvPicker({ groups, reason: emptyReason, error: transportError })) {
+    return null;
+  }
 
   const activeGroup =
     groups.find((g) => g.id === activeGroupId) ??

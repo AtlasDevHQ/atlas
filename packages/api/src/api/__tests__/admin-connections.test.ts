@@ -28,6 +28,11 @@ const mockHealthCheck = mock(() =>
   Promise.resolve({ status: "healthy", latencyMs: 3, checkedAt: new Date() }),
 );
 
+// Captured so tests can assert on register-call sequences (e.g. the
+// registry-rollback contract on PUT). Without a captured reference,
+// inline `mock(() => {})` is unobservable from `.mock.calls`.
+const mockRegister = mock(() => {});
+
 const mocks = createApiTestMocks({
   authUser: {
     id: "admin-1",
@@ -47,7 +52,7 @@ const mocks = createApiTestMocks({
         { id: "other-org-conn", dbType: "mysql", description: "Other org connection" },
       ],
       healthCheck: mockHealthCheck,
-      register: mock(() => {}),
+      register: mockRegister,
       unregister: mock(() => false),
       has: (id: string) => ["default", "warehouse", "other-org-conn"].includes(id),
       list: () => ["default", "warehouse", "other-org-conn"],
@@ -1194,6 +1199,600 @@ describe("admin connections — org scoping", () => {
       if (res.status >= 400) {
         expect(raw).not.toContain("hunter2");
       }
+    });
+  });
+
+  // ─── #2484 — Add Connection Env Field ─────────────────────────────
+  //
+  // POST + PUT accept `connectionGroupId` (attach existing env) and
+  // `newGroupName` (inline-create with the new connection promoted as
+  // primary). Cross-org `connectionGroupId` rejects with 404 (B2B
+  // isolation — foreign-org ids look indistinguishable from missing).
+  // `newGroupName` conflict on `uq_connection_groups_org_name` rolls the
+  // whole INSERT/UPDATE back via the single CTE.
+
+  describe("POST /connections — env field (#2484)", () => {
+    it("attach to existing env: INSERT uses provided connectionGroupId, no auto-singleton CTE", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        // Pre-validation: env exists and is active in this org.
+        if (sql.includes("SELECT id, status FROM connection_groups")) {
+          return Promise.resolve([{ id: "g_prod", status: "active" }]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections", "POST", {
+          id: "analytics",
+          url: "postgresql://user:pass@host/db",
+          connectionGroupId: "g_prod",
+        }),
+      );
+
+      expect(res.status).toBe(201);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.groupId).toBe("g_prod");
+
+      const insertCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) => typeof sql === "string" && sql.includes("INSERT INTO connections"),
+      );
+      expect(insertCall).toBeDefined();
+      const [sql, params] = insertCall!;
+      // Attach branch — straight INSERT, no group_row CTE.
+      expect(sql).not.toContain("INSERT INTO connection_groups");
+      expect(params).toContain("g_prod");
+    });
+
+    it("inline-create env: CTE inserts connection_groups with primary_connection_id = new connection id", async () => {
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections", "POST", {
+          id: "analytics",
+          url: "postgresql://user:pass@host/db",
+          newGroupName: "Production",
+        }),
+      );
+
+      expect(res.status).toBe(201);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.groupId).toMatch(/^g_/);
+
+      const insertCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) =>
+          typeof sql === "string" &&
+          sql.includes("INSERT INTO connections") &&
+          sql.includes("INSERT INTO connection_groups"),
+      );
+      expect(insertCall).toBeDefined();
+      const [sql, params] = insertCall!;
+      expect(sql).toContain("primary_connection_id");
+      // Group name + connection id both flow into the CTE params.
+      expect(params).toContain("Production");
+      expect(params).toContain("analytics");
+    });
+
+    it("ungrouped (no env field): keeps the existing auto-`g_<id>` self-group CTE", async () => {
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections", "POST", {
+          id: "analytics",
+          url: "postgresql://user:pass@host/db",
+        }),
+      );
+
+      expect(res.status).toBe(201);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.groupId).toBe("g_analytics");
+
+      const insertCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) =>
+          typeof sql === "string" &&
+          sql.includes("INSERT INTO connections") &&
+          sql.includes("'g_' || $1"),
+      );
+      expect(insertCall).toBeDefined();
+    });
+
+    it("cross-org connectionGroupId: SELECT returns no rows → 404 (B2B isolation, #2424 pattern)", async () => {
+      // Mock returns `[]` for the env pre-validate SELECT — mirrors the
+      // result of querying with the workspace's org_id when the env
+      // actually lives in a different org. Foreign-org ids look identical
+      // to ids that don't exist anywhere; both → 404.
+      mocks.mockInternalQuery.mockResolvedValue([]);
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections", "POST", {
+          id: "analytics",
+          url: "postgresql://user:pass@host/db",
+          connectionGroupId: "g_foreign",
+        }),
+      );
+
+      expect(res.status).toBe(404);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.error).toBe("not_found");
+
+      // No INSERT should have fired — pre-validation rejected before persistence.
+      const insertCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) => typeof sql === "string" && sql.includes("INSERT INTO connections"),
+      );
+      expect(insertCall).toBeUndefined();
+    });
+
+    it("inline-create env name conflict: 23505 on uq_connection_groups_org_name → 409, connection NOT persisted", async () => {
+      // Throw a faux pg unique-violation from the single CTE INSERT.
+      // The CTE atomicity is what guarantees rollback — both the group
+      // insert and the connection insert fail together. We can't observe
+      // the rollback directly from a mock, but the 409 + the absence of
+      // a partial UPDATE call in the registry is the contract.
+      const conflictErr = Object.assign(new Error("duplicate key value violates unique constraint"), {
+        code: "23505",
+        constraint: "uq_connection_groups_org_name",
+      });
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (
+          typeof sql === "string" &&
+          sql.includes("INSERT INTO connections") &&
+          sql.includes("INSERT INTO connection_groups")
+        ) {
+          return Promise.reject(conflictErr);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections", "POST", {
+          id: "analytics",
+          url: "postgresql://user:pass@host/db",
+          newGroupName: "Production",
+        }),
+      );
+
+      expect(res.status).toBe(409);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.error).toBe("conflict");
+      expect(body.message).toContain("Production");
+    });
+
+    it("both fields together: 400 invalid_request (mutually exclusive)", async () => {
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections", "POST", {
+          id: "analytics",
+          url: "postgresql://user:pass@host/db",
+          connectionGroupId: "g_prod",
+          newGroupName: "Production",
+        }),
+      );
+
+      expect(res.status).toBe(400);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.error).toBe("invalid_request");
+    });
+
+    it("newGroupName fails the name pattern: 400 invalid_request", async () => {
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections", "POST", {
+          id: "analytics",
+          url: "postgresql://user:pass@host/db",
+          newGroupName: "  spaces & ampersands ", // ampersand isn't in the pattern
+        }),
+      );
+
+      expect(res.status).toBe(400);
+    });
+
+    it("attach to an archived env: 409 with restore guidance, no INSERT fires", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT id, status FROM connection_groups")) {
+          return Promise.resolve([{ id: "g_stale", status: "archived" }]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections", "POST", {
+          id: "analytics",
+          url: "postgresql://user:pass@host/db",
+          connectionGroupId: "g_stale",
+        }),
+      );
+
+      expect(res.status).toBe(409);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.error).toBe("conflict");
+      expect(body.message).toContain("archived");
+
+      const insertCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) => typeof sql === "string" && sql.includes("INSERT INTO connections"),
+      );
+      expect(insertCall).toBeUndefined();
+    });
+
+    it("revive archived row with newGroupName: UPDATE-with-CTE branch with primary_connection_id set", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        // PK-collision SELECT — archived row already owns the id.
+        if (sql.includes("SELECT status FROM connections")) {
+          return Promise.resolve([{ status: "archived" }]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections", "POST", {
+          id: "analytics",
+          url: "postgresql://user:pass@host/db",
+          newGroupName: "Production",
+        }),
+      );
+
+      expect(res.status).toBe(201);
+      const updateCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) =>
+          typeof sql === "string" &&
+          sql.startsWith("WITH group_row AS") &&
+          sql.includes("INSERT INTO connection_groups") &&
+          sql.includes("primary_connection_id") &&
+          sql.includes("UPDATE connections"),
+      );
+      expect(updateCall).toBeDefined();
+      expect(updateCall![1]).toContain("Production");
+      expect(updateCall![1]).toContain("analytics");
+    });
+
+    it("revive archived row with connectionGroupId: UPDATE includes group_id, no group CTE", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT status FROM connections")) {
+          return Promise.resolve([{ status: "archived" }]);
+        }
+        if (sql.includes("SELECT id, status FROM connection_groups")) {
+          return Promise.resolve([{ id: "g_prod", status: "active" }]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections", "POST", {
+          id: "analytics",
+          url: "postgresql://user:pass@host/db",
+          connectionGroupId: "g_prod",
+        }),
+      );
+
+      expect(res.status).toBe(201);
+      const updateCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) =>
+          typeof sql === "string" &&
+          sql.startsWith("UPDATE connections") &&
+          sql.includes("group_id"),
+      );
+      expect(updateCall).toBeDefined();
+      expect(updateCall![1]).toContain("g_prod");
+    });
+
+    it("revive archived row with no env field: UPDATE preserves existing group_id (no group_id clause)", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT status FROM connections")) {
+          return Promise.resolve([{ status: "archived" }]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections", "POST", {
+          id: "analytics",
+          url: "postgresql://user:pass@host/db",
+        }),
+      );
+
+      expect(res.status).toBe(201);
+      const updateCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) =>
+          typeof sql === "string" &&
+          sql.startsWith("UPDATE connections"),
+      );
+      expect(updateCall).toBeDefined();
+      // No `group_id =` in the SET list — preserves whatever the archived
+      // row already pointed at.
+      expect(updateCall![0]).not.toContain("group_id =");
+    });
+  });
+
+  describe("PUT /connections/:id — env field (#2484)", () => {
+    it("reattach to existing env: UPDATE includes group_id, response carries new groupId", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        // Existing-row pre-load — caller's connection lives in this org.
+        if (sql.includes("SELECT id, url, type, description, schema_name, group_id FROM connections")) {
+          return Promise.resolve([
+            {
+              id: "warehouse",
+              url: "encrypted:postgresql://old",
+              type: "postgres",
+              description: null,
+              schema_name: null,
+              group_id: "g_warehouse",
+            },
+          ]);
+        }
+        // Env pre-validate: target group exists and is active.
+        if (sql.includes("SELECT id, status FROM connection_groups")) {
+          return Promise.resolve([{ id: "g_prod", status: "active" }]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/warehouse", "PUT", {
+          connectionGroupId: "g_prod",
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.groupId).toBe("g_prod");
+
+      // Find the UPDATE that carries the new group_id.
+      const updateCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) =>
+          typeof sql === "string" &&
+          sql.startsWith("UPDATE connections") &&
+          sql.includes("group_id"),
+      );
+      expect(updateCall).toBeDefined();
+      expect(updateCall![1]).toContain("g_prod");
+    });
+
+    it("explicit ungroup (connectionGroupId: null): UPDATE back to `g_<id>` via ON CONFLICT CTE", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT id, url, type, description, schema_name, group_id FROM connections")) {
+          return Promise.resolve([
+            {
+              id: "warehouse",
+              url: "encrypted:postgresql://old",
+              type: "postgres",
+              description: null,
+              schema_name: null,
+              group_id: "g_prod",
+            },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/warehouse", "PUT", {
+          connectionGroupId: null,
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.groupId).toBe("g_warehouse");
+
+      const updateCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) =>
+          typeof sql === "string" &&
+          sql.includes("UPDATE connections") &&
+          sql.includes("INSERT INTO connection_groups") &&
+          sql.includes("ON CONFLICT"),
+      );
+      expect(updateCall).toBeDefined();
+    });
+
+    it("inline-create on edit: CTE creates env with primary_connection_id = this connection id", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT id, url, type, description, schema_name, group_id FROM connections")) {
+          return Promise.resolve([
+            {
+              id: "warehouse",
+              url: "encrypted:postgresql://old",
+              type: "postgres",
+              description: null,
+              schema_name: null,
+              group_id: "g_warehouse",
+            },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/warehouse", "PUT", {
+          newGroupName: "Production",
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.groupId).toMatch(/^g_/);
+
+      const updateCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) =>
+          typeof sql === "string" &&
+          sql.includes("INSERT INTO connection_groups") &&
+          sql.includes("primary_connection_id") &&
+          sql.includes("UPDATE connections"),
+      );
+      expect(updateCall).toBeDefined();
+      expect(updateCall![1]).toContain("Production");
+      // The connection id flows into the CTE so the new group's
+      // primary_connection_id surfaces as user-named on the next list.
+      expect(updateCall![1]).toContain("warehouse");
+    });
+
+    it("cross-org connectionGroupId on edit: 404 before any UPDATE fires", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT id, url, type, description, schema_name, group_id FROM connections")) {
+          return Promise.resolve([
+            {
+              id: "warehouse",
+              url: "encrypted:postgresql://old",
+              type: "postgres",
+              description: null,
+              schema_name: null,
+              group_id: "g_warehouse",
+            },
+          ]);
+        }
+        // Env pre-validate misses — foreign-org id.
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/warehouse", "PUT", {
+          connectionGroupId: "g_foreign",
+        }),
+      );
+
+      expect(res.status).toBe(404);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.error).toBe("not_found");
+
+      const updateCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) => typeof sql === "string" && sql.startsWith("UPDATE connections"),
+      );
+      expect(updateCall).toBeUndefined();
+    });
+
+    it("attach to an archived env on edit: 409 with restore guidance, no UPDATE fires", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT id, url, type, description, schema_name, group_id FROM connections")) {
+          return Promise.resolve([
+            {
+              id: "warehouse",
+              url: "encrypted:postgresql://old",
+              type: "postgres",
+              description: null,
+              schema_name: null,
+              group_id: "g_warehouse",
+            },
+          ]);
+        }
+        if (sql.includes("SELECT id, status FROM connection_groups")) {
+          return Promise.resolve([{ id: "g_stale", status: "archived" }]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/warehouse", "PUT", {
+          connectionGroupId: "g_stale",
+        }),
+      );
+
+      expect(res.status).toBe(409);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.error).toBe("conflict");
+      expect(body.message).toContain("archived");
+
+      const updateCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) => typeof sql === "string" && sql.startsWith("UPDATE connections"),
+      );
+      expect(updateCall).toBeUndefined();
+    });
+
+    it("DB UPDATE throws on env reassign: registry rolls back to previous URL", async () => {
+      // Asserts the registry-rollback contract holds when the new env-branch
+      // UPDATE fails after `urlChanged` has already swapped the registry to
+      // the new URL. A regression that moves the env UPDATE outside the
+      // rollback try (or replaces register-with-current with bare
+      // unregister) would silently strand the registry on the new URL
+      // while the DB carries the old one — the agent would query the
+      // wrong DB. Catching that here is more valuable than asserting
+      // the 500 status alone.
+      mockRegister.mockClear();
+
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT id, url, type, description, schema_name, group_id FROM connections")) {
+          return Promise.resolve([
+            {
+              id: "warehouse",
+              url: "encrypted:postgresql://old",
+              type: "postgres",
+              description: "old desc",
+              schema_name: null,
+              group_id: "g_warehouse",
+            },
+          ]);
+        }
+        if (sql.includes("SELECT id, status FROM connection_groups")) {
+          return Promise.resolve([{ id: "g_prod", status: "active" }]);
+        }
+        if (typeof sql === "string" && sql.startsWith("UPDATE connections")) {
+          return Promise.reject(new Error("transient pool failure"));
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/warehouse", "PUT", {
+          url: "postgresql://new",
+          connectionGroupId: "g_prod",
+        }),
+      );
+
+      expect(res.status).toBe(500);
+      // The handler runs `register` twice on a urlChanged + UPDATE-fails
+      // path: once with the new URL (line 1064), once to rollback with
+      // the previous URL (line 1098 or 1158). The second call is the
+      // rollback we want to assert fired.
+      const registerCalls = mockRegister.mock.calls;
+      expect(registerCalls.length).toBeGreaterThanOrEqual(2);
+      const rollbackCall = registerCalls[registerCalls.length - 1] as Array<unknown>;
+      // Args are [id, { url, description, schema }]; rollback uses the
+      // pre-edit URL so the registry returns to a coherent state.
+      const rollbackOpts = rollbackCall[1] as { url?: string };
+      expect(rollbackOpts.url).toBe("postgresql://old");
+    });
+
+    it("inline-create name conflict on edit: 23505 → 409, no UPDATE persisted", async () => {
+      const conflictErr = Object.assign(new Error("duplicate key value violates unique constraint"), {
+        code: "23505",
+        constraint: "uq_connection_groups_org_name",
+      });
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT id, url, type, description, schema_name, group_id FROM connections")) {
+          return Promise.resolve([
+            {
+              id: "warehouse",
+              url: "encrypted:postgresql://old",
+              type: "postgres",
+              description: null,
+              schema_name: null,
+              group_id: "g_warehouse",
+            },
+          ]);
+        }
+        if (
+          typeof sql === "string" &&
+          sql.includes("INSERT INTO connection_groups") &&
+          sql.includes("UPDATE connections")
+        ) {
+          return Promise.reject(conflictErr);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/warehouse", "PUT", {
+          newGroupName: "Production",
+        }),
+      );
+
+      expect(res.status).toBe(409);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.error).toBe("conflict");
+      expect(body.message).toContain("Production");
     });
   });
 });

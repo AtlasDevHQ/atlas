@@ -40,7 +40,7 @@ import {
 import { useDemoReadonly } from "@/ui/hooks/use-demo-readonly";
 import { DemoBadge, DraftBadge } from "@/ui/components/admin/mode-badges";
 import { DEMO_CONNECTION_ID } from "./columns";
-import { stripGroupPrefix } from "@/ui/lib/strip-group-prefix";
+import { stripGroupPrefix, isAutoBackfilledSingleton } from "@/ui/lib/strip-group-prefix";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -107,24 +107,98 @@ import { ConnectionsResponseSchema } from "@/ui/lib/admin-schemas";
 
 // ── Connection Form Dialog ───────────────────────────────────────
 
-const connectionCreateSchema = z.object({
-  id: z
-    .string()
-    .min(1, "Connection ID is required")
-    .regex(/^[a-z][a-z0-9_-]*$/, "Lowercase letters, numbers, hyphens, underscores. Must start with a letter."),
-  dbType: z.string().min(1, "Database type is required"),
-  url: z.string().min(1, "Connection URL is required"),
-  schema: z.string(),
-  description: z.string(),
-});
+// Mirrors the backend GROUP_NAME_PATTERN in `lib/db/connection-groups-helpers.ts`.
+// Inlined (rather than imported) so the web bundle doesn't pull from
+// `@atlas/api` — see "Frontend is a pure HTTP client" in CLAUDE.md. A drift here
+// surfaces in tests because the API returns a 400 with the same message.
+const ENV_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}$/;
 
-const connectionEditSchema = z.object({
+// Sentinel values used by the Environment combobox. `__create__` swaps the
+// combobox row for an inline text input bound to `newGroupName`; `__none__`
+// means the connection lands ungrouped (auto `g_<id>` singleton — the
+// migration-0062 invariant the single-DB user never has to think about).
+const ENV_SENTINEL_NONE = "__none__";
+const ENV_SENTINEL_CREATE = "__create__";
+
+const envSelectionSchema = z.string();
+
+const connectionCreateSchema = z
+  .object({
+    id: z
+      .string()
+      .min(1, "Connection ID is required")
+      .regex(/^[a-z][a-z0-9_-]*$/, "Lowercase letters, numbers, hyphens, underscores. Must start with a letter."),
+    dbType: z.string().min(1, "Database type is required"),
+    url: z.string().min(1, "Connection URL is required"),
+    schema: z.string(),
+    description: z.string(),
+    envSelection: envSelectionSchema,
+    newGroupName: z.string(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.envSelection === ENV_SENTINEL_CREATE) {
+      const trimmed = data.newGroupName.trim();
+      if (!trimmed) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["newGroupName"],
+          message: "Environment name is required.",
+        });
+      } else if (!ENV_NAME_PATTERN.test(trimmed)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["newGroupName"],
+          message: "Letters, digits, spaces, hyphens, or underscores (max 64 chars). Must start with a letter or digit.",
+        });
+      }
+    }
+  });
+
+const connectionEditSchema = z
+  .object({
+    id: z.string(),
+    dbType: z.string(),
+    url: z.string(), // empty string is valid on edit — empty means keep current URL
+    schema: z.string(),
+    description: z.string(),
+    envSelection: envSelectionSchema,
+    newGroupName: z.string(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.envSelection === ENV_SENTINEL_CREATE) {
+      const trimmed = data.newGroupName.trim();
+      if (!trimmed) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["newGroupName"],
+          message: "Environment name is required.",
+        });
+      } else if (!ENV_NAME_PATTERN.test(trimmed)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["newGroupName"],
+          message: "Letters, digits, spaces, hyphens, or underscores (max 64 chars). Must start with a letter or digit.",
+        });
+      }
+    }
+  });
+
+/** Wire shape for `/api/v1/admin/connection-groups` — subset of the
+ * `ConnectionGroup` interface that the dialog actually needs. Mirrors the
+ * decode in `connection-groups-section.tsx`; kept inline rather than
+ * extracted to a shared module to avoid a new import cycle for two
+ * fields. */
+const EnvGroupSchema = z.object({
   id: z.string(),
-  dbType: z.string(),
-  url: z.string(), // empty string is valid on edit — empty means keep current URL
-  schema: z.string(),
-  description: z.string(),
+  name: z.string(),
+  status: z.enum(["active", "archived"]).default("active"),
+  memberCount: z.number().int().nonnegative(),
+  primaryConnectionId: z.string().nullable().optional(),
 });
+const EnvGroupListSchema = z.object({
+  groups: z.array(EnvGroupSchema),
+});
+type EnvGroup = z.infer<typeof EnvGroupSchema>;
 
 interface ConnectionFormProps {
   open: boolean;
@@ -140,6 +214,10 @@ interface ConnectionFormProps {
    * dropdown stays locked to the real value.
    */
   initialDbType?: string;
+  /** Live list of envs (connection groups). Passed in so the dialog
+   * doesn't re-fetch on every open — the parent fetch hits TanStack's
+   * cache and the dialog's combobox renders pre-selected on first open. */
+  envGroups: ReadonlyArray<EnvGroup>;
   onSuccess: () => void;
 }
 
@@ -149,6 +227,7 @@ function ConnectionFormDialog({
   editId,
   editDetail,
   initialDbType,
+  envGroups,
   onSuccess,
 }: ConnectionFormProps) {
   const isEdit = !!editId;
@@ -175,12 +254,32 @@ function ConnectionFormDialog({
 
   const schema = isEdit ? connectionEditSchema : connectionCreateSchema;
 
-  // Only the default `dbType` value changes when `initialDbType` is present —
-  // schema validation, submit payload, and every other form field stay
-  // byte-for-byte identical to the pre-revamp form.
+  // Env dropdown only surfaces user-named envs. Auto-`g_<id>` singletons
+  // are hidden so the dropdown doesn't leak migration-0062's
+  // implementation detail to single-DB admins. Same predicate the
+  // Environments tab uses to collapse the auto-detected noise.
+  const selectableEnvs = envGroups.filter(
+    (g) => g.status !== "archived" && !isAutoBackfilledSingleton(g),
+  );
+
+  // Default env selection:
+  //   - Edit + connection is currently in a selectable env → pre-select it.
+  //   - Edit + connection is in an auto-singleton or null → `__none__`.
+  //   - Create + workspace has exactly one selectable env → pre-select it.
+  //   - Create + zero or many selectable envs → `__none__`.
+  function resolveDefaultEnvSelection(): string {
+    if (isEdit && editDetail) {
+      const current = editDetail.groupId;
+      if (current && selectableEnvs.some((g) => g.id === current)) return current;
+      return ENV_SENTINEL_NONE;
+    }
+    if (selectableEnvs.length === 1) return selectableEnvs[0].id;
+    return ENV_SENTINEL_NONE;
+  }
+
   const defaultValues = isEdit && editDetail
-    ? { id: editId!, dbType: editDetail.dbType, url: "", schema: editDetail.schema ?? "", description: editDetail.description ?? "" }
-    : { id: "", dbType: initialDbType ?? "postgres", url: "", schema: "", description: "" };
+    ? { id: editId!, dbType: editDetail.dbType, url: "", schema: editDetail.schema ?? "", description: editDetail.description ?? "", envSelection: resolveDefaultEnvSelection(), newGroupName: "" }
+    : { id: "", dbType: initialDbType ?? "postgres", url: "", schema: "", description: "", envSelection: resolveDefaultEnvSelection(), newGroupName: "" };
 
   function handleOpenChange(nextOpen: boolean) {
     if (nextOpen) {
@@ -211,11 +310,20 @@ function ConnectionFormDialog({
       body.schema = values.schema || undefined;
     }
 
+    // __none__ asymmetry: no-op on Create (server picks auto-singleton),
+    // explicit null on Edit (server reattaches to g_<id>).
+    if (values.envSelection === ENV_SENTINEL_CREATE) {
+      body.newGroupName = values.newGroupName.trim();
+    } else if (values.envSelection === ENV_SENTINEL_NONE) {
+      if (isEdit) body.connectionGroupId = null;
+    } else if (values.envSelection) {
+      body.connectionGroupId = values.envSelection;
+    }
+
     // Gate close-on-success on `result.ok` so a non-2xx leaves the
     // dialog open with the error inline (#2485). Capture `result.error`
-    // into local state so the banner renders even when a close-then-
-    // reopen race clears the hook-level slot before the request settles
-    // (use-admin-mutation.ts:370 swallows the late `setError` write).
+    // into local state so the banner survives the close-then-reopen
+    // race in use-admin-mutation.
     setSubmitError(null);
     const result = await saveMutation.mutate({ path, method, body });
     if (result.ok) {
@@ -303,6 +411,62 @@ function ConnectionFormDialog({
                     />
                   </FormControl>
                   <FormDesc>Lowercase letters, numbers, hyphens, underscores.</FormDesc>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          )}
+
+          <FormField
+            control={form.control}
+            name="envSelection"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Environment</FormLabel>
+                <Select value={field.value} onValueChange={field.onChange}>
+                  <FormControl>
+                    <SelectTrigger className="w-full" data-testid="env-select-trigger">
+                      <SelectValue />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    {selectableEnvs.map((g) => (
+                      <SelectItem key={g.id} value={g.id}>
+                        {stripGroupPrefix(g.name)}
+                      </SelectItem>
+                    ))}
+                    <SelectItem value={ENV_SENTINEL_CREATE} data-testid="env-select-create">
+                      + Create new environment…
+                    </SelectItem>
+                    <SelectItem value={ENV_SENTINEL_NONE} data-testid="env-select-none">
+                      (none — ungrouped)
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+                <FormDesc>
+                  Bundle connections that share a schema (e.g. prod replicas) so semantic
+                  entities and dashboards apply everywhere.
+                </FormDesc>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          {form.watch("envSelection") === ENV_SENTINEL_CREATE && (
+            <FormField
+              control={form.control}
+              name="newGroupName"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>New Environment Name</FormLabel>
+                  <FormControl>
+                    <Input
+                      placeholder="e.g. Production"
+                      {...field}
+                      autoFocus
+                      data-testid="env-new-name-input"
+                    />
+                  </FormControl>
                   <FormMessage />
                 </FormItem>
               )}
@@ -886,6 +1050,16 @@ export default function ConnectionsPage() {
     { schema: ConnectionsResponseSchema },
   );
 
+  // Envs are fetched here (not inside the dialog) so the singleton-preselect
+  // logic runs against fresh data on first open. TanStack Query dedups
+  // with the same path used by `ConnectionGroupsSection`, so this is one
+  // network call shared across the page.
+  const { data: envGroupsData } = useAdminFetch(
+    "/api/v1/admin/connection-groups",
+    { schema: EnvGroupListSchema },
+  );
+  const envGroups = envGroupsData?.groups ?? [];
+
   const [localConnections, setLocalConnections] = useState<ConnectionInfo[] | null>(null);
   // `useAdminFetch` is typed as `ConnectionInfo[]` but defense-in-depth
   // matters here: the TanStack Query cache is keyed by path, not by schema,
@@ -1153,6 +1327,7 @@ export default function ConnectionsPage() {
         editId={editId}
         editDetail={editDetail}
         initialDbType={createDbType}
+        envGroups={envGroups}
         onSuccess={handleMutationSuccess}
       />
 

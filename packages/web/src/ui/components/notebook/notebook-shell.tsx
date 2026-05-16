@@ -7,7 +7,7 @@ import { useKeyboardNav } from "./use-keyboard-nav";
 import { NotebookCell } from "./notebook-cell";
 import { NotebookTextCell } from "./notebook-text-cell";
 import { NotebookEmptyState } from "./notebook-empty-state";
-import { NotebookInputBar } from "./notebook-input-bar";
+import { AskComposer } from "../ask-composer";
 import { DeleteCellDialog } from "./delete-cell-dialog";
 import { ForkBranchSelector } from "./fork-branch-selector";
 import { exportToMarkdown, exportToHTML, downloadFile } from "./notebook-export";
@@ -327,16 +327,22 @@ export function NotebookShell({ notebook, focusCellId, onShareAsReport, starterP
         </div>
       </div>
 
-      <NotebookInputBar
-        value={notebook.input}
-        onChange={notebook.setInput}
-        onSubmit={() => {
-          if (notebook.input.trim()) {
-            notebook.appendCell(notebook.input.trim());
-          }
-        }}
-        disabled={anyRunning}
-      />
+      <div className="mx-auto w-full max-w-5xl px-4">
+        <AskComposer
+          value={notebook.input}
+          onChange={notebook.setInput}
+          onSubmit={() => {
+            if (notebook.input.trim()) {
+              notebook.appendCell(notebook.input.trim());
+            }
+          }}
+          disabled={anyRunning}
+          placeholder="Ask a question to add a new cell…"
+          multiline
+          helperText="Enter to send · Shift+Enter for newline"
+          inputAriaLabel="New cell question"
+        />
+      </div>
 
       <DeleteCellDialog
         open={pendingDeleteIndex !== null}

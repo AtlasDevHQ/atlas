@@ -60,6 +60,7 @@ import { useDemoReadonly, demoIndustryLabel } from "@/ui/hooks/use-demo-readonly
 import { useDevModeNoDrafts } from "@/ui/hooks/use-dev-mode-no-drafts";
 import { DeveloperEmptyState } from "@/ui/components/admin/developer-empty-state";
 import { SemanticPublishedBanner } from "@/ui/components/admin/semantic-published-banner";
+import { DriftDrawer } from "@/ui/components/admin/drift-drawer";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -422,6 +423,12 @@ export default function SemanticPage() {
   const [editingEntityName, setEditingEntityName] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
+  // Drift drawer (#2461): opens overlaid when a drifted entity is clicked.
+  // The underlying selection still updates so closing the drawer leaves the
+  // admin on the entity's detail view. Slice 3 (#2462) adds action buttons.
+  const [driftDrawerEntity, setDriftDrawerEntity] = useState<string | null>(null);
+  const [driftDrawerOpen, setDriftDrawerOpen] = useState(false);
+
   const fetchOpts: RequestInit = {
     credentials: isCrossOrigin ? "include" : "same-origin",
   };
@@ -592,6 +599,21 @@ export default function SemanticPage() {
         group: selectionToGroupParam(sel),
       });
     });
+    // #2461: opening the drift drawer on click for drifted entities.
+    // We piggy-back on the existing selection update — closing the drawer
+    // returns to the regular entity detail view, no extra navigation needed.
+    if (sel?.type === "entity") {
+      const match = entities.find(
+        (e) =>
+          e.name === sel.name &&
+          e.connectionGroupId === (sel.connectionGroupId ?? null),
+      );
+      const driftState = match?.drift?.state;
+      if (driftState === "changed" || driftState === "removed" || driftState === "new") {
+        setDriftDrawerEntity(sel.name);
+        setDriftDrawerOpen(true);
+      }
+    }
   };
 
   // Fetch entity detail when selection changes (including from URL on mount)
@@ -987,6 +1009,16 @@ export default function SemanticPage() {
       </>
       )}
       </AdminContentWrapper>
+
+      {/* Drift drawer (#2461) — opens overlaid on drifted-entity clicks. */}
+      <DriftDrawer
+        entityName={driftDrawerEntity}
+        open={driftDrawerOpen}
+        onOpenChange={(open) => {
+          setDriftDrawerOpen(open);
+          if (!open) setDriftDrawerEntity(null);
+        }}
+      />
 
       {/* Entity editor dialog */}
       <EntityEditorDialog

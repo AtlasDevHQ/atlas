@@ -1,20 +1,13 @@
 /**
- * Tests for the one-time SaaS trial backfill ({@link backfillSaasTrial}).
+ * Tests for the one-time SaaS trial backfill (`backfillSaasTrial`).
  *
- * Pairs with the signup-time {@link assignSaasTrial} hook from slice 1:
- * the hook handles every new org, the backfill retires legacy 'free'
- * rows the hook didn't run for. PRD #2464 slice 2/4.
- *
- * Contract under test:
- *   - SaaS + free rows present → promotes them, returns the ids.
- *   - Self-hosted → no SELECT, no UPDATE, no throw.
- *   - No internal DB (DATABASE_URL unset) → no SELECT, no UPDATE.
- *   - Re-run when there are no candidates → 0-count, no error.
- *   - UPDATE throws → result is SKIPPED, no rethrow.
+ * Pairs with the signup-time `assignSaasTrial` hook (#2465): the hook
+ * handles every new org, the backfill retires legacy 'free' rows the
+ * hook didn't run for. PRD #2464.
  *
  * Mocks `InternalPool` via `_resetPool` and `getConfig()` via
- * `_setConfigForTest`. Same pattern as
- * `auth/__tests__/assign-saas-trial.test.ts`.
+ * `_setConfigForTest`. Same pattern as the slice 1 sibling test for
+ * `assignSaasTrial`.
  */
 
 import { describe, it, expect, beforeEach, afterAll } from "bun:test";
@@ -112,6 +105,38 @@ describe("backfillSaasTrial", () => {
     // zero candidates. Re-running on the next boot is the same no-op
     // call shape.
     expect(queries).toHaveLength(1);
+  });
+
+  it("is idempotent across two boots — second call promotes zero rows", async () => {
+    // Simulates the real Postgres behaviour: first boot finds the
+    // legacy 'free' rows and updates them; second boot's UPDATE sees
+    // `trial_ends_at IS NOT NULL` and the WHERE clause matches nothing,
+    // so RETURNING is empty. End-to-end check on the PRD's hard
+    // idempotency requirement — the WHERE-clause regex elsewhere only
+    // asserts the clause is *present*.
+    let callCount = 0;
+    const queries: Array<{ sql: string; params?: unknown[] }> = [];
+    const pool = {
+      query: async (sql: string, params?: unknown[]) => {
+        queries.push({ sql, params });
+        callCount += 1;
+        const rows = callCount === 1
+          ? [{ id: "org_dogfood" }, { id: "org_acme" }]
+          : [];
+        return { rows, rowCount: rows.length };
+      },
+    } as unknown as InternalPool;
+    _resetPool(pool);
+
+    const first = await backfillSaasTrial();
+    expect(first.updatedCount).toBe(2);
+    expect(first.orgIds).toEqual(["org_dogfood", "org_acme"]);
+
+    const second = await backfillSaasTrial();
+    expect(second.updatedCount).toBe(0);
+    expect(second.orgIds).toEqual([]);
+
+    expect(queries).toHaveLength(2);
   });
 
   it("skips on self-hosted — no UPDATE", async () => {

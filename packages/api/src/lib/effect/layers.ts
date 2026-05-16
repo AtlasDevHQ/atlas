@@ -257,6 +257,13 @@ export const BackfillSaasTrialLive: Layer.Layer<
     const db = yield* InternalDB;
     const migration = yield* Migration;
     if (!db.available || !migration.migrated) {
+      // Match MigrationLive's "logged-reason" pattern so an operator
+      // debugging "why didn't my SaaS region backfill?" can correlate
+      // without grepping for absences.
+      log.info(
+        { available: db.available, migrated: migration.migrated },
+        "SaaS trial backfill skipped — upstream gate (InternalDB or Migration) not satisfied",
+      );
       return { updatedCount: 0 } satisfies BackfillSaasTrialShape;
     }
 
@@ -267,11 +274,16 @@ export const BackfillSaasTrialLive: Layer.Layer<
         );
         return await backfillSaasTrial();
       },
-      catch: (err) => (err instanceof Error ? err.message : String(err)),
+      // Preserve the original Error (stack trace included) so pino's
+      // `err` serializer reports the throw site, not this catch site.
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     }).pipe(
-      Effect.catchAll((errMsg) => {
-        log.error({ err: new Error(errMsg) }, "SaaS trial backfill threw");
-        return Effect.succeed({ updatedCount: 0, orgIds: [] as ReadonlyArray<string> });
+      Effect.catchAll((err) => {
+        // Only reachable if the dynamic import itself rejects (e.g.
+        // bundle artefact missing) — `backfillSaasTrial` catches its
+        // own errors and never throws.
+        log.error({ err }, "SaaS trial backfill threw");
+        return Effect.succeed({ updatedCount: 0 } satisfies BackfillSaasTrialShape);
       }),
     );
 
@@ -1007,8 +1019,9 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
   const migrationLayer = MigrationLive.pipe(Layer.provide(internalDBLayer));
 
   // BackfillSaasTrialLive depends on Migration (so the `organization`
-  // table is guaranteed to exist) and InternalDB. Sits between
-  // migrations and scheduler in the boot DAG.
+  // table is guaranteed to exist) and InternalDB. Independent peer of
+  // the other layers — Effect's mergeAll doesn't order independent
+  // siblings, so the only real ordering is the Migration dependency.
   const backfillSaasTrialLayer = BackfillSaasTrialLive.pipe(
     Layer.provide(Layer.merge(internalDBLayer, migrationLayer)),
   );

@@ -2,11 +2,9 @@
  * One-time idempotent backfill: flip existing SaaS workspaces stuck on
  * `plan_tier='free'` onto `'trial'` with a fresh 14-day window.
  *
- * Pairs with the signup-time {@link assignSaasTrial} hook (#2465). New
- * orgs created after the hook lands take the happy path; this module
- * exists to retire the legacy `'free'` rows the hook didn't run for —
- * pre-launch this is the dogfood instance, but the pattern is safe for
- * any SaaS deploy that picks up the new code with existing orgs.
+ * Pairs with the signup-time `assignSaasTrial` hook (#2465). New orgs
+ * created after the hook lands take the happy path; this module retires
+ * the legacy `'free'` rows the hook didn't run for.
  *
  * Guarded on `deployMode === 'saas'` because self-hosted's free tier is
  * the legitimate free product — clobbering it would lock self-hosted
@@ -14,11 +12,11 @@
  *
  * Idempotent via the `WHERE trial_ends_at IS NULL` clause: subsequent
  * boots find zero candidates. Uses `NOW() + 14d` (not `createdAt + 14d`)
- * so the dogfood workspace gets a fresh window instead of landing
+ * so existing 'free' workspaces get a fresh window rather than landing
  * pre-expired the moment this code deploys.
  *
  * Wired through `BackfillSaasTrialLive` in
- * `packages/api/src/lib/effect/layers.ts`, scheduled after migrations
+ * `packages/api/src/lib/effect/layers.ts`, which depends on `Migration`
  * so the `organization` table is guaranteed to exist before the UPDATE.
  */
 

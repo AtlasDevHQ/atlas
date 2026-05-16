@@ -115,7 +115,8 @@ describe("migrateAuthTables", () => {
     //   4. Execute baseline SQL
     //   5. INSERT migration record
     //   6. COMMIT
-    // Then seeds (prompt library, SLA thresholds, backup config) + loadSavedConnections + loadPluginSettings + restoreAbuseState
+    // Then seeds (prompt library, SLA thresholds, backup config) + loadPluginSettings + restoreAbuseState.
+    // loadSavedConnections moved to ConnectionsHydrateLive in lib/effect/layers.ts (#2482).
     expect(queries.length).toBeGreaterThan(5);
 
     // Verify advisory lock acquired and tracking table created

@@ -6,6 +6,8 @@ import {
   Config,
   Migration,
   MigrationLive,
+  ConnectionsHydrate,
+  ConnectionsHydrateLive,
   SemanticSync,
   SemanticSyncLive,
   Settings,
@@ -120,6 +122,79 @@ describe("MigrationLive", () => {
     );
 
     expect(result).toBe(false);
+  });
+});
+
+// ── ConnectionsHydrate (#2482) ─────────────────────────────────────
+
+describe("ConnectionsHydrateLive", () => {
+  test("returns zero count when InternalDB is unavailable", async () => {
+    const testInternalDB = createInternalDBTestLayer({ available: false });
+    const testMigration = makeTestMigrationLayer({ migrated: true });
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const hydrate = yield* ConnectionsHydrate;
+        return hydrate;
+      }).pipe(
+        Effect.provide(
+          ConnectionsHydrateLive.pipe(
+            Layer.provide(Layer.merge(testInternalDB, testMigration)),
+          ),
+        ),
+      ),
+    );
+
+    expect(result.count).toBe(0);
+    expect(typeof result.durationMs).toBe("number");
+  });
+
+  test("returns zero count when Migration did not succeed", async () => {
+    const testInternalDB = createInternalDBTestLayer({ available: true });
+    const testMigration = makeTestMigrationLayer({ migrated: false });
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const hydrate = yield* ConnectionsHydrate;
+        return hydrate;
+      }).pipe(
+        Effect.provide(
+          ConnectionsHydrateLive.pipe(
+            Layer.provide(Layer.merge(testInternalDB, testMigration)),
+          ),
+        ),
+      ),
+    );
+
+    expect(result.count).toBe(0);
+  });
+
+  test("invokes loadSavedConnections when upstream gates are satisfied", async () => {
+    // When InternalDB.available + Migration.migrated are both true, the
+    // Layer reaches the loadSavedConnections call. In this unit context
+    // there is no real DB so loadSavedConnections falls into its inner
+    // catch ("table may not exist yet") and returns 0 — the assertion
+    // we care about is "the layer ran end-to-end and produced a result".
+    const testInternalDB = createInternalDBTestLayer({ available: true });
+    const testMigration = makeTestMigrationLayer({ migrated: true });
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const hydrate = yield* ConnectionsHydrate;
+        return hydrate;
+      }).pipe(
+        Effect.provide(
+          ConnectionsHydrateLive.pipe(
+            Layer.provide(Layer.merge(testInternalDB, testMigration)),
+          ),
+        ),
+      ),
+    );
+
+    expect(typeof result.count).toBe("number");
+    expect(result.count).toBeGreaterThanOrEqual(0);
+    expect(typeof result.durationMs).toBe("number");
+    expect(result.durationMs).toBeGreaterThanOrEqual(0);
   });
 });
 
@@ -426,6 +501,7 @@ describe("buildAppLayer", () => {
         const telemetry = yield* Telemetry;
         const configSvc = yield* Config;
         const migration = yield* Migration;
+        const hydrate = yield* ConnectionsHydrate;
         const semanticSync = yield* SemanticSync;
         const settings = yield* Settings;
         const scheduler = yield* Scheduler;
@@ -433,6 +509,7 @@ describe("buildAppLayer", () => {
           hasTelemetry: typeof telemetry.shutdown === "function",
           hasConfig: configSvc.config != null,
           hasMigration: typeof migration.migrated === "boolean",
+          hasHydrate: typeof hydrate.count === "number",
           hasSync: typeof semanticSync.reconciled === "boolean",
           hasSettings: typeof settings.loaded === "number",
           hasScheduler: typeof scheduler.backend === "string",
@@ -443,6 +520,7 @@ describe("buildAppLayer", () => {
     expect(result.hasTelemetry).toBe(true);
     expect(result.hasConfig).toBe(true);
     expect(result.hasMigration).toBe(true);
+    expect(result.hasHydrate).toBe(true);
     expect(result.hasSync).toBe(true);
     expect(result.hasSettings).toBe(true);
     expect(result.hasScheduler).toBe(true);

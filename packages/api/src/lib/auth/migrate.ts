@@ -95,13 +95,11 @@ export async function migrateAuthTables(): Promise<void> {
       // Don't block server start — audit will fall back to pino-only
     }
 
-    // 3. Load admin-managed connections (separate from migration so failures don't conflate)
-    try {
-      const { loadSavedConnections } = await import("@atlas/api/lib/db/internal");
-      await loadSavedConnections();
-    } catch (err) {
-      log.error({ err }, "Failed to load saved connections at startup — admin-managed connections unavailable");
-    }
+    // 3. Saved-connection hydrate moved to ConnectionsHydrateLive in
+    //    lib/effect/layers.ts (#2482). The Effect Layer DAG runs the
+    //    hydrate as a first-class boot phase after InternalDB +
+    //    Migration are up — keeping a duplicate call here would double-
+    //    fire decryption warnings on key-rotation errors.
 
     // Load plugin settings (enabled/disabled state from DB)
     try {

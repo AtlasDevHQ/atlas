@@ -230,6 +230,84 @@ describe("admin connections — org scoping", () => {
       expect(defaultRow.groupName).toBeNull();
     });
 
+    it("#2490 — org-owned row (warehouse) reports billable: true", async () => {
+      // Workspace owns one real `connections` row. The group-decoration
+      // JOIN matches it, so it lands in `groupInfoByConnection` and the
+      // response decorates `billable: true` — the same predicate billing
+      // uses for the trial-cap count.
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT c.id FROM connections c WHERE c.org_id")) {
+          return Promise.resolve([{ id: "warehouse" }]);
+        }
+        if (sql.includes("g.name AS group_name")) {
+          return Promise.resolve([
+            { id: "warehouse", group_id: null, group_name: null },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
+
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      const warehouse = body.connections.find((c: { id: string }) => c.id === "warehouse");
+      expect(warehouse).toBeDefined();
+      expect(warehouse.billable).toBe(true);
+    });
+
+    it("#2490 — visible row absent from the org-scoped JOIN reports billable: false", async () => {
+      // Covers the `__global__`-sourced half of the billable contract.
+      // Visibility surfaces the row (via the UNION on `__global__` in
+      // getVisibleConnectionIds), but the group-decoration JOIN is
+      // scoped to `c.org_id = $1`, so a `__global__`-owned row returns
+      // no decoration → `billable: false`. Same parity billing enforces:
+      // the shared demo doesn't eat the trial slot. A future change
+      // that widens the JOIN to `org_id IN ($1, '__global__')` would
+      // silently start charging every workspace for shared rows — this
+      // test fails first.
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT c.id FROM connections c WHERE c.org_id")) {
+          // `warehouse` is the stand-in for a `__global__`-sourced row:
+          // visibility lists it, but the JOIN below returns no row for
+          // it (because it doesn't live under org-alpha in this fixture).
+          return Promise.resolve([{ id: "warehouse" }]);
+        }
+        if (sql.includes("g.name AS group_name")) {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
+
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      const warehouse = body.connections.find((c: { id: string }) => c.id === "warehouse");
+      expect(warehouse).toBeDefined();
+      expect(warehouse.billable).toBe(false);
+    });
+
+    it("#2490 — lone lazy `default` (pre-provision workspace) reports billable: false", async () => {
+      // Pre-provision self-hosted demo: zero `connections` rows for this
+      // org. `getVisibleConnectionIds` adds `default` from the in-memory
+      // registry. The list response must mark it `billable: false` so the
+      // /admin/connections header agrees with the /admin/billing usage
+      // panel (which counts the same SQL predicate and reports 0).
+      mocks.mockInternalQuery.mockResolvedValue([]);
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
+
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.connections).toHaveLength(1);
+      expect(body.connections[0].id).toBe("default");
+      expect(body.connections[0].billable).toBe(false);
+    });
+
     it("decorates each row with groupId + groupName from the connection_groups JOIN", async () => {
       // The list endpoint's second internalQuery call selects c.id, c.group_id
       // and g.name via LEFT JOIN connection_groups. The visibility query runs

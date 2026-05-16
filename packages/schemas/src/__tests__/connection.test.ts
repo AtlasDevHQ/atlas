@@ -79,3 +79,24 @@ describe("group decoration fields survive parse", () => {
     expect(ConnectionInfoSchema.parse(ungrouped)).toEqual(ungrouped);
   });
 });
+
+describe("billable field survives parse (#2490)", () => {
+  // The header at /admin/connections counts only billable rows. If the
+  // schema's default object strip drops the field at parse time, the page
+  // sees `undefined` on every row, the `!== false` wire-compat fallback
+  // counts everything, and the exact bug #2490 fixed silently returns.
+  test("parses billable: true (per-org row)", () => {
+    const owned = { ...validInfo, billable: true };
+    expect(ConnectionInfoSchema.parse(owned)).toEqual(owned);
+  });
+
+  test("parses billable: false (lazy default / __global__ shadow)", () => {
+    const fallback = { ...validInfo, billable: false };
+    expect(ConnectionInfoSchema.parse(fallback)).toEqual(fallback);
+  });
+
+  test("billable absent parses cleanly (mixed-version wire compat)", () => {
+    const parsed = ConnectionInfoSchema.parse(validInfo);
+    expect("billable" in parsed).toBe(false);
+  });
+});

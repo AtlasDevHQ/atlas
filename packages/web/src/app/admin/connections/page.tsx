@@ -98,6 +98,7 @@ import { cn } from "@/lib/utils";
 import { formatDateTime } from "@/lib/format";
 import {
   DB_TYPES,
+  isBillable,
   type ConnectionHealth,
   type ConnectionInfo,
   type ConnectionDetail,
@@ -1169,9 +1170,15 @@ export default function ConnectionsPage() {
     ...Array.from(byType.keys()).filter((k) => !DB_TYPES.some((t) => t.value === k)),
   ];
 
+  // Header "X / Y live" mirrors the /admin/billing usage panel — the
+  // lazy `default` fallback on self-hosted demo deploys reports
+  // `billable: false` and stays out of both numerator and denominator
+  // (#2490). `isBillable` encodes the wire-compat fallback for older
+  // API servers that omit the field.
+  const billableConnections = displayConnections.filter(isBillable);
   const stats = {
-    live: displayConnections.filter((c) => c.health?.status === "healthy").length,
-    total: displayConnections.length,
+    live: billableConnections.filter((c) => c.health?.status === "healthy").length,
+    total: billableConnections.length,
   };
 
   return (

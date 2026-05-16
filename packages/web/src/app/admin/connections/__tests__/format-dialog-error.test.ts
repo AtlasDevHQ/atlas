@@ -36,15 +36,34 @@ describe("formatDialogError — #2485 dialog error surfacing", () => {
     expect(out).toContain("Request ID: abc-123");
   });
 
-  test("plan_limit_exceeded (also 429) substitutes retry guidance — same status, same surfacing", () => {
-    // Both rate-limited and plan-limit-exceeded come back as 429.
-    // The admin sees consistent copy regardless of the underlying cause —
-    // the structured `code` is still on the error for downstream surfaces
-    // that need to branch (e.g. an upsell CTA later).
+  test("plan_limit_exceeded (also 429) surfaces the server's structured upgrade message verbatim", () => {
+    // Both rate-limited and plan-limit-exceeded come back as 429, but
+    // the recovery action is different: rate-limited admins wait,
+    // plan-limited admins upgrade. Collapsing both to wait-and-retry
+    // would tell a plan-limited admin to wait for a budget refresh
+    // that never comes. The 429 substitution gates on `code` so the
+    // structured "Upgrade to add more" copy from billing/enforcement
+    // reaches the user.
     const err: FetchError = {
       status: 429,
       code: "plan_limit_exceeded",
-      message: "Workspace exceeded its connection limit.",
+      message: "Your free plan allows up to 1 connections. Upgrade to add more.",
+    };
+    const out = formatDialogError(err);
+    expect(out).toContain("Your free plan allows up to 1 connections");
+    expect(out).toContain("Upgrade to add more");
+    // The wait-and-retry copy must NOT appear — that would mislead a
+    // plan-limited admin into waiting instead of upgrading.
+    expect(out).not.toContain("Wait a few seconds");
+  });
+
+  test("429 without a code (defensive) substitutes retry guidance", () => {
+    // Belt-and-suspenders: a 429 from an upstream layer that forgot to
+    // populate `code` should still get the wait-and-retry copy, because
+    // the most common cause of 429 in this surface is rate-limiting.
+    const err: FetchError = {
+      status: 429,
+      message: "Too many requests.",
     };
     const out = formatDialogError(err);
     expect(out).toBe("Too many requests. Wait a few seconds and try again.");

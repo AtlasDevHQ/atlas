@@ -96,25 +96,34 @@ function getRpmLimitForBucket(bucket: RateLimitBucket): number {
     return Math.floor(n);
   }
 
-  // bucket === "admin"
-  const raw = getSetting("ATLAS_RATE_LIMIT_RPM_ADMIN");
-  if (raw === undefined || raw === "") {
-    // Default: at least 60/min — one request per second — so interactive
-    // admin forms aren't throttled at a base RPM tuned for public traffic.
-    return Math.max(60, baseLimit);
-  }
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) {
-    if (raw !== lastWarnedAdminRpmValue) {
-      log.warn(
-        { value: raw },
-        "Invalid ATLAS_RATE_LIMIT_RPM_ADMIN; falling back to derived default max(60, RPM)",
-      );
-      lastWarnedAdminRpmValue = raw;
+  if (bucket === "admin") {
+    const raw = getSetting("ATLAS_RATE_LIMIT_RPM_ADMIN");
+    if (raw === undefined || raw === "") {
+      // Default: at least 60/min — one request per second — so interactive
+      // admin forms aren't throttled at a base RPM tuned for public traffic.
+      return Math.max(60, baseLimit);
     }
-    return Math.max(60, baseLimit);
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) {
+      if (raw !== lastWarnedAdminRpmValue) {
+        log.warn(
+          { value: raw },
+          "Invalid ATLAS_RATE_LIMIT_RPM_ADMIN; falling back to derived default max(60, RPM)",
+        );
+        lastWarnedAdminRpmValue = raw;
+      }
+      return Math.max(60, baseLimit);
+    }
+    return Math.floor(n);
   }
-  return Math.floor(n);
+
+  // Exhaustiveness gate — adding a fourth bucket to `RateLimitBucket`
+  // without adding an arm here is a TS error. Without it the new bucket
+  // would silently fall through to whatever the last branch happened to
+  // return (the admin path used to be a comment-only fall-through; this
+  // closes that door).
+  const _exhaustive: never = bucket;
+  throw new Error(`Unhandled rate-limit bucket: ${String(_exhaustive)}`);
 }
 
 /** Bucket categories for `checkRateLimit`. */

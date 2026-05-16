@@ -45,7 +45,7 @@ ATLAS_TRUST_PROXY=true
 Rate limit keys are resolved in order: authenticated user ID, then forwarded IP (if `ATLAS_TRUST_PROXY=true`), then a shared `anon` bucket. Without `ATLAS_TRUST_PROXY`, all proxied users share the same key.
 </Callout>
 
-Rate limiting is **disabled by default**. When enabled, it covers the primary API routes: `/api/chat`, `/api/v1/query`, `/api/v1/conversations`, `/api/v1/admin/*`, `/api/v1/semantic/*`, `/api/v1/scheduled-tasks`, and `/api/v1/actions`. Health, auth, widget, and OpenAPI spec endpoints are exempt.
+Rate limiting is **disabled by default**. When enabled, it covers the primary API routes: `/api/v1/chat`, `/api/v1/query`, `/api/v1/conversations`, `/api/v1/admin/*`, `/api/v1/semantic/*`, `/api/v1/scheduled-tasks`, and `/api/v1/actions`. Health, auth, widget, and OpenAPI spec endpoints are exempt.
 
 ### Per-bucket isolation
 
@@ -53,11 +53,11 @@ Each caller has three independent sliding windows keyed on the same identity (us
 
 | Bucket | Routes | Why it's separate |
 |--------|--------|-------------------|
-| `default` | `/api/chat` rate-check, `/api/v1/query`, `/api/v1/conversations`, public reads | Baseline; tuned by `ATLAS_RATE_LIMIT_RPM` |
-| `chat` | `/api/chat` stream (per-call) | A 25-step LLM tool-use loop fires many requests in a row — without isolation it would deplete the default bucket and lock out the same caller's cheap reads (F-74) |
-| `admin` | `/api/v1/admin/*`, `/api/v1/platform/*` | Interactive admin forms (Add / Test / Delete in quick succession) burst easily past a public-traffic ceiling — without isolation a dogfood session at 30 RPM throttles after ~12 clicks (#2485) |
+| `default` | `/api/v1/query`, `/api/v1/conversations`, `/api/v1/semantic/*`, `/api/v1/scheduled-tasks`, `/api/v1/actions`, `/api/v1/me/*`, public reads | Baseline; tuned by `ATLAS_RATE_LIMIT_RPM` |
+| `chat` | `/api/v1/chat` (per-call) | A 25-step LLM tool-use loop fires many requests in a row — without isolation it would deplete the default bucket and lock out the same caller's cheap reads (F-74) |
+| `admin` | `/api/v1/admin/*`, `/api/v1/platform/*` | Interactive admin forms (Add / Test / Delete in quick succession) burst well past a public-traffic ceiling — without isolation a single Add/Edit Connection session can throttle on a tight base RPM (#2485) |
 
-The admin bucket defaults to a floor of 60 RPM (one per second), which keeps an interactive admin session from running out of budget even on a deployment with a tight `ATLAS_RATE_LIMIT_RPM`. Tune `ATLAS_RATE_LIMIT_RPM_ADMIN` directly if your workspace has tighter or looser admin-traffic needs.
+The admin bucket defaults to `max(60, ATLAS_RATE_LIMIT_RPM)` — at least one request per second, and tracking the base RPM above that — so an interactive admin session never runs out of budget on a deployment with a tight base limit. Tune `ATLAS_RATE_LIMIT_RPM_ADMIN` directly if your workspace has different admin-traffic needs.
 
 ### Per-Datasource Rate Limiting
 

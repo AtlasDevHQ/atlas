@@ -795,8 +795,8 @@ describe("checkRateLimit() — admin bucket (#2485)", () => {
   it("derives default admin ceiling as max(60, RPM) when override unset", () => {
     delete process.env.ATLAS_RATE_LIMIT_RPM_ADMIN;
     // RPM=30 — admin ceiling lifts to 60 so an interactive admin form
-    // (DELETE + Test + Add, ~12 calls per session) doesn't burn through
-    // a budget tuned for cheap public reads.
+    // (DELETE + Test + Add in quick succession) doesn't burn through a
+    // budget tuned for cheap public reads.
     process.env.ATLAS_RATE_LIMIT_RPM = "30";
     resetRateLimits();
 

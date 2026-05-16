@@ -52,6 +52,12 @@ export const ConnectionInfoSchema = z.object({
   // default object strip drops the keys at parse time.
   groupId: z.string().nullable().optional(),
   groupName: z.string().nullable().optional(),
+  // Per-connection mirror of the billing usage-panel SQL predicate
+  // (`status != 'archived'` rows in the per-org `connections` table).
+  // Optional so older API responses still parse; absence is treated as
+  // "count it" by consumers to preserve pre-#2490 behavior. See
+  // `ConnectionInfo.billable` for full semantics.
+  billable: z.boolean().optional(),
 }) as z.ZodType<ConnectionInfo>;
 
 // ---------------------------------------------------------------------------

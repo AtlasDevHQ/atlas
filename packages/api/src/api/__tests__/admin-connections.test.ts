@@ -230,6 +230,58 @@ describe("admin connections — org scoping", () => {
       expect(defaultRow.groupName).toBeNull();
     });
 
+    it("#2490 — lazy `default` fallback reports billable: false; org-owned rows report true", async () => {
+      // Self-hosted demo deploy: workspace owns one real connection
+      // (`warehouse`), and the registry also has the runtime-registered
+      // `default` from `ATLAS_DATASOURCE_URL`. The visibility set should
+      // include `warehouse` only (org-owned rows suppress the fallback),
+      // but to exercise the parity codepath we mock the visibility query
+      // to return only `warehouse` and verify `billable` is computed via
+      // the same predicate `/admin/billing` uses
+      // (`connections WHERE org_id = $1 AND status != 'archived'`).
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT c.id FROM connections c WHERE c.org_id")) {
+          return Promise.resolve([{ id: "warehouse" }]);
+        }
+        if (sql.includes("g.name AS group_name")) {
+          // `warehouse` lives in the connections table → present in the
+          // JOIN → billable. `default` is the lazy fallback → absent →
+          // not billable.
+          return Promise.resolve([
+            { id: "warehouse", group_id: null, group_name: null },
+          ]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
+
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      const warehouse = body.connections.find((c: { id: string }) => c.id === "warehouse");
+      expect(warehouse).toBeDefined();
+      expect(warehouse.billable).toBe(true);
+    });
+
+    it("#2490 — lone lazy `default` (pre-provision workspace) reports billable: false", async () => {
+      // Pre-provision self-hosted demo: zero `connections` rows for this
+      // org. `getVisibleConnectionIds` adds `default` from the in-memory
+      // registry. The list response must mark it `billable: false` so the
+      // /admin/connections header agrees with the /admin/billing usage
+      // panel (which counts the same SQL predicate and reports 0).
+      mocks.mockInternalQuery.mockResolvedValue([]);
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
+
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.connections).toHaveLength(1);
+      expect(body.connections[0].id).toBe("default");
+      expect(body.connections[0].billable).toBe(false);
+    });
+
     it("decorates each row with groupId + groupName from the connection_groups JOIN", async () => {
       // The list endpoint's second internalQuery call selects c.id, c.group_id
       // and g.name via LEFT JOIN connection_groups. The visibility query runs

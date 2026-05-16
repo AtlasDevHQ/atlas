@@ -1169,9 +1169,17 @@ export default function ConnectionsPage() {
     ...Array.from(byType.keys()).filter((k) => !DB_TYPES.some((t) => t.value === k)),
   ];
 
+  // Header "X / Y live" mirrors the /admin/billing usage panel's source
+  // of truth — only count connections that map to a per-org `connections`
+  // row (#2490). The lazy `default` fallback on self-hosted demo deploys
+  // reports `billable: false` and stays out of both the numerator and the
+  // denominator so the header agrees with billing. Connections from an
+  // older API response that predates the field fall back to "count it"
+  // via the `!== false` check, preserving pre-#2490 behavior.
+  const billableConnections = displayConnections.filter((c) => c.billable !== false);
   const stats = {
-    live: displayConnections.filter((c) => c.health?.status === "healthy").length,
-    total: displayConnections.length,
+    live: billableConnections.filter((c) => c.health?.status === "healthy").length,
+    total: billableConnections.length,
   };
 
   return (

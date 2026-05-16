@@ -50,6 +50,22 @@ export interface ConnectionInfo {
    * Same three-state semantics as {@link groupId}.
    */
   groupName?: string | null;
+  /**
+   * Whether this connection counts toward billing/trial resource limits.
+   *
+   * Mirrors the predicate `/admin/billing` uses
+   * (`connections WHERE org_id = $1 AND status != 'archived'`): true iff
+   * this connection has a real row in the per-org `connections` table.
+   * `__global__`-sourced rows (e.g. the shared `__demo__`) and the
+   * runtime-registered `default` fallback (self-hosted demo with no rows
+   * yet) report `billable: false` so the connections-page header agrees
+   * with the billing usage panel.
+   *
+   * Optional for wire compatibility: older serializers omit the field;
+   * consumers should treat `undefined` as "unknown — count it" to
+   * preserve pre-#2490 behavior on a mixed-version deploy.
+   */
+  billable?: boolean;
 }
 
 /** Real-time pool size counters (only available for core adapters with pool access). */

@@ -2661,8 +2661,8 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       [groupId, orgId],
     );
     const dashboardInsert = await pool.query<{ id: string }>(
-      `INSERT INTO dashboards (org_id, owner_id, name, slug, share_mode)
-       VALUES ($1, 'owner', 'card-test', 'card-test-${Date.now()}', 'org')
+      `INSERT INTO dashboards (org_id, owner_id, title, share_mode)
+       VALUES ($1, 'owner', 'card-test', 'org')
        RETURNING id`,
       [orgId],
     );

@@ -49676,6 +49676,13 @@
                           "name": {
                             "type": "string"
                           },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "active",
+                              "archived"
+                            ]
+                          },
                           "memberCount": {
                             "type": "integer",
                             "minimum": 0
@@ -49702,6 +49709,7 @@
                         "required": [
                           "id",
                           "name",
+                          "status",
                           "memberCount",
                           "primaryConnectionId",
                           "resolvedConnectionId",
@@ -49788,6 +49796,13 @@
                     "name": {
                       "type": "string"
                     },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "archived"
+                      ]
+                    },
                     "memberCount": {
                       "type": "integer",
                       "minimum": 0
@@ -49814,6 +49829,7 @@
                   "required": [
                     "id",
                     "name",
+                    "status",
                     "memberCount",
                     "primaryConnectionId",
                     "resolvedConnectionId",
@@ -49958,6 +49974,13 @@
                     "name": {
                       "type": "string"
                     },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "archived"
+                      ]
+                    },
                     "memberCount": {
                       "type": "integer",
                       "minimum": 0
@@ -50009,6 +50032,7 @@
                   "required": [
                     "id",
                     "name",
+                    "status",
                     "memberCount",
                     "primaryConnectionId",
                     "resolvedConnectionId",
@@ -50127,6 +50151,13 @@
                     "name": {
                       "type": "string"
                     },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "archived"
+                      ]
+                    },
                     "memberCount": {
                       "type": "integer",
                       "minimum": 0
@@ -50153,6 +50184,7 @@
                   "required": [
                     "id",
                     "name",
+                    "status",
                     "memberCount",
                     "primaryConnectionId",
                     "resolvedConnectionId",
@@ -50540,6 +50572,31 @@
               }
             }
           },
+          "409": {
+            "description": "Group is archived — member assignments are refused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -50593,6 +50650,13 @@
                         "name": {
                           "type": "string"
                         },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "active",
+                            "archived"
+                          ]
+                        },
                         "memberCount": {
                           "type": "integer",
                           "minimum": 0
@@ -50623,6 +50687,7 @@
                       "required": [
                         "id",
                         "name",
+                        "status",
                         "memberCount",
                         "primaryConnectionId",
                         "resolvedConnectionId",
@@ -50786,6 +50851,164 @@
           }
         },
         "operationId": "postAdminConnectionGroupsMerge"
+      }
+    },
+    "/api/v1/admin/connection-groups/{id}/archive": {
+      "post": {
+        "tags": [
+          "Admin — Connection Groups"
+        ],
+        "summary": "Archive connection group (cascade)",
+        "description": "Atomically marks the group `status = 'archived'` and cascades to every content row scoped to it: semantic entities → `archived`, scheduled tasks → `enabled = false`, pending approvals → `expired`. All four flips happen in one transaction — any sub-step failure rolls every flip back. Idempotent: re-archiving a group returns a 409 with the current archived state rather than double-counting.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "g_prod"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Group archived (with cascade counts)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "archivedCounts": {
+                      "type": "object",
+                      "properties": {
+                        "entities": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "tasks": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "approvals": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "entities",
+                        "tasks",
+                        "approvals"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "archivedCounts"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Group not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Group is already archived",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminConnectionGroupsByIdArchive"
       }
     },
     "/api/v1/admin/publish": {

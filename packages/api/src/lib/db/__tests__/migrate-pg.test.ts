@@ -773,9 +773,9 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       [liveConn, orgId],
     );
     await pool.query(
-      `INSERT INTO scheduled_tasks (owner_id, name, question, cron_expression, connection_id, connection_group_id, org_id)
-       VALUES ('admin-1', 'legacy task', 'select 1', '0 0 * * *', $1, 'g_legacy-task', $2)`,
-      [liveConn, orgId],
+      `INSERT INTO scheduled_tasks (owner_id, name, question, cron_expression, connection_group_id, org_id)
+       VALUES ('admin-1', 'legacy task', 'select 1', '0 0 * * *', 'g_legacy-task', $1)`,
+      [orgId],
     );
 
     // Apply the migration body. The smoke runs the full migration set

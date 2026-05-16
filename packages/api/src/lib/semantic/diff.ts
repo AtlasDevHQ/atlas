@@ -335,9 +335,9 @@ export function getYAMLSnapshots(
  * SaaS workspaces store their semantic layer in the internal DB (the wizard
  * and `/use-demo` both write rows with `connection_id` set, never to disk).
  * The on-disk loader (`getYAMLSnapshots`) returns empty for those orgs, which
- * is why Schema Diff was rendering "all DB tables are new" or "no entities
- * match" — the diff was comparing a real DB schema against an empty YAML
- * side. This loader is the DB-backed counterpart.
+ * is why the drift drawer was rendering "all DB tables are new" or "no
+ * entities match" — the diff was comparing a real DB schema against an
+ * empty YAML side. This loader is the DB-backed counterpart.
  *
  * Mode semantics mirror the whitelist:
  *   - `developer` — overlay (draft + published; `draft_delete` tombstones

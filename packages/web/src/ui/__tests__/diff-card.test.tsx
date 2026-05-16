@@ -1,8 +1,7 @@
 /**
  * Direct render contract for the shared <DiffCard> (#2461). The drawer test
  * exercises this transitively, but `defaultOpen={false}` and `removedColumns`
- * aren't covered there — locking them here keeps both consumers honest while
- * the legacy schema-diff page (#2463) is still around.
+ * aren't covered there — locking them here keeps the contract pinned.
  */
 
 import { describe, expect, test, afterEach } from "bun:test";

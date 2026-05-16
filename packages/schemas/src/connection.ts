@@ -1,8 +1,9 @@
 /**
  * Connection wire-format schemas — `ConnectionInfo` + `ConnectionHealth`.
  *
- * Powers the admin `/connections` surface and the schema-diff page. Replaces
- * the duplicate schemas in `packages/web/src/ui/lib/admin-schemas.ts`.
+ * Powers the admin `/connections` surface and the semantic-page connection
+ * picker. Replaces the duplicate schemas in
+ * `packages/web/src/ui/lib/admin-schemas.ts`.
  *
  * `ConnectionInfo.status` tightens to `CONNECTION_STATUSES` from
  * `@useatlas/types` so mode-drift (published/draft/archived) fails parse

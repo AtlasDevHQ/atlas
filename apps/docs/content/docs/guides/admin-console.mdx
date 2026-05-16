@@ -81,27 +81,9 @@ Browse entities by clicking them in the sidebar. The catalog shows `use_for` tag
 
 In **SaaS mode**, admins can create, edit, and delete entities directly from the UI with schema-aware autocomplete and full version history. See [Semantic Editor](/guides/semantic-editor) for the full guide.
 
+**Schema drift:** Drift between the live database schema and the semantic layer is surfaced inline on `/admin/semantic` — drifted entities are flagged in the tree, and the drawer shows added/removed columns and type mismatches with one-click reconcile actions. The drift-detection API (`GET /api/v1/admin/semantic/diff?connection=<id>`) returns structured JSON with `newTables`, `removedTables`, `tableDiffs`, `unchangedCount`, and a `summary` object.
+
 See [Semantic Layer](/getting-started/semantic-layer) for the YAML format reference.
-
----
-
-## Schema Diff
-
-**Route:** `/admin/schema-diff`
-
-Compares the live database schema against the semantic layer YAML files to detect drift:
-
-- **Summary cards** — New tables (in DB, not in YAML), removed tables (in YAML, not in DB), changed tables (column-level drift), unchanged tables (in sync)
-- **New tables** — Green cards listing tables that exist in the database but have no corresponding entity YAML. Shows a suggestion to run `atlas init --update`
-- **Removed tables** — Red cards listing entity YAMLs that reference tables no longer in the database. Indicates stale entities that should be cleaned up
-- **Changed tables** — Amber expandable cards with a column-level diff table showing added columns, removed columns, and type mismatches between DB and YAML
-- **In-sync state** — When no drift is detected, shows a green success message
-
-**Multiple connections:** If multiple datasource connections are registered, a connection selector dropdown appears in the page header. The diff is re-computed when you switch connections.
-
-**Scoped to your semantic layer:** The diff only considers tables present in your organization's semantic whitelist for the active mode. In developer mode, drafts are included via the overlay; in published mode, only published entities count. This prevents phantom tables from appearing when multiple tenants share a physical database (e.g. demo orgs) and hides system tables that aren't part of the semantic layer.
-
-**API endpoint:** `GET /api/v1/admin/semantic/diff?connection=<id>` — returns structured JSON with `newTables`, `removedTables`, `tableDiffs`, `unchangedCount`, and a `summary` object.
 
 ---
 

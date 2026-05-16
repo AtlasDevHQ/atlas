@@ -644,8 +644,8 @@ onboarding.openapi(
       // ordering committed the connection row before attempting the
       // entity import; if the import then failed (or the bundled YAML
       // wasn't on disk), the user ended up with a `__demo__` connection
-      // and zero `semantic_entities` — Schema Diff and the agent both
-      // saw a broken setup.
+      // and zero `semantic_entities` — the semantic page and the agent
+      // both saw a broken setup.
       // ---------------------------------------------------------------
       const url = resolveDatasourceUrl();
       if (!url) {
@@ -778,7 +778,8 @@ onboarding.openapi(
 
       // ---------------------------------------------------------------
       // Phase 3 — commit point. Once this row lands, the entities
-      // imported in phase 2 become visible to the agent and Schema Diff.
+      // imported in phase 2 become visible to the agent and the
+      // semantic page.
       //
       // The demo connection lives once at `org_id = '__global__'` rather
       // than being cloned per workspace as customer count grows (#2304).

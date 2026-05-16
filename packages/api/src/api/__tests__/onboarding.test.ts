@@ -1060,7 +1060,7 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     // failed on `total > 0`, so it silently absorbed the no-op, set
     // ATLAS_DEMO_INDUSTRY, and committed the __demo__ connection. dharma
     // got a half-installed workspace with `connection but no entities` —
-    // exactly the state Schema Diff exposed today.
+    // exactly the state the semantic page drift drawer exposes today.
     //
     // The fix: any scan returning `total === 0` is a deploy-time
     // misconfiguration (the bundled seed isn't on the server) and must

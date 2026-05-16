@@ -54,8 +54,8 @@ function getAtlasMode(c: { get(key: string): unknown }): import("@useatlas/types
  * own in `connections`. On SaaS every onboarded org owns either `__demo__` or
  * a wizard-created connection that aliases the same physical DB as `default`,
  * so seeding `default` unconditionally produced a phantom duplicate in the
- * Connections list, the Semantic page, and the Schema Diff picker. Self-
- * hosted single-tenant deployments still see `default` because they have no
+ * Connections list and the Semantic page connection picker. Self-hosted
+ * single-tenant deployments still see `default` because they have no
  * `connections` rows at all.
  *
  * @param mode - Atlas mode. Published mode sees only published connections;

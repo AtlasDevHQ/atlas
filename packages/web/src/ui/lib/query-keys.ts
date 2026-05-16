@@ -116,11 +116,6 @@ export const queryKeys = {
       versionDetail: (id: string) => ["admin", "semantic", "versions", "detail", id] as const,
     },
 
-    schemaDiff: {
-      connections: () => ["admin", "schema-diff", "connections"] as const,
-      diff: (params?: string) => ["admin", "schema-diff", "diff", params] as const,
-    },
-
     approval: {
       rules: () => ["admin", "approval", "rules"] as const,
       queue: (params?: string) => ["admin", "approval", "queue", params] as const,

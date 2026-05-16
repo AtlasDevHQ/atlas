@@ -20,10 +20,9 @@ import { ChevronDown } from "lucide-react";
 import type { SemanticTableDiff } from "@/ui/lib/types";
 
 /**
- * Per-table drift card extracted from `/admin/schema-diff` (#2461). Both
- * the legacy schema-diff page and the new drift drawer on `/admin/semantic`
- * render this. Keep it pure: the only input is the diff payload + the
- * optional initial-open flag the drawer uses to expand by default.
+ * Per-table drift card used by the drift drawer on `/admin/semantic` (#2461).
+ * Keep it pure: the only input is the diff payload + the optional
+ * initial-open flag the drawer uses to expand by default.
  */
 export function DiffCard({
   diff,

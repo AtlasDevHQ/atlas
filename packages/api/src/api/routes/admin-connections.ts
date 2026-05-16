@@ -396,6 +396,14 @@ adminConnections.openapi(listConnectionsRoute, async (c) => runHandler(c, "list 
   // fall through with `groupId/groupName: null` on every row. Transient
   // DB errors propagate via runHandler's classifyError — a flaky pool
   // surfaces as a 500 here, no silent-success fallback.
+  //
+  // Presence in `groupInfoByConnection` doubles as the `billable` signal
+  // (#2490): the SELECT already matches the billing usage-panel SQL
+  // (`c.org_id = $1` on a non-archived row — archived rows are removed
+  // upstream by `getVisibleConnectionIds`'s content-mode read filter).
+  // `__global__`-sourced rows and the lazy `default` fallback are
+  // visible to the user but absent from this query, so they correctly
+  // report `billable: false`.
   let groupInfoByConnection = new Map<string, { groupId: string | null; groupName: string | null }>();
   if (hasInternalDB() && filtered.length > 0) {
     const ids = filtered.map((c) => c.id);
@@ -418,6 +426,7 @@ adminConnections.openapi(listConnectionsRoute, async (c) => runHandler(c, "list 
       ...c,
       groupId: info?.groupId ?? null,
       groupName: info?.groupName ?? null,
+      billable: groupInfoByConnection.has(c.id),
     };
   });
 

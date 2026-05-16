@@ -50,6 +50,16 @@ export interface ConnectionInfo {
    * Same three-state semantics as {@link groupId}.
    */
   groupName?: string | null;
+  /**
+   * Mirrors the `/admin/billing` usage-panel predicate
+   * (`connections WHERE org_id = $1 AND status != 'archived'`).
+   *
+   * Optional for wire compatibility: consumers must treat `undefined`
+   * as "count it" so a mixed-version deploy preserves pre-#2490
+   * behavior. The `isBillable()` helper in `packages/web/src/ui/lib/types.ts`
+   * encodes this convention — prefer it over reading the field directly.
+   */
+  billable?: boolean;
 }
 
 /** Real-time pool size counters (only available for core adapters with pool access). */

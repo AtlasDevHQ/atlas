@@ -4,7 +4,7 @@
  * All types are canonical from @useatlas/types — no local duplication.
  */
 
-import type { ShareMode } from "@useatlas/types";
+import type { ConnectionInfo, ShareMode } from "@useatlas/types";
 
 export {
   AUTH_MODES,
@@ -205,3 +205,16 @@ export type ShareStatus =
  * "Frontend is a pure HTTP client".
  */
 export type MeConnectionGroupsEmptyReason = "no_active_org" | "no_internal_db";
+
+/**
+ * Wire-compat-safe read of {@link ConnectionInfo.billable}.
+ *
+ * `billable: false` excludes the row from billing/trial counts;
+ * `undefined` (older API server pre-#2490) means "count it" so a
+ * mixed-version deploy preserves prior behavior. Encoding the
+ * convention here keeps every consumer from having to remember to
+ * write `!== false` instead of the more natural `=== true`.
+ */
+export function isBillable(c: Pick<ConnectionInfo, "billable">): boolean {
+  return c.billable !== false;
+}

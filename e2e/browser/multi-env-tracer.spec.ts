@@ -1,19 +1,24 @@
-import { test, expect, type APIRequestContext, type BrowserContext } from "@playwright/test";
+import { test, expect, type APIRequestContext, type BrowserContext, type APIResponse } from "@playwright/test";
 import { Client } from "pg";
-import { createHmac } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  signInWithPassword,
+  satisfyTotpChallenge,
+  type HttpReply,
+  type HttpRequestInit,
+} from "./lib/admin-auth";
 
 /**
  * Multi-environment tracer — real-API e2e (no route mocks).
  *
- * Companion to `multi-env-admin.integration.spec.ts` (which is route-mock
- * UI integration) — this spec drives the live admin API and asserts that
- * switching envs actually changes what the system queries. Three local
- * Postgres containers (5433/5434/5435) are seeded with **divergent** row
- * counts + a schema difference in prod, so a routing bug — e.g. the
- * picker silently falls through to dev — surfaces as a count mismatch
- * rather than as identical-success false greens.
+ * Companion to `multi-env-admin.integration.spec.ts` (route-mock UI
+ * integration). This spec drives the live admin API to confirm that
+ * three Postgres backends behind one workspace are independently
+ * routable. The local overlay seeds them with **divergent** row counts
+ * + a schema difference in prod, so a routing bug — e.g. the picker
+ * silently falls through to dev — surfaces as a count mismatch rather
+ * than as identical-success false greens.
  *
  * Prereqs (skipped if missing — see `assertOverlay()` below):
  *   docker compose -f docker-compose.yml -f docker-compose.multi-env.yml up -d
@@ -22,22 +27,20 @@ import { resolve } from "node:path";
  *
  * Independent auth flow:
  *   The shared `global-setup.ts` doesn't satisfy MFA — admin@useatlas.dev
- *   requires TOTP via the `mfaRequired` gate. Rather than fork that, this
- *   spec does its own sign-in inside `test.beforeAll`, reading the secret
- *   that `scripts/seed-multi-env.ts` enrolled on its first run. Cookies
- *   are pushed into `context.addCookies()` so the page navigation in step
- *   4 below is admin-authed without depending on storage-state.
+ *   requires TOTP via the `mfaRequired` gate. This spec does its own
+ *   sign-in inside the test, reading the secret that `seed-multi-env.ts`
+ *   enrolled on its first run. Cookies are pushed into
+ *   `context.addCookies()` so the browser navigation step is
+ *   admin-authed without depending on storage-state.
  */
 
 const API_URL = process.env.ATLAS_API_URL ?? "http://localhost:3001";
 const WEB_URL = process.env.BASE_URL ?? "http://localhost:3000";
 const SECRET_FILE = resolve(process.cwd(), ".atlas", "mfa-secret");
+// Mirrors PASSWORDS order in `scripts/seed-multi-env.ts`: tracer
+// password first because that's what the seed rotated to; `atlas-dev`
+// only matters on a fresh DB before the seed has run.
 const PASSWORDS = [
-  // Order matters: try the seed-rotated password FIRST so the happy path
-  // doesn't burn Better Auth's per-window sign-in budget (default 10/60s)
-  // by attempting a stale password before falling through. The bare
-  // `atlas-dev` only matters on a freshly-reset DB before `seed-multi-env`
-  // has rotated it.
   process.env.ATLAS_ADMIN_PASSWORD,
   "atlas-multi-env-tracer!",
   "atlas-dev",
@@ -71,6 +74,8 @@ async function assertOverlay(): Promise<void> {
       );
       return;
     } finally {
+      // intentionally ignored: best-effort socket teardown after probe;
+      // the assertion has already passed/failed by this point.
       await client.end().catch(() => {});
     }
   }
@@ -90,73 +95,54 @@ async function probeCustomers(env: EnvSpec): Promise<{ count: number; columns: s
       columns: colsRes.rows.map((r) => r.column_name).sort(),
     };
   } finally {
+    // intentionally ignored: see assertOverlay.
     await client.end().catch(() => {});
   }
 }
 
-// ─── TOTP (RFC 6238, SHA-1, 6 digits, 30s) ───────────────────────────
+// ─── HttpShim for APIRequestContext ──────────────────────────────────
+//
+// Playwright's APIRequestContext carries its own cookie jar across
+// calls within the same context — the shim just wraps the request +
+// surfaces the standard `{ status, body, rawText }` envelope so the
+// shared `lib/admin-auth` helpers can run against it.
 
-const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-
-function base32Decode(input: string): Buffer {
-  const clean = input.replace(/=+$/, "").toUpperCase();
-  const bits: number[] = [];
-  for (const ch of clean) {
-    const idx = BASE32_ALPHABET.indexOf(ch);
-    if (idx < 0) throw new Error(`Invalid base32 char: ${ch}`);
-    for (let i = 4; i >= 0; i--) bits.push((idx >> i) & 1);
-  }
-  const bytes: number[] = [];
-  for (let i = 0; i + 8 <= bits.length; i += 8) {
-    let byte = 0;
-    for (let j = 0; j < 8; j++) byte = (byte << 1) | bits[i + j]!;
-    bytes.push(byte);
-  }
-  return Buffer.from(bytes);
+function buildShim(request: APIRequestContext) {
+  return async <T = unknown>(path: string, init: HttpRequestInit): Promise<HttpReply<T>> => {
+    const url = `${API_URL}${path}`;
+    let res: APIResponse;
+    const headers = { origin: API_URL, ...(init.headers ?? {}) };
+    if (init.method === "GET") {
+      res = await request.get(url, { headers });
+    } else {
+      res = await request.post(url, {
+        headers: { ...headers, "content-type": "application/json" },
+        data: init.body,
+      });
+    }
+    const text = await res.text();
+    let body: T | null = null;
+    if (text.length > 0) {
+      try {
+        body = JSON.parse(text) as T;
+      } catch (err) {
+        console.warn(
+          `[multi-env-tracer] non-JSON body on ${init.method} ${path} (${res.status()}): ` +
+            `${text.slice(0, 200)}${text.length > 200 ? "..." : ""} ` +
+            `(${err instanceof Error ? err.message : String(err)})`,
+        );
+      }
+    }
+    return { status: res.status(), body, rawText: text };
+  };
 }
-
-function totp(secret: string, atSeconds: number = Math.floor(Date.now() / 1000)): string {
-  const counter = Math.floor(atSeconds / 30);
-  const buf = Buffer.alloc(8);
-  buf.writeBigUInt64BE(BigInt(counter));
-  const hmac = createHmac("sha1", base32Decode(secret)).update(buf).digest();
-  const offset = hmac[hmac.length - 1]! & 0x0f;
-  const code =
-    (((hmac[offset]! & 0x7f) << 24) |
-      ((hmac[offset + 1]! & 0xff) << 16) |
-      ((hmac[offset + 2]! & 0xff) << 8) |
-      (hmac[offset + 3]! & 0xff)) %
-    1_000_000;
-  return code.toString().padStart(6, "0");
-}
-
-// ─── Sign-in (with MFA challenge satisfaction) ───────────────────────
 
 interface AuthCookie { name: string; value: string }
 
-function parseSetCookies(headers: Record<string, string[] | string | undefined>): AuthCookie[] {
-  const raw = headers["set-cookie"];
-  const list: string[] = Array.isArray(raw) ? raw : raw ? [raw] : [];
-  return list
-    .map((sc) => sc.split(";")[0]!.trim())
-    .filter((s) => s.length > 0)
-    .map((s) => {
-      const eq = s.indexOf("=");
-      return eq < 0 ? null : { name: s.slice(0, eq), value: s.slice(eq + 1) };
-    })
-    .filter((c): c is AuthCookie => c !== null);
-}
-
 /**
- * Drive the Better Auth sign-in flow: password → TOTP challenge. Returns
- * the cookies that Playwright's APIRequestContext has accumulated — the
- * caller can pass these to `context.addCookies()` for a browser session.
- * The request context itself retains the cookie jar internally for any
- * subsequent `request.get/post(...)` calls.
- *
- * The TOTP secret is the one `scripts/seed-multi-env.ts` enrolled on its
- * first run; if that file is missing, we soft-skip with an explicit
- * pointer rather than fail confusingly downstream.
+ * Drive the Better Auth sign-in + TOTP challenge so subsequent
+ * `request.*` calls (and the browser context if mirrored) are
+ * admin-authed and MFA-satisfied.
  */
 async function signInAdmin(request: APIRequestContext): Promise<AuthCookie[]> {
   if (!existsSync(SECRET_FILE)) {
@@ -167,44 +153,16 @@ async function signInAdmin(request: APIRequestContext): Promise<AuthCookie[]> {
     return [];
   }
   const secret = readFileSync(SECRET_FILE, "utf8").trim();
+  const shim = buildShim(request);
 
-  let signedIn = false;
-  let lastError: string | null = null;
-  for (const password of PASSWORDS) {
-    const signIn = await request.post(`${API_URL}/api/auth/sign-in/email`, {
-      headers: { origin: API_URL, "content-type": "application/json" },
-      data: { email: "admin@useatlas.dev", password },
-    });
-    if (signIn.status() === 200) {
-      signedIn = true;
-      break;
-    }
-    lastError = `${signIn.status()}: ${await signIn.text().catch(() => "<no body>")}`;
-  }
-  if (!signedIn) {
-    throw new Error(`Sign-in failed for admin@useatlas.dev — last error: ${lastError ?? "unknown"}`);
-  }
+  await signInWithPassword(shim, "admin@useatlas.dev", PASSWORDS);
+  await satisfyTotpChallenge(shim, secret);
 
-  // Satisfy 2FA challenge. Playwright's APIRequestContext carries the
-  // session cookie from the sign-in response automatically — we don't
-  // need to thread it through headers.
-  for (const offset of [0, -30, 30]) {
-    const code = totp(secret, Math.floor(Date.now() / 1000) + offset);
-    const verify = await request.post(`${API_URL}/api/auth/two-factor/verify-totp`, {
-      headers: { origin: API_URL, "content-type": "application/json" },
-      data: { code, trustDevice: true },
-    });
-    if (verify.status() === 200) {
-      // Pull the now-complete cookie jar out of the context's storage
-      // state so the caller can mirror it onto a BrowserContext.
-      const state = await request.storageState();
-      const apiOrigin = new URL(API_URL);
-      return state.cookies
-        .filter((c) => c.domain === apiOrigin.hostname || c.domain === `.${apiOrigin.hostname}`)
-        .map((c) => ({ name: c.name, value: c.value }));
-    }
-  }
-  throw new Error("two-factor/verify-totp failed for all clock-skew offsets — secret may be stale.");
+  const state = await request.storageState();
+  const apiOrigin = new URL(API_URL);
+  return state.cookies
+    .filter((c) => c.domain === apiOrigin.hostname || c.domain === `.${apiOrigin.hostname}`)
+    .map((c) => ({ name: c.name, value: c.value }));
 }
 
 function cookiesForDomain(cookies: AuthCookie[], origin: string): Parameters<BrowserContext["addCookies"]>[0] {
@@ -222,17 +180,17 @@ function cookiesForDomain(cookies: AuthCookie[], origin: string): Parameters<Bro
 
 // ─── Admin-API helpers (rely on APIRequestContext's cookie jar) ──────
 //
-// All admin probes go through with `x-atlas-mode: developer` because the
+// Admin probes go through with `x-atlas-mode: developer` because the
 // seed flow stamps new connections as `status='draft'` (per the 1.4.4
 // publish model). Published-mode requests filter drafts out via
 // `getVisibleConnectionIds`, so a 404 here would otherwise be a false
 // failure — the connections genuinely exist but aren't visible without
 // the dev-mode header.
 
-const DEV_MODE_HEADERS = { origin: API_URL, "x-atlas-mode": "developer" } as const;
+const DEV_MODE_HEADERS = { "x-atlas-mode": "developer" } as const;
 
 async function adminGet<T>(request: APIRequestContext, path: string): Promise<{ status: number; body: T | null }> {
-  const res = await request.get(`${API_URL}${path}`, { headers: DEV_MODE_HEADERS });
+  const res = await request.get(`${API_URL}${path}`, { headers: { origin: API_URL, ...DEV_MODE_HEADERS } });
   const text = await res.text();
   let body: T | null = null;
   try { body = text.length > 0 ? (JSON.parse(text) as T) : null; } catch { body = null; }
@@ -241,7 +199,7 @@ async function adminGet<T>(request: APIRequestContext, path: string): Promise<{ 
 
 async function adminPost<T>(request: APIRequestContext, path: string, data?: unknown): Promise<{ status: number; body: T | null }> {
   const res = await request.post(`${API_URL}${path}`, {
-    headers: { ...DEV_MODE_HEADERS, "content-type": "application/json" },
+    headers: { origin: API_URL, ...DEV_MODE_HEADERS, "content-type": "application/json" },
     data,
   });
   const text = await res.text();
@@ -268,10 +226,9 @@ test.describe("multi-env tracer — real API, real Postgres", () => {
   });
 
   test("admin API + /admin/connections — single-signin combined gate", async ({ browser, request }) => {
-    // Combined into one test (was two) so we sign in ONCE per spec run —
-    // Better Auth's sign-in/email defaults to 10 attempts per 60s window
-    // and three parallel test workers each authenticating burned that
-    // budget on quick re-runs, surfacing as a flaky 429.
+    // Single sign-in covers both the API assertions and the UI gate so
+    // we stay under Better Auth's 10/60s sign-in budget across parallel
+    // workers + back-to-back runs.
 
     const cookies = await signInAdmin(request);
 
@@ -301,20 +258,17 @@ test.describe("multi-env tracer — real API, real Postgres", () => {
       expect(member, `me feed group ${env.group} missing connection ${env.id}`).toBeDefined();
     }
 
-    // ── 4. Regression gate — the prod "O is not iterable" crash was a
-    //       `for...of` over a non-array shape returned by useAdminFetch
-    //       under some schema-drift conditions. Page now has a defensive
-    //       Array.isArray() guard; this test exercises the page end-to-end
-    //       to ensure it renders without throwing.
+    // ── 4. Regression gate: /admin/connections must render without
+    //       uncaught exceptions even if useAdminFetch returns an
+    //       unexpected shape. The page's defensive Array.isArray()
+    //       guard would suppress the crash but emit a console.warn
+    //       prefixed `[admin/connections]` — we assert that warn never
+    //       fires so the underlying schema-drift root cause doesn't
+    //       hide behind the guard.
     if (!(await isWebReachable())) {
-      // Soft-skip the UI portion if the web dev server isn't up — the API
-      // assertions above still cover the routing-layer story.
       console.warn(`Web dev server not reachable at ${WEB_URL}; skipping UI regression gate.`);
       return;
     }
-    // Mirror cookies onto BOTH origins (web :3000 and API :3001) so the
-    // browser sends them whether the page calls API relatively (proxied)
-    // or via NEXT_PUBLIC_ATLAS_API_URL (cross-origin).
     const ctx = await browser.newContext({ baseURL: WEB_URL });
     await ctx.addCookies([
       ...cookiesForDomain(cookies, WEB_URL),
@@ -322,9 +276,9 @@ test.describe("multi-env tracer — real API, real Postgres", () => {
     ]);
     const page = await ctx.newPage();
     try {
-      const consoleErrors: string[] = [];
+      const pageErrors: string[] = [];
       const consoleMessages: string[] = [];
-      page.on("pageerror", (err) => consoleErrors.push(err.message));
+      page.on("pageerror", (err) => pageErrors.push(err.message));
       page.on("console", (msg) => {
         if (msg.type() === "error" || msg.type() === "warning") {
           consoleMessages.push(`[${msg.type()}] ${msg.text()}`);
@@ -336,26 +290,27 @@ test.describe("multi-env tracer — real API, real Postgres", () => {
       const resp = await page.goto("/admin/connections");
       const heading = page.getByRole("heading", { name: "Connections" });
       try {
-        // The page hydrates + makes parallel admin fetches; 15s covers
-        // cold-start compile time in turbopack dev mode. `expect.toBeVisible`
-        // polls until the locator resolves (unlike Locator.isVisible which
-        // returns immediately).
         await expect(heading).toBeVisible({ timeout: 15_000 });
       } catch (err) {
         throw new Error(
           [
             `Connections heading not visible after navigation.`,
             `Navigation status: ${resp?.status() ?? "?"}; final URL: ${page.url()}`,
-            `Page errors: ${consoleErrors.join(" | ") || "(none)"}`,
+            `Page errors: ${pageErrors.join(" | ") || "(none)"}`,
             `Console warnings/errors: ${consoleMessages.slice(0, 10).join(" | ") || "(none)"}`,
             `Failed requests: ${failedRequests.slice(0, 5).join(" | ") || "(none)"}`,
             `Underlying: ${err instanceof Error ? err.message : String(err)}`,
           ].join("\n"),
         );
       }
-      // No uncaught JS errors — a defensive console.warn from the page is
-      // fine (warns aren't pageerrors), but uncaught exceptions are not.
-      expect(consoleErrors, `unexpected page errors: ${consoleErrors.join(" | ")}`).toEqual([]);
+      // Uncaught JS errors are the prod regression signature.
+      expect(pageErrors, `unexpected page errors: ${pageErrors.join(" | ")}`).toEqual([]);
+      // The page-level defensive guard emits a warning prefixed
+      // `[admin/connections]` when it has to fall back. If that fires,
+      // the schema-drift root cause has recurred even though the page
+      // still rendered — gate against that too.
+      const guardActivations = consoleMessages.filter((m) => m.includes("[admin/connections]"));
+      expect(guardActivations, `defensive guard fired: ${guardActivations.join(" | ")}`).toEqual([]);
     } finally {
       await ctx.close();
     }
@@ -367,6 +322,9 @@ async function isWebReachable(): Promise<boolean> {
     const res = await fetch(WEB_URL, { signal: AbortSignal.timeout(2000) });
     return res.status < 500;
   } catch {
+    // intentionally ignored: probe-only — distinguishing ECONNREFUSED
+    // from TLS handshake from DNS error wouldn't change the soft-skip
+    // outcome, and `console.debug` would clutter the test log.
     return false;
   }
 }

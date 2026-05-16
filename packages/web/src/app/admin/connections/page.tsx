@@ -849,20 +849,16 @@ export default function ConnectionsPage() {
   );
 
   const [localConnections, setLocalConnections] = useState<ConnectionInfo[] | null>(null);
-  // Defensive: the prod "O is not iterable" crash (May 2026) was a
-  // `for...of` over `displayConnections` that turned out to be a non-array
-  // shape under some schema-drift conditions. The `?? []` chain trusts
-  // `useAdminFetch` to always return an array, but a future version
-  // mismatch (or a Zod major bump that drops `.transform()` output) can
-  // surface the raw `{ connections: [...] }` envelope here. Guarding with
-  // `Array.isArray()` keeps the page rendering and leaves a console.warn
-  // breadcrumb so the next regression at least has a diagnostic trail.
+  // `useAdminFetch` is typed as `ConnectionInfo[]` but has returned
+  // wrapped envelopes under schema drift; guard with `Array.isArray`
+  // so the for-of below keeps the page renderable, and emit a warning
+  // when the fallback fires so the regression has a breadcrumb.
   const displayConnections: ConnectionInfo[] = Array.isArray(localConnections)
     ? localConnections
     : Array.isArray(connections)
       ? connections
       : [];
-  if (connections !== undefined && !Array.isArray(connections)) {
+  if (connections != null && !Array.isArray(connections)) {
     console.warn(
       "[admin/connections] useAdminFetch returned non-array data — falling back to [].",
       { typeof: typeof connections },

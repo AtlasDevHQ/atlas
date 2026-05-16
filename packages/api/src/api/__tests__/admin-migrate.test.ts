@@ -6,8 +6,9 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import type { ExportBundle, ImportResult } from "@useatlas/types";
-import { validateBundle } from "../routes/admin-migrate";
+import type { ExportBundle, ExportedSemanticEntity, ImportResult } from "@useatlas/types";
+import type { InternalPoolClient } from "@atlas/api/lib/db/internal";
+import { importBundle, validateBundle } from "../routes/admin-migrate";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -253,5 +254,128 @@ describe("bundle round-trip shape", () => {
     expect(total(result.semanticEntities)).toBe(5);
     expect(total(result.learnedPatterns)).toBe(4);
     expect(total(result.settings)).toBe(8);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ExportedSemanticEntity.connectionGroupId optionality (#2423)
+// ---------------------------------------------------------------------------
+//
+// The wire shape accepts three forms — omitted (legacy pre-1.4.4 bundle),
+// explicit null (post-1.4.4 unscoped row), and an explicit string (group id).
+// The importer must coalesce all three into the same INSERT parameter so a
+// pre-1.4.4 producer that simply omits the key doesn't break strict shape
+// validation or insert `undefined` into pg.
+
+/** Build an empty bundle with a single semantic entity for importer probing. */
+function bundleWithEntity(entity: ExportedSemanticEntity): ExportBundle {
+  return {
+    manifest: {
+      version: 1,
+      exportedAt: "2026-05-15T00:00:00Z",
+      source: { label: "test" },
+      counts: { conversations: 0, messages: 0, semanticEntities: 1, learnedPatterns: 0, settings: 0 },
+    },
+    conversations: [],
+    semanticEntities: [entity],
+    learnedPatterns: [],
+    settings: [],
+  };
+}
+
+/** Capturing in-memory InternalPoolClient — records every (sql, params) tuple. */
+function captureClient(): { client: InternalPoolClient; calls: Array<{ sql: string; params: unknown[] }> } {
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  const client: InternalPoolClient = {
+    query: async (sql: string, params?: unknown[]) => {
+      calls.push({ sql, params: params ?? [] });
+      // existing-row probes return empty so the importer always inserts
+      return { rows: [] };
+    },
+    release: () => {},
+  };
+  return { client, calls };
+}
+
+describe("ExportedSemanticEntity.connectionGroupId — three import shapes", () => {
+  it("accepts the omitted shape at compile time and at runtime", () => {
+    // Compile-time: this must type-check without `connectionGroupId`.
+    const legacyEntity: ExportedSemanticEntity = {
+      name: "users",
+      entityType: "entity",
+      yamlContent: "table: users\n",
+    };
+
+    const bundle = bundleWithEntity(legacyEntity);
+    const result = validateBundle(bundle);
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts explicit null", () => {
+    const bundle = bundleWithEntity({
+      name: "users",
+      entityType: "entity",
+      yamlContent: "table: users\n",
+      connectionGroupId: null,
+    });
+    const result = validateBundle(bundle);
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts an explicit string", () => {
+    const bundle = bundleWithEntity({
+      name: "users",
+      entityType: "entity",
+      yamlContent: "table: users\n",
+      connectionGroupId: "g_prod_us",
+    });
+    const result = validateBundle(bundle);
+    expect(result.ok).toBe(true);
+  });
+
+  it("coalesces omitted connectionGroupId to null in the INSERT", async () => {
+    const { client, calls } = captureClient();
+    const bundle = bundleWithEntity({
+      name: "users",
+      entityType: "entity",
+      yamlContent: "table: users\n",
+    });
+
+    await importBundle(client, bundle, "org-test");
+
+    const insert = calls.find((c) => c.sql.includes("INSERT INTO semantic_entities"));
+    expect(insert).toBeDefined();
+    // 5-tuple: org_id, entity_type, name, yaml_content, connection_group_id
+    expect(insert?.params[4]).toBeNull();
+  });
+
+  it("preserves explicit null in the INSERT", async () => {
+    const { client, calls } = captureClient();
+    const bundle = bundleWithEntity({
+      name: "users",
+      entityType: "entity",
+      yamlContent: "table: users\n",
+      connectionGroupId: null,
+    });
+
+    await importBundle(client, bundle, "org-test");
+
+    const insert = calls.find((c) => c.sql.includes("INSERT INTO semantic_entities"));
+    expect(insert?.params[4]).toBeNull();
+  });
+
+  it("forwards an explicit group id into the INSERT", async () => {
+    const { client, calls } = captureClient();
+    const bundle = bundleWithEntity({
+      name: "users",
+      entityType: "entity",
+      yamlContent: "table: users\n",
+      connectionGroupId: "g_prod_us",
+    });
+
+    await importBundle(client, bundle, "org-test");
+
+    const insert = calls.find((c) => c.sql.includes("INSERT INTO semantic_entities"));
+    expect(insert?.params[4]).toBe("g_prod_us");
   });
 });

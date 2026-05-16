@@ -225,10 +225,13 @@ export async function importBundle(
       continue;
     }
 
+    // `connectionGroupId` is optional on the wire (#2423) — pre-1.4.4
+    // bundles omit the key entirely. Coalesce to null so the legacy /
+    // unscoped row is stored consistently regardless of producer.
     await client.query(
       `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id)
        VALUES ($1, $2, $3, $4, $5)`,
-      [orgId, entity.entityType, entity.name, entity.yamlContent, entity.connectionGroupId],
+      [orgId, entity.entityType, entity.name, entity.yamlContent, entity.connectionGroupId ?? null],
     );
     result.semanticEntities.imported++;
   }

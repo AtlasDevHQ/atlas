@@ -849,7 +849,21 @@ export default function ConnectionsPage() {
   );
 
   const [localConnections, setLocalConnections] = useState<ConnectionInfo[] | null>(null);
-  const displayConnections = localConnections ?? connections ?? [];
+  // `useAdminFetch` is typed as `ConnectionInfo[]` but has returned
+  // wrapped envelopes under schema drift; guard with `Array.isArray`
+  // so the for-of below keeps the page renderable, and emit a warning
+  // when the fallback fires so the regression has a breadcrumb.
+  const displayConnections: ConnectionInfo[] = Array.isArray(localConnections)
+    ? localConnections
+    : Array.isArray(connections)
+      ? connections
+      : [];
+  if (connections != null && !Array.isArray(connections)) {
+    console.warn(
+      "[admin/connections] useAdminFetch returned non-array data — falling back to [].",
+      { typeof: typeof connections },
+    );
+  }
 
   if (connections && localConnections !== null && connections !== localConnections) {
     setLocalConnections(null);

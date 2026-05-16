@@ -46,12 +46,12 @@ The response carries the cascade counts so the audit log reconstructs the full s
 
 **Idempotency.** Re-archiving an already-archived group returns `409 conflict`; the cascade does not double-count. Restoring an archived group is intentionally not exposed yet — the tombstone is permanent for now.
 
-**Dashboard cards.** Cards keep their `connection_group_id` reference; the group's archived state surfaces at view time rather than per-card. This is by design — adding a per-card status column was out of scope for the initial cascade slice. If a card looks broken after a group archive, edit it to target a live group.
+**Dashboard cards.** Cards keep their `connection_group_id` reference AND keep rendering against the archived environment — the dashboard read path does not filter on group status today. This is intentional for the initial cascade slice: adding a per-card status or threading a group-status filter through every dashboard surface is a dedicated follow-up. If you archive a group, plan to edit or remove the cards that reference it.
 
 **Member connections.** Connections themselves are not touched. Their `connections.status` stays whatever it was (likely `published`). If you want to archive the underlying physical connections too, run the per-connection archive flow under **Admin → Connections** afterwards.
 
 <Callout type="warn">
-An archived group cannot be renamed, assigned new members, or re-archived. Reads against group-scoped content silently drop archived rows from the published view (`status != 'archived'`); a developer-mode overlay still surfaces them so an admin can audit the snapshot post-archive.
+An archived group cannot be renamed, assigned new members (the API returns 409), or re-archived. Semantic-entity reads filter archived rows from the published view (`status != 'archived'`); a developer-mode overlay still surfaces them so an admin can audit the snapshot post-archive. Dashboard cards are the exception — they continue to render against the archived group until manually edited.
 </Callout>
 
 <Callout type="info">

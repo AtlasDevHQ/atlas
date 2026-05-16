@@ -127,23 +127,25 @@ export interface ConnectionDetail {
  * shape once a second read site needs a different denormalization.
  */
 /**
- * Group lifecycle (migration 0071, Phase 4 archive cascade — #2413).
+ * Group lifecycle.
  *
  * - `active`   — default. Group accepts new members, content writes,
  *                and chat routing.
- * - `archived` — read-only tombstone. The POST
- *                `/admin/connection-groups/:id/archive` cascade flipped
- *                this; the group's content was archived too. Renames,
- *                member assignments, and re-archives are refused.
+ * - `archived` — read-only tombstone. The group's content was
+ *                cascade-archived; renames, member assignments, and
+ *                re-archives are refused server-side.
  */
 export type ConnectionGroupStatus = "active" | "archived";
 
 export interface ConnectionGroup {
   id: string;
   name: string;
-  /** Lifecycle. Defaults to `active` for any group that pre-dates the
-   * 0071 migration backfill. The wire field is always populated. */
-  status: ConnectionGroupStatus;
+  /** Lifecycle. Optional at the type level so older SDK consumers
+   * compiled against pre-status wire types still typecheck after a
+   * `@useatlas/types` bump — `0.0.x` exact-pin semver means a required
+   * field is a breaking change for every dependent. New backends
+   * always populate it; consumers should treat `undefined` as `active`. */
+  status?: ConnectionGroupStatus;
   /** Number of connections currently assigned to this group. */
   memberCount: number;
   createdAt: string;

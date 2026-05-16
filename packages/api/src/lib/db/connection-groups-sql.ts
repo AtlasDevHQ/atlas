@@ -218,11 +218,11 @@ export const MERGE_CONNECTIONS_INTO_GROUP_SQL = `
 //
 // Vocabulary mismatch between this slice and the rest of the schema:
 //
-//   - `connection_groups.status` uses the new `active` / `archived` enum
-//     introduced in migration 0071. The mode-system tables
-//     (`semantic_entities`, `connections`, `prompt_collections`,
-//     `query_suggestions`) reuse the existing
-//     `published` / `draft` / `draft_delete` / `archived` lifecycle.
+//   - `connection_groups.status` uses the new `active` / `archived`
+//     enum introduced in migration 0071. The mode-system tables
+//     reuse the existing `published` / `draft` / `archived` lifecycle
+//     (`semantic_entities` additionally has `draft_delete` for its
+//     tombstone overlay).
 //   - `scheduled_tasks` has no `status` column — it carries an
 //     `enabled` boolean that already serves the same intent. The
 //     existing `cascadeWorkspaceDelete` flow in `lib/db/internal.ts`
@@ -235,12 +235,16 @@ export const MERGE_CONNECTIONS_INTO_GROUP_SQL = `
 //     goes away; we mirror that semantic here so a pending request
 //     can't survive its target group.
 //   - `dashboard_cards` has neither `status` nor `enabled`. Cards
-//     continue to reference the archived group; the group's
-//     `status = 'archived'` is the read-side signal (resolved at
-//     view time by `lib/dashboards-group-resolve.ts`). Cascading
-//     cards is intentionally out of scope for this slice — adding a
-//     status column would change the read path for every existing
-//     dashboard surface and belongs in a dedicated follow-up.
+//     continue to reference the archived group AND continue to
+//     render normally — `lib/dashboards.ts` and
+//     `lib/dashboards-group-resolve.ts` do not filter on
+//     `connection_groups.status`. Cascading cards is intentionally
+//     out of scope for this slice; surfacing the archived state at
+//     view time would require either adding a status column to
+//     `dashboard_cards` or threading a `WHERE group.status = 'active'`
+//     filter through every dashboard read path. Both are dedicated
+//     follow-ups. Admins archiving a group should plan to edit or
+//     remove cards that reference it.
 //
 // Each statement takes the same parameters:
 //   $1 = group id
@@ -284,11 +288,11 @@ export const CASCADE_ARCHIVE_GROUP_TASKS_SQL = `
 
 /**
  * Expire every pending `approval_queue` row scoped to the group. Uses
- * `status = 'expired'` rather than `'archived'` because `chk_approval_status`
- * (set in 0028) does not include `archived` — see vocabulary mismatch
- * comment above. Re-running this is a no-op because the WHERE filters
- * on `status = 'pending'`; approved/denied/expired rows are left as-is
- * so audit history resolves intact.
+ * `status = 'expired'` because `chk_approval_status` does not allow
+ * `'archived'`; `'expired'` is the matching semantic that the existing
+ * `expireStaleRequests` flow uses for the same intent. Re-running this
+ * is a no-op (WHERE filters on `status = 'pending'`); approved /
+ * denied / expired rows are left as-is so audit history resolves intact.
  */
 export const CASCADE_ARCHIVE_GROUP_APPROVALS_SQL = `
   UPDATE approval_queue

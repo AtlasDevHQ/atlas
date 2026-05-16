@@ -307,6 +307,7 @@ const assignMemberRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Group or connection not found", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Group is archived — member assignments are refused", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -720,12 +721,26 @@ adminConnectionGroups.openapi(assignMemberRoute, async (c) =>
 
     // Verify the group exists in this org so the caller gets a typed 404
     // rather than a foreign_key_violation 500 from the UPDATE below.
-    const groupRows = await internalQuery<{ id: string }>(
-      `SELECT id FROM connection_groups WHERE id = $1 AND org_id = $2`,
+    // Status is captured so an archived target can be rejected with a
+    // 409 — the read-only tombstone contract refuses new member
+    // assignments. The UI hides the affordance, but a direct API
+    // caller (or stale client) could still POST without this guard.
+    const groupRows = await internalQuery<{ id: string; status: string }>(
+      `SELECT id, status FROM connection_groups WHERE id = $1 AND org_id = $2`,
       [groupId, orgId],
     );
     if (groupRows.length === 0) {
       return c.json({ error: "not_found", message: `Group "${groupId}" not found.`, requestId }, 404);
+    }
+    if (groupRows[0].status === "archived") {
+      return c.json(
+        {
+          error: "conflict",
+          message: `Group "${groupId}" is archived. Member assignments are refused on archived environments.`,
+          requestId,
+        },
+        409,
+      );
     }
 
     // Verify the connection belongs to this org and (for unassign) is
@@ -989,6 +1004,32 @@ adminConnectionGroups.openapi(mergeGroupsRoute, async (c) =>
       new Set(sourceRows.map((r) => r.group_id).filter((g): g is string => typeof g === "string")),
     );
 
+    // Refuse merging into an archived target. The merge CTE's
+    // `ON CONFLICT (org_id, name) DO UPDATE` doesn't filter `status`,
+    // so without this guard a caller naming an archived group would
+    // see the `moved` UPDATE re-parent connections into a tombstone —
+    // the archived group then carries live members but archived
+    // entities/tasks/approvals, and the wire response would report
+    // success against a group the docs explicitly call "read-only".
+    // The status enum was introduced for the archive cascade slice;
+    // this is the merge-side mirror of the contract.
+    const archivedTarget = await internalQuery<{ id: string; status: string }>(
+      `SELECT id, status FROM connection_groups
+        WHERE org_id = $1 AND name = $2 AND status = 'archived'
+        LIMIT 1`,
+      [orgId, trimmedTargetName],
+    );
+    if (archivedTarget.length > 0) {
+      return c.json(
+        {
+          error: "conflict",
+          message: `An archived environment named "${trimmedTargetName}" already exists. Choose a different name.`,
+          requestId,
+        },
+        409,
+      );
+    }
+
     // ── Atomic merge ──────────────────────────────────────────────────
     const newTargetId = generateGroupId();
     let result: MergeResultRow[];
@@ -1220,14 +1261,31 @@ adminConnectionGroups.openapi(archiveGroupRoute, async (c) =>
       const approvalsRes = await client.query(CASCADE_ARCHIVE_GROUP_APPROVALS_SQL, [id, orgId]);
       const groupRes = await client.query(ARCHIVE_GROUP_SQL, [id, orgId]);
       await client.query("COMMIT");
+      // Concurrent-archive race: the existence pre-check above passed
+      // (status = 'active'), but another admin's archive landed
+      // between that SELECT and this UPDATE. `ARCHIVE_GROUP_SQL`'s
+      // `WHERE status = 'active'` filter turned the duplicate flip
+      // into a 0-row no-op rather than a duplicate audit row. Map to
+      // the same 409 the pre-check would have produced so the losing
+      // caller sees a meaningful response instead of a "succeeded but
+      // nothing happened" 200. The cascade UPDATEs above are also
+      // 0-row no-ops because the winning archive's cascade already
+      // ran — committing the empty txn is safe (nothing to roll back)
+      // and skipping the audit emission keeps the log honest.
+      if (groupRes.rows.length === 0) {
+        return c.json(
+          {
+            error: "conflict",
+            message: `Group "${id}" was archived by another admin between the pre-check and the cascade.`,
+            requestId,
+          },
+          409,
+        );
+      }
       archivedCounts = {
         entities: entitiesRes.rows.length,
         tasks: tasksRes.rows.length,
         approvals: approvalsRes.rows.length,
-        // 1 = this caller flipped state; 0 = the row was already
-        // archived (the existence pre-check above would normally short
-        // a 409, but a concurrent archive racing in between also has
-        // to map to 0 rather than crash the audit).
         group: groupRes.rows.length,
       };
     } catch (err) {

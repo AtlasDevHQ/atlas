@@ -744,8 +744,9 @@ function ArchiveGroupDialog({
             <li>Scheduled tasks scoped to this environment will stop firing.</li>
             <li>Pending approval requests for this environment will expire.</li>
             <li>
-              Dashboard cards keep their reference — they'll surface the
-              archived state at view time rather than render stale data.
+              Dashboard cards scoped to this environment are NOT touched
+              automatically — they'll keep rendering against the archived
+              environment until you edit or remove them.
             </li>
           </ul>
         )}

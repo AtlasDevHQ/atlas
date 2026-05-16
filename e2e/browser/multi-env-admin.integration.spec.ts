@@ -535,6 +535,38 @@ test.describe("chat env/member picker (#2345)", () => {
     await expect(page.getByTestId("chat-env-picker-member-staging-us")).toBeVisible();
   });
 
+  /**
+   * Regression guard for #2504. The empty-state half already catches
+   * the canonical case (picker missing from `(workspace)/page.tsx`
+   * after the shell migration); the active-conversation half is the
+   * forward-looking guard against the most likely future regression
+   * shape — wrapping the render in a `messages.length === 0`
+   * (or inverse) condition.
+   */
+  test("#2504 — picker is visible in BOTH empty state and active conversation", async ({ page }) => {
+    const captured = { lastChatBody: null as Record<string, unknown> | null };
+    await installChatEnvMocks(page, buildChatEnvFixture(), captured);
+
+    await page.goto("/");
+
+    // Empty state — picker is present before any message has been sent.
+    const trigger = page.getByTestId("chat-env-picker-trigger");
+    await expect(trigger, "picker missing in empty state (#2504)").toBeVisible();
+
+    // Send a turn so the surface transitions from empty-state hero to an
+    // active-conversation view. The mock streams a single text-delta
+    // frame and finishes; `waitForResponse` blocks until the POST is in
+    // flight, then the assertion below confirms the picker survived the
+    // state transition.
+    await page.locator("textarea, input[type=text]").first().fill("hi");
+    await page.keyboard.press("Enter");
+    await page.waitForResponse(/\/api\/v1\/chat$/);
+
+    // Active conversation — picker is still present. Fails any future
+    // refactor that conditions the render on `messages.length === 0`.
+    await expect(trigger, "picker missing in active conversation (#2504)").toBeVisible();
+  });
+
   test("per-turn override stamps connectionId into the chat request body", async ({ page }) => {
     const captured = { lastChatBody: null as Record<string, unknown> | null };
     await installChatEnvMocks(page, buildChatEnvFixture(), captured);

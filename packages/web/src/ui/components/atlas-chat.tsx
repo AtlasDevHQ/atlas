@@ -544,6 +544,7 @@ export function AtlasChat() {
                   <ChatEnvPicker
                     groups={envGroupsQuery.groups}
                     emptyReason={envGroupsQuery.reason}
+                    transportError={envGroupsQuery.error}
                     activeGroupId={selectedGroupId}
                     activeConnectionId={selectedConnectionId}
                     onSelect={({ groupId, connectionId }) => {

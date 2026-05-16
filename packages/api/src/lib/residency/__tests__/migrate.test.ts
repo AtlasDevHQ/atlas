@@ -11,7 +11,6 @@ import { describe, it, expect, beforeEach, mock, afterEach } from "bun:test";
 
 let mockHasInternalDB = true;
 let mockQueryResults: Record<string, unknown[]> = {};
-let mockQueryError: Error | null = null;
 // Per-SQL injection: when set, internalQuery rejects on the first call whose
 // SQL contains the pattern. Used to exercise transient-failure paths on a
 // specific statement without breaking unrelated queries.
@@ -39,7 +38,6 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   }),
   internalQuery: (sql: string, params: unknown[]) => {
     capturedQueries.push({ sql, params });
-    if (mockQueryError) return Promise.reject(mockQueryError);
     if (mockInternalQueryRejectPattern && sql.includes(mockInternalQueryRejectPattern.pattern)) {
       return Promise.reject(mockInternalQueryRejectPattern.error);
     }
@@ -122,7 +120,6 @@ const {
 function resetMocks() {
   mockHasInternalDB = true;
   mockQueryResults = {};
-  mockQueryError = null;
   mockInternalQueryRejectPattern = null;
   mockPoolQueryResult = { rows: [{ id: "org-1" }] };
   mockPoolQueryError = null;

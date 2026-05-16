@@ -188,3 +188,13 @@ export { parseChatError } from "@useatlas/types/errors";
 export type ShareStatus =
   | { shared: false }
   | { shared: true; token: string; url: string; expiresAt: string | null; shareMode: ShareMode };
+
+/**
+ * Wire shape of `GET /api/v1/me/connection-groups` (#2422). Mirrored
+ * here — not bumped into `@useatlas/types` — because there's no
+ * cross-package consumer yet (web is the only caller). If the SDK or
+ * another package starts consuming this, promote the type to
+ * `@useatlas/types` and re-export it via this file. See CLAUDE.md
+ * "Frontend is a pure HTTP client".
+ */
+export type MeConnectionGroupsEmptyReason = "no_active_org" | "no_internal_db";

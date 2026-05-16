@@ -543,6 +543,7 @@ export function AtlasChat() {
                       deploy) so the header is byte-identical pre-1.4.4. */}
                   <ChatEnvPicker
                     groups={envGroupsQuery.groups}
+                    emptyReason={envGroupsQuery.reason}
                     activeGroupId={selectedGroupId}
                     activeConnectionId={selectedConnectionId}
                     onSelect={({ groupId, connectionId }) => {

@@ -24,7 +24,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { Layers } from "lucide-react";
+import { Layers, AlertCircle } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -35,6 +35,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { stripGroupPrefix } from "@/ui/lib/strip-group-prefix";
+import type { MeConnectionGroupsEmptyReason } from "@/ui/lib/types";
 
 export interface ChatEnvMember {
   readonly connectionId: string;
@@ -51,6 +52,14 @@ export interface ChatEnvGroup {
 export interface ChatEnvPickerProps {
   /** Resolved groups from `/api/v1/me/connection-groups`. */
   readonly groups: ReadonlyArray<ChatEnvGroup>;
+  /**
+   * When `groups` is empty, this explains why. `null` ⇒ empty list is a
+   * normal "workspace has no group config yet" state (picker stays
+   * hidden, chat falls back to single-connection routing). A populated
+   * reason swaps the silent hide for an inline diagnostic chip. See
+   * #2422.
+   */
+  readonly emptyReason?: MeConnectionGroupsEmptyReason | null;
   /** Currently active group id. `null` ⇒ no group context yet. */
   readonly activeGroupId: string | null;
   /** Currently active member (execution target). `null` ⇒ inherit from group's first member. */
@@ -64,12 +73,48 @@ export interface ChatEnvPickerProps {
   readonly onSelect: (next: { groupId: string; connectionId: string }) => void;
 }
 
+const EMPTY_REASON_COPY: Record<MeConnectionGroupsEmptyReason, string> = {
+  no_active_org: "No active workspace — select one in the top bar.",
+  no_internal_db:
+    "Multi-environment features require an internal database. Self-hosters: set DATABASE_URL.",
+};
+
+/**
+ * Runtime narrow against the closed reason union. A server emitting an
+ * unrecognized value (forward-compat scenario, or a bug) would
+ * otherwise index into `EMPTY_REASON_COPY` and render `undefined` as
+ * visible chip text. Treat unknowns as "no reason" so the picker
+ * falls back to its hide-on-empty default.
+ */
+function isKnownEmptyReason(value: unknown): value is MeConnectionGroupsEmptyReason {
+  return typeof value === "string" && value in EMPTY_REASON_COPY;
+}
+
 export function ChatEnvPicker({
   groups,
+  emptyReason = null,
   activeGroupId,
   activeConnectionId,
   onSelect,
 }: ChatEnvPickerProps): React.ReactElement | null {
+  // Empty list + a reason ⇒ render a diagnostic chip instead of
+  // silently hiding. Hiding here would conceal a real degraded state
+  // (org switch in flight, self-host missing DATABASE_URL) and is
+  // exactly the failure mode #2422 traced.
+  if (groups.length === 0 && emptyReason) {
+    return (
+      <div
+        className="flex h-8 items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-2.5 text-xs font-medium text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200"
+        role="status"
+        data-testid="chat-env-picker-empty-reason"
+        data-reason={emptyReason}
+      >
+        <AlertCircle className="size-3.5" aria-hidden />
+        <span>{EMPTY_REASON_COPY[emptyReason]}</span>
+      </div>
+    );
+  }
+
   // Hide only the truly trivial 1×1 case: one group with one member.
   // The 0062 1:1 backfill emits N singleton groups for N legacy
   // connections, so anything ≥ 2 groups (even all singletons) is a
@@ -205,6 +250,7 @@ export interface UseChatEnvGroupsOptions {
 
 export interface UseChatEnvGroupsResult {
   readonly groups: ReadonlyArray<ChatEnvGroup>;
+  readonly reason: MeConnectionGroupsEmptyReason | null;
   readonly loading: boolean;
   readonly error: string | null;
 }
@@ -213,13 +259,14 @@ export interface UseChatEnvGroupsResult {
  * Fetches the user's accessible connection groups + members from
  * `/api/v1/me/connection-groups`. Defensive: a network or 5xx failure
  * surfaces as an empty list so the chat still renders, just without the
- * picker. The picker only hides itself when there's a single
- * single-member group — see {@link ChatEnvPicker} for the predicate.
+ * picker. `reason` mirrors the wire field so a known degraded state can
+ * render an explanatory chip instead of a silent hide — see #2422.
  */
 export function useChatEnvGroups(
   opts: UseChatEnvGroupsOptions,
 ): UseChatEnvGroupsResult {
   const [groups, setGroups] = useState<ReadonlyArray<ChatEnvGroup>>([]);
+  const [reason, setReason] = useState<MeConnectionGroupsEmptyReason | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -238,16 +285,33 @@ export function useChatEnvGroups(
           // list ⇒ picker hides itself.
           throw new Error(`HTTP ${res.status}`);
         }
-        const body = (await res.json()) as { groups?: ChatEnvGroup[] };
+        const body = (await res.json()) as {
+          groups?: ChatEnvGroup[];
+          reason?: unknown;
+        };
         if (!cancelled) {
           setGroups(body.groups ?? []);
+          // Narrow unknown / unrecognized reason values to `null` —
+          // never index into `EMPTY_REASON_COPY` with a value the
+          // frontend hasn't been built to render.
+          setReason(isKnownEmptyReason(body.reason) ? body.reason : null);
         }
       })
       .catch((err: unknown) => {
         if (!cancelled) {
           const msg = err instanceof Error ? err.message : String(err);
+          // Surface to the console so a persistent 5xx or CORS
+          // regression leaves a breadcrumb. CLAUDE.md: every catch
+          // must log or rethrow — silent swallowing is what #2422
+          // existed to fix.
+          console.warn("[atlas-chat] failed to load connection groups", msg);
           setError(msg);
           setGroups([]);
+          // Don't synthesize a `reason` on transport failure — the
+          // server is the only source of truth for "empty because of
+          // X". A flaky network reading as "no_internal_db" would be
+          // misleading.
+          setReason(null);
         }
       })
       .finally(() => {
@@ -258,5 +322,5 @@ export function useChatEnvGroups(
     };
   }, [opts.apiUrl, opts.enabled, opts.getHeaders, opts.getCredentials]);
 
-  return { groups, loading, error };
+  return { groups, reason, loading, error };
 }

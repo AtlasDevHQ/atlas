@@ -1,4 +1,4 @@
-import { describe, expect, test, mock, beforeEach } from "bun:test";
+import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
 import React, { type ReactNode } from "react";
 
 // Mock the dropdown-menu primitives so portal'd content renders inline.
@@ -32,8 +32,12 @@ mock.module("@/components/ui/dropdown-menu", () => {
   };
 });
 
-import { render, cleanup } from "@testing-library/react";
-import { ChatEnvPicker, type ChatEnvGroup } from "../components/chat/env-picker";
+import { render, renderHook, waitFor, cleanup } from "@testing-library/react";
+import {
+  ChatEnvPicker,
+  useChatEnvGroups,
+  type ChatEnvGroup,
+} from "../components/chat/env-picker";
 
 beforeEach(() => {
   cleanup();
@@ -205,6 +209,110 @@ describe("ChatEnvPicker singleton-only footer hint (#2408)", () => {
   });
 });
 
+describe("ChatEnvPicker emptyReason (#2422)", () => {
+  test("renders an inline 'no active workspace' chip when groups is empty and emptyReason is 'no_active_org'", () => {
+    const { container } = render(
+      <ChatEnvPicker
+        groups={[]}
+        emptyReason="no_active_org"
+        activeGroupId={null}
+        activeConnectionId={null}
+        onSelect={noop}
+      />,
+    );
+    const chip = container.querySelector(
+      '[data-testid="chat-env-picker-empty-reason"]',
+    );
+    expect(chip).not.toBeNull();
+    expect(chip?.getAttribute("data-reason")).toBe("no_active_org");
+    expect(chip?.textContent).toContain("No active workspace");
+    // The chip must not be hidden — it replaces the silent-fallback
+    // behavior that motivated #2422.
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-trigger"]'),
+    ).toBeNull();
+  });
+
+  test("renders an inline 'set DATABASE_URL' chip when groups is empty and emptyReason is 'no_internal_db'", () => {
+    const { container } = render(
+      <ChatEnvPicker
+        groups={[]}
+        emptyReason="no_internal_db"
+        activeGroupId={null}
+        activeConnectionId={null}
+        onSelect={noop}
+      />,
+    );
+    const chip = container.querySelector(
+      '[data-testid="chat-env-picker-empty-reason"]',
+    );
+    expect(chip).not.toBeNull();
+    expect(chip?.getAttribute("data-reason")).toBe("no_internal_db");
+    expect(chip?.textContent).toContain("internal database");
+    expect(chip?.textContent).toContain("DATABASE_URL");
+  });
+
+  test("stays hidden when groups is empty and emptyReason is null (workspace with no groups configured)", () => {
+    const { container } = render(
+      <ChatEnvPicker
+        groups={[]}
+        emptyReason={null}
+        activeGroupId={null}
+        activeConnectionId={null}
+        onSelect={noop}
+      />,
+    );
+    expect(container.firstChild).toBeNull();
+  });
+
+  test("stays hidden when groups is empty and emptyReason is omitted (defaults to null)", () => {
+    // Locks the default-prop contract — callers that haven't been
+    // updated to thread `emptyReason` should keep the original silent
+    // behavior.
+    const { container } = render(
+      <ChatEnvPicker
+        groups={[]}
+        activeGroupId={null}
+        activeConnectionId={null}
+        onSelect={noop}
+      />,
+    );
+    expect(container.firstChild).toBeNull();
+  });
+
+  test("ignores emptyReason when groups is non-empty (server saw groups; chip would be a lie)", () => {
+    const groups: ChatEnvGroup[] = [
+      {
+        id: "g_prod",
+        name: "prod",
+        members: [
+          { connectionId: "us-int", dbType: "postgres", description: null },
+          { connectionId: "eu-int", dbType: "postgres", description: null },
+        ],
+      },
+    ];
+    const { container } = render(
+      <ChatEnvPicker
+        groups={groups}
+        // A server bug or future state could theoretically send both —
+        // the picker takes the groups as ground truth and ignores the
+        // reason. Locks the precedence so the chip can never overlay a
+        // populated picker.
+        emptyReason="no_internal_db"
+        activeGroupId="g_prod"
+        activeConnectionId="us-int"
+        onSelect={noop}
+      />,
+    );
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-empty-reason"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-trigger"]'),
+    ).not.toBeNull();
+  });
+});
+
 describe("ChatEnvPicker chip label collapse (#2408)", () => {
   test("renders just the member id when stripped group name equals member id", () => {
     // Common 0062 backfill shape: group `g_warehouse` with one member
@@ -297,5 +405,116 @@ describe("ChatEnvPicker chip label collapse (#2408)", () => {
       '[data-testid="chat-env-picker-label"]',
     );
     expect(label?.textContent).toBe("prod / us-int");
+  });
+});
+
+// ── useChatEnvGroups hook ────────────────────────────────────────────
+//
+// `useChatEnvGroups` is the only place the wire `reason` actually
+// enters the web app. The component-layer tests above lock the render
+// branches, but the hook itself has three behaviors a regression could
+// quietly break: echoing a known reason through to state, falling back
+// to null when the server omits the field (forward-compat with older
+// API), and resetting reason to null on transport failure so a flaky
+// network can't pin a stale chip on screen. See #2422.
+
+const originalFetch = globalThis.fetch;
+
+function mockFetch(
+  handler: () => Response | Promise<Response>,
+): () => number {
+  let calls = 0;
+  globalThis.fetch = mock(async () => {
+    calls += 1;
+    return await handler();
+  }) as unknown as typeof fetch;
+  return () => calls;
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+describe("useChatEnvGroups (#2422)", () => {
+  const opts = {
+    apiUrl: "http://atlas.test",
+    enabled: true,
+    getHeaders: () => ({}),
+    getCredentials: () => "same-origin" as RequestCredentials,
+  };
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    cleanup();
+  });
+
+  test("echoes a known reason through to state on a successful empty response", async () => {
+    mockFetch(() => jsonResponse({ groups: [], reason: "no_internal_db" }));
+    const { result } = renderHook(() => useChatEnvGroups(opts));
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(result.current.groups).toEqual([]);
+    expect(result.current.reason).toBe("no_internal_db");
+    expect(result.current.error).toBeNull();
+  });
+
+  test("falls back to reason: null when the server omits the field (forward-compat with older API)", async () => {
+    mockFetch(() => jsonResponse({ groups: [] }));
+    const { result } = renderHook(() => useChatEnvGroups(opts));
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(result.current.reason).toBeNull();
+  });
+
+  test("narrows an unrecognized reason to null instead of leaking it to the chip", async () => {
+    // A server bug or a forward-version drift could emit a reason the
+    // frontend hasn't been built to render. Indexing into the copy
+    // table with that value would render `undefined` as visible text.
+    // The hook must narrow before passing it on.
+    mockFetch(() =>
+      jsonResponse({ groups: [], reason: "no_active_token" /* not in union */ }),
+    );
+    const { result } = renderHook(() => useChatEnvGroups(opts));
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(result.current.reason).toBeNull();
+  });
+
+  test("resets reason to null on transport failure so a flaky network can't pin a stale chip", async () => {
+    // Silence the console.warn we now emit on transport failure; the
+    // test is asserting state shape, not log output, and an
+    // unexpected warn would flag a CLAUDE.md "no silent swallows"
+    // regression elsewhere.
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      mockFetch(() => {
+        throw new Error("network down");
+      });
+      const { result } = renderHook(() => useChatEnvGroups(opts));
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+      expect(result.current.groups).toEqual([]);
+      expect(result.current.reason).toBeNull();
+      expect(result.current.error).toContain("network down");
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  test("does not fetch when enabled is false (signed-out / auth not resolved)", async () => {
+    const callCount = mockFetch(() => jsonResponse({ groups: [], reason: null }));
+    renderHook(() => useChatEnvGroups({ ...opts, enabled: false }));
+    // Microtask flush — give the effect a chance to fire if it were
+    // going to.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(callCount()).toBe(0);
   });
 });

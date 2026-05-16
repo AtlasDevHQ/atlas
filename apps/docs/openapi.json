@@ -8104,10 +8104,22 @@
                           "members"
                         ]
                       }
+                    },
+                    "reason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "no_active_org",
+                        "no_internal_db",
+                        null
+                      ]
                     }
                   },
                   "required": [
-                    "groups"
+                    "groups",
+                    "reason"
                   ]
                 }
               }

@@ -44,7 +44,13 @@ export async function signInWithPassword(
   passwords: readonly string[],
 ): Promise<SignInResult> {
   let lastError: string | null = null;
-  for (const password of passwords) {
+  // Track which candidate failed by *position* (1-based), never by value
+  // — CodeQL's clear-text-logging taint analysis flags any password
+  // derivative reaching a log sink, even a partial redact like
+  // `password.slice(0, 3)`. The candidate count is enough to debug
+  // (e.g. "all 2 candidates 401'd" → check ATLAS_ADMIN_PASSWORD).
+  for (let i = 0; i < passwords.length; i++) {
+    const password = passwords[i]!;
     const r = await shim<SignInResult["body"]>("/api/auth/sign-in/email", {
       method: "POST",
       body: { email, password },
@@ -56,7 +62,7 @@ export async function signInWithPassword(
       lastError = `${r.status}: ${r.rawText ?? "<no body>"}`;
       break;
     }
-    lastError = `401 for ${password.slice(0, 3)}***`;
+    lastError = `401 on candidate ${i + 1}/${passwords.length}`;
   }
   throw new Error(
     `Sign-in failed for ${email} — last error: ${lastError ?? "unknown"}. ` +

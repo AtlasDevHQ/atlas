@@ -67,7 +67,7 @@ import {
 } from "lucide-react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError } from "@/ui/lib/fetch-error";
+import { formatDialogError } from "./format-dialog-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   FormDialog,
@@ -200,12 +200,16 @@ function ConnectionFormDialog({
       body.schema = values.schema || undefined;
     }
 
-    await saveMutation.mutate({
-      path,
-      method,
-      body,
-      onSuccess: () => onOpenChange(false),
-    });
+    // Gate close-on-success on `result.ok` — explicit so a non-2xx leaves
+    // the dialog open with `saveMutation.error` populated (#2485). The
+    // hook already only fires `onSuccess` on 2xx, but threading the close
+    // through the result discriminant keeps the success path readable and
+    // forecloses a regression where the close-callback shape silently
+    // shifts behind the curtain.
+    const result = await saveMutation.mutate({ path, method, body });
+    if (result.ok) {
+      onOpenChange(false);
+    }
   }
 
   async function handleTest(url: string, schemaVal: string) {
@@ -246,7 +250,7 @@ function ConnectionFormDialog({
       onSubmit={handleSubmit}
       submitLabel={isEdit ? "Save Changes" : "Add Connection"}
       saving={saveMutation.saving}
-      serverError={saveMutation.error ? friendlyError(saveMutation.error) : null}
+      serverError={saveMutation.error ? formatDialogError(saveMutation.error) : null}
       className="sm:max-w-md"
       extraFooter={(form) => (
         <Button

@@ -28,7 +28,9 @@ Control how many requests each user can make per minute. This is a sliding-windo
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_RATE_LIMIT_RPM` | `0` (disabled) | Max requests per minute per user. `0` or unset = unlimited |
+| `ATLAS_RATE_LIMIT_RPM` | `0` (disabled) | Max requests per minute per user (default bucket). `0` or unset = unlimited |
+| `ATLAS_RATE_LIMIT_RPM_CHAT` | `max(5, RPM/4)` | Chat-stream RPM ceiling — separate bucket so a 25-step LLM call doesn't deplete the cheap-read allowance |
+| `ATLAS_RATE_LIMIT_RPM_ADMIN` | `max(60, RPM)` | Admin namespace RPM ceiling — separate bucket so a sequence of DELETE + Test + Add Connection (#2485) doesn't deplete the cheap-read allowance |
 | `ATLAS_TRUST_PROXY` | `false` | Trust `X-Forwarded-For` / `X-Real-IP` headers for client IP detection |
 
 ```bash
@@ -44,6 +46,18 @@ Rate limit keys are resolved in order: authenticated user ID, then forwarded IP 
 </Callout>
 
 Rate limiting is **disabled by default**. When enabled, it covers the primary API routes: `/api/chat`, `/api/v1/query`, `/api/v1/conversations`, `/api/v1/admin/*`, `/api/v1/semantic/*`, `/api/v1/scheduled-tasks`, and `/api/v1/actions`. Health, auth, widget, and OpenAPI spec endpoints are exempt.
+
+### Per-bucket isolation
+
+Each caller has three independent sliding windows keyed on the same identity (user ID or IP). Hitting one bucket's ceiling never throttles the others:
+
+| Bucket | Routes | Why it's separate |
+|--------|--------|-------------------|
+| `default` | `/api/chat` rate-check, `/api/v1/query`, `/api/v1/conversations`, public reads | Baseline; tuned by `ATLAS_RATE_LIMIT_RPM` |
+| `chat` | `/api/chat` stream (per-call) | A 25-step LLM tool-use loop fires many requests in a row — without isolation it would deplete the default bucket and lock out the same caller's cheap reads (F-74) |
+| `admin` | `/api/v1/admin/*`, `/api/v1/platform/*` | Interactive admin forms (Add / Test / Delete in quick succession) burst easily past a public-traffic ceiling — without isolation a dogfood session at 30 RPM throttles after ~12 clicks (#2485) |
+
+The admin bucket defaults to a floor of 60 RPM (one per second), which keeps an interactive admin session from running out of budget even on a deployment with a tight `ATLAS_RATE_LIMIT_RPM`. Tune `ATLAS_RATE_LIMIT_RPM_ADMIN` directly if your workspace has tighter or looser admin-traffic needs.
 
 ### Per-Datasource Rate Limiting
 

@@ -1,30 +1,14 @@
 /**
- * Reconcile-action dispatcher for the drift drawer (#2462 / PRD #2458 slice 3).
- *
- * Three actions on a `(orgId, entityName, connection)` tuple:
- *
- * - `sync_yaml` — rewrite the entity's YAML to match the introspected DB
- *   columns. Preserves user-authored fields via {@link reconcileEntityYaml}.
- *   Stages as draft regardless of `atlasMode` (#2177), same contract as the
- *   semantic editor PUT.
- *
- * - `remove` — delete the entity row. Mirrors the existing
- *   `deleteOrgEntityRoute` semantics: a draft is hard-deleted, a published
- *   row is tombstoned for the next publish.
- *
- * - `create_from_db` — introspect the named DB table and write a starter
- *   entity. Returns `mismatch` when an entity by that name already exists,
- *   or when the DB doesn't contain a matching table (the route layer maps
- *   both to 404 per acceptance criterion).
- *
- * The dispatcher returns a tagged {@link ReconcileResult} so the route layer
- * can map each variant to the right HTTP status without re-querying.
+ * Reconcile-action dispatcher for the drift drawer. All writes stage as
+ * drafts (#2177); the route layer maps `mismatch`/`not_found` → 404 and
+ * `not_available` → 501.
  */
 
 import * as yaml from "js-yaml";
 import type { AtlasMode } from "@useatlas/types/auth";
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import {
   getEntity,
   upsertDraftEntity,
@@ -44,44 +28,33 @@ export interface ReconcileInput {
   readonly name: string;
   readonly action: ReconcileAction;
   readonly atlasMode: AtlasMode;
-  /**
-   * Connection alias for DB introspection (matches the drift fetch's
-   * `?connection=` query string). Used for `sync_yaml` to compute the
-   * per-table diff and for `create_from_db` to find the source table.
-   */
+  /** Connection alias for DB introspection — matches the drift fetch's `?connection=` query. */
   readonly connection: string;
   /**
-   * Group scope for the entity row (#2412). When omitted, mirrors the
-   * unscoped-lookup contract in {@link getEntity}.
+   * Trinary group scope (#2412): `undefined` → unique-or-409, `null` →
+   * legacy null-scope row, string → that group.
    */
   readonly connectionGroupId?: string | null;
 }
 
+/**
+ * The `remove` ok variant carries no entity payload — the row was deleted.
+ * `sync_yaml` and `create_from_db` always return the refreshed entity.
+ * The nested discriminant makes `{action:"remove", entity:{...}}` and
+ * `{action:"sync_yaml", entity:null}` unrepresentable.
+ */
 export type ReconcileResult =
+  | { readonly status: "ok"; readonly action: "remove"; readonly name: string }
   | {
       readonly status: "ok";
-      readonly action: ReconcileAction;
+      readonly action: "sync_yaml" | "create_from_db";
       readonly name: string;
-      readonly entity: { readonly name: string; readonly yamlContent: string } | null;
+      readonly entity: { readonly name: string; readonly yamlContent: string };
     }
-  | {
-      readonly status: "not_found";
-      readonly reason: string;
-    }
-  | {
-      readonly status: "mismatch";
-      readonly reason: string;
-    }
-  | {
-      readonly status: "not_available";
-      readonly reason: string;
-    };
+  | { readonly status: "not_found"; readonly reason: string }
+  | { readonly status: "mismatch"; readonly reason: string }
+  | { readonly status: "not_available"; readonly reason: string };
 
-/**
- * Resolve the table name an entity targets — defaults to the entity row name
- * when the YAML omits an explicit `table:` field (matches the diff engine's
- * fallback in `parseEntityYAML`).
- */
 function resolveTableName(row: SemanticEntityRow): string {
   try {
     const doc = yaml.load(row.yaml_content);
@@ -89,10 +62,45 @@ function resolveTableName(row: SemanticEntityRow): string {
       const t = (doc as Record<string, unknown>).table;
       if (typeof t === "string" && t.length > 0) return t;
     }
-  } catch {
-    // Fall through — caller will see an empty diff and skip the rewrite.
+  } catch (err) {
+    log.warn(
+      { err: errorMessage(err), name: row.name },
+      "resolveTableName: failed to parse entity YAML — falling back to row.name",
+    );
   }
   return row.name;
+}
+
+/**
+ * DB is authoritative; disk is a persistent cache. Disk sync failures must
+ * not roll back a committed DB mutation — matches the editor's contract.
+ */
+async function safeSyncToDisk(
+  orgId: string,
+  name: string,
+  yamlContent: string,
+): Promise<void> {
+  try {
+    const { syncEntityToDisk } = await import("./sync");
+    await syncEntityToDisk(orgId, name, "entity", yamlContent);
+  } catch (err) {
+    log.warn(
+      { err: errorMessage(err), orgId, name },
+      "Entity reconciled in DB but disk sync failed — will be synced on next restart",
+    );
+  }
+}
+
+async function safeSyncDeleteFromDisk(orgId: string, name: string): Promise<void> {
+  try {
+    const { syncEntityDeleteFromDisk } = await import("./sync");
+    await syncEntityDeleteFromDisk(orgId, name, "entity");
+  } catch (err) {
+    log.warn(
+      { err: errorMessage(err), orgId, name },
+      "Entity removed in DB but disk sync failed — will be cleaned on next restart",
+    );
+  }
 }
 
 export async function reconcileEntity(input: ReconcileInput): Promise<ReconcileResult> {
@@ -135,12 +143,11 @@ async function reconcileSyncYaml(input: ReconcileInput): Promise<ReconcileResult
   await upsertDraftEntity(input.orgId, "entity", input.name, updatedYaml, input.connection);
 
   const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
-  const { syncEntityToDisk } = await import("./sync");
   invalidateOrgWhitelist(input.orgId);
-  await syncEntityToDisk(input.orgId, input.name, "entity", updatedYaml);
+  await safeSyncToDisk(input.orgId, input.name, updatedYaml);
 
   log.info(
-    { orgId: input.orgId, name: input.name, table, action: "sync_yaml" },
+    { orgId: input.orgId, name: input.name, table },
     "Reconciled entity YAML to DB columns",
   );
 
@@ -153,9 +160,6 @@ async function reconcileSyncYaml(input: ReconcileInput): Promise<ReconcileResult
 }
 
 async function reconcileRemove(input: ReconcileInput): Promise<ReconcileResult> {
-  // Mirror the existing `deleteOrgEntityRoute` semantics — hard-delete a
-  // draft / tombstone-then-publish-overwrite a published row. Same draft
-  // staging contract as the semantic editor (#2177).
   const existing = await getEntity(input.orgId, "entity", input.name, input.connectionGroupId);
   if (!existing) {
     return { status: "not_found", reason: `Entity "${input.name}" not found.` };
@@ -174,21 +178,15 @@ async function reconcileRemove(input: ReconcileInput): Promise<ReconcileResult> 
   }
 
   const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
-  const { syncEntityDeleteFromDisk } = await import("./sync");
   invalidateOrgWhitelist(input.orgId);
-  await syncEntityDeleteFromDisk(input.orgId, input.name, "entity");
+  await safeSyncDeleteFromDisk(input.orgId, input.name);
 
-  log.info(
-    { orgId: input.orgId, name: input.name, action: "remove" },
-    "Removed entity via reconcile",
-  );
+  log.info({ orgId: input.orgId, name: input.name }, "Removed entity via reconcile");
 
-  return { status: "ok", action: "remove", name: input.name, entity: null };
+  return { status: "ok", action: "remove", name: input.name };
 }
 
 async function reconcileCreateFromDb(input: ReconcileInput): Promise<ReconcileResult> {
-  // Refuse to clobber an existing entity. Acceptance criterion: 404 when
-  // the action target doesn't make sense.
   const existing = await getEntity(input.orgId, "entity", input.name, input.connectionGroupId);
   if (existing) {
     return {
@@ -197,10 +195,6 @@ async function reconcileCreateFromDb(input: ReconcileInput): Promise<ReconcileRe
     };
   }
 
-  // Source table name defaults to the entity name (the drift drawer opens
-  // off `new` rows whose name matches the DB table). The connection's full
-  // schema is introspected once and matched here so we never write a
-  // starter entity for a non-existent table.
   const schema = await getDBSchemaRaw(input.connection);
   const snapshot = schema.get(input.name);
   if (!snapshot) {
@@ -215,12 +209,11 @@ async function reconcileCreateFromDb(input: ReconcileInput): Promise<ReconcileRe
 
   await upsertDraftEntity(input.orgId, "entity", input.name, starterYaml, input.connection);
   const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
-  const { syncEntityToDisk } = await import("./sync");
   invalidateOrgWhitelist(input.orgId);
-  await syncEntityToDisk(input.orgId, input.name, "entity", starterYaml);
+  await safeSyncToDisk(input.orgId, input.name, starterYaml);
 
   log.info(
-    { orgId: input.orgId, name: input.name, columns: columns.length, action: "create_from_db" },
+    { orgId: input.orgId, name: input.name, columns: columns.length },
     "Created starter entity from DB introspection",
   );
 

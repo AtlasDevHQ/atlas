@@ -404,11 +404,7 @@ export default function SemanticPage() {
   ]);
 
   const [entities, setEntities] = useState<EntitySummary[]>([]);
-  // Slice 1 (#2459) signal: when the connection introspects zero tables we
-  // suppress the file-tree-renders-every-YAML-as-removed UX in favor of a
-  // targeted "we couldn't read any tables from this connection" panel
-  // (#2462). Initialise to `false` so the file tree renders normally until
-  // the entities fetch resolves; flip when the API confirms zero tables.
+  // True only after the API confirms the connection introspects zero tables.
   const [noIntrospectedTables, setNoIntrospectedTables] = useState(false);
   const [selectedEntity, setSelectedEntity] = useState<EntityData | null>(null);
   const [glossary, setGlossary] = useState<GlossaryTerm[]>([]);
@@ -430,9 +426,6 @@ export default function SemanticPage() {
   const [editingEntityName, setEditingEntityName] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
-  // Drift drawer (#2461): opens overlaid when a drifted entity is clicked.
-  // The underlying selection still updates so closing the drawer leaves the
-  // admin on the entity's detail view. Reconcile actions land in #2462.
   const [driftDrawerEntity, setDriftDrawerEntity] = useState<string | null>(null);
   const [driftDrawerOpen, setDriftDrawerOpen] = useState(false);
 
@@ -559,12 +552,8 @@ export default function SemanticPage() {
           console.warn("admin/semantic: drift warnings from /api/v1/admin/semantic/entities", warnings);
         }
         setEntities(normalized);
-        // Slice 1 (#2459) → slice 3 (#2462) consumer. The flag is
-        // load-bearing: without it every YAML row renders as "removed"
-        // when the DB itself has zero tables (the 2026-05-16 dogfood
-        // false-positive). We trust the server's resolution rather
-        // than re-deriving — `drift.ts` already separates the
-        // "DB has no tables" vs "whitelist excluded every table" cases.
+        // Server-resolved: drift.ts distinguishes "DB has no tables" from
+        // "whitelist excluded every table". Re-deriving would conflate them.
         setNoIntrospectedTables(data?.noIntrospectedTables === true);
       } else {
         // `extractFetchError` returns a populated `FetchError`; any other
@@ -840,16 +829,11 @@ export default function SemanticPage() {
         loadingMessage="Loading semantic layer..."
       >
       {/*
-        Zero-introspected-tables fix (#2462 slice 3, signal from #2459).
-        When the DB itself returns zero tables, the legacy file-tree path
-        would render every YAML entity as `removed` — the alarming
-        "N removed tables" UX surfaced by the 2026-05-16 dogfood pass.
-        Render a targeted empty state instead so admins see the real
-        signal: "we couldn't read any tables from this connection."
-
-        Falls below loading + above the empty / file-tree branches so it
-        wins over "no semantic entities yet" (the entities may still exist
-        in YAML — the introspection failure is the load-bearing fact).
+        Zero-introspected-tables case: render a targeted "we couldn't
+        read any tables" panel instead of the file tree, where every
+        YAML would otherwise show as drifted-removed. Falls above the
+        empty / file-tree branches because the YAML rows may still
+        exist — the introspection failure is the load-bearing fact.
       */}
       {!loading && noIntrospectedTables ? (
         <div className="p-6" data-testid="semantic-no-introspected-tables">
@@ -1062,11 +1046,7 @@ export default function SemanticPage() {
           setDriftDrawerOpen(open);
           if (!open) setDriftDrawerEntity(null);
         }}
-        onReconciled={() => {
-          // Refetch the entities list so the drift signal updates after a
-          // successful reconcile (#2462). The drawer closes itself.
-          refetchAll();
-        }}
+        onReconciled={refetchAll}
         reconcileDisabled={demoReadOnly}
         reconcileDisabledReason={DEMO_READONLY_TOOLTIP}
       />

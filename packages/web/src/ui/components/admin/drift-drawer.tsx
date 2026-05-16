@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   Sheet,
   SheetContent,
@@ -21,46 +22,21 @@ import { CheckCircle2, Minus, RefreshCw, Trash2, Plus } from "lucide-react";
 
 interface DriftDrawerProps {
   /**
-   * Entity name to show drift for. Matched against the diff payload's
-   * `tableDiffs[].table` and `removedTables[]`. `null` keeps the drawer
-   * closed without firing the request.
+   * Entity name to show drift for. Matched against `tableDiffs[].table` /
+   * `removedTables[]` / `newTables[]`. `null` keeps the drawer closed.
    */
   entityName: string | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /**
-   * Connection alias passed to `/api/v1/admin/semantic/diff`. Defaults to
-   * `"default"`; callers thread the active env through once multi-env
-   * routing is wired (#2460).
-   */
+  /** Connection alias for `/api/v1/admin/semantic/diff`. */
   connection?: string;
-  /**
-   * Fires after a successful reconcile (#2462). The page consumer refetches
-   * the entity list so drift counts + the file tree reflect the new state.
-   * Closing the drawer is handled inside the drawer itself.
-   */
+  /** Fires after a successful reconcile so the page can refetch entities. */
   onReconciled?: () => void;
-  /**
-   * Disable the reconcile action buttons (#2462). Page-level callers gate
-   * on `useDemoReadonly()` so demo orgs in published mode can't mutate
-   * shared content via the drift drawer — mirrors the editor's gating.
-   */
+  /** Disables the action buttons (e.g. demo-readonly orgs in published mode). */
   reconcileDisabled?: boolean;
-  /** Optional tooltip / a11y hint surfaced when `reconcileDisabled` is true. */
   reconcileDisabledReason?: string;
 }
 
-/**
- * Right-side drawer that shows the per-table drift payload for a single
- * entity (#2461) plus three reconcile actions (#2462). #2463 retires the
- * standalone schema-diff page.
- *
- * Reuses the existing `/api/v1/admin/semantic/diff` endpoint and filters
- * client-side rather than extending the API: drift payloads are bounded
- * by the workspace's entity count (10s, not 1000s), so the extra rows are
- * cheap and #2463 retires the standalone diff route anyway. Hoisting
- * filtering server-side here would have made #2463 a backend change too.
- */
 export function DriftDrawer({
   entityName,
   open,
@@ -96,11 +72,8 @@ export function DriftDrawer({
   );
 }
 
-/**
- * Body is a separate component so the fetch only fires once `entityName`
- * is set — mounting it conditionally above means React tears the hook
- * tree down when the drawer closes, which short-circuits the request.
- */
+// Split so the diff fetch only fires when `entityName` is non-null —
+// mounting conditionally above tears the hook tree down on close.
 function DriftDrawerBody({
   entityName,
   connection,
@@ -132,6 +105,21 @@ function DriftDrawerBody({
     path: `/api/v1/admin/semantic/entities/${encodeURIComponent(entityName)}/reconcile`,
   });
 
+  // Tracks which action is in-flight so the right button shows busy copy
+  // when the panel renders two (the `changed` case).
+  const [busyAction, setBusyAction] = useState<ReconcileAction | null>(null);
+
+  const runAction = async (action: ReconcileAction) => {
+    setBusyAction(action);
+    try {
+      const result = await reconcile.mutate({ body: { action, connection } });
+      if (result.ok) onReconciled();
+      // !result.ok → <MutationErrorSurface> below renders the error.
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   if (loading) {
     return <LoadingState message="Loading drift…" />;
   }
@@ -148,17 +136,7 @@ function DriftDrawerBody({
   const isRemoved = data.removedTables.includes(entityName);
   const isNew = data.newTables.includes(entityName);
 
-  const runAction = async (action: "sync_yaml" | "remove" | "create_from_db") => {
-    const result = await reconcile.mutate({
-      body: { action, connection },
-    });
-    if (result.ok) onReconciled();
-  };
-
   if (changed) {
-    // Auto-expand: the drawer is single-entity, so the collapsed state
-    // would just be an extra click. The schema-diff page renders many
-    // cards and stays collapsed to keep scroll length sane.
     return (
       <div className="space-y-3">
         <DiffCard diff={changed} defaultOpen />
@@ -171,8 +149,7 @@ function DriftDrawerBody({
           actions={["sync_yaml", "remove"]}
           disabled={reconcileDisabled}
           disabledReason={reconcileDisabledReason}
-          busyAction={reconcile.saving ? null : null}
-          saving={reconcile.saving}
+          busyAction={busyAction}
           onRun={runAction}
         />
       </div>
@@ -202,7 +179,7 @@ function DriftDrawerBody({
           actions={["remove"]}
           disabled={reconcileDisabled}
           disabledReason={reconcileDisabledReason}
-          saving={reconcile.saving}
+          busyAction={busyAction}
           onRun={runAction}
         />
       </div>
@@ -232,19 +209,15 @@ function DriftDrawerBody({
           actions={["create_from_db"]}
           disabled={reconcileDisabled}
           disabledReason={reconcileDisabledReason}
-          saving={reconcile.saving}
+          busyAction={busyAction}
           onRun={runAction}
         />
       </div>
     );
   }
 
-  // No matching diff entry — keep the copy descriptive, not affirmative.
-  // The page only opens the drawer for drifted rows, so reaching this branch
-  // means the entities list and the /diff response disagree (stale state in
-  // another tab, a backend warning swallowing tableDiffs, etc.). Logging
-  // matches the existing dev-console signal pattern in the semantic page for
-  // the same class of disagreement.
+  // Drift/diff disagreement — the page only opens the drawer for drifted
+  // rows, so this branch usually means stale state in another tab.
   console.warn(
     `drift-drawer: opened for "${entityName}" but no matching diff entry — drift/diff disagreement?`,
   );
@@ -272,23 +245,22 @@ function ReconcileActions({
   actions,
   disabled,
   disabledReason,
-  saving,
-  onRun,
   busyAction,
+  onRun,
 }: {
   actions: ReconcileAction[];
   disabled: boolean;
   disabledReason?: string;
-  saving: boolean;
+  busyAction: ReconcileAction | null;
   onRun: (action: ReconcileAction) => void;
-  busyAction?: ReconcileAction | null;
 }) {
+  const anyBusy = busyAction !== null;
   return (
     <SheetFooter className="flex-row flex-wrap justify-end gap-2 border-t pt-3">
       {actions.map((action) => {
         const meta = ACTION_LABELS[action];
         const Icon = meta.icon;
-        const isBusy = saving && (busyAction === undefined || busyAction === action);
+        const isBusy = busyAction === action;
         return (
           <Button
             key={action}
@@ -299,9 +271,10 @@ function ReconcileActions({
                 ? "gap-1.5 text-xs text-destructive hover:text-destructive"
                 : "gap-1.5 text-xs"
             }
-            disabled={disabled || saving}
+            disabled={disabled || anyBusy}
             title={disabled ? disabledReason : undefined}
             onClick={() => onRun(action)}
+            data-testid={`drift-action-${action}`}
           >
             <Icon className="size-3.5" />
             {isBusy ? meta.busy : meta.idle}

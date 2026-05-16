@@ -497,6 +497,11 @@ const mockRunDriftDiff: Mock<(connectionId?: string) => Promise<unknown>> = mock
   warnings: [] as string[],
 }));
 
+// `getDBSchemaRaw` is overridable per-test for the create_from_db happy
+// path. Default is an empty Map (the introspection-found-nothing case).
+const mockGetDBSchemaRaw: Mock<(connectionId?: string) => Promise<Map<string, { table: string; columns: Map<string, string> }>>> =
+  mock(async () => new Map());
+
 mock.module("@atlas/api/lib/semantic/diff", () => ({
   runDiff: mockRunDiff,
   // #2459: matches the admin route's new import alongside runDiff.
@@ -505,7 +510,7 @@ mock.module("@atlas/api/lib/semantic/diff", () => ({
   parseEntityYAML: () => ({ table: "", columns: new Map(), foreignKeys: new Set() }),
   computeDiff: () => ({ newTables: [], removedTables: [], tableDiffs: [], unchangedCount: 0 }),
   getDBSchema: async () => new Map(),
-  getDBSchemaRaw: async () => new Map(),
+  getDBSchemaRaw: mockGetDBSchemaRaw,
   getYAMLSnapshots: () => ({ snapshots: new Map(), warnings: [] }),
 }));
 
@@ -3570,6 +3575,8 @@ describe("POST /api/v1/admin/semantic/entities/:name/reconcile (#2462)", () => {
       introspectedTableCount: 1,
       warnings: [] as string[],
     });
+    mockGetDBSchemaRaw.mockReset();
+    mockGetDBSchemaRaw.mockResolvedValue(new Map());
   });
 
   it("returns 403 for a non-admin caller", async () => {
@@ -3610,6 +3617,58 @@ describe("POST /api/v1/admin/semantic/entities/:name/reconcile (#2462)", () => {
     expect(mockUpsertEntityAdmin).not.toHaveBeenCalled();
   });
 
+  it("sync_yaml: rewrites dimensions to match the diff's added column", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "e-1", org_id: "org-1", entity_type: "entity", name: "users",
+      yaml_content: "table: users\ndimensions: []\n",
+      connection_group_id: null, status: "published",
+      created_at: "2026-05-16T00:00:00Z", updated_at: "2026-05-16T00:00:00Z",
+    });
+    mockRunDriftDiff.mockResolvedValueOnce({
+      diff: {
+        newTables: [],
+        removedTables: [],
+        tableDiffs: [{
+          table: "users",
+          addedColumns: [{ name: "email", type: "string" }],
+          removedColumns: [],
+          typeChanges: [],
+        }],
+        unchangedCount: 0,
+      },
+      introspectedTableCount: 1,
+      warnings: [],
+    });
+    const res = await app.fetch(adminRequest(RECONCILE_PATH, "POST", { action: "sync_yaml" }));
+    expect(res.status).toBe(200);
+    // Inspect the 4th positional arg of `upsertDraftEntity` — the YAML payload
+    // must reflect the diff, not echo the original empty-dimensions YAML.
+    const call = mockUpsertDraftEntityAdmin.mock.calls[0] as unknown as [string, string, string, string, string];
+    const writtenYaml = call[3];
+    expect(writtenYaml).toContain("email");
+    expect(writtenYaml).toContain("string");
+  });
+
+  it("sync_yaml: accepts demo+published writes via drafts (parity with editor, no 403)", async () => {
+    // The PRD acceptance criterion "403 for demo_readonly workspaces in
+    // published mode" is intentionally implemented as draft-staging
+    // parity with the editor — drafts handle the safety, FE gates the
+    // button via `useDemoReadonly`. This locks the contract: a write to
+    // a demo-owned entity in published mode succeeds with a 200 + draft.
+    setOrgAdmin("org-demo-1");
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "e-1", org_id: "org-demo-1", entity_type: "entity", name: "users",
+      yaml_content: "table: users\n", connection_id: "__demo__",
+      connection_group_id: null, status: "published",
+      created_at: "2026-05-16T00:00:00Z", updated_at: "2026-05-16T00:00:00Z",
+    });
+    const res = await app.fetch(adminRequest(RECONCILE_PATH, "POST", { action: "sync_yaml" }));
+    expect(res.status).toBe(200);
+    expect(mockUpsertDraftEntityAdmin).toHaveBeenCalledTimes(1);
+    expect(mockUpsertEntityAdmin).not.toHaveBeenCalled();
+  });
+
   it("sync_yaml: returns 404 when the entity row doesn't exist", async () => {
     setOrgAdmin("org-1");
     mockGetEntityAdmin.mockResolvedValue(null);
@@ -3646,14 +3705,7 @@ describe("POST /api/v1/admin/semantic/entities/:name/reconcile (#2462)", () => {
     expect(mockDeleteDraftEntityAdmin).not.toHaveBeenCalled();
   });
 
-  it("remove: returns 404 when the entity doesn't exist", async () => {
-    setOrgAdmin("org-1");
-    mockGetEntityAdmin.mockResolvedValue(null);
-    const res = await app.fetch(adminRequest(RECONCILE_PATH, "POST", { action: "remove" }));
-    expect(res.status).toBe(404);
-  });
-
-  it("create_from_db: returns 404 when an entity with that name already exists", async () => {
+  it("create_from_db: returns 404 with error=mismatch when an entity already exists", async () => {
     setOrgAdmin("org-1");
     mockGetEntityAdmin.mockResolvedValue({
       id: "e-1", org_id: "org-1", entity_type: "entity", name: "users",
@@ -3663,16 +3715,75 @@ describe("POST /api/v1/admin/semantic/entities/:name/reconcile (#2462)", () => {
     });
     const res = await app.fetch(adminRequest(RECONCILE_PATH, "POST", { action: "create_from_db" }));
     expect(res.status).toBe(404);
+    const body = (await res.json()) as Record<string, unknown>;
+    // FE branches on this code to switch CTA from "create" → "sync_yaml".
+    expect(body.error).toBe("mismatch");
     expect(mockUpsertDraftEntityAdmin).not.toHaveBeenCalled();
   });
 
-  it("create_from_db: returns 404 when no DB table matches the requested name", async () => {
+  it("create_from_db: returns 404 with error=mismatch when no DB table matches the name", async () => {
     setOrgAdmin("org-1");
     mockGetEntityAdmin.mockResolvedValue(null);
     // Default `getDBSchemaRaw` mock returns an empty Map — no table matches.
     const res = await app.fetch(adminRequest(RECONCILE_PATH, "POST", { action: "create_from_db" }));
     expect(res.status).toBe(404);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("mismatch");
     expect(mockUpsertDraftEntityAdmin).not.toHaveBeenCalled();
+  });
+
+  it("create_from_db: returns 200 + writes a starter draft when the DB table exists", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue(null);
+    mockGetDBSchemaRaw.mockResolvedValueOnce(
+      new Map([
+        [
+          "users",
+          {
+            table: "users",
+            columns: new Map<string, string>([
+              ["id", "number"],
+              ["email", "string"],
+            ]),
+          },
+        ],
+      ]),
+    );
+    const res = await app.fetch(adminRequest(RECONCILE_PATH, "POST", { action: "create_from_db" }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.ok).toBe(true);
+    expect(body.action).toBe("create_from_db");
+    expect(mockUpsertDraftEntityAdmin).toHaveBeenCalledTimes(1);
+    const call = mockUpsertDraftEntityAdmin.mock.calls[0] as unknown as [string, string, string, string, string];
+    const writtenYaml = call[3];
+    expect(writtenYaml).toContain("table: users");
+    expect(writtenYaml).toContain("id");
+    expect(writtenYaml).toContain("email");
+  });
+
+  it("remove: returns 404 with error=not_found (distinct from mismatch) when entity missing", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue(null);
+    const res = await app.fetch(adminRequest(RECONCILE_PATH, "POST", { action: "remove" }));
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("not_found");
+  });
+
+  it("remove: 200 response omits the entity field (no payload on delete)", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "e-1", org_id: "org-1", entity_type: "entity", name: "users",
+      yaml_content: "table: users\n",
+      connection_group_id: null, status: "draft",
+      created_at: "2026-05-16T00:00:00Z", updated_at: "2026-05-16T00:00:00Z",
+    });
+    const res = await app.fetch(adminRequest(RECONCILE_PATH, "POST", { action: "remove" }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.action).toBe("remove");
+    expect(body.entity).toBeNull();
   });
 
   it("rejects an unknown action with a client error", async () => {

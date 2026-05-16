@@ -40,7 +40,7 @@ query_patterns:
     sql: SELECT date_trunc('month', created_at) AS m, SUM(total) FROM orders GROUP BY 1
 `;
 
-  test("column added → dimension appended with name + sql + type", () => {
+  test("column added → dimension appended with name + sql + type, existing order preserved", () => {
     const diff: SemanticTableDiff = {
       table: "orders",
       addedColumns: [{ name: "shipped_at", type: "date" }],
@@ -50,10 +50,10 @@ query_patterns:
     const out = reconcileEntityYaml(baseYaml, diff);
     const parsed = yaml.load(out) as Record<string, unknown>;
     const dims = parsed.dimensions as Array<Record<string, unknown>>;
-    const appended = dims.find((d) => d.name === "shipped_at");
-    expect(appended).toBeDefined();
-    expect(appended?.type).toBe("date");
-    expect(appended?.sql).toBe("shipped_at");
+    // Dimension ORDER matters: existing rows stay in place, new column appended last.
+    expect(dims.map((d) => d.name)).toEqual(["id", "customer_id", "total", "shipped_at"]);
+    expect(dims[3]?.type).toBe("date");
+    expect(dims[3]?.sql).toBe("shipped_at");
   });
 
   test("column removed → dimension dropped by name", () => {
@@ -165,7 +165,29 @@ query_patterns:
       addedColumns: [],
       removedColumns: [],
       typeChanges: [],
-    })).toThrow();
+    })).toThrow(/YAML parse failed/);
+  });
+
+  test("throws when YAML parses to a non-object (e.g. a top-level array)", () => {
+    expect(() => reconcileEntityYaml("- one\n- two\n", {
+      table: "x",
+      addedColumns: [],
+      removedColumns: [],
+      typeChanges: [],
+    })).toThrow(/must be an object/);
+  });
+
+  test("removal wins when a column appears in both removedColumns and typeChanges", () => {
+    const diff: SemanticTableDiff = {
+      table: "orders",
+      addedColumns: [],
+      removedColumns: [{ name: "total", type: "number" }],
+      typeChanges: [{ name: "total", yamlType: "number", dbType: "string" }],
+    };
+    const out = reconcileEntityYaml(baseYaml, diff);
+    const parsed = yaml.load(out) as Record<string, unknown>;
+    const dims = parsed.dimensions as Array<Record<string, unknown>>;
+    expect(dims.some((d) => d.name === "total")).toBe(false);
   });
 });
 

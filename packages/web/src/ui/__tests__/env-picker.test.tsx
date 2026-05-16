@@ -205,6 +205,110 @@ describe("ChatEnvPicker singleton-only footer hint (#2408)", () => {
   });
 });
 
+describe("ChatEnvPicker emptyReason (#2422)", () => {
+  test("renders an inline 'no active workspace' chip when groups is empty and emptyReason is 'no_active_org'", () => {
+    const { container } = render(
+      <ChatEnvPicker
+        groups={[]}
+        emptyReason="no_active_org"
+        activeGroupId={null}
+        activeConnectionId={null}
+        onSelect={noop}
+      />,
+    );
+    const chip = container.querySelector(
+      '[data-testid="chat-env-picker-empty-reason"]',
+    );
+    expect(chip).not.toBeNull();
+    expect(chip?.getAttribute("data-reason")).toBe("no_active_org");
+    expect(chip?.textContent).toContain("No active workspace");
+    // The chip must not be hidden — it replaces the silent-fallback
+    // behavior that motivated #2422.
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-trigger"]'),
+    ).toBeNull();
+  });
+
+  test("renders an inline 'set DATABASE_URL' chip when groups is empty and emptyReason is 'no_internal_db'", () => {
+    const { container } = render(
+      <ChatEnvPicker
+        groups={[]}
+        emptyReason="no_internal_db"
+        activeGroupId={null}
+        activeConnectionId={null}
+        onSelect={noop}
+      />,
+    );
+    const chip = container.querySelector(
+      '[data-testid="chat-env-picker-empty-reason"]',
+    );
+    expect(chip).not.toBeNull();
+    expect(chip?.getAttribute("data-reason")).toBe("no_internal_db");
+    expect(chip?.textContent).toContain("internal database");
+    expect(chip?.textContent).toContain("DATABASE_URL");
+  });
+
+  test("stays hidden when groups is empty and emptyReason is null (workspace with no groups configured)", () => {
+    const { container } = render(
+      <ChatEnvPicker
+        groups={[]}
+        emptyReason={null}
+        activeGroupId={null}
+        activeConnectionId={null}
+        onSelect={noop}
+      />,
+    );
+    expect(container.firstChild).toBeNull();
+  });
+
+  test("stays hidden when groups is empty and emptyReason is omitted (defaults to null)", () => {
+    // Locks the default-prop contract — callers that haven't been
+    // updated to thread `emptyReason` should keep the original silent
+    // behavior.
+    const { container } = render(
+      <ChatEnvPicker
+        groups={[]}
+        activeGroupId={null}
+        activeConnectionId={null}
+        onSelect={noop}
+      />,
+    );
+    expect(container.firstChild).toBeNull();
+  });
+
+  test("ignores emptyReason when groups is non-empty (server saw groups; chip would be a lie)", () => {
+    const groups: ChatEnvGroup[] = [
+      {
+        id: "g_prod",
+        name: "prod",
+        members: [
+          { connectionId: "us-int", dbType: "postgres", description: null },
+          { connectionId: "eu-int", dbType: "postgres", description: null },
+        ],
+      },
+    ];
+    const { container } = render(
+      <ChatEnvPicker
+        groups={groups}
+        // A server bug or future state could theoretically send both —
+        // the picker takes the groups as ground truth and ignores the
+        // reason. Locks the precedence so the chip can never overlay a
+        // populated picker.
+        emptyReason="no_internal_db"
+        activeGroupId="g_prod"
+        activeConnectionId="us-int"
+        onSelect={noop}
+      />,
+    );
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-empty-reason"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-trigger"]'),
+    ).not.toBeNull();
+  });
+});
+
 describe("ChatEnvPicker chip label collapse (#2408)", () => {
   test("renders just the member id when stripped group name equals member id", () => {
     // Common 0062 backfill shape: group `g_warehouse` with one member

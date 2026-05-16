@@ -13,9 +13,11 @@
  *     header picker, conversation create dialog). It cannot grow new
  *     verbs — non-admin users must not be able to mutate group state.
  *
- * Empty workspaces (no groups configured yet) return `{ groups: [] }`;
- * the picker then renders nothing and the chat falls back to the
- * legacy single-connection path.
+ * `reason` distinguishes "empty because the workspace genuinely has no
+ * groups" (null — picker stays hidden, chat falls back to the legacy
+ * single-connection path) from "empty because the request can't reach a
+ * usable state" (`no_internal_db` / `no_active_org` — picker renders
+ * explanatory copy instead of silently disappearing). See #2422.
  */
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
@@ -39,6 +41,25 @@ const ConnectionGroupSchema = z.object({
   members: z.array(ConnectionGroupMemberSchema),
 });
 
+/**
+ * Why an empty `groups` list. `null` ⇒ the workspace genuinely has no
+ * groups configured (picker stays hidden, legacy single-connection
+ * routing kicks in). Anything else is a degraded state the user should
+ * see explained instead of a silent empty picker.
+ *
+ * Extending: keep this as a discriminated string union (not a free-form
+ * `string`) so the frontend's exhaustive switch stays a compile-time
+ * check. New reasons require a matching branch in `env-picker.tsx`.
+ */
+export type MeConnectionGroupsEmptyReason = "no_active_org" | "no_internal_db";
+
+const ResponseSchema = z.object({
+  groups: z.array(ConnectionGroupSchema),
+  reason: z.enum(["no_active_org", "no_internal_db"]).nullable(),
+});
+
+export type MeConnectionGroupsResponse = z.infer<typeof ResponseSchema>;
+
 const listRoute = createRoute({
   method: "get",
   path: "/",
@@ -51,7 +72,7 @@ const listRoute = createRoute({
       description: "Connection group list",
       content: {
         "application/json": {
-          schema: z.object({ groups: z.array(ConnectionGroupSchema) }),
+          schema: ResponseSchema,
         },
       },
     },
@@ -74,13 +95,23 @@ meConnectionGroups.openapi(listRoute, async (c) => {
   const auth = c.get("authResult");
   const orgId = auth?.user?.activeOrganizationId;
   const requestId = c.get("requestId");
-  if (!hasInternalDB() || !orgId) {
-    // No internal DB or no org context — return empty rather than 500.
-    // The picker UI treats `[]` as "no groups configured" and falls back
-    // to the legacy single-connection routing. Surfacing a 500 here
-    // would block chat for self-hosted users on the legacy single-
-    // connection path.
-    return c.json({ groups: [] as Array<z.infer<typeof ConnectionGroupSchema>> }, 200);
+  // Pick the most operator-actionable diagnostic when both signals are
+  // degraded. `no_internal_db` points at the deploy-side fix (set
+  // DATABASE_URL); `no_active_org` is the per-user case the topbar
+  // surfaces anyway. See the dedicated test in
+  // `me-connection-groups.test.ts` for why this is a single signal and
+  // not a state machine.
+  if (!hasInternalDB()) {
+    return c.json(
+      { groups: [], reason: "no_internal_db" as const },
+      200,
+    );
+  }
+  if (!orgId) {
+    return c.json(
+      { groups: [], reason: "no_active_org" as const },
+      200,
+    );
   }
   try {
     // One round-trip via a left-join so groups with zero non-archived
@@ -124,7 +155,12 @@ meConnectionGroups.openapi(listRoute, async (c) => {
         });
       }
     }
-    return c.json({ groups: Array.from(byGroup.values()) }, 200);
+    // `reason: null` covers both "workspace has groups" and the
+    // ordinary "workspace has no groups configured yet" — the picker
+    // treats null as "no banner; just hide if the array is empty". A
+    // populated `reason` is reserved for genuinely degraded states the
+    // caller couldn't reach a usable query for.
+    return c.json({ groups: Array.from(byGroup.values()), reason: null }, 200);
   } catch (err) {
     log.error(
       { err: errorMessage(err), requestId, orgId },

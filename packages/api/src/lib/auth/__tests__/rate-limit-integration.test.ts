@@ -261,97 +261,33 @@ describe("config wiring snapshot — buildAuthOptions", () => {
     expect(unhandled).toBeNull();
   });
 
-  it("wires the outer `.catch()` on sendVerificationEmail so rejections don't propagate", async () => {
-    // Inject a sendVerificationEmail impl that rejects with a sentinel
-    // error. If the options builder drops the outer `.catch()`, the
-    // built callback's floating promise becomes an unhandled rejection
-    // — which Bun's test runner treats as a test failure and which,
-    // under Node's `--unhandled-rejections=strict`, would crash the
-    // process mid-signup and reopen the enumeration oracle as a
-    // 500-vs-200 side channel.
+  it("does NOT wire `sendVerificationEmail` in the auth options so the emailOTP plugin's override takes effect", async () => {
+    // Regression guard: the previous wiring set
+    // `emailVerification.sendVerificationEmail` to a magic-link sender,
+    // which won the options-merge race against the emailOTP plugin's
+    // `init()` override and caused the prod bug where signup sent a
+    // magic link instead of an OTP code (resend correctly used the
+    // plugin's own endpoint).
     //
-    // Two mechanisms combine to catch regressions: (1) the attached
-    // `unhandledRejection` handler captures the rejection and the
-    // sentinel-message assertion below flips red, and (2) Bun's own
-    // test-runner rejection tracking fails the test directly. Either
-    // is sufficient; having both guards against future runtime
-    // behavior changes.
-    const sentinel = new Error("boom — simulated dispatcher crash");
-    const options = buildAuthOptions(
-      makeDeps({
-        testOverrides: {
-          sendVerificationEmail: async () => { throw sentinel; },
-        },
-      }),
-    );
-
-    const callback = options.emailVerification?.sendVerificationEmail;
-    expect(typeof callback).toBe("function");
-
-    let unhandled: unknown = null;
-    const handler = (reason: unknown) => {
-      // Only capture our sentinel — guards against false positives from
-      // an unrelated rejection that happens to fire during the window.
-      if (reason === sentinel) unhandled = reason;
-    };
-    process.on("unhandledRejection", handler);
-    try {
-      // Better Auth invokes the callback with `({ user, url, token }, request)`.
-      // Cast needed — the Better Auth callback type is a complex union we
-      // only invoke with the fields we know the wired implementation reads.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- narrow Better Auth callback type for test invocation
-      await (callback as any)({
-        user: { email: "wire@example.com" },
-        url: "https://example.com/verify?token=x",
-        token: "x",
-      });
-      // Give the microtask chain (from `.catch()` or a floating reject)
-      // a tick to resolve before detaching the handler.
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    } finally {
-      process.off("unhandledRejection", handler);
-    }
-
-    expect(unhandled).toBeNull();
+    // With the wiring removed, the plugin's `init()` returns
+    // `{ options: { emailVerification: { sendVerificationEmail: <OTP sender> } } }`
+    // — Better Auth merges that in. We assert the absence here so a
+    // future refactor that re-adds the magic-link callback fails CI
+    // before the bug ships.
+    const options = buildAuthOptions(makeDeps());
+    expect(options.emailVerification?.sendVerificationEmail).toBeUndefined();
   });
 
-  it("wires `rewriteVerificationCallbackURL` into the verification dispatch path", async () => {
-    // Pins the post-verify-redirect bug fix: a relative `callbackURL` in
-    // the URL Better Auth hands the dispatcher must be rewritten to an
-    // absolute URL on the first trusted origin BEFORE the dispatcher is
-    // called. Without this assertion, a refactor that drops the
-    // `rewriteVerificationCallbackURL(...)` wrapping at the call site
-    // would silently restore the original 404-on-verify regression and no
-    // existing test would go red — the unit tests for the helper itself
-    // pass, the dispatch wiring's `.catch()` test passes, but the wiring
-    // between the two would be broken.
-    let captured: { to: string; url: string } | null = null;
-    const options = buildAuthOptions(
-      makeDeps({
-        trustedOrigins: ["https://app.useatlas.dev", "https://api.useatlas.dev"],
-        testOverrides: {
-          sendVerificationEmail: async (opts) => {
-            captured = opts;
-          },
-        },
-      }),
-    );
-
-    const callback = options.emailVerification?.sendVerificationEmail;
-    expect(typeof callback).toBe("function");
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- narrow Better Auth callback type for test invocation
-    await (callback as any)({
-      user: { email: "verify@example.com" },
-      url: "https://api.useatlas.dev/api/auth/verify-email?token=t&callbackURL=%2Flogin",
-      token: "t",
-    });
-    // Allow the fire-and-forget dispatch to settle.
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    expect(captured).not.toBeNull();
-    const cb = new URL(captured!.url).searchParams.get("callbackURL");
-    expect(cb).toBe("https://app.useatlas.dev/login");
+  it("keeps autoSignInAfterVerification + sendOnSignIn flags on emailVerification (plugin override flows through them)", async () => {
+    // The plugin's `init()` only sets `sendVerificationEmail` — the flags
+    // `autoSignInAfterVerification` and `sendOnSignIn` stay on our config
+    // and tell Better Auth's flow to auto-sign-in after OTP verify and
+    // to re-issue an OTP on blocked sign-ins respectively. If a future
+    // refactor drops the whole `emailVerification` block, both behaviors
+    // break silently.
+    const options = buildAuthOptions(makeDeps());
+    expect(options.emailVerification?.autoSignInAfterVerification).toBe(true);
+    expect(options.emailVerification?.sendOnSignIn).toBe(true);
   });
 
   it("wires `rewriteVerificationCallbackURL` into the password-reset dispatch path", async () => {

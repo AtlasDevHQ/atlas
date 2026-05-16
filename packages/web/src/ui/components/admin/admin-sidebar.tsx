@@ -90,6 +90,24 @@ export function AdminSidebar() {
     return group.items.some((item) => matchesNavItem(item, pathname));
   }
 
+  // Track manually-expanded groups so client-side navigation auto-opens
+  // the active group AND respects user-initiated toggles. Using a plain
+  // `defaultOpen` is uncontrolled — only respected on first mount — so
+  // landing on /admin/x and then navigating to /admin/y left the y-parent
+  // collapsed even when y was the active item.
+  const [userOpenedGroups, setUserOpenedGroups] = useState<Set<string>>(new Set());
+  function isGroupOpen(group: NavGroup): boolean {
+    return isGroupActive(group) || userOpenedGroups.has(group.title);
+  }
+  function handleGroupOpenChange(title: string, open: boolean) {
+    setUserOpenedGroups((prev) => {
+      const next = new Set(prev);
+      if (open) next.add(title);
+      else next.delete(title);
+      return next;
+    });
+  }
+
   const visibleGroups = navGroups
     .filter((group) => !group.requiredRole || group.requiredRole === userRole)
     .map((group) => ({
@@ -166,7 +184,8 @@ export function AdminSidebar() {
               <Collapsible
                 key={group.title}
                 asChild
-                defaultOpen={isGroupActive(group)}
+                open={isGroupOpen(group)}
+                onOpenChange={(open) => handleGroupOpenChange(group.title, open)}
                 className="group/collapsible"
               >
                 <SidebarMenuItem>

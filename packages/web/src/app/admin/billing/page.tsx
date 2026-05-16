@@ -26,6 +26,7 @@ import {
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { BillingStatusSchema } from "@/ui/lib/admin-schemas";
 import { ModelProviderSection } from "@/ui/components/admin/model-provider-section";
@@ -108,11 +109,19 @@ export default function BillingPage() {
   const { data, loading, error, refetch } = useAdminFetch("/api/v1/billing", {
     schema: BillingStatusSchema,
   });
+  const { deployMode } = useDeployMode();
 
   // Framework-level 404 (billing routes not mounted) means self-hosted / no Stripe.
   // API-level 404s ("Workspace not found", "no internal database") have descriptive
   // messages and should surface as real errors, not the self-hosted card.
+  //
+  // Gate on deployMode too: on a SaaS deployment a 404 here means the billing
+  // system is misconfigured (Stripe plugin not mounted, internal DB
+  // unavailable), NOT that the deployment is self-hosted. Showing the
+  // "Self-hosted · no billing" card in that case lies to the user — let the
+  // generic error path surface the failure so it's visible to operators.
   const isSelfHosted =
+    deployMode === "self-hosted" &&
     !loading &&
     !data &&
     error?.status === 404 &&

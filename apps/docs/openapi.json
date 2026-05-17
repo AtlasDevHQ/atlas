@@ -91,6 +91,14 @@
                   "connectionGroupId": {
                     "type": "string"
                   },
+                  "routingMode": {
+                    "type": "string",
+                    "enum": [
+                      "auto",
+                      "pin",
+                      "all"
+                    ]
+                  },
                   "boundDashboardId": {
                     "type": "string",
                     "format": "uuid"

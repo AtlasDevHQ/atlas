@@ -731,7 +731,15 @@ chat.openapi(chatRoute, async (c) => {
               toolContext: {
                 dashboardId: string;
                 orgId: string | null | undefined;
+                // #2364 — propagate userId so the bound editor tools can
+                // route writes through the user's draft when the drafts
+                // flag is on.
+                // #2367 — also used by the screenshot tool as part of the
+                // per-user cache key.
                 userId?: string | null;
+                // #2367 — forwarded `Cookie:` header so the screenshot
+                // tool's headless browser can authenticate against the
+                // bound dashboard's web route without a fresh sign-in.
                 cookieHeader?: string | null;
               };
             }
@@ -1017,14 +1025,17 @@ chat.openapi(chatRoute, async (c) => {
               toolContext: {
                 dashboardId: resolved.dashboard.id,
                 orgId: authResult.user?.activeOrganizationId,
-                // #2367 — the screenshot tool needs both to render the
-                // user's view of the dashboard:
-                //   - userId  → part of the per-user cache key (forward-
-                //     compat with #2364 drafts; today same PNG per user)
-                //   - cookie  → forwarded to the headless browser so it
-                //     can authenticate against the dashboard's web route
-                //     without doing a fresh sign-in.
+                // #2364 — propagate userId so the bound editor tools
+                // can route mutations through the per-user draft when
+                // `ATLAS_DASHBOARD_DRAFTS_ENABLED=true`. Anonymous
+                // bound chats stay on the legacy direct-published path.
+                // #2367 — also used by the screenshot tool as part of
+                // the per-user cache key (forward-compat with the per-
+                // user draft view that lands as drafts mature).
                 userId: authResult.user?.id ?? null,
+                // #2367 — forwarded to the screenshot tool's headless
+                // browser so it can authenticate against the dashboard's
+                // web route without doing a fresh sign-in.
                 cookieHeader: req.headers.get("cookie"),
               },
             };

@@ -1788,3 +1788,40 @@ A new `boot-smoke` job in `.github/workflows/deploy-validation.yml` builds `depl
 - **One frontend file** (`bound-chat-drawer.tsx`) drives the entire UI — uses `useChat` directly with a slim `DefaultChatTransport` that always carries `boundDashboardId`. The existing heavyweight `AtlasChat` stays untouched.
 
 **Category:** Deep module that absorbs a binding relationship + its tool factory + its prompt constant + its listing query. Same pattern as the win #58 → win #59 → win #60 chain — when a module's contract is "this is the only place that knows X," every reader downstream can be a one-line call. The PRD #2362 follow-ups (#2364 drafts, #2365 stage tracker, #2368 history, #2369 createDashboard) all consume this module without re-deriving the relationship.
+
+## 64. `dashboardVersioning` — per-user drafts as pure snapshot transforms (#2364)
+
+**Date:** 2026-05-17
+**Issue:** #2364 (1.4.6 foundation slice for PRD #2362, sibling to #2363's bound-chat-context deepening — win #63)
+**Milestone:** 1.4.6 — Chat as dashboard editor
+**Branch:** `feat/2364-dashboard-drafts-foundation`
+
+**Before:** the chat-as-dashboard-editor PRD #2362 says every editor gets a private draft of a dashboard. The naive shape would have been: a `draft jsonb` column on `dashboards` plus a per-tool branch ("if user has a draft, write to draft, else write to dashboard_cards") scattered across `bound-dashboard.ts`, `dashboards.ts`, `chat.ts`, and the draft API routes — each path re-implementing the three-way merge from scratch. Plus the publish transaction would have been wrapped around whatever SQL each tool happens to issue, with rollback safety dependent on the caller remembering to use a client.
+
+**The win:** `lib/dashboard-versioning.ts` is the single module that owns the entire lifecycle, and the four hot functions are PURE.
+
+- **`forkDraftFromPublished(published) → snapshot`** — pure. Takes a `DashboardWithCards`, returns a `DashboardSnapshot`.
+- **`applyChangeToDraft(draft, change) → result`** — pure. Discriminated `DraftChange` union (`addCard` / `updateCard` / `updateLayout` / `updateMeta`); `unknown_card` is a return-value failure, never a thrown error.
+- **`publishDraftMerge(draft, currentPublished, baseline) → ok | conflict`** — pure three-way merge. Returns the exact set of `PublishOp`s the transaction will execute, or the conflict set. **Conflicts are surfaced, never silently dropped** — `card_missing_in_published` + `card_mutated_in_published` are explicit cases.
+- **`rebaseDraftSnapshot(draft, newPublished, baseline, newBaselineAt) → fastForward | conflict`** — pure. Same three-way merge from a different angle.
+
+The DB-touching helpers (`forkOrLoadDraft`, `saveDraft`, `publishDraft`, `discardDraft`, `rebaseDraft`) are thin wrappers — they load the snapshots, call the pure functions, and persist. The publish transaction is `getInternalDB().connect()` → `BEGIN` → loop the precomputed `PublishOp`s → `UPDATE dashboards.updated_at` → `DELETE FROM dashboard_user_drafts` → `COMMIT`; the merge result is a value, computed before the transaction opens, so the SQL inside the transaction is just persistence with no branching logic.
+
+**Stale-baseline guard.** `publishDraft` refuses to publish when `published.updatedAt !== draft.publishedBaselineAt` — returns `stale_baseline` instead of attempting a merge. The route maps this to 409; the UI prompts the user to rebase. This is the CLAUDE.md "prefer errors over silent fallbacks" rule applied to a real correctness boundary: silently treating "current published" as the baseline when the persisted baseline says otherwise would silently overwrite a teammate's edit. A persisted `baseline jsonb` column alongside `published_baseline_at` makes the three-way merge exact for the common case where the user does rebase before publishing; the column is one schema addition, not a separate snapshot table.
+
+**Feature flag is the only branch.** `isDashboardDraftsEnabled()` reads `ATLAS_DASHBOARD_DRAFTS_ENABLED` per call (not cached at import) so tests flip cleanly. The bound editor tools (`packages/api/src/lib/tools/bound-dashboard.ts`) have a single `maybeApplyToDraft(ctx, change)` helper at the top — when the flag is on AND `ctx.userId` is set, route through `forkOrLoadDraft` + `applyChangeToDraft` + `saveDraft`; otherwise fall through to the existing direct-published path. Each mutating tool gets a 3-line addition: try the draft path, if routed return its result, else run the legacy code. No tool re-implements draft routing.
+
+**What got unbundled:**
+- **Pure test surface.** `dashboard-versioning.test.ts` has 30+ pure cases (`forkDraftFromPublished`, `applyChangeToDraft`, `publishDraftMerge`, `rebaseDraftSnapshot`, `materializeDraftView`) with zero DB. The DB-touching helpers get separate tests against `_resetPool(mockPool)`. The transactional `publishDraft` is verified by asserting BEGIN/COMMIT/ROLLBACK sequencing — the merge correctness was already proven up top.
+- **Schema is two columns.** `dashboard_user_drafts (user_id, dashboard_id, draft jsonb, baseline jsonb, published_baseline_at)` with composite PK + ON DELETE CASCADE on dashboard_id. The `baseline jsonb` is the difference between "approximate merges" and "real three-way merges" — one extra column buys exact conflict detection.
+- **Route layer is dumb.** Four routes (`GET /draft`, `POST /draft/publish`, `POST /draft/discard`, `POST /draft/rebase`) each call exactly one module function and map the result to a status code. The `?view=draft` query param on `GET /:id` is one extra `if` block — overlay the draft via `materializeDraftView(published, draftSnapshot)`. Viewers (no user / anonymous shares) always get published, matching PRD user story 11.
+- **Flag-off behavior is preserved.** Anonymous bound chats (no userId) follow the legacy path even with the flag on. Regression coverage: existing `bound-dashboard.test.ts` already asserts "UPDATE dashboards" + "INSERT INTO dashboard_cards" against a flag-off environment; the new `bound-dashboard-drafts.test.ts` flag-OFF block re-asserts the SQL targets to lock in the contract.
+
+**Impact:**
+- **1 new deep module** (`lib/dashboard-versioning.ts`, ~600 lines including the persistence helpers + transaction) + 1 migration (0074) + matching `schema.ts` mirror.
+- **`tools/bound-dashboard.ts` changes:** 1 new helper (`maybeApplyToDraft`), 1 new field on `BoundDashboardToolContext` (`userId`), 1 new branch in each of 4 mutating tools (~3 lines each).
+- **`api/routes/dashboards.ts` changes:** 4 new route definitions + handlers, 1 new `?view=draft` branch on `GET /:id`, ~150 lines total.
+- **Tests:** 47 cases in `dashboard-versioning.test.ts` (pure + DB-touching), 8 in `bound-dashboard-drafts.test.ts` (flag-off regression + flag-on routing + per-user isolation), 3 migrate-pg cases (column shape + composite PK + ON DELETE CASCADE).
+- **Wire to #2521:** the Publish UI slice consumes the four draft routes directly — no module changes needed there, it just renders the diff modal + calls `POST /draft/publish`. The "your baseline has changed" notice (user story 13) reads off `stale_baseline` 409s the publish route already returns.
+
+**Category:** Deep module + pure-snapshot-transform pattern. Same shape as the connection-mode resolution module (win #58) and content-mode publish (the workspace-wide cousin) — when correctness lives in pure functions and the DB layer is "load → call → persist," the test surface stays tractable as the surface area grows. The PRD #2362 follow-ups (#2365 stage tracker, #2369 createDashboard) plug into `applyChangeToDraft` by extending the `DraftChange` union — no re-architecting of the publish/rebase paths.

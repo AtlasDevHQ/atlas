@@ -19,6 +19,7 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext, RequestContext } from "@atlas/api/lib/effect/services";
 import { requireEnterpriseEffect } from "@atlas/ee/index";
 import { AnswerMeter, AnswerMeterLive } from "@atlas/api/lib/proactive/answer-meter";
+import { getWorkspaceQuotaStatus } from "@atlas/api/lib/proactive/quota";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
 const log = createLogger("admin-proactive-analytics");
@@ -110,6 +111,19 @@ adminProactiveAnalytics.get("/", async (c) => {
           err instanceof Error ? err : new Error(String(err)),
       });
 
+      // Monthly quota snapshot (#2301). Lives next to the rolling
+      // summary so the admin UI can render "classify usage this month"
+      // alongside the rolling window — different time horizons, same
+      // panel. `getWorkspaceQuotaStatus` fails open on its own (returns
+      // `capReached: false` with null cap), so we don't need a separate
+      // try/catch here. Read on every render: COUNT(*) over the current
+      // month's classify rows is bounded by the 0078 index.
+      const quota = yield* Effect.tryPromise({
+        try: () => getWorkspaceQuotaStatus(orgId),
+        catch: (err) =>
+          err instanceof Error ? err : new Error(String(err)),
+      });
+
       log.info(
         {
           requestId,
@@ -117,6 +131,9 @@ adminProactiveAnalytics.get("/", async (c) => {
           sinceMs,
           classifyCount: summary.classifyCount,
           reactCount: summary.reactCount,
+          classifyCountThisMonth: quota.classifyCountThisMonth,
+          monthlyClassifierCap: quota.monthlyClassifierCap,
+          capReached: quota.capReached,
         },
         "proactive analytics summary served",
       );
@@ -126,6 +143,11 @@ adminProactiveAnalytics.get("/", async (c) => {
           workspaceId: orgId,
           sinceMs,
           summary,
+          quota: {
+            classifyCountThisMonth: quota.classifyCountThisMonth,
+            monthlyClassifierCap: quota.monthlyClassifierCap,
+            capReached: quota.capReached,
+          },
         },
         200,
       );

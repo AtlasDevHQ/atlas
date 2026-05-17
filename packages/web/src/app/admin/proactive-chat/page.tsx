@@ -452,8 +452,9 @@ function MonthlyCapField({
       </Label>
       <p className="text-[12px] text-muted-foreground">
         Optional. Hard cap on classifier invocations per calendar month. When
-        the cap is reached, proactive chat falls back to the regex layer only
-        until the next reset. Leave blank for no cap.
+        the cap is reached, proactive chat short-circuits before the
+        classifier runs until the next reset (calendar month, UTC). Leave
+        blank for no cap.
       </p>
       <Input
         id="proactive-monthly-cap"
@@ -466,6 +467,81 @@ function MonthlyCapField({
         aria-invalid={invalid}
         className="max-w-[180px] font-mono text-sm"
       />
+      <QuotaUsageIndicator />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Quota usage indicator (#2301)
+//
+// Reads `GET /api/v1/admin/proactive/analytics` and renders a tiny usage
+// bar with traffic-light colors:
+//   - <80%  grey   (under cap, no concern)
+//   - 80%+  yellow (warn — admin may want to raise the cap)
+//   - 100%  red    (exhausted — proactive is silently short-circuiting)
+//
+// Rendered inline under the cap input so the admin can see the impact of
+// the value they just typed. Hides itself when the workspace has never
+// set a cap (`monthlyClassifierCap === null`) — there's nothing to
+// usage-bar against.
+// ---------------------------------------------------------------------------
+
+const AnalyticsResponseSchema = z.object({
+  quota: z.object({
+    classifyCountThisMonth: z.number().int().nonnegative(),
+    monthlyClassifierCap: z.number().int().nonnegative().nullable(),
+    capReached: z.boolean(),
+  }),
+});
+
+type AnalyticsResponse = z.infer<typeof AnalyticsResponseSchema>;
+
+function QuotaUsageIndicator() {
+  const { data, loading, error } = useAdminFetch<AnalyticsResponse>(
+    "/api/v1/admin/proactive/analytics",
+    { schema: AnalyticsResponseSchema },
+  );
+
+  if (loading || error || !data) return null;
+  const { classifyCountThisMonth, monthlyClassifierCap, capReached } = data.quota;
+  if (monthlyClassifierCap === null) return null;
+
+  const pct =
+    monthlyClassifierCap === 0
+      ? 100
+      : Math.min(
+          100,
+          Math.round((classifyCountThisMonth / monthlyClassifierCap) * 100),
+        );
+  const yellow = pct >= 80 && !capReached;
+  const red = capReached;
+
+  const barColor = red
+    ? "bg-destructive"
+    : yellow
+      ? "bg-yellow-500"
+      : "bg-muted-foreground/40";
+  const labelColor = red
+    ? "text-destructive"
+    : yellow
+      ? "text-yellow-700 dark:text-yellow-500"
+      : "text-muted-foreground";
+
+  return (
+    <div className="space-y-1.5" aria-live="polite">
+      <div className="h-1.5 w-full max-w-[260px] overflow-hidden rounded-full bg-muted">
+        <div
+          className={`h-full rounded-full transition-all ${barColor}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <p className={`text-[11px] ${labelColor}`}>
+        {classifyCountThisMonth.toLocaleString()} /{" "}
+        {monthlyClassifierCap.toLocaleString()} classifies this month ({pct}%)
+        {red && " — cap reached; proactive will resume next month"}
+        {yellow && " — approaching cap"}
+      </p>
     </div>
   );
 }

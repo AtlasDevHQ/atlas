@@ -1657,6 +1657,45 @@ export const dashboardCards = pgTable(
   ],
 );
 
+// 0074 — Per-user dashboard drafts (#2364, PRD #2362). Composite PK
+// `(user_id, dashboard_id)` enforces "one in-flight draft per editor
+// per dashboard"; opening the chat drawer in a new tab UPSERTs onto
+// the same row. ON DELETE CASCADE on dashboard_id mirrors
+// `dashboard_cards` — a deleted dashboard takes its drafts with it.
+// Org scope lives on the parent dashboard; this table inherits it via
+// the FK + the route-layer scope check.
+//
+// Intentionally OUT of the global content-mode publish system:
+// per-user drafts are private to the editor and publish individually
+// when the user clicks Publish on THIS dashboard, not through the
+// workspace-wide `/api/v1/admin/publish` transaction.
+export const dashboardUserDrafts = pgTable(
+  "dashboard_user_drafts",
+  {
+    userId: text("user_id").notNull(),
+    dashboardId: uuid("dashboard_id").notNull().references(() => dashboards.id, { onDelete: "cascade" }),
+    // Full DashboardSnapshot — title/description/cards array — see
+    // `lib/dashboard-versioning.ts`. Stored as a snapshot rather than
+    // mutating `dashboard_cards` so the published view stays stable
+    // for viewers until the user explicitly publishes.
+    draft: jsonb("draft").notNull(),
+    // Snapshot of published AT FORK TIME. Refreshed by `rebase`. Lets
+    // `publishDraftMerge` + `rebaseDraftSnapshot` do a true three-way
+    // merge without falling back to "treat current published as
+    // baseline" (which would silently overwrite a teammate's edit).
+    baseline: jsonb("baseline").notNull(),
+    // Moment of fork from published. Compared to dashboards.updated_at
+    // on rebase to detect "your baseline has changed" (user story 13).
+    publishedBaselineAt: timestamp("published_baseline_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.dashboardId] }),
+    index("idx_dashboard_user_drafts_dashboard").on(t.dashboardId),
+  ],
+);
+
 export const sandboxCredentials = pgTable(
   "sandbox_credentials",
   {

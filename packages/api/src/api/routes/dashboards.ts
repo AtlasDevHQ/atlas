@@ -41,6 +41,15 @@ import {
   type SharedDashboardFailReason,
 } from "@atlas/api/lib/dashboards";
 import { CHART_TYPES } from "@atlas/api/lib/dashboard-types";
+import {
+  isDashboardDraftsEnabled,
+  forkOrLoadDraft,
+  loadDraft,
+  discardDraft,
+  publishDraft,
+  rebaseDraft,
+  materializeDraftView,
+} from "@atlas/api/lib/dashboard-versioning";
 import { SHARE_MODES } from "@useatlas/types/share";
 import { ErrorSchema, parsePagination } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -294,14 +303,103 @@ const getDashboardRoute = createRoute({
   path: "/{id}",
   tags: ["Dashboards"],
   summary: "Get dashboard with cards",
-  description: "Returns a dashboard with all its cards. Requires admin role.",
-  request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
+  description:
+    "Returns a dashboard with all its cards. Requires admin role. Pass `?view=draft` to overlay the caller's per-user draft (#2364) when `ATLAS_DASHBOARD_DRAFTS_ENABLED=true`; the published view is returned otherwise.",
+  request: {
+    params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }),
+    query: z.object({
+      view: z.enum(["published", "draft"]).optional().openapi({
+        param: { name: "view", in: "query" },
+        description: "`draft` overlays the current user's draft (flag-gated); `published` (default) returns the live published dashboard.",
+      }),
+    }),
+  },
   responses: {
     200: { description: "Dashboard with cards", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Not found", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Draft routes (#2364) — per-user dashboard drafts
+// ---------------------------------------------------------------------------
+
+const getDraftRoute = createRoute({
+  method: "get",
+  path: "/{id}/draft",
+  tags: ["Dashboards", "Drafts"],
+  summary: "Get (or fork) the caller's draft for a dashboard",
+  description:
+    "Returns the current user's draft for this dashboard, forking from published on first call. Requires admin role + `ATLAS_DASHBOARD_DRAFTS_ENABLED=true` (returns 503 when the feature flag is off).",
+  request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
+  responses: {
+    200: { description: "Draft snapshot + materialized DashboardWithCards", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    404: { description: "Dashboard not found", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Drafts feature flag disabled", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const publishDraftRoute = createRoute({
+  method: "post",
+  path: "/{id}/draft/publish",
+  tags: ["Dashboards", "Drafts"],
+  summary: "Publish the caller's draft to the live dashboard",
+  description:
+    "Diff-merges the caller's draft into the live dashboard in a single transaction. Returns 409 when a teammate has published since the draft was forked (with `reason: \"stale_baseline\"`) or when both sides edited the same card (with `reason: \"conflict\"`).",
+  request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
+  responses: {
+    200: { description: "Published — number of merge ops applied", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    404: { description: "Dashboard or draft not found", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Stale baseline or merge conflict", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Drafts feature flag disabled", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const discardDraftRoute = createRoute({
+  method: "post",
+  path: "/{id}/draft/discard",
+  tags: ["Dashboards", "Drafts"],
+  summary: "Discard the caller's draft",
+  description: "Idempotently drops the caller's draft for this dashboard. No-op if no draft exists.",
+  request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
+  responses: {
+    204: { description: "Draft discarded (or already absent)" },
+    400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    503: { description: "Drafts feature flag disabled", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const rebaseDraftRoute = createRoute({
+  method: "post",
+  path: "/{id}/draft/rebase",
+  tags: ["Dashboards", "Drafts"],
+  summary: "Rebase the caller's draft onto the latest published baseline",
+  description:
+    "Fast-forwards the draft onto the latest published row when there are no conflicts; returns 409 with the conflict set when both sides edited the same card.",
+  request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
+  responses: {
+    200: { description: "Rebased draft", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    404: { description: "Dashboard or draft not found", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Rebase conflict", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Drafts feature flag disabled", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -713,7 +811,7 @@ authed.openapi(
 authed.openapi(getDashboardRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
-    const { orgId } = yield* AuthContext;
+    const { orgId, user } = yield* AuthContext;
     const { id } = c.req.valid("param");
     if (!UUID_RE.test(id)) {
       return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
@@ -724,8 +822,229 @@ authed.openapi(getDashboardRoute, async (c) => {
       const fail = crudFailResponse(result.reason, requestId);
       return c.json(fail.body, fail.status);
     }
+
+    // #2364 — `?view=draft` overlays the caller's draft when the flag
+    // is on AND a draft exists. Viewers (no user, anonymous shares)
+    // always see the published row even when ?view=draft is passed —
+    // PRD user story 11 ("viewers see published").
+    const view = c.req.valid("query").view;
+    if (view === "draft" && isDashboardDraftsEnabled() && user?.id) {
+      const draft = yield* Effect.promise(() => loadDraft(user.id, id));
+      if (draft) {
+        return c.json(materializeDraftView(result.data, draft.snapshot), 200);
+      }
+    }
     return c.json(result.data, 200);
   }), { label: "get dashboard" });
+});
+
+// ---------------------------------------------------------------------------
+// Draft routes (#2364) — per-user dashboard drafts
+// ---------------------------------------------------------------------------
+
+function draftsFlagOffResponse() {
+  return {
+    body: {
+      error: "feature_disabled",
+      message:
+        "Per-user dashboard drafts are not enabled. Set ATLAS_DASHBOARD_DRAFTS_ENABLED=true on the API to enable.",
+    },
+    status: 503 as const,
+  };
+}
+
+authed.openapi(getDraftRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId, user } = yield* AuthContext;
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
+    }
+    if (!isDashboardDraftsEnabled()) {
+      const fail = draftsFlagOffResponse();
+      return c.json(fail.body, fail.status);
+    }
+    if (!user?.id) {
+      return c.json({ error: "auth_required", message: "Drafts require an authenticated user." }, 401);
+    }
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
+    if (!dash.ok) {
+      const fail = crudFailResponse(dash.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
+    const draftRow = yield* Effect.promise(() => forkOrLoadDraft(user.id, dash.data));
+    if (!draftRow) {
+      return c.json(
+        { error: "internal_error", message: "Could not load or create a draft.", requestId },
+        500,
+      );
+    }
+    return c.json(
+      {
+        draft: {
+          userId: draftRow.userId,
+          dashboardId: draftRow.dashboardId,
+          snapshot: draftRow.snapshot,
+          publishedBaselineAt: draftRow.publishedBaselineAt,
+          updatedAt: draftRow.updatedAt,
+        },
+        view: materializeDraftView(dash.data, draftRow.snapshot),
+      },
+      200,
+    );
+  }), { label: "get draft" });
+});
+
+authed.openapi(publishDraftRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId, user } = yield* AuthContext;
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
+    }
+    if (!isDashboardDraftsEnabled()) {
+      const fail = draftsFlagOffResponse();
+      return c.json(fail.body, fail.status);
+    }
+    if (!user?.id) {
+      return c.json({ error: "auth_required", message: "Drafts require an authenticated user." }, 401);
+    }
+    const result = yield* Effect.promise(() =>
+      publishDraft({
+        userId: user.id,
+        dashboardId: id,
+        orgId,
+        loadDashboardForOrg: async (dId, oId) => {
+          const r = await getDashboard(dId, { orgId: oId ?? undefined });
+          return r.ok ? r.data : null;
+        },
+      }),
+    );
+    if (result.ok) {
+      return c.json({ ok: true, opsApplied: result.opsApplied }, 200);
+    }
+    if (result.reason === "no_db") {
+      return c.json(
+        { error: "not_available", message: "Dashboards require an internal database." },
+        404,
+      );
+    }
+    if (result.reason === "no_draft") {
+      return c.json({ error: "not_found", message: "No draft to publish." }, 404);
+    }
+    if (result.reason === "dashboard_missing") {
+      return c.json({ error: "not_found", message: "Dashboard not found." }, 404);
+    }
+    if (result.reason === "stale_baseline") {
+      return c.json(
+        {
+          error: "stale_baseline",
+          message: "Published has changed since your draft was forked. Rebase before publishing.",
+          requestId,
+        },
+        409,
+      );
+    }
+    if (result.reason === "conflict") {
+      return c.json(
+        {
+          error: "conflict",
+          message: "Publish conflicts with concurrent edits.",
+          conflicts: result.conflicts,
+          requestId,
+        },
+        409,
+      );
+    }
+    return c.json(
+      { error: "internal_error", message: "Publish failed.", requestId },
+      500,
+    );
+  }), { label: "publish draft" });
+});
+
+authed.openapi(discardDraftRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId: _requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
+    }
+    if (!isDashboardDraftsEnabled()) {
+      const fail = draftsFlagOffResponse();
+      return c.json(fail.body, fail.status);
+    }
+    if (!user?.id) {
+      return c.json({ error: "auth_required", message: "Drafts require an authenticated user." }, 401);
+    }
+    yield* Effect.promise(() => discardDraft(user.id, id));
+    return c.body(null, 204);
+  }), { label: "discard draft" });
+});
+
+authed.openapi(rebaseDraftRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId, user } = yield* AuthContext;
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
+    }
+    if (!isDashboardDraftsEnabled()) {
+      const fail = draftsFlagOffResponse();
+      return c.json(fail.body, fail.status);
+    }
+    if (!user?.id) {
+      return c.json({ error: "auth_required", message: "Drafts require an authenticated user." }, 401);
+    }
+    const result = yield* Effect.promise(() =>
+      rebaseDraft({
+        userId: user.id,
+        dashboardId: id,
+        orgId,
+        loadDashboardForOrg: async (dId, oId) => {
+          const r = await getDashboard(dId, { orgId: oId ?? undefined });
+          return r.ok ? r.data : null;
+        },
+      }),
+    );
+    if (result.ok) {
+      return c.json(
+        { ok: true, snapshot: result.snapshot, publishedBaselineAt: result.newBaselineAt },
+        200,
+      );
+    }
+    if (result.reason === "no_db") {
+      return c.json(
+        { error: "not_available", message: "Dashboards require an internal database." },
+        404,
+      );
+    }
+    if (result.reason === "no_draft") {
+      return c.json({ error: "not_found", message: "No draft to rebase." }, 404);
+    }
+    if (result.reason === "dashboard_missing") {
+      return c.json({ error: "not_found", message: "Dashboard not found." }, 404);
+    }
+    if (result.reason === "conflict") {
+      return c.json(
+        {
+          error: "conflict",
+          message: "Rebase conflict — your draft and the latest published diverge.",
+          conflicts: result.conflicts,
+          requestId,
+        },
+        409,
+      );
+    }
+    return c.json(
+      { error: "internal_error", message: "Rebase failed.", requestId },
+      500,
+    );
+  }), { label: "rebase draft" });
 });
 
 // ---------------------------------------------------------------------------

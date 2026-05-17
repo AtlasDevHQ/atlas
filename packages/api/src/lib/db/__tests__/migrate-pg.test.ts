@@ -3424,4 +3424,117 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(names).toContain("idx_proactive_pauses_lookup");
     expect(names).toContain("idx_proactive_pauses_user");
   }, PG_TEST_TIMEOUT_MS);
+
+  // ─────────────────────────────────────────────────────────────────────
+  // 0079 — dashboard_user_drafts (#2364)
+  //
+  // Per-user drafts off a published baseline (PRD #2362). Three real-PG
+  // assertions matter:
+  //   1. Column shape — user_id text, dashboard_id uuid, draft + baseline
+  //      jsonb, published_baseline_at timestamptz, all NOT NULL.
+  //   2. Composite PK on (user_id, dashboard_id) — second insert with
+  //      the same pair UPSERTs onto the existing row (acceptance:
+  //      "two browser tabs by the same user stay on the same draft").
+  //   3. ON DELETE CASCADE — deleting the dashboard takes every editor's
+  //      draft with it (matches dashboard_cards cascade).
+  // ─────────────────────────────────────────────────────────────────────
+
+  it("0079: dashboard_user_drafts column shape — text user_id, uuid dashboard_id, jsonb draft + baseline, NOT NULL (#2364)", async () => {
+    const { rows } = await pool.query<{
+      column_name: string;
+      data_type: string;
+      udt_name: string;
+      is_nullable: string;
+    }>(
+      `SELECT column_name, data_type, udt_name, is_nullable
+         FROM information_schema.columns
+        WHERE table_name = 'dashboard_user_drafts'
+          AND table_schema = current_schema()
+        ORDER BY ordinal_position`,
+    );
+    const byName = new Map(rows.map((r) => [r.column_name, r]));
+    expect(byName.get("user_id")?.udt_name).toBe("text");
+    expect(byName.get("user_id")?.is_nullable).toBe("NO");
+    expect(byName.get("dashboard_id")?.udt_name).toBe("uuid");
+    expect(byName.get("dashboard_id")?.is_nullable).toBe("NO");
+    expect(byName.get("draft")?.udt_name).toBe("jsonb");
+    expect(byName.get("draft")?.is_nullable).toBe("NO");
+    expect(byName.get("baseline")?.udt_name).toBe("jsonb");
+    expect(byName.get("baseline")?.is_nullable).toBe("NO");
+    expect(byName.get("published_baseline_at")?.udt_name).toBe("timestamptz");
+    expect(byName.get("published_baseline_at")?.is_nullable).toBe("NO");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0079: composite PK on (user_id, dashboard_id) — second insert with same pair conflicts (#2364)", async () => {
+    const stamp = Date.now();
+    const orgId = `org-2364-${stamp}`;
+    const dashRows = await pool.query<{ id: string }>(
+      `INSERT INTO dashboards (org_id, owner_id, title) VALUES ($1, 'u-2364', 'Drafts PK test') RETURNING id`,
+      [orgId],
+    );
+    const dashboardId = dashRows.rows[0]?.id as string;
+    const userId = `u-2364-${stamp}`;
+
+    await pool.query(
+      `INSERT INTO dashboard_user_drafts (user_id, dashboard_id, draft, baseline, published_baseline_at)
+       VALUES ($1, $2, $3::jsonb, $4::jsonb, now())`,
+      [userId, dashboardId, JSON.stringify({ cards: [] }), JSON.stringify({ cards: [] })],
+    );
+
+    // Same pair → unique violation 23505.
+    let dupErr: { code?: string } | null = null;
+    try {
+      await pool.query(
+        `INSERT INTO dashboard_user_drafts (user_id, dashboard_id, draft, baseline, published_baseline_at)
+         VALUES ($1, $2, $3::jsonb, $4::jsonb, now())`,
+        [userId, dashboardId, JSON.stringify({ cards: [{}] }), JSON.stringify({ cards: [] })],
+      );
+    } catch (err) {
+      dupErr = err as { code?: string };
+    }
+    expect(dupErr?.code).toBe("23505");
+
+    // Different user, same dashboard → independent row, no conflict.
+    const otherUser = `u-2364-other-${stamp}`;
+    await pool.query(
+      `INSERT INTO dashboard_user_drafts (user_id, dashboard_id, draft, baseline, published_baseline_at)
+       VALUES ($1, $2, $3::jsonb, $4::jsonb, now())`,
+      [otherUser, dashboardId, JSON.stringify({ cards: [] }), JSON.stringify({ cards: [] })],
+    );
+    const { rows: count } = await pool.query<{ c: number }>(
+      `SELECT COUNT(*)::int AS c FROM dashboard_user_drafts WHERE dashboard_id = $1`,
+      [dashboardId],
+    );
+    expect(count[0]?.c).toBe(2);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0079: ON DELETE CASCADE — dropping the parent dashboard drops every editor's draft (#2364)", async () => {
+    const stamp = Date.now();
+    const orgId = `org-2364-cascade-${stamp}`;
+    const dashRows = await pool.query<{ id: string }>(
+      `INSERT INTO dashboards (org_id, owner_id, title) VALUES ($1, 'u-2364', 'Cascade test') RETURNING id`,
+      [orgId],
+    );
+    const dashboardId = dashRows.rows[0]?.id as string;
+    await pool.query(
+      `INSERT INTO dashboard_user_drafts (user_id, dashboard_id, draft, baseline, published_baseline_at)
+       VALUES ($1, $2, '{}'::jsonb, '{}'::jsonb, now()),
+              ($3, $2, '{}'::jsonb, '{}'::jsonb, now())`,
+      [`u-2364-a-${stamp}`, dashboardId, `u-2364-b-${stamp}`],
+    );
+
+    const beforeCount = await pool.query<{ c: number }>(
+      `SELECT COUNT(*)::int AS c FROM dashboard_user_drafts WHERE dashboard_id = $1`,
+      [dashboardId],
+    );
+    expect(beforeCount.rows[0]?.c).toBe(2);
+
+    await pool.query(`DELETE FROM dashboards WHERE id = $1`, [dashboardId]);
+
+    const afterCount = await pool.query<{ c: number }>(
+      `SELECT COUNT(*)::int AS c FROM dashboard_user_drafts WHERE dashboard_id = $1`,
+      [dashboardId],
+    );
+    expect(afterCount.rows[0]?.c).toBe(0);
+  }, PG_TEST_TIMEOUT_MS);
 });

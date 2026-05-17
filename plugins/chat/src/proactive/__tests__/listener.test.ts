@@ -880,3 +880,187 @@ describe("registerProactiveListener — kill switch", () => {
     expect(thread._addReaction).toHaveBeenCalledTimes(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Monthly quota cap (#2301)
+// ---------------------------------------------------------------------------
+
+interface MeterEventRecorded {
+  eventType: string;
+  metadata?: Record<string, unknown>;
+}
+
+describe("registerProactiveListener — monthly quota cap (#2301)", () => {
+  it("short-circuits classification + reaction and emits a capReached meter event when the cap is reached", async () => {
+    const classify = mock(yesLLM);
+    const meterEvents: MeterEventRecorded[] = [];
+    const onMeterEvent = mock(async (evt: MeterEventRecorded) => {
+      meterEvents.push(evt);
+    });
+    const getQuotaStatus = mock(async () => ({
+      monthlyClassifierCap: 50,
+      classifyCountThisMonth: 50,
+      capReached: true,
+    }));
+    const { chat, invokeMessage: invoke } = makeChat();
+    await registerProactiveListener(
+      chat as unknown as Parameters<typeof registerProactiveListener>[0],
+      makeLogger(),
+      {
+        isEnabled: () => true,
+        classify,
+        workspace: baseWorkspace,
+        channelAllowlist: ["C-allowed"],
+        workspaceId: "ws_1",
+        getQuotaStatus,
+        onMeterEvent,
+      },
+    );
+    const thread = makeThread("C-allowed");
+    await invoke(thread, makeMessage());
+
+    expect(getQuotaStatus).toHaveBeenCalledTimes(1);
+    expect(classify).not.toHaveBeenCalled();
+    expect(thread._addReaction).not.toHaveBeenCalled();
+    // One meter event: the capReached marker.
+    expect(meterEvents).toHaveLength(1);
+    expect(meterEvents[0]!.eventType).toBe("classify");
+    expect(meterEvents[0]!.metadata).toMatchObject({
+      capReached: true,
+      skipped: "monthly-quota",
+      classifyCountThisMonth: 50,
+      monthlyClassifierCap: 50,
+    });
+  });
+
+  it("simulates 100 messages on a cap=50 workspace and short-circuits the 51st", async () => {
+    const classify = mock(yesLLM);
+    let count = 0;
+    const cap = 50;
+    // Production-faithful: the quota reader reflects whatever the host
+    // last wrote to `proactive_meter_events`. Bump `count` from inside
+    // the meter callback so the 51st classify actually trips the cap.
+    const getQuotaStatus = mock(async () => ({
+      monthlyClassifierCap: cap,
+      classifyCountThisMonth: count,
+      capReached: count >= cap,
+    }));
+    const meterEvents: MeterEventRecorded[] = [];
+    const onMeterEvent = mock(async (evt: MeterEventRecorded) => {
+      if (evt.eventType === "classify" && evt.metadata?.capReached !== true) {
+        count += 1;
+      }
+      meterEvents.push(evt);
+    });
+
+    const { chat, invokeMessage: invoke } = makeChat();
+    await registerProactiveListener(
+      chat as unknown as Parameters<typeof registerProactiveListener>[0],
+      makeLogger(),
+      {
+        isEnabled: () => true,
+        classify,
+        workspace: baseWorkspace,
+        channelAllowlist: ["C-allowed"],
+        workspaceId: "ws_1",
+        getQuotaStatus,
+        onMeterEvent,
+      },
+    );
+
+    // Drive 100 messages through the listener.
+    for (let i = 0; i < 100; i++) {
+      const thread = makeThread("C-allowed");
+      await invoke(thread, makeMessage({ id: `M-${i}` }));
+    }
+
+    // First 50 should classify; the remaining 50 should short-circuit.
+    expect(classify).toHaveBeenCalledTimes(50);
+    expect(getQuotaStatus).toHaveBeenCalledTimes(100);
+    const capReachedEvents = meterEvents.filter(
+      (e) => e.metadata?.capReached === true,
+    );
+    expect(capReachedEvents.length).toBe(50);
+  });
+
+  it("fails open on getQuotaStatus throw — Atlas keeps answering", async () => {
+    const classify = mock(yesLLM);
+    const getQuotaStatus = mock(async () => {
+      throw new Error("quota read failed");
+    });
+    const { chat, invokeMessage: invoke } = makeChat();
+    const log = makeLogger();
+    await registerProactiveListener(
+      chat as unknown as Parameters<typeof registerProactiveListener>[0],
+      log,
+      {
+        isEnabled: () => true,
+        classify,
+        workspace: baseWorkspace,
+        channelAllowlist: ["C-allowed"],
+        workspaceId: "ws_1",
+        getQuotaStatus,
+      },
+    );
+    const thread = makeThread("C-allowed");
+    await invoke(thread, makeMessage());
+
+    expect(getQuotaStatus).toHaveBeenCalledTimes(1);
+    // Failed-open: classifier still runs, reaction still fires.
+    expect(classify).toHaveBeenCalledTimes(1);
+    expect(thread._addReaction).toHaveBeenCalledTimes(1);
+    expect(log.warn).toHaveBeenCalled();
+  });
+
+  it("proceeds to classifier when capReached=false", async () => {
+    const classify = mock(yesLLM);
+    const getQuotaStatus = mock(async () => ({
+      monthlyClassifierCap: 1000,
+      classifyCountThisMonth: 12,
+      capReached: false,
+    }));
+    const { chat, invokeMessage: invoke } = makeChat();
+    await registerProactiveListener(
+      chat as unknown as Parameters<typeof registerProactiveListener>[0],
+      makeLogger(),
+      {
+        isEnabled: () => true,
+        classify,
+        workspace: baseWorkspace,
+        channelAllowlist: ["C-allowed"],
+        workspaceId: "ws_1",
+        getQuotaStatus,
+      },
+    );
+    const thread = makeThread("C-allowed");
+    await invoke(thread, makeMessage());
+    expect(getQuotaStatus).toHaveBeenCalledTimes(1);
+    expect(classify).toHaveBeenCalledTimes(1);
+    expect(thread._addReaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("is a no-op for quota checks when workspaceId is omitted", async () => {
+    const getQuotaStatus = mock(async () => ({
+      monthlyClassifierCap: 50,
+      classifyCountThisMonth: 50,
+      capReached: true,
+    }));
+    const { chat, invokeMessage: invoke } = makeChat();
+    await registerProactiveListener(
+      chat as unknown as Parameters<typeof registerProactiveListener>[0],
+      makeLogger(),
+      {
+        isEnabled: () => true,
+        classify: yesLLM,
+        workspace: baseWorkspace,
+        channelAllowlist: ["C-allowed"],
+        // No workspaceId — listener should NOT call getQuotaStatus.
+        getQuotaStatus,
+      },
+    );
+    const thread = makeThread("C-allowed");
+    await invoke(thread, makeMessage());
+    expect(getQuotaStatus).not.toHaveBeenCalled();
+    expect(thread._addReaction).toHaveBeenCalledTimes(1);
+  });
+});

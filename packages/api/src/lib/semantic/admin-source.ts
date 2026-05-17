@@ -6,19 +6,14 @@
  * unit-testability. The orchestrators `listAdminEntities` + `getAdminEntity`
  * wire them to filesystem + DB reads.
  *
- * Source rule: the internal DB is the source of truth for the admin API.
- * The per-org disk mirror at `.orgs/<orgId>/entities/` is a derived cache
- * for the agent's `explore` tool (`ls`/`cat`/`grep` over the filesystem),
- * kept in sync by `sync.ts`. The admin orchestrators read the DB only
- * when it's available — disk is the fallback exclusively for pure-YAML
- * self-hosted deployments where no internal DB exists (`hasInternalDB()`
- * returns false). Reading both at once let stale-mirror files outlive
- * renames in the DB and double-list under different display-name casings
- * (e.g. legacy lowercase `apikey.yml` alongside a group-scoped `ApiKey`
- * DB row); the merge dedup-key `(name, group)` doesn't collide across
- * those, so both used to survive. `mergeAdminEntities` is still
- * exercised — when no DB is present the orchestrator passes the disk
- * list through it for shape projection.
+ * Source rule (#2561): the internal DB is canonical for the admin API
+ * when `hasInternalDB() && orgId`. The per-org disk mirror at
+ * `.orgs/<orgId>/entities/` is a derived cache for the agent's `explore`
+ * tool, kept in sync by `sync.ts`; admin surfaces ignore it when the DB
+ * is reachable. Disk is the fallback exclusively for pure-YAML self-
+ * hosted (no internal DB). Both branches route through
+ * `mergeAdminEntities` so the response shape and sort order are
+ * identical regardless of source.
  */
 
 import * as path from "path";
@@ -263,10 +258,17 @@ function diskToAdminSummary(e: EntitySummary): AdminEntitySummary {
 }
 
 /**
- * Combine DB rows + disk entities into a sorted, deduplicated list. Pure —
- * no I/O. Callers pre-filter DB rows via `listEntitiesWithOverlay`
- * (developer mode) or `listEntityRows(..., "published")` (published mode);
- * this helper just merges with DB-shadows-disk on `(name, group)` collision.
+ * Project DB rows and/or disk entities to admin summaries, sort
+ * deterministically, and dedup defensively. Pure — no I/O.
+ *
+ * Post-PR-2561 the orchestrators never pass both lists populated in the
+ * same call — `listAdminEntities` chooses DB-only (DB present) or
+ * disk-only (no DB) and feeds the other list as `[]`. The merge survives
+ * as the shared projection + sort + dedup pipeline so the DB and disk
+ * branches produce identically-shaped output; the dedup pass is
+ * defense-in-depth against duplicate rows within a single source
+ * (e.g. a future migration that breaks the partial-unique index) rather
+ * than the cross-source shadow rule it used to implement.
  *
  * Dedup key is `(summary.name, connectionId)` (#2412). The 0063 partial
  * unique index made `connection_group_id` part of the natural key —

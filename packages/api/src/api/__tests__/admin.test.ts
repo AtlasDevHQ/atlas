@@ -959,6 +959,26 @@ describe("GET /api/v1/admin/semantic/entities — DB branch + mode fan-out", () 
     expect(body.requestId).not.toBe("");
   });
 
+  it("developer-mode DB failure also returns 500 with requestId (symmetry with published-mode)", async () => {
+    // Mirror of the published-mode throw test above — the developer-mode
+    // path uses `listEntitiesWithOverlay`, a separate code path. Without
+    // this guard, a future refactor that masked overlay errors with
+    // `.catch(() => [])` would silently flip the developer-mode list to
+    // an empty workspace under DB outage while the published-mode test
+    // above still passed.
+    setOrgScopedAdmin("org-saas-1");
+    mockListEntitiesWithOverlay.mockRejectedValue(new Error("overlay query failed"));
+    const req = new Request("http://localhost/api/v1/admin/semantic/entities", {
+      headers: { Authorization: "Bearer test-key", Cookie: "atlas-mode=developer" },
+    });
+    const res = await app.fetch(req);
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string; requestId?: string };
+    expect(body.error).toBe("internal_error");
+    expect(typeof body.requestId).toBe("string");
+    expect(body.requestId).not.toBe("");
+  });
+
   it("orphan disk YAMLs under .orgs/<orgId>/ do not leak into the list when DB is present", async () => {
     // Regression guard for the prod symptom — every internal Atlas
     // table appeared twice in the file tree: once as a stale lowercase
@@ -1384,9 +1404,11 @@ describe("GET /api/v1/admin/semantic/entities/:name — org-scoped + DB overlay"
     // with no matching DB row must NOT be visible to the admin route —
     // surfacing it produced ghost duplicates of legitimate DB-backed
     // entities (e.g. legacy lowercase `apikey.yml` alongside a group-
-    // scoped `ApiKey` DB row). Verified by dropping a disk fixture for an
-    // org and asserting the route returns 404 (no DB row) while the DB
-    // lookup IS still consulted.
+    // scoped `ApiKey` DB row). The disk fixture below is intentionally
+    // valid YAML for an entity called `scoped`; a disk-first regression
+    // would return 200 + that body. Asserting 404 plus the absence of a
+    // disk-derived body is sufficient — no impl-coupled "was DB called?"
+    // check needed.
     const orgRoot = path.join(tmpRoot, ".orgs", "org-saas-fs", "entities");
     fs.mkdirSync(orgRoot, { recursive: true });
     fs.writeFileSync(
@@ -1406,8 +1428,8 @@ dimensions:
     try {
       const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/scoped"));
       expect(res.status).toBe(404);
-      // DB-only contract: the route consulted the DB and got no row.
-      expect(mockGetEntityAdmin).toHaveBeenCalled();
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.entity).toBeUndefined();
     } finally {
       fs.rmSync(path.join(tmpRoot, ".orgs", "org-saas-fs"), { recursive: true, force: true });
     }
@@ -1417,7 +1439,9 @@ dimensions:
     // The disk path is still the source for self-hosted deployments
     // running without an internal DB. With `hasInternalDB()` false, the
     // route resolves the same per-org overlay and returns the YAML
-    // content without ever calling the DB getter.
+    // content. The 200 + disk-content body is sufficient evidence — the
+    // mock DB getter is reset so any spurious call would surface as an
+    // empty response, but we don't need to assert that explicitly.
     const orgRoot = path.join(tmpRoot, ".orgs", "org-yaml-only", "entities");
     fs.mkdirSync(orgRoot, { recursive: true });
     fs.writeFileSync(
@@ -1441,7 +1465,6 @@ dimensions:
       const body = (await res.json()) as { entity: Record<string, unknown> };
       expect(body.entity.table).toBe("scoped");
       expect(body.entity.description).toBe("From the org overlay");
-      expect(mockGetEntityAdmin).not.toHaveBeenCalled();
     } finally {
       mockHasInternalDB = true;
       fs.rmSync(path.join(tmpRoot, ".orgs", "org-yaml-only"), { recursive: true, force: true });

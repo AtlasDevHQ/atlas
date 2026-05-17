@@ -657,21 +657,30 @@ export async function reconcileAllOrgs(): Promise<void> {
     // `atlas init` against the internal DB whose entries were never
     // backfilled into `semantic_entities`) live on the mirror forever,
     // surfacing in the admin file tree as ghost duplicates of the real
-    // DB-backed entities. Full rebuild is cheap (atomic writes of
-    // ~10–100 YAMLs per typical org) and serial across orgs, so the DB
-    // pool isn't saturated. Failures are scoped per-org — one bad org
-    // doesn't break the others.
+    // DB-backed entities. Cost is bounded — atomic writes are cheap and
+    // the loop is serial across orgs, so the DB pool isn't saturated.
+    // Failures are scoped per-org — one bad org doesn't break the others.
+    let okOrgs = 0;
+    let failedOrgs = 0;
     for (const { org_id: orgId } of orgs) {
       try {
         const synced = await syncAllEntitiesToDisk(orgId);
         log.info({ orgId, synced }, "Boot reconciliation: rebuilt org directory (GC orphans + write DB rows)");
+        okOrgs++;
       } catch (err) {
+        failedOrgs++;
         log.error(
           { orgId, err: errorMessage(err) },
           "Boot reconciliation failed for org — explore may not work for this org until next restart",
         );
       }
     }
+    log.info(
+      { orgCount: orgs.length, okOrgs, failedOrgs },
+      failedOrgs > 0
+        ? "Boot reconciliation completed with failures — see per-org error logs above"
+        : "Boot reconciliation complete",
+    );
   } catch (err) {
     log.error(
       { err: errorMessage(err) },

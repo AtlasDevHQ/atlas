@@ -434,6 +434,121 @@ describe("ChatEnvPicker chip label collapse (#2408)", () => {
   });
 });
 
+describe("ChatEnvPicker default-member resolution honours group primary", () => {
+  // Pre-fix, `activeMember` fell back to `members[0]` (alphabetical) when
+  // no `activeConnectionId` was set, so a group like
+  // `{apac-prod, eu-prod, us-prod}` with primary `us-prod` would chip
+  // `apac-prod` and route there on the first turn. The fix prefers the
+  // group's `primaryConnectionId` when no explicit selection exists.
+
+  test("chip resolves to the group primary, not members[0], when no active connection is set", () => {
+    const groups: ChatEnvGroup[] = [
+      {
+        id: "g_prod",
+        name: "prod",
+        primaryConnectionId: "us-prod",
+        members: [
+          { connectionId: "apac-prod", dbType: "postgres", description: null },
+          { connectionId: "eu-prod", dbType: "postgres", description: null },
+          { connectionId: "us-prod", dbType: "postgres", description: null },
+        ],
+      },
+    ];
+    const { container } = render(
+      <ChatEnvPicker
+        groups={groups}
+        activeGroupId={null}
+        activeConnectionId={null}
+        activeRoutingMode="pin"
+        onSelect={noop}
+      />,
+    );
+    const label = container.querySelector('[data-testid="chat-env-picker-label"]');
+    expect(label?.textContent).toBe("prod / us-prod");
+  });
+
+  test("falls back to members[0] when no primary is configured", () => {
+    const groups: ChatEnvGroup[] = [
+      {
+        id: "g_prod",
+        name: "prod",
+        primaryConnectionId: null,
+        members: [
+          { connectionId: "apac-prod", dbType: "postgres", description: null },
+          { connectionId: "us-prod", dbType: "postgres", description: null },
+        ],
+      },
+    ];
+    const { container } = render(
+      <ChatEnvPicker
+        groups={groups}
+        activeGroupId={null}
+        activeConnectionId={null}
+        activeRoutingMode="pin"
+        onSelect={noop}
+      />,
+    );
+    const label = container.querySelector('[data-testid="chat-env-picker-label"]');
+    expect(label?.textContent).toBe("prod / apac-prod");
+  });
+
+  test("falls back to members[0] when the named primary isn't in the member list", () => {
+    // The API's dangling-primary guard usually nulls these out, but the
+    // picker should still degrade gracefully if a stale primary survives
+    // (e.g. an SDK consumer that synthesises ChatEnvGroup objects).
+    const groups: ChatEnvGroup[] = [
+      {
+        id: "g_prod",
+        name: "prod",
+        primaryConnectionId: "us-prod-archived",
+        members: [
+          { connectionId: "apac-prod", dbType: "postgres", description: null },
+          { connectionId: "eu-prod", dbType: "postgres", description: null },
+        ],
+      },
+    ];
+    const { container } = render(
+      <ChatEnvPicker
+        groups={groups}
+        activeGroupId={null}
+        activeConnectionId={null}
+        activeRoutingMode="pin"
+        onSelect={noop}
+      />,
+    );
+    const label = container.querySelector('[data-testid="chat-env-picker-label"]');
+    expect(label?.textContent).toBe("prod / apac-prod");
+  });
+
+  test("explicit activeConnectionId still wins over the group primary", () => {
+    // The primary is only a *default*; once the user has picked a member
+    // (or the conversation row carries one), that selection overrides.
+    const groups: ChatEnvGroup[] = [
+      {
+        id: "g_prod",
+        name: "prod",
+        primaryConnectionId: "us-prod",
+        members: [
+          { connectionId: "apac-prod", dbType: "postgres", description: null },
+          { connectionId: "eu-prod", dbType: "postgres", description: null },
+          { connectionId: "us-prod", dbType: "postgres", description: null },
+        ],
+      },
+    ];
+    const { container } = render(
+      <ChatEnvPicker
+        groups={groups}
+        activeGroupId="g_prod"
+        activeConnectionId="eu-prod"
+        activeRoutingMode="pin"
+        onSelect={noop}
+      />,
+    );
+    const label = container.querySelector('[data-testid="chat-env-picker-label"]');
+    expect(label?.textContent).toBe("prod / eu-prod");
+  });
+});
+
 // ── useChatEnvGroups hook ────────────────────────────────────────────
 //
 // `useChatEnvGroups` is the only place the wire `reason` actually

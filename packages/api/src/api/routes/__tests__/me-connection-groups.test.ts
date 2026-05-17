@@ -52,6 +52,7 @@ let dbAvailable = true;
 type GroupRow = {
   group_id: string;
   group_name: string;
+  primary_connection_id: string | null;
   connection_id: string | null;
   db_type: string | null;
   description: string | null;
@@ -140,7 +141,12 @@ function userAuth(
 
 async function getJson(res: Response) {
   return (await res.json()) as {
-    groups: Array<{ id: string; name: string; members: unknown[] }>;
+    groups: Array<{
+      id: string;
+      name: string;
+      primaryConnectionId: string | null;
+      members: Array<{ connectionId: string; dbType: string; description: string | null }>;
+    }>;
     reason: "no_active_org" | "no_internal_db" | null;
   };
 }
@@ -207,6 +213,7 @@ describe("GET /api/v1/me/connection-groups — reason field (#2422)", () => {
       {
         group_id: "g_prod",
         group_name: "prod",
+        primary_connection_id: "us-int",
         connection_id: "us-int",
         db_type: "postgres",
         description: null,
@@ -218,5 +225,124 @@ describe("GET /api/v1/me/connection-groups — reason field (#2422)", () => {
     expect(body.groups).toHaveLength(1);
     expect(body.groups[0]).toMatchObject({ id: "g_prod", name: "prod" });
     expect(body.reason).toBeNull();
+  });
+});
+
+describe("GET /api/v1/me/connection-groups — primaryConnectionId surfacing", () => {
+  // The chat env picker defaults to the group's operator-designated
+  // primary instead of alphabetical-first. Without this field on the
+  // wire the picker can't honor `connection_groups.primary_connection_id`
+  // and a fresh conversation against a group like
+  // `{apac-prod, eu-prod, us-prod}` routes to `apac-prod` no matter
+  // which member the operator picked as primary.
+
+  it("surfaces the group's primary_connection_id so the picker can default to it", async () => {
+    fakeAuth = userAuth();
+    rowsForOrg["org-1"] = [
+      {
+        group_id: "g_prod",
+        group_name: "prod",
+        primary_connection_id: "us-prod",
+        connection_id: "apac-prod",
+        db_type: "postgres",
+        description: "APAC",
+      },
+      {
+        group_id: "g_prod",
+        group_name: "prod",
+        primary_connection_id: "us-prod",
+        connection_id: "eu-prod",
+        db_type: "postgres",
+        description: "EU",
+      },
+      {
+        group_id: "g_prod",
+        group_name: "prod",
+        primary_connection_id: "us-prod",
+        connection_id: "us-prod",
+        db_type: "postgres",
+        description: "US",
+      },
+    ];
+    const res = await meConnectionGroups.request("/", { method: "GET" });
+    expect(res.status).toBe(200);
+    const body = await getJson(res);
+    expect(body.groups).toHaveLength(1);
+    expect(body.groups[0]?.primaryConnectionId).toBe("us-prod");
+    expect(body.groups[0]?.members.map((m) => m.connectionId)).toEqual([
+      "apac-prod",
+      "eu-prod",
+      "us-prod",
+    ]);
+  });
+
+  it("returns primaryConnectionId: null when the group has no primary configured", async () => {
+    fakeAuth = userAuth();
+    rowsForOrg["org-1"] = [
+      {
+        group_id: "g_prod",
+        group_name: "prod",
+        primary_connection_id: null,
+        connection_id: "us-prod",
+        db_type: "postgres",
+        description: null,
+      },
+    ];
+    const res = await meConnectionGroups.request("/", { method: "GET" });
+    const body = await getJson(res);
+    expect(body.groups[0]?.primaryConnectionId).toBeNull();
+  });
+
+  it("nulls out a primary that's no longer in the member list (archived / mismatched)", async () => {
+    // The left join filters out archived connections but
+    // `connection_groups.primary_connection_id` isn't FK-enforced, so a
+    // primary can dangle. Surfacing the dangling pointer would make the
+    // picker pin to a member that isn't visible. Null it out and let
+    // the picker fall through to alphabetical-first.
+    fakeAuth = userAuth();
+    rowsForOrg["org-1"] = [
+      {
+        group_id: "g_prod",
+        group_name: "prod",
+        primary_connection_id: "us-prod-archived",
+        connection_id: "apac-prod",
+        db_type: "postgres",
+        description: null,
+      },
+      {
+        group_id: "g_prod",
+        group_name: "prod",
+        primary_connection_id: "us-prod-archived",
+        connection_id: "eu-prod",
+        db_type: "postgres",
+        description: null,
+      },
+    ];
+    const res = await meConnectionGroups.request("/", { method: "GET" });
+    const body = await getJson(res);
+    expect(body.groups[0]?.primaryConnectionId).toBeNull();
+  });
+
+  it("preserves primaryConnectionId on a group with zero non-archived members (left-join empty)", async () => {
+    // A group whose only member was archived still appears via the
+    // LEFT JOIN with a NULL `connection_id`. The dangling-pointer
+    // logic should null the primary since the row isn't in the
+    // returned member list — same shape as the prior test, but the
+    // member list is empty rather than mismatched.
+    fakeAuth = userAuth();
+    rowsForOrg["org-1"] = [
+      {
+        group_id: "g_empty",
+        group_name: "empty",
+        primary_connection_id: "gone",
+        connection_id: null,
+        db_type: null,
+        description: null,
+      },
+    ];
+    const res = await meConnectionGroups.request("/", { method: "GET" });
+    const body = await getJson(res);
+    expect(body.groups[0]?.members).toEqual([]);
+    expect(body.groups[0]?.primaryConnectionId).toBeNull();
   });
 });

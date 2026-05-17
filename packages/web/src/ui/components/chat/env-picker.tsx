@@ -59,6 +59,13 @@ export interface ChatEnvMember {
 export interface ChatEnvGroup {
   readonly id: string;
   readonly name: string;
+  // Operator-designated default execution target for the group. The
+  // picker uses this as the default member when no `activeConnectionId`
+  // is set; falls back to `members[0]` (alphabetical) only when this
+  // is null/undefined or the named member isn't in the group anymore.
+  // Optional on the type so pre-existing test fixtures don't have to
+  // declare it; the API always populates it (null when unset).
+  readonly primaryConnectionId?: string | null;
   readonly members: ReadonlyArray<ChatEnvMember>;
 }
 
@@ -211,8 +218,18 @@ export function ChatEnvPicker({
     groups.find((g) => g.id === activeGroupId) ??
     groups.find((g) => g.members.some((m) => m.connectionId === activeConnectionId)) ??
     groups[0];
+  // Default-member resolution: explicit selection wins; otherwise prefer
+  // the group's operator-designated primary; otherwise fall back to the
+  // alphabetical first member. Without the middle step a group like
+  // `{apac-prod, eu-prod, us-prod}` with primary `us-prod` would surface
+  // `apac-prod` here and the conversation would route there by default.
+  const primaryMember =
+    activeGroup?.primaryConnectionId
+      ? activeGroup.members.find((m) => m.connectionId === activeGroup.primaryConnectionId)
+      : undefined;
   const activeMember =
     activeGroup?.members.find((m) => m.connectionId === activeConnectionId) ??
+    primaryMember ??
     activeGroup?.members[0];
 
   const mode = effectiveMode(activeRoutingMode);

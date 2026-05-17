@@ -38,6 +38,13 @@ const ConnectionGroupMemberSchema = z.object({
 const ConnectionGroupSchema = z.object({
   id: z.string(),
   name: z.string(),
+  // The group's designated default execution target. `null` when the
+  // operator hasn't set one (or it's been archived). The chat env
+  // picker uses this as the default member rather than
+  // alphabetical-first — without it, a group like
+  // `{apac-prod, eu-prod, us-prod}` would route to `apac-prod` even
+  // when the operator picked `us-prod` as the primary.
+  primaryConnectionId: z.string().nullable(),
   members: z.array(ConnectionGroupMemberSchema),
 });
 
@@ -128,15 +135,17 @@ meConnectionGroups.openapi(listRoute, async (c) => {
     const rows = await internalQuery<{
       group_id: string;
       group_name: string;
+      primary_connection_id: string | null;
       connection_id: string | null;
       db_type: string | null;
       description: string | null;
     }>(
-      `SELECT g.id   AS group_id,
-              g.name AS group_name,
-              c.id   AS connection_id,
-              c.type AS db_type,
-              c.description AS description
+      `SELECT g.id                    AS group_id,
+              g.name                  AS group_name,
+              g.primary_connection_id AS primary_connection_id,
+              c.id                    AS connection_id,
+              c.type                  AS db_type,
+              c.description           AS description
          FROM connection_groups g
          LEFT JOIN connections c
            ON c.group_id = g.id
@@ -152,7 +161,12 @@ meConnectionGroups.openapi(listRoute, async (c) => {
     for (const row of rows) {
       let group = byGroup.get(row.group_id);
       if (!group) {
-        group = { id: row.group_id, name: row.group_name, members: [] };
+        group = {
+          id: row.group_id,
+          name: row.group_name,
+          primaryConnectionId: row.primary_connection_id,
+          members: [],
+        };
         byGroup.set(row.group_id, group);
       }
       if (row.connection_id) {
@@ -161,6 +175,17 @@ meConnectionGroups.openapi(listRoute, async (c) => {
           dbType: row.db_type ?? "unknown",
           description: row.description,
         });
+      }
+    }
+    // Null out a primary that's been archived or doesn't exist — the
+    // picker should fall through to alphabetical-first rather than try
+    // to pin to a member that isn't in the list.
+    for (const group of byGroup.values()) {
+      if (
+        group.primaryConnectionId &&
+        !group.members.some((m) => m.connectionId === group.primaryConnectionId)
+      ) {
+        group.primaryConnectionId = null;
       }
     }
     // `reason: null` covers both "workspace has groups" and the

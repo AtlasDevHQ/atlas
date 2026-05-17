@@ -1360,7 +1360,7 @@ admin.openapi(overviewRoute, async (c) => {
   // entity count. Mirror the entity-list route's 500-with-requestId shape
   // so the operator gets a correlation handle in the response body.
   let entityCount: number;
-  let entityWarnings: string[] = [];
+  let entityWarnings: string[];
   try {
     const entityList = await listAdminEntities({
       orgId: orgId ?? undefined,

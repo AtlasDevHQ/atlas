@@ -229,13 +229,6 @@ describe("GET /api/v1/me/connection-groups — reason field (#2422)", () => {
 });
 
 describe("GET /api/v1/me/connection-groups — primaryConnectionId surfacing", () => {
-  // The chat env picker defaults to the group's operator-designated
-  // primary instead of alphabetical-first. Without this field on the
-  // wire the picker can't honor `connection_groups.primary_connection_id`
-  // and a fresh conversation against a group like
-  // `{apac-prod, eu-prod, us-prod}` routes to `apac-prod` no matter
-  // which member the operator picked as primary.
-
   it("surfaces the group's primary_connection_id so the picker can default to it", async () => {
     fakeAuth = userAuth();
     rowsForOrg["org-1"] = [
@@ -294,11 +287,10 @@ describe("GET /api/v1/me/connection-groups — primaryConnectionId surfacing", (
   });
 
   it("nulls out a primary that's no longer in the member list (archived / mismatched)", async () => {
-    // The left join filters out archived connections but
-    // `connection_groups.primary_connection_id` isn't FK-enforced, so a
-    // primary can dangle. Surfacing the dangling pointer would make the
-    // picker pin to a member that isn't visible. Null it out and let
-    // the picker fall through to alphabetical-first.
+    // The composite FK has ON DELETE SET NULL, but archive isn't
+    // delete — the LEFT JOIN filter `status != 'archived'` is what
+    // strands the primary. Guard nulls it so the picker doesn't pin
+    // to an invisible member.
     fakeAuth = userAuth();
     rowsForOrg["org-1"] = [
       {
@@ -324,11 +316,8 @@ describe("GET /api/v1/me/connection-groups — primaryConnectionId surfacing", (
   });
 
   it("preserves primaryConnectionId on a group with zero non-archived members (left-join empty)", async () => {
-    // A group whose only member was archived still appears via the
-    // LEFT JOIN with a NULL `connection_id`. The dangling-pointer
-    // logic should null the primary since the row isn't in the
-    // returned member list — same shape as the prior test, but the
-    // member list is empty rather than mismatched.
+    // LEFT JOIN yields one row with NULL connection_id when every
+    // member is archived; dangling-primary guard still applies.
     fakeAuth = userAuth();
     rowsForOrg["org-1"] = [
       {

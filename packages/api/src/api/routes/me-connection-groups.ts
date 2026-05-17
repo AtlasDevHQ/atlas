@@ -38,12 +38,7 @@ const ConnectionGroupMemberSchema = z.object({
 const ConnectionGroupSchema = z.object({
   id: z.string(),
   name: z.string(),
-  // The group's designated default execution target. `null` when the
-  // operator hasn't set one (or it's been archived). The chat env
-  // picker uses this as the default member rather than
-  // alphabetical-first — without it, a group like
-  // `{apac-prod, eu-prod, us-prod}` would route to `apac-prod` even
-  // when the operator picked `us-prod` as the primary.
+  // Operator-designated default member; null when unset or archived.
   primaryConnectionId: z.string().nullable(),
   members: z.array(ConnectionGroupMemberSchema),
 });
@@ -177,14 +172,28 @@ meConnectionGroups.openapi(listRoute, async (c) => {
         });
       }
     }
-    // Null out a primary that's been archived or doesn't exist — the
-    // picker should fall through to alphabetical-first rather than try
-    // to pin to a member that isn't in the list.
+    // The composite FK on `(primary_connection_id, org_id)` uses
+    // `ON DELETE SET NULL`, so a deleted member can't dangle here.
+    // But archive isn't delete: the LEFT JOIN filters
+    // `status != 'archived'`, leaving rows where the primary references
+    // an archived member the user can no longer see. Null those out so
+    // the picker doesn't pin to an invisible member, and log it —
+    // archive + stale primary is operator-actionable config drift.
     for (const group of byGroup.values()) {
       if (
         group.primaryConnectionId &&
         !group.members.some((m) => m.connectionId === group.primaryConnectionId)
       ) {
+        log.warn(
+          {
+            requestId,
+            orgId,
+            groupId: group.id,
+            primaryConnectionId: group.primaryConnectionId,
+            memberIds: group.members.map((m) => m.connectionId),
+          },
+          "connection_groups.primary_connection_id points to an archived/missing member — falling back to alphabetical-first",
+        );
         group.primaryConnectionId = null;
       }
     }

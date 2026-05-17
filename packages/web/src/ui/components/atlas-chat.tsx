@@ -22,6 +22,7 @@ import { SuggestionChips } from "./chat/suggestion-chips";
 import { DeveloperChatEmptyState } from "./chat/developer-empty-state";
 import {
   ChatEnvPicker,
+  pickDefaultEnvSeed,
   useChatEnvGroups,
   type ConversationRoutingMode,
 } from "./chat/env-picker";
@@ -183,27 +184,13 @@ export function AtlasChat() {
     getCredentials,
   });
 
-  // Default the per-turn execution target to the active group's primary
-  // when no conversation-level selection exists yet. Without this the
-  // transport sends `connectionId: null` on the first turn of a fresh
-  // conversation, and the backend's routing lookup falls back to
-  // `members[0]` (alphabetical) — so a group like
-  // `{apac-prod, eu-prod, us-prod}` with primary `us-prod` would route
-  // to `apac-prod`. Only seeds when nothing's been picked yet; never
-  // overrides an explicit user selection.
+  // Seed selection only when empty — never override a user pick or a
+  // conversation-restored value.
   useEffect(() => {
-    if (selectedConnectionId !== null) return;
-    if (envGroupsQuery.groups.length === 0) return;
-    const activeGroup = envGroupsQuery.groups[0];
-    if (!activeGroup) return;
-    const primary = activeGroup.primaryConnectionId;
-    const primaryMember = primary
-      ? activeGroup.members.find((m) => m.connectionId === primary)
-      : undefined;
-    const defaultMember = primaryMember ?? activeGroup.members[0];
-    if (!defaultMember) return;
-    setSelectedGroupId(activeGroup.id);
-    setSelectedConnectionId(defaultMember.connectionId);
+    const seed = pickDefaultEnvSeed(envGroupsQuery.groups, selectedConnectionId);
+    if (!seed) return;
+    setSelectedGroupId(seed.groupId);
+    setSelectedConnectionId(seed.connectionId);
   }, [envGroupsQuery.groups, selectedConnectionId]);
 
   const convos = useConversations({

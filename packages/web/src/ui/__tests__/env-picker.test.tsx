@@ -60,6 +60,7 @@ mock.module("@/components/ui/dropdown-menu", () => {
 import { render, renderHook, waitFor, cleanup } from "@testing-library/react";
 import {
   ChatEnvPicker,
+  pickDefaultEnvSeed,
   shouldRenderEnvPicker,
   useChatEnvGroups,
   type ChatEnvGroup,
@@ -77,6 +78,7 @@ describe("ChatEnvPicker visibility predicate (#2408)", () => {
       {
         id: "g_a",
         name: "g_a",
+        primaryConnectionId: null,
         members: [{ connectionId: "a", dbType: "postgres", description: null }],
       },
     ];
@@ -98,6 +100,7 @@ describe("ChatEnvPicker visibility predicate (#2408)", () => {
       {
         id: "g_a",
         name: "g_a",
+        primaryConnectionId: null,
         members: [{ connectionId: "a", dbType: "postgres", description: null }],
       },
     ];
@@ -129,11 +132,13 @@ describe("ChatEnvPicker visibility predicate (#2408)", () => {
       {
         id: "g_a",
         name: "g_a",
+        primaryConnectionId: null,
         members: [{ connectionId: "a", dbType: "postgres", description: null }],
       },
       {
         id: "g_b",
         name: "g_b",
+        primaryConnectionId: null,
         members: [{ connectionId: "b", dbType: "postgres", description: null }],
       },
     ];
@@ -155,6 +160,7 @@ describe("ChatEnvPicker visibility predicate (#2408)", () => {
       {
         id: "g_prod",
         name: "prod",
+        primaryConnectionId: null,
         members: [
           { connectionId: "us-int", dbType: "postgres", description: null },
           { connectionId: "eu-int", dbType: "postgres", description: null },
@@ -181,11 +187,13 @@ describe("ChatEnvPicker singleton-only footer hint (#2408)", () => {
       {
         id: "g_a",
         name: "g_a",
+        primaryConnectionId: null,
         members: [{ connectionId: "a", dbType: "postgres", description: null }],
       },
       {
         id: "g_b",
         name: "g_b",
+        primaryConnectionId: null,
         members: [{ connectionId: "b", dbType: "postgres", description: null }],
       },
     ];
@@ -210,6 +218,7 @@ describe("ChatEnvPicker singleton-only footer hint (#2408)", () => {
       {
         id: "g_prod",
         name: "prod",
+        primaryConnectionId: null,
         members: [
           { connectionId: "us-int", dbType: "postgres", description: null },
           { connectionId: "eu-int", dbType: "postgres", description: null },
@@ -218,6 +227,7 @@ describe("ChatEnvPicker singleton-only footer hint (#2408)", () => {
       {
         id: "g_dev",
         name: "dev",
+        primaryConnectionId: null,
         members: [{ connectionId: "dev-1", dbType: "postgres", description: null }],
       },
     ];
@@ -311,6 +321,7 @@ describe("ChatEnvPicker emptyReason (#2422)", () => {
       {
         id: "g_prod",
         name: "prod",
+        primaryConnectionId: null,
         members: [
           { connectionId: "us-int", dbType: "postgres", description: null },
           { connectionId: "eu-int", dbType: "postgres", description: null },
@@ -348,6 +359,7 @@ describe("ChatEnvPicker chip label collapse (#2408)", () => {
       {
         id: "g_warehouse",
         name: "g_warehouse",
+        primaryConnectionId: null,
         members: [
           { connectionId: "warehouse", dbType: "postgres", description: null },
         ],
@@ -355,6 +367,7 @@ describe("ChatEnvPicker chip label collapse (#2408)", () => {
       {
         id: "g_other",
         name: "g_other",
+        primaryConnectionId: null,
         members: [
           { connectionId: "other", dbType: "postgres", description: null },
         ],
@@ -383,6 +396,7 @@ describe("ChatEnvPicker chip label collapse (#2408)", () => {
       {
         id: "g_warehouse",
         name: "warehouse",
+        primaryConnectionId: null,
         members: [
           { connectionId: "warehouse", dbType: "postgres", description: null },
         ],
@@ -390,6 +404,7 @@ describe("ChatEnvPicker chip label collapse (#2408)", () => {
       {
         id: "g_other",
         name: "other",
+        primaryConnectionId: null,
         members: [
           { connectionId: "other", dbType: "postgres", description: null },
         ],
@@ -413,6 +428,7 @@ describe("ChatEnvPicker chip label collapse (#2408)", () => {
       {
         id: "g_prod",
         name: "prod",
+        primaryConnectionId: null,
         members: [
           { connectionId: "us-int", dbType: "postgres", description: null },
           { connectionId: "eu-int", dbType: "postgres", description: null },
@@ -435,12 +451,6 @@ describe("ChatEnvPicker chip label collapse (#2408)", () => {
 });
 
 describe("ChatEnvPicker default-member resolution honours group primary", () => {
-  // Pre-fix, `activeMember` fell back to `members[0]` (alphabetical) when
-  // no `activeConnectionId` was set, so a group like
-  // `{apac-prod, eu-prod, us-prod}` with primary `us-prod` would chip
-  // `apac-prod` and route there on the first turn. The fix prefers the
-  // group's `primaryConnectionId` when no explicit selection exists.
-
   test("chip resolves to the group primary, not members[0], when no active connection is set", () => {
     const groups: ChatEnvGroup[] = [
       {
@@ -521,8 +531,6 @@ describe("ChatEnvPicker default-member resolution honours group primary", () => 
   });
 
   test("explicit activeConnectionId still wins over the group primary", () => {
-    // The primary is only a *default*; once the user has picked a member
-    // (or the conversation row carries one), that selection overrides.
     const groups: ChatEnvGroup[] = [
       {
         id: "g_prod",
@@ -546,6 +554,88 @@ describe("ChatEnvPicker default-member resolution honours group primary", () => 
     );
     const label = container.querySelector('[data-testid="chat-env-picker-label"]');
     expect(label?.textContent).toBe("prod / eu-prod");
+  });
+});
+
+describe("pickDefaultEnvSeed — atlas-chat first-load seeding", () => {
+  // The picker chip rendering correctly is cosmetic until atlas-chat
+  // actually flips `selectedConnectionId` from null to the primary.
+  // Without this seeding, the transport sends `connectionId: null` on
+  // the first turn and the backend's routing falls through to
+  // alphabetical-first — the exact bug this PR is fixing. These tests
+  // lock the rules behind the auto-seed so a future refactor can't
+  // silently drop it.
+
+  const multiMemberGroup: ChatEnvGroup = {
+    id: "g_prod",
+    name: "prod",
+    primaryConnectionId: "us-prod",
+    members: [
+      { connectionId: "apac-prod", dbType: "postgres", description: null },
+      { connectionId: "eu-prod", dbType: "postgres", description: null },
+      { connectionId: "us-prod", dbType: "postgres", description: null },
+    ],
+  };
+
+  test("seeds from group primary when no selection exists", () => {
+    expect(pickDefaultEnvSeed([multiMemberGroup], null)).toEqual({
+      groupId: "g_prod",
+      connectionId: "us-prod",
+    });
+  });
+
+  test("returns null when an explicit selection already exists", () => {
+    // The guard that protects a user pick from being overwritten on
+    // every refetch. Without it, every `useChatEnvGroups` poll would
+    // stomp on the picker's manual selection.
+    expect(pickDefaultEnvSeed([multiMemberGroup], "eu-prod")).toBeNull();
+  });
+
+  test("falls back to members[0] when primaryConnectionId is null", () => {
+    const noPrimary: ChatEnvGroup = { ...multiMemberGroup, primaryConnectionId: null };
+    expect(pickDefaultEnvSeed([noPrimary], null)).toEqual({
+      groupId: "g_prod",
+      connectionId: "apac-prod",
+    });
+  });
+
+  test("falls back to members[0] when the primary isn't in the member list", () => {
+    const danglingPrimary: ChatEnvGroup = {
+      ...multiMemberGroup,
+      primaryConnectionId: "us-prod-archived",
+    };
+    expect(pickDefaultEnvSeed([danglingPrimary], null)).toEqual({
+      groupId: "g_prod",
+      connectionId: "apac-prod",
+    });
+  });
+
+  test("returns null for an empty groups array", () => {
+    expect(pickDefaultEnvSeed([], null)).toBeNull();
+  });
+
+  test("returns null when the only group has no members (left-join shape with all archived)", () => {
+    const emptyGroup: ChatEnvGroup = {
+      id: "g_empty",
+      name: "empty",
+      primaryConnectionId: null,
+      members: [],
+    };
+    expect(pickDefaultEnvSeed([emptyGroup], null)).toBeNull();
+  });
+
+  test("idempotent: passing the same selection again returns null even if groups is a fresh-reference array", () => {
+    // The atlas-chat effect's dep array is `[groups, selectedConnectionId]`.
+    // Each `useChatEnvGroups` refetch produces a NEW array reference
+    // even when contents are identical, so the effect re-fires. The
+    // `currentSelection !== null` short-circuit is the only thing
+    // keeping an existing pick from being overwritten on every refetch.
+    const firstResult = pickDefaultEnvSeed([multiMemberGroup], null);
+    expect(firstResult).not.toBeNull();
+    const newReferenceSameContents: ChatEnvGroup[] = [{ ...multiMemberGroup }];
+    expect(
+      pickDefaultEnvSeed(newReferenceSameContents, firstResult!.connectionId),
+    ).toBeNull();
   });
 });
 
@@ -752,6 +842,7 @@ describe("ChatEnvPicker transportError (#2504)", () => {
       {
         id: "g_prod",
         name: "prod",
+        primaryConnectionId: null,
         members: [
           { connectionId: "us-int", dbType: "postgres", description: null },
           { connectionId: "eu-int", dbType: "postgres", description: null },
@@ -783,6 +874,7 @@ describe("ChatEnvPicker three-state routing mode (#2518)", () => {
     {
       id: "g_prod",
       name: "prod",
+      primaryConnectionId: null,
       members: [
         { connectionId: "us-int", dbType: "postgres", description: null },
         { connectionId: "eu", dbType: "postgres", description: null },
@@ -938,6 +1030,7 @@ describe("ChatEnvPicker three-state routing mode (#2518)", () => {
       {
         id: "g_only",
         name: "only",
+        primaryConnectionId: null,
         members: [{ connectionId: "only", dbType: "postgres", description: null }],
       },
     ];

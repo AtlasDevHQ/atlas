@@ -59,13 +59,9 @@ export interface ChatEnvMember {
 export interface ChatEnvGroup {
   readonly id: string;
   readonly name: string;
-  // Operator-designated default execution target for the group. The
-  // picker uses this as the default member when no `activeConnectionId`
-  // is set; falls back to `members[0]` (alphabetical) only when this
-  // is null/undefined or the named member isn't in the group anymore.
-  // Optional on the type so pre-existing test fixtures don't have to
-  // declare it; the API always populates it (null when unset).
-  readonly primaryConnectionId?: string | null;
+  // Operator-designated default; picker falls back to members[0] when
+  // null or the named member is absent from `members`.
+  readonly primaryConnectionId: string | null;
   readonly members: ReadonlyArray<ChatEnvMember>;
 }
 
@@ -156,6 +152,31 @@ function isKnownEmptyReason(value: unknown): value is MeConnectionGroupsEmptyRea
 }
 
 /**
+ * What `atlas-chat` should auto-select when no conversation-level
+ * selection exists. Returns null to mean "leave the current selection
+ * alone" so the same call site handles both "nothing to do" and "the
+ * user has already picked" without branching.
+ */
+export interface EnvSeed {
+  readonly groupId: string;
+  readonly connectionId: string;
+}
+
+export function pickDefaultEnvSeed(
+  groups: ReadonlyArray<ChatEnvGroup>,
+  currentSelection: string | null,
+): EnvSeed | null {
+  if (currentSelection !== null) return null;
+  const group = groups[0];
+  if (!group) return null;
+  const member =
+    group.members.find((m) => m.connectionId === group.primaryConnectionId) ??
+    group.members[0];
+  if (!member) return null;
+  return { groupId: group.id, connectionId: member.connectionId };
+}
+
+/**
  * Back-compat default — NULL on the conversation row means "pin", not
  * "auto". Pre-#2518 rows carry a non-null `connection_id` and the
  * safest interpretation is "stay pinned to that member". The default
@@ -218,18 +239,9 @@ export function ChatEnvPicker({
     groups.find((g) => g.id === activeGroupId) ??
     groups.find((g) => g.members.some((m) => m.connectionId === activeConnectionId)) ??
     groups[0];
-  // Default-member resolution: explicit selection wins; otherwise prefer
-  // the group's operator-designated primary; otherwise fall back to the
-  // alphabetical first member. Without the middle step a group like
-  // `{apac-prod, eu-prod, us-prod}` with primary `us-prod` would surface
-  // `apac-prod` here and the conversation would route there by default.
-  const primaryMember =
-    activeGroup?.primaryConnectionId
-      ? activeGroup.members.find((m) => m.connectionId === activeGroup.primaryConnectionId)
-      : undefined;
   const activeMember =
     activeGroup?.members.find((m) => m.connectionId === activeConnectionId) ??
-    primaryMember ??
+    activeGroup?.members.find((m) => m.connectionId === activeGroup.primaryConnectionId) ??
     activeGroup?.members[0];
 
   const mode = effectiveMode(activeRoutingMode);

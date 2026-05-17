@@ -786,3 +786,405 @@ export function createAuthContextTestLayer(
     trustDeviceIdentifier: partial.trustDeviceIdentifier,
   });
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  Enterprise subsystem Tags (#2563 slice 1/11 of #2017)
+// ══════════════════════════════════════════════════════════════════════
+//
+// Sixteen Context.Tags that invert the core → ee dependency. Each Tag
+// defines a minimal contract for an enterprise subsystem that core code
+// currently reaches via dynamic `await import("@atlas/ee/...")`. The
+// no-op default Layer below each Tag returns the "feature disabled"
+// shape so a self-hosted build (no EE) gets correct behavior without any
+// flag checks at call sites.
+//
+// Subsequent slices (#2564–#2572) replace call-site dynamic imports with
+// `yield* TagName` and add the real `Layer.effect` implementation to
+// `ee/src/layers.ts`. Once #2573 (closeout) lands, the only `@atlas/ee`
+// import in core is the single conditional `await import("@atlas/ee/layers")`
+// inside `buildAppLayer()`.
+//
+// Shapes here are deliberately conservative — each Tag exposes just
+// enough surface to gate the corresponding EE feature without committing
+// to a precise return-type vocabulary. Slices 2–10 may widen a shape
+// when they move the first real call site; widening is a non-breaking
+// change for a no-op default that already returns the "feature disabled"
+// sentinel.
+
+// ── ResidencyResolver (#2564) ────────────────────────────────────────
+//
+// Replaces `await import("@atlas/ee/platform/residency")` in
+// `lib/db/connection.ts`. EE resolves an org's home region for
+// per-region pool routing; core's no-op returns `null` (single-region).
+
+export interface ResidencyResolverShape {
+  readonly resolveRegion: (orgId: string) => Promise<string | null>;
+}
+export class ResidencyResolver extends Context.Tag("ResidencyResolver")<
+  ResidencyResolver,
+  ResidencyResolverShape
+>() {}
+export const NoopResidencyResolverLayer: Layer.Layer<ResidencyResolver> =
+  Layer.succeed(ResidencyResolver, {
+    resolveRegion: async () => null,
+  } satisfies ResidencyResolverShape);
+
+// ── ModelRouter (#2565) ──────────────────────────────────────────────
+//
+// Replaces `await import("@atlas/ee/platform/model-routing")` in
+// `lib/agent.ts` + `lib/scheduler/byot-catalog-refresh.ts`. EE resolves
+// per-workspace BYOT model config; core's no-op returns `null` so the
+// agent falls back to env-var-configured providers.
+
+export interface ModelRouterShape {
+  readonly getWorkspaceConfig: (orgId: string) => Promise<unknown | null>;
+}
+export class ModelRouter extends Context.Tag("ModelRouter")<
+  ModelRouter,
+  ModelRouterShape
+>() {}
+export const NoopModelRouterLayer: Layer.Layer<ModelRouter> = Layer.succeed(
+  ModelRouter,
+  {
+    getWorkspaceConfig: async () => null,
+  } satisfies ModelRouterShape,
+);
+
+// ── MaskingPolicy (#2566) ────────────────────────────────────────────
+//
+// Replaces `await import("@atlas/ee/compliance/masking")` in
+// `lib/tools/sql.ts`. EE applies PII masking to result rows per org
+// policy; core's no-op passes rows through unchanged.
+
+export interface MaskingPolicyShape {
+  readonly applyMasking: <T extends Record<string, unknown>>(
+    rows: ReadonlyArray<T>,
+    orgId: string | undefined,
+  ) => Promise<ReadonlyArray<T>>;
+}
+export class MaskingPolicy extends Context.Tag("MaskingPolicy")<
+  MaskingPolicy,
+  MaskingPolicyShape
+>() {}
+export const NoopMaskingPolicyLayer: Layer.Layer<MaskingPolicy> = Layer.succeed(
+  MaskingPolicy,
+  {
+    applyMasking: async (rows) => rows,
+  } satisfies MaskingPolicyShape,
+);
+
+// ── ComplianceReports (#2567) ────────────────────────────────────────
+//
+// Replaces `import { ... } from "@atlas/ee/compliance/reports"` in
+// `api/routes/admin-compliance.ts`. EE generates SOC2/HIPAA reports;
+// core's no-op returns the "feature disabled" sentinel so the admin
+// surface can render the upsell instead of crashing.
+
+export interface ComplianceReportsShape {
+  readonly available: boolean;
+}
+export class ComplianceReports extends Context.Tag("ComplianceReports")<
+  ComplianceReports,
+  ComplianceReportsShape
+>() {}
+export const NoopComplianceReportsLayer: Layer.Layer<ComplianceReports> =
+  Layer.succeed(ComplianceReports, {
+    available: false,
+  } satisfies ComplianceReportsShape);
+
+// ── ApprovalGate (#2568) ─────────────────────────────────────────────
+//
+// Replaces `await import("@atlas/ee/governance/approval")` in
+// `lib/tools/sql.ts` + `api/routes/admin-approval.ts`. EE checks
+// whether a query needs approval and tracks request lifecycle; core's
+// no-op returns `{ required: false }` so all queries pass through.
+
+export interface ApprovalGateShape {
+  readonly checkApprovalRequired: (input: {
+    readonly sql: string;
+    readonly orgId?: string;
+    readonly connectionId: string;
+  }) => Promise<{ readonly required: boolean; readonly rules: ReadonlyArray<string> }>;
+}
+export class ApprovalGate extends Context.Tag("ApprovalGate")<
+  ApprovalGate,
+  ApprovalGateShape
+>() {}
+export const NoopApprovalGateLayer: Layer.Layer<ApprovalGate> = Layer.succeed(
+  ApprovalGate,
+  {
+    checkApprovalRequired: async () => ({ required: false, rules: [] }),
+  } satisfies ApprovalGateShape,
+);
+
+// ── SlaMetrics (#2569) ───────────────────────────────────────────────
+//
+// Replaces `await import("@atlas/ee/sla/index")` in `lib/tools/sql.ts`.
+// EE records per-query latency / success metrics for SLA dashboards;
+// core's no-op drops the metric on the floor.
+
+export interface SlaMetricsShape {
+  readonly recordQueryMetric: (input: {
+    readonly sql: string;
+    readonly orgId?: string;
+    readonly durationMs: number;
+    readonly success: boolean;
+  }) => Promise<void>;
+}
+export class SlaMetrics extends Context.Tag("SlaMetrics")<
+  SlaMetrics,
+  SlaMetricsShape
+>() {}
+export const NoopSlaMetricsLayer: Layer.Layer<SlaMetrics> = Layer.succeed(
+  SlaMetrics,
+  {
+    recordQueryMetric: async () => {},
+  } satisfies SlaMetricsShape,
+);
+
+// ── BackupsManager (#2570) ───────────────────────────────────────────
+//
+// Replaces `await import("@atlas/ee/backups/index")` in
+// `api/routes/platform-backups.ts`. EE orchestrates automated backups;
+// core's no-op reports the feature is unavailable so the admin surface
+// renders the upsell.
+
+export interface BackupsManagerShape {
+  readonly available: boolean;
+}
+export class BackupsManager extends Context.Tag("BackupsManager")<
+  BackupsManager,
+  BackupsManagerShape
+>() {}
+export const NoopBackupsManagerLayer: Layer.Layer<BackupsManager> = Layer.succeed(
+  BackupsManager,
+  {
+    available: false,
+  } satisfies BackupsManagerShape,
+);
+
+// ── AuditRetention (#2571) ───────────────────────────────────────────
+//
+// Replaces `await import("@atlas/ee/audit/retention")` in
+// `api/routes/admin-audit-retention.ts` + `admin-action-retention.ts`.
+// EE manages retention policy, anonymization, and hard-delete; core's
+// no-op returns the "feature disabled" sentinel.
+
+export interface AuditRetentionShape {
+  readonly available: boolean;
+}
+export class AuditRetention extends Context.Tag("AuditRetention")<
+  AuditRetention,
+  AuditRetentionShape
+>() {}
+export const NoopAuditRetentionLayer: Layer.Layer<AuditRetention> = Layer.succeed(
+  AuditRetention,
+  {
+    available: false,
+  } satisfies AuditRetentionShape,
+);
+
+// ── IpAllowlistPolicy (#2572) ────────────────────────────────────────
+//
+// Replaces `await import("@atlas/ee/auth/ip-allowlist")` in
+// `api/routes/middleware.ts` + chat / auth-preamble / admin-auth /
+// admin-ip-allowlist. EE checks client IP against per-org allowlist;
+// core's no-op always allows.
+
+export interface IpAllowlistPolicyShape {
+  readonly checkAllowed: (
+    ip: string,
+    orgId: string,
+  ) => Promise<{ readonly allowed: boolean; readonly reason?: string }>;
+}
+export class IpAllowlistPolicy extends Context.Tag("IpAllowlistPolicy")<
+  IpAllowlistPolicy,
+  IpAllowlistPolicyShape
+>() {}
+export const NoopIpAllowlistPolicyLayer: Layer.Layer<IpAllowlistPolicy> =
+  Layer.succeed(IpAllowlistPolicy, {
+    checkAllowed: async () => ({ allowed: true }),
+  } satisfies IpAllowlistPolicyShape);
+
+// ── SSOPolicy (slice TBD) ────────────────────────────────────────────
+//
+// Replaces `import { ... } from "@atlas/ee/auth/sso"` in
+// `api/routes/admin-sso.ts`. EE manages SSO providers; core's no-op
+// reports the feature unavailable.
+
+export interface SSOPolicyShape {
+  readonly available: boolean;
+}
+export class SSOPolicy extends Context.Tag("SSOPolicy")<
+  SSOPolicy,
+  SSOPolicyShape
+>() {}
+export const NoopSSOPolicyLayer: Layer.Layer<SSOPolicy> = Layer.succeed(
+  SSOPolicy,
+  {
+    available: false,
+  } satisfies SSOPolicyShape,
+);
+
+// ── SCIMProvenance (slice TBD) ───────────────────────────────────────
+//
+// Replaces `import { ... } from "@atlas/ee/auth/scim"` in
+// `api/routes/admin-scim.ts`. EE tracks SCIM-managed user provenance;
+// core's no-op reports nothing is SCIM-managed.
+
+export interface SCIMProvenanceShape {
+  readonly isManaged: (userId: string) => Promise<boolean>;
+}
+export class SCIMProvenance extends Context.Tag("SCIMProvenance")<
+  SCIMProvenance,
+  SCIMProvenanceShape
+>() {}
+export const NoopSCIMProvenanceLayer: Layer.Layer<SCIMProvenance> = Layer.succeed(
+  SCIMProvenance,
+  {
+    isManaged: async () => false,
+  } satisfies SCIMProvenanceShape,
+);
+
+// ── RolesPolicy (slice TBD) ──────────────────────────────────────────
+//
+// Replaces `(await import("@atlas/ee/auth/roles")).checkPermission` in
+// `api/routes/admin-router.ts`. EE resolves user permissions via the
+// `custom_roles` table; core's no-op falls back to `LEGACY_ROLE_PERMISSIONS`
+// which EE already implements in `ee/src/auth/roles.ts` —
+// `RolesPolicy`'s shape will be the typed Permission flag set already
+// hosted in `@atlas/api/lib/auth/permissions`.
+
+export interface RolesPolicyShape {
+  /** True when EE has wired the custom-role surface; false → legacy mapping. */
+  readonly customRolesActive: boolean;
+}
+export class RolesPolicy extends Context.Tag("RolesPolicy")<
+  RolesPolicy,
+  RolesPolicyShape
+>() {}
+export const NoopRolesPolicyLayer: Layer.Layer<RolesPolicy> = Layer.succeed(
+  RolesPolicy,
+  {
+    customRolesActive: false,
+  } satisfies RolesPolicyShape,
+);
+
+// ── Branding (slice TBD) ─────────────────────────────────────────────
+//
+// Replaces `import { ... } from "@atlas/ee/branding/white-label"` in
+// `api/routes/admin-branding.ts` + `public-branding.ts`. EE serves
+// per-workspace white-label config; core's no-op returns `null` so
+// the public surface falls back to Atlas branding.
+
+export interface BrandingShape {
+  readonly getWorkspaceBrandingPublic: (
+    orgId: string,
+  ) => Promise<unknown | null>;
+}
+export class Branding extends Context.Tag("Branding")<
+  Branding,
+  BrandingShape
+>() {}
+export const NoopBrandingLayer: Layer.Layer<Branding> = Layer.succeed(Branding, {
+  getWorkspaceBrandingPublic: async () => null,
+} satisfies BrandingShape);
+
+// ── Domains (slice TBD) ──────────────────────────────────────────────
+//
+// Replaces `await import("@atlas/ee/platform/domains")` in
+// `api/routes/shared-domains.ts` + `admin-domains.ts`. EE manages
+// custom-domain mappings; core's no-op reports none configured.
+
+export interface DomainsShape {
+  readonly available: boolean;
+}
+export class Domains extends Context.Tag("Domains")<
+  Domains,
+  DomainsShape
+>() {}
+export const NoopDomainsLayer: Layer.Layer<Domains> = Layer.succeed(Domains, {
+  available: false,
+} satisfies DomainsShape);
+
+// ── ProactiveGate (slice TBD) ────────────────────────────────────────
+//
+// Replaces `requireEnterpriseEffect("proactive")` + the
+// `admin-proactive-*` route guards. EE gates the proactive chat
+// surface; core's no-op reports unavailable so the feature is hidden.
+
+export interface ProactiveGateShape {
+  readonly enabled: boolean;
+}
+export class ProactiveGate extends Context.Tag("ProactiveGate")<
+  ProactiveGate,
+  ProactiveGateShape
+>() {}
+export const NoopProactiveGateLayer: Layer.Layer<ProactiveGate> = Layer.succeed(
+  ProactiveGate,
+  {
+    enabled: false,
+  } satisfies ProactiveGateShape,
+);
+
+// ── DeployModeResolver (slice TBD) ───────────────────────────────────
+//
+// Replaces `await import("@atlas/ee/deploy-mode")` in `lib/config.ts`.
+// EE resolves `"saas" | "self-hosted"` from env + internal-DB presence;
+// core's no-op always reports `"self-hosted"` (the correct answer when
+// EE is not loaded — `"saas"` mode requires enterprise).
+
+export interface DeployModeResolverShape {
+  readonly resolve: () => "saas" | "self-hosted";
+}
+export class DeployModeResolver extends Context.Tag("DeployModeResolver")<
+  DeployModeResolver,
+  DeployModeResolverShape
+>() {}
+export const NoopDeployModeResolverLayer: Layer.Layer<DeployModeResolver> =
+  Layer.succeed(DeployModeResolver, {
+    resolve: () => "self-hosted",
+  } satisfies DeployModeResolverShape);
+
+// ── Aggregate no-op default Layer ────────────────────────────────────
+//
+// Merged into `buildAppLayer()` so every enterprise Tag has a default
+// implementation. When EE is enabled, `EELayer` from `@atlas/ee/layers`
+// is merged on top — later Layers override earlier ones for the same
+// Tag, so EE's `Layer.effect` impls win.
+
+export const NoopEnterpriseDefaultsLayer: Layer.Layer<
+  | ResidencyResolver
+  | ModelRouter
+  | MaskingPolicy
+  | ComplianceReports
+  | ApprovalGate
+  | SlaMetrics
+  | BackupsManager
+  | AuditRetention
+  | IpAllowlistPolicy
+  | SSOPolicy
+  | SCIMProvenance
+  | RolesPolicy
+  | Branding
+  | Domains
+  | ProactiveGate
+  | DeployModeResolver
+> = Layer.mergeAll(
+  NoopResidencyResolverLayer,
+  NoopModelRouterLayer,
+  NoopMaskingPolicyLayer,
+  NoopComplianceReportsLayer,
+  NoopApprovalGateLayer,
+  NoopSlaMetricsLayer,
+  NoopBackupsManagerLayer,
+  NoopAuditRetentionLayer,
+  NoopIpAllowlistPolicyLayer,
+  NoopSSOPolicyLayer,
+  NoopSCIMProvenanceLayer,
+  NoopRolesPolicyLayer,
+  NoopBrandingLayer,
+  NoopDomainsLayer,
+  NoopProactiveGateLayer,
+  NoopDeployModeResolverLayer,
+);

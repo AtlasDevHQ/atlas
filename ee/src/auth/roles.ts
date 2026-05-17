@@ -21,6 +21,20 @@ import {
 import { createLogger } from "@atlas/api/lib/logger";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { ATLAS_ROLES } from "@atlas/api/lib/auth/types";
+import {
+  PERMISSIONS,
+  isValidPermission,
+  type Permission,
+} from "@atlas/api/lib/auth/permissions";
+
+/**
+ * Re-export the canonical definitions from core (#2563 slice 1/11 of #2017).
+ * EE keeps the named exports so existing `import { Permission } from
+ * "@atlas/ee/auth/roles"` call sites continue to work through slice 11;
+ * new code should import from `@atlas/api/lib/auth/permissions` directly.
+ */
+export { PERMISSIONS, isValidPermission };
+export type { Permission };
 
 /**
  * Lower-cased set of every built-in Atlas role name. Kept in lockstep with
@@ -38,26 +52,6 @@ const RESERVED_ATLAS_ROLE_NAMES: ReadonlySet<string> = new Set(
 );
 
 const log = createLogger("ee:roles");
-
-// ── Permission flags ─────────────────────────────────────────────
-
-export const PERMISSIONS = [
-  "query",
-  "query:raw_data",
-  "admin:users",
-  "admin:connections",
-  "admin:settings",
-  "admin:audit",
-  "admin:roles",
-  "admin:semantic",
-] as const;
-
-export type Permission = (typeof PERMISSIONS)[number];
-
-/** Validate that a string is a known permission flag. */
-export function isValidPermission(p: string): p is Permission {
-  return (PERMISSIONS as readonly string[]).includes(p);
-}
 
 // ── Built-in role definitions ────────────────────────────────────
 

@@ -145,6 +145,32 @@ export class ApprovalRequiredError extends Data.TaggedError("ApprovalRequiredErr
   readonly rules: ReadonlyArray<string>;
 }> {}
 
+/**
+ * Enterprise-required guard error. Thrown by `requireEnterprise()` and
+ * `Effect.fail`'d by `requireEnterpriseEffect()` when an enterprise feature
+ * is accessed without the flag enabled.
+ *
+ * Hosted here (rather than in `@atlas/ee/index`) so core route handlers
+ * and effect bridges can `instanceof`-check without importing from EE —
+ * see #2563 (slice 1/11 of #2017, inverting the core → ee dependency).
+ * EE re-exports this class from `ee/src/index.ts` for back-compat through
+ * slice 11.
+ *
+ * **Invariant**: the `_tag` (and therefore the inherited `Error.name`) must
+ * stay `"EnterpriseError"` — `lib/effect/hono.ts:isEnterpriseError` duck-types
+ * on `err.name === "EnterpriseError"` to map this to HTTP 403 without taking
+ * a hard import on the class. The shared `hono.test.ts` coupling test
+ * guards this invariant.
+ */
+export class EnterpriseError extends Data.TaggedError("EnterpriseError")<{
+  message: string;
+  code: "enterprise_required";
+}> {
+  constructor(message = "Enterprise features are not enabled") {
+    super({ message, code: "enterprise_required" });
+  }
+}
+
 // ── Plugin ──────────────────────────────────────────────────────────
 
 /** Plugin beforeQuery hook rejected the query. */

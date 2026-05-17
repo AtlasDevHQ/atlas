@@ -32,6 +32,7 @@ import type {
   DashboardCard,
   DashboardWithCards,
 } from "@atlas/api/lib/dashboard-types";
+import type { Message, MessageRole } from "@atlas/api/lib/conversation-types";
 
 const log = createLogger("bound-chat-context");
 
@@ -198,6 +199,110 @@ export async function listSessionsForDashboard(
       "listSessionsForDashboard failed",
     );
     return [];
+  }
+}
+
+/**
+ * Read a single bound conversation's transcript for the History tab (#2368).
+ *
+ * Workspace-wide visibility: any caller with access to the dashboard can
+ * read any past session bound to it — matches the current dashboard ACL.
+ * `getConversation` in `lib/conversations.ts` enforces per-user ownership,
+ * which is the wrong gate here; instead we double-check the binding +
+ * org-scope locally before returning messages.
+ *
+ * Returns `not_found` for any of:
+ *   - conversation row missing
+ *   - conversation row's `bound_dashboard_id` doesn't match `dashboardId`
+ *   - conversation's `org_id` doesn't match `orgId` (and isn't NULL)
+ * — so an attacker can't probe whether a session id exists outside their org.
+ */
+export type SessionTranscriptResult =
+  | {
+      ok: true;
+      data: {
+        conversationId: string;
+        dashboardId: string;
+        userId: string | null;
+        title: string | null;
+        createdAt: string;
+        updatedAt: string;
+        messages: Message[];
+      };
+    }
+  | { ok: false; reason: "no_db" | "not_found" | "error" };
+
+export async function getSessionTranscript(
+  dashboardId: string,
+  conversationId: string,
+  orgId: string | null | undefined,
+): Promise<SessionTranscriptResult> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    // Single-query gate: row must match dashboard binding AND org scope.
+    // Matches `scopeClause`'s NULL-org fallback for legacy / self-hosted
+    // single-tenant rows.
+    const orgClause = orgId ? "AND (org_id = $3 OR org_id IS NULL)" : "";
+    const params: unknown[] = [dashboardId, conversationId];
+    if (orgId) params.push(orgId);
+
+    const convRows = await internalQuery<{
+      id: string;
+      user_id: string | null;
+      title: string | null;
+      created_at: Date | string;
+      updated_at: Date | string;
+    }>(
+      `SELECT id, user_id, title, created_at, updated_at
+         FROM conversations
+        WHERE bound_dashboard_id = $1
+          AND id = $2
+          AND deleted_at IS NULL
+          ${orgClause}
+        LIMIT 1`,
+      params,
+    );
+    if (convRows.length === 0) return { ok: false, reason: "not_found" };
+    const conv = convRows[0]!;
+
+    const msgRows = await internalQuery<{
+      id: string;
+      conversation_id: string;
+      role: string;
+      content: unknown;
+      created_at: Date | string;
+    }>(
+      `SELECT id, conversation_id, role, content, created_at
+         FROM messages
+        WHERE conversation_id = $1
+        ORDER BY created_at ASC`,
+      [conversationId],
+    );
+
+    return {
+      ok: true,
+      data: {
+        conversationId: conv.id,
+        dashboardId,
+        userId: conv.user_id,
+        title: conv.title,
+        createdAt: String(conv.created_at),
+        updatedAt: String(conv.updated_at),
+        messages: msgRows.map((m) => ({
+          id: m.id,
+          conversationId: m.conversation_id,
+          role: m.role as MessageRole,
+          content: m.content,
+          createdAt: String(m.created_at),
+        })),
+      },
+    };
+  } catch (err) {
+    log.error(
+      { err: errorMessage(err), dashboardId, conversationId, orgId },
+      "getSessionTranscript failed",
+    );
+    return { ok: false, reason: "error" };
   }
 }
 

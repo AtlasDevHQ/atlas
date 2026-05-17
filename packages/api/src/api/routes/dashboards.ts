@@ -14,6 +14,10 @@ import { createLogger, hashShareToken } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { verifyGroupBelongsToOrg } from "@atlas/api/lib/conversations";
 import {
+  listSessionsForDashboard,
+  getSessionTranscript,
+} from "@atlas/api/lib/bound-chat-context";
+import {
   createDashboard,
   getDashboard,
   listDashboards,
@@ -548,6 +552,49 @@ const suggestCardsRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Dashboard not found", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const listDashboardSessionsRoute = createRoute({
+  method: "get",
+  path: "/{id}/sessions",
+  tags: ["Dashboards"],
+  summary: "List archived bound chat sessions for a dashboard",
+  description:
+    "Returns past chat sessions bound to this dashboard (one row per drawer-open). Workspace-wide visibility: any user who can view the dashboard sees every session. Used by the bound chat drawer's History tab (#2368).",
+  request: {
+    params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }),
+  },
+  responses: {
+    200: { description: "Archived sessions", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    404: { description: "Dashboard not found", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getDashboardSessionRoute = createRoute({
+  method: "get",
+  path: "/{id}/sessions/{sessionId}",
+  tags: ["Dashboards"],
+  summary: "Read a bound chat session transcript",
+  description:
+    "Returns the read-only transcript (messages) for one bound session. Workspace-wide visibility: gated by dashboard ACL + binding match, not per-user ownership. Used by the bound chat drawer's History tab transcript panel (#2368).",
+  request: {
+    params: z.object({
+      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
+      sessionId: z.string().openapi({ param: { name: "sessionId", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
+    }),
+  },
+  responses: {
+    200: { description: "Session transcript", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    400: { description: "Invalid ID format", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    404: { description: "Dashboard or session not found", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -1331,6 +1378,86 @@ authed.openapi(suggestCardsRoute, async (c) => {
 
     return c.json({ suggestions }, 200);
   }), { label: "suggest cards" });
+});
+
+// ---------------------------------------------------------------------------
+// GET /:id/sessions — list archived bound chat sessions for the dashboard
+// (#2368 — History tab in the bound chat drawer)
+// ---------------------------------------------------------------------------
+
+authed.openapi(listDashboardSessionsRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId } = yield* AuthContext;
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
+    }
+
+    // Org-scoped dashboard existence check — anyone in the workspace who
+    // can read the dashboard sees the same sessions list (matches current
+    // dashboard ACL per PRD #2362, user stories 21/22). Failing the
+    // dashboard lookup here doubles as the cross-org safety net.
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
+    if (!dash.ok) {
+      const fail = crudFailResponse(dash.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
+
+    const sessions = yield* Effect.promise(() =>
+      listSessionsForDashboard(id, orgId),
+    );
+    return c.json({ sessions }, 200);
+  }), { label: "list dashboard sessions" });
+});
+
+// ---------------------------------------------------------------------------
+// GET /:id/sessions/:sessionId — read one bound chat session transcript
+// (#2368 — read-only transcript panel)
+// ---------------------------------------------------------------------------
+
+authed.openapi(getDashboardSessionRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId } = yield* AuthContext;
+    const { id, sessionId } = c.req.valid("param");
+    if (!UUID_RE.test(id) || !UUID_RE.test(sessionId)) {
+      return c.json({ error: "invalid_request", message: "Invalid ID format." }, 400);
+    }
+
+    // First gate: the dashboard must belong to caller's org. Without this,
+    // a 404 from getSessionTranscript would still leak the org-id mapping
+    // of a guessed dashboardId (a cross-org session lookup returns
+    // "not_found" too).
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
+    if (!dash.ok) {
+      const fail = crudFailResponse(dash.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
+
+    // Second gate: the conversation must be bound to this dashboard AND
+    // in the same org. `getSessionTranscript` enforces both — workspace-
+    // wide read (no per-user ownership check) is intentional and matches
+    // the dashboard ACL.
+    const result = yield* Effect.promise(() =>
+      getSessionTranscript(id, sessionId, orgId),
+    );
+    if (!result.ok) {
+      switch (result.reason) {
+        case "no_db":
+          return c.json({ error: "not_available", message: "Conversation history is not available." }, 404);
+        case "not_found":
+          return c.json({ error: "not_found", message: "Session not found." }, 404);
+        case "error":
+          return c.json({ error: "internal_error", message: "Could not load session transcript. Please retry.", requestId }, 500);
+        default: {
+          const _exhaustive: never = result.reason;
+          return c.json({ error: "internal_error", message: `Unhandled: ${_exhaustive}`, requestId }, 500);
+        }
+      }
+    }
+    return c.json(result.data, 200);
+  }), { label: "get dashboard session transcript" });
 });
 
 // Mount authenticated routes

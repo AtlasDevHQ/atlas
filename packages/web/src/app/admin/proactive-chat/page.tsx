@@ -1,0 +1,666 @@
+"use client";
+
+/**
+ * Admin → Proactive Chat (#2294, PRD #2291).
+ *
+ * Workspace-level opt-in surface for the proactive-chat feature shipped
+ * by #2292. Replaces the env-var allowlist with persisted config:
+ *
+ *   1. Master toggle — disabled by default; nothing happens until an
+ *      admin flips it on.
+ *   2. Sensitivity — how often the agent should chime in (cautious /
+ *      balanced / eager).
+ *   3. Classifier mode — `regex-prefilter` runs the regex layer first
+ *      and only falls back to the LLM classifier when the regex layer
+ *      is uncertain (cheap); `classify-all` always runs the LLM
+ *      (expensive — only sensible with the announcement-channel scope
+ *      or a small workspace).
+ *   4. Announcement channel — optional. Future: a channel picker
+ *      sourced from the chat-platform API. Free-form for this slice.
+ *   5. Monthly classifier cap — optional spend safety net.
+ *   6. Channel overrides — per-channel allow/deny, with optional
+ *      per-channel sensitivity override.
+ *
+ * The whole page is enterprise-gated. Self-hosted free users see
+ * `<EnterpriseUpsell feature="Proactive Chat" />` instead of the form;
+ * the gate fires when the API returns 403 `enterprise_required`,
+ * routed by `<AdminContentWrapper feature="Proactive Chat">`.
+ */
+
+import { useEffect, useState } from "react";
+import {
+  Bot,
+  Hash,
+  Loader2,
+  Megaphone,
+  Plus,
+  Trash2,
+} from "lucide-react";
+import { z } from "zod";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
+import { ErrorBoundary } from "@/ui/components/error-boundary";
+import {
+  CompactRow,
+  InlineError,
+  SectionHeading,
+  type StatusKind,
+} from "@/ui/components/admin/compact";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
+// ---------------------------------------------------------------------------
+// Wire schemas (must agree with packages/api/src/api/routes/admin-proactive.ts)
+// ---------------------------------------------------------------------------
+
+const SENSITIVITIES = ["cautious", "balanced", "eager"] as const;
+const CLASSIFIER_MODES = ["regex-prefilter", "classify-all"] as const;
+
+type Sensitivity = (typeof SENSITIVITIES)[number];
+type ClassifierMode = (typeof CLASSIFIER_MODES)[number];
+
+const WorkspaceConfigSchema = z.object({
+  workspaceId: z.string(),
+  enabled: z.boolean(),
+  sensitivity: z.enum(SENSITIVITIES),
+  classifierMode: z.enum(CLASSIFIER_MODES),
+  announcementChannelId: z.string().nullable(),
+  monthlyClassifierCap: z.number().int().nonnegative().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+type WorkspaceConfig = z.infer<typeof WorkspaceConfigSchema>;
+
+const ChannelOverrideSchema = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  channelId: z.string(),
+  allow: z.boolean(),
+  sensitivity: z.enum(SENSITIVITIES).nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+type ChannelOverride = z.infer<typeof ChannelOverrideSchema>;
+
+const ChannelsResponseSchema = z
+  .object({ channels: z.array(ChannelOverrideSchema) })
+  .transform((r) => r.channels);
+
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
+
+export default function ProactiveChatPage() {
+  return (
+    <ErrorBoundary>
+      <div className="mx-auto max-w-3xl px-6 py-10">
+        <Hero />
+        <PageBody />
+      </div>
+    </ErrorBoundary>
+  );
+}
+
+function Hero() {
+  return (
+    <header className="mb-10 flex flex-col gap-2">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+        Atlas · Admin
+      </p>
+      <div className="flex items-baseline justify-between gap-6">
+        <h1 className="text-3xl font-semibold tracking-tight">Proactive Chat</h1>
+      </div>
+      <p className="max-w-xl text-sm text-muted-foreground">
+        Decide where Atlas chimes in unprompted. Off by default — every flip
+        emits an audit row.
+      </p>
+    </header>
+  );
+}
+
+function PageBody() {
+  const { data, loading, error, refetch } = useAdminFetch<WorkspaceConfig>(
+    "/api/v1/admin/proactive/workspace",
+    { schema: WorkspaceConfigSchema },
+  );
+
+  return (
+    <AdminContentWrapper
+      loading={loading}
+      error={error}
+      feature="Proactive Chat"
+      onRetry={refetch}
+      loadingMessage="Loading proactive-chat settings..."
+    >
+      {data ? <ConfigForm initial={data} refetchWorkspace={refetch} /> : null}
+    </AdminContentWrapper>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Workspace config form
+// ---------------------------------------------------------------------------
+
+interface ConfigFormProps {
+  initial: WorkspaceConfig;
+  refetchWorkspace: () => void;
+}
+
+function ConfigForm({ initial, refetchWorkspace }: ConfigFormProps) {
+  const [enabled, setEnabled] = useState(initial.enabled);
+  const [sensitivity, setSensitivity] = useState<Sensitivity>(initial.sensitivity);
+  const [classifierMode, setClassifierMode] = useState<ClassifierMode>(
+    initial.classifierMode,
+  );
+  const [announcementChannelId, setAnnouncementChannelId] = useState(
+    initial.announcementChannelId ?? "",
+  );
+  const [monthlyCap, setMonthlyCap] = useState<string>(
+    initial.monthlyClassifierCap === null ? "" : String(initial.monthlyClassifierCap),
+  );
+
+  // Reset form state when the fetched row changes — happens after a refetch
+  // following save or after the master toggle drops into a different shape.
+  useEffect(() => {
+    setEnabled(initial.enabled);
+    setSensitivity(initial.sensitivity);
+    setClassifierMode(initial.classifierMode);
+    setAnnouncementChannelId(initial.announcementChannelId ?? "");
+    setMonthlyCap(
+      initial.monthlyClassifierCap === null
+        ? ""
+        : String(initial.monthlyClassifierCap),
+    );
+  }, [initial]);
+
+  const save = useAdminMutation({
+    path: "/api/v1/admin/proactive/workspace",
+    method: "PUT",
+    invalidates: refetchWorkspace,
+  });
+
+  const monthlyCapNumeric =
+    monthlyCap.trim() === "" ? null : Number(monthlyCap);
+  const monthlyCapInvalid =
+    monthlyCapNumeric !== null &&
+    (!Number.isInteger(monthlyCapNumeric) || monthlyCapNumeric < 0);
+
+  const dirty =
+    enabled !== initial.enabled ||
+    sensitivity !== initial.sensitivity ||
+    classifierMode !== initial.classifierMode ||
+    announcementChannelId !== (initial.announcementChannelId ?? "") ||
+    monthlyCapNumeric !== initial.monthlyClassifierCap;
+
+  async function handleSave() {
+    if (monthlyCapInvalid) return;
+    await save.mutate({
+      body: {
+        enabled,
+        sensitivity,
+        classifierMode,
+        announcementChannelId:
+          announcementChannelId.trim() === "" ? null : announcementChannelId.trim(),
+        monthlyClassifierCap: monthlyCapNumeric,
+      },
+    });
+  }
+
+  return (
+    <div className="space-y-10">
+      <section>
+        <SectionHeading
+          title="Activation"
+          description="Master switch — controls whether Atlas ever speaks up on its own."
+        />
+        <MasterToggleRow enabled={enabled} onToggle={setEnabled} />
+      </section>
+
+      <section>
+        <SectionHeading
+          title="Behavior"
+          description="Workspace defaults applied unless a channel override says otherwise."
+        />
+        <div className="space-y-6">
+          <SensitivityRadio value={sensitivity} onChange={setSensitivity} />
+          <ClassifierModeRadio
+            value={classifierMode}
+            onChange={setClassifierMode}
+          />
+          <AnnouncementChannelField
+            value={announcementChannelId}
+            onChange={setAnnouncementChannelId}
+          />
+          <MonthlyCapField
+            value={monthlyCap}
+            onChange={setMonthlyCap}
+            invalid={monthlyCapInvalid}
+          />
+        </div>
+      </section>
+
+      <MutationErrorSurface
+        error={save.error}
+        feature="Proactive Chat"
+        variant="inline"
+        inlinePrefix="Save failed."
+      />
+      {monthlyCapInvalid && (
+        <InlineError>
+          Monthly classifier cap must be a non-negative whole number.
+        </InlineError>
+      )}
+
+      <footer className="flex items-center gap-2 border-t border-border/50 pt-5">
+        <Button
+          type="button"
+          onClick={handleSave}
+          disabled={save.saving || monthlyCapInvalid || !dirty}
+          size="sm"
+        >
+          {save.saving && <Loader2 className="mr-1.5 size-3 animate-spin" />}
+          {dirty ? "Save changes" : "Saved"}
+        </Button>
+      </footer>
+
+      <section>
+        <SectionHeading
+          title="Channel overrides"
+          description="Per-channel allow / deny and optional sensitivity override."
+        />
+        <ChannelOverridesTable />
+      </section>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Master toggle row
+// ---------------------------------------------------------------------------
+
+function MasterToggleRow({
+  enabled,
+  onToggle,
+}: {
+  enabled: boolean;
+  onToggle: (value: boolean) => void;
+}) {
+  const status: StatusKind = enabled ? "connected" : "disconnected";
+  return (
+    <CompactRow
+      icon={Bot}
+      title="Enable proactive chat"
+      description={
+        enabled
+          ? "Atlas may volunteer answers in channels it's invited to"
+          : "Atlas only responds when explicitly mentioned (default)"
+      }
+      status={status}
+      statusLabel={enabled ? "Enabled" : "Disabled"}
+      action={
+        <Switch
+          checked={enabled}
+          onCheckedChange={onToggle}
+          aria-label="Enable proactive chat"
+        />
+      }
+    />
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sensitivity / classifier-mode radio groups
+// ---------------------------------------------------------------------------
+
+const SENSITIVITY_LABELS: Record<Sensitivity, string> = {
+  cautious: "Cautious — only obvious data questions",
+  balanced: "Balanced — most reasonable data questions (default)",
+  eager: "Eager — even loose mentions of metrics",
+};
+
+function SensitivityRadio({
+  value,
+  onChange,
+}: {
+  value: Sensitivity;
+  onChange: (value: Sensitivity) => void;
+}) {
+  return (
+    <fieldset className="space-y-2">
+      <legend className="text-sm font-medium">Sensitivity</legend>
+      <p className="text-[12px] text-muted-foreground">
+        How readily Atlas decides a message is a data question.
+      </p>
+      <RadioGroup
+        value={value}
+        onValueChange={(v) => onChange(v as Sensitivity)}
+        className="space-y-1"
+      >
+        {SENSITIVITIES.map((s) => (
+          <div key={s} className="flex items-center gap-3">
+            <RadioGroupItem value={s} id={`proactive-sensitivity-${s}`} />
+            <Label htmlFor={`proactive-sensitivity-${s}`} className="text-sm">
+              {SENSITIVITY_LABELS[s]}
+            </Label>
+          </div>
+        ))}
+      </RadioGroup>
+    </fieldset>
+  );
+}
+
+const CLASSIFIER_LABELS: Record<ClassifierMode, string> = {
+  "regex-prefilter":
+    "Regex prefilter — cheap; falls back to the LLM classifier only when uncertain (default)",
+  "classify-all":
+    "Classify all — always runs the LLM classifier (more accurate, higher cost)",
+};
+
+function ClassifierModeRadio({
+  value,
+  onChange,
+}: {
+  value: ClassifierMode;
+  onChange: (value: ClassifierMode) => void;
+}) {
+  return (
+    <fieldset className="space-y-2">
+      <legend className="text-sm font-medium">Classifier mode</legend>
+      <p className="text-[12px] text-muted-foreground">
+        Whether to gate the LLM classifier behind a regex prefilter.
+      </p>
+      <RadioGroup
+        value={value}
+        onValueChange={(v) => onChange(v as ClassifierMode)}
+        className="space-y-1"
+      >
+        {CLASSIFIER_MODES.map((m) => (
+          <div key={m} className="flex items-center gap-3">
+            <RadioGroupItem value={m} id={`proactive-classifier-${m}`} />
+            <Label htmlFor={`proactive-classifier-${m}`} className="text-sm">
+              {CLASSIFIER_LABELS[m]}
+            </Label>
+          </div>
+        ))}
+      </RadioGroup>
+    </fieldset>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Announcement channel + monthly cap fields
+// ---------------------------------------------------------------------------
+
+function AnnouncementChannelField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label htmlFor="proactive-announcement-channel" className="text-sm font-medium">
+        Announcement channel
+      </Label>
+      <p className="text-[12px] text-muted-foreground">
+        Optional. When the agent has something proactive to share with the
+        whole workspace, it posts here instead of any individual channel.
+        Leave blank to disable workspace-wide announcements.
+      </p>
+      <div className="flex items-center gap-2">
+        <Megaphone className="size-4 shrink-0 text-muted-foreground" />
+        <Input
+          id="proactive-announcement-channel"
+          placeholder="C0123456789"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="font-mono text-sm"
+        />
+      </div>
+    </div>
+  );
+}
+
+function MonthlyCapField({
+  value,
+  onChange,
+  invalid,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  invalid: boolean;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label htmlFor="proactive-monthly-cap" className="text-sm font-medium">
+        Monthly classifier cap
+      </Label>
+      <p className="text-[12px] text-muted-foreground">
+        Optional. Hard cap on classifier invocations per calendar month. When
+        the cap is reached, proactive chat falls back to the regex layer only
+        until the next reset. Leave blank for no cap.
+      </p>
+      <Input
+        id="proactive-monthly-cap"
+        type="number"
+        min={0}
+        step={1}
+        placeholder="e.g. 10000"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-invalid={invalid}
+        className="max-w-[180px] font-mono text-sm"
+      />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Channel overrides table
+// ---------------------------------------------------------------------------
+
+function ChannelOverridesTable() {
+  const { data, loading, error, refetch } = useAdminFetch<ChannelOverride[]>(
+    "/api/v1/admin/proactive/channels",
+    { schema: ChannelsResponseSchema },
+  );
+
+  const upsert = useAdminMutation({
+    path: "/api/v1/admin/proactive/channels",
+    method: "POST",
+    invalidates: refetch,
+  });
+
+  // Row-shape inputs for a single staged channel — saved on "Add override".
+  const [draftChannelId, setDraftChannelId] = useState("");
+  const [draftAllow, setDraftAllow] = useState(true);
+  const [draftSensitivity, setDraftSensitivity] = useState<"" | Sensitivity>("");
+
+  async function handleAdd() {
+    const trimmed = draftChannelId.trim();
+    if (!trimmed) return;
+    const result = await upsert.mutate({
+      body: {
+        channelId: trimmed,
+        allow: draftAllow,
+        sensitivity: draftSensitivity === "" ? null : draftSensitivity,
+      },
+    });
+    if (result.ok) {
+      setDraftChannelId("");
+      setDraftAllow(true);
+      setDraftSensitivity("");
+    }
+  }
+
+  return (
+    <AdminContentWrapper
+      loading={loading}
+      error={error}
+      feature="Proactive Chat"
+      onRetry={refetch}
+      loadingMessage="Loading channel overrides..."
+    >
+      <div className="space-y-4">
+        <div className="rounded-lg border bg-muted/30 p-4">
+          <p className="mb-3 text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Add override
+          </p>
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="proactive-add-channel" className="text-[11px]">
+                Channel ID
+              </Label>
+              <div className="flex items-center gap-2">
+                <Hash className="size-4 shrink-0 text-muted-foreground" />
+                <Input
+                  id="proactive-add-channel"
+                  placeholder="C0123456789"
+                  value={draftChannelId}
+                  onChange={(e) => setDraftChannelId(e.target.value)}
+                  className="w-[180px] font-mono text-xs"
+                />
+              </div>
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-[11px]">Allow proactive</Label>
+              <div className="flex items-center gap-2 pt-1.5">
+                <Switch
+                  checked={draftAllow}
+                  onCheckedChange={setDraftAllow}
+                  aria-label="Allow proactive in this channel"
+                />
+                <span className="text-[12px] text-muted-foreground">
+                  {draftAllow ? "Allow" : "Deny"}
+                </span>
+              </div>
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-[11px]">Sensitivity (optional)</Label>
+              <Select
+                value={draftSensitivity}
+                onValueChange={(v) =>
+                  setDraftSensitivity(v === "default" ? "" : (v as Sensitivity))
+                }
+              >
+                <SelectTrigger className="w-[180px] text-xs">
+                  <SelectValue placeholder="Workspace default" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">Workspace default</SelectItem>
+                  {SENSITIVITIES.map((s) => (
+                    <SelectItem key={s} value={s} className="capitalize">
+                      {s}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              onClick={handleAdd}
+              disabled={upsert.saving || !draftChannelId.trim()}
+            >
+              {upsert.saving ? (
+                <Loader2 className="mr-1.5 size-3 animate-spin" />
+              ) : (
+                <Plus className="mr-1.5 size-3.5" />
+              )}
+              Save override
+            </Button>
+          </div>
+          <MutationErrorSurface
+            error={upsert.error}
+            feature="Proactive Chat"
+            variant="inline"
+            inlinePrefix="Save failed."
+          />
+        </div>
+
+        {data && data.length > 0 ? (
+          <ul className="space-y-1.5">
+            {data.map((row) => (
+              <ChannelRow key={row.id} row={row} refetch={refetch} />
+            ))}
+          </ul>
+        ) : (
+          <p className="rounded-md border border-dashed bg-muted/20 p-6 text-center text-[12px] text-muted-foreground">
+            No channel overrides yet. Workspace defaults apply everywhere.
+          </p>
+        )}
+      </div>
+    </AdminContentWrapper>
+  );
+}
+
+function ChannelRow({
+  row,
+  refetch,
+}: {
+  row: ChannelOverride;
+  refetch: () => void;
+}) {
+  const remove = useAdminMutation({
+    path: `/api/v1/admin/proactive/channels/${encodeURIComponent(row.channelId)}`,
+    method: "DELETE",
+    invalidates: refetch,
+  });
+
+  const status: StatusKind = row.allow ? "connected" : "disconnected";
+  const description = row.sensitivity
+    ? `${row.allow ? "Allow" : "Deny"} · sensitivity: ${row.sensitivity}`
+    : row.allow
+      ? "Allow · workspace default sensitivity"
+      : "Deny";
+
+  return (
+    <li>
+      <CompactRow
+        icon={Hash}
+        title={row.channelId}
+        description={description}
+        status={status}
+        statusLabel={row.allow ? "Allow" : "Deny"}
+        action={
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={() => remove.mutate({})}
+            disabled={remove.saving}
+            aria-label={`Remove override for ${row.channelId}`}
+          >
+            {remove.saving ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <Trash2 className="size-3.5" />
+            )}
+          </Button>
+        }
+      />
+      <MutationErrorSurface
+        error={remove.error}
+        feature="Proactive Chat"
+        variant="inline"
+        inlinePrefix="Remove failed."
+      />
+    </li>
+  );
+}
+

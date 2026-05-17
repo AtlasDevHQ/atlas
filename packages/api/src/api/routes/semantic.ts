@@ -6,8 +6,10 @@
  *
  * Reads via `listAdminEntities` / `getAdminEntity` so the file-tree, the
  * `/admin/semantic` editor, and the chat schema explorer all stay in
- * lockstep on what counts as a queryable entity. DB rows win on `name`
- * collision per `mergeAdminEntities`'s shadow rule.
+ * lockstep on what counts as a queryable entity. Both orchestrators
+ * follow the source rule documented in `admin-source.ts`: the internal
+ * DB is canonical when present; the per-org disk mirror is the fallback
+ * exclusively for pure-YAML self-hosted (no internal DB).
  */
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import {

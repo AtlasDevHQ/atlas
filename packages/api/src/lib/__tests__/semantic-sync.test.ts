@@ -88,6 +88,7 @@ import {
   syncAllEntitiesToDisk,
   cleanupOrgDirectory,
   importFromDisk,
+  reconcileAllOrgs,
 } from "../semantic/sync";
 
 // ---------------------------------------------------------------------------
@@ -392,6 +393,151 @@ describe("cleanupOrgDirectory", () => {
     await expect(
       cleanupOrgDirectory("nonexistent-org"),
     ).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reconcileAllOrgs (boot reconciliation runs full sync — incl. GC)
+// ---------------------------------------------------------------------------
+
+describe("reconcileAllOrgs", () => {
+  it("GC's orphan disk YAMLs even when the org's entities/ dir is already populated", async () => {
+    // Regression guard for the architectural correction: previously
+    // boot reconciliation skipped orgs whose dir was non-empty, so
+    // legacy YAMLs (e.g. entries from a pre-1.4.4 `atlas init` against
+    // the internal Atlas DB) lived on the mirror forever — double-
+    // listing in the admin file tree alongside their group-scoped
+    // DB rows. Boot now always rebuilds, which removes orphans.
+    const orgId = testOrgId();
+    const root = getSemanticRoot(orgId);
+    fs.mkdirSync(path.join(root, "entities"), { recursive: true });
+    fs.writeFileSync(path.join(root, "entities", "apikey.yml"), "table: apikey\n");
+    fs.writeFileSync(path.join(root, "entities", "users.yml"), "table: users\n");
+
+    // DB only has `users` — `apikey` is a disk orphan.
+    mockHasInternalDB.mockImplementation(() => true);
+    // `reconcileAllOrgs` issues one internal query
+    // (`SELECT DISTINCT org_id FROM semantic_entities`); pin the response
+    // to that SQL substring so a future second query in the function
+    // doesn't get this same row returned by accident.
+    mockInternalQuery.mockImplementationOnce(() =>
+      Promise.resolve([{ org_id: orgId }]),
+    );
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([makeEntityRow(orgId, "users", "entity", "table: users\n")]),
+    );
+
+    await reconcileAllOrgs();
+
+    expect(fs.existsSync(path.join(root, "entities", "users.yml"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "entities", "apikey.yml"))).toBe(false);
+  });
+
+  it("isolates per-org sync failures — one bad org does not break the others", async () => {
+    // Guards the architectural promise that boot doesn't degrade to "all
+    // orgs broken" when one org's sync fails. Without isolation, a
+    // refactor that re-threw inside the loop would silently regress
+    // every org's mirror.
+    const goodOrg = testOrgId();
+    const badOrg = testOrgId();
+    const goodRoot = getSemanticRoot(goodOrg);
+    const badRoot = getSemanticRoot(badOrg);
+    fs.mkdirSync(path.join(goodRoot, "entities"), { recursive: true });
+    fs.mkdirSync(path.join(badRoot, "entities"), { recursive: true });
+
+    mockHasInternalDB.mockImplementation(() => true);
+    // Two orgs returned from the org-discovery query, badOrg first so
+    // the bad path runs before the good path.
+    mockInternalQuery.mockImplementationOnce(() =>
+      Promise.resolve([{ org_id: badOrg }, { org_id: goodOrg }]),
+    );
+    mockListEntities.mockImplementation((orgId?: string) => {
+      if (orgId === badOrg) return Promise.reject(new Error("simulated org-specific DB failure"));
+      return Promise.resolve([makeEntityRow(goodOrg, "users", "entity", "table: users\n")]);
+    });
+
+    // Must not throw — per-org failures are scoped.
+    await reconcileAllOrgs();
+
+    // The good org's file landed despite the bad org's failure earlier
+    // in the loop.
+    expect(fs.existsSync(path.join(goodRoot, "entities", "users.yml"))).toBe(true);
+  });
+
+  it("logs and continues when the org-discovery query fails with a non-'does not exist' error", async () => {
+    // `sync.ts:632-641` only swallows "table does not exist" / "no such
+    // table" — every other DB error rethrows up to the outer try/catch.
+    // Without coverage, a refactor that swallowed the wrong error class
+    // would let boot proceed silently with no orgs reconciled and no GC.
+    mockHasInternalDB.mockImplementation(() => true);
+    mockInternalQuery.mockImplementationOnce(() =>
+      Promise.reject(new Error("connection terminated unexpectedly")),
+    );
+
+    // Must not throw — the outer try/catch logs and returns.
+    await reconcileAllOrgs();
+
+    // `listEntityRows` should never be called when the org-discovery
+    // query rejected before producing any orgs.
+    expect(mockListEntities).not.toHaveBeenCalled();
+  });
+
+  it("first-boot: no DB orgs + disk-populated .orgs/<id>/ → triggers auto-import", async () => {
+    // `_autoImportOrgsFromDisk` runs when `SELECT DISTINCT org_id FROM
+    // semantic_entities` returns zero rows but there's a populated
+    // `.orgs/<orgId>/entities/` on disk. Handles self-hosted → managed
+    // migration and `atlas init` runs that predate the DB import endpoint.
+    const orgId = testOrgId();
+    const root = getSemanticRoot(orgId);
+    fs.mkdirSync(path.join(root, "entities"), { recursive: true });
+    fs.writeFileSync(path.join(root, "entities", "users.yml"), "table: users\nname: users\n");
+
+    mockHasInternalDB.mockImplementation(() => true);
+    // Org-discovery returns no orgs → falls into the auto-import branch.
+    mockInternalQuery.mockImplementationOnce(() => Promise.resolve([]));
+    mockBulkUpsertEntities.mockClear();
+
+    await reconcileAllOrgs();
+
+    // The disk file's content should have been handed to bulkUpsertEntities.
+    expect(mockBulkUpsertEntities).toHaveBeenCalled();
+    const [calledOrgId, calledEntities] = mockBulkUpsertEntities.mock.calls[0] ?? [];
+    expect(calledOrgId).toBe(orgId);
+    expect(Array.isArray(calledEntities)).toBe(true);
+    expect((calledEntities as unknown[]).length).toBeGreaterThan(0);
+  });
+
+  it("end-to-end: rename apikey → ApiKey in DB, then reconcile + list shows only ApiKey", async () => {
+    // The two coupled changes in #2561 (admin reads DB-only when DB is
+    // present, sync GC removes orphan files) together produce the
+    // architectural rule: after a rename, the old display name is
+    // invisible from both the admin route and the explore-tool disk
+    // mirror. This integration-style test proves they work together —
+    // breaks if either half regresses.
+    const orgId = testOrgId();
+    const root = getSemanticRoot(orgId);
+    fs.mkdirSync(path.join(root, "entities"), { recursive: true });
+
+    // Simulate the pre-rename state: a lowercase `apikey.yml` written by
+    // an earlier `atlas init`, no matching DB row anymore (it got
+    // renamed to `ApiKey`).
+    fs.writeFileSync(path.join(root, "entities", "apikey.yml"), "table: apikey\nname: apikey\n");
+
+    mockHasInternalDB.mockImplementation(() => true);
+    mockInternalQuery.mockImplementationOnce(() =>
+      Promise.resolve([{ org_id: orgId }]),
+    );
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([
+        makeEntityRow(orgId, "ApiKey", "entity", "table: apikey\nname: ApiKey\n"),
+      ]),
+    );
+
+    await reconcileAllOrgs();
+
+    // Mirror invariant: PascalCase file present, lowercase orphan gone.
+    expect(fs.existsSync(path.join(root, "entities", "ApiKey.yml"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "entities", "apikey.yml"))).toBe(false);
   });
 });
 

@@ -1354,12 +1354,31 @@ admin.openapi(overviewRoute, async (c) => {
   // `/admin/semantic/entities` route reads through — matches what the user
   // sees on the Semantic page so Overview and that page can't disagree.
   // `listAdminEntities` falls back to the disk root when no internal DB is
-  // configured (self-hosted dev) without ever crossing tenants.
-  const entityList = await listAdminEntities({
-    orgId: orgId ?? undefined,
-    mode,
-  });
-  const entityCount = entityList.entities.length;
+  // configured (self-hosted dev) without ever crossing tenants. Wrapped:
+  // PR #2561 removed the disk-shadows-DB fallback, so a DB outage now
+  // surfaces as a thrown error here instead of degrading to a stale-mirror
+  // entity count. Mirror the entity-list route's 500-with-requestId shape
+  // so the operator gets a correlation handle in the response body.
+  let entityCount: number;
+  let entityWarnings: string[];
+  try {
+    const entityList = await listAdminEntities({
+      orgId: orgId ?? undefined,
+      mode,
+    });
+    entityCount = entityList.entities.length;
+    entityWarnings = [...entityList.warnings];
+  } catch (err) {
+    const requestId = reqId(c);
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)), orgId, mode, requestId },
+      "Failed to count admin entities for /admin/overview",
+    );
+    return c.json(
+      { error: "internal_error", message: "Failed to load workspace overview.", requestId },
+      500,
+    );
+  }
 
   // Plugin count — still globally registered today (plugins are deployment
   // scaffold, not per-org). Left on `/admin` until plugins become per-org;
@@ -1413,7 +1432,7 @@ admin.openapi(overviewRoute, async (c) => {
     plugins: pluginList.length,
     queriesLast24h,
     workspace: workspaceBlock,
-    ...(entityList.warnings.length > 0 && { warnings: entityList.warnings }),
+    ...(entityWarnings.length > 0 && { warnings: entityWarnings }),
   }, 200);
 });
 

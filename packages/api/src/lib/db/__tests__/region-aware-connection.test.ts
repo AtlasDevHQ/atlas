@@ -30,21 +30,67 @@ mock.module("mysql2/promise", () => ({
   }),
 }));
 
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 
-// Mock the EE residency module — default: no region configured
+// Mock the EE layer aggregator instead of `@atlas/ee/platform/residency`
+// directly: post-#2564 the production code resolves residency via the
+// `ResidencyResolver` Tag, and the `ConditionalEELayer` in
+// `lib/effect/enterprise-layer.ts` lazy-imports `@atlas/ee/layers`. The
+// mocked aggregator returns a `Layer.succeed(ResidencyResolver, ...)`
+// whose `resolveRegionDatabaseUrl` calls back into the test-local
+// `mockResolveFn`, preserving the per-test mutability the original
+// module-level mock had.
 type RegionResult = { databaseUrl: string; datasourceUrl?: string; region: string } | null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mock function type needs to be wide for reassignment
 let mockResolveFn: (...args: any[]) => RegionResult = () => null;
 
+// Force `ConditionalEELayer` to load the mocked aggregator. Without this
+// `isEnterpriseEnabledLocal()` returns false and the conditional layer
+// falls through to `Layer.empty`, leaving the no-op `ResidencyResolver`
+// in effect — the test would always see `available: false`.
+process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+
+// Stub the EE residency module so a transitive `import("@atlas/ee/layers")`
+// chain that bottoms out at `./platform/residency` doesn't blow up the
+// loader on a partial-mock-export error.
 mock.module("@atlas/ee/platform/residency", () => ({
   resolveRegionDatabaseUrl: (...args: unknown[]) => Effect.succeed(mockResolveFn(...args)),
+  makeResidencyResolverLive: () => ({ available: true, resolveRegionDatabaseUrl: () => Effect.succeed(null) }),
+  ResidencyResolverLive: Layer.empty,
+  ResidencyError: class { constructor(public args: { message: string; code: string }) {} },
 }));
 
-// Mock config so getConfig() returns a valid config
+mock.module("@atlas/ee/layers", () => ({
+  EELayer: Layer.unwrapEffect(
+    Effect.sync(() => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+      return Layer.succeed(services.ResidencyResolver, {
+        available: true,
+        resolveRegionDatabaseUrl: (...args: unknown[]) => Effect.succeed(mockResolveFn(...args)),
+        // The rest of the shape isn't exercised by this test; stubs throw
+        // on access so a future test that pulls in another method gets a
+        // loud failure rather than a silent default-zero.
+        listRegions: () => Effect.die("not stubbed"),
+        getDefaultRegion: () => { throw new Error("not stubbed"); },
+        getConfiguredRegions: () => { throw new Error("not stubbed"); },
+        assignWorkspaceRegion: () => Effect.die("not stubbed"),
+        getWorkspaceRegionAssignment: () => Effect.die("not stubbed"),
+        listWorkspaceRegions: () => Effect.die("not stubbed"),
+        isConfiguredRegion: () => true,
+      } satisfies import("@atlas/api/lib/effect/services").ResidencyResolverShape);
+    }),
+  ),
+}));
+
+// Mock config so getConfig() returns a valid config. Note: the
+// `isEnterpriseEnabledLocal` check in enterprise-layer.ts reads
+// `config.enterprise?.enabled` first, then falls back to the env var
+// — we set both above so the layer wires up the mocked EE aggregator.
 mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => ({
     datasources: { default: { url: "postgresql://localhost/test" } },
+    enterprise: { enabled: true },
   }),
   defineConfig: (c: unknown) => c,
 }));

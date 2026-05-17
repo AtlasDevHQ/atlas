@@ -73,17 +73,22 @@ const log = createLogger("dashboard-versioning");
 // ---------------------------------------------------------------------------
 
 /**
- * Whether the per-user-draft routing is active. Defaults to FALSE so
- * existing dashboards behave exactly as they did pre-#2364 — the bound
- * editor tools write straight to published. The flag is flipped in
- * #2521 once the Publish UI lands.
+ * Whether the per-user-draft routing is active. Defaults to TRUE as of
+ * #2521 — the Publish UI shipped in the same slice that flipped this
+ * default, so every editor now routes through drafts by default. Set
+ * `ATLAS_DASHBOARD_DRAFTS_ENABLED=false` (exact string match) to opt out
+ * — operators who want the pre-#2364 last-write-wins behavior must
+ * explicitly disable it.
+ *
+ * The strict-string match is deliberate: "0" / "no" / "off" do NOT
+ * disable, so a typo in an opt-out env var fails closed (drafts stay
+ * on) rather than silently reverting to the legacy path.
  *
  * Read per-call rather than cached at import time so test setups can
- * toggle the flag with `process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED =
- * "true"` between cases without a module reset.
+ * toggle the flag between cases without a module reset.
  */
 export function isDashboardDraftsEnabled(): boolean {
-  return process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED === "true";
+  return process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED !== "false";
 }
 
 // ---------------------------------------------------------------------------

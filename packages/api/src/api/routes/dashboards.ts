@@ -353,6 +353,32 @@ const getDraftRoute = createRoute({
   },
 });
 
+// #2521 — lightweight non-forking presence check. The Publish UI needs
+// to know "does this user have a draft?" without the side effect that
+// `GET /:id/draft` has (it forks on first call). Returns the metadata
+// fields only — no snapshot — so the client can derive the draft badge,
+// the publish-button enabled state, and the stale-baseline check
+// without paying for the full materialized view. 404 when no draft
+// exists; the publish/discard/rebase buttons stay hidden.
+const getDraftStatusRoute = createRoute({
+  method: "get",
+  path: "/{id}/draft/status",
+  tags: ["Dashboards", "Drafts"],
+  summary: "Check whether the caller has an active draft for this dashboard",
+  description:
+    "Non-forking presence check. Returns 200 with `{ hasDraft: true, publishedBaselineAt, dashboardUpdatedAt }` when the caller's draft exists, 200 with `{ hasDraft: false }` when not, and 503 when drafts are disabled. The client uses `publishedBaselineAt !== dashboardUpdatedAt` to surface the stale-baseline banner.",
+  request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
+  responses: {
+    200: { description: "Draft presence + baseline timestamps", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    404: { description: "Dashboard not found", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Drafts feature flag disabled", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
 const publishDraftRoute = createRoute({
   method: "post",
   path: "/{id}/draft/publish",
@@ -1007,6 +1033,54 @@ authed.openapi(getDraftRoute, async (c) => {
       200,
     );
   }), { label: "get draft" });
+});
+
+// #2521 — non-forking presence check (powers the draft badge + baseline
+// drift detection). Never forks. Returns `{ hasDraft: false }` when the
+// caller has no draft, or `{ hasDraft: true, publishedBaselineAt,
+// dashboardUpdatedAt }` when one exists. The client compares the two
+// timestamps to surface the "your baseline has changed" banner.
+authed.openapi(getDraftStatusRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId, user } = yield* AuthContext;
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
+    }
+    if (!isDashboardDraftsEnabled()) {
+      const fail = draftsFlagOffResponse();
+      return c.json(fail.body, fail.status);
+    }
+    if (!user?.id) {
+      return c.json({ error: "auth_required", message: "Drafts require an authenticated user." }, 401);
+    }
+    // Load dashboard first so we 404 on cross-org reads BEFORE leaking
+    // whether a draft row exists (the FK + the route gate already make
+    // cross-org reads impossible at the DB layer, but the read-path
+    // shape stays consistent with `GET /:id`).
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
+    if (!dash.ok) {
+      const fail = crudFailResponse(dash.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
+    const draft = yield* Effect.promise(() => loadDraft(user.id, id));
+    if (!draft) {
+      return c.json({ hasDraft: false }, 200);
+    }
+    return c.json(
+      {
+        hasDraft: true,
+        publishedBaselineAt: draft.publishedBaselineAt,
+        dashboardUpdatedAt: dash.data.updatedAt,
+        // staleBaseline derived server-side so the client doesn't
+        // re-implement the comparison.
+        staleBaseline: draft.publishedBaselineAt !== dash.data.updatedAt,
+        updatedAt: draft.updatedAt,
+      },
+      200,
+    );
+  }), { label: "get draft status" });
 });
 
 authed.openapi(publishDraftRoute, async (c) => {

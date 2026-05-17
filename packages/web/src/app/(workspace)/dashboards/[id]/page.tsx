@@ -26,9 +26,13 @@ import { friendlyError } from "@/ui/lib/fetch-error";
 import { DashboardShareDialog } from "./share-dialog";
 import { DashboardGrid } from "@/ui/components/dashboards/dashboard-grid";
 import { DashboardTopBar } from "@/ui/components/dashboards/dashboard-topbar";
+import { DraftStatusBanner } from "@/ui/components/dashboards/draft-status-banner";
+import { PublishDiffModal } from "@/ui/components/dashboards/publish-diff-modal";
+import { diffDashboards, type DashboardDiff } from "@/ui/components/dashboards/dashboard-diff";
 import { nextTileLayout, withAutoLayout } from "@/ui/components/dashboards/auto-layout";
 import { StageProvider } from "@/ui/components/dashboards/stage-context";
 import type { StagedChange } from "@/ui/lib/types";
+import { useVisibilityGatedPoll } from "@/ui/hooks/use-visibility-gated-poll";
 import { selectNextAfterDelete } from "../select-recent";
 import type { Density } from "@/ui/components/dashboards/grid-constants";
 import type {
@@ -37,6 +41,35 @@ import type {
   DashboardSuggestion,
   DashboardWithCards,
 } from "@/ui/lib/types";
+
+// #2521 — wire shape returned by `GET /:id/draft/status`. Lightweight
+// presence check; never forks a draft.
+interface DraftStatusResponse {
+  hasDraft: boolean;
+  /** Only present when hasDraft is true. */
+  publishedBaselineAt?: string;
+  dashboardUpdatedAt?: string;
+  staleBaseline?: boolean;
+  updatedAt?: string;
+}
+
+// #2521 — wire shape returned by `GET /:id/draft`. Materialized view +
+// draft metadata. We only consume `.view` (a DashboardWithCards) here —
+// the snapshot stays server-side.
+interface DraftViewResponse {
+  draft: {
+    userId: string;
+    dashboardId: string;
+    publishedBaselineAt: string;
+    updatedAt: string;
+  };
+  view: DashboardWithCards;
+}
+
+/** Poll interval for draft status. 30s is the same cadence as TanStack
+ *  Query's default staleTime in this app, so the window-focus refetch
+ *  picks up baseline drift even sooner. */
+const DRAFT_STATUS_POLL_MS = 30_000;
 
 export default function DashboardViewPage() {
   const { id } = useParams<{ id: string }>();
@@ -73,6 +106,38 @@ export default function DashboardViewPage() {
   const [density, setDensity] = useState<Density>("comfortable");
   // #2363 — bound chat drawer state
   const [chatOpen, setChatOpen] = useState(false);
+
+  // #2521 — draft state. `useAdminFetch` powers the badge + baseline-drift
+  // detection; we poll on window focus + a 30s tick so a teammate's
+  // publish surfaces quickly without blowing the request budget.
+  const {
+    data: draftStatus,
+    refetch: refetchDraftStatus,
+  } = useAdminFetch<DraftStatusResponse>(`/api/v1/dashboards/${id}/draft/status`);
+  useVisibilityGatedPoll(refetchDraftStatus, DRAFT_STATUS_POLL_MS);
+
+  const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
+  const [publishModalOpen, setPublishModalOpen] = useState(false);
+  // Draft view materialized server-side — fetched lazily, only when the
+  // user opens the Publish modal. Avoids the side-effect cost of `GET
+  // /:id/draft` (which forks-on-first-call) on every page load.
+  const [draftView, setDraftView] = useState<DashboardWithCards | null>(null);
+  const [draftViewLoading, setDraftViewLoading] = useState(false);
+
+  // Dedicated mutation hook for draft ops. We want a separate error
+  // surface from the shared `mutate` above (which is reused for card +
+  // dashboard CRUD) so the banner's "draft-error" copy doesn't mask
+  // unrelated mutation errors and vice-versa.
+  const {
+    mutate: draftMutate,
+    error: draftError,
+    clearError: clearDraftError,
+  } = useAdminMutation({
+    invalidates: [refetch, refetchDraftStatus],
+  });
+  const [publishing, setPublishing] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
+  const [rebasing, setRebasing] = useState(false);
 
   // Optimistic layout — applied on drop/resize end so the UI doesn't wait for
   // the PATCH round-trip. Dropped explicitly when the mutation settles. No
@@ -267,6 +332,97 @@ export default function DashboardViewPage() {
     });
   }
 
+  // -------------------------------------------------------------------
+  // #2521 — Publish / Discard / Rebase handlers
+  // -------------------------------------------------------------------
+
+  // Fetch the materialized draft view on demand (Publish modal open).
+  // We hit the GET endpoint directly rather than going through
+  // useAdminFetch because the call is one-shot per open — we don't need
+  // the cache machinery, and we want to surface a network error to the
+  // modal's own banner rather than the page's.
+  async function handleOpenPublishModal() {
+    clearDraftError();
+    setPublishModalOpen(true);
+    setDraftView(null);
+    setDraftViewLoading(true);
+    try {
+      const res = await fetch(`${apiUrl}/api/v1/dashboards/${id}/draft`, {
+        credentials: isCrossOrigin ? "include" : "same-origin",
+      });
+      if (res.ok) {
+        const json = (await res.json()) as DraftViewResponse;
+        setDraftView(json.view ?? null);
+      } else {
+        console.debug(`[dashboard] Failed to fetch draft view: ${res.status}`);
+        setDraftView(null);
+      }
+    } catch (err) {
+      console.debug(
+        "[dashboard] Network error fetching draft view:",
+        err instanceof Error ? err.message : String(err),
+      );
+      setDraftView(null);
+    } finally {
+      setDraftViewLoading(false);
+    }
+  }
+
+  async function handleConfirmPublish() {
+    setPublishing(true);
+    const result = await draftMutate({
+      path: `/api/v1/dashboards/${id}/draft/publish`,
+      method: "POST",
+    });
+    setPublishing(false);
+    if (result.ok) {
+      setPublishModalOpen(false);
+      setDraftView(null);
+    } else if (result.error.status === 409) {
+      // Stale baseline OR conflict — close the modal and let the banner
+      // surface the rebase affordance. The error is recorded on
+      // draftError so the user sees what happened next to the Rebase
+      // button. Refetching draft status picks up the staleBaseline
+      // flag from the server.
+      setPublishModalOpen(false);
+      void refetchDraftStatus();
+    }
+    // Other failures: modal stays open so the user sees the error in
+    // its own banner.
+  }
+
+  async function handleDiscardConfirm() {
+    setDiscarding(true);
+    const result = await draftMutate({
+      path: `/api/v1/dashboards/${id}/draft/discard`,
+      method: "POST",
+    });
+    setDiscarding(false);
+    if (result.ok) {
+      setDiscardConfirmOpen(false);
+    }
+  }
+
+  async function handleRebase() {
+    setRebasing(true);
+    const result = await draftMutate({
+      path: `/api/v1/dashboards/${id}/draft/rebase`,
+      method: "POST",
+    });
+    setRebasing(false);
+    if (result.ok) {
+      // refetchDraftStatus is wired as an invalidate above; the banner
+      // updates automatically as soon as the status returns
+      // staleBaseline=false.
+    }
+  }
+
+  // Compute the diff client-side from the live published view vs the
+  // fetched draft view. The modal renders an empty state when these
+  // match (`diff.empty`); Publish is disabled in that case.
+  const diff: DashboardDiff | null =
+    dashboard && draftView ? diffDashboards(dashboard, draftView) : null;
+
   const cardsForGrid: DashboardCard[] = dashboard
     ? dashboard.cards.map((c) =>
         optimisticLayouts[c.id] ? { ...c, layout: optimisticLayouts[c.id] } : c,
@@ -338,6 +494,21 @@ export default function DashboardViewPage() {
               onEditingChange={setEditing}
               density={density}
               onDensityChange={setDensity}
+            />
+
+            <DraftStatusBanner
+              hasDraft={!!draftStatus?.hasDraft}
+              staleBaseline={!!draftStatus?.staleBaseline}
+              discardOpen={discardConfirmOpen}
+              onDiscardOpenChange={setDiscardConfirmOpen}
+              onPublish={handleOpenPublishModal}
+              onDiscardConfirm={handleDiscardConfirm}
+              onRebase={handleRebase}
+              publishing={publishing}
+              discarding={discarding}
+              rebasing={rebasing}
+              error={draftError}
+              onDismissError={clearDraftError}
             />
 
             {mutationError && (
@@ -507,6 +678,16 @@ export default function DashboardViewPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <PublishDiffModal
+        open={publishModalOpen}
+        onOpenChange={setPublishModalOpen}
+        diff={diff}
+        loading={draftViewLoading}
+        publishing={publishing}
+        error={draftError}
+        onConfirm={handleConfirmPublish}
+      />
     </StageProvider>
   );
 }

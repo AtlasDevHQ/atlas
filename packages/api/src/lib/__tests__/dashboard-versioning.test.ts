@@ -115,23 +115,27 @@ describe("isDashboardDraftsEnabled", () => {
     else process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = orig;
   });
 
-  it("is false by default", () => {
+  it("is true by default (#2521 flipped the default ON)", () => {
     delete process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED;
-    expect(isDashboardDraftsEnabled()).toBe(false);
-  });
-
-  it("is true when env var is exactly 'true'", () => {
-    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "true";
     expect(isDashboardDraftsEnabled()).toBe(true);
   });
 
-  it("is false for non-'true' truthy strings (no accidental opt-in)", () => {
+  it("is false only when env var is exactly 'false'", () => {
+    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
+    expect(isDashboardDraftsEnabled()).toBe(false);
+  });
+
+  it("is true when env var is anything other than 'false' (no accidental opt-out)", () => {
+    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "true";
+    expect(isDashboardDraftsEnabled()).toBe(true);
     process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "1";
-    expect(isDashboardDraftsEnabled()).toBe(false);
-    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "TRUE";
-    expect(isDashboardDraftsEnabled()).toBe(false);
-    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "yes";
-    expect(isDashboardDraftsEnabled()).toBe(false);
+    expect(isDashboardDraftsEnabled()).toBe(true);
+    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "0";
+    expect(isDashboardDraftsEnabled()).toBe(true);
+    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "FALSE";
+    expect(isDashboardDraftsEnabled()).toBe(true);
+    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "no";
+    expect(isDashboardDraftsEnabled()).toBe(true);
   });
 });
 

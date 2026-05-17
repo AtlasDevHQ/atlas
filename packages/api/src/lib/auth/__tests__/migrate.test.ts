@@ -319,11 +319,8 @@ describe("migrateAuthTables", () => {
             { name: "0071_connection_groups_status.sql" },
             { name: "0072_cleanup_empty_synthetic_groups.sql" },
             { name: "0073_conversation_bound_dashboard.sql" },
-<<<<<<< HEAD
             { name: "0074_audit_log_parent_audit_id.sql" },
-=======
-            { name: "0074_proactive_chat_config.sql" },
->>>>>>> ca399117 (chore(api,docs): #2294 — regen OpenAPI + bump migration-count assertions)
+            { name: "0075_proactive_chat_config.sql" },
           ],
         };
       }

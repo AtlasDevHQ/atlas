@@ -86,12 +86,9 @@ describe("runMigrations", () => {
     // + 0071 (connection_groups.status enum, Phase 4 archive cascade, #2413)
     // + 0072 (cleanup empty synthetic group orphans, #2506)
     // + 0073 (conversations.bound_dashboard_id, #2363)
-<<<<<<< HEAD
-    // + 0074 (audit_log.parent_audit_id for cross-env fanout, #2519) = 75.
-=======
-    // + 0074 (proactive chat admin config, #2294) = 75.
->>>>>>> ca399117 (chore(api,docs): #2294 — regen OpenAPI + bump migration-count assertions)
-    expect(count).toBe(75);
+    // + 0074 (audit_log.parent_audit_id for cross-env fanout, #2519)
+    // + 0075 (proactive chat admin config, #2294) = 76.
+    expect(count).toBe(76);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");

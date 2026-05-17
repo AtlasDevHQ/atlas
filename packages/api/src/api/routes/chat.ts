@@ -726,7 +726,17 @@ chat.openapi(chatRoute, async (c) => {
         // a `bound_dashboard_id`. Drives the bound-mode tool registry
         // + system-prompt swap below.
         let boundDashboardForAgent:
-          | { cardSummary: string; toolContext: { dashboardId: string; orgId: string | null | undefined } }
+          | {
+              cardSummary: string;
+              toolContext: {
+                dashboardId: string;
+                orgId: string | null | undefined;
+                // #2364 — propagate userId so the bound editor tools can
+                // route writes through the user's draft when the drafts
+                // flag is on.
+                userId?: string | null;
+              };
+            }
           | null = null;
         // F-77 — track the upfront reservation so the post-stream
         // settlement can refund any unused budget. `null` means no
@@ -1009,6 +1019,11 @@ chat.openapi(chatRoute, async (c) => {
               toolContext: {
                 dashboardId: resolved.dashboard.id,
                 orgId: authResult.user?.activeOrganizationId,
+                // #2364 — propagate userId so the bound editor tools
+                // can route mutations through the per-user draft when
+                // `ATLAS_DASHBOARD_DRAFTS_ENABLED=true`. Anonymous
+                // bound chats stay on the legacy direct-published path.
+                userId: authResult.user?.id ?? null,
               },
             };
           } else if (resolved.reason === "error") {

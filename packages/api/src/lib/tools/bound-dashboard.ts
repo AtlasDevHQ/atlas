@@ -15,6 +15,7 @@
  * the safe set but not for delete / SQL rewrite.
  */
 
+import * as crypto from "crypto";
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { CHART_TYPES } from "@useatlas/types";
@@ -31,6 +32,14 @@ import {
 } from "@atlas/api/lib/dashboards";
 import type { DashboardCardLayout } from "@atlas/api/lib/dashboard-types";
 import { buildCardSummary } from "@atlas/api/lib/bound-chat-context";
+import {
+  isDashboardDraftsEnabled,
+  forkOrLoadDraft,
+  saveDraft,
+  applyChangeToDraft,
+  materializeDraftView,
+  type DashboardSnapshotCard,
+} from "@atlas/api/lib/dashboard-versioning";
 
 const log = createLogger("tool:bound-dashboard");
 
@@ -43,12 +52,71 @@ const ChartConfigSchema = z.object({
 export interface BoundDashboardToolContext {
   dashboardId: string;
   orgId: string | null | undefined;
+  /**
+   * Bound editor's user id. When `ATLAS_DASHBOARD_DRAFTS_ENABLED=true`
+   * AND a userId is present, mutating tools route through the user's
+   * draft (forking from published on first touch). When unset OR the
+   * flag is off, mutations fall through to the legacy direct-published
+   * path — preserves #2363 behavior for anonymous + flag-off cases.
+   */
+  userId?: string | null;
+}
+
+/**
+ * Apply a change to the user's draft snapshot when the drafts flag is
+ * on and we have a userId; otherwise the caller falls through to the
+ * direct-published path. Returns:
+ *   - `{ routed: true, ok: true }`  → draft updated, the legacy path
+ *     should NOT run.
+ *   - `{ routed: true, ok: false, error }` → drafts path was selected
+ *     but failed; surface the error and skip the legacy path so we
+ *     don't double-write.
+ *   - `{ routed: false }` → flag off or no userId; caller runs the
+ *     legacy direct-published mutation.
+ */
+async function maybeApplyToDraft(
+  ctx: BoundDashboardToolContext,
+  change: import("@atlas/api/lib/dashboard-versioning").DraftChange,
+): Promise<
+  | { routed: true; ok: true }
+  | { routed: true; ok: false; error: string }
+  | { routed: false }
+> {
+  if (!isDashboardDraftsEnabled()) return { routed: false };
+  if (!ctx.userId) return { routed: false };
+  const published = await getDashboard(ctx.dashboardId, {
+    orgId: ctx.orgId ?? undefined,
+  });
+  if (!published.ok) {
+    return { routed: true, ok: false, error: `Could not read dashboard: ${published.reason}` };
+  }
+  const draftRow = await forkOrLoadDraft(ctx.userId, published.data);
+  if (!draftRow) {
+    return {
+      routed: true,
+      ok: false,
+      error: "Could not load or create a draft for this dashboard. Internal DB unavailable.",
+    };
+  }
+  const applied = applyChangeToDraft(draftRow.snapshot, change);
+  if (!applied.ok) {
+    return {
+      routed: true,
+      ok: false,
+      error: `Could not apply change to draft: ${applied.reason} (cardId=${applied.cardId})`,
+    };
+  }
+  const saved = await saveDraft(ctx.userId, ctx.dashboardId, applied.snapshot);
+  if (!saved) {
+    return { routed: true, ok: false, error: "Could not persist draft update." };
+  }
+  return { routed: true, ok: true };
 }
 
 /**
  * Build the editor tool set for a specific bound dashboard. The
- * dashboardId / orgId are captured at request time and the tool
- * registry consuming this is built per-request via
+ * dashboardId / orgId / userId are captured at request time and the
+ * tool registry consuming this is built per-request via
  * `buildBoundDashboardRegistry`.
  */
 export function createBoundDashboardTools(
@@ -64,15 +132,25 @@ export function createBoundDashboardTools(
       if (!dash.ok) {
         return { kind: "err" as const, error: `Could not read dashboard: ${dash.reason}` };
       }
+      // Draft view overlay when the flag is on AND a draft exists for
+      // this user — the agent's mental model of "what cards exist" has
+      // to match what the user sees in the chat-bound editor pane.
+      let view = dash.data;
+      if (isDashboardDraftsEnabled() && ctx.userId) {
+        const draftRow = await forkOrLoadDraft(ctx.userId, dash.data);
+        if (draftRow) {
+          view = materializeDraftView(dash.data, draftRow.snapshot);
+        }
+      }
       return {
         kind: "ok" as const,
         dashboard: {
-          id: dash.data.id,
-          title: dash.data.title,
-          description: dash.data.description,
-          cardCount: dash.data.cards.length,
+          id: view.id,
+          title: view.title,
+          description: view.description,
+          cardCount: view.cards.length,
         },
-        summary: buildCardSummary(dash.data.cards),
+        summary: buildCardSummary(view.cards),
       };
     },
   });
@@ -117,6 +195,36 @@ export function createBoundDashboardTools(
           return {
             kind: "err" as const,
             error: `SQL validation failed: ${validation.error}. Fix the query and retry.`,
+          };
+        }
+        // Drafts path: when on, mint a UUID for the new card and stage
+        // it in the draft snapshot rather than INSERTing into
+        // dashboard_cards. The id flows back to the agent so subsequent
+        // updateCard / updateLayout calls in the same session resolve.
+        const draftCard: DashboardSnapshotCard = {
+          id: crypto.randomUUID(),
+          // Position is recomputed at publish time when the merge runs;
+          // for the in-progress draft, append at the end of the current
+          // snapshot. The agent doesn't care about exact positions in
+          // an editing session — only at view + publish time.
+          position: 0,
+          title,
+          sql,
+          chartConfig,
+          connectionGroupId: null,
+          layout: layout ?? null,
+        };
+        const routed = await maybeApplyToDraft(ctx, { kind: "addCard", card: draftCard });
+        if (routed.routed) {
+          if (!routed.ok) return { kind: "err" as const, error: routed.error };
+          return {
+            kind: "ok" as const,
+            card: {
+              id: draftCard.id,
+              title: draftCard.title,
+              chartType: draftCard.chartConfig?.type ?? "table",
+              position: draftCard.position,
+            },
           };
         }
         const result = await addCard({
@@ -171,6 +279,16 @@ export function createBoundDashboardTools(
           return { kind: "err" as const, error: "No fields supplied — pass at least one of title, chartConfig, layout, position." };
         }
 
+        const routed = await maybeApplyToDraft(ctx, {
+          kind: "updateCard",
+          cardId,
+          updates,
+        });
+        if (routed.routed) {
+          if (!routed.ok) return { kind: "err" as const, error: routed.error };
+          return { kind: "ok" as const, cardId, updated: Object.keys(updates) };
+        }
+
         const result = await updateCard(cardId, dashboardId, updates);
         if (!result.ok) {
           return { kind: "err" as const, error: `Could not update card ${cardId}: ${result.reason}` };
@@ -200,16 +318,58 @@ export function createBoundDashboardTools(
         .describe("Per-card grid placements"),
     }),
     execute: async ({ layouts }) => {
-      const results: { cardId: string; ok: boolean; reason?: string }[] = [];
+      // Validate every layout entry first — if any is malformed, surface
+      // before touching state. This matches the legacy per-row loop's
+      // per-card validation but as a single pre-pass so the draft path
+      // can apply the whole batch atomically (the versioning module's
+      // `updateLayout` change is all-or-nothing).
+      const parsed: { cardId: string; layout: DashboardCardLayout }[] = [];
+      const malformed: { cardId: string; reason: string }[] = [];
       for (const placement of layouts) {
         const { cardId, x, y, w, h } = placement;
-        const parsed = CardLayoutSchema.safeParse({ x, y, w, h });
-        if (!parsed.success) {
-          results.push({ cardId, ok: false, reason: parsed.error.issues[0]?.message ?? "invalid layout" });
+        const v = CardLayoutSchema.safeParse({ x, y, w, h });
+        if (!v.success) {
+          malformed.push({ cardId, reason: v.error.issues[0]?.message ?? "invalid layout" });
           continue;
         }
-        const r = await updateCard(cardId, dashboardId, { layout: parsed.data });
-        results.push(r.ok ? { cardId, ok: true } : { cardId, ok: false, reason: r.reason });
+        parsed.push({ cardId, layout: v.data });
+      }
+
+      const routed = await maybeApplyToDraft(ctx, {
+        kind: "updateLayout",
+        layouts: parsed,
+      });
+      if (routed.routed) {
+        if (!routed.ok) {
+          const errResults = [
+            ...malformed.map((m) => ({ cardId: m.cardId, ok: false as const, reason: m.reason })),
+            { cardId: "(draft)", ok: false as const, reason: routed.error },
+          ];
+          return { kind: "partial" as const, results: errResults, failedCount: errResults.length };
+        }
+        const okResults = parsed.map((p) => ({ cardId: p.cardId, ok: true as const }));
+        if (malformed.length > 0) {
+          return {
+            kind: "partial" as const,
+            results: [
+              ...okResults,
+              ...malformed.map((m) => ({ cardId: m.cardId, ok: false as const, reason: m.reason })),
+            ],
+            failedCount: malformed.length,
+          };
+        }
+        return { kind: "ok" as const, results: okResults };
+      }
+
+      // Legacy path — per-row updateCard.
+      const results: { cardId: string; ok: boolean; reason?: string }[] = malformed.map((m) => ({
+        cardId: m.cardId,
+        ok: false,
+        reason: m.reason,
+      }));
+      for (const placement of parsed) {
+        const r = await updateCard(placement.cardId, dashboardId, { layout: placement.layout });
+        results.push(r.ok ? { cardId: placement.cardId, ok: true } : { cardId: placement.cardId, ok: false, reason: r.reason });
       }
       const failed = results.filter((r) => !r.ok);
       if (failed.length > 0) {
@@ -232,6 +392,16 @@ export function createBoundDashboardTools(
 
       if (Object.keys(updates).length === 0) {
         return { kind: "err" as const, error: "No fields supplied — pass title or description." };
+      }
+
+      const routed = await maybeApplyToDraft(ctx, {
+        kind: "updateMeta",
+        ...(updates.title !== undefined && { title: updates.title }),
+        ...(updates.description !== undefined && { description: updates.description }),
+      });
+      if (routed.routed) {
+        if (!routed.ok) return { kind: "err" as const, error: routed.error };
+        return { kind: "ok" as const, updated: Object.keys(updates) };
       }
 
       const result = await updateDashboard(dashboardId, { orgId: orgId ?? undefined }, updates);

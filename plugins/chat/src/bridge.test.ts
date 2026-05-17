@@ -3232,6 +3232,85 @@ describe("ephemeral error delivery", () => {
 });
 
 // ---------------------------------------------------------------------------
+// ProactiveConfig schema validation
+// ---------------------------------------------------------------------------
+
+describe("ProactiveConfig schema", () => {
+  it("accepts a fully-specified proactive config", async () => {
+    const { ChatConfigSchema } = await import("./config");
+
+    const result = ChatConfigSchema.safeParse({
+      adapters: {
+        slack: { botToken: "xoxb-test", signingSecret: "test-secret" },
+      },
+      executeQuery: () =>
+        Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
+      proactive: {
+        isEnabled: () => true,
+        classify: async () => ({ isQuestion: true, confidence: 0.9 }),
+        workspace: {
+          enabled: true,
+          sensitivity: "balanced",
+          classifierMode: "regex-prefilter",
+        },
+        channelAllowlist: ["C-allowed"],
+        channelConfigs: {
+          "C-allowed": { channelId: "C-allowed", allow: true },
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects when proactive.isEnabled is not a function", async () => {
+    const { ChatConfigSchema } = await import("./config");
+
+    const result = ChatConfigSchema.safeParse({
+      adapters: {
+        slack: { botToken: "xoxb-test", signingSecret: "test-secret" },
+      },
+      executeQuery: () =>
+        Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
+      proactive: {
+        isEnabled: "not-a-function",
+        classify: async () => ({ isQuestion: false, confidence: 0 }),
+        workspace: {
+          enabled: true,
+          sensitivity: "balanced",
+          classifierMode: "regex-prefilter",
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects invalid sensitivity preset", async () => {
+    const { ChatConfigSchema } = await import("./config");
+
+    const result = ChatConfigSchema.safeParse({
+      adapters: {
+        slack: { botToken: "xoxb-test", signingSecret: "test-secret" },
+      },
+      executeQuery: () =>
+        Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
+      proactive: {
+        isEnabled: () => true,
+        classify: async () => ({ isQuestion: false, confidence: 0 }),
+        workspace: {
+          enabled: true,
+          sensitivity: "extreme",
+          classifierMode: "regex-prefilter",
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Proactive DM API (sendDirectMessage)
 // ---------------------------------------------------------------------------
 

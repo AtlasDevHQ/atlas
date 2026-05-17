@@ -46,6 +46,7 @@ import {
 } from "./features/file-upload";
 import { createReactionLifecycle } from "./features/reactions";
 import type { IReactionLifecycle } from "./features/reactions";
+import { registerProactiveListener } from "./proactive/listener";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1502,6 +1503,30 @@ export function createChatBridge(
       "Clarification modal dismissed",
     );
   });
+
+  // --- Proactive listener (slice #2292) ---
+  // Only registers when proactive config is present AND the host-supplied
+  // gate (`isEnterpriseEnabled() && workspaceFlag`) returns true. Failures
+  // never block the rest of the bridge from coming up.
+  if (config.proactive) {
+    const proactiveConfig = config.proactive;
+    Promise.resolve()
+      .then(() =>
+        registerProactiveListener(chat, log, {
+          isEnabled: proactiveConfig.isEnabled,
+          classify: proactiveConfig.classify,
+          workspace: proactiveConfig.workspace,
+          channelAllowlist: proactiveConfig.channelAllowlist,
+          channelConfigs: proactiveConfig.channelConfigs,
+        }),
+      )
+      .catch((err) => {
+        log.error(
+          { err: err instanceof Error ? err : new Error(String(err)) },
+          "Failed to register proactive listener — proactive mode is disabled for this process",
+        );
+      });
+  }
 
   return {
     webhooks: chat.webhooks,

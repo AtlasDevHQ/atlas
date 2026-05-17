@@ -35,6 +35,7 @@ import {
 } from "./answerer";
 import type {
   ChannelProactiveConfig,
+  GetQuotaStatusFn,
   LLMClassifierFn,
   OnPauseRequestFn,
   ProactiveGateFn,
@@ -108,6 +109,21 @@ export interface ProactiveListenerConfig {
    * outage never crashes the Chat SDK loop.
    */
   onMeterEvent?: ProactiveMeterEventFn;
+
+  // ---- Slice #2301 additions: monthly quota cap ----
+
+  /**
+   * Optional host-injected quota reader. Consulted BEFORE classification
+   * so a workspace that has hit its monthly cap pays only a DB read
+   * (well-indexed) per message instead of an LLM call. When the cap is
+   * reached the listener emits a `classify` meter event with
+   * `metadata: { capReached: true, skipped: "monthly-quota" }` and
+   * skips both classification and reaction.
+   *
+   * Failures are swallowed (no-op + warn) so a quota outage never
+   * silences Atlas — the agent fails open just like the pause registry.
+   */
+  getQuotaStatus?: GetQuotaStatusFn;
 
   // ---- Slice #2298 additions: feedback collection ----
 
@@ -380,6 +396,54 @@ export async function registerProactiveListener(
 
       const channelAllowed = allowlist.has(channelId);
       const channelConfig = config.channelConfigs?.[channelId];
+
+      // ---------------------------------------------------------------
+      // Monthly quota cap (#2301) — short-circuit BEFORE the classifier
+      // when the workspace has used its allotted classifies for the
+      // current calendar month. Records a `classify` meter row with
+      // `capReached: true` so the admin analytics + audit trail show
+      // "we saw a question and chose to skip it because of the cap"
+      // instead of a silent gap. No reaction, no offer card.
+      // ---------------------------------------------------------------
+      if (config.getQuotaStatus && config.workspaceId) {
+        try {
+          const quota = await config.getQuotaStatus({
+            workspaceId: config.workspaceId,
+          });
+          if (quota.capReached) {
+            log.debug(
+              {
+                workspaceId: config.workspaceId,
+                channelId,
+                classifyCountThisMonth: quota.classifyCountThisMonth,
+                monthlyClassifierCap: quota.monthlyClassifierCap,
+              },
+              "Proactive: skipped — monthly classifier cap reached",
+            );
+            await emitMeter({
+              channelId,
+              messageId: message.id,
+              eventType: "classify",
+              tokens: 0,
+              actorUserId: message.author.userId ?? null,
+              metadata: {
+                capReached: true,
+                skipped: "monthly-quota",
+                classifyCountThisMonth: quota.classifyCountThisMonth,
+                monthlyClassifierCap: quota.monthlyClassifierCap,
+              },
+            });
+            return;
+          }
+        } catch (err) {
+          // Fail open — momentary read failure shouldn't silence the
+          // agent. Same posture as the pause registry above.
+          log.warn(
+            { err: err instanceof Error ? err : new Error(String(err)) },
+            "Proactive: quota read failed — treating as under cap",
+          );
+        }
+      }
 
       const classification = await classifyMessage({
         text,

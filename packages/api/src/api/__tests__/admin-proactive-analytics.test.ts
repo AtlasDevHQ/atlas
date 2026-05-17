@@ -105,6 +105,38 @@ mock.module("@atlas/api/lib/proactive/answer-meter", () => ({
 }));
 
 // ---------------------------------------------------------------------------
+// Mock the quota module (#2301)
+//
+// Same sync-factory pattern. Default `{ classifyCountThisMonth: 0,
+// monthlyClassifierCap: null, capReached: false }` so tests that don't
+// care about quota still see the rolling-window summary.
+// ---------------------------------------------------------------------------
+
+interface QuotaStatusShape {
+  monthlyClassifierCap: number | null;
+  classifyCountThisMonth: number;
+  capReached: boolean;
+}
+
+const baseQuota: QuotaStatusShape = {
+  monthlyClassifierCap: null,
+  classifyCountThisMonth: 0,
+  capReached: false,
+};
+
+const mockQuotaStatus: Mock<
+  (workspaceId: string, now?: Date) => Promise<QuotaStatusShape>
+> = mock(async () => baseQuota);
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const realQuota = require("@atlas/api/lib/proactive/quota") as typeof import("@atlas/api/lib/proactive/quota");
+
+mock.module("@atlas/api/lib/proactive/quota", () => ({
+  ...realQuota,
+  getWorkspaceQuotaStatus: mockQuotaStatus,
+}));
+
+// ---------------------------------------------------------------------------
 // Enterprise gate — default on so the route reaches the meter
 // ---------------------------------------------------------------------------
 
@@ -150,6 +182,8 @@ beforeEach(() => {
   enterpriseEnabled = true;
   mockSummary.mockClear();
   mockSummary.mockImplementation(async () => baseSummary);
+  mockQuotaStatus.mockClear();
+  mockQuotaStatus.mockImplementation(async () => baseQuota);
 });
 
 // ---------------------------------------------------------------------------
@@ -216,5 +250,66 @@ describe("GET /api/v1/admin/proactive/analytics", () => {
     // Hono error classifier maps EnterpriseError to 403 with
     // `code: "enterprise_required"`.
     expect(body.code ?? body.error).toBeDefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // #2301 — monthly quota cap surfaces on the analytics payload
+  // -------------------------------------------------------------------------
+
+  it("includes the quota block with capReached=false by default", async () => {
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/proactive/analytics"),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      quota: {
+        classifyCountThisMonth: number;
+        monthlyClassifierCap: number | null;
+        capReached: boolean;
+      };
+    };
+    expect(body.quota).toEqual({
+      classifyCountThisMonth: 0,
+      monthlyClassifierCap: null,
+      capReached: false,
+    });
+    expect(mockQuotaStatus).toHaveBeenCalledTimes(1);
+    expect(mockQuotaStatus.mock.calls[0]![0]).toBe("org-alpha");
+  });
+
+  it("surfaces a non-null cap + current usage", async () => {
+    mockQuotaStatus.mockImplementation(async () => ({
+      monthlyClassifierCap: 1000,
+      classifyCountThisMonth: 420,
+      capReached: false,
+    }));
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/proactive/analytics"),
+    );
+    const body = (await res.json()) as {
+      quota: {
+        classifyCountThisMonth: number;
+        monthlyClassifierCap: number | null;
+        capReached: boolean;
+      };
+    };
+    expect(body.quota.monthlyClassifierCap).toBe(1000);
+    expect(body.quota.classifyCountThisMonth).toBe(420);
+    expect(body.quota.capReached).toBe(false);
+  });
+
+  it("flips capReached=true when the workspace is over its cap", async () => {
+    mockQuotaStatus.mockImplementation(async () => ({
+      monthlyClassifierCap: 50,
+      classifyCountThisMonth: 50,
+      capReached: true,
+    }));
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/proactive/analytics"),
+    );
+    const body = (await res.json()) as {
+      quota: { capReached: boolean };
+    };
+    expect(body.quota.capReached).toBe(true);
   });
 });

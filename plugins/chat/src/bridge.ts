@@ -1578,6 +1578,10 @@ export function createChatBridge(
           workspaceId: proactiveConfig.workspaceId,
           isPaused: proactiveConfig.isPaused,
           onPauseRequest: proactiveConfig.onPauseRequest,
+          // AnswerMeter (#2296).
+          onMeterEvent: proactiveConfig.onMeterEvent,
+          // Monthly quota cap (#2301).
+          getQuotaStatus: proactiveConfig.getQuotaStatus,
         });
         proactiveRecentAnswers = handle.recentAnswers;
       })

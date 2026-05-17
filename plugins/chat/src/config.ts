@@ -11,9 +11,11 @@ import type { StreamChunk } from "chat";
 import type { ReactionConfig } from "./features/reactions";
 import type {
   ChannelProactiveConfig,
+  GetQuotaStatusFn,
   LLMClassifierFn,
   OnPauseRequestFn,
   ProactiveGateFn,
+  ProactiveMeterEventFn,
   WorkspaceProactiveConfig,
 } from "./proactive/types";
 import type { IsPausedFn } from "./proactive/pause";
@@ -479,6 +481,29 @@ export interface ProactiveConfig {
    * user opt-out).
    */
   onPauseRequest?: OnPauseRequestFn;
+
+  // ---- Slice #2296 additions: AnswerMeter ----
+
+  /**
+   * Per-event meter callback. Receives one event per classify (always)
+   * and one per react / offer / accept / feedback when those stages
+   * fire. Host wires this to `recordMeterEvent` from
+   * `@atlas/api/lib/proactive/answer-meter` so rows land in
+   * `proactive_meter_events`.
+   */
+  onMeterEvent?: ProactiveMeterEventFn;
+
+  // ---- Slice #2301 additions: monthly quota cap ----
+
+  /**
+   * Quota-status reader. Consulted BEFORE the classifier on every
+   * channel message — when the workspace has hit its monthly cap the
+   * listener short-circuits and emits a `capReached` meter row instead
+   * of running the LLM. Host wires this to
+   * `getWorkspaceQuotaStatus` from
+   * `@atlas/api/lib/proactive/quota`.
+   */
+  getQuotaStatus?: GetQuotaStatusFn;
 }
 
 // ---------------------------------------------------------------------------
@@ -756,6 +781,24 @@ const ProactiveConfigSchema = z
       .refine(
         (v) => v === undefined || typeof v === "function",
         "proactive.onPauseRequest must be a function returning Promise<void>",
+      )
+      .optional(),
+    // AnswerMeter wiring (#2296). Optional — when omitted the listener
+    // simply doesn't emit meter rows.
+    onMeterEvent: z
+      .any()
+      .refine(
+        (v) => v === undefined || typeof v === "function",
+        "proactive.onMeterEvent must be a function returning Promise<void> | void",
+      )
+      .optional(),
+    // Monthly quota wiring (#2301). Optional — when omitted no cap is
+    // enforced and every message goes through the classifier.
+    getQuotaStatus: z
+      .any()
+      .refine(
+        (v) => v === undefined || typeof v === "function",
+        "proactive.getQuotaStatus must be a function returning Promise<ProactiveQuotaStatus>",
       )
       .optional(),
   })

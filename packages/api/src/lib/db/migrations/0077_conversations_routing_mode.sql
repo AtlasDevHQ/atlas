@@ -23,3 +23,4 @@
 
 ALTER TABLE conversations
   ADD COLUMN IF NOT EXISTS routing_mode TEXT;
+

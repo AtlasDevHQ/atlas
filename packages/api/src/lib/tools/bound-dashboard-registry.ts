@@ -1,11 +1,13 @@
 /**
- * Bound dashboard tool registry (#2363).
+ * Bound dashboard tool registry (#2363, +#2365 destructive ops).
  *
  * The bound agent has a strict editor tool surface:
  *   - explore + executeSQL — same as the default agent (needed to verify
- *     SQL shape before `addCard`).
+ *     SQL shape before `addCard` / `updateCardSql`).
  *   - getDashboardState, getCardDetail, addCard, updateCard, updateLayout,
- *     updateDashboardMeta — the six safe editor tools.
+ *     updateDashboardMeta — the six safe editor tools (commit immediately).
+ *   - removeCard, updateCardSql — destructive editor tools (#2365). Stage
+ *     a ghost change rather than mutating; user accepts / discards inline.
  *
  * Explicitly NOT included:
  *   - executePython — out of scope for dashboard editing; the bound agent

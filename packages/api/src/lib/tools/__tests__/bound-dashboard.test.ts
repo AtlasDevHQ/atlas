@@ -170,21 +170,21 @@ describe("createBoundDashboardTools", () => {
   // Factory shape
   // -------------------------------------------------------------------
 
-  it("returns the safe-op editor tools (six edit tools + screenshotDashboard) and nothing else", () => {
+  it("returns the nine editor tools (#2363 safe + #2365 destructive + #2367 vision)", () => {
     const tools = createBoundDashboardTools(ctx);
     const names = Object.keys(tools).sort();
     expect(names).toEqual([
       "addCard",
       "getCardDetail",
       "getDashboardState",
+      "removeCard",
       "screenshotDashboard",
       "updateCard",
+      "updateCardSql",
       "updateDashboardMeta",
       "updateLayout",
     ]);
-    // Critically: no removeCard / updateCardSql / executePython / actions.
-    expect(names).not.toContain("removeCard");
-    expect(names).not.toContain("updateCardSql");
+    // Critically: no executePython / action-plugin tools.
     expect(names).not.toContain("executePython");
   });
 

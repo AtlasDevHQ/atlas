@@ -328,6 +328,7 @@ describe("migrateAuthTables", () => {
             { name: "0080_proactive_public_dataset.sql" },
             { name: "0081_workspace_proactive_announcement_posted_at.sql" },
             { name: "0082_audit_log_parent_audit_id_deferrable.sql" },
+            { name: "0083_dashboard_stage_changes.sql" },
           ],
         };
       }

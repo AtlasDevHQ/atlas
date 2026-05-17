@@ -1701,6 +1701,57 @@ export const dashboardUserDrafts = pgTable(
   ],
 );
 
+// 0080 — Per-user staged destructive ops on dashboards (#2365, PRD #2362).
+// The bound chat agent's `removeCard` and `updateCardSql` tools do NOT
+// mutate the draft directly; they queue a row here. Accepting a stage
+// applies the change to the draft via the versioning module; discarding
+// drops it. Terminal rows are kept (audit trail) so the table grows
+// per-edit-session and is GC'd at dashboard delete via ON DELETE CASCADE.
+//
+// Per-user scope — `user_id text` mirrors `dashboard_user_drafts.user_id`
+// so the table works in every auth mode without an FK into Better Auth's
+// managed `user` table.
+export const dashboardStageChanges = pgTable(
+  "dashboard_stage_changes",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    dashboardId: uuid("dashboard_id").notNull().references(() => dashboards.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull(),
+    // `remove_card` payload: { cardId }.
+    // `edit_sql`    payload: { cardId, newSql, currentSql }.
+    kind: text("kind").notNull(),
+    payload: jsonb("payload").notNull(),
+    // `pending` / `applied` / `discarded`. Terminal-state rows are frozen
+    // — accept / discard helpers are no-ops on rows that aren't `pending`.
+    status: text("status").notNull().default("pending"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    appliedAt: timestamp("applied_at", { withTimezone: true }),
+    discardedAt: timestamp("discarded_at", { withTimezone: true }),
+  },
+  (t) => [
+    // Mirrors the migration's CHECK constraint on `kind`.
+    check("dashboard_stage_changes_kind_chk", sql`${t.kind} IN ('remove_card', 'edit_sql')`),
+    // Mirrors the migration's CHECK on `status`.
+    check("dashboard_stage_changes_status_chk", sql`${t.status} IN ('pending', 'applied', 'discarded')`),
+    // Terminal-state invariants: pending rows have both timestamps NULL;
+    // applied rows have applied_at set + discarded_at NULL; discarded
+    // rows have discarded_at set + applied_at NULL.
+    check(
+      "dashboard_stage_changes_timestamps_chk",
+      sql`(${t.status} = 'pending' AND ${t.appliedAt} IS NULL AND ${t.discardedAt} IS NULL)
+       OR (${t.status} = 'applied' AND ${t.appliedAt} IS NOT NULL AND ${t.discardedAt} IS NULL)
+       OR (${t.status} = 'discarded' AND ${t.discardedAt} IS NOT NULL AND ${t.appliedAt} IS NULL)`,
+    ),
+    // Per-user pending stages by dashboard — drives the overlay query on
+    // every render. Partial index keeps it tight (terminal rows excluded).
+    index("idx_dashboard_stage_changes_user_pending")
+      .on(t.dashboardId, t.userId, t.status)
+      .where(sql`status = 'pending'`),
+    index("idx_dashboard_stage_changes_dashboard").on(t.dashboardId),
+  ],
+);
+
 export const sandboxCredentials = pgTable(
   "sandbox_credentials",
   {

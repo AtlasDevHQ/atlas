@@ -11,6 +11,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
+import { eeOnError } from "./ee-error-handler";
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { createLogger, withRequestContext, getRequestContext } from "@atlas/api/lib/logger";
@@ -237,13 +238,7 @@ async function verifyOrgMembership(
   }
 }
 
-admin.onError((err, c) => {
-  if (err instanceof HTTPException) {
-    if (err.res) return err.res;
-    if (err.status === 400) return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
-  }
-  throw err;
-});
+admin.onError(eeOnError);
 
 admin.use(withRequestId);
 

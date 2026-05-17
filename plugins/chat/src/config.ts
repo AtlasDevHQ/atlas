@@ -9,6 +9,12 @@
 import { z } from "zod";
 import type { StreamChunk } from "chat";
 import type { ReactionConfig } from "./features/reactions";
+import type {
+  ChannelProactiveConfig,
+  LLMClassifierFn,
+  ProactiveGateFn,
+  WorkspaceProactiveConfig,
+} from "./proactive/types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -388,6 +394,38 @@ export interface ChatPluginConfig {
   /** Ephemeral message configuration. Controls whether errors and debug info
    * are posted as ephemeral messages (visible only to the requesting user). */
   ephemeral?: EphemeralConfig;
+
+  /**
+   * Proactive chat configuration (slice #2292: reaction-first tracer).
+   *
+   * When present and `isEnabled()` returns truthy, the bridge subscribes
+   * to channel-message events and reacts to high-confidence data
+   * questions with 🤖. The host wires `isEnabled` to
+   * `isEnterpriseEnabled() && workspaceFlag` and `classify` to the
+   * configured Atlas model — the plugin itself never imports from
+   * `@atlas/ee` or `@atlas/api`.
+   *
+   * Slice #2292 stops at the reaction. Later slices add the reply,
+   * kill switches, admin UI, meter, and feedback.
+   */
+  proactive?: ProactiveConfig;
+}
+
+/** Proactive chat configuration (slice #2292). */
+export interface ProactiveConfig {
+  /** Gate: returns true when proactive mode is allowed. */
+  isEnabled: ProactiveGateFn;
+  /** LLM classifier injected from the host. */
+  classify: LLMClassifierFn;
+  /** Workspace-level settings (master toggle, sensitivity, classifier mode). */
+  workspace: WorkspaceProactiveConfig;
+  /**
+   * Optional explicit channel allowlist. If omitted, the listener reads
+   * `ATLAS_PROACTIVE_CHANNELS` (comma-separated channel IDs).
+   */
+  channelAllowlist?: string[];
+  /** Per-channel overrides keyed by channel ID. */
+  channelConfigs?: Record<string, ChannelProactiveConfig>;
 }
 
 // ---------------------------------------------------------------------------
@@ -596,6 +634,40 @@ const ReactionConfigSchema = z
   })
   .optional();
 
+const SensitivityPresetSchema = z.enum(["cautious", "balanced", "eager"]);
+
+const ProactiveWorkspaceConfigSchema = z.object({
+  enabled: z.boolean(),
+  sensitivity: SensitivityPresetSchema,
+  classifierMode: z.enum(["regex-prefilter", "classify-all"]),
+});
+
+const ProactiveChannelConfigSchema = z.object({
+  channelId: z.string().min(1),
+  allow: z.boolean(),
+  sensitivity: SensitivityPresetSchema.optional(),
+});
+
+const ProactiveConfigSchema = z
+  .object({
+    isEnabled: z
+      .any()
+      .refine(
+        (v) => typeof v === "function",
+        "proactive.isEnabled must be a function returning boolean | Promise<boolean>",
+      ),
+    classify: z
+      .any()
+      .refine(
+        (v) => typeof v === "function",
+        "proactive.classify must be a function returning Promise<ClassificationResult>",
+      ),
+    workspace: ProactiveWorkspaceConfigSchema,
+    channelAllowlist: z.array(z.string().min(1)).optional(),
+    channelConfigs: z.record(z.string(), ProactiveChannelConfigSchema).optional(),
+  })
+  .optional();
+
 export const ChatConfigSchema = z.object({
   adapters: z
     .object({
@@ -672,6 +744,7 @@ export const ChatConfigSchema = z.object({
   fileUpload: FileUploadConfigSchema,
   reactions: ReactionConfigSchema,
   ephemeral: EphemeralConfigSchema,
+  proactive: ProactiveConfigSchema,
   executeQueryStream: z
     .any()
     .refine(

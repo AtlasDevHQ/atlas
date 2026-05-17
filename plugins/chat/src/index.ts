@@ -111,7 +111,30 @@ export type {
   StreamingQueryResult,
   FileUploadConfig,
   EphemeralConfig,
+  ProactiveConfig,
 } from "./config";
+
+// Proactive chat layer (slice #2292: reaction-first tracer)
+export type {
+  ChannelProactiveConfig,
+  ClassificationResult,
+  InterjectionAction,
+  InterjectionDecision,
+  LLMClassifierFn,
+  ProactiveGateFn,
+  SensitivityPreset,
+  WorkspaceProactiveConfig,
+} from "./proactive";
+export {
+  PROACTIVE_REACTION,
+  RECENT_INTERJECTION_COOLDOWN_MS,
+  SENSITIVITY_THRESHOLDS,
+  classifyMessage,
+  decideInterjection,
+  regexPreFilter,
+  registerProactiveListener,
+  resolveChannelAllowlist,
+} from "./proactive";
 export type { ReactionConfig, IReactionLifecycle } from "./features/reactions";
 export { StatusEmoji, createReactionLifecycle } from "./features/reactions";
 export type { ChatBridge, ChatPlatform } from "./bridge";

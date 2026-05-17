@@ -2030,3 +2030,43 @@ export const proactivePauses = pgTable(
       .where(sql`${t.userId} IS NOT NULL`),
   ],
 );
+
+// ---------------------------------------------------------------------------
+// Proactive chat — public dataset for non-linked askers (#2297, PRD #2291).
+//
+// The unlinked-asker flow from #2293 stops at "link your Atlas account."
+// This table is the curated allowlist of fully-qualified semantic entity
+// names that an unlinked asker is allowed to ask questions about — the
+// admin opts in entity-by-entity. `deny_metrics` is the per-entry escape
+// hatch for "allow `users` but never `users.email`": column / measure
+// names that block a query even when the parent entity is allowed.
+//
+// Defaults are conservative — empty allowlist on day one. No
+// auto-population. Cross-entity joins are strict (`isEntityAllowed`
+// rejects a query that touches any out-of-allowlist entity, even via
+// JOIN). Refusal emits a `proactive.public_refused` meter event whose
+// `metadata.entityName` drives the discoverability rollup in the
+// admin console.
+// ---------------------------------------------------------------------------
+
+export const proactivePublicDataset = pgTable(
+  "proactive_public_dataset",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: text("workspace_id").notNull(),
+    entityName: text("entity_name").notNull(),
+    denyMetrics: text("deny_metrics")
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("uq_proactive_public_dataset_workspace_entity").on(
+      t.workspaceId,
+      t.entityName,
+    ),
+    index("idx_proactive_public_dataset_workspace").on(t.workspaceId),
+  ],
+);

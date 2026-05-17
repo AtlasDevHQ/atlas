@@ -35,15 +35,18 @@ import {
 } from "./answerer";
 import type {
   ChannelProactiveConfig,
+  GetPublicDatasetFn,
   GetQuotaStatusFn,
   LLMClassifierFn,
   OnPauseRequestFn,
   ProactiveGateFn,
   ProactiveMeterEvent,
   ProactiveMeterEventFn,
+  ProactivePublicDatasetEntry,
   RecentActivity,
   WorkspaceProactiveConfig,
 } from "./types";
+import { DEFAULT_PROACTIVE_REFUSAL_COPY } from "./types";
 import {
   buildProactiveAnswerCard,
   buildProactiveOfferCard,
@@ -139,6 +142,21 @@ export interface ProactiveListenerConfig {
    * bridge default; pass the same value you pass to `slashCommandName`.
    */
   slashCommandName?: string;
+
+  // ---- Slice #2297 additions: public dataset for unlinked askers ----
+
+  /**
+   * Host-injected fetch for the curated allowlist of semantic entities
+   * an unlinked asker may ask about. When omitted the listener keeps
+   * the #2293 unlinked-asker stub (link-Atlas prompt only).
+   */
+  getPublicDataset?: GetPublicDatasetFn;
+  /**
+   * Override the default refusal copy posted when an unlinked asker's
+   * question touches an entity that isn't on the public dataset.
+   * Defaults to `DEFAULT_PROACTIVE_REFUSAL_COPY`.
+   */
+  refusalCopy?: string;
 
   // ---- Slice #2295 additions (kill switch + per-user opt-out) ----
 
@@ -802,12 +820,143 @@ async function runAnswerFlow(
     ? await safeResolveUser(config.userResolver, asker, log)
     : { atlasUserId: undefined };
 
+  // Helper: route a meter event through the host (slice #2297 / #2296).
+  // Shared with the public-dataset refusal branch below and the linked-
+  // asker happy path. Failures are swallowed because the meter is
+  // observability, not control flow.
+  const emitMeter = async (
+    partial: Omit<ProactiveMeterEvent, "workspaceId">,
+  ): Promise<void> => {
+    if (!config.onMeterEvent) return;
+    try {
+      await config.onMeterEvent({
+        workspaceId: config.workspaceId ?? "",
+        ...partial,
+      });
+    } catch (err) {
+      log.warn(
+        {
+          err: err instanceof Error ? err : new Error(String(err)),
+          eventType: partial.eventType,
+        },
+        "Proactive meter callback threw — suppressed",
+      );
+    }
+  };
+
+  // -----------------------------------------------------------------
+  // Slice #2297 — unlinked-asker public dataset gate
+  // -----------------------------------------------------------------
+  //
+  // Three branches, conservative defaults:
+  //
+  //   - Unlinked asker, no `getPublicDataset` wired → fall through to
+  //     the #2293 link-Atlas stub. Self-hosted free deployments stay
+  //     on this path because the public dataset feature is enterprise-
+  //     gated at the route layer.
+  //
+  //   - Unlinked asker, allowlist is empty → refuse with the configured
+  //     copy and emit `public_refused`. We intentionally refuse rather
+  //     than falling back to the link prompt; the admin has signalled
+  //     "no public data" by not curating anything yet, and the refusal
+  //     event is what drives the discoverability rollup.
+  //
+  //   - Unlinked asker, allowlist non-empty → call
+  //     `executeQueryProactive` with `atlasUserId: ""` (sentinel for
+  //     "no Atlas identity"). The host implementation is responsible
+  //     for constraining the agent to the allowlist. Post-execution
+  //     we intersect `entitiesReferenced` against the allowlist and
+  //     refuse if any out-of-allowlist entity slipped through —
+  //     belt-and-braces against an agent that ignores the constraint.
   if (!resolved.atlasUserId) {
-    const prompt = buildUnlinkedAskerPrompt(config.linkUrl);
-    await thread.post(prompt);
+    if (!config.getPublicDataset || !config.executeQueryProactive) {
+      const prompt = buildUnlinkedAskerPrompt(config.linkUrl);
+      await thread.post(prompt);
+      log.info(
+        { threadId, externalUserId: asker.externalUserId },
+        "Proactive answer: posted unlinked-asker stub (no public-dataset wiring)",
+      );
+      return;
+    }
+
+    let allowlist: ReadonlyArray<ProactivePublicDatasetEntry> = [];
+    try {
+      allowlist = await config.getPublicDataset({
+        workspaceId: config.workspaceId ?? "",
+      });
+    } catch (err) {
+      // Fail closed — a registry hiccup must NOT widen the refusal
+      // surface. Treat as empty allowlist; the user sees the refusal
+      // copy and the admin sees a logged warning.
+      log.warn(
+        {
+          err: err instanceof Error ? err : new Error(String(err)),
+          workspaceId: config.workspaceId,
+        },
+        "Proactive public-dataset lookup threw — treating as empty allowlist",
+      );
+      allowlist = [];
+    }
+
+    if (allowlist.length === 0) {
+      await postPublicRefusal(thread, config, log, asker, threadId, undefined);
+      await emitMeter({
+        channelId: thread.channelId,
+        eventType: "public_refused",
+        actorUserId: asker.externalUserId,
+        metadata: {
+          reason: "allowlist-empty",
+          askerExternalUserId: asker.externalUserId,
+        },
+      });
+      return;
+    }
+
+    let publicResult: ProactiveQueryResultLike;
+    try {
+      publicResult = await config.executeQueryProactive(text, {
+        threadId,
+        asker,
+        // Sentinel — host implementations check for the empty string to
+        // skip RLS and constrain the agent to the allowlist instead.
+        atlasUserId: "",
+      });
+    } catch (err) {
+      log.error(
+        {
+          err: err instanceof Error ? err : new Error(String(err)),
+          threadId,
+        },
+        "Proactive executeQueryProactive threw (unlinked-asker / public-dataset path)",
+      );
+      await thread.post(
+        "Sorry — I hit an error while answering. Try asking again or use `@atlas` directly.",
+      );
+      return;
+    }
+
+    const refused = entitiesOutsideAllowlist(publicResult, allowlist);
+    if (refused.length > 0) {
+      const firstRefused = refused[0];
+      await postPublicRefusal(thread, config, log, asker, threadId, firstRefused);
+      await emitMeter({
+        channelId: thread.channelId,
+        eventType: "public_refused",
+        actorUserId: asker.externalUserId,
+        metadata: {
+          reason: "entity-not-in-allowlist",
+          entityName: firstRefused,
+          refusedEntities: refused,
+          askerExternalUserId: asker.externalUserId,
+        },
+      });
+      return;
+    }
+
+    await postProactiveAnswer(thread, log, threadId, asker, text, publicResult, recentAnswers);
     log.info(
-      { threadId, externalUserId: asker.externalUserId },
-      "Proactive answer: posted unlinked-asker stub",
+      { threadId, externalUserId: asker.externalUserId, mode: "public-dataset" },
+      "Proactive answer delivered to unlinked asker via public dataset",
     );
     return;
   }
@@ -822,7 +971,7 @@ async function runAnswerFlow(
     return;
   }
 
-  let result: { answer: string; followupSubscribe?: boolean };
+  let result: ProactiveQueryResultLike;
   try {
     result = await config.executeQueryProactive(text, {
       threadId,
@@ -843,10 +992,124 @@ async function runAnswerFlow(
     return;
   }
 
-  // Post the answer with the feedback button row. The Chat SDK
-  // surfaces the answer card's own message ID as `event.messageId` on
-  // feedback button clicks, so we don't have to round-trip the answer
-  // id through the button `value`.
+  await postProactiveAnswer(thread, log, threadId, asker, text, result, recentAnswers);
+  log.info(
+    { threadId, externalUserId: asker.externalUserId, atlasUserId: resolved.atlasUserId },
+    "Proactive answer delivered to linked asker",
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Public-dataset helpers (#2297)
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal contract on the executeQueryProactive return shape that the
+ * listener actually consumes. Kept here rather than importing the full
+ * `ProactiveQueryResult` so a host that adds new optional fields to
+ * the result doesn't fan-out a type churn through the listener.
+ */
+type ProactiveQueryResultLike = {
+  answer: string;
+  followupSubscribe?: boolean;
+  entitiesReferenced?: string[];
+  metricsReferenced?: string[];
+};
+
+/**
+ * Walk the agent's reported entity touches against the workspace
+ * allowlist and return the names that are out-of-allowlist (or that
+ * touch a denied metric). Empty result === query is fully allowlisted.
+ *
+ * When the host doesn't report `entitiesReferenced`, we conservatively
+ * treat the result as "no information" and let the result through —
+ * this matches the host wiring stage where the agent doesn't yet
+ * surface entity introspection. Hosts that want strict enforcement
+ * should populate `entitiesReferenced` in the result.
+ */
+function entitiesOutsideAllowlist(
+  result: ProactiveQueryResultLike,
+  allowlist: ReadonlyArray<ProactivePublicDatasetEntry>,
+): string[] {
+  const entities = result.entitiesReferenced ?? [];
+  const metrics = result.metricsReferenced ?? [];
+  if (entities.length === 0) return [];
+  const refused: string[] = [];
+  for (const entity of entities) {
+    const entry = allowlist.find((row) => row.entityName === entity);
+    if (!entry) {
+      refused.push(entity);
+      continue;
+    }
+    if (entry.denyMetrics.length > 0) {
+      const hit = metrics.find((m) => entry.denyMetrics.includes(m));
+      if (hit) refused.push(entity);
+    }
+  }
+  return refused;
+}
+
+/**
+ * Post the public-dataset refusal copy in-thread. Always pairs the
+ * copy with the link-Atlas prompt (the asker's next step), so the
+ * single refusal landing answers both questions: "why didn't Atlas
+ * answer" and "how do I get an answer". Configurable via
+ * `config.refusalCopy`.
+ */
+async function postPublicRefusal(
+  thread: AnyThread,
+  config: ProactiveListenerConfig,
+  log: PluginLogger,
+  asker: ProactiveAsker,
+  threadId: string,
+  _refusedEntity: string | undefined,
+): Promise<void> {
+  const copy = config.refusalCopy ?? DEFAULT_PROACTIVE_REFUSAL_COPY;
+  try {
+    await thread.post(copy);
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err : new Error(String(err)), threadId },
+      "Proactive public-dataset refusal: failed to post copy",
+    );
+  }
+  // Always follow up with the unlinked-asker link prompt — the HITL
+  // decision pairs the refusal with the existing link button.
+  try {
+    const linkPrompt = buildUnlinkedAskerPrompt(config.linkUrl);
+    await thread.post(linkPrompt);
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err : new Error(String(err)), threadId },
+      "Proactive public-dataset refusal: failed to post link prompt",
+    );
+  }
+  log.info(
+    {
+      threadId,
+      externalUserId: asker.externalUserId,
+      // Intentionally NOT logging the refused entity name into the
+      // structured INFO line — keeps the operator log content-blind
+      // even when forensic detail lands on the meter event.
+    },
+    "Proactive public-dataset refusal posted",
+  );
+}
+
+/**
+ * Shared answer-posting tail. Hoisted from the linked-asker happy
+ * path so the unlinked-asker public-dataset branch reuses the exact
+ * same card shape + feedback wiring + recent-answers bookkeeping.
+ */
+async function postProactiveAnswer(
+  thread: AnyThread,
+  log: PluginLogger,
+  threadId: string,
+  asker: ProactiveAsker,
+  question: string,
+  result: ProactiveQueryResultLike,
+  recentAnswers: RecentAnswers,
+): Promise<void> {
   const answer = buildProactiveAnswerCard(result.answer);
   const sent = await thread.post(answer);
   const answerMessageId =
@@ -858,13 +1121,11 @@ async function runAnswerFlow(
     recentAnswers.record(thread.channelId, asker.externalUserId, {
       threadId,
       answerMessageId,
-      question: text,
+      question,
       answer: result.answer,
     });
   }
 
-  // Subscribe so follow-ups in the thread flow through the existing
-  // `onSubscribedMessage` handler.
   if (result.followupSubscribe !== false) {
     try {
       await thread.subscribe();
@@ -875,11 +1136,6 @@ async function runAnswerFlow(
       );
     }
   }
-
-  log.info(
-    { threadId, externalUserId: asker.externalUserId, atlasUserId: resolved.atlasUserId },
-    "Proactive answer delivered to linked asker",
-  );
 }
 
 async function deliverFeedback(

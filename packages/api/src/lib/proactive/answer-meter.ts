@@ -35,13 +35,23 @@ const log = createLogger("answer-meter");
 // Public types
 // ---------------------------------------------------------------------------
 
-/** Five lifecycle stages a proactive interaction passes through. */
+/**
+ * Lifecycle stages a proactive interaction passes through.
+ *
+ * `public_refused` (#2297) is emitted when an unlinked asker reaches
+ * the answer flow but the question's referenced entities aren't on
+ * the workspace's curated public dataset. The discoverability rollup
+ * in the admin console groups these by `metadata.entityName` so an
+ * admin can see "what topic do non-linked askers keep trying" and
+ * one-click widen the allowlist.
+ */
 export type ProactiveEventType =
   | "classify"
   | "react"
   | "offer"
   | "accept"
-  | "feedback";
+  | "feedback"
+  | "public_refused";
 
 /**
  * Outcomes captured on `feedback` events. `no-feedback` covers the
@@ -200,6 +210,13 @@ function incrementEventType(
     case "feedback":
       // Outcome split tracked separately; the bucket counter is the
       // total across outcomes.
+      return;
+    case "public_refused":
+      // `public_refused` rows are aggregated by the public-dataset
+      // discoverability rollup (`summarizePublicRefused`) — the
+      // top-level meter summary deliberately ignores them so an admin
+      // glancing at "react count" doesn't accidentally double-count
+      // proactive engagement against the silent-refusal stream.
       return;
   }
 }

@@ -1064,3 +1064,283 @@ describe("registerProactiveListener — monthly quota cap (#2301)", () => {
     expect(thread._addReaction).toHaveBeenCalledTimes(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Public-dataset gate for unlinked askers (#2297)
+// ---------------------------------------------------------------------------
+
+describe("registerProactiveListener — public dataset (#2297)", () => {
+  async function setup(opts: {
+    userResolver?: ProactiveUserResolver;
+    executeQueryProactive?: ProactiveExecuteQuery;
+    getPublicDataset?: (input: { workspaceId: string }) => Promise<
+      ReadonlyArray<{ entityName: string; denyMetrics: string[] }>
+    >;
+    refusalCopy?: string;
+    onMeterEvent?: (event: unknown) => Promise<void> | void;
+  } = {}) {
+    const { chat, invokeMessage, invokeReaction } = makeChat();
+    const log = makeLogger();
+    await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], log, {
+      isEnabled: () => true,
+      classify: yesLLM,
+      workspace: baseWorkspace,
+      channelAllowlist: ["C-allowed"],
+      workspaceId: "ws_1",
+      userResolver: opts.userResolver,
+      executeQueryProactive: opts.executeQueryProactive,
+      getPublicDataset: opts.getPublicDataset,
+      refusalCopy: opts.refusalCopy,
+      onMeterEvent: opts.onMeterEvent as Parameters<typeof registerProactiveListener>[2]["onMeterEvent"],
+    });
+    return { chat, log, invokeMessage, invokeReaction };
+  }
+
+  function triggerReaction(thread: ReturnType<typeof makeThread>, messageId = "M1") {
+    return {
+      added: true,
+      messageId,
+      threadId: thread.channelId,
+      thread,
+      user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
+      emoji: PROACTIVE_REACTION,
+      rawEmoji: "robot_face",
+      adapter: { name: "slack" },
+      raw: {},
+    };
+  }
+
+  it("linked asker bypasses the public dataset entirely", async () => {
+    const getPublicDataset = mock(async () => []);
+    const executeQueryProactive = mock(echoExecute);
+    const { invokeMessage, invokeReaction } = await setup({
+      userResolver: linkedResolver,
+      executeQueryProactive,
+      getPublicDataset,
+    });
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage({ id: "M1" }));
+    await invokeReaction(triggerReaction(thread));
+    expect(executeQueryProactive).toHaveBeenCalledTimes(1);
+    expect(executeQueryProactive.mock.calls[0]![1].atlasUserId).toBe(
+      "atlas-user-1",
+    );
+    // The allowlist lookup is for the unlinked path — linked asker
+    // should never trigger it.
+    expect(getPublicDataset).not.toHaveBeenCalled();
+  });
+
+  it("unlinked asker without a public-dataset wiring falls back to the link prompt", async () => {
+    const executeQueryProactive = mock(echoExecute);
+    const { invokeMessage, invokeReaction } = await setup({
+      userResolver: unlinkedResolver,
+      executeQueryProactive,
+      // getPublicDataset deliberately omitted
+    });
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage({ id: "M1" }));
+    await invokeReaction(triggerReaction(thread));
+    expect(executeQueryProactive).not.toHaveBeenCalled();
+    expect(thread.post).toHaveBeenCalledTimes(1);
+  });
+
+  it("unlinked asker with an empty allowlist gets the refusal + a meter event", async () => {
+    const onMeterEvent = mock(async () => {});
+    const getPublicDataset = mock(async () => []);
+    const executeQueryProactive = mock(echoExecute);
+    const { invokeMessage, invokeReaction } = await setup({
+      userResolver: unlinkedResolver,
+      executeQueryProactive,
+      getPublicDataset,
+      onMeterEvent,
+    });
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage({ id: "M1" }));
+    await invokeReaction(triggerReaction(thread));
+
+    expect(executeQueryProactive).not.toHaveBeenCalled();
+    // Refusal copy + link prompt = 2 posts.
+    expect(thread.post).toHaveBeenCalledTimes(2);
+
+    // Meter wiring landed a `public_refused` event with the empty-allowlist
+    // reason, plus the classify/react events from the channel-message phase.
+    const meterCalls = onMeterEvent.mock.calls.map(
+      (c) =>
+        (c as unknown[])[0] as { eventType: string; metadata?: Record<string, unknown> },
+    );
+    const publicRefused = meterCalls.find((c) => c.eventType === "public_refused");
+    expect(publicRefused).toBeDefined();
+    expect(publicRefused?.metadata?.reason).toBe("allowlist-empty");
+  });
+
+  it("unlinked asker inside the allowlist runs executeQueryProactive", async () => {
+    const getPublicDataset = mock(async () => [
+      { entityName: "marketing.users", denyMetrics: [] },
+    ]);
+    const executeQueryProactive = mock(
+      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string }) => ({
+        answer: `Echo: ${q}`,
+        entitiesReferenced: ["marketing.users"],
+      }),
+    );
+    const { invokeMessage, invokeReaction } = await setup({
+      userResolver: unlinkedResolver,
+      executeQueryProactive,
+      getPublicDataset,
+    });
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage({ id: "M1" }));
+    await invokeReaction(triggerReaction(thread));
+
+    expect(executeQueryProactive).toHaveBeenCalledTimes(1);
+    // The sentinel empty-string atlasUserId tells the host this is the
+    // public-dataset path; the host then constrains the agent.
+    expect(executeQueryProactive.mock.calls[0]![1].atlasUserId).toBe("");
+    // Answer card + subscribe → one thread.post for the answer.
+    expect(thread.post).toHaveBeenCalledTimes(1);
+    expect(thread.subscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("unlinked asker outside the allowlist gets the refusal + public_refused meter event", async () => {
+    const onMeterEvent = mock(async () => {});
+    const getPublicDataset = mock(async () => [
+      { entityName: "marketing.users", denyMetrics: [] },
+    ]);
+    const executeQueryProactive = mock(
+      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string }) => ({
+        answer: `Echo: ${q}`,
+        entitiesReferenced: ["finance.revenue"],
+      }),
+    );
+    const { invokeMessage, invokeReaction } = await setup({
+      userResolver: unlinkedResolver,
+      executeQueryProactive,
+      getPublicDataset,
+      onMeterEvent,
+    });
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage({ id: "M1" }));
+    await invokeReaction(triggerReaction(thread));
+
+    expect(executeQueryProactive).toHaveBeenCalledTimes(1);
+    // 2 posts: refusal copy + link prompt. The agent answer is NOT posted.
+    expect(thread.post).toHaveBeenCalledTimes(2);
+
+    const meterCalls = onMeterEvent.mock.calls.map(
+      (c) =>
+        (c as unknown[])[0] as { eventType: string; metadata?: Record<string, unknown> },
+    );
+    const publicRefused = meterCalls.find((c) => c.eventType === "public_refused");
+    expect(publicRefused).toBeDefined();
+    expect(publicRefused?.metadata?.reason).toBe("entity-not-in-allowlist");
+    expect(publicRefused?.metadata?.entityName).toBe("finance.revenue");
+  });
+
+  it("strict join semantics: out-of-allowlist join target refuses the whole query", async () => {
+    const onMeterEvent = mock(async () => {});
+    // revenue is public, customers is NOT — agent reports both → refuse.
+    const getPublicDataset = mock(async () => [
+      { entityName: "finance.revenue", denyMetrics: [] },
+    ]);
+    const executeQueryProactive = mock(
+      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string }) => ({
+        answer: `Echo: ${q}`,
+        entitiesReferenced: ["finance.revenue", "finance.customers"],
+      }),
+    );
+    const { invokeMessage, invokeReaction } = await setup({
+      userResolver: unlinkedResolver,
+      executeQueryProactive,
+      getPublicDataset,
+      onMeterEvent,
+    });
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage({ id: "M1" }));
+    await invokeReaction(triggerReaction(thread));
+
+    expect(thread.post).toHaveBeenCalledTimes(2); // refusal + link
+    const meterCalls = onMeterEvent.mock.calls.map(
+      (c) =>
+        (c as unknown[])[0] as { eventType: string; metadata?: Record<string, unknown> },
+    );
+    const publicRefused = meterCalls.find((c) => c.eventType === "public_refused");
+    expect(publicRefused).toBeDefined();
+    expect(publicRefused?.metadata?.refusedEntities).toEqual(["finance.customers"]);
+  });
+
+  it("denyMetrics refuses a touched metric inside an allowlisted entity", async () => {
+    const onMeterEvent = mock(async () => {});
+    const getPublicDataset = mock(async () => [
+      { entityName: "marketing.users", denyMetrics: ["email"] },
+    ]);
+    const executeQueryProactive = mock(
+      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string }) => ({
+        answer: `Echo: ${q}`,
+        entitiesReferenced: ["marketing.users"],
+        metricsReferenced: ["signup_date", "email"],
+      }),
+    );
+    const { invokeMessage, invokeReaction } = await setup({
+      userResolver: unlinkedResolver,
+      executeQueryProactive,
+      getPublicDataset,
+      onMeterEvent,
+    });
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage({ id: "M1" }));
+    await invokeReaction(triggerReaction(thread));
+
+    expect(thread.post).toHaveBeenCalledTimes(2);
+    const meterCalls = onMeterEvent.mock.calls.map(
+      (c) =>
+        (c as unknown[])[0] as { eventType: string; metadata?: Record<string, unknown> },
+    );
+    const publicRefused = meterCalls.find((c) => c.eventType === "public_refused");
+    expect(publicRefused).toBeDefined();
+    expect(publicRefused?.metadata?.refusedEntities).toEqual(["marketing.users"]);
+  });
+
+  it("admin-supplied refusalCopy overrides the default", async () => {
+    const getPublicDataset = mock(async () => []);
+    const executeQueryProactive = mock(echoExecute);
+    const { invokeMessage, invokeReaction } = await setup({
+      userResolver: unlinkedResolver,
+      executeQueryProactive,
+      getPublicDataset,
+      refusalCopy: "Custom-refusal-copy-XYZ",
+    });
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage({ id: "M1" }));
+    await invokeReaction(triggerReaction(thread));
+
+    expect(thread.post).toHaveBeenCalledTimes(2);
+    // First post is the refusal copy (string), second is the link card.
+    const firstArg = thread.post.mock.calls[0]![0];
+    expect(firstArg).toBe("Custom-refusal-copy-XYZ");
+  });
+
+  it("getPublicDataset failures are treated as an empty allowlist (fail closed)", async () => {
+    const onMeterEvent = mock(async () => {});
+    const getPublicDataset = mock(async () => {
+      throw new Error("DB unreachable");
+    });
+    const executeQueryProactive = mock(echoExecute);
+    const { invokeMessage, invokeReaction, log } = await setup({
+      userResolver: unlinkedResolver,
+      executeQueryProactive,
+      getPublicDataset,
+      onMeterEvent,
+    });
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage({ id: "M1" }));
+    await invokeReaction(triggerReaction(thread));
+
+    expect(executeQueryProactive).not.toHaveBeenCalled();
+    expect(thread.post).toHaveBeenCalledTimes(2);
+    expect(log.warn).toHaveBeenCalled();
+    const meterCalls = onMeterEvent.mock.calls.map(
+      (c) => (c as unknown[])[0] as { eventType: string },
+    );
+    expect(meterCalls.some((c) => c.eventType === "public_refused")).toBe(true);
+  });
+});

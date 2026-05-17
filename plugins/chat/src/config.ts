@@ -11,6 +11,7 @@ import type { StreamChunk } from "chat";
 import type { ReactionConfig } from "./features/reactions";
 import type {
   ChannelProactiveConfig,
+  GetPublicDatasetFn,
   GetQuotaStatusFn,
   LLMClassifierFn,
   OnPauseRequestFn,
@@ -463,6 +464,27 @@ export interface ProactiveConfig {
    */
   feedbackCollector?: FeedbackCollectorFn;
 
+  // ---- Slice #2297 additions: public dataset for unlinked askers ----
+
+  /**
+   * Host-injected fetch for the workspace's curated allowlist of
+   * semantic entities a public-channel asker (not OAuth'd into Atlas)
+   * is allowed to ask questions about. When omitted, the listener
+   * keeps the unlinked-asker stub from #2293 — every unlinked-asker
+   * answer attempt routes to the "link your Atlas account" prompt.
+   */
+  getPublicDataset?: GetPublicDatasetFn;
+  /**
+   * Override the default refusal copy posted when an unlinked asker
+   * hits a question whose referenced entities aren't on the public
+   * dataset. Defaults to `DEFAULT_PROACTIVE_REFUSAL_COPY` in
+   * `proactive/types.ts`. Content-blind by design — never names the
+   * entity the asker probed for.
+   */
+  refusalCopy?: string;
+  // (onMeterEvent declared below alongside the #2296 AnswerMeter wiring —
+  //  shared callback covers the public_refused events from #2297.)
+
   // ---- Slice #2295 additions: kill switch + per-user opt-out ----
 
   /**
@@ -766,6 +788,17 @@ const ProactiveConfigSchema = z
         "proactive.feedbackCollector must be a function",
       )
       .optional(),
+    // Public dataset wiring (#2297). All three optional — when
+    // `getPublicDataset` is omitted, the listener keeps the
+    // unlinked-asker stub from #2293 (link-Atlas prompt only).
+    getPublicDataset: z
+      .any()
+      .refine(
+        (v) => v === undefined || typeof v === "function",
+        "proactive.getPublicDataset must be a function returning Promise<PublicDatasetEntry[]>",
+      )
+      .optional(),
+    refusalCopy: z.string().min(1).max(1024).optional(),
     // Kill-switch wiring (#2295). All three optional so the legacy
     // env-var allowlist mode (used by tests + dev) keeps working.
     workspaceId: z.string().min(1).optional(),

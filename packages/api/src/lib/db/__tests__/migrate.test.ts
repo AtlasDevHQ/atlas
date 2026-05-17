@@ -91,8 +91,9 @@ describe("runMigrations", () => {
     // + 0076 (proactive_pauses kill switch, #2295)
     // + 0077 (conversations.routing_mode picker, #2518)
     // + 0078 (proactive_meter_events, #2296)
-    // + 0079 (dashboard_user_drafts, #2364) = 80.
-    expect(count).toBe(80);
+    // + 0079 (dashboard_user_drafts, #2364)
+    // + 0080 (proactive_public_dataset + public_refused meter, #2297) = 81.
+    expect(count).toBe(81);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -201,6 +202,7 @@ describe("runMigrations", () => {
         "0077_conversations_routing_mode.sql",
         "0078_proactive_meter_events.sql",
         "0079_dashboard_user_drafts.sql",
+        "0080_proactive_public_dataset.sql",
       ],
     });
 

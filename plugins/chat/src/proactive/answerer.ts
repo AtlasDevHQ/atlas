@@ -52,9 +52,33 @@ export interface ProactiveQueryResult {
    * `onSubscribedMessage`. Defaults to true at the call site.
    */
   followupSubscribe?: boolean;
+  /**
+   * Fully-qualified semantic entity names the agent touched while
+   * answering. Populated when the host wires the agent's entity
+   * tracker through to the result (#2297 — drives the public-dataset
+   * gate for unlinked askers). Empty / undefined means "host doesn't
+   * report this"; the listener falls back to allowlist-presence-only
+   * behavior in that case.
+   */
+  entitiesReferenced?: string[];
+  /**
+   * Column / measure names the agent touched. Combined with the
+   * allowlist's per-entry `denyMetrics` to refuse a question that
+   * touches a sensitive column inside an otherwise-public entity.
+   */
+  metricsReferenced?: string[];
 }
 
-/** Execute the Atlas agent on behalf of a linked asker. */
+/**
+ * Execute the Atlas agent on behalf of an asker.
+ *
+ * Slice #2293 introduced this for linked askers only (`atlasUserId`
+ * non-null). Slice #2297 extends it to public-dataset askers too:
+ * when the caller passes `atlasUserId: null` and a non-empty
+ * `publicDatasetAllowlist`, the host runs the agent constrained to
+ * the allowlist (no RLS, just the curated entity set). The listener
+ * post-filters the result against the same allowlist before posting.
+ */
 export type ProactiveExecuteQuery = (
   question: string,
   context: {

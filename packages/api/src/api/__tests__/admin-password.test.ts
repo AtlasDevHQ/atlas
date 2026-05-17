@@ -226,6 +226,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   resolveGroupForConnection: mock(() => Promise.resolve(null)),
   verifyGroupBelongsToOrg: mock(() => Promise.resolve("ok")),
   updateConversationRoutingMode: mock(() => Promise.resolve({ ok: true as const })),
+  resolveRoutingMode: mock((m: "auto" | "pin" | "all" | null | undefined = null) => m ?? "pin"),
 }));
 
 // Mock auth/server for the password-change dynamic import

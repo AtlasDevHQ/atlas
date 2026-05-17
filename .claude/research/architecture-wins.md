@@ -1716,11 +1716,11 @@ A new `boot-smoke` job in `.github/workflows/deploy-validation.yml` builds `depl
 - **Unknown-member fallback degrades, doesn't fault.** When the agent emits a `scope` string that doesn't match any member (a prompt drift or model hallucination), the planner falls back to the group's primary with a warning rather than 500-ing the tool call. The audit warning surfaces the divergence to the operator.
 
 **What got unbundled:**
-- **The routing rules became a single named function call.** Slice 2's agent-prompt change and slice 3's picker can both call `resolveRoutingPlan` with their respective inputs and trust the policy is consistent. Without this module, the prompt prompt would need its own logic for "what does `scope: 'all'` mean" and the picker would need its own logic for "what does `pickerMode: 'pin'` mean," and the two would inevitably drift.
-- **The reason discriminator is the audit attribute.** `RoutingReason` values (`agent-all`, `picker-pin`, `1x1-group`, etc.) feed directly into the `atlas.routing_mode` OTel span attribute slated for slice 4. Pinning the reason in tests means the audit dimension can't silently change.
+- **The routing rules became a single named function call.** Slice 2's agent-prompt change and slice 3's picker can both call `resolveRoutingPlan` with their respective inputs and trust the policy is consistent. Without this module, the agent prompt would need its own logic for "what does `scope: 'all'` mean" and the picker would need its own logic for "what does `pickerMode: 'pin'` mean," and the two would inevitably drift.
+- **The reason discriminator is an audit + OTel attribute.** `RoutingReason` values (`agent-all`, `picker-pin`, `1x1-group`, etc.) flow into the `atlas.routing_reason` OTel span attribute on every `atlas.sql.execute` span (single + fanout legs). Pinning the reason in tests means the trace dimension can't silently change. The follow-up to milestone 1.4.5 wired this end-to-end after the original slice shipped — the reason had been generated but not consumed.
 
 **Impact:**
-- **One pure module** (~165 lines including JSDoc) holds every routing decision.
+- **One pure module** holds every routing decision; the run-time logic is ~110 effective lines (the rest is structured JSDoc).
 - **18 unit tests** in `env-routing/__tests__/index.test.ts` cover the full decision table.
 - **Zero pre-existing call sites changed.** `executeSQL` was the first consumer; slices 2 + 3 wire the agent prompt and picker.
 
@@ -1749,9 +1749,9 @@ A new `boot-smoke` job in `.github/workflows/deploy-validation.yml` builds `depl
 - **Empty / degenerate / fanout-of-one all collapse to the same shape.** Zero members → `{ columns: [__env__], rows: [], envContributions: [] }`; single-member fanout → same shape as the multi-member case. Downstream code (UI, SDK, audit) handles one branch.
 
 **Impact:**
-- **One pure module** (~130 lines including JSDoc) holds every merge rule.
+- **One pure module** holds every merge rule (run-time logic ~70 effective lines; the rest is structured JSDoc).
 - **13 unit tests** in `multi-env-merger/__tests__/index.test.ts` cover same-schema, schema-divergence, partial failure, all-failure, all-empty, type coercion, ordering, and the `__env__` collision case.
-- **`executeSQL`'s fanout dispatch** (`executeSqlFanout`) is ~45 lines — orchestration only, no merge logic inline.
+- **`executeSQL`'s fanout dispatch** (`executeSqlFanout`) is orchestration only — the merge logic stays in the pure module.
 
 **Category:** Pure data-transformation module extracted ahead of the behaviour-flipping slice. The merger's interface (`MemberExecutionResult[]` → `MergedResult`) is the same shape slice 4 ships on the wire, so the type contract from the merger flows straight through to the SDK without a translation step.
 
@@ -1825,3 +1825,48 @@ The DB-touching helpers (`forkOrLoadDraft`, `saveDraft`, `publishDraft`, `discar
 - **Wire to #2521:** the Publish UI slice consumes the four draft routes directly — no module changes needed there, it just renders the diff modal + calls `POST /draft/publish`. The "your baseline has changed" notice (user story 13) reads off `stale_baseline` 409s the publish route already returns.
 
 **Category:** Deep module + pure-snapshot-transform pattern. Same shape as the connection-mode resolution module (win #58) and content-mode publish (the workspace-wide cousin) — when correctness lives in pure functions and the DB layer is "load → call → persist," the test surface stays tractable as the surface area grows. The PRD #2362 follow-ups (#2365 stage tracker, #2369 createDashboard) plug into `applyChangeToDraft` by extending the `DraftChange` union — no re-architecting of the publish/rebase paths.
+
+## 65. `stageTracker` — destructive-op staging as pure transitions atop the versioning module (#2365)
+
+**Date:** 2026-05-17
+**Issue:** #2365 (1.4.6 destructive-op slice for PRD #2362, sibling deepening to #2364's `dashboardVersioning` — win #64)
+**Milestone:** 1.4.6 — Chat as dashboard editor
+**Branch:** `feat/2365-stage-tracker-ghost-overlays`
+
+**Before:** PRD #2362 user story 8 — "destructive operations (delete card, rewrite SQL) stage as ghost changes the user accepts or discards inline." The naive shape would have been: a per-tool branch in `bound-dashboard.ts` (`if (isDraftsEnabled) { stage; surface envelope } else { mutate directly }`), with the route layer re-implementing the accept-then-apply lifecycle inline, an ad-hoc UI surface walking accept / discard against whatever in-memory representation the dashboard happened to use, and the per-user scope enforced ad-hoc at every endpoint that touched a stage row. Every layer would have known about the kind/status/payload shape and the dispatcher from `StagePayload` to `DraftChange` would have lived in three places.
+
+**The win:** `lib/stage-tracker.ts` is the single module that owns the entire lifecycle, and the three hot functions are PURE.
+
+- **`acceptStageTransition(row, nowIso) → { kind: "apply" | "noop" | "rejected" }`** — pure. Drives the four-arm state machine: `pending → applied` returns the `DraftChange` for the caller to dispatch through `applyChangeToDraft`; `applied → applied` is idempotent (re-clicking Accept never re-applies); `discarded → rejected` is a typed 409.
+- **`discardStageTransition(row, nowIso) → { kind: "discard" | "noop" | "rejected" }`** — pure, mirror symmetry. `pending → discarded` mutates; `discarded → discarded` idempotent; `applied → rejected`.
+- **`payloadToDraftChange(payload) → DraftChange`** — pure dispatch from the on-disk `StagePayload` discriminated union (`remove_card` / `edit_sql`) to the versioning module's `DraftChange` variant (`removeCard` / `editSql`). The two new variants on `DraftChange` are the ONLY change the versioning module needed.
+
+The DB-touching helpers (`stageChange`, `loadStagedChange`, `listStagedChangesForUser`, `acceptStagedChange`, `discardStagedChange`) are thin wrappers — they load the row, call the pure transition, and either flip the status (discard) or run a single transaction that mutates the draft + flips the status (accept). The transaction body is BEGIN → UPDATE the draft → UPDATE the stage WHERE status='pending' (race-guarded) → COMMIT; if either step throws, ROLLBACK leaves both untouched.
+
+**Per-user scope as a first-class invariant.** Every DB helper takes `userId` as a non-optional parameter and gates SQL on `WHERE id = $1 AND user_id = $2`. An attacker stamping someone else's stage id can't probe for existence — the gate returns `not_found` whether the row doesn't exist OR belongs to another user. The route layer also runs an org-scoped `getDashboard` first before any `list` / `stage` call, so cross-org dashboard id stamps don't leak existence either. This is the "teammates' stages aren't visible on your view" PRD acceptance criterion enforced at every layer.
+
+**Tools become envelope-returning, never mutating.** The two new tools (`removeCard`, `updateCardSql`) call `stageChange(...)` and return a `{ kind: "stage_required", stageId, stageKind, target }` envelope to the LLM. The agent never sees a mutation result for these. The web tool-part renderer (`stage-change-card.tsx`) recognises the `stage_required` envelope and surfaces an inline Accept / Discard pair that POSTs to the new accept/discard routes. The dashboard renderer (`<DashboardGrid>`) reads from `/api/v1/dashboards/[id]/stage` and overlays cards with pending stages (strikethrough for `remove_card`, side-by-side SQL diff for `edit_sql`). The accept endpoint re-uses `applyChangeToDraft` — the versioning module is the ONLY place a draft snapshot ever mutates, even for destructive ops staged through this module.
+
+**Schema is one table + four CHECK constraints.** `dashboard_stage_changes (id uuid, dashboard_id uuid FK CASCADE, user_id text, kind text, payload jsonb, status text, created_at, updated_at, applied_at, discarded_at)` plus:
+
+- `kind IN ('remove_card', 'edit_sql')` — schema enforces the discriminated union at insert time.
+- `status IN ('pending', 'applied', 'discarded')` — same.
+- Terminal-state timestamp invariant: pending forbids both terminal timestamps; applied requires `applied_at` + forbids `discarded_at`; discarded vice versa. Catches "we forgot to stamp the timestamp" bugs at insert/update rather than at audit-read.
+- Partial index `(dashboard_id, user_id, status) WHERE status = 'pending'` — drives the overlay query without scanning terminal rows.
+
+The terminal rows are kept (not DELETEd) so a future audit / history view can show "which staged op resolved which card change."
+
+**What got unbundled:**
+- **Pure test surface.** `stage-tracker.test.ts` has 22 cases — 8 pure state-machine cases (every transition arm, including the cross-rejection cases applied↔discarded that the schema forbids but the helper layer still has to handle for the race-where-the-row-flipped-between-load-and-update), 14 DB-touching cases against `_resetPool(mockPool)` that lock down the SQL targets + per-user gate without requiring a real Postgres. `dashboard-versioning.test.ts` gains 8 more cases for the new `DraftChange` variants (removeCard / editSql on `applyChangeToDraft` + the three new branches in `publishDraftMerge`: draft-removed-card → deleteCard op, both-sides-agree → no-op, removed-in-draft-but-mutated-in-published → conflict). Migrate-pg gains 4 more cases (column shape, kind CHECK, status + timestamp CHECK, ON DELETE CASCADE).
+- **`publishDraftMerge` extends without restructuring.** The new `deleteCard` op falls naturally out of the three-way merge — when a card is in baseline + published but absent from the draft, that's a deletion. The pre-existing "no-op for draft-absent baseline cards" branch in #2364 becomes "no-op only when published also lacks the card" + emit deleteCard otherwise. One new branch, two extra conflicts cases (delete-in-draft + mutated-in-published).
+- **Tool wrappers each grow by one new line.** `removeCard` and `updateCardSql` are 80 lines total combined, almost all of which is the `tool({ description, inputSchema, execute })` Zod boilerplate the AI SDK requires. The actual destructive-op routing logic is `await stageChange({ ... }); return { kind: "stage_required", ... }`.
+- **UI ghost overlay is a tile-level prop.** `<DashboardTile stage={stage}>` reads the per-card stage and renders either the strikethrough banner or the SQL diff overlay. No changes to the chart renderers; the overlay is an absolute-positioned panel on top of the regular tile contents. Accept/Discard surface lives in the chat — the tile's overlay is a "this is what's about to happen" signal, not an action surface (mirrors the PRD's split between WHERE the change happens vs WHERE the resolution happens).
+
+**Impact:**
+- **1 new deep module** (`lib/stage-tracker.ts`, ~450 lines including the persistence helpers + transaction) + 1 migration (0080) + matching `schema.ts` mirror + 2 new `DraftChange` variants on the existing versioning module.
+- **`tools/bound-dashboard.ts` changes:** 1 new helper (`readCurrentCard` — draft-aware lookup for the `currentSql` snapshot), 2 new tools (`removeCard` + `updateCardSql`) returning `stage_required` envelopes. The six pre-existing safe-op tools are UNCHANGED.
+- **`api/routes/dashboards.ts` changes:** 4 new route definitions + handlers (list, stage, accept, discard), ~250 lines total. Re-uses `crudFailResponse` + `runEffect` + `UUID_RE` from the existing scaffolding.
+- **Web changes:** 1 new `<StageChangeCard>` component (inline accept/discard in the tool-part renderer), 1 new `<StageProvider>` context (bridges `dashboardId` + `onStagesChanged` into the deeply-nested tool-part tree), `<DashboardGrid>` + `<DashboardTile>` each grow one optional `stage` prop, the dashboard page adds one `useAdminFetch` for the pending-stage list.
+- **Tests:** 22 cases in `stage-tracker.test.ts` (pure + DB-touching), 8 new in `dashboard-versioning.test.ts` for the new union variants, 4 migrate-pg cases (column shape + kind CHECK + status/timestamp CHECK + ON DELETE CASCADE), 4 browser e2e specs (`@llm`-tagged + per-user-scope integration).
+
+**Category:** Deep module + pure-state-machine pattern stacked on top of an existing deep module. Same shape as `dashboardVersioning` (win #64) — when the lifecycle is small enough that every transition can be expressed as `(input, now) → result`, the test surface stays narrow, the route layer becomes "load → call → persist", and the UI becomes "read from the API, render the overlay." The two new `DraftChange` variants are the ONLY change to the versioning module — extending the discriminated union didn't require rewriting any of its merge / rebase / publish paths.

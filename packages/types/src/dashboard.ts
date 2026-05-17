@@ -118,3 +118,32 @@ export interface PreviewCardResponse {
   rowCount: number;
   executionMs: number;
 }
+
+/**
+ * Per-user destructive-op staging (#2365, PRD #2362).
+ *
+ * The bound chat agent's `removeCard` and `updateCardSql` tools enqueue
+ * a `StagedChange` row instead of mutating immediately. The dashboard
+ * renders staged cards with a ghost overlay (strikethrough for removal,
+ * side-by-side SQL diff for edits) until the user accepts or discards
+ * the stage inline.
+ */
+export type StageKind = "remove_card" | "edit_sql";
+export type StageStatus = "pending" | "applied" | "discarded";
+
+export type StagePayload =
+  | { kind: "remove_card"; cardId: string }
+  | { kind: "edit_sql"; cardId: string; newSql: string; currentSql: string };
+
+export interface StagedChange {
+  id: string;
+  dashboardId: string;
+  userId: string;
+  kind: StageKind;
+  payload: StagePayload;
+  status: StageStatus;
+  createdAt: string;
+  updatedAt: string;
+  appliedAt: string | null;
+  discardedAt: string | null;
+}

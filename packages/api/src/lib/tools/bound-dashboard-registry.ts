@@ -1,20 +1,24 @@
 /**
- * Bound dashboard tool registry (#2363).
+ * Bound dashboard tool registry (#2363, +#2365 destructive ops).
  *
  * The bound agent has a strict editor tool surface:
  *   - explore + executeSQL — same as the default agent (needed to verify
- *     SQL shape before `addCard`).
+ *     SQL shape before `addCard` / `updateCardSql`).
  *   - getDashboardState, getCardDetail, addCard, updateCard, updateLayout,
- *     updateDashboardMeta — the six safe editor tools.
+ *     updateDashboardMeta — the six safe editor tools (commit immediately).
+ *   - removeCard, updateCardSql — destructive editor tools (#2365). Stage
+ *     a ghost change rather than mutating; user accepts / discards inline.
  *
  * Explicitly NOT included:
  *   - executePython — out of scope for dashboard editing; the bound agent
  *     should not run arbitrary Python in the middle of an edit session.
  *   - action plugins (createJiraTicket, sendEmailReport) — irrelevant to
  *     dashboard composition; including them just confuses the model.
- *   - proposeDashboard — superseded by the bound editor tools. The root-
- *     chat flow keeps proposeDashboard until #2369 reframes it as
- *     `createDashboard`; the bound flow drops it outright.
+ *   - createDashboard — superseded by the bound editor tools. The root-
+ *     chat flow uses `createDashboard` to mint a new dashboard + open
+ *     the bound editor; once inside the bound flow, further cards land
+ *     via `addCard` on the existing dashboard rather than minting a
+ *     second one.
  *
  * Plugin tools are NOT merged here. Plugin-registered tools target the
  * general agent loop; the bound surface is intentionally narrow. If a

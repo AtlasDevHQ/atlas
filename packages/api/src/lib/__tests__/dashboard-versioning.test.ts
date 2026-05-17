@@ -115,23 +115,27 @@ describe("isDashboardDraftsEnabled", () => {
     else process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = orig;
   });
 
-  it("is false by default", () => {
+  it("is true by default (#2521 flipped the default ON)", () => {
     delete process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED;
-    expect(isDashboardDraftsEnabled()).toBe(false);
-  });
-
-  it("is true when env var is exactly 'true'", () => {
-    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "true";
     expect(isDashboardDraftsEnabled()).toBe(true);
   });
 
-  it("is false for non-'true' truthy strings (no accidental opt-in)", () => {
+  it("is false only when env var is exactly 'false'", () => {
+    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
+    expect(isDashboardDraftsEnabled()).toBe(false);
+  });
+
+  it("is true when env var is anything other than 'false' (no accidental opt-out)", () => {
+    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "true";
+    expect(isDashboardDraftsEnabled()).toBe(true);
     process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "1";
-    expect(isDashboardDraftsEnabled()).toBe(false);
-    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "TRUE";
-    expect(isDashboardDraftsEnabled()).toBe(false);
-    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "yes";
-    expect(isDashboardDraftsEnabled()).toBe(false);
+    expect(isDashboardDraftsEnabled()).toBe(true);
+    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "0";
+    expect(isDashboardDraftsEnabled()).toBe(true);
+    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "FALSE";
+    expect(isDashboardDraftsEnabled()).toBe(true);
+    process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "no";
+    expect(isDashboardDraftsEnabled()).toBe(true);
   });
 });
 
@@ -247,6 +251,52 @@ describe("applyChangeToDraft", () => {
     expect(both.snapshot.title).toBe("X");
     expect(both.snapshot.description).toBe("Y");
   });
+
+  // ---------- destructive #2365 variants ----------------------------------
+
+  it("removeCard drops the card from the snapshot", () => {
+    const base = snapshot([card("c1"), card("c2"), card("c3")]);
+    const result = applyChangeToDraft(base, { kind: "removeCard", cardId: "c2" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.cards.map((c) => c.id)).toEqual(["c1", "c3"]);
+    // Pure: source unchanged.
+    expect(base.cards.map((c) => c.id)).toEqual(["c1", "c2", "c3"]);
+  });
+
+  it("removeCard returns unknown_card when the target is missing", () => {
+    const base = snapshot([card("c1")]);
+    const result = applyChangeToDraft(base, { kind: "removeCard", cardId: "missing" });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("unknown_card");
+    expect(result.cardId).toBe("missing");
+  });
+
+  it("editSql replaces the card's SQL in place; other fields unchanged", () => {
+    const base = snapshot([card("c1", { sql: "SELECT 1", title: "First" })]);
+    const result = applyChangeToDraft(base, {
+      kind: "editSql",
+      cardId: "c1",
+      newSql: "SELECT 2 FROM t WHERE x = 1",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.cards[0].sql).toBe("SELECT 2 FROM t WHERE x = 1");
+    expect(result.snapshot.cards[0].title).toBe("First");
+  });
+
+  it("editSql returns unknown_card when the target is missing", () => {
+    const base = snapshot([card("c1")]);
+    const result = applyChangeToDraft(base, {
+      kind: "editSql",
+      cardId: "missing",
+      newSql: "SELECT 1",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("unknown_card");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -334,6 +384,66 @@ describe("publishDraftMerge", () => {
     if (result.kind !== "conflict") return;
     expect(result.conflicts[0].kind).toBe("card_mutated_in_published");
     expect(result.conflicts[0].cardId).toBe("c1");
+  });
+
+  // ---------- destructive #2365 ops on the merge path ----------------------
+
+  it("removeCard in draft → deleteCard op when published still has it untouched", () => {
+    const baseline = snapshot([card("c1"), card("c2")]);
+    const draft = applyChangeToDraft(baseline, { kind: "removeCard", cardId: "c2" });
+    expect(draft.ok).toBe(true);
+    if (!draft.ok) return;
+    // Published unchanged.
+    const result = publishDraftMerge(draft.snapshot, baseline, baseline);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.ops).toEqual([{ kind: "deleteCard", cardId: "c2" }]);
+  });
+
+  it("removeCard in draft + same card already removed in published → no-op (both sides agree)", () => {
+    const baseline = snapshot([card("c1"), card("c2")]);
+    const draft = applyChangeToDraft(baseline, { kind: "removeCard", cardId: "c2" });
+    expect(draft.ok).toBe(true);
+    if (!draft.ok) return;
+    const newPublished = snapshot([card("c1")]);
+    const result = publishDraftMerge(draft.snapshot, newPublished, baseline);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    // c2 was removed both sides — no op needed.
+    expect(result.ops).toHaveLength(0);
+  });
+
+  it("removeCard in draft + published mutated that card → conflict (card_mutated_in_published)", () => {
+    const baseline = snapshot([card("c1"), card("c2", { title: "Original" })]);
+    const draft = applyChangeToDraft(baseline, { kind: "removeCard", cardId: "c2" });
+    expect(draft.ok).toBe(true);
+    if (!draft.ok) return;
+    const newPublished: DashboardSnapshot = {
+      ...baseline,
+      cards: [card("c1"), { ...baseline.cards[1], title: "Published edit" }],
+    };
+    const result = publishDraftMerge(draft.snapshot, newPublished, baseline);
+    expect(result.kind).toBe("conflict");
+    if (result.kind !== "conflict") return;
+    expect(result.conflicts[0].kind).toBe("card_mutated_in_published");
+    expect(result.conflicts[0].cardId).toBe("c2");
+  });
+
+  it("editSql in draft → updateCard op with new SQL preserved", () => {
+    const baseline = snapshot([card("c1", { sql: "SELECT 1" })]);
+    const draft = applyChangeToDraft(baseline, {
+      kind: "editSql",
+      cardId: "c1",
+      newSql: "SELECT 2",
+    });
+    expect(draft.ok).toBe(true);
+    if (!draft.ok) return;
+    const result = publishDraftMerge(draft.snapshot, baseline, baseline);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.ops).toHaveLength(1);
+    if (result.ops[0]?.kind !== "updateCard") throw new Error("expected updateCard");
+    expect(result.ops[0].card.sql).toBe("SELECT 2");
   });
 
   it("draft-add with the same id colliding with published → conflict", () => {

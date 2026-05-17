@@ -173,11 +173,11 @@ export type {
   DashboardChartConfig,
   DashboardSuggestion,
   ChartType,
-  ProposedCard,
-  ProposedDashboardSpec,
-  ProposedCardValidationError,
-  ProposeDashboardResult,
   PreviewCardResponse,
+  StagedChange,
+  StageKind,
+  StageStatus,
+  StagePayload,
 } from "@useatlas/types";
 export { CHART_TYPES } from "@useatlas/types";
 export { DOMAIN_STATUSES, CERTIFICATE_STATUSES } from "@useatlas/types";

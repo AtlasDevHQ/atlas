@@ -50,6 +50,12 @@ import {
   rebaseDraft,
   materializeDraftView,
 } from "@atlas/api/lib/dashboard-versioning";
+import {
+  stageChange,
+  acceptStagedChange,
+  discardStagedChange,
+  listStagedChangesForUser,
+} from "@atlas/api/lib/stage-tracker";
 import { SHARE_MODES } from "@useatlas/types/share";
 import { ErrorSchema, parsePagination } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -347,6 +353,32 @@ const getDraftRoute = createRoute({
   },
 });
 
+// #2521 — lightweight non-forking presence check. The Publish UI needs
+// to know "does this user have a draft?" without the side effect that
+// `GET /:id/draft` has (it forks on first call). Returns the metadata
+// fields only — no snapshot — so the client can derive the draft badge,
+// the publish-button enabled state, and the stale-baseline check
+// without paying for the full materialized view. 404 when no draft
+// exists; the publish/discard/rebase buttons stay hidden.
+const getDraftStatusRoute = createRoute({
+  method: "get",
+  path: "/{id}/draft/status",
+  tags: ["Dashboards", "Drafts"],
+  summary: "Check whether the caller has an active draft for this dashboard",
+  description:
+    "Non-forking presence check. Returns 200 with `{ hasDraft: true, publishedBaselineAt, dashboardUpdatedAt }` when the caller's draft exists, 200 with `{ hasDraft: false }` when not, and 503 when drafts are disabled. The client uses `publishedBaselineAt !== dashboardUpdatedAt` to surface the stale-baseline banner.",
+  request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) },
+  responses: {
+    200: { description: "Draft presence + baseline timestamps", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    404: { description: "Dashboard not found", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Drafts feature flag disabled", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
 const publishDraftRoute = createRoute({
   method: "post",
   path: "/{id}/draft/publish",
@@ -400,6 +432,113 @@ const rebaseDraftRoute = createRoute({
     404: { description: "Dashboard or draft not found", content: { "application/json": { schema: ErrorSchema } } },
     409: { description: "Rebase conflict", content: { "application/json": { schema: ErrorSchema } } },
     503: { description: "Drafts feature flag disabled", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Stage routes (#2365) — per-user destructive-op staging
+// ---------------------------------------------------------------------------
+
+const StagePayloadSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("remove_card"),
+    cardId: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal("edit_sql"),
+    cardId: z.string().min(1),
+    newSql: z.string().min(1),
+    currentSql: z.string().min(1),
+  }),
+]);
+
+const stageRoute = createRoute({
+  method: "post",
+  path: "/{id}/stage",
+  tags: ["Dashboards", "Stage"],
+  summary: "Queue a destructive ghost change for the caller",
+  description:
+    "Queues a `remove_card` or `edit_sql` stage as a pending row in `dashboard_stage_changes`. Per-user — teammates do not see your stages. Returns the full stage row + an envelope the bound chat UI renders as an inline Accept/Discard affordance. Used by the bound editor tools (`removeCard`, `updateCardSql`); also callable directly for tests.",
+  request: {
+    params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }),
+    body: { content: { "application/json": { schema: StagePayloadSchema } }, required: true },
+  },
+  responses: {
+    201: { description: "Stage queued", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    400: { description: "Invalid ID or payload", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    404: { description: "Dashboard not found", content: { "application/json": { schema: ErrorSchema } } },
+    422: { description: "Validation error", content: { "application/json": { schema: ErrorSchema.extend({ details: z.array(z.unknown()).optional() }) } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const acceptStageRoute = createRoute({
+  method: "post",
+  path: "/{id}/stage/{stageId}/accept",
+  tags: ["Dashboards", "Stage"],
+  summary: "Accept a pending stage (apply to draft)",
+  description:
+    "Applies the staged change to the caller's draft (forking if needed) and flips the stage to `applied` transactionally. Idempotent on rows already in `applied`. Returns 409 when the stage was already `discarded` (you cannot un-discard).",
+  request: {
+    params: z.object({
+      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
+      stageId: z.string().openapi({ param: { name: "stageId", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
+    }),
+  },
+  responses: {
+    200: { description: "Stage accepted (or already accepted)", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    404: { description: "Stage not found", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Stage was already discarded", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const discardStageRoute = createRoute({
+  method: "post",
+  path: "/{id}/stage/{stageId}/discard",
+  tags: ["Dashboards", "Stage"],
+  summary: "Discard a pending stage (drop without applying)",
+  description:
+    "Flips the stage to `discarded`. Idempotent on rows already discarded. Returns 409 when the stage was already `applied` — accepted edits cannot be un-applied via this route.",
+  request: {
+    params: z.object({
+      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
+      stageId: z.string().openapi({ param: { name: "stageId", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
+    }),
+  },
+  responses: {
+    200: { description: "Stage discarded (or already discarded)", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    404: { description: "Stage not found", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Stage was already applied", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const listStagesRoute = createRoute({
+  method: "get",
+  path: "/{id}/stage",
+  tags: ["Dashboards", "Stage"],
+  summary: "List the caller's pending stages for a dashboard",
+  description:
+    "Returns the caller's pending stages (per-user — teammates do not appear). Drives the ghost-overlay rendering on the dashboard view. Terminal rows (applied / discarded) are excluded.",
+  request: {
+    params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }),
+  },
+  responses: {
+    200: { description: "Pending stages", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    404: { description: "Dashboard not found", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -896,6 +1035,54 @@ authed.openapi(getDraftRoute, async (c) => {
   }), { label: "get draft" });
 });
 
+// #2521 — non-forking presence check (powers the draft badge + baseline
+// drift detection). Never forks. Returns `{ hasDraft: false }` when the
+// caller has no draft, or `{ hasDraft: true, publishedBaselineAt,
+// dashboardUpdatedAt }` when one exists. The client compares the two
+// timestamps to surface the "your baseline has changed" banner.
+authed.openapi(getDraftStatusRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId, user } = yield* AuthContext;
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
+    }
+    if (!isDashboardDraftsEnabled()) {
+      const fail = draftsFlagOffResponse();
+      return c.json(fail.body, fail.status);
+    }
+    if (!user?.id) {
+      return c.json({ error: "auth_required", message: "Drafts require an authenticated user." }, 401);
+    }
+    // Load dashboard first so we 404 on cross-org reads BEFORE leaking
+    // whether a draft row exists (the FK + the route gate already make
+    // cross-org reads impossible at the DB layer, but the read-path
+    // shape stays consistent with `GET /:id`).
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
+    if (!dash.ok) {
+      const fail = crudFailResponse(dash.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
+    const draft = yield* Effect.promise(() => loadDraft(user.id, id));
+    if (!draft) {
+      return c.json({ hasDraft: false }, 200);
+    }
+    return c.json(
+      {
+        hasDraft: true,
+        publishedBaselineAt: draft.publishedBaselineAt,
+        dashboardUpdatedAt: dash.data.updatedAt,
+        // staleBaseline derived server-side so the client doesn't
+        // re-implement the comparison.
+        staleBaseline: draft.publishedBaselineAt !== dash.data.updatedAt,
+        updatedAt: draft.updatedAt,
+      },
+      200,
+    );
+  }), { label: "get draft status" });
+});
+
 authed.openapi(publishDraftRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
@@ -1045,6 +1232,161 @@ authed.openapi(rebaseDraftRoute, async (c) => {
       500,
     );
   }), { label: "rebase draft" });
+});
+
+// ---------------------------------------------------------------------------
+// Stage routes (#2365) — per-user destructive-op staging
+// ---------------------------------------------------------------------------
+
+authed.openapi(listStagesRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId, user } = yield* AuthContext;
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
+    }
+    if (!user?.id) {
+      return c.json({ error: "auth_required", message: "Stages require an authenticated user." }, 401);
+    }
+    // Org-scope the dashboard before reading stages — even though
+    // `listStagedChangesForUser` is per-user, this gate prevents an
+    // attacker probing whether a dashboard exists in another org by
+    // hitting `/stage` against arbitrary uuids.
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
+    if (!dash.ok) {
+      const fail = crudFailResponse(dash.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
+    const stages = yield* Effect.promise(() => listStagedChangesForUser(id, user.id));
+    return c.json({ stages }, 200);
+  }), { label: "list stages" });
+});
+
+authed.openapi(stageRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId, user } = yield* AuthContext;
+    const { id } = c.req.valid("param");
+    const payload = c.req.valid("json");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
+    }
+    if (!user?.id) {
+      return c.json({ error: "auth_required", message: "Stages require an authenticated user." }, 401);
+    }
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
+    if (!dash.ok) {
+      const fail = crudFailResponse(dash.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
+    const result = yield* Effect.promise(() =>
+      stageChange({ dashboardId: id, userId: user.id, payload }),
+    );
+    if (!result.ok) {
+      if (result.reason === "no_db") {
+        return c.json({ error: "not_available", message: "Stages require an internal database." }, 404);
+      }
+      return c.json(
+        { error: "internal_error", message: "Could not queue the stage.", requestId },
+        500,
+      );
+    }
+    return c.json({ stage: result.stage }, 201);
+  }), { label: "stage change" });
+});
+
+authed.openapi(acceptStageRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId, user } = yield* AuthContext;
+    const { id, stageId } = c.req.valid("param");
+    if (!UUID_RE.test(id) || !UUID_RE.test(stageId)) {
+      return c.json({ error: "invalid_request", message: "Invalid ID format." }, 400);
+    }
+    if (!user?.id) {
+      return c.json({ error: "auth_required", message: "Stages require an authenticated user." }, 401);
+    }
+    const result = yield* Effect.promise(() =>
+      acceptStagedChange({ stageId, userId: user.id, orgId }),
+    );
+    if (!result.ok) {
+      if (result.reason === "no_db") {
+        return c.json({ error: "not_available", message: "Stages require an internal database." }, 404);
+      }
+      if (result.reason === "not_found") {
+        return c.json({ error: "not_found", message: "Stage not found." }, 404);
+      }
+      if (result.reason === "no_draft") {
+        return c.json({ error: "not_found", message: "Could not load or create a draft." }, 404);
+      }
+      if (result.reason === "rejected") {
+        return c.json(
+          {
+            error: "conflict",
+            message: "This stage was already discarded.",
+            requestId,
+          },
+          409,
+        );
+      }
+      if (result.reason === "unknown_card") {
+        return c.json(
+          {
+            error: "conflict",
+            message: "The card this stage targeted is no longer present on the draft.",
+            requestId,
+          },
+          409,
+        );
+      }
+      return c.json(
+        { error: "internal_error", message: "Could not accept the stage.", requestId },
+        500,
+      );
+    }
+    return c.json({ stage: result.stage, applied: result.applied }, 200);
+  }), { label: "accept stage" });
+});
+
+authed.openapi(discardStageRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
+    const { id, stageId } = c.req.valid("param");
+    if (!UUID_RE.test(id) || !UUID_RE.test(stageId)) {
+      return c.json({ error: "invalid_request", message: "Invalid ID format." }, 400);
+    }
+    if (!user?.id) {
+      return c.json({ error: "auth_required", message: "Stages require an authenticated user." }, 401);
+    }
+    const result = yield* Effect.promise(() =>
+      discardStagedChange({ stageId, userId: user.id }),
+    );
+    if (!result.ok) {
+      if (result.reason === "no_db") {
+        return c.json({ error: "not_available", message: "Stages require an internal database." }, 404);
+      }
+      if (result.reason === "not_found") {
+        return c.json({ error: "not_found", message: "Stage not found." }, 404);
+      }
+      if (result.reason === "rejected") {
+        return c.json(
+          {
+            error: "conflict",
+            message: "This stage was already applied — accepted edits cannot be un-applied.",
+            requestId,
+          },
+          409,
+        );
+      }
+      return c.json(
+        { error: "internal_error", message: "Could not discard the stage.", requestId },
+        500,
+      );
+    }
+    return c.json({ stage: result.stage, discarded: result.discarded }, 200);
+  }), { label: "discard stage" });
 });
 
 // ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { MessagesSquare, Plus, Sparkles, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -26,7 +26,13 @@ import { friendlyError } from "@/ui/lib/fetch-error";
 import { DashboardShareDialog } from "./share-dialog";
 import { DashboardGrid } from "@/ui/components/dashboards/dashboard-grid";
 import { DashboardTopBar } from "@/ui/components/dashboards/dashboard-topbar";
+import { DraftStatusBanner } from "@/ui/components/dashboards/draft-status-banner";
+import { PublishDiffModal } from "@/ui/components/dashboards/publish-diff-modal";
+import { diffDashboards, type DashboardDiff } from "@/ui/components/dashboards/dashboard-diff";
 import { nextTileLayout, withAutoLayout } from "@/ui/components/dashboards/auto-layout";
+import { StageProvider } from "@/ui/components/dashboards/stage-context";
+import type { StagedChange } from "@/ui/lib/types";
+import { useVisibilityGatedPoll } from "@/ui/hooks/use-visibility-gated-poll";
 import { selectNextAfterDelete } from "../select-recent";
 import type { Density } from "@/ui/components/dashboards/grid-constants";
 import type {
@@ -36,14 +42,54 @@ import type {
   DashboardWithCards,
 } from "@/ui/lib/types";
 
+// #2521 — wire shape returned by `GET /:id/draft/status`. Lightweight
+// presence check; never forks a draft.
+interface DraftStatusResponse {
+  hasDraft: boolean;
+  /** Only present when hasDraft is true. */
+  publishedBaselineAt?: string;
+  dashboardUpdatedAt?: string;
+  staleBaseline?: boolean;
+  updatedAt?: string;
+}
+
+// #2521 — wire shape returned by `GET /:id/draft`. Materialized view +
+// draft metadata. We only consume `.view` (a DashboardWithCards) here —
+// the snapshot stays server-side.
+interface DraftViewResponse {
+  draft: {
+    userId: string;
+    dashboardId: string;
+    publishedBaselineAt: string;
+    updatedAt: string;
+  };
+  view: DashboardWithCards;
+}
+
+/** Poll interval for draft status. 30s is the same cadence as TanStack
+ *  Query's default staleTime in this app, so the window-focus refetch
+ *  picks up baseline drift even sooner. */
+const DRAFT_STATUS_POLL_MS = 30_000;
+
 export default function DashboardViewPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
 
   const { data: dashboard, loading, error, refetch } = useAdminFetch<DashboardWithCards>(
     `/api/v1/dashboards/${id}`,
   );
+
+  // #2365 — pending destructive stages for THIS user on THIS dashboard.
+  // Drives the ghost overlay on the grid (strikethrough + side-by-side
+  // diff). Per-user; teammates never see each other's pending stages.
+  // Refetched whenever the chat tool fires a stage or the user accepts /
+  // discards via `<StageChangeCard>`.
+  const { data: stagesData, refetch: refetchStages } = useAdminFetch<{ stages: StagedChange[] }>(
+    `/api/v1/dashboards/${id}/stage`,
+  );
+  const stages: StagedChange[] = stagesData?.stages ?? [];
 
   const { mutate, error: mutationError } = useAdminMutation({ invalidates: refetch });
 
@@ -61,12 +107,57 @@ export default function DashboardViewPage() {
   // #2363 — bound chat drawer state
   const [chatOpen, setChatOpen] = useState(false);
 
+  // #2521 — draft state. `useAdminFetch` powers the badge + baseline-drift
+  // detection; we poll on window focus + a 30s tick so a teammate's
+  // publish surfaces quickly without blowing the request budget.
+  const {
+    data: draftStatus,
+    refetch: refetchDraftStatus,
+  } = useAdminFetch<DraftStatusResponse>(`/api/v1/dashboards/${id}/draft/status`);
+  useVisibilityGatedPoll(refetchDraftStatus, DRAFT_STATUS_POLL_MS);
+
+  const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
+  const [publishModalOpen, setPublishModalOpen] = useState(false);
+  // Draft view materialized server-side — fetched lazily, only when the
+  // user opens the Publish modal. Avoids the side-effect cost of `GET
+  // /:id/draft` (which forks-on-first-call) on every page load.
+  const [draftView, setDraftView] = useState<DashboardWithCards | null>(null);
+  const [draftViewLoading, setDraftViewLoading] = useState(false);
+
+  // Dedicated mutation hook for draft ops. We want a separate error
+  // surface from the shared `mutate` above (which is reused for card +
+  // dashboard CRUD) so the banner's "draft-error" copy doesn't mask
+  // unrelated mutation errors and vice-versa.
+  const {
+    mutate: draftMutate,
+    error: draftError,
+    clearError: clearDraftError,
+  } = useAdminMutation({
+    invalidates: [refetch, refetchDraftStatus],
+  });
+  const [publishing, setPublishing] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
+  const [rebasing, setRebasing] = useState(false);
+
   // Optimistic layout — applied on drop/resize end so the UI doesn't wait for
   // the PATCH round-trip. Dropped explicitly when the mutation settles. No
   // effect-driven reconciliation against `dashboard` — the previous version
   // of that pattern cascaded into React #185 once refetches started landing
   // fast enough during multi-drag sessions.
   const [optimisticLayouts, setOptimisticLayouts] = useState<Record<string, DashboardCardLayout>>({});
+
+  // #2369 — creation-to-bound continuity. The chat-side
+  // `createDashboard` tool surfaces a "Continue editing" link that
+  // navigates here with `?openChat=true`. Auto-open the bound chat
+  // drawer once so the same conversation resumes in bound mode, then
+  // strip the param so a refresh doesn't keep reopening it.
+  useEffect(() => {
+    if (searchParams.get("openChat") !== "true") return;
+    setChatOpen(true);
+    // Replace the URL without the flag — `router.replace` keeps the
+    // browser history clean (no "back" landing on the auto-open).
+    router.replace(`/dashboards/${id}`);
+  }, [searchParams, router, id]);
 
   // Skip when typing in inputs.
   useEffect(() => {
@@ -241,14 +332,114 @@ export default function DashboardViewPage() {
     });
   }
 
+  // -------------------------------------------------------------------
+  // #2521 — Publish / Discard / Rebase handlers
+  // -------------------------------------------------------------------
+
+  // Fetch the materialized draft view on demand (Publish modal open).
+  // We hit the GET endpoint directly rather than going through
+  // useAdminFetch because the call is one-shot per open — we don't need
+  // the cache machinery, and we want to surface a network error to the
+  // modal's own banner rather than the page's.
+  async function handleOpenPublishModal() {
+    clearDraftError();
+    setPublishModalOpen(true);
+    setDraftView(null);
+    setDraftViewLoading(true);
+    try {
+      const res = await fetch(`${apiUrl}/api/v1/dashboards/${id}/draft`, {
+        credentials: isCrossOrigin ? "include" : "same-origin",
+      });
+      if (res.ok) {
+        const json = (await res.json()) as DraftViewResponse;
+        setDraftView(json.view ?? null);
+      } else {
+        console.debug(`[dashboard] Failed to fetch draft view: ${res.status}`);
+        setDraftView(null);
+      }
+    } catch (err) {
+      console.debug(
+        "[dashboard] Network error fetching draft view:",
+        err instanceof Error ? err.message : String(err),
+      );
+      setDraftView(null);
+    } finally {
+      setDraftViewLoading(false);
+    }
+  }
+
+  async function handleConfirmPublish() {
+    setPublishing(true);
+    const result = await draftMutate({
+      path: `/api/v1/dashboards/${id}/draft/publish`,
+      method: "POST",
+    });
+    setPublishing(false);
+    if (result.ok) {
+      setPublishModalOpen(false);
+      setDraftView(null);
+    } else if (result.error.status === 409) {
+      // Stale baseline OR conflict — close the modal and let the banner
+      // surface the rebase affordance. The error is recorded on
+      // draftError so the user sees what happened next to the Rebase
+      // button. Refetching draft status picks up the staleBaseline
+      // flag from the server.
+      setPublishModalOpen(false);
+      void refetchDraftStatus();
+    }
+    // Other failures: modal stays open so the user sees the error in
+    // its own banner.
+  }
+
+  async function handleDiscardConfirm() {
+    setDiscarding(true);
+    const result = await draftMutate({
+      path: `/api/v1/dashboards/${id}/draft/discard`,
+      method: "POST",
+    });
+    setDiscarding(false);
+    if (result.ok) {
+      setDiscardConfirmOpen(false);
+    }
+  }
+
+  async function handleRebase() {
+    setRebasing(true);
+    const result = await draftMutate({
+      path: `/api/v1/dashboards/${id}/draft/rebase`,
+      method: "POST",
+    });
+    setRebasing(false);
+    if (result.ok) {
+      // refetchDraftStatus is wired as an invalidate above; the banner
+      // updates automatically as soon as the status returns
+      // staleBaseline=false.
+    }
+  }
+
+  // Compute the diff client-side from the live published view vs the
+  // fetched draft view. The modal renders an empty state when these
+  // match (`diff.empty`); Publish is disabled in that case.
+  const diff: DashboardDiff | null =
+    dashboard && draftView ? diffDashboards(dashboard, draftView) : null;
+
   const cardsForGrid: DashboardCard[] = dashboard
     ? dashboard.cards.map((c) =>
         optimisticLayouts[c.id] ? { ...c, layout: optimisticLayouts[c.id] } : c,
       )
     : [];
 
+  // The stage handler fires when the user clicks Accept / Discard in the
+  // bound chat drawer. We refetch BOTH the dashboard (the draft cards
+  // changed after an accept) AND the stage list (the row is no longer
+  // pending). Both calls are cheap (org-scoped GETs).
+  function handleStagesChanged() {
+    refetch();
+    refetchStages();
+  }
+
   return (
-    <>
+    <StageProvider value={{ dashboardId: id, onStagesChanged: handleStagesChanged }}>
       <div className="flex h-full flex-1 flex-col overflow-auto">
         {loading && (
           <div className="space-y-4 px-4 py-6 sm:px-6">
@@ -303,6 +494,21 @@ export default function DashboardViewPage() {
               onEditingChange={setEditing}
               density={density}
               onDensityChange={setDensity}
+            />
+
+            <DraftStatusBanner
+              hasDraft={!!draftStatus?.hasDraft}
+              staleBaseline={!!draftStatus?.staleBaseline}
+              discardOpen={discardConfirmOpen}
+              onDiscardOpenChange={setDiscardConfirmOpen}
+              onPublish={handleOpenPublishModal}
+              onDiscardConfirm={handleDiscardConfirm}
+              onRebase={handleRebase}
+              publishing={publishing}
+              discarding={discarding}
+              rebasing={rebasing}
+              error={draftError}
+              onDismissError={clearDraftError}
             />
 
             {mutationError && (
@@ -405,6 +611,7 @@ export default function DashboardViewPage() {
                   cards={cardsForGrid}
                   editing={editing}
                   refreshingId={refreshingCardId}
+                  stages={stages}
                   onLayoutChange={handleLayoutChange}
                   onRefresh={handleRefreshCard}
                   onDuplicate={handleDuplicate}
@@ -447,7 +654,7 @@ export default function DashboardViewPage() {
           onOpenChange={setChatOpen}
           dashboardId={dashboard.id}
           dashboardTitle={dashboard.title}
-          onDashboardMutated={refetch}
+          onDashboardMutated={handleStagesChanged}
         />
       )}
 
@@ -471,6 +678,16 @@ export default function DashboardViewPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </>
+
+      <PublishDiffModal
+        open={publishModalOpen}
+        onOpenChange={setPublishModalOpen}
+        diff={diff}
+        loading={draftViewLoading}
+        publishing={publishing}
+        error={draftError}
+        onConfirm={handleConfirmPublish}
+      />
+    </StageProvider>
   );
 }

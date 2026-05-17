@@ -138,7 +138,7 @@ const cardRow = {
 // AI SDK's `Tool` type has a structural `execute` signature parameterized
 // over the inputSchema; calling it generically in tests requires escaping
 // the per-tool type. We `any`-cast at the boundary, then narrow via the
-// caller's generic. Same trade as proposeDashboard.test.ts.
+// caller's generic. Same trade as create-dashboard.test.ts.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function runTool<T = unknown>(tool: any, args: unknown): Promise<T> {
   if (!tool?.execute) throw new Error("tool has no execute");
@@ -170,21 +170,21 @@ describe("createBoundDashboardTools", () => {
   // Factory shape
   // -------------------------------------------------------------------
 
-  it("returns the safe-op editor tools (six edit tools + screenshotDashboard) and nothing else", () => {
+  it("returns the nine editor tools (#2363 safe + #2365 destructive + #2367 vision)", () => {
     const tools = createBoundDashboardTools(ctx);
     const names = Object.keys(tools).sort();
     expect(names).toEqual([
       "addCard",
       "getCardDetail",
       "getDashboardState",
+      "removeCard",
       "screenshotDashboard",
       "updateCard",
+      "updateCardSql",
       "updateDashboardMeta",
       "updateLayout",
     ]);
-    // Critically: no removeCard / updateCardSql / executePython / actions.
-    expect(names).not.toContain("removeCard");
-    expect(names).not.toContain("updateCardSql");
+    // Critically: no executePython / action-plugin tools.
     expect(names).not.toContain("executePython");
   });
 
@@ -439,6 +439,15 @@ describe("createBoundDashboardTools", () => {
     });
 
     it("addCard invalidates the screenshot cache on success", async () => {
+      // The cache-invalidation tests use the legacy direct-publish path
+      // (mock fixtures hit `addCard` / `updateCard` / etc. on lib/dashboards
+      // without setting up the draft-table query results). Post-#2521 the
+      // drafts flag defaults to ON, which would route through the draft
+      // path and miss the mocked queries. Opt out explicitly per test so
+      // the invalidation assertion stays focused on the cache hook, not
+      // the routing path. The invalidation hook fires after EITHER write
+      // path lands; testing draft routing is the #2364 suite's job.
+      process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
       enableInternalDB();
       setResults(
         { rows: [{ next_pos: 1 }] },
@@ -464,6 +473,7 @@ describe("createBoundDashboardTools", () => {
     });
 
     it("updateCard invalidates the screenshot cache on success", async () => {
+      process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
       enableInternalDB();
       setResults({ rows: [{ id: "card-1" }] });
       const tools = createBoundDashboardTools(ctxWithUser);
@@ -472,6 +482,7 @@ describe("createBoundDashboardTools", () => {
     });
 
     it("updateLayout invalidates the screenshot cache when any placement succeeds", async () => {
+      process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
       enableInternalDB();
       setResults({ rows: [{ id: "card-1" }] });
       const tools = createBoundDashboardTools(ctxWithUser);
@@ -482,6 +493,7 @@ describe("createBoundDashboardTools", () => {
     });
 
     it("updateDashboardMeta invalidates the screenshot cache on success", async () => {
+      process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
       enableInternalDB();
       setResults({ rows: [{ id: "dash-1" }] });
       const tools = createBoundDashboardTools(ctxWithUser);

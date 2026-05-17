@@ -73,17 +73,22 @@ const log = createLogger("dashboard-versioning");
 // ---------------------------------------------------------------------------
 
 /**
- * Whether the per-user-draft routing is active. Defaults to FALSE so
- * existing dashboards behave exactly as they did pre-#2364 — the bound
- * editor tools write straight to published. The flag is flipped in
- * #2521 once the Publish UI lands.
+ * Whether the per-user-draft routing is active. Defaults to TRUE as of
+ * #2521 — the Publish UI shipped in the same slice that flipped this
+ * default, so every editor now routes through drafts by default. Set
+ * `ATLAS_DASHBOARD_DRAFTS_ENABLED=false` (exact string match) to opt out
+ * — operators who want the pre-#2364 last-write-wins behavior must
+ * explicitly disable it.
+ *
+ * The strict-string match is deliberate: "0" / "no" / "off" do NOT
+ * disable, so a typo in an opt-out env var fails closed (drafts stay
+ * on) rather than silently reverting to the legacy path.
  *
  * Read per-call rather than cached at import time so test setups can
- * toggle the flag with `process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED =
- * "true"` between cases without a module reset.
+ * toggle the flag between cases without a module reset.
  */
 export function isDashboardDraftsEnabled(): boolean {
-  return process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED === "true";
+  return process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED !== "false";
 }
 
 // ---------------------------------------------------------------------------
@@ -151,9 +156,15 @@ export function forkDraftFromPublished(published: DashboardWithCards): Dashboard
  * Discriminated set of changes the editor tools can apply to a draft.
  *
  * Each change is a snapshot-in / snapshot-out transformation — the tool
- * layer never mutates the snapshot in place. Destructive ops
- * (`removeCard`, `updateCardSql`) are intentionally NOT in this union
- * for the #2364 slice; they ship as staged ghost changes in #2365.
+ * layer never mutates the snapshot in place.
+ *
+ * Destructive ops (`remove_card`, `edit_sql`) were intentionally absent
+ * in the foundation slice #2364 and added in #2365 once the stage tracker
+ * existed to gate them through accept/discard. The bound tools never
+ * call `applyChangeToDraft` with these variants directly — they go
+ * through `stageChange` first; `acceptStagedChange` then dispatches
+ * them through this union, which is the only path that touches the
+ * user's draft snapshot.
  */
 export type DraftChange =
   | { kind: "addCard"; card: DashboardSnapshotCard }
@@ -168,7 +179,15 @@ export type DraftChange =
       };
     }
   | { kind: "updateLayout"; layouts: { cardId: string; layout: DashboardCardLayout }[] }
-  | { kind: "updateMeta"; title?: string; description?: string | null };
+  | { kind: "updateMeta"; title?: string; description?: string | null }
+  // #2365 — destructive ops. Routed via the stage tracker; never called
+  // directly from a tool's `execute`. `remove_card` drops the card from
+  // the draft snapshot; `edit_sql` replaces the card's SQL in place. Any
+  // collateral (e.g. clearing the cached column metadata) is the
+  // publish-side renderer's problem — the draft snapshot doesn't carry
+  // cached rows.
+  | { kind: "removeCard"; cardId: string }
+  | { kind: "editSql"; cardId: string; newSql: string };
 
 /**
  * Apply a single change to a draft snapshot. Pure: returns a new
@@ -224,6 +243,24 @@ export function applyChangeToDraft(
       if (change.title !== undefined) next.title = change.title;
       if (change.description !== undefined) next.description = change.description;
       return { ok: true, snapshot: next };
+    }
+    case "removeCard": {
+      // Drop the card from the snapshot. `unknown_card` surfaces when
+      // the stage was queued against a card that has since been removed
+      // by another safe-op (last-write-wins behavior — the stage was
+      // pointing at a card the draft no longer knows about).
+      const idx = draft.cards.findIndex((c) => c.id === change.cardId);
+      if (idx === -1) return { ok: false, reason: "unknown_card", cardId: change.cardId };
+      const cards = draft.cards.filter((c) => c.id !== change.cardId);
+      return { ok: true, snapshot: { ...draft, cards } };
+    }
+    case "editSql": {
+      const idx = draft.cards.findIndex((c) => c.id === change.cardId);
+      if (idx === -1) return { ok: false, reason: "unknown_card", cardId: change.cardId };
+      const cards = draft.cards.map((c, i) =>
+        i === idx ? { ...c, sql: change.newSql } : c,
+      );
+      return { ok: true, snapshot: { ...draft, cards } };
     }
   }
 }
@@ -307,6 +344,33 @@ export function publishDraftMerge(
   // Index lookups so each card is O(1).
   const baselineById = new Map(baseline.cards.map((c) => [c.id, c] as const));
   const publishedById = new Map(published.cards.map((c) => [c.id, c] as const));
+
+  // Find cards present in baseline but absent from the draft — that's
+  // the destructive-op path (#2365). When the user staged + accepted a
+  // `removeCard`, the card disappears from the draft snapshot; publish
+  // must translate that absence into a `deleteCard` op against the live
+  // dashboard. We only emit the delete when the card still exists in
+  // published — if another publisher already removed it, the draft +
+  // published are already in agreement and the op is a no-op.
+  const draftById = new Map(draft.cards.map((c) => [c.id, c] as const));
+  for (const bCard of baseline.cards) {
+    if (draftById.has(bCard.id)) continue;
+    const stillInPublished = publishedById.get(bCard.id);
+    if (!stillInPublished) continue; // already removed elsewhere — no-op
+    // Concurrent-edit guard: if published edited the card we are about
+    // to delete since baseline, surface a conflict. The user has to
+    // decide whether to keep the teammate's edit or proceed with the
+    // delete.
+    if (!cardEquals(stillInPublished, bCard)) {
+      conflicts.push({
+        kind: "card_mutated_in_published",
+        cardId: bCard.id,
+        reason: "card was modified in published since the draft was forked",
+      });
+      continue;
+    }
+    ops.push({ kind: "deleteCard", cardId: bCard.id });
+  }
 
   for (const dCard of draft.cards) {
     const wasInBaseline = baselineById.has(dCard.id);

@@ -2,7 +2,7 @@ import type { ToolSet } from "ai";
 import { type AtlasAction, isAction } from "@atlas/api/lib/action-types";
 import { explore } from "./explore";
 import { executeSQL } from "./sql";
-import { proposeDashboard } from "./propose-dashboard";
+import { createDashboard } from "./create-dashboard";
 
 export type { AtlasAction };
 export { isAction };
@@ -143,14 +143,14 @@ Use the executePython tool for analysis that SQL alone cannot handle:
 
 Do NOT use executePython for simple aggregations, GROUP BY, or filtering — executeSQL handles those.`;
 
-export const PROPOSE_DASHBOARD_DESCRIPTION = `### Propose a Dashboard
-Use the proposeDashboard tool when the user wants a dashboard, not just a single chart:
+export const CREATE_DASHBOARD_DESCRIPTION = `### Create a Dashboard
+Use the createDashboard tool when the user wants a dashboard, not just a single chart:
 - Call AFTER executeSQL has confirmed each card's column names — chartConfig.categoryColumn and valueColumns must match the SQL output
 - Each card needs: title, sql, chartConfig ({ type, categoryColumn, valueColumns })
 - chart types: bar, line, pie, area, scatter, table
-- Layout is optional — omit it and the canvas auto-arranges
-- The tool returns a spec; the user sees a live preview in a side canvas and clicks Save
-- To iterate ("make card 2 a bar chart"), call proposeDashboard again — the canvas state is replaced`;
+- Layout is optional — omit it and the dashboard auto-arranges
+- The tool COMMITS a real dashboard owned by the calling user and stages the initial cards in the user's draft (not yet visible to other org members). The chat surfaces a "Continue editing on the dashboard" link to the new id; the same conversation resumes there in bound mode for further edits
+- If any card has invalid SQL the whole call is rejected — fix the failing card and call again with the full set`;
 
 // --- Default registry ---
 
@@ -169,9 +169,9 @@ defaultRegistry.register({
 });
 
 defaultRegistry.register({
-  name: "proposeDashboard",
-  description: PROPOSE_DASHBOARD_DESCRIPTION,
-  tool: proposeDashboard,
+  name: "createDashboard",
+  description: CREATE_DASHBOARD_DESCRIPTION,
+  tool: createDashboard,
 });
 
 defaultRegistry.freeze();
@@ -209,9 +209,9 @@ export async function buildRegistry(options?: {
   });
 
   registry.register({
-    name: "proposeDashboard",
-    description: PROPOSE_DASHBOARD_DESCRIPTION,
-    tool: proposeDashboard,
+    name: "createDashboard",
+    description: CREATE_DASHBOARD_DESCRIPTION,
+    tool: createDashboard,
   });
 
   if (process.env.ATLAS_PYTHON_ENABLED === "true") {

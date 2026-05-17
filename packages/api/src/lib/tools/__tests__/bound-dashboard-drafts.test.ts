@@ -123,6 +123,10 @@ describe("bound-dashboard tools — drafts flag", () => {
     queryResultIndex = 0;
     validateSQLMock.mockClear();
     delete process.env.DATABASE_URL;
+    // #2521 flipped the default to ON. Per-describe blocks below set the
+    // value explicitly ("false" for the legacy direct-published path,
+    // "true" for the drafts path); we clear the var here so a stray
+    // setting from a previous file doesn't bleed in.
     delete process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED;
     _resetPool(null);
   });
@@ -141,6 +145,12 @@ describe("bound-dashboard tools — drafts flag", () => {
   // -------------------------------------------------------------------
 
   describe("flag OFF (legacy direct-published path)", () => {
+    beforeEach(() => {
+      // #2521 flipped the default to ON; this describe block must opt
+      // out explicitly to exercise the legacy direct-write path.
+      process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
+    });
+
     it("addCard writes to dashboard_cards (not dashboard_user_drafts)", async () => {
       enableInternalDB();
       // addCard issues two queries: MAX(position) + INSERT

@@ -10,7 +10,7 @@ import {
 } from "react-grid-layout";
 import "react-grid-layout/css/styles.css";
 import { cn } from "@/lib/utils";
-import type { DashboardCard, DashboardCardLayout } from "@/ui/lib/types";
+import type { DashboardCard, DashboardCardLayout, StagedChange } from "@/ui/lib/types";
 import { COLS, ROW_H, GAP, MIN_W, MIN_H, MOBILE_BREAKPOINT } from "./grid-constants";
 import { withAutoLayout } from "./auto-layout";
 import { DashboardTile } from "./dashboard-tile";
@@ -19,6 +19,14 @@ interface DashboardGridProps {
   cards: DashboardCard[];
   editing: boolean;
   refreshingId: string | null;
+  /**
+   * #2365 — per-user pending destructive stages. Drives the ghost
+   * overlay: cards with a `remove_card` stage render with a
+   * strikethrough banner; cards with an `edit_sql` stage render a
+   * side-by-side SQL diff overlay. Per-user list comes from
+   * `/api/v1/dashboards/[id]/stage`.
+   */
+  stages?: StagedChange[];
   onLayoutChange: (cardId: string, layout: DashboardCardLayout) => void;
   onRefresh: (cardId: string) => void;
   onDuplicate: (cardId: string) => void;
@@ -30,6 +38,7 @@ export function DashboardGrid({
   cards,
   editing,
   refreshingId,
+  stages,
   onLayoutChange,
   onRefresh,
   onDuplicate,
@@ -39,6 +48,27 @@ export function DashboardGrid({
   const { width, containerRef, mounted } = useContainerWidth();
   const [fullscreenId, setFullscreenId] = useState<string | null>(null);
   const placed = useMemo(() => withAutoLayout(cards), [cards]);
+  // Index stages by cardId. A single card can have multiple stages in
+  // pathological cases (agent staged delete + the user clarified, agent
+  // restaged a SQL edit). The first pending one wins for overlay purposes
+  // — a definitive resolution flips one specific stage, the rest stay
+  // visible until they're individually accepted or discarded. Useful
+  // correctness invariant: the overlay never lies about WHICH stage is
+  // pending; it shows the most-recent pending one.
+  const stagesByCardId = useMemo(() => {
+    const map = new Map<string, StagedChange>();
+    for (const s of stages ?? []) {
+      if (s.status !== "pending") continue;
+      const cardId = (s.payload as { cardId?: string }).cardId;
+      if (!cardId) continue;
+      // Keep the most-recently-staged one — overlay reflects current intent.
+      const existing = map.get(cardId);
+      if (!existing || existing.createdAt < s.createdAt) {
+        map.set(cardId, s);
+      }
+    }
+    return map;
+  }, [stages]);
 
   // Esc must exit fullscreen *before* the page-level handler exits edit mode,
   // so the user gets one Esc per dialog-like layer.
@@ -111,6 +141,7 @@ export function DashboardGrid({
                 editing={false}
                 fullscreen={fullscreenId === card.id}
                 isRefreshing={refreshingId === card.id}
+                stage={stagesByCardId.get(card.id) ?? null}
                 onFullscreen={(id) => setFullscreenId((prev) => (prev === id ? null : id))}
                 onRefresh={onRefresh}
                 onDuplicate={onDuplicate}
@@ -156,6 +187,7 @@ export function DashboardGrid({
                 editing={editing}
                 fullscreen={fullscreenId === card.id}
                 isRefreshing={refreshingId === card.id}
+                stage={stagesByCardId.get(card.id) ?? null}
                 onFullscreen={(id) => setFullscreenId((prev) => (prev === id ? null : id))}
                 onRefresh={onRefresh}
                 onDuplicate={onDuplicate}

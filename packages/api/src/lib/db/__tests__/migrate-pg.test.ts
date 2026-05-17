@@ -1521,6 +1521,70 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows[0]?.routing_mode).toBeNull();
   }, PG_TEST_TIMEOUT_MS);
 
+  it("audit_log.parent_audit_id: column exists, is nullable uuid, and FK is DEFERRABLE INITIALLY DEFERRED", async () => {
+    // Slice 4 (#2519) acceptance criterion: parent_audit_id column +
+    // self-FK to audit_log(id). Slice's follow-up (this PR) makes the FK
+    // DEFERRABLE INITIALLY DEFERRED so the fanout's fire-and-forget
+    // parent + child INSERTs can race without 23503 violations.
+    const { rows: colRows } = await pool.query<{ data_type: string; is_nullable: string }>(
+      `SELECT data_type, is_nullable FROM information_schema.columns
+        WHERE table_name = 'audit_log' AND column_name = 'parent_audit_id'`,
+    );
+    expect(colRows[0]?.data_type).toBe("uuid");
+    expect(colRows[0]?.is_nullable).toBe("YES");
+
+    // Partial index for fanout-only lookups exists.
+    const { rows: idxRows } = await pool.query<{ indexname: string }>(
+      `SELECT indexname FROM pg_indexes
+        WHERE tablename = 'audit_log' AND indexname = 'idx_audit_log_parent_audit_id'`,
+    );
+    expect(idxRows.length).toBe(1);
+
+    // FK is deferrable. `pg_constraint.condeferrable` is true for
+    // DEFERRABLE constraints; `condeferred` is true for INITIALLY
+    // DEFERRED. Both must hold for the fanout's race-free linkage to
+    // work without explicit `SET CONSTRAINTS ALL DEFERRED`.
+    const { rows: fkRows } = await pool.query<{ condeferrable: boolean; condeferred: boolean }>(
+      `SELECT condeferrable, condeferred FROM pg_constraint
+        WHERE conname = 'audit_log_parent_audit_id_fkey'`,
+    );
+    expect(fkRows[0]?.condeferrable).toBe(true);
+    expect(fkRows[0]?.condeferred).toBe(true);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("audit_log.parent_audit_id: child INSERT BEFORE parent INSERT in same transaction succeeds (deferrability proof)", async () => {
+    // Pre-DEFERRABLE behaviour: this race produced 23503. After 0079 the
+    // FK only checks at COMMIT, so the ordering invariant the fanout's
+    // fire-and-forget audit writers depend on is structurally enforced.
+    const parentId = "00000000-0000-0000-0000-000000000099";
+    const childId = "00000000-0000-0000-0000-000000000098";
+    await pool.query("BEGIN");
+    try {
+      // Child first — would fail with 23503 if FK were immediate.
+      await pool.query(
+        `INSERT INTO audit_log (id, sql, duration_ms, success, auth_mode, parent_audit_id)
+          VALUES ($1, 'SELECT 1', 0, true, 'none', $2)`,
+        [childId, parentId],
+      );
+      // Parent after child.
+      await pool.query(
+        `INSERT INTO audit_log (id, sql, duration_ms, success, auth_mode)
+          VALUES ($1, 'parent', 0, true, 'none')`,
+        [parentId],
+      );
+      await pool.query("COMMIT");
+    } catch (err) {
+      await pool.query("ROLLBACK");
+      throw err;
+    }
+    const { rows } = await pool.query<{ id: string; parent_audit_id: string | null }>(
+      `SELECT id, parent_audit_id FROM audit_log WHERE id IN ($1, $2) ORDER BY id`,
+      [parentId, childId],
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows.find((r) => r.id === childId)?.parent_audit_id).toBe(parentId);
+  }, PG_TEST_TIMEOUT_MS);
+
   it("conversations: connection_id and connection_group_id can hold independent values (per-turn override shape)", async () => {
     // The slice's core invariant: a conversation can pin its content
     // scope to a multi-member "prod" group while its execution target
@@ -3867,5 +3931,176 @@ describeIfPg("migrate-pg (real Postgres)", () => {
         `ALTER TABLE proactive_pauses__polish_tmp RENAME TO proactive_pauses`,
       );
     }
+  }, PG_TEST_TIMEOUT_MS);
+
+  // ─────────────────────────────────────────────────────────────────────
+  // 0083 — dashboard_stage_changes (#2365)
+  //
+  // Per-user destructive-op staging on top of the #2364 draft. Four
+  // real-PG assertions matter:
+  //   1. Column shape — id uuid (default gen_random_uuid), dashboard_id
+  //      uuid + FK CASCADE, user_id text, kind/status text, payload jsonb,
+  //      timestamps NOT NULL / nullable as appropriate.
+  //   2. `kind` CHECK constraint — only `remove_card` / `edit_sql` accepted.
+  //   3. `status` CHECK constraint — only `pending` / `applied` /
+  //      `discarded` accepted.
+  //   4. Terminal-state timestamp invariants — pending forbids both
+  //      timestamps; applied requires applied_at + forbids discarded_at;
+  //      discarded vice versa.
+  //   5. ON DELETE CASCADE — dropping the dashboard drops every stage.
+  // ─────────────────────────────────────────────────────────────────────
+
+  it("0080: dashboard_stage_changes column shape — uuid id, FK cascade, text user_id, jsonb payload (#2365)", async () => {
+    const { rows } = await pool.query<{
+      column_name: string;
+      data_type: string;
+      udt_name: string;
+      is_nullable: string;
+    }>(
+      `SELECT column_name, data_type, udt_name, is_nullable
+         FROM information_schema.columns
+        WHERE table_name = 'dashboard_stage_changes'
+          AND table_schema = current_schema()
+        ORDER BY ordinal_position`,
+    );
+    const byName = new Map(rows.map((r) => [r.column_name, r]));
+    expect(byName.get("id")?.udt_name).toBe("uuid");
+    expect(byName.get("id")?.is_nullable).toBe("NO");
+    expect(byName.get("dashboard_id")?.udt_name).toBe("uuid");
+    expect(byName.get("dashboard_id")?.is_nullable).toBe("NO");
+    expect(byName.get("user_id")?.udt_name).toBe("text");
+    expect(byName.get("user_id")?.is_nullable).toBe("NO");
+    expect(byName.get("kind")?.udt_name).toBe("text");
+    expect(byName.get("kind")?.is_nullable).toBe("NO");
+    expect(byName.get("payload")?.udt_name).toBe("jsonb");
+    expect(byName.get("payload")?.is_nullable).toBe("NO");
+    expect(byName.get("status")?.udt_name).toBe("text");
+    expect(byName.get("status")?.is_nullable).toBe("NO");
+    expect(byName.get("created_at")?.is_nullable).toBe("NO");
+    expect(byName.get("updated_at")?.is_nullable).toBe("NO");
+    // Terminal-state timestamps are nullable until the row transitions.
+    expect(byName.get("applied_at")?.is_nullable).toBe("YES");
+    expect(byName.get("discarded_at")?.is_nullable).toBe("YES");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0080: kind CHECK constraint rejects unknown kinds (#2365)", async () => {
+    const stamp = Date.now();
+    const orgId = `org-2365-kind-${stamp}`;
+    const dashRows = await pool.query<{ id: string }>(
+      `INSERT INTO dashboards (org_id, owner_id, title) VALUES ($1, 'u-2365', 'Kind chk') RETURNING id`,
+      [orgId],
+    );
+    const dashboardId = dashRows.rows[0]?.id as string;
+
+    // Valid kinds succeed.
+    await pool.query(
+      `INSERT INTO dashboard_stage_changes (dashboard_id, user_id, kind, payload)
+       VALUES ($1, $2, 'remove_card', '{"kind":"remove_card","cardId":"c-1"}'::jsonb)`,
+      [dashboardId, `u-2365-${stamp}`],
+    );
+    await pool.query(
+      `INSERT INTO dashboard_stage_changes (dashboard_id, user_id, kind, payload)
+       VALUES ($1, $2, 'edit_sql', '{"kind":"edit_sql","cardId":"c-1","newSql":"SELECT 1","currentSql":"SELECT 0"}'::jsonb)`,
+      [dashboardId, `u-2365-${stamp}`],
+    );
+
+    // Unknown kind → 23514 (check_violation).
+    let chkErr: { code?: string } | null = null;
+    try {
+      await pool.query(
+        `INSERT INTO dashboard_stage_changes (dashboard_id, user_id, kind, payload)
+         VALUES ($1, $2, 'edit_layout', '{}'::jsonb)`,
+        [dashboardId, `u-2365-${stamp}`],
+      );
+    } catch (err) {
+      chkErr = err as { code?: string };
+    }
+    expect(chkErr?.code).toBe("23514");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0080: status CHECK + terminal-timestamp invariants (#2365)", async () => {
+    const stamp = Date.now();
+    const orgId = `org-2365-status-${stamp}`;
+    const dashRows = await pool.query<{ id: string }>(
+      `INSERT INTO dashboards (org_id, owner_id, title) VALUES ($1, 'u-2365', 'Status chk') RETURNING id`,
+      [orgId],
+    );
+    const dashboardId = dashRows.rows[0]?.id as string;
+    const userId = `u-2365-${stamp}`;
+
+    // pending with both timestamps NULL — succeeds (default).
+    const inserted = await pool.query<{ id: string }>(
+      `INSERT INTO dashboard_stage_changes (dashboard_id, user_id, kind, payload)
+       VALUES ($1, $2, 'remove_card', '{"kind":"remove_card","cardId":"c-1"}'::jsonb)
+       RETURNING id`,
+      [dashboardId, userId],
+    );
+    const stageId = inserted.rows[0]?.id as string;
+
+    // Flip to applied with applied_at set — succeeds.
+    await pool.query(
+      `UPDATE dashboard_stage_changes
+          SET status = 'applied', applied_at = now()
+        WHERE id = $1`,
+      [stageId],
+    );
+
+    // Trying to mark applied without applied_at — chk violation.
+    let bothNullErr: { code?: string } | null = null;
+    try {
+      const r = await pool.query<{ id: string }>(
+        `INSERT INTO dashboard_stage_changes (dashboard_id, user_id, kind, payload)
+         VALUES ($1, $2, 'remove_card', '{"kind":"remove_card","cardId":"c-2"}'::jsonb)
+         RETURNING id`,
+        [dashboardId, userId],
+      );
+      await pool.query(
+        `UPDATE dashboard_stage_changes SET status = 'applied' WHERE id = $1`,
+        [r.rows[0]?.id as string],
+      );
+    } catch (err) {
+      bothNullErr = err as { code?: string };
+    }
+    expect(bothNullErr?.code).toBe("23514");
+
+    // Unknown status → 23514.
+    let statusErr: { code?: string } | null = null;
+    try {
+      await pool.query(
+        `INSERT INTO dashboard_stage_changes (dashboard_id, user_id, kind, payload, status)
+         VALUES ($1, $2, 'remove_card', '{"kind":"remove_card","cardId":"c-3"}'::jsonb, 'rejected')`,
+        [dashboardId, userId],
+      );
+    } catch (err) {
+      statusErr = err as { code?: string };
+    }
+    expect(statusErr?.code).toBe("23514");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0080: ON DELETE CASCADE — dropping the parent dashboard drops every stage (#2365)", async () => {
+    const stamp = Date.now();
+    const orgId = `org-2365-cascade-${stamp}`;
+    const dashRows = await pool.query<{ id: string }>(
+      `INSERT INTO dashboards (org_id, owner_id, title) VALUES ($1, 'u-2365', 'Cascade test') RETURNING id`,
+      [orgId],
+    );
+    const dashboardId = dashRows.rows[0]?.id as string;
+    await pool.query(
+      `INSERT INTO dashboard_stage_changes (dashboard_id, user_id, kind, payload)
+       VALUES ($1, $2, 'remove_card', '{"kind":"remove_card","cardId":"c-1"}'::jsonb),
+              ($1, $3, 'edit_sql', '{"kind":"edit_sql","cardId":"c-2","newSql":"S","currentSql":"S"}'::jsonb)`,
+      [dashboardId, `u-2365-a-${stamp}`, `u-2365-b-${stamp}`],
+    );
+    const beforeCount = await pool.query<{ c: number }>(
+      `SELECT COUNT(*)::int AS c FROM dashboard_stage_changes WHERE dashboard_id = $1`,
+      [dashboardId],
+    );
+    expect(beforeCount.rows[0]?.c).toBe(2);
+    await pool.query(`DELETE FROM dashboards WHERE id = $1`, [dashboardId]);
+    const afterCount = await pool.query<{ c: number }>(
+      `SELECT COUNT(*)::int AS c FROM dashboard_stage_changes WHERE dashboard_id = $1`,
+      [dashboardId],
+    );
+    expect(afterCount.rows[0]?.c).toBe(0);
   }, PG_TEST_TIMEOUT_MS);
 });

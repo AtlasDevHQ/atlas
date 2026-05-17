@@ -6,9 +6,19 @@
  * unit-testability. The orchestrators `listAdminEntities` + `getAdminEntity`
  * wire them to filesystem + DB reads.
  *
- * Shadow rule: when a DB row and a disk entity share a `name`, the DB row
- * wins. DB is the source of truth; disk is a mirror that can lag (or be
- * wiped on a container restart on ephemeral filesystems).
+ * Source rule: the internal DB is the source of truth for the admin API.
+ * The per-org disk mirror at `.orgs/<orgId>/entities/` is a derived cache
+ * for the agent's `explore` tool (`ls`/`cat`/`grep` over the filesystem),
+ * kept in sync by `sync.ts`. The admin orchestrators read the DB only
+ * when it's available — disk is the fallback exclusively for pure-YAML
+ * self-hosted deployments where no internal DB exists (`hasInternalDB()`
+ * returns false). Reading both at once let stale-mirror files outlive
+ * renames in the DB and double-list under different display-name casings
+ * (e.g. legacy lowercase `apikey.yml` alongside a group-scoped `ApiKey`
+ * DB row); the merge dedup-key `(name, group)` doesn't collide across
+ * those, so both used to survive. `mergeAdminEntities` is still
+ * exercised — when no DB is present the orchestrator passes the disk
+ * list through it for shape projection.
  */
 
 import * as path from "path";
@@ -319,11 +329,15 @@ export function mergeAdminEntities(input: {
 /**
  * Load the unified admin entity list.
  *
- * - DB read (when `hasInternalDB()` and an `orgId` is present) uses
- *   `listEntitiesWithOverlay` in developer mode and `listEntityRows`
- *   with `status='published'` otherwise.
- * - Disk read scopes to `resolveSemanticRoot(orgId)` so a SaaS request
- *   reads `.orgs/<orgId>/`, not the API container's bundled fixture.
+ * - When `hasInternalDB()` AND an `orgId` is present, returns DB rows only.
+ *   `listEntitiesWithOverlay` is used in developer mode and `listEntityRows`
+ *   with `status='published'` otherwise. The per-org disk mirror at
+ *   `.orgs/<orgId>/entities/` is a derived cache for the agent's `explore`
+ *   tool and is intentionally NOT consulted here — see the module header.
+ * - When no internal DB exists (pure-YAML self-hosted) OR no `orgId` is in
+ *   scope, falls back to the disk root via `resolveSemanticRoot(opts.orgId)`.
+ *   Pre-existing tests rely on the no-orgId branch reading the bundled
+ *   fixture; that behavior is preserved.
  * - DB rejections propagate (a real DB outage shouldn't masquerade as an
  *   empty workspace — the route handler maps it to a 500 with `requestId`).
  */
@@ -333,17 +347,17 @@ export async function listAdminEntities(opts: {
 }): Promise<AdminEntityListResult> {
   const mode = opts.mode ?? "published";
 
-  let dbRows: SemanticEntityRow[] = [];
   if (opts.orgId && hasInternalDB()) {
-    dbRows = mode === "developer"
+    const dbRows = mode === "developer"
       ? await listEntitiesWithOverlay(opts.orgId, "entity")
       : await listEntityRows(opts.orgId, "entity", "published");
+    return mergeAdminEntities({ dbRows, diskEntities: [], diskWarnings: [] });
   }
 
   const root = resolveSemanticRoot(opts.orgId);
   const { entities: diskEntities, warnings } = discoverEntities(root);
 
-  return mergeAdminEntities({ dbRows, diskEntities, diskWarnings: warnings });
+  return mergeAdminEntities({ dbRows: [], diskEntities, diskWarnings: warnings });
 }
 
 interface GetAdminEntityOptions {
@@ -372,13 +386,16 @@ interface GetAdminEntityOptions {
 }
 
 /**
- * Resolve a single admin entity by name. Returns `null` when neither
- * disk nor DB has it — the route handler maps that to a 404.
+ * Resolve a single admin entity by name. Returns `null` when the active
+ * source (DB when present, otherwise disk) has no match — the route
+ * handler maps that to a 404.
  *
- * Disk-first, DB-fallback: the per-source directory layout
- * (`semantic/<source>/entities/<name>.yml`) is where self-hosted users
- * keep authored YAML, so the local file gets a fast short-circuit. DB
- * picks up the SaaS / draft case.
+ * DB-only when `hasInternalDB() && orgId`; disk-only fallback otherwise.
+ * Symmetric with `listAdminEntities` so navigating to an entity that
+ * doesn't appear in the list can't accidentally surface a stale disk
+ * mirror file. Self-hosted users who edit YAMLs in-repo run `atlas init`
+ * to sync to DB; the disk-fast-path optimisation that used to live here
+ * was the same surface that hid the duplicate-display-name bug.
  *
  * Errors:
  * - Invalid `name` (path-traversal probe) → `null` (route maps to 404
@@ -399,33 +416,13 @@ export async function getAdminEntity(opts: GetAdminEntityOptions): Promise<Admin
     return null;
   }
 
-  // 1. Disk first
-  const diskRoot = resolveSemanticRoot(orgId);
-  const filePath = findEntityFile(diskRoot, name);
-  if (filePath) {
-    // Intentional 403→404 downgrade if the path escapes the root: don't
-    // leak whether a path-traversal probe hit a real file. The route's
-    // upstream `isValidEntityName` check returns 400 for obvious probes,
-    // so this branch is pure defense-in-depth (symlinks, future bugs in
-    // `findEntityFile`). `requestId` is preserved end-to-end via the
-    // 404 response so log correlation still works.
-    const resolved = path.resolve(filePath);
-    if (!resolved.startsWith(path.resolve(diskRoot))) {
-      log.error({ requestId, name, resolved, root: diskRoot }, "getAdminEntity: resolved path escaped semantic root");
-      return null;
-    }
-
-    const detail = parseEntityYaml(name, "disk", () => readYamlFile(filePath), requestId);
-    return { entity: detail, status: "published", source: "disk" };
-  }
-
-  // 2. DB fallback
+  // DB is canonical when it's available — see module header for the
+  // source rule. `connectionGroupId` is passed verbatim: `undefined`
+  // triggers the unique-or-409 path in `getEntity`, an explicit `null`
+  // or string scopes to that group. The route layer decides which.
+  // `mode` gates draft visibility — published-mode SQL restricts to
+  // `status = 'published'`, developer-mode returns the overlay row.
   if (orgId && hasInternalDB()) {
-    // Pass `connectionGroupId` through verbatim — `undefined` triggers
-    // the unique-or-409 path in `getEntity`, an explicit `null` or
-    // string scopes to that group. The route layer decides which.
-    // `mode` gates draft visibility — published-mode SQL restricts to
-    // `status = 'published'`, developer-mode returns the overlay row.
     const row = await getEntity(orgId, "entity", name, connectionGroupId, mode);
     if (!row) return null;
 
@@ -434,7 +431,26 @@ export async function getAdminEntity(opts: GetAdminEntityOptions): Promise<Admin
     return { entity: detail, status, source: "db" };
   }
 
-  return null;
+  // No internal DB → pure-YAML self-hosted. The disk root holds the
+  // authored YAML.
+  const diskRoot = resolveSemanticRoot(orgId);
+  const filePath = findEntityFile(diskRoot, name);
+  if (!filePath) return null;
+
+  // Intentional 403→404 downgrade if the path escapes the root: don't
+  // leak whether a path-traversal probe hit a real file. The route's
+  // upstream `isValidEntityName` check returns 400 for obvious probes,
+  // so this branch is pure defense-in-depth (symlinks, future bugs in
+  // `findEntityFile`). `requestId` is preserved end-to-end via the
+  // 404 response so log correlation still works.
+  const resolved = path.resolve(filePath);
+  if (!resolved.startsWith(path.resolve(diskRoot))) {
+    log.error({ requestId, name, resolved, root: diskRoot }, "getAdminEntity: resolved path escaped semantic root");
+    return null;
+  }
+
+  const detail = parseEntityYaml(name, "disk", () => readYamlFile(filePath), requestId);
+  return { entity: detail, status: "published", source: "disk" };
 }
 
 /**

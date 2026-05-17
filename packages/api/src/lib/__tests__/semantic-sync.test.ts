@@ -88,6 +88,7 @@ import {
   syncAllEntitiesToDisk,
   cleanupOrgDirectory,
   importFromDisk,
+  reconcileAllOrgs,
 } from "../semantic/sync";
 
 // ---------------------------------------------------------------------------
@@ -392,6 +393,41 @@ describe("cleanupOrgDirectory", () => {
     await expect(
       cleanupOrgDirectory("nonexistent-org"),
     ).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reconcileAllOrgs (boot reconciliation runs full sync — incl. GC)
+// ---------------------------------------------------------------------------
+
+describe("reconcileAllOrgs", () => {
+  it("GC's orphan disk YAMLs even when the org's entities/ dir is already populated", async () => {
+    // Regression guard for the architectural correction: previously
+    // boot reconciliation skipped orgs whose dir was non-empty, so
+    // legacy YAMLs (e.g. entries from a pre-1.4.4 `atlas init` against
+    // the internal Atlas DB) lived on the mirror forever — double-
+    // listing in the admin file tree alongside their group-scoped
+    // DB rows. Boot now always rebuilds, which removes orphans.
+    const orgId = testOrgId();
+    const root = getSemanticRoot(orgId);
+    fs.mkdirSync(path.join(root, "entities"), { recursive: true });
+    fs.writeFileSync(path.join(root, "entities", "apikey.yml"), "table: apikey\n");
+    fs.writeFileSync(path.join(root, "entities", "users.yml"), "table: users\n");
+
+    // DB only has `users` — `apikey` is a disk orphan.
+    mockHasInternalDB.mockImplementation(() => true);
+    // The mock signature is zero-arg; in this test the only internal
+    // query reconcileAllOrgs runs is `SELECT DISTINCT org_id FROM
+    // semantic_entities`, so we can return the org row unconditionally.
+    mockInternalQuery.mockImplementation(() => Promise.resolve([{ org_id: orgId }]));
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([makeEntityRow(orgId, "users", "entity", "table: users\n")]),
+    );
+
+    await reconcileAllOrgs();
+
+    expect(fs.existsSync(path.join(root, "entities", "users.yml"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "entities", "apikey.yml"))).toBe(false);
   });
 });
 

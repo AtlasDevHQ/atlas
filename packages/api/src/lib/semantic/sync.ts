@@ -650,39 +650,26 @@ export async function reconcileAllOrgs(): Promise<void> {
 
     log.info({ orgCount: orgs.length }, "Starting boot reconciliation for org semantic layers");
 
+    // Always rebuild — `syncAllEntitiesToDisk` writes idempotent atomic
+    // copies of every DB row AND runs `_cleanStaleFiles` to remove disk
+    // YAMLs that no longer have a matching DB row. The previous
+    // "skip if dir is populated" branch let orphan files (e.g. an early
+    // `atlas init` against the internal DB whose entries were never
+    // backfilled into `semantic_entities`) live on the mirror forever,
+    // surfacing in the admin file tree as ghost duplicates of the real
+    // DB-backed entities. Full rebuild is cheap (atomic writes of
+    // ~10–100 YAMLs per typical org) and serial across orgs, so the DB
+    // pool isn't saturated. Failures are scoped per-org — one bad org
+    // doesn't break the others.
     for (const { org_id: orgId } of orgs) {
-      const root = getSemanticRoot(orgId);
-      const entitiesDir = path.join(root, "entities");
-
-      // Check if the directory exists and has files
-      let needsRebuild = false;
       try {
-        const entries = await fs.promises.readdir(entitiesDir);
-        needsRebuild = !entries.some((e) => e.endsWith(".yml"));
+        const synced = await syncAllEntitiesToDisk(orgId);
+        log.info({ orgId, synced }, "Boot reconciliation: rebuilt org directory (GC orphans + write DB rows)");
       } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-          needsRebuild = true;
-        } else {
-          log.warn(
-            { orgId, err: errorMessage(err) },
-            "Unexpected error reading org entities directory — attempting rebuild",
-          );
-          needsRebuild = true;
-        }
-      }
-
-      if (needsRebuild) {
-        try {
-          const synced = await syncAllEntitiesToDisk(orgId);
-          log.info({ orgId, synced }, "Boot reconciliation: rebuilt org directory");
-        } catch (err) {
-          log.error(
-            { orgId, err: errorMessage(err) },
-            "Boot reconciliation failed for org — explore may not work for this org until next restart",
-          );
-        }
-      } else {
-        log.debug({ orgId }, "Boot reconciliation: org directory exists and has entities — skipping");
+        log.error(
+          { orgId, err: errorMessage(err) },
+          "Boot reconciliation failed for org — explore may not work for this org until next restart",
+        );
       }
     }
   } catch (err) {

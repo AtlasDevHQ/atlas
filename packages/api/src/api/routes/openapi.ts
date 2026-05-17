@@ -307,18 +307,27 @@ export const staticPaths: Record<string, unknown> = {
 
   // -------------------------------------------------------------------
   // Hosted MCP — Server-Sent Events transport for MCP clients
+  //
+  // The same path serves three verbs (see packages/mcp/src/hosted.ts:7-9):
+  //   POST   — JSON-RPC frames (client → server)
+  //   GET    — SSE notifications (server → client)
+  //   DELETE — explicit session termination
+  //
+  // Auth, workspace claim binding, and session-cap behavior are shared
+  // across all three. See the MCP authorization spec for the full
+  // request/response contract on the JSON-RPC payloads.
   // -------------------------------------------------------------------
   "/mcp/{workspace_id}/sse": {
     get: {
-      operationId: "hostedMcpSse",
-      summary: "Hosted MCP server (SSE transport)",
+      operationId: "hostedMcpSseStream",
+      summary: "Hosted MCP — SSE notifications stream",
       description:
-        "Hosted Model Context Protocol endpoint. MCP clients (Claude Desktop, ChatGPT, " +
-        "Cursor) connect here over Server-Sent Events to call tools (`executeSQL`, " +
-        "`explore`, typed metric tools) and list prompts. " +
+        "Server-sent-events stream for MCP server → client notifications. " +
+        "Companion to `POST /mcp/{workspace_id}/sse` (JSON-RPC frames) and " +
+        "`DELETE /mcp/{workspace_id}/sse` (session termination). " +
         "Authentication is OAuth 2.1 + RFC 9728: clients first hit " +
         "`/.well-known/oauth-protected-resource/mcp/{workspace_id}` to discover the " +
-        "authorization server, complete the OAuth flow, then connect here with " +
+        "authorization server, complete the OAuth flow, then connect with " +
         "`Authorization: Bearer <token>`. The token's `aud` claim must match the " +
         "advertised resource URI and `ATLAS_OAUTH_WORKSPACE_CLAIM` must match " +
         "`workspace_id`. " +
@@ -338,12 +347,66 @@ export const staticPaths: Record<string, unknown> = {
       ],
       responses: {
         "200": {
-          description: "SSE stream (text/event-stream)",
+          description: "SSE stream (text/event-stream) carrying JSON-RPC notifications",
           content: { "text/event-stream": { schema: { type: "string" } } },
         },
         "401": errorResponse("Missing or invalid bearer token"),
         "403": errorResponse("Token workspace claim does not match path workspace_id"),
         "503": errorResponse("Session cap reached (too_many_sessions)"),
+      },
+    },
+    post: {
+      operationId: "hostedMcpSseRequest",
+      summary: "Hosted MCP — submit a JSON-RPC frame",
+      description:
+        "Client → server JSON-RPC frames over the MCP transport. Same auth + workspace-claim contract as `GET /mcp/{workspace_id}/sse`. Payload shape is defined by the MCP protocol spec; Atlas accepts any conformant JSON-RPC request (initialize, tools/list, tools/call, prompts/list, prompts/get, …).",
+      tags: ["MCP"],
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        {
+          name: "workspace_id",
+          in: "path",
+          required: true,
+          schema: { type: "string" },
+          description: "Workspace identifier — must match the `ATLAS_OAUTH_WORKSPACE_CLAIM` value in the bearer token.",
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": { schema: { type: "object" } },
+        },
+      },
+      responses: {
+        "200": {
+          description: "JSON-RPC response (or 202 acknowledgment for notifications)",
+          content: { "application/json": { schema: { type: "object" } } },
+        },
+        "401": errorResponse("Missing or invalid bearer token"),
+        "403": errorResponse("Token workspace claim does not match path workspace_id"),
+        "503": errorResponse("Session cap reached (too_many_sessions)"),
+      },
+    },
+    delete: {
+      operationId: "hostedMcpSseTerminate",
+      summary: "Hosted MCP — terminate the session",
+      description:
+        "Explicit session termination. Drops the server-side session state and any in-flight SSE stream for the caller's workspace. Same auth + workspace-claim contract as the other verbs.",
+      tags: ["MCP"],
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        {
+          name: "workspace_id",
+          in: "path",
+          required: true,
+          schema: { type: "string" },
+          description: "Workspace identifier — must match the `ATLAS_OAUTH_WORKSPACE_CLAIM` value in the bearer token.",
+        },
+      ],
+      responses: {
+        "204": { description: "Session terminated" },
+        "401": errorResponse("Missing or invalid bearer token"),
+        "403": errorResponse("Token workspace claim does not match path workspace_id"),
       },
     },
   },

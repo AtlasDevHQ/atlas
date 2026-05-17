@@ -232,7 +232,8 @@ When `ATLAS_AUTH_MODE` is not set, Atlas auto-detects based on which variables a
 ```bash
 # Simple key auth for headless integrations
 ATLAS_API_KEY=your-secret-key-here
-ATLAS_API_KEY_ROLE=analyst
+# Optional — defaults to admin. Valid values: member, admin, owner.
+ATLAS_API_KEY_ROLE=member
 ```
 
 ### Managed (Better Auth)

@@ -148,12 +148,12 @@ Clicking a drifted entity opens its detail view with the drift drawer already ex
 
 Clicking a per-row reconcile button writes the change directly to the entity YAML and refreshes the diff — no separate review step. For bulk drift (e.g. a freshly-added table with 20 new columns), use the **Reconcile all** button at the top of the drawer to apply every action at once.
 
-**Cross-connection diff.** When the workspace has multiple connection groups (1.4.4), the drift drawer is scoped to one group at a time. Pick the target group from the drawer header — the schema diff is computed against that group's primary member. To audit drift across all groups, run `atlas diff` from the CLI; the admin drawer is optimised for the day-to-day "the semantic layer caught up to last sprint's migration" workflow rather than a cross-environment audit.
+**Cross-connection diff.** The drift drawer is scoped to one connection at a time — pass `?connection=<id>` to target a specific member of a multi-environment group. To audit drift across all groups, run `atlas diff` from the CLI per connection; the admin drawer is optimised for the day-to-day "the semantic layer caught up to last sprint's migration" workflow rather than a cross-environment audit.
 
-**API.** The drift-detection API (`GET /api/v1/admin/semantic/diff?connection=<id>&group=<id>`) returns structured JSON with `newTables`, `removedTables`, `tableDiffs`, `unchangedCount`, and a `summary` object. See [Schema Evolution](/deployment/schema-evolution) for the underlying drift contract.
+**API.** The drift-detection API (`GET /api/v1/admin/semantic/diff?connection=<id>`) returns structured JSON with `newTables`, `removedTables`, `tableDiffs`, `unchangedCount`, and a `summary` object. The `connection` query param is optional — omitted it uses the workspace's default connection. See [Schema Evolution](/deployment/schema-evolution) for the underlying drift contract.
 
 <Callout type="info">
-**If you're looking for `/admin/schema-diff`** — the page was retired in 1.4.4. Drift is now inline on `/admin/semantic` per the walkthrough above. The `GET /api/v1/admin/schema-diff` endpoint still exists for back-compat but the UI route redirects to `/admin/semantic`.
+**If you're looking for `/admin/schema-diff`** — the page was retired in 1.4.4. Drift is now inline on `/admin/semantic` per the walkthrough above. There was no public `/api/v1/admin/schema-diff` REST endpoint; the new inline drift drawer uses `/api/v1/admin/semantic/diff` (documented above).
 </Callout>
 
 See [Semantic Layer](/getting-started/semantic-layer) for the YAML format reference.

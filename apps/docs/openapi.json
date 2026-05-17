@@ -73406,9 +73406,9 @@
     },
     "/mcp/{workspace_id}/sse": {
       "get": {
-        "operationId": "hostedMcpSse",
-        "summary": "Hosted MCP server (SSE transport)",
-        "description": "Hosted Model Context Protocol endpoint. MCP clients (Claude Desktop, ChatGPT, Cursor) connect here over Server-Sent Events to call tools (`executeSQL`, `explore`, typed metric tools) and list prompts. Authentication is OAuth 2.1 + RFC 9728: clients first hit `/.well-known/oauth-protected-resource/mcp/{workspace_id}` to discover the authorization server, complete the OAuth flow, then connect here with `Authorization: Bearer <token>`. The token's `aud` claim must match the advertised resource URI and `ATLAS_OAUTH_WORKSPACE_CLAIM` must match `workspace_id`. Concurrent session count is bounded by `ATLAS_MCP_MAX_SESSIONS` (default 100); exceeding it returns `503 too_many_sessions`. See the [MCP guide](/guides/mcp) for the full agent-onboarding flow.",
+        "operationId": "hostedMcpSseStream",
+        "summary": "Hosted MCP — SSE notifications stream",
+        "description": "Server-sent-events stream for MCP server → client notifications. Companion to `POST /mcp/{workspace_id}/sse` (JSON-RPC frames) and `DELETE /mcp/{workspace_id}/sse` (session termination). Authentication is OAuth 2.1 + RFC 9728: clients first hit `/.well-known/oauth-protected-resource/mcp/{workspace_id}` to discover the authorization server, complete the OAuth flow, then connect with `Authorization: Bearer <token>`. The token's `aud` claim must match the advertised resource URI and `ATLAS_OAUTH_WORKSPACE_CLAIM` must match `workspace_id`. Concurrent session count is bounded by `ATLAS_MCP_MAX_SESSIONS` (default 100); exceeding it returns `503 too_many_sessions`. See the [MCP guide](/guides/mcp) for the full agent-onboarding flow.",
         "tags": [
           "MCP"
         ],
@@ -73430,7 +73430,7 @@
         ],
         "responses": {
           "200": {
-            "description": "SSE stream (text/event-stream)",
+            "description": "SSE stream (text/event-stream) carrying JSON-RPC notifications",
             "content": {
               "text/event-stream": {
                 "schema": {
@@ -73489,6 +73489,201 @@
           },
           "503": {
             "description": "Session cap reached (too_many_sessions)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "hostedMcpSseRequest",
+        "summary": "Hosted MCP — submit a JSON-RPC frame",
+        "description": "Client → server JSON-RPC frames over the MCP transport. Same auth + workspace-claim contract as `GET /mcp/{workspace_id}/sse`. Payload shape is defined by the MCP protocol spec; Atlas accepts any conformant JSON-RPC request (initialize, tools/list, tools/call, prompts/list, prompts/get, …).",
+        "tags": [
+          "MCP"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace identifier — must match the `ATLAS_OAUTH_WORKSPACE_CLAIM` value in the bearer token."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "JSON-RPC response (or 202 acknowledgment for notifications)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Token workspace claim does not match path workspace_id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Session cap reached (too_many_sessions)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "hostedMcpSseTerminate",
+        "summary": "Hosted MCP — terminate the session",
+        "description": "Explicit session termination. Drops the server-side session state and any in-flight SSE stream for the caller's workspace. Same auth + workspace-claim contract as the other verbs.",
+        "tags": [
+          "MCP"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Workspace identifier — must match the `ATLAS_OAUTH_WORKSPACE_CLAIM` value in the bearer token."
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Session terminated"
+          },
+          "401": {
+            "description": "Missing or invalid bearer token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Token workspace claim does not match path workspace_id",
             "content": {
               "application/json": {
                 "schema": {

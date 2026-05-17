@@ -52222,6 +52222,12 @@
                       ],
                       "minimum": 0
                     },
+                    "announcementPostedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "createdAt": {
                       "type": "string"
                     },
@@ -52236,6 +52242,7 @@
                     "classifierMode",
                     "announcementChannelId",
                     "monthlyClassifierCap",
+                    "announcementPostedAt",
                     "createdAt",
                     "updatedAt"
                   ]
@@ -52384,6 +52391,12 @@
                       ],
                       "minimum": 0
                     },
+                    "announcementPostedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "createdAt": {
                       "type": "string"
                     },
@@ -52398,6 +52411,7 @@
                     "classifierMode",
                     "announcementChannelId",
                     "monthlyClassifierCap",
+                    "announcementPostedAt",
                     "createdAt",
                     "updatedAt"
                   ]

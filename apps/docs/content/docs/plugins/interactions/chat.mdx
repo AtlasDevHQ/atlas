@@ -480,6 +480,20 @@ The `chunkIntervalMs` setting controls how frequently messages are edited on pla
 
 Routes are mounted under the plugin's base path (e.g., `/api/plugins/chat-interaction/webhooks/slack`).
 
+## Install consent language
+
+When you present the Atlas install flow to a workspace admin (Slack OAuth, Teams app submission, Discord invite, or any other adapter that prompts the installer for permission), include the following disclosure so the admin can pass it on to their org:
+
+<Callout type="info">
+**Atlas reads messages in channels you opt in to proactive mode.**
+
+By default Atlas only responds to direct mentions (`@atlas`), slash commands (`/atlas`), and DMs. If a workspace admin enables Atlas's proactive mode and adds a channel to the proactive allowlist, Atlas will read messages in that channel to detect data questions and may offer to answer them. Atlas does not monitor channels that have not been explicitly opted in.
+
+Users can DM Atlas with `unsubscribe` to opt out of proactive answers across the workspace. Channel members can also pause proactive mode in a channel for 24 hours with `@atlas pause`.
+</Callout>
+
+When proactive mode is first enabled for a workspace, Atlas posts a one-time announcement to the admin-configured announcement channel so end-users see the same disclosure at the point of contact. The post is idempotent — disabling and re-enabling proactive mode never produces a second announcement.
+
 ## Environment Variables
 
 | Variable | Description |

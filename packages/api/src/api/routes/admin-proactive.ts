@@ -36,6 +36,8 @@ import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { runHandler } from "@atlas/api/lib/effect/hono";
+import { announceActivation } from "@atlas/api/lib/proactive/announcement-coordinator";
+import { getChatAnnouncer } from "@atlas/api/lib/proactive/announcer-registry";
 import { isEnterpriseEnabled, EnterpriseError } from "@atlas/ee/index";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
@@ -66,6 +68,13 @@ const WorkspaceConfigSchema = z.object({
   classifierMode: ClassifierModeSchema,
   announcementChannelId: z.string().nullable(),
   monthlyClassifierCap: z.number().int().nonnegative().nullable(),
+  /**
+   * One-shot activation announcement stamp (#2300). `null` until the
+   * AnnouncementCoordinator successfully posts to
+   * `announcement_channel_id`. Exposed on the wire so admin UIs can
+   * surface "we already announced" affordances.
+   */
+  announcementPostedAt: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -108,6 +117,7 @@ type WorkspaceConfigRow = {
   classifier_mode: string;
   announcement_channel_id: string | null;
   monthly_classifier_cap: number | null;
+  announcement_posted_at: Date | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -150,6 +160,7 @@ function workspaceRowToWire(row: WorkspaceConfigRow): z.infer<typeof WorkspaceCo
     classifierMode: projectClassifierMode(row.classifier_mode),
     announcementChannelId: row.announcement_channel_id,
     monthlyClassifierCap: row.monthly_classifier_cap,
+    announcementPostedAt: row.announcement_posted_at?.toISOString() ?? null,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
@@ -334,7 +345,7 @@ adminProactive.openapi(getWorkspaceRoute, async (c) =>
            SET updated_at = workspace_proactive_config.updated_at
          RETURNING workspace_id, enabled, sensitivity, classifier_mode,
                    announcement_channel_id, monthly_classifier_cap,
-                   created_at, updated_at`,
+                   announcement_posted_at, created_at, updated_at`,
         [orgId],
       );
       return c.json(workspaceRowToWire(rows[0]), 200);
@@ -373,6 +384,18 @@ adminProactive.openapi(updateWorkspaceRoute, async (c) =>
          ON CONFLICT (workspace_id) DO NOTHING`,
         [orgId],
       );
+
+      // Snapshot `enabled` BEFORE the UPDATE so we can detect a
+      // false→true transition for the one-shot activation announcement
+      // (#2300). A pre-UPDATE SELECT is the simplest correct option —
+      // doing it in the same connection would matter for serializable
+      // isolation but we run read-committed and treat double-announce
+      // as the DB-stamp's problem (idempotent in announceActivation).
+      const priorRows = await internalQuery<{ enabled: boolean }>(
+        `SELECT enabled FROM workspace_proactive_config WHERE workspace_id = $1`,
+        [orgId],
+      );
+      const wasEnabled = priorRows[0]?.enabled ?? false;
 
       // Build the partial-update SET clause from the fields the caller
       // actually touched. `undefined` means "leave alone"; `null` is
@@ -414,7 +437,7 @@ adminProactive.openapi(updateWorkspaceRoute, async (c) =>
           WHERE workspace_id = $${idx}
          RETURNING workspace_id, enabled, sensitivity, classifier_mode,
                    announcement_channel_id, monthly_classifier_cap,
-                   created_at, updated_at`,
+                   announcement_posted_at, created_at, updated_at`,
         params,
       );
       const updated = rows[0];
@@ -440,6 +463,48 @@ adminProactive.openapi(updateWorkspaceRoute, async (c) =>
           }),
         },
       });
+
+      // One-shot activation announcement (#2300). Triggers on a
+      // false→true `enabled` transition when an announcement channel is
+      // configured. Best-effort: failures are logged via the
+      // coordinator and never fail the PUT — the row was already
+      // updated and the admin should not see a 500 for a Slack hiccup.
+      // The coordinator handles its own DB idempotency
+      // (`announcement_posted_at` stamp), so a flap of disable +
+      // re-enable does NOT re-announce.
+      if (
+        body.enabled === true &&
+        !wasEnabled &&
+        updated.announcement_channel_id !== null
+      ) {
+        try {
+          const outcome = await announceActivation({
+            workspaceId: orgId,
+            channelId: updated.announcement_channel_id,
+            announcer: getChatAnnouncer(),
+          });
+          if (outcome.posted) {
+            log.info(
+              { requestId, orgId, channelId: updated.announcement_channel_id },
+              "Proactive activation announcement posted",
+            );
+          } else {
+            log.info(
+              { requestId, orgId, reason: outcome.reason },
+              "Proactive activation announcement skipped",
+            );
+          }
+        } catch (announceErr) {
+          // Defence-in-depth: announceActivation already swallows
+          // expected errors; this catch guards against a programmer
+          // mistake in the coordinator surfacing through.
+          log.warn(
+            { requestId, orgId, err: errorMessage(announceErr) },
+            "announceActivation threw unexpectedly — ignored",
+          );
+        }
+      }
+
       return c.json(workspaceRowToWire(updated), 200);
     } catch (err) {
       log.error(

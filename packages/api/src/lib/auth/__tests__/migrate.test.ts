@@ -326,6 +326,7 @@ describe("migrateAuthTables", () => {
             { name: "0078_proactive_meter_events.sql" },
             { name: "0079_dashboard_user_drafts.sql" },
             { name: "0080_proactive_public_dataset.sql" },
+            { name: "0081_workspace_proactive_announcement_posted_at.sql" },
           ],
         };
       }

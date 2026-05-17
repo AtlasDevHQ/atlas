@@ -87,8 +87,10 @@ describe("runMigrations", () => {
     // + 0072 (cleanup empty synthetic group orphans, #2506)
     // + 0073 (conversations.bound_dashboard_id, #2363)
     // + 0074 (audit_log.parent_audit_id for cross-env fanout, #2519)
-    // + 0075 (proactive_meter_events, #2296) = 76.
-    expect(count).toBe(76);
+    // + 0075 (proactive chat admin config, #2294)
+    // + 0076 (proactive_pauses kill switch, #2295)
+    // + 0077 (conversations.routing_mode picker, #2518) = 78.
+    expect(count).toBe(78);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -192,7 +194,9 @@ describe("runMigrations", () => {
         "0072_cleanup_empty_synthetic_groups.sql",
         "0073_conversation_bound_dashboard.sql",
         "0074_audit_log_parent_audit_id.sql",
-        "0075_proactive_meter_events.sql",
+        "0075_proactive_chat_config.sql",
+        "0076_proactive_pauses.sql",
+        "0077_conversations_routing_mode.sql",
       ],
     });
 

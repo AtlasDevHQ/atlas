@@ -1840,37 +1840,56 @@ export const executeSQL = tool({
     // RequestContext. The model normally omits `connectionId`, so fall back to
     // that routed context before the legacy default to avoid executing against
     // the wrong environment while conversation metadata says otherwise.
-    const requestContextConnectionId = getRequestContext()?.connectionId;
+    const reqCtx = getRequestContext();
+    const requestContextConnectionId = reqCtx?.connectionId;
     const currentMember = connectionId ?? requestContextConnectionId ?? "default";
 
-    // Fast path: no agent-supplied scope (or explicit "this") preserves the
-    // pre-#2516 behaviour exactly — single execution, no group lookup.
+    // #2518 — three-state picker. `routingMode` reaches us via
+    // `RequestContext` (stamped by the chat route from the conversation
+    // row). The chat route applies the NULL→"pin" back-compat default
+    // before stamping; reaching this code with `routingMode === undefined`
+    // means the caller never went through the chat route (tools / MCP /
+    // scheduler / unit tests), and the legacy "agent decides" semantics
+    // are the right answer there.
+    const routingMode = reqCtx?.routingMode ?? "auto";
+
+    // Fast path — only valid when EVERY override path collapses to
+    // "single execution against currentMember". That is true when:
+    //   - the agent emitted no scope (or scope === "this"), AND
+    //   - the picker is NOT pinning the fanout case ('all').
+    // The 'pin' picker case ALSO collapses to single — pin always
+    // routes to `currentMember` regardless of the agent's hint — so we
+    // keep the fast path for it (no DB lookup needed). 'auto' with no
+    // agent scope is the same shape as legacy single-env execution.
     //
     // Wraps the leaf result with a 1-element `envContributions` array so
     // SDK consumers see the same wire shape for single-env and fanout
     // responses (#2519). The leaf result already carries `success`,
     // `columns`, `rows`, etc. — we only attach the contribution.
-    if (scope === undefined || scope === "this") {
+    if ((scope === undefined || scope === "this") && routingMode !== "all") {
       const result = await executeSqlForConnection({
         sql,
         explanation,
         connId: currentMember,
-        routingMode: "auto",
+        routingMode,
       });
       return attachSingleEnvContribution(result, currentMember);
     }
 
-    // Routing path: agent asked for fanout or a specific member. Resolve
-    // the active group's members + primary, then run the pure routing
-    // module. Failures collapse to a 1×1 fallback so the tool call still
-    // returns a useful result.
-    const orgId = getRequestContext()?.user?.activeOrganizationId;
+    // Routing path: either the agent asked for fanout / a specific
+    // member, or the picker is pinning 'all' (which overrides the
+    // agent's scope regardless of value). Resolve the active group's
+    // members + primary, then run the pure routing module. Failures
+    // collapse to a 1×1 fallback so the tool call still returns a
+    // useful result.
+    const orgId = reqCtx?.user?.activeOrganizationId;
     const ctx = await loadGroupRoutingContext(orgId, currentMember);
     const { plan, warnings } = resolveRoutingPlan({
       agentScope: scope,
       currentMember: ctx.currentMember,
       members: ctx.members,
       primaryMember: ctx.primaryMember,
+      pickerMode: routingMode,
     });
     for (const w of warnings) {
       log.warn({ connectionId: currentMember, scope, plan: plan.kind }, w);
@@ -1881,7 +1900,7 @@ export const executeSQL = tool({
         sql,
         explanation,
         connId: plan.connectionId,
-        routingMode: "auto",
+        routingMode,
       });
       return attachSingleEnvContribution(result, plan.connectionId);
     }

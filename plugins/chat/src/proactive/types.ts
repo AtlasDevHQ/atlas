@@ -9,7 +9,7 @@
  *
  * Slice #2292 ships the reaction-first tracer: subscribe → classify →
  * react. Slice #2295 layers in the three-tier kill switch + per-user
- * opt-out — those types live below.
+ * opt-out — types live below.
  */
 
 /** Result of running a message through the question classifier. */
@@ -130,59 +130,3 @@ export type OnPauseRequestFn = (request: {
    *  can compute `expires_at` deterministically in tests. */
   requestedAt: number;
 }) => Promise<void>;
-
-// ---------------------------------------------------------------------------
-// Meter event (#2296)
-// ---------------------------------------------------------------------------
-
-/** Lifecycle stages tracked by the answer meter. */
-export type ProactiveMeterEventType =
-  | "classify"
-  | "react"
-  | "offer"
-  | "accept"
-  | "feedback";
-
-/** Outcome values captured on `feedback` events. */
-export type ProactiveMeterOutcome =
-  | "helpful"
-  | "not-helpful"
-  | "wrong-data"
-  | "no-feedback";
-
-/**
- * Event emitted from the listener whenever the proactive flow advances
- * a lifecycle stage. The plugin stays decoupled from `@atlas/api`; the
- * host wires this callback into the AnswerMeter service.
- *
- * `tokens` / `costMicroUsd` / `confidence` are optional because not
- * every event type carries them (a `react` event has confidence but
- * no LLM tokens of its own — the tokens were already accounted for on
- * the preceding `classify` event).
- */
-export interface ProactiveMeterEvent {
-  /** Active workspace id (per-channel multitenancy support). */
-  workspaceId: string;
-  channelId: string;
-  messageId?: string | null;
-  eventType: ProactiveMeterEventType;
-  outcome?: ProactiveMeterOutcome | null;
-  tokens?: number;
-  costMicroUsd?: number;
-  confidence?: number | null;
-  actorUserId?: string | null;
-  /** Free-form bag for downstream debugging — never holds secrets. */
-  metadata?: Record<string, unknown>;
-}
-
-/**
- * Host-injected meter callback. The plugin never persists meter rows
- * itself — it emits an event and the host wires it to the API's
- * `AnswerMeter` service (which writes to `proactive_meter_events`).
- *
- * Implementations should never throw. Failures are swallowed inside
- * the listener so the Chat SDK event loop never crashes.
- */
-export type ProactiveMeterEventFn = (
-  event: ProactiveMeterEvent,
-) => Promise<void> | void;

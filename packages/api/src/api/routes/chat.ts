@@ -41,7 +41,9 @@ import {
   reserveConversationBudget,
   resolveGroupForConnection,
   settleConversationSteps,
+  updateConversationRoutingMode,
 } from "@atlas/api/lib/conversations";
+import type { ConversationRoutingMode } from "@useatlas/types/conversation";
 import {
   bindConversationToDashboard,
   resolveBoundDashboard,
@@ -366,6 +368,16 @@ export const ChatRequestSchema = z.object({
    * follow-up turn.
    */
   connectionGroupId: z.string().optional(),
+  /**
+   * #2518 — three-state Auto/Pin/All cross-environment picker mode.
+   * When supplied, the chat route persists it onto the conversation row
+   * AND uses it to drive `executeSQL` routing for this turn. Omitted
+   * turns inherit the conversation's stored value (or `"pin"` for
+   * pre-#2518 rows). The Zod enum is the single source of truth for
+   * acceptable values — there's no DB-layer CHECK constraint (see
+   * migration 0077).
+   */
+  routingMode: z.enum(["auto", "pin", "all"]).optional(),
   /**
    * #2363 — bound dashboard editor. When the chat drawer opens on
    * `/dashboards/[id]` the client supplies the dashboard id once (on
@@ -730,6 +742,11 @@ chat.openapi(chatRoute, async (c) => {
         //      changed by per-turn overrides.
         let effectiveConnectionId: string | undefined = parsed.data.connectionId;
         let effectiveConnectionGroupId: string | undefined = parsed.data.connectionGroupId;
+        // #2518 — three-state picker mode. Body value (this turn) >
+        // stored value on the row (back-compat default 'pin' if NULL).
+        // The runtime treats undefined here as 'pin' to preserve
+        // pre-#2518 single-execution semantics for legacy conversations.
+        let effectiveRoutingMode: ConversationRoutingMode | undefined = parsed.data.routingMode;
 
         // #2424 — when the body supplies `connectionGroupId`, verify it
         // belongs to the caller's active org BEFORE persisting it onto the
@@ -793,6 +810,40 @@ chat.openapi(chatRoute, async (c) => {
             }
             if (effectiveConnectionGroupId === undefined && existing.data.connectionGroupId) {
               effectiveConnectionGroupId = existing.data.connectionGroupId;
+            }
+            // #2518 — inherit picker mode from the conversation row when
+            // the body omits it. NULL on the row is read as 'pin' at the
+            // routing edge (executeSQL); we leave effectiveRoutingMode
+            // undefined here so the absence vs. explicit-pin distinction
+            // survives all the way to `withRequestContext`.
+            if (effectiveRoutingMode === undefined && existing.data.routingMode) {
+              effectiveRoutingMode = existing.data.routingMode;
+            }
+            // Persist the picker mode if the body explicitly set one for
+            // this turn. We compare against the stored value to avoid
+            // burning an UPDATE on every chat turn when nothing changed.
+            if (
+              parsed.data.routingMode !== undefined &&
+              parsed.data.routingMode !== existing.data.routingMode
+            ) {
+              // Fire-and-forget within the request lifetime: a transient
+              // write failure shouldn't block the chat turn (the runtime
+              // will still honor the body's routingMode for this turn).
+              // Note we don't await — the helper logs its own failures.
+              updateConversationRoutingMode(
+                conversationId,
+                parsed.data.routingMode,
+                authResult.user?.id,
+                authResult.user?.activeOrganizationId,
+              ).catch((err: unknown) => {
+                log.warn(
+                  {
+                    err: err instanceof Error ? err.message : String(err),
+                    conversationId,
+                  },
+                  "updateConversationRoutingMode rejected",
+                );
+              });
             }
             // F-77 — aggregate per-conversation step ceiling. The per-request
             // caps (stepCountIs(25), 180s wall-clock) bound a single agent
@@ -897,6 +948,11 @@ chat.openapi(chatRoute, async (c) => {
                 surface: "web",
                 connectionId: effectiveConnectionId ?? null,
                 connectionGroupId: effectiveConnectionGroupId ?? null,
+                // #2518 — persist the picker mode the user picked at
+                // creation. NULL on the row reads as 'pin' downstream
+                // for back-compat, so omitting this on legacy callers
+                // is structurally safe.
+                routingMode: effectiveRoutingMode ?? null,
                 orgId: authResult.user?.activeOrganizationId,
               });
               if (created) {
@@ -1060,6 +1116,17 @@ chat.openapi(chatRoute, async (c) => {
               ...(effectiveConnectionGroupId !== undefined && {
                 connectionGroupId: effectiveConnectionGroupId,
               }),
+              // #2518 — picker mode reaches `executeSQL` via the request
+              // context so the agent's `scope` parameter can be overridden
+              // before reaching `resolveRoutingPlan`. When neither the
+              // body nor the persisted row carries a value, the
+              // conversation predates the picker column (NULL on the row)
+              // — apply the back-compat default 'pin' here so the agent's
+              // scope hints don't suddenly start fanning out on
+              // pre-#2518 chats. The tool's own default ('auto') only
+              // kicks in for non-chat callers (MCP / scheduler / direct
+              // tool tests).
+              routingMode: effectiveRoutingMode ?? "pin",
             },
             () =>
               runAgent({

@@ -106,6 +106,12 @@ export const conversations = pgTable(
     // entities, dashboards, etc. resolve). Two columns, two purposes —
     // they are deliberately decoupled.
     connectionGroupId: text("connection_group_id"),
+    // 0077 — three-state Auto/Pin/All picker state (#2518). NULL is
+    // read as "pin" by the runtime so pre-#2518 conversations whose
+    // `connection_id` already names a single member keep their
+    // single-execution behavior. Validation lives in the chat route's
+    // Zod schema (single source of truth) rather than a CHECK here.
+    routingMode: text("routing_mode"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
     // Saved/starred
@@ -1881,3 +1887,107 @@ export const proactiveMeterEvents = pgTable(
 // here through the soak; migration 0047 drops the table. Token lifecycle
 // for hosted MCP is now Better Auth's `oauthAccessToken` /
 // `oauthRefreshToken` schema, which Better Auth's runtime owns.
+
+// Proactive chat admin opt-in (#2294, PRD #2291). Two tables back the
+// workspace-level admin console for proactive mode:
+//   - workspace_proactive_config — 1 row per workspace, master toggle +
+//     defaults. Enterprise-gated at the route layer; the table exists on
+//     every tenant so future plan upgrades read pre-existing config
+//     without a migration.
+//   - channel_proactive_config   — N rows per workspace, per-channel
+//     allow/deny + optional sensitivity override. Unique on
+//     (workspace_id, channel_id) so a POST acts as an upsert.
+// ---------------------------------------------------------------------------
+
+export const workspaceProactiveConfig = pgTable(
+  "workspace_proactive_config",
+  {
+    workspaceId: text("workspace_id").primaryKey(),
+    enabled: boolean("enabled").notNull().default(false),
+    sensitivity: text("sensitivity").notNull().default("balanced"),
+    classifierMode: text("classifier_mode").notNull().default("regex-prefilter"),
+    announcementChannelId: text("announcement_channel_id"),
+    monthlyClassifierCap: integer("monthly_classifier_cap"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "chk_workspace_proactive_sensitivity",
+      sql`${t.sensitivity} IN ('cautious', 'balanced', 'eager')`,
+    ),
+    check(
+      "chk_workspace_proactive_classifier_mode",
+      sql`${t.classifierMode} IN ('regex-prefilter', 'classify-all')`,
+    ),
+    check(
+      "chk_workspace_proactive_monthly_cap_nonneg",
+      sql`${t.monthlyClassifierCap} IS NULL OR ${t.monthlyClassifierCap} >= 0`,
+    ),
+  ],
+);
+
+export const channelProactiveConfig = pgTable(
+  "channel_proactive_config",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: text("workspace_id").notNull(),
+    channelId: text("channel_id").notNull(),
+    allow: boolean("allow").notNull(),
+    sensitivity: text("sensitivity"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "chk_channel_proactive_sensitivity",
+      sql`${t.sensitivity} IS NULL OR ${t.sensitivity} IN ('cautious', 'balanced', 'eager')`,
+    ),
+    uniqueIndex("uq_channel_proactive_workspace_channel").on(t.workspaceId, t.channelId),
+    index("idx_channel_proactive_workspace").on(t.workspaceId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Proactive chat — three-layer kill switch + per-user opt-out (#2295,
+// PRD #2291). Single table backs four orthogonal pause shapes:
+//
+//   workspace-kill   one row, channel_id NULL, user_id NULL, expires_at NULL.
+//                    Admin "pause all proactive" — wins over everything.
+//   admin-channel    per-channel admin deny. channel_id NOT NULL,
+//                    user_id NULL, expires_at NULL.
+//   user-optout      DM `unsubscribe`. workspace-scoped per user;
+//                    channel_id NULL, user_id NOT NULL, expires_at NULL.
+//   channel-24h      In-channel `@atlas pause`. channel_id NOT NULL,
+//                    user_id NULL, expires_at = now() + 24h.
+//
+// Precedence resolved in app layer (`decidePauseFromRows`):
+//   workspace-kill > admin-channel > user-optout > channel-24h
+//
+// Expired rows are ignored at read time; no sweeper at MVP.
+// ---------------------------------------------------------------------------
+
+export const proactivePauses = pgTable(
+  "proactive_pauses",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: text("workspace_id").notNull(),
+    channelId: text("channel_id"),
+    userId: text("user_id"),
+    layer: text("layer").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "chk_proactive_pauses_layer",
+      sql`${t.layer} IN ('channel-24h', 'admin-channel', 'workspace-kill', 'user-optout')`,
+    ),
+    index("idx_proactive_pauses_lookup").on(t.workspaceId, t.channelId, t.expiresAt),
+    // Partial index keyed on (workspace, user) — keeps user-optout
+    // lookups (DM `unsubscribe`) off the wide workspace scan.
+    index("idx_proactive_pauses_user")
+      .on(t.workspaceId, t.userId)
+      .where(sql`${t.userId} IS NOT NULL`),
+  ],
+);

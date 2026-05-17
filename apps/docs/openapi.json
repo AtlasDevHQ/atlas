@@ -91,6 +91,14 @@
                   "connectionGroupId": {
                     "type": "string"
                   },
+                  "routingMode": {
+                    "type": "string",
+                    "enum": [
+                      "auto",
+                      "pin",
+                      "all"
+                    ]
+                  },
                   "boundDashboardId": {
                     "type": "string",
                     "format": "uuid"
@@ -51350,6 +51358,718 @@
         "operationId": "postAdminConnectionGroupsByIdArchive"
       }
     },
+    "/api/v1/admin/proactive/workspace": {
+      "get": {
+        "tags": [
+          "Admin — Proactive Chat"
+        ],
+        "summary": "Get workspace proactive config",
+        "description": "Returns the workspace's proactive-chat config. Materialises a default row (enabled=false) the first time it is read so the admin form has a stable shape.",
+        "responses": {
+          "200": {
+            "description": "Workspace proactive config",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "workspaceId": {
+                      "type": "string"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "sensitivity": {
+                      "type": "string",
+                      "enum": [
+                        "cautious",
+                        "balanced",
+                        "eager"
+                      ]
+                    },
+                    "classifierMode": {
+                      "type": "string",
+                      "enum": [
+                        "regex-prefilter",
+                        "classify-all"
+                      ]
+                    },
+                    "announcementChannelId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "monthlyClassifierCap": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "createdAt": {
+                      "type": "string"
+                    },
+                    "updatedAt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "workspaceId",
+                    "enabled",
+                    "sensitivity",
+                    "classifierMode",
+                    "announcementChannelId",
+                    "monthlyClassifierCap",
+                    "createdAt",
+                    "updatedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required or enterprise not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminProactiveWorkspace"
+      },
+      "put": {
+        "tags": [
+          "Admin — Proactive Chat"
+        ],
+        "summary": "Update workspace proactive config",
+        "description": "Updates the workspace's proactive-chat config. Fields are independently optional — omitting one leaves the persisted value alone. Pass `null` for `announcementChannelId` / `monthlyClassifierCap` to explicitly clear.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "sensitivity": {
+                    "type": "string",
+                    "enum": [
+                      "cautious",
+                      "balanced",
+                      "eager"
+                    ]
+                  },
+                  "classifierMode": {
+                    "type": "string",
+                    "enum": [
+                      "regex-prefilter",
+                      "classify-all"
+                    ]
+                  },
+                  "announcementChannelId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "monthlyClassifierCap": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated workspace proactive config",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "workspaceId": {
+                      "type": "string"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "sensitivity": {
+                      "type": "string",
+                      "enum": [
+                        "cautious",
+                        "balanced",
+                        "eager"
+                      ]
+                    },
+                    "classifierMode": {
+                      "type": "string",
+                      "enum": [
+                        "regex-prefilter",
+                        "classify-all"
+                      ]
+                    },
+                    "announcementChannelId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "monthlyClassifierCap": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "createdAt": {
+                      "type": "string"
+                    },
+                    "updatedAt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "workspaceId",
+                    "enabled",
+                    "sensitivity",
+                    "classifierMode",
+                    "announcementChannelId",
+                    "monthlyClassifierCap",
+                    "createdAt",
+                    "updatedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required or enterprise not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "putAdminProactiveWorkspace"
+      }
+    },
+    "/api/v1/admin/proactive/channels": {
+      "get": {
+        "tags": [
+          "Admin — Proactive Chat"
+        ],
+        "summary": "List channel overrides",
+        "description": "Returns every per-channel override row for the active workspace, sorted by channel id.",
+        "responses": {
+          "200": {
+            "description": "Channel override list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "channels": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "workspaceId": {
+                            "type": "string"
+                          },
+                          "channelId": {
+                            "type": "string"
+                          },
+                          "allow": {
+                            "type": "boolean"
+                          },
+                          "sensitivity": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "enum": [
+                              "cautious",
+                              "balanced",
+                              "eager",
+                              null
+                            ]
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "updatedAt": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "workspaceId",
+                          "channelId",
+                          "allow",
+                          "sensitivity",
+                          "createdAt",
+                          "updatedAt"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "channels"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required or enterprise not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminProactiveChannels"
+      },
+      "post": {
+        "tags": [
+          "Admin — Proactive Chat"
+        ],
+        "summary": "Upsert a channel override",
+        "description": "Creates or replaces the override row for (workspaceId, channelId). Idempotent — POSTing twice with the same channelId updates the existing row rather than creating duplicates.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "channelId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "allow": {
+                    "type": "boolean"
+                  },
+                  "sensitivity": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "enum": [
+                      "cautious",
+                      "balanced",
+                      "eager",
+                      null
+                    ]
+                  }
+                },
+                "required": [
+                  "channelId",
+                  "allow"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel override upserted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "workspaceId": {
+                      "type": "string"
+                    },
+                    "channelId": {
+                      "type": "string"
+                    },
+                    "allow": {
+                      "type": "boolean"
+                    },
+                    "sensitivity": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "cautious",
+                        "balanced",
+                        "eager",
+                        null
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string"
+                    },
+                    "updatedAt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "workspaceId",
+                    "channelId",
+                    "allow",
+                    "sensitivity",
+                    "createdAt",
+                    "updatedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required or enterprise not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminProactiveChannels"
+      }
+    },
+    "/api/v1/admin/proactive/channels/{channelId}": {
+      "delete": {
+        "tags": [
+          "Admin — Proactive Chat"
+        ],
+        "summary": "Delete a channel override",
+        "description": "Removes the override row for (workspaceId, channelId). Idempotent — 404 if the row was already gone.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "example": "C0123456789"
+            },
+            "required": true,
+            "name": "channelId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Channel override deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required or enterprise not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Override not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteAdminProactiveChannelsByChannelId"
+      }
+    },
     "/api/v1/admin/publish": {
       "post": {
         "tags": [
@@ -53147,6 +53867,328 @@
           }
         },
         "operationId": "postAdminCacheFlush"
+      }
+    },
+    "/api/v1/admin/proactive/pause": {
+      "get": {
+        "tags": [
+          "Admin — Proactive Chat"
+        ],
+        "summary": "Get the workspace-wide proactive kill switch status",
+        "description": "Returns whether the workspace currently has a `workspace-kill` pause row active. Other pause layers (per-channel, per-user) are exposed under separate surfaces.",
+        "responses": {
+          "200": {
+            "description": "Pause status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "workspaceKillActive": {
+                      "type": "boolean"
+                    },
+                    "expiresAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "workspaceKillActive"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required or enterprise not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminProactivePause"
+      },
+      "post": {
+        "tags": [
+          "Admin — Proactive Chat"
+        ],
+        "summary": "Enable the workspace-wide proactive kill switch",
+        "description": "Inserts an indefinite `workspace-kill` row. Atlas stops interjecting in every channel of the workspace until the kill switch is lifted. Idempotent — re-enabling while already on is a no-op.",
+        "responses": {
+          "200": {
+            "description": "Kill switch enabled (or already on)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "workspaceKillActive": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "workspaceKillActive"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required or enterprise not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminProactivePause"
+      },
+      "delete": {
+        "tags": [
+          "Admin — Proactive Chat"
+        ],
+        "summary": "Lift the workspace-wide proactive kill switch",
+        "description": "Expires every active `workspace-kill` row (sets expires_at = NOW()). Atlas resumes interjecting in channels that are not otherwise paused by admin / channel / user layers. Idempotent.",
+        "responses": {
+          "200": {
+            "description": "Kill switch lifted (or already off)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "workspaceKillActive": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "workspaceKillActive"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required or enterprise not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteAdminProactivePause"
       }
     },
     "/api/v1/admin/admin-actions": {
@@ -70009,6 +71051,9 @@
     },
     {
       "name": "Admin — Plugins"
+    },
+    {
+      "name": "Admin — Proactive Chat"
     },
     {
       "name": "Admin — Prompts"

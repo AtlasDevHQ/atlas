@@ -33,6 +33,13 @@ export interface UseAtlasTransportOptions {
    * conversation row).
    */
   getConnectionGroupId?: () => string | null;
+  /**
+   * #2518 — three-state Auto/Pin/All cross-environment routing mode.
+   * Returns the picker's current selection or `null` to omit the field
+   * from the request body (server applies its NULL→"pin" back-compat
+   * default for legacy conversations).
+   */
+  getRoutingMode?: () => "auto" | "pin" | "all" | null;
 }
 
 export interface UseAtlasTransportReturn {
@@ -70,6 +77,13 @@ export function useAtlasTransport(
 
   const getConnectionGroupIdRef = useRef(opts.getConnectionGroupId);
   getConnectionGroupIdRef.current = opts.getConnectionGroupId;
+
+  // #2518 — routing-mode getter (Auto/Pin/All). Ref for the same reason
+  // the connection getters are refs: a picker change between turns
+  // reaches the next request without rebuilding `useChat`'s transport
+  // (which would cancel the in-flight stream).
+  const getRoutingModeRef = useRef(opts.getRoutingMode);
+  getRoutingModeRef.current = opts.getRoutingMode;
 
   // --- Auth state (seed from module cache to avoid flash on client-side nav) ---
   const [authMode, setAuthModeState] = useState<AuthMode | null>(_cachedAuthMode);
@@ -242,6 +256,13 @@ export function useAtlasTransport(
         const connectionGroupId = getConnectionGroupIdRef.current?.();
         if (connectionGroupId) {
           body.connectionGroupId = connectionGroupId;
+        }
+        // #2518 — Auto/Pin/All routing mode. Omitted when null so the
+        // server's NULL→"pin" back-compat default applies to legacy
+        // conversations that never went through the new picker.
+        const routingMode = getRoutingModeRef.current?.();
+        if (routingMode) {
+          body.routingMode = routingMode;
         }
         return body;
       },

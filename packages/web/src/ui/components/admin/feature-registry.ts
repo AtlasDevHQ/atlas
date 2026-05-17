@@ -53,6 +53,7 @@ export const FEATURE_NAMES = [
   "Platform Settings",
   "Plugin Catalog",
   "Plugins",
+  "Proactive Chat",
   "Prompt Library",
   "Query Analytics",
   "Sandbox",

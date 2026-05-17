@@ -1458,6 +1458,69 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows[0]?.connection_group_id).toBe(groupId);
   }, PG_TEST_TIMEOUT_MS);
 
+  // 0077 — conversations.routing_mode. Adds the three-state Auto/Pin/
+  // All picker column the cross-environment routing slice (#2518)
+  // lives on. What this set of assertions guards against:
+  //   - A future migration that flips `routing_mode` to NOT NULL
+  //     without a backfill — legacy conversations (pre-0077) must keep
+  //     booting with NULL on the column.
+  //   - A future migration that adds a too-strict CHECK constraint
+  //     that rejects the legitimate values. The Zod enum in the chat
+  //     route is the single source of truth; a DB-level CHECK is
+  //     intentionally omitted (see 0077).
+  it("conversations.routing_mode: column exists, is nullable, and accepts auto/pin/all", async () => {
+    const { rows } = await pool.query<{ is_nullable: string; data_type: string }>(
+      `SELECT is_nullable, data_type
+       FROM information_schema.columns
+       WHERE table_name = 'conversations'
+         AND column_name = 'routing_mode'
+         AND table_schema = current_schema()`,
+    );
+    expect(rows[0]?.data_type).toBe("text");
+    expect(rows[0]?.is_nullable).toBe("YES");
+
+    // The three documented values must all be writable. We probe with
+    // raw SQL (no application-layer validation) so a future CHECK
+    // constraint that diverges from the Zod enum fails this test
+    // loudly rather than silently dropping a picker selection.
+    const orgId = `org-rm-${Date.now()}`;
+    const userBase = `user-rm-${Date.now()}`;
+    for (const mode of ["auto", "pin", "all"] as const) {
+      await pool.query(
+        `INSERT INTO conversations (user_id, title, surface, routing_mode, org_id)
+         VALUES ($1, $2, 'web', $3, $4)`,
+        [`${userBase}-${mode}`, `Routing mode test (${mode})`, mode, orgId],
+      );
+    }
+    const persisted = await pool.query<{ routing_mode: string }>(
+      `SELECT routing_mode FROM conversations WHERE org_id = $1 ORDER BY routing_mode`,
+      [orgId],
+    );
+    expect(persisted.rows.map((r) => r.routing_mode)).toEqual(["all", "auto", "pin"]);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("conversations.routing_mode: pre-0077 rows stay readable as NULL (back-compat read-side default)", async () => {
+    // Legacy conversations (no routing_mode column when they were
+    // written) survive the migration with NULL on the new column.
+    // The runtime treats NULL as "pin" — pre-#2518 rows carry a
+    // single connection_id and the safest interpretation is "stay
+    // pinned to that member". This test inserts a row WITHOUT
+    // setting routing_mode (mimicking a pre-#2518 INSERT) and
+    // asserts the read surfaces NULL, not a synthetic default.
+    const orgId = `org-rm-legacy-${Date.now()}`;
+    const userId = `user-rm-legacy-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO conversations (user_id, title, surface, connection_id, org_id)
+       VALUES ($1, 'Legacy pre-0077 row', 'web', 'us-int', $2)`,
+      [userId, orgId],
+    );
+    const { rows } = await pool.query<{ routing_mode: string | null }>(
+      `SELECT routing_mode FROM conversations WHERE user_id = $1`,
+      [userId],
+    );
+    expect(rows[0]?.routing_mode).toBeNull();
+  }, PG_TEST_TIMEOUT_MS);
+
   it("conversations: connection_id and connection_group_id can hold independent values (per-turn override shape)", async () => {
     // The slice's core invariant: a conversation can pin its content
     // scope to a multi-member "prod" group while its execution target
@@ -3276,70 +3339,89 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(after.rows[0]?.bound_dashboard_id).toBeNull();
   }, PG_TEST_TIMEOUT_MS);
 
-  // ─────────────────────────────────────────────────────────────────────
-  // 0074 — proactive_meter_events (#2296) — CHECK constraints + roundtrip.
-  // ─────────────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------------------
+  // proactive_pauses (#2295)
+  // ---------------------------------------------------------------------------
 
-  it("proactive_meter_events: accepts a canonical classify row (#2296)", async () => {
-    const workspaceId = `org-meter-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  it("proactive_pauses: layer CHECK constraint rejects unknown values (#2295)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-pp-bad-${stamp}`;
+    let err: Error | null = null;
+    try {
+      await pool.query(
+        `INSERT INTO proactive_pauses (workspace_id, channel_id, user_id, layer)
+         VALUES ($1, NULL, NULL, 'not-a-real-layer')`,
+        [ws],
+      );
+    } catch (e) {
+      err = e instanceof Error ? e : new Error(String(e));
+    }
+    expect(err).not.toBeNull();
+    // 23514 = check_violation
+    expect(err?.message).toMatch(/chk_proactive_pauses_layer|23514|check constraint/i);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("proactive_pauses: stores all four canonical layers (#2295)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-pp-canon-${stamp}`;
+    const channelId = `C-${stamp}`;
+    const userId = `U-${stamp}`;
+
     await pool.query(
-      `INSERT INTO proactive_meter_events
-         (workspace_id, channel_id, message_id, event_type, tokens, cost_micro_usd, confidence, actor_user_id)
-       VALUES ($1, 'C-alpha', 'M-1', 'classify', 120, 75, 0.91, 'U-asker')`,
-      [workspaceId],
-    );
-    const { rows } = await pool.query<{ tokens: number; cost_micro_usd: number; confidence: string }>(
-      `SELECT tokens, cost_micro_usd, confidence FROM proactive_meter_events WHERE workspace_id = $1`,
-      [workspaceId],
-    );
-    expect(rows[0]?.tokens).toBe(120);
-    expect(rows[0]?.cost_micro_usd).toBe(75);
-    expect(Number(rows[0]?.confidence)).toBeCloseTo(0.91, 2);
-  }, PG_TEST_TIMEOUT_MS);
-
-  it("proactive_meter_events: rejects an unknown event_type with 23514 (#2296)", async () => {
-    const workspaceId = `org-meter-bad-evt-${Date.now()}`;
-    await expect(
-      pool.query(
-        `INSERT INTO proactive_meter_events (workspace_id, channel_id, event_type)
-         VALUES ($1, 'C-alpha', 'snicker')`,
-        [workspaceId],
-      ),
-    ).rejects.toMatchObject({ code: "23514" });
-  }, PG_TEST_TIMEOUT_MS);
-
-  it("proactive_meter_events: rejects an unknown outcome with 23514 (#2296)", async () => {
-    const workspaceId = `org-meter-bad-out-${Date.now()}`;
-    await expect(
-      pool.query(
-        `INSERT INTO proactive_meter_events (workspace_id, channel_id, event_type, outcome)
-         VALUES ($1, 'C-alpha', 'feedback', 'mid')`,
-        [workspaceId],
-      ),
-    ).rejects.toMatchObject({ code: "23514" });
-  }, PG_TEST_TIMEOUT_MS);
-
-  it("proactive_meter_events: summary query roundtrips with NUMERIC confidence (#2296)", async () => {
-    const workspaceId = `org-meter-rt-${Date.now()}`;
-    await pool.query(
-      `INSERT INTO proactive_meter_events
-         (workspace_id, channel_id, event_type, tokens, cost_micro_usd, confidence)
+      `INSERT INTO proactive_pauses (workspace_id, channel_id, user_id, layer, expires_at)
        VALUES
-         ($1, 'C-a', 'classify', 100, 50, 0.80),
-         ($1, 'C-a', 'classify', 100, 50, 0.85),
-         ($1, 'C-a', 'react',      0,  0, 0.85),
-         ($1, 'C-b', 'classify', 100, 25, 0.92),
-         ($1, 'C-b', 'feedback',   0,  0, NULL)`,
-      [workspaceId],
+         ($1, NULL,        NULL,    'workspace-kill', NULL),
+         ($1, $2::text,    NULL,    'admin-channel',  NULL),
+         ($1, NULL,        $3::text, 'user-optout',   NULL),
+         ($1, $2::text,    NULL,    'channel-24h',    NOW() + INTERVAL '24 hours')`,
+      [ws, channelId, userId],
     );
-    const { rows } = await pool.query<{ event_type: string; cost_micro_usd: number }>(
-      `SELECT event_type, cost_micro_usd FROM proactive_meter_events
+
+    const { rows } = await pool.query<{ layer: string }>(
+      `SELECT layer FROM proactive_pauses WHERE workspace_id = $1 ORDER BY layer`,
+      [ws],
+    );
+    expect(rows.map((r) => r.layer).sort()).toEqual([
+      "admin-channel",
+      "channel-24h",
+      "user-optout",
+      "workspace-kill",
+    ]);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("proactive_pauses: expired-row predicate works in WHERE (#2295)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-pp-exp-${stamp}`;
+    const channelId = `C-${stamp}`;
+
+    // Two channel-24h rows: one already expired, one still active.
+    await pool.query(
+      `INSERT INTO proactive_pauses (workspace_id, channel_id, layer, expires_at) VALUES
+         ($1, $2, 'channel-24h', NOW() - INTERVAL '1 hour'),
+         ($1, $2, 'channel-24h', NOW() + INTERVAL '1 hour')`,
+      [ws, channelId],
+    );
+
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT id FROM proactive_pauses
         WHERE workspace_id = $1
-        ORDER BY created_at`,
-      [workspaceId],
+          AND channel_id = $2
+          AND (expires_at IS NULL OR expires_at > NOW())`,
+      [ws, channelId],
     );
-    expect(rows).toHaveLength(5);
-    const total = rows.reduce((sum, r) => sum + Number(r.cost_micro_usd), 0);
-    expect(total).toBe(125);
+    expect(rows.length).toBe(1);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("proactive_pauses: lookup index is used for (workspace, channel) scans (#2295)", async () => {
+    // Sanity-check that the lookup index exists by name — EXPLAIN ANALYZE
+    // would be heavier; the index presence test is enough for drift detection.
+    const { rows } = await pool.query<{ indexname: string }>(
+      `SELECT indexname FROM pg_indexes
+        WHERE tablename = 'proactive_pauses'
+        ORDER BY indexname`,
+    );
+    const names = rows.map((r) => r.indexname);
+    expect(names).toContain("idx_proactive_pauses_lookup");
+    expect(names).toContain("idx_proactive_pauses_user");
   }, PG_TEST_TIMEOUT_MS);
 });

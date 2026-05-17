@@ -12,9 +12,11 @@ import type { ReactionConfig } from "./features/reactions";
 import type {
   ChannelProactiveConfig,
   LLMClassifierFn,
+  OnPauseRequestFn,
   ProactiveGateFn,
   WorkspaceProactiveConfig,
 } from "./proactive/types";
+import type { IsPausedFn } from "./proactive/pause";
 import type {
   ProactiveExecuteQuery,
   ProactiveUserResolver,
@@ -458,6 +460,25 @@ export interface ProactiveConfig {
    * writes to the meter / evals dataset.
    */
   feedbackCollector?: FeedbackCollectorFn;
+
+  // ---- Slice #2295 additions: kill switch + per-user opt-out ----
+
+  /**
+   * Workspace id threaded into the kill-switch callbacks. Required
+   * when `isPaused` or `onPauseRequest` is set.
+   */
+  workspaceId?: string;
+  /**
+   * Pause-registry read API. Host backs this with the API package's
+   * `PauseRegistry` so the listener consults it BEFORE classification.
+   */
+  isPaused?: IsPausedFn;
+  /**
+   * Pause-registry write API. Called for in-channel `@atlas pause`
+   * (24h channel scope) and DM `unsubscribe` (workspace-wide
+   * user opt-out).
+   */
+  onPauseRequest?: OnPauseRequestFn;
 }
 
 // ---------------------------------------------------------------------------
@@ -718,6 +739,23 @@ const ProactiveConfigSchema = z
       .refine(
         (v) => v === undefined || typeof v === "function",
         "proactive.feedbackCollector must be a function",
+      )
+      .optional(),
+    // Kill-switch wiring (#2295). All three optional so the legacy
+    // env-var allowlist mode (used by tests + dev) keeps working.
+    workspaceId: z.string().min(1).optional(),
+    isPaused: z
+      .any()
+      .refine(
+        (v) => v === undefined || typeof v === "function",
+        "proactive.isPaused must be a function returning Promise<PauseDecision>",
+      )
+      .optional(),
+    onPauseRequest: z
+      .any()
+      .refine(
+        (v) => v === undefined || typeof v === "function",
+        "proactive.onPauseRequest must be a function returning Promise<void>",
       )
       .optional(),
   })

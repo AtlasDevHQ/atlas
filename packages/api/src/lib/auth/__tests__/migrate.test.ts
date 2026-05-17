@@ -320,7 +320,9 @@ describe("migrateAuthTables", () => {
             { name: "0072_cleanup_empty_synthetic_groups.sql" },
             { name: "0073_conversation_bound_dashboard.sql" },
             { name: "0074_audit_log_parent_audit_id.sql" },
-            { name: "0075_proactive_meter_events.sql" },
+            { name: "0075_proactive_chat_config.sql" },
+            { name: "0076_proactive_pauses.sql" },
+            { name: "0077_conversations_routing_mode.sql" },
           ],
         };
       }

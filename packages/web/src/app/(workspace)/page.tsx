@@ -27,6 +27,7 @@ import {
   ChatEnvPicker,
   shouldRenderEnvPicker,
   useChatEnvGroups,
+  type ConversationRoutingMode,
 } from "@/ui/components/chat/env-picker";
 import { parseSuggestions } from "@/ui/lib/helpers";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -75,6 +76,13 @@ function ChatPage() {
   // applies default routing.
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
+  // #2518 — three-state Auto/Pin/All cross-environment routing picker.
+  // `null` until the user (or the server, on conversation load) picks a
+  // mode; the transport omits the field when `null` so the server
+  // applies its NULL→"pin" back-compat default for legacy
+  // conversations.
+  const [selectedRoutingMode, setSelectedRoutingMode] =
+    useState<ConversationRoutingMode | null>(null);
   // Adaptive empty-chat starter surface — backend composes the ranked
   // prompt list from favorites / popular / library tiers (#1474).
   const [starterPrompts, setStarterPrompts] = useState<
@@ -134,6 +142,7 @@ function ChatPage() {
     // transport.
     getConnectionId: () => selectedConnectionId,
     getConnectionGroupId: () => selectedGroupId,
+    getRoutingMode: () => selectedRoutingMode,
   });
 
   const convos = useConversations({
@@ -448,9 +457,11 @@ function ChatPage() {
                       transportError={envGroupsQuery.error}
                       activeGroupId={selectedGroupId}
                       activeConnectionId={selectedConnectionId}
-                      onSelect={({ groupId, connectionId }) => {
+                      activeRoutingMode={selectedRoutingMode}
+                      onSelect={({ groupId, connectionId, routingMode }) => {
                         setSelectedGroupId(groupId);
                         setSelectedConnectionId(connectionId);
+                        setSelectedRoutingMode(routingMode);
                       }}
                     />
                   </div>

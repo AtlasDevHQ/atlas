@@ -8,16 +8,28 @@
  */
 
 export type {
+  ChannelPauseLayer,
   ChannelProactiveConfig,
   ClassificationResult,
   InterjectionAction,
   InterjectionDecision,
   LLMClassifierFn,
+  OnPauseRequestFn,
+  PauseLayer,
   ProactiveGateFn,
   RecentActivity,
   SensitivityPreset,
   WorkspaceProactiveConfig,
 } from "./types";
+
+export {
+  CHANNEL_PAUSE_DURATION_MS,
+  detectPauseCommand,
+  detectUnsubscribeDM,
+  resolvePauseRequest,
+  type IsPausedFn,
+  type PauseDecision,
+} from "./pause";
 
 export {
   classifyMessage,

@@ -36,6 +36,7 @@ import { getConfig } from "./config";
 import { createLogger, getRequestContext } from "./logger";
 import { getSetting } from "./settings";
 import { hasInternalDB, internalExecute } from "./db/internal";
+import { loadGroupRoutingContext } from "./env-routing/lookup";
 import { logUsageEvent } from "./metering";
 import { buildLearnedPatternsSection } from "./learn/pattern-cache";
 import { dispatchMutableHook } from "./plugins/hooks";
@@ -167,6 +168,68 @@ function filterAgentVisibleSources(sources: ConnectionMetadata[]): ConnectionMet
   return sources.filter((s) => s.id !== "default");
 }
 
+/**
+ * Active-group routing context passed into the system prompt builder so the
+ * agent can decide whether to set `scope` on `executeSQL` (PRD #2515 / slice 2
+ * #2517). When `members.length > 1`, the prompt gains a "Cross-Environment
+ * Routing" section listing every member id and the comparative-intent
+ * heuristics. Single-member groups see no prompt change — back-compat with
+ * pre-#2517 single-env workspaces.
+ */
+export interface ScopeRoutingContext {
+  /** Every member id of the conversation's active connection group. */
+  readonly members: readonly string[];
+  /** The conversation's currently-selected member id (anchors `scope: "this"`). */
+  readonly currentMember: string;
+  /** Active group id, for display only. */
+  readonly groupId?: string;
+}
+
+/**
+ * Build the "Cross-Environment Routing" prompt section. Returns an empty
+ * string when there's nothing to teach the agent (single-member groups,
+ * missing routing context). Pure — the upstream caller decides whether to
+ * append this to the system prompt.
+ *
+ * The guidance is conservative-by-default: single-environment cues collapse
+ * to `scope: "<that member>"`; ambiguous questions default to single
+ * execution against the current member. Fanout (`scope: "all"`) requires
+ * an explicit comparative cue so the agent doesn't burn N× tokens on a
+ * one-env question that happened to mention a region word.
+ */
+function buildScopeGuidanceSection(
+  routingContext: ScopeRoutingContext | undefined,
+): string {
+  if (!routingContext) return "";
+  const { members, currentMember } = routingContext;
+  if (members.length <= 1) return "";
+
+  const memberList = members.map((m) => `\`${m}\``).join(", ");
+  return `## Cross-Environment Routing (executeSQL \`scope\`)
+
+This conversation is in a multi-environment group with ${members.length} members: ${memberList}. The conversation's current member is \`${currentMember}\`.
+
+Each \`executeSQL\` call can carry a \`scope\` argument that decides which environment(s) the SQL runs against:
+
+- **\`scope: "this"\`** (or omitted) — runs against the current member \`${currentMember}\`. Default for single-environment questions.
+- **\`scope: "all"\`** — fans out across every member (${memberList}); the result merges all rows with a prepended \`__env__\` column so the agent can see per-environment values side by side.
+- **\`scope: "<member id>"\`** — routes to that specific member only. Use when the user names an environment.
+
+**When to set scope:**
+
+- **Comparative intent** — "trends across regions", "compare X by region", "side by side", "each environment", "all regions" — set \`scope: "all"\`.
+- **Single-environment cue** — "in EU", "production us-int", a region keyword used as the target — set \`scope: "<that member id>"\` (must match one of: ${memberList}).
+- **No routing cue / ambiguous** — be conservative: omit \`scope\` or set \`"this"\`. Single execution against the current member is the right default; you can ask a clarifying question if the question is genuinely ambiguous.
+
+**Conservative-by-default examples:**
+
+- "show me the EU schema for orders" → single execution (the user wants the EU schema, not a comparison). Use \`scope: "eu"\` if \`eu\` is a member, otherwise omit.
+- "compare order volume across regions" → \`scope: "all"\` (explicit comparative phrasing).
+- "show me orders" → omit \`scope\` (no routing cue — stick with the current member).
+
+The result of a fanned-out query carries an \`envContributions\` array describing each environment's row count, duration, and error (if any). Use it to surface partial failures to the user instead of silently treating a failed env as zero rows.`;
+}
+
 function buildMultiSourceSection(
   sources: ConnectionMetadata[],
 ): string {
@@ -233,7 +296,12 @@ const PYTHON_GUIDANCE = `
 
 **Chart guidance:** prefer \`_atlas_chart\` (interactive Recharts) for bar/line/pie charts. Use \`chart_path()\` only for advanced matplotlib visualizations that Recharts cannot render.`;
 
-function buildSystemPrompt(registry: ToolRegistry, orgSemanticIndex?: string, learnedPatternsSection?: string): string {
+function buildSystemPrompt(
+  registry: ToolRegistry,
+  orgSemanticIndex?: string,
+  learnedPatternsSection?: string,
+  routingContext?: ScopeRoutingContext,
+): string {
   let base = SYSTEM_PROMPT_PREFIX + "\n\n" + registry.describe() + "\n\n" + SYSTEM_PROMPT_SUFFIX;
 
   // Add Python guidance only when the tool is available
@@ -290,6 +358,12 @@ function buildSystemPrompt(registry: ToolRegistry, orgSemanticIndex?: string, le
   // Non-core dialects (clickhouse, snowflake, duckdb, salesforce, etc.)
   // are provided by plugins via appendDialectHints().
 
+  // Cross-environment routing guidance: only appears when the active group
+  // has >1 member (PRD #2515 / slice 2 #2517). Single-member groups omit
+  // the section so single-env workspaces see no prompt change.
+  const scopeGuidance = buildScopeGuidanceSection(routingContext);
+  if (scopeGuidance) prompt += "\n\n" + scopeGuidance;
+
   return appendDialectHints(prompt);
 }
 
@@ -313,8 +387,9 @@ export function buildSystemParam(
   warnings?: string[],
   orgSemanticIndex?: string,
   learnedPatternsSection?: string,
+  routingContext?: ScopeRoutingContext,
 ): string | SystemModelMessage {
-  let content = buildSystemPrompt(registry, orgSemanticIndex, learnedPatternsSection);
+  let content = buildSystemPrompt(registry, orgSemanticIndex, learnedPatternsSection, routingContext);
 
   if (warnings && warnings.length > 0) {
     content += "\n\n## Warnings\n\n" + warnings.map((w) => `- ${w}`).join("\n");
@@ -706,11 +781,27 @@ export async function runAgent({
   const rawTools = toolRegistry.getAll();
   const tools = wrapToolsWithHooks(rawTools, { userId: userId ?? undefined, conversationId });
 
+  // #2517 — load active-group routing context so the system prompt can
+  // teach the agent when to set `scope` on `executeSQL`. Falls back to
+  // a 1×1 result (no prompt section) when no group is bound or the
+  // lookup fails — single-env workspaces see no behavioural change.
+  let scopeRoutingContext: ScopeRoutingContext | undefined;
+  if (connectionId) {
+    const ctx = await loadGroupRoutingContext(orgId, connectionId);
+    if (ctx.members.length > 1) {
+      scopeRoutingContext = {
+        members: ctx.members,
+        currentMember: ctx.currentMember,
+        ...(ctx.groupId ? { groupId: ctx.groupId } : {}),
+      };
+    }
+  }
+
   let result;
   try {
     result = otelContext.with(agentCtx, () => streamText({
       model,
-      system: buildSystemParam(providerType, toolRegistry, warnings, orgSemanticIndex, learnedPatternsSection),
+      system: buildSystemParam(providerType, toolRegistry, warnings, orgSemanticIndex, learnedPatternsSection, scopeRoutingContext),
       messages: modelMessages,
       tools,
       temperature: 0.2,

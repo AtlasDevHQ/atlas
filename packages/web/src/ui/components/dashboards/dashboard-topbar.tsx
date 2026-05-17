@@ -43,6 +43,12 @@ interface DashboardTopBarProps {
   suggesting: boolean;
   onDelete: () => void;
   shareSlot: React.ReactNode;
+  /**
+   * #2363 — optional slot for the bound chat drawer trigger. Rendered
+   * next to `shareSlot` so the topbar layout is unchanged when the
+   * caller doesn't supply one.
+   */
+  chatSlot?: React.ReactNode;
   editing: boolean;
   onEditingChange: (next: boolean) => void;
   density: Density;
@@ -63,6 +69,7 @@ export function DashboardTopBar({
   suggesting,
   onDelete,
   shareSlot,
+  chatSlot,
   editing,
   onEditingChange,
   density,
@@ -225,6 +232,8 @@ export function DashboardTopBar({
             <SelectItem value="0 9 * * 1">Weekly (Mon 9am)</SelectItem>
           </SelectContent>
         </Select>
+
+        {chatSlot}
 
         {shareSlot}
 

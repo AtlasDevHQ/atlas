@@ -3,8 +3,9 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { Plus, Sparkles, XCircle } from "lucide-react";
+import { MessagesSquare, Plus, Sparkles, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { BoundChatDrawer } from "@/ui/components/dashboards/bound-chat-drawer";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -57,6 +58,8 @@ export default function DashboardViewPage() {
 
   const [editing, setEditing] = useState(false);
   const [density, setDensity] = useState<Density>("comfortable");
+  // #2363 — bound chat drawer state
+  const [chatOpen, setChatOpen] = useState(false);
 
   // Optimistic layout — applied on drop/resize end so the UI doesn't wait for
   // the PATCH round-trip. Dropped explicitly when the mutation settles. No
@@ -285,6 +288,17 @@ export default function DashboardViewPage() {
               suggesting={suggestingCards}
               onDelete={() => setDeleteDashboard(true)}
               shareSlot={<DashboardShareDialog dashboardId={id} />}
+              chatSlot={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setChatOpen(true)}
+                  aria-label="Edit dashboard with chat"
+                >
+                  <MessagesSquare className="mr-1.5 size-3.5" aria-hidden="true" />
+                  Edit with chat
+                </Button>
+              }
               editing={editing}
               onEditingChange={setEditing}
               density={density}
@@ -426,6 +440,16 @@ export default function DashboardViewPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {dashboard && (
+        <BoundChatDrawer
+          open={chatOpen}
+          onOpenChange={setChatOpen}
+          dashboardId={dashboard.id}
+          dashboardTitle={dashboard.title}
+          onDashboardMutated={refetch}
+        />
+      )}
 
       <AlertDialog open={deleteDashboard} onOpenChange={setDeleteDashboard}>
         <AlertDialogContent>

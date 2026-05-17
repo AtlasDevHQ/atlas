@@ -42,6 +42,16 @@ import {
   resolveGroupForConnection,
   settleConversationSteps,
 } from "@atlas/api/lib/conversations";
+import {
+  bindConversationToDashboard,
+  resolveBoundDashboard,
+  buildCardSummary,
+} from "@atlas/api/lib/bound-chat-context";
+// `buildBoundDashboardRegistry` is loaded lazily inside the request
+// handler — it statically imports `tools/explore`, and existing tests
+// (e.g. action-permissions.test.ts) partial-mock `tools/explore`.
+// Keeping it dynamic mirrors the pattern used for the default
+// `buildRegistry` below.
 import { setStreamWriter, clearStreamWriter } from "@atlas/api/lib/tools/python-stream";
 import { getSetting } from "@atlas/api/lib/settings";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
@@ -356,6 +366,15 @@ export const ChatRequestSchema = z.object({
    * follow-up turn.
    */
   connectionGroupId: z.string().optional(),
+  /**
+   * #2363 — bound dashboard editor. When the chat drawer opens on
+   * `/dashboards/[id]` the client supplies the dashboard id once (on
+   * the conversation-creating turn). The route stamps
+   * `conversations.bound_dashboard_id` and subsequent turns inherit
+   * the binding from the persisted row, so the field is optional on
+   * follow-up turns.
+   */
+  boundDashboardId: z.string().uuid().optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -685,6 +704,18 @@ chat.openapi(chatRoute, async (c) => {
   
         const messages = parsed.data.messages as UIMessage[];
         let conversationId = parsed.data.conversationId;
+        // #2363 — bound dashboard editor. The id supplied by the client
+        // is honored only on the conversation-creating turn (and only
+        // after dashboard org-ownership is verified inside
+        // `bindConversationToDashboard`). Follow-up turns ignore the
+        // body field and inherit the binding from the conversation row.
+        const requestedBoundDashboardId = parsed.data.boundDashboardId;
+        // Populated after conversation load/create when the row carries
+        // a `bound_dashboard_id`. Drives the bound-mode tool registry
+        // + system-prompt swap below.
+        let boundDashboardForAgent:
+          | { cardSummary: string; toolContext: { dashboardId: string; orgId: string | null | undefined } }
+          | null = null;
         // F-77 — track the upfront reservation so the post-stream
         // settlement can refund any unused budget. `null` means no
         // reservation was charged (cap disabled, new conversation, or
@@ -874,11 +905,63 @@ chat.openapi(chatRoute, async (c) => {
                 if (firstUserMsg) {
                   addMessage({ conversationId, role: "user", content: firstUserMsg.parts });
                 }
+                // #2363 — stamp the bound-dashboard pointer immediately
+                // after creation, BEFORE the agent runs, so the first
+                // turn already sees the bound-mode registry. Best-effort:
+                // a bind failure (dashboard not found / cross-org / DB
+                // glitch) logs + falls back to the default agent loop.
+                // The drawer client will see the empty card summary on
+                // its next refresh and can prompt the user to retry.
+                if (requestedBoundDashboardId) {
+                  const bound = await bindConversationToDashboard(
+                    conversationId,
+                    requestedBoundDashboardId,
+                    { orgId: authResult.user?.activeOrganizationId },
+                  );
+                  if (!bound.ok) {
+                    log.warn(
+                      {
+                        requestId,
+                        conversationId,
+                        dashboardId: requestedBoundDashboardId,
+                        reason: bound.reason,
+                      },
+                      "Failed to bind conversation to dashboard — chat will run unbound",
+                    );
+                  }
+                }
               }
             } catch (err) {
               log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to create conversation");
             }
           }
+        }
+
+        // #2363 — resolve the bound dashboard (if any) AFTER conversation
+        // load/create. Reads the persisted `bound_dashboard_id` so
+        // follow-up turns inherit the binding without resending it.
+        // Falls back to the default agent when the resolve returns
+        // `not_bound` / `dashboard_missing` (deleted between turns) /
+        // `error` — the route never hard-fails on a binding lookup.
+        if (conversationId) {
+          const resolved = await resolveBoundDashboard(conversationId, {
+            orgId: authResult.user?.activeOrganizationId,
+          });
+          if (resolved.ok) {
+            boundDashboardForAgent = {
+              cardSummary: buildCardSummary(resolved.dashboard.cards),
+              toolContext: {
+                dashboardId: resolved.dashboard.id,
+                orgId: authResult.user?.activeOrganizationId,
+              },
+            };
+          } else if (resolved.reason === "error") {
+            log.warn(
+              { requestId, conversationId, reason: resolved.reason },
+              "resolveBoundDashboard failed — falling back to default agent",
+            );
+          }
+          // not_bound / no_db / dashboard_missing → silent fallback to default agent
         }
   
         try {
@@ -904,27 +987,44 @@ chat.openapi(chatRoute, async (c) => {
             }
           }
   
-          // Merge plugin tools (if any) on top of the current registry
-          const prePluginRegistry = toolRegistry;
-          try {
-            const { getPluginTools } = await import("@atlas/api/lib/plugins/tools");
-            const pluginTools = getPluginTools();
-            if (pluginTools) {
-              const { ToolRegistry, defaultRegistry } = await import("@atlas/api/lib/tools/registry");
-              const base = toolRegistry ?? defaultRegistry;
-              toolRegistry = ToolRegistry.merge(base, pluginTools);
-              toolRegistry.freeze();
+          // Merge plugin tools (if any) on top of the current registry.
+          // #2363 — skip the merge entirely when the agent is bound to a
+          // dashboard. The bound editor surface is intentionally narrow
+          // (explore + executeSQL + 6 editor tools) and plugin / action
+          // tools just confuse the model mid-edit. The bound registry
+          // is built fresh below.
+          if (!boundDashboardForAgent) {
+            const prePluginRegistry = toolRegistry;
+            try {
+              const { getPluginTools } = await import("@atlas/api/lib/plugins/tools");
+              const pluginTools = getPluginTools();
+              if (pluginTools) {
+                const { ToolRegistry, defaultRegistry } = await import("@atlas/api/lib/tools/registry");
+                const base = toolRegistry ?? defaultRegistry;
+                toolRegistry = ToolRegistry.merge(base, pluginTools);
+                toolRegistry.freeze();
+              }
+            } catch (err) {
+              toolRegistry = prePluginRegistry;
+              const errObj = err instanceof Error ? err : new Error(String(err));
+              log.error(
+                { err: errObj },
+                "Failed to merge plugin tools — continuing without plugin tools",
+              );
+              warnings.push(
+                `Plugin tools failed to load: ${errObj.message}. Chat will continue without plugin tools. Inform the user that plugin-provided tools are unavailable for this session.`,
+              );
             }
-          } catch (err) {
-            toolRegistry = prePluginRegistry;
-            const errObj = err instanceof Error ? err : new Error(String(err));
-            log.error(
-              { err: errObj },
-              "Failed to merge plugin tools — continuing without plugin tools",
+          } else {
+            // Bound mode — replace the registry entirely with the
+            // dashboard editor toolset. Dropping action / plugin /
+            // python tools is the whole point of binding. Dynamic
+            // import keeps `tools/explore` out of chat.ts's static
+            // graph so partial-mock tests stay green.
+            const { buildBoundDashboardRegistry } = await import(
+              "@atlas/api/lib/tools/bound-dashboard-registry"
             );
-            warnings.push(
-              `Plugin tools failed to load: ${errObj.message}. Chat will continue without plugin tools. Inform the user that plugin-provided tools are unavailable for this session.`,
-            );
+            toolRegistry = buildBoundDashboardRegistry(boundDashboardForAgent.toolContext);
           }
   
           // #1988 B5 — out-array the agent's preflight loaders push into
@@ -968,6 +1068,9 @@ chat.openapi(chatRoute, async (c) => {
                 conversationId,
                 ...(warnings.length > 0 && { warnings }),
                 contextWarnings,
+                ...(boundDashboardForAgent && {
+                  boundDashboardContext: { cardSummary: boundDashboardForAgent.cardSummary },
+                }),
               }),
           );
   

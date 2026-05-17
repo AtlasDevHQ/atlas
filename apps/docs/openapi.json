@@ -10048,6 +10048,12 @@
                           "name": {
                             "type": "string"
                           },
+                          "primaryConnectionId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "members": {
                             "type": "array",
                             "items": {
@@ -10077,6 +10083,7 @@
                         "required": [
                           "id",
                           "name",
+                          "primaryConnectionId",
                           "members"
                         ]
                       }

@@ -191,11 +191,8 @@ describe("runMigrations", () => {
         "0071_connection_groups_status.sql",
         "0072_cleanup_empty_synthetic_groups.sql",
         "0073_conversation_bound_dashboard.sql",
-<<<<<<< HEAD
         "0074_audit_log_parent_audit_id.sql",
-=======
-        "0074_proactive_chat_config.sql",
->>>>>>> ca399117 (chore(api,docs): #2294 — regen OpenAPI + bump migration-count assertions)
+        "0075_proactive_chat_config.sql",
       ],
     });
 

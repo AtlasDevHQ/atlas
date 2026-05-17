@@ -1,7 +1,14 @@
 /** @jsxImportSource chat */
-import { Card, CardText, Section, Actions, Button } from "chat";
-import type { CardElement } from "chat";
-import { toCardElement } from "chat/jsx-runtime";
+import { Card, CardText, Section, Actions, Button, Modal, TextInput } from "chat";
+import type { CardElement, ModalElement } from "chat";
+import { toCardElement, toModalElement } from "chat/jsx-runtime";
+import {
+  PROACTIVE_FB_HELPFUL_ACTION_ID,
+  PROACTIVE_FB_NOT_HELPFUL_ACTION_ID,
+  PROACTIVE_FB_WRONG_DATA_ACTION_ID,
+  PROACTIVE_FB_WRONG_DATA_INPUT_ID,
+  PROACTIVE_FB_WRONG_DATA_MODAL_ID,
+} from "../proactive/feedback";
 
 // ---------------------------------------------------------------------------
 // Action IDs
@@ -66,21 +73,39 @@ export function buildProactiveOfferCard(messageId: string): {
 /**
  * Build the in-thread answer card for a linked asker.
  *
- * Slice #2293 keeps this minimal — markdown body + a fallback string.
- * Rich result cards (charts, exports) come from the existing
- * `buildQueryResultCard` once the full agent loop wires through; for
- * now we use a plain text card so the proactive path can ship.
+ * Includes the slice #2298 inline feedback row when `answerId` is
+ * provided. The button `value` carries `answerId` so the action
+ * handler can attribute the feedback to the right Atlas answer.
+ *
+ * Rich result cards (charts, exports) still come from the existing
+ * `buildQueryResultCard` once the full agent loop wires through; this
+ * card is intentionally minimal so the proactive path can ship.
  */
-export function buildProactiveAnswerCard(answer: string): {
+export function buildProactiveAnswerCard(
+  answer: string,
+  answerId?: string,
+): {
   card: CardElement;
   fallbackText: string;
 } {
   const trimmed = answer.trim().length > 0 ? answer : "(no answer produced)";
+  const value = answerId ?? "";
   const jsx = (
     <Card>
       <Section>
         <CardText>{trimmed}</CardText>
       </Section>
+      <Actions>
+        <Button id={PROACTIVE_FB_HELPFUL_ACTION_ID} value={value}>
+          Helpful
+        </Button>
+        <Button id={PROACTIVE_FB_NOT_HELPFUL_ACTION_ID} value={value}>
+          Not helpful
+        </Button>
+        <Button id={PROACTIVE_FB_WRONG_DATA_ACTION_ID} style="danger" value={value}>
+          Wrong data
+        </Button>
+      </Actions>
     </Card>
   );
   const card = toCardElement(jsx);
@@ -88,6 +113,36 @@ export function buildProactiveAnswerCard(answer: string): {
     throw new Error("Failed to build proactive answer card");
   }
   return { card, fallbackText: trimmed };
+}
+
+// ---------------------------------------------------------------------------
+// "Wrong data" follow-up modal
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the "Tell me what was wrong" modal opened by the
+ * `Wrong data` button. Returns null when the host's chat platform
+ * cannot render modals; the caller should silently no-op in that
+ * case (the feedback button-click is still recorded).
+ */
+export function buildWrongDataModal(answerId: string): ModalElement | null {
+  return toModalElement(
+    Modal({
+      callbackId: PROACTIVE_FB_WRONG_DATA_MODAL_ID,
+      title: "What was wrong?",
+      submitLabel: "Submit",
+      notifyOnClose: false,
+      privateMetadata: answerId,
+      children: [
+        TextInput({
+          id: PROACTIVE_FB_WRONG_DATA_INPUT_ID,
+          label: "Optional context (e.g. 'figure is stale — we re-stated April yesterday')",
+          multiline: true,
+          placeholder: "Tell us what went wrong…",
+        }),
+      ],
+    }),
+  );
 }
 
 // ---------------------------------------------------------------------------

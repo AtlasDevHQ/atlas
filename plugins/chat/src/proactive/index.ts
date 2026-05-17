@@ -61,4 +61,24 @@ export {
   buildProactiveAnswerCard,
   buildProactiveOfferCard,
   buildUnlinkedAskerPrompt,
+  buildWrongDataModal,
 } from "../cards/proactive-answer-card";
+
+export {
+  PROACTIVE_FB_HELPFUL_ACTION_ID,
+  PROACTIVE_FB_NOT_HELPFUL_ACTION_ID,
+  PROACTIVE_FB_WRONG_DATA_ACTION_ID,
+  PROACTIVE_FB_WRONG_DATA_INPUT_ID,
+  PROACTIVE_FB_WRONG_DATA_MODAL_ID,
+  RECENT_ANSWER_MAX_ENTRIES,
+  RECENT_ANSWER_TTL_MS,
+  RecentAnswers,
+  outcomeForActionId,
+  parseFeedbackSlashArgs,
+  type FeedbackCollectorFn,
+  type FeedbackOutcome,
+  type FeedbackSlashParse,
+  type FeedbackSource,
+  type ProactiveFeedbackEvent,
+  type RecentAnswerEntry,
+} from "./feedback";

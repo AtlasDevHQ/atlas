@@ -773,6 +773,7 @@ Requires `BETTER_AUTH_SECRET` for demo token signing.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ATLAS_SETTINGS_REFRESH_INTERVAL` | `30000` | Hot-reload interval for settings in milliseconds (default: 30s). Controls how often the API re-reads workspace-level settings from the database. Set to `0` to disable periodic refresh |
+| `ATLAS_DASHBOARD_DRAFTS_ENABLED` | `true` | Per-user dashboard drafts (1.4.6). When enabled, admin mutations to a bound dashboard write to the caller's draft and the **Publish** flow promotes them via an atomic three-way merge against the persisted baseline. Set to the literal string `false` to fall back to the pre-1.4.6 direct-write model — draft fetch returns `503` and the chat-bound editor degrades to a read-only viewer. See [Dashboards → Chat as editor](/guides/dashboards#chat-as-editor) |
 
 ---
 

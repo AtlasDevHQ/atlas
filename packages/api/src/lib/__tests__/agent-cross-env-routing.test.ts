@@ -439,9 +439,15 @@ describe("agent cross-env routing — executeSQL `scope`", () => {
     expect(sqlResults).toHaveLength(1);
     const first = sqlResults[0]!;
     expect(first.success).toBe(true);
-    // Single-env shape: no __env__ prepend, no envContributions
+    // Single-env shape: no `__env__` prepend.
     expect(first.columns).toEqual(["id"]);
-    expect(first.envContributions).toBeUndefined();
+    // Per #2519: single-env executions emit a 1-element envContributions
+    // array so SDK consumers see the same wire shape as fanouts. The
+    // contribution names the executed connection and carries its row
+    // count / duration.
+    expect(first.envContributions).toHaveLength(1);
+    expect(first.envContributions?.[0]?.connectionId).toBe("default");
+    expect(first.envContributions?.[0]?.error).toBeNull();
     // Only the default connection's handler ran
     expect(memberCallCounts.get("default")).toBe(1);
   });

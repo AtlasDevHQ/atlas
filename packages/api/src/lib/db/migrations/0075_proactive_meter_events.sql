@@ -1,4 +1,4 @@
--- 0074 — proactive_meter_events.
+-- 0075 — proactive_meter_events.
 --
 -- Per-event meter for proactive chat (#2296). Records every lifecycle
 -- transition so admin analytics and the eventual billing wiring share

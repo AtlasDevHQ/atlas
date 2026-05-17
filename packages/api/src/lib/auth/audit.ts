@@ -27,9 +27,34 @@ const log = createLogger("audit");
 const PINO_SQL_LIMIT = 500;
 const DB_SQL_LIMIT = 2000;
 
+/**
+ * Common audit-row fields not in the success-vs-failure discriminator.
+ *
+ * `id` and `parentAuditId` were added for cross-environment audit
+ * linkage (#2519, PRD #2515 slice 4). On a fanned-out turn the caller
+ * generates the parent's UUID, passes it as `id` on the parent row, and
+ * then passes it as `parentAuditId` on every child row. Both default to
+ * undefined — single-env executions emit a single row with no linkage
+ * and `id` defaulted by the database (`gen_random_uuid()` via the
+ * column default).
+ */
+interface AuditEntryCommon {
+  sql: string;
+  durationMs: number;
+  sourceId?: string;
+  sourceType?: DBType;
+  targetHost?: string;
+  tablesAccessed?: string[];
+  columnsAccessed?: string[];
+  /** Optional pre-generated row id. Used to stamp the parent of a fanout (#2519). */
+  id?: string;
+  /** Parent audit row id for fanned-out children. NULL on parent + single-env rows (#2519). */
+  parentAuditId?: string;
+}
+
 export type AuditEntry =
-  | { sql: string; durationMs: number; rowCount: number; success: true; sourceId?: string; sourceType?: DBType; targetHost?: string; tablesAccessed?: string[]; columnsAccessed?: string[] }
-  | { sql: string; durationMs: number; rowCount: null; success: false; error?: string; sourceId?: string; sourceType?: DBType; targetHost?: string; tablesAccessed?: string[]; columnsAccessed?: string[] };
+  | (AuditEntryCommon & { rowCount: number; success: true })
+  | (AuditEntryCommon & { rowCount: number | null; success: false; error?: string });
 
 function scrubError(error: string | undefined): string | undefined {
   if (!error) return undefined;
@@ -84,31 +109,68 @@ export function logQueryAudit(entry: AuditEntry): void {
     });
   }
 
-  // Insert into audit_log when internal DB is available (SQL truncated to 2000 chars)
+  // Insert into audit_log when internal DB is available (SQL truncated to 2000 chars).
+  //
+  // `id` and `parent_audit_id` participate in cross-environment fanout
+  // linkage (#2519). Single-env executions leave both NULL so PG fills
+  // `id` from its `gen_random_uuid()` default and `parent_audit_id`
+  // stays NULL — every existing audit consumer keeps seeing the row
+  // shape it expected. Fanout writes a parent row with a
+  // caller-supplied `id` and `parent_audit_id = NULL`, then writes one
+  // child row per member with `parent_audit_id = <parent id>`.
   if (hasInternalDB()) {
     try {
+      // Build the INSERT dynamically so we only thread `id` when the
+      // caller supplied one (parent of a fanout). For every other row
+      // PG fills `id` from the column default and we never name it.
+      const cols = [
+        "user_id",
+        "user_label",
+        "auth_mode",
+        "sql",
+        "duration_ms",
+        "row_count",
+        "success",
+        "error",
+        "source_id",
+        "source_type",
+        "target_host",
+        "tables_accessed",
+        "columns_accessed",
+        "org_id",
+        "actor_kind",
+        "client_id",
+        "tool_name",
+        "parent_audit_id",
+      ];
+      const params: unknown[] = [
+        userId,
+        userLabel,
+        authMode,
+        entry.sql.slice(0, DB_SQL_LIMIT),
+        entry.durationMs,
+        entry.rowCount,
+        entry.success,
+        scrubbedError ?? null,
+        entry.sourceId ?? null,
+        entry.sourceType ?? null,
+        entry.targetHost ?? null,
+        entry.tablesAccessed?.length ? JSON.stringify(entry.tablesAccessed) : null,
+        entry.columnsAccessed?.length ? JSON.stringify(entry.columnsAccessed) : null,
+        ctx?.user?.activeOrganizationId ?? null,
+        actorKind,
+        clientId,
+        toolName,
+        entry.parentAuditId ?? null,
+      ];
+      if (entry.id) {
+        cols.push("id");
+        params.push(entry.id);
+      }
+      const placeholders = params.map((_, i) => `$${i + 1}`).join(", ");
       internalExecute(
-        `INSERT INTO audit_log (user_id, user_label, auth_mode, sql, duration_ms, row_count, success, error, source_id, source_type, target_host, tables_accessed, columns_accessed, org_id, actor_kind, client_id, tool_name)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
-        [
-          userId,
-          userLabel,
-          authMode,
-          entry.sql.slice(0, DB_SQL_LIMIT),
-          entry.durationMs,
-          entry.rowCount,
-          entry.success,
-          scrubbedError ?? null,
-          entry.sourceId ?? null,
-          entry.sourceType ?? null,
-          entry.targetHost ?? null,
-          entry.tablesAccessed?.length ? JSON.stringify(entry.tablesAccessed) : null,
-          entry.columnsAccessed?.length ? JSON.stringify(entry.columnsAccessed) : null,
-          ctx?.user?.activeOrganizationId ?? null,
-          actorKind,
-          clientId,
-          toolName,
-        ],
+        `INSERT INTO audit_log (${cols.join(", ")}) VALUES (${placeholders})`,
+        params,
       );
     } catch (err) {
       log.warn({ err }, "audit_log insert failed");

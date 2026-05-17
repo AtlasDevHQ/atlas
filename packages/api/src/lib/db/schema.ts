@@ -63,6 +63,12 @@ export const auditLog = pgTable(
     actorKind: text("actor_kind"),
     clientId: text("client_id"),
     toolName: text("tool_name"),
+    // #2519 — cross-environment audit linkage (PRD #2515 slice 4).
+    // NULL for single-env executions; on fanout, one parent row carries
+    // NULL and N child rows reference the parent's id. ON DELETE SET
+    // NULL so retention purge of the parent leaves the per-env children
+    // attributable. See migration 0074.
+    parentAuditId: uuid("parent_audit_id"),
   },
   (t) => [
     index("idx_audit_log_timestamp").on(t.timestamp),
@@ -75,6 +81,12 @@ export const auditLog = pgTable(
     index("idx_audit_log_org_actor_ts").on(t.orgId, t.actorKind, t.timestamp.desc())
       .where(sql`actor_kind IS NOT NULL`),
     index("idx_audit_log_client_id").on(t.clientId).where(sql`client_id IS NOT NULL`),
+    index("idx_audit_log_parent_audit_id").on(t.parentAuditId).where(sql`parent_audit_id IS NOT NULL`),
+    foreignKey({
+      columns: [t.parentAuditId],
+      foreignColumns: [t.id],
+      name: "audit_log_parent_audit_id_fkey",
+    }).onDelete("set null"),
     check("chk_audit_log_actor_kind", sql`actor_kind IS NULL OR actor_kind IN ('human', 'agent', 'mcp', 'scheduler')`),
     check("chk_audit_log_auth_mode", sql`auth_mode IN ('none', 'simple-key', 'managed', 'byot')`),
   ],

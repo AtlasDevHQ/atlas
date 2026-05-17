@@ -189,6 +189,12 @@ export { ONBOARDING_EMAIL_STEPS, ONBOARDING_MILESTONES } from "@useatlas/types";
 export { PII_CATEGORIES, MASKING_STRATEGIES, PII_CONFIDENCE_LEVELS, COMPLIANCE_REPORT_TYPES } from "@useatlas/types";
 export { SHARE_EXPIRY_OPTIONS, PROMPT_INDUSTRIES, PROMPT_COLLECTION_STATUSES, MODEL_CONFIG_PROVIDERS, APPROVAL_RULE_TYPES, APPROVAL_STATUSES, WORKSPACE_STATUSES, PLAN_TIERS, NOISY_NEIGHBOR_METRICS, CONNECTION_STATUSES } from "@useatlas/types";
 export { parseChatError } from "@useatlas/types/errors";
+export type {
+  ConnectionContribution,
+  ExecuteSqlResult,
+  ExecuteSqlSuccessResult,
+  ExecuteSqlFailureResult,
+} from "@useatlas/types";
 
 // --- Web-only types (not in @useatlas/types) ---
 

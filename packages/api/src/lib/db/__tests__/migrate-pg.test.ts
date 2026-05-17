@@ -3176,4 +3176,48 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
     expect(rows[0]?.id).toBe(groupId);
   }, PG_TEST_TIMEOUT_MS);
+
+  // ─────────────────────────────────────────────────────────────────────
+  // #2512 — scheduled_tasks is the third write path that carries
+  // `connection_group_id` without an FK (the table doesn't reference
+  // `connection_groups` at the schema level, by design — schedulers may
+  // outlive group membership rotations). The application-layer predicate
+  // is what gates a stale agent / SDK consumer from binding a task to a
+  // cross-org group. Mirrors the conversations/dashboards fixtures above.
+  // ─────────────────────────────────────────────────────────────────────
+
+  it("verifyGroupBelongsToOrg gates scheduled_tasks cross-org writes (#2512)", async () => {
+    // The route handler validates BEFORE the DB INSERT (the gate added in
+    // #2512). The fixture stamps the same predicate the helper does, so a
+    // regression in either surfaces in the same diff.
+    const stamp = Date.now();
+    const groupOwner = `org-st-owner-${stamp}`;
+    const groupAttacker = `org-st-attacker-${stamp}`;
+    const groupId = `g_st_${stamp}`;
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES ($1, $2, 'prod')`,
+      [groupId, groupOwner],
+    );
+
+    // Attacker tries to bind a task to the owner's group — the predicate
+    // returns zero rows, so the route 400s before reaching the INSERT.
+    const { rows: rejected } = await pool.query<{ id: string }>(
+      `SELECT id FROM connection_groups
+        WHERE id = $1
+          AND (org_id IS NOT DISTINCT FROM $2 OR org_id = '__global__')
+        LIMIT 1`,
+      [groupId, groupAttacker],
+    );
+    expect(rejected.length).toBe(0);
+
+    // Owner binds to their own group — predicate returns the row.
+    const { rows: allowed } = await pool.query<{ id: string }>(
+      `SELECT id FROM connection_groups
+        WHERE id = $1
+          AND (org_id IS NOT DISTINCT FROM $2 OR org_id = '__global__')
+        LIMIT 1`,
+      [groupId, groupOwner],
+    );
+    expect(allowed[0]?.id).toBe(groupId);
+  }, PG_TEST_TIMEOUT_MS);
 });

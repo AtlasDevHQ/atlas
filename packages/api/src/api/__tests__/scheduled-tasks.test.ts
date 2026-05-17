@@ -325,6 +325,11 @@ describe("scheduled-tasks routes", () => {
             cronExpression: "0 9 * * 1",
             deliveryChannel: "email",
             recipients: [{ type: "email", address: "test@test.com" }],
+            // #2512 — connectionGroupId is now required at create time;
+            // the original #2346 fixture only sent the legacy field, which
+            // now 400s. Supplying both verifies the new gate AND preserves
+            // the historical assertion that legacy `connectionId` is dropped.
+            connectionGroupId: "g_prod",
             connectionId: "legacy-connection",
           }),
         }),
@@ -332,7 +337,7 @@ describe("scheduled-tasks routes", () => {
       expect(response.status).toBe(201);
       const opts = mockCreateScheduledTask.mock.calls[0][0] as { connectionGroupId?: string | null; connectionId?: string | null };
       expect("connectionId" in opts).toBe(false);
-      expect(opts.connectionGroupId).toBeNull();
+      expect(opts.connectionGroupId).toBe("g_prod");
     });
 
     it("returns 422 for missing name", async () => {
@@ -384,6 +389,7 @@ describe("scheduled-tasks routes", () => {
 
     it("returns 404 when no internal DB", async () => {
       delete process.env.DATABASE_URL;
+      mockCreateScheduledTask.mockResolvedValueOnce({ ok: false, reason: "no_db" });
       const response = await app.fetch(
         new Request("http://localhost/api/v1/scheduled-tasks", {
           method: "POST",
@@ -392,10 +398,112 @@ describe("scheduled-tasks routes", () => {
             name: "Test",
             question: "Q?",
             cronExpression: "0 9 * * 1",
+            connectionGroupId: "g_prod",
           }),
         }),
       );
       expect(response.status).toBe(404);
+    });
+
+    // #2512 — connectionGroupId is now required on create. Three shapes that
+    // used to silently fall through are gated here:
+    //   - omitted entirely → 400 connection_group_required
+    //   - explicit `null` → 400 connection_group_required
+    //   - empty string → coerced to `null` by the Zod transform, then 400
+    //     connection_group_required (the previous DB-FK-500 leak is gone).
+    it("returns 400 connection_group_required when connectionGroupId is omitted (#2512)", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/scheduled-tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: "Daily Revenue",
+            question: "What?",
+            cronExpression: "0 9 * * 1",
+          }),
+        }),
+      );
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("connection_group_required");
+    });
+
+    it("returns 400 connection_group_required when connectionGroupId is null (#2512)", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/scheduled-tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: "Daily Revenue",
+            question: "What?",
+            cronExpression: "0 9 * * 1",
+            connectionGroupId: null,
+          }),
+        }),
+      );
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("connection_group_required");
+    });
+
+    it("returns 400 connection_group_required when connectionGroupId is empty string (#2512)", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/scheduled-tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: "Daily Revenue",
+            question: "What?",
+            cronExpression: "0 9 * * 1",
+            connectionGroupId: "",
+          }),
+        }),
+      );
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("connection_group_required");
+    });
+
+    it("returns 400 invalid_connection_group when connectionGroupId belongs to another org (#2512)", async () => {
+      const { verifyGroupBelongsToOrg } = await import("@atlas/api/lib/conversations");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock surface
+      (verifyGroupBelongsToOrg as any).mockResolvedValueOnce("not_found");
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/scheduled-tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: "Daily Revenue",
+            question: "What?",
+            cronExpression: "0 9 * * 1",
+            connectionGroupId: "g_other_org",
+          }),
+        }),
+      );
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("invalid_connection_group");
+    });
+
+    it("returns 500 internal_error when group ownership verification itself errors (#2512)", async () => {
+      const { verifyGroupBelongsToOrg } = await import("@atlas/api/lib/conversations");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock surface
+      (verifyGroupBelongsToOrg as any).mockResolvedValueOnce("error");
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/scheduled-tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: "Daily Revenue",
+            question: "What?",
+            cronExpression: "0 9 * * 1",
+            connectionGroupId: "g_prod",
+          }),
+        }),
+      );
+      expect(response.status).toBe(500);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
     });
   });
 
@@ -478,6 +586,59 @@ describe("scheduled-tasks routes", () => {
         }),
       );
       expect(response.status).toBe(404);
+    });
+
+    // #2512 — PUT verifies non-null `connectionGroupId` against the caller's
+    // org before delegating to the DB layer. `null` is still accepted (it's
+    // the documented "un-scope this task" PATCH); the previous failure was
+    // letting cross-org / empty-string values trip an FK violation and leak
+    // as a generic 500.
+    it("returns 400 invalid_connection_group on cross-org connectionGroupId (#2512)", async () => {
+      const { verifyGroupBelongsToOrg } = await import("@atlas/api/lib/conversations");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock surface
+      (verifyGroupBelongsToOrg as any).mockResolvedValueOnce("not_found");
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/scheduled-tasks/${VALID_ID}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ connectionGroupId: "g_other_org" }),
+        }),
+      );
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("invalid_connection_group");
+    });
+
+    it("coerces empty-string connectionGroupId to null (#2512)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/scheduled-tasks/${VALID_ID}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ connectionGroupId: "" }),
+        }),
+      );
+      // `""` → null is the un-scope PATCH, which delegates to the lib (200 in
+      // mock-land). The previous behavior tripped a DB FK violation and 500'd.
+      expect(response.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock surface
+      const callArgs = mockUpdateScheduledTask.mock.calls.at(-1) as any;
+      expect(callArgs[2].connectionGroupId).toBeNull();
+    });
+
+    it("returns 500 internal_error when group ownership verification itself errors on PUT (#2512)", async () => {
+      const { verifyGroupBelongsToOrg } = await import("@atlas/api/lib/conversations");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock surface
+      (verifyGroupBelongsToOrg as any).mockResolvedValueOnce("error");
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/scheduled-tasks/${VALID_ID}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ connectionGroupId: "g_prod" }),
+        }),
+      );
+      expect(response.status).toBe(500);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
     });
   });
 

@@ -17,6 +17,7 @@ import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { verifyGroupBelongsToOrg } from "@atlas/api/lib/conversations";
 import {
   createScheduledTask,
   getScheduledTask,
@@ -47,13 +48,23 @@ const RecipientSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("webhook"), url: z.string().url(), headers: z.record(z.string(), z.string()).optional() }),
 ]);
 
+// #2512 — coerce empty-string `connectionGroupId` to `null` at the boundary.
+// Without this the value reaches the DB INSERT and trips an FK violation
+// that surfaces as a generic 500. The Zod transform lets the rest of the
+// pipeline branch on "supplied a group id" vs "no group" cleanly.
+const ConnectionGroupIdField = z
+  .string()
+  .nullable()
+  .optional()
+  .transform((v) => (v === "" ? null : v));
+
 const CreateScheduledTaskSchema = z.object({
   name: z.string().min(1).max(200),
   question: z.string().min(1).max(2000),
   cronExpression: z.string().min(1),
   deliveryChannel: z.enum(DELIVERY_CHANNELS).default("webhook"),
   recipients: z.array(RecipientSchema).default([]),
-  connectionGroupId: z.string().nullable().optional(),
+  connectionGroupId: ConnectionGroupIdField,
   approvalMode: z.enum(ACTION_APPROVAL_MODES).default("auto"),
 });
 
@@ -63,7 +74,7 @@ const UpdateScheduledTaskSchema = z.object({
   cronExpression: z.string().min(1).optional(),
   deliveryChannel: z.enum(DELIVERY_CHANNELS).optional(),
   recipients: z.array(RecipientSchema).optional(),
-  connectionGroupId: z.string().nullable().optional(),
+  connectionGroupId: ConnectionGroupIdField,
   approvalMode: z.enum(ACTION_APPROVAL_MODES).optional(),
   enabled: z.boolean().optional(),
 });
@@ -273,6 +284,47 @@ authed.openapi(
         return c.json({ error: "invalid_request", message: `Invalid cron expression: ${cronCheck.error}` }, 400);
       }
 
+      // #2512 — connectionGroupId gates (parity with chat.ts + dashboards.ts).
+      // The schema's `transform` already coerced `""` to `null`, so this is the
+      // canonical place to enforce: (a) "must be bound to an environment" on
+      // create (#2418's API-side counterpart — the form gate was form-only)
+      // and (b) cross-org ownership (#2424 — third write path; the first two
+      // are chat + dashboards). Both checks return a `400` with a stable
+      // `error` discriminator the SDK can branch on.
+      if (parsed.connectionGroupId === null || parsed.connectionGroupId === undefined) {
+        return c.json(
+          {
+            error: "connection_group_required",
+            message: "Scheduled tasks must be bound to an environment. Create one in Admin → Environments first.",
+            requestId,
+          },
+          400,
+        );
+      }
+      const verdict = yield* Effect.promise(() =>
+        verifyGroupBelongsToOrg(parsed.connectionGroupId!, orgId),
+      );
+      if (verdict === "not_found") {
+        return c.json(
+          {
+            error: "invalid_connection_group",
+            message: "The requested environment is not available in this workspace.",
+            requestId,
+          },
+          400,
+        );
+      }
+      if (verdict === "error") {
+        return c.json(
+          {
+            error: "internal_error",
+            message: "Could not verify environment ownership. Please retry.",
+            requestId,
+          },
+          500,
+        );
+      }
+
       const createOpts = {
         ownerId: user?.id ?? "anonymous",
         orgId,
@@ -281,7 +333,7 @@ authed.openapi(
         cronExpression: parsed.cronExpression,
         deliveryChannel: parsed.deliveryChannel,
         recipients: parsed.recipients,
-        connectionGroupId: parsed.connectionGroupId ?? null,
+        connectionGroupId: parsed.connectionGroupId,
         approvalMode: parsed.approvalMode,
       };
       const createResult = yield* Effect.promise(() => createScheduledTask(createOpts));
@@ -484,6 +536,41 @@ authed.openapi(
         const cronCheck = validateCronExpression(parsed.cronExpression);
         if (!cronCheck.valid) {
           return c.json({ error: "invalid_request", message: `Invalid cron expression: ${cronCheck.error}` }, 400);
+        }
+      }
+
+      // #2512 — when the caller supplies a non-null `connectionGroupId`,
+      // verify it belongs to the caller's org BEFORE handing off to the
+      // DB layer (which would otherwise leak an FK violation as a generic
+      // 500). The Zod transform already coerced `""` to `null`. Explicit
+      // `null` is the legitimate "un-scope this task" PATCH and is left
+      // alone here — un-scoping has its own consequences (scheduler falls
+      // back to `getDB()`), but that's a separate policy call and is the
+      // existing behavior documented on the route description.
+      if (parsed.connectionGroupId) {
+        const groupId = parsed.connectionGroupId;
+        const verdict = yield* Effect.promise(() =>
+          verifyGroupBelongsToOrg(groupId, orgId),
+        );
+        if (verdict === "not_found") {
+          return c.json(
+            {
+              error: "invalid_connection_group",
+              message: "The requested environment is not available in this workspace.",
+              requestId,
+            },
+            400,
+          );
+        }
+        if (verdict === "error") {
+          return c.json(
+            {
+              error: "internal_error",
+              message: "Could not verify environment ownership. Please retry.",
+              requestId,
+            },
+            500,
+          );
         }
       }
 

@@ -29,6 +29,45 @@ import { createLogger } from "@atlas/api/lib/logger";
 const log = createLogger("auth:permissions");
 
 // ---------------------------------------------------------------------------
+// Permission flags (granular RBAC)
+// ---------------------------------------------------------------------------
+
+/**
+ * Granular permission flags consumed by the enterprise custom-role surface
+ * (`@atlas/ee/auth/roles`) and the `admin-router.ts` permission middleware.
+ *
+ * Hosted here (rather than in `@atlas/ee/auth/roles`) so core route handlers
+ * can import the type without taking a hard dep on `@atlas/ee` —
+ * see #2563 (slice 1/11 of #2017, inverting the core → ee dependency).
+ * EE re-exports `PERMISSIONS`, `Permission`, and `isValidPermission` from
+ * `ee/src/auth/roles.ts` for back-compat through slice 11.
+ *
+ * Adding a flag requires:
+ *   1. Appending it here
+ *   2. Adding it to the appropriate `BUILTIN_ROLES` entries in
+ *      `ee/src/auth/roles.ts` so seeded org rows pick it up
+ *   3. (Optional) Mapping it into `LEGACY_ROLE_PERMISSIONS` in the same
+ *      file for non-enterprise deployments
+ */
+export const PERMISSIONS = [
+  "query",
+  "query:raw_data",
+  "admin:users",
+  "admin:connections",
+  "admin:settings",
+  "admin:audit",
+  "admin:roles",
+  "admin:semantic",
+] as const;
+
+export type Permission = (typeof PERMISSIONS)[number];
+
+/** Validate that a string is a known permission flag. */
+export function isValidPermission(p: string): p is Permission {
+  return (PERMISSIONS as readonly string[]).includes(p);
+}
+
+// ---------------------------------------------------------------------------
 // Role hierarchy
 // ---------------------------------------------------------------------------
 

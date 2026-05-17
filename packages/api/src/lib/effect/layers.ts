@@ -48,8 +48,96 @@ import {
   MigrationsRequiredError,
 } from "./saas-guards";
 import { readSaasEnv } from "./saas-env";
+import {
+  NoopEnterpriseDefaultsLayer,
+  type ResidencyResolver,
+  type ModelRouter,
+  type MaskingPolicy,
+  type ComplianceReports,
+  type ApprovalGate,
+  type SlaMetrics,
+  type BackupsManager,
+  type AuditRetention,
+  type IpAllowlistPolicy,
+  type SSOPolicy,
+  type SCIMProvenance,
+  type RolesPolicy,
+  type Branding,
+  type Domains,
+  type ProactiveGate,
+  type DeployModeResolver,
+} from "./services";
 
 const log = createLogger("effect:layers");
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  Enterprise gate (#2563 slice 1/11 of #2017)
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * Read whether enterprise is enabled without importing from `@atlas/ee`.
+ *
+ * Mirrors the resolution in `ee/src/index.ts:isEnterpriseEnabled` so
+ * this file (the sole post-closeout `@atlas/ee`-touching module) does
+ * not need a second static import alongside the conditional
+ * `await import("@atlas/ee/layers")` below. Slice #2573 (closeout)
+ * enforces this with a CI grep that bans `@atlas/ee` from every core
+ * file except this one.
+ *
+ * Resolution order matches `ee/src/index.ts`:
+ *   1. `enterprise.enabled` in atlas.config.ts
+ *   2. `ATLAS_ENTERPRISE_ENABLED` env var
+ */
+function isEnterpriseEnabledLocal(): boolean {
+  // Lazy require to avoid a circular import at module-eval time
+  // (config.ts pulls in pieces of the layer DAG via type-only paths).
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getConfig } = require("@atlas/api/lib/config") as {
+    getConfig: () => { enterprise?: { enabled?: boolean } } | null;
+  };
+  const config = getConfig();
+  if (config?.enterprise?.enabled !== undefined) {
+    return config.enterprise.enabled;
+  }
+  return process.env.ATLAS_ENTERPRISE_ENABLED === "true";
+}
+
+/**
+ * Conditional EE Layer. When enterprise is enabled, lazy-imports
+ * `@atlas/ee/layers` and exposes its `EELayer`. Otherwise falls back to
+ * the empty Layer. Wrapped in `Layer.unwrapEffect` so the dynamic
+ * import is deferred to Layer construction time (not module load), and
+ * a missing or broken `@atlas/ee` install never fails core startup —
+ * the catch arm logs and falls back to the empty Layer, so the no-op
+ * defaults from `NoopEnterpriseDefaultsLayer` remain in effect.
+ *
+ * This is the **single permitted `@atlas/ee` reference** in core post
+ * slice #2573. Adding any other `@atlas/ee` or `isEnterpriseEnabled`
+ * reference to `packages/api/src/` will fail the CI grep that the
+ * closeout slice installs.
+ */
+const ConditionalEELayer: Layer.Layer<never> = Layer.unwrapEffect(
+  Effect.sync(() => isEnterpriseEnabledLocal()).pipe(
+    Effect.flatMap((enabled) => {
+      if (!enabled) return Effect.succeed(Layer.empty as Layer.Layer<never>);
+      return Effect.tryPromise({
+        try: async () => {
+          const mod = (await import("@atlas/ee/layers")) as { EELayer: Layer.Layer<never> };
+          return mod.EELayer;
+        },
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) => {
+          log.error(
+            { err: errorMessage(err) },
+            "Enterprise enabled but @atlas/ee/layers failed to load — falling back to no-op defaults",
+          );
+          return Effect.succeed(Layer.empty as Layer.Layer<never>);
+        }),
+      );
+    }),
+  ),
+);
 
 // ══════════════════════════════════════════════════════════════════════
 // ██  Telemetry Layer
@@ -1145,7 +1233,31 @@ export const MigrationGuardLive: Layer.Layer<never, MigrationsRequiredError, Con
  * Connection and plugin shutdown is handled imperatively in server.ts.
  */
 export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
-  Telemetry | Config | InternalDB | Migration | BackfillSaasTrial | ConnectionsHydrate | SemanticSync | Settings | Scheduler,
+  | Telemetry
+  | Config
+  | InternalDB
+  | Migration
+  | BackfillSaasTrial
+  | ConnectionsHydrate
+  | SemanticSync
+  | Settings
+  | Scheduler
+  | ResidencyResolver
+  | ModelRouter
+  | MaskingPolicy
+  | ComplianceReports
+  | ApprovalGate
+  | SlaMetrics
+  | BackupsManager
+  | AuditRetention
+  | IpAllowlistPolicy
+  | SSOPolicy
+  | SCIMProvenance
+  | RolesPolicy
+  | Branding
+  | Domains
+  | ProactiveGate
+  | DeployModeResolver,
   Error
 > {
   const configLayer = Layer.succeed(Config, { config });
@@ -1199,6 +1311,14 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
 
   // Merge all layers. InternalDB is included both directly and as a
   // dependency of migrationLayer — Effect memoizes same-reference Layers.
+  //
+  // Enterprise subsystem composition (#2563 slice 1/11 of #2017):
+  //   NoopEnterpriseDefaultsLayer  — 16 Context.Tags with no-op default impls
+  //   ConditionalEELayer           — when enterprise enabled, lazy-loads
+  //                                  @atlas/ee/layers and overrides defaults
+  //                                  via "last wins" merge semantics.
+  // The conditional layer is appended LAST so its Tag bindings override
+  // the no-op defaults when present.
   return Layer.mergeAll(
     TelemetryLive,
     configLayer,
@@ -1217,5 +1337,7 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     regionGuardLayer,
     pluginConfigGuardLayer,
     migrationGuardLayer,
+    NoopEnterpriseDefaultsLayer,
+    ConditionalEELayer,
   );
 }

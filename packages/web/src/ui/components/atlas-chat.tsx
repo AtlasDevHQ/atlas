@@ -22,6 +22,7 @@ import { SuggestionChips } from "./chat/suggestion-chips";
 import { DeveloperChatEmptyState } from "./chat/developer-empty-state";
 import {
   ChatEnvPicker,
+  pickDefaultEnvSeed,
   useChatEnvGroups,
   type ConversationRoutingMode,
 } from "./chat/env-picker";
@@ -182,6 +183,15 @@ export function AtlasChat() {
     getHeaders,
     getCredentials,
   });
+
+  // Seed selection only when empty — never override a user pick or a
+  // conversation-restored value.
+  useEffect(() => {
+    const seed = pickDefaultEnvSeed(envGroupsQuery.groups, selectedConnectionId);
+    if (!seed) return;
+    setSelectedGroupId(seed.groupId);
+    setSelectedConnectionId(seed.connectionId);
+  }, [envGroupsQuery.groups, selectedConnectionId]);
 
   const convos = useConversations({
     apiUrl,

@@ -74,17 +74,28 @@ export interface ProactiveQueryResult {
  *
  * Slice #2293 introduced this for linked askers only (`atlasUserId`
  * non-null). Slice #2297 extends it to public-dataset askers too:
- * when the caller passes `atlasUserId: null` and a non-empty
- * `publicDatasetAllowlist`, the host runs the agent constrained to
- * the allowlist (no RLS, just the curated entity set). The listener
- * post-filters the result against the same allowlist before posting.
+ * when the caller passes `atlasUserId: null` (no Atlas identity
+ * resolved for this chat user), the host MUST constrain the agent
+ * to the workspace's public-dataset allowlist (no RLS, curated entity
+ * set only). The listener post-filters the result against the same
+ * allowlist before posting.
+ *
+ * Why nullable instead of an empty-string sentinel: a typo or accidental
+ * `""` from upstream resolution can't be distinguished from "intentional
+ * public-dataset call" when the slot is a `string`; `string | null`
+ * forces a deliberate null check on every host implementation.
  */
 export type ProactiveExecuteQuery = (
   question: string,
   context: {
     threadId: string;
     asker: ProactiveAsker;
-    atlasUserId: string;
+    /**
+     * Atlas user id when the asker is OAuth'd into a workspace user.
+     * `null` means the asker is unlinked — host MUST constrain the
+     * agent to the workspace's public-dataset allowlist.
+     */
+    atlasUserId: string | null;
   },
 ) => Promise<ProactiveQueryResult>;
 

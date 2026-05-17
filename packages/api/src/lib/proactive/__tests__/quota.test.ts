@@ -213,15 +213,20 @@ describe("getWorkspaceQuotaStatus", () => {
     expect(out.capReached).toBe(true);
   });
 
-  it("fails open on DB error — logs but returns capReached=false", async () => {
+  it("fails open on DB error — logs but returns capReached=false (+ readFailed:true for observability)", async () => {
     mockInternalQuery.mockImplementation(async () => {
       throw new Error("internal db unreachable");
     });
     const out = await quota.getWorkspaceQuotaStatus("ws-1");
+    // Post-1.5.0 polish: snapshot adds `readFailed: true` so the
+    // listener can emit a `classify` meter row tagged `quota-read-failed`
+    // — the bypass surfaces in the analytics rollup even though the
+    // cap isn't enforced for this request.
     expect(out).toEqual({
       monthlyClassifierCap: null,
       classifyCountThisMonth: 0,
       capReached: false,
+      readFailed: true,
     });
   });
 });

@@ -30,7 +30,7 @@ describe("isEntityAllowed", () => {
     const decision = isEntityAllowed([], "marketing.users", []);
     expect(decision.allowed).toBe(false);
     if (!decision.allowed) {
-      expect(decision.deniedReason).toBe("entity-not-in-allowlist");
+      expect(decision.kind).toBe("entity-not-in-allowlist");
     }
   });
 
@@ -39,7 +39,7 @@ describe("isEntityAllowed", () => {
     const decision = isEntityAllowed(allowlist, "finance.revenue", []);
     expect(decision.allowed).toBe(false);
     if (!decision.allowed) {
-      expect(decision.deniedReason).toBe("entity-not-in-allowlist");
+      expect(decision.kind).toBe("entity-not-in-allowlist");
     }
   });
 
@@ -71,9 +71,10 @@ describe("isEntityAllowed", () => {
       "email",
     ]);
     expect(decision.allowed).toBe(false);
-    if (!decision.allowed) {
-      expect(decision.deniedReason).toMatch(/^metric-denied:/);
-      expect(decision.deniedReason).toContain("email");
+    if (!decision.allowed && decision.kind === "metric-denied") {
+      // Post-1.5.0 polish: tagged union exposes `metric` directly
+      // (was packed into `deniedReason: "metric-denied:${metric}"`).
+      expect(decision.metric).toBe("email");
     }
   });
 
@@ -110,9 +111,9 @@ describe("isEntityAllowed", () => {
       "email",
     ]);
     expect(decision.allowed).toBe(false);
-    if (!decision.allowed) {
+    if (!decision.allowed && decision.kind === "metric-denied") {
       // Caller order — first metric to overlap wins.
-      expect(decision.deniedReason).toBe("metric-denied:phone_number");
+      expect(decision.metric).toBe("phone_number");
     }
   });
 });

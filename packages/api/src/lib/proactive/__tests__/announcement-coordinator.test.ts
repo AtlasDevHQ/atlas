@@ -95,13 +95,16 @@ describe("buildAnnouncementMessage", () => {
 describe("announceActivation", () => {
   beforeEach(reset);
 
-  it("posts the first time and stamps the row", async () => {
-    // Pre-check: row exists, announcement_posted_at NULL.
+  it("posts the first time and stamps the row (UPDATE-first claim, post-1.5.0 polish)", async () => {
+    // Post-1.5.0 the coordinator inverted SELECT-then-UPDATE to a
+    // single atomic UPDATE-RETURNING claim. Concurrent admins racing
+    // the enable flip now have Postgres serialise the WHERE-NULL
+    // predicate — exactly one row is claimed and only the winner
+    // calls the announcer. Claim returns a row when the UPDATE
+    // succeeded.
     mockInternalRows = [
-      [{ announcement_posted_at: null }],
-      // UPDATE returns nothing — we don't check the row count here, just
-      // that the UPDATE fires.
-      [],
+      // UPDATE ... RETURNING workspace_id AS id → one row when claim wins.
+      [{ id: "org-1" }],
     ];
 
     const calls: Array<{ channelId: string; workspaceId: string; markdown: string }> = [];
@@ -126,17 +129,24 @@ describe("announceActivation", () => {
     expect(calls[0]).toMatchObject({ workspaceId: "org-1", channelId: "C-ann" });
     expect(calls[0].markdown).toContain("only reads messages in channels");
 
-    // Two queries: SELECT pre-check + UPDATE stamp.
-    expect(lastQueries).toHaveLength(2);
-    expect(lastQueries[0].sql).toContain("SELECT announcement_posted_at");
-    expect(lastQueries[1].sql).toContain("UPDATE workspace_proactive_config");
-    expect(lastQueries[1].sql).toContain("announcement_posted_at = NOW()");
-    expect(lastQueries[1].sql).toContain("announcement_posted_at IS NULL");
+    // One query: the atomic claim UPDATE. No separate pre-check SELECT
+    // (the conditional `WHERE announcement_posted_at IS NULL` IS the
+    // pre-check — that's the whole point of the race-safety fix).
+    expect(lastQueries).toHaveLength(1);
+    expect(lastQueries[0].sql).toContain("UPDATE workspace_proactive_config");
+    expect(lastQueries[0].sql).toContain("announcement_posted_at = NOW()");
+    expect(lastQueries[0].sql).toContain("announcement_posted_at IS NULL");
+    expect(lastQueries[0].sql).toContain("RETURNING workspace_id AS id");
   });
 
   it("no-ops the second time (already_posted reason)", async () => {
-    // Pre-check returns a row with a non-null stamp.
+    // Claim UPDATE matches zero rows (row already stamped), so the
+    // distinguishing SELECT runs to tell `no_config_row` vs
+    // `already_posted` apart.
     mockInternalRows = [
+      // 1st query: UPDATE → no claim (row already stamped).
+      [],
+      // 2nd query: distinguishing SELECT returns the stamped row.
       [{ announcement_posted_at: new Date("2026-05-17T00:00:00Z") }],
     ];
 
@@ -160,12 +170,15 @@ describe("announceActivation", () => {
     }
     // Announcer was NOT called.
     expect(announcerCallCount).toBe(0);
-    // Only the SELECT ran — no UPDATE.
-    expect(lastQueries).toHaveLength(1);
+    // UPDATE + distinguishing SELECT = 2 queries on this branch.
+    expect(lastQueries).toHaveLength(2);
+    expect(lastQueries[0].sql).toContain("UPDATE workspace_proactive_config");
+    expect(lastQueries[1].sql).toContain("SELECT announcement_posted_at");
   });
 
   it("returns no_config_row when the workspace has no row", async () => {
-    mockInternalRows = [[]];
+    // UPDATE → no claim; distinguishing SELECT → no row at all.
+    mockInternalRows = [[], []];
     const outcome = await announceActivation({
       workspaceId: "org-ghost",
       channelId: "C-ann",
@@ -187,8 +200,15 @@ describe("announceActivation", () => {
     expect(lastQueries).toHaveLength(0);
   });
 
-  it("leaves the stamp NULL when the announcer rejects (retry-able)", async () => {
-    mockInternalRows = [[{ announcement_posted_at: null }]];
+  it("post-claim announcer rejection maps to announcer_rejected with the platform message", async () => {
+    // Post-1.5.0 polish: the bare `reason: string` was replaced by a
+    // tagged union. Platform announcer rejections (other than the
+    // recognised `no_announcer_configured` from NULL_ANNOUNCER) map
+    // to `{ reason: "announcer_rejected", message }`. The claim
+    // UPDATE is taken BEFORE the announcer call, so a rejection
+    // doesn't release the stamp — see module header for the
+    // race-safety / no-retry trade.
+    mockInternalRows = [[{ id: "org-1" }]];
     const announcer: ChatAnnouncer = {
       postChannelAnnouncement: async () => ({ ok: false, reason: "rate_limited" }),
     };
@@ -198,13 +218,20 @@ describe("announceActivation", () => {
       announcer,
     });
     expect(outcome.posted).toBe(false);
-    if (!outcome.posted) expect(outcome.reason).toBe("rate_limited");
-    // Only the SELECT — no UPDATE because we didn't post.
+    if (!outcome.posted && outcome.reason === "announcer_rejected") {
+      expect(outcome.message).toBe("rate_limited");
+    } else {
+      throw new Error(
+        `expected announcer_rejected outcome, got ${JSON.stringify(outcome)}`,
+      );
+    }
+    // Only the claim UPDATE ran — stamp already taken.
     expect(lastQueries).toHaveLength(1);
+    expect(lastQueries[0].sql).toContain("UPDATE workspace_proactive_config");
   });
 
-  it("leaves the stamp NULL when the announcer throws", async () => {
-    mockInternalRows = [[{ announcement_posted_at: null }]];
+  it("post-claim announcer throw maps to announcer_threw with the error message", async () => {
+    mockInternalRows = [[{ id: "org-1" }]];
     const announcer: ChatAnnouncer = {
       postChannelAnnouncement: async () => {
         throw new Error("network");
@@ -216,8 +243,12 @@ describe("announceActivation", () => {
       announcer,
     });
     expect(outcome.posted).toBe(false);
-    if (!outcome.posted) {
-      expect(outcome.reason.startsWith("announcer_threw")).toBe(true);
+    if (!outcome.posted && outcome.reason === "announcer_threw") {
+      expect(outcome.message).toBe("network");
+    } else {
+      throw new Error(
+        `expected announcer_threw outcome, got ${JSON.stringify(outcome)}`,
+      );
     }
     expect(lastQueries).toHaveLength(1);
   });

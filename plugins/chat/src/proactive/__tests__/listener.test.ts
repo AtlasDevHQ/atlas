@@ -30,6 +30,7 @@ import {
 } from "../feedback";
 import type {
   LLMClassifierFn,
+  ProactiveMeterEvent,
   WorkspaceProactiveConfig,
 } from "../types";
 import type {
@@ -754,25 +755,42 @@ describe("registerProactiveListener — kill switch", () => {
     expect(thread._addReaction).toHaveBeenCalledTimes(1);
   });
 
-  it("treats an isPaused throw as not paused (fail open)", async () => {
+  it("treats an isPaused throw as paused (fail CLOSED — post-1.5.0 polish)", async () => {
+    // Post-1.5.0 the listener inverted its kill-switch posture from
+    // fail-open to fail-closed: a callback throw silences the listener
+    // for that message and logs at error so on-call sees the registry
+    // outage. The product contract is "deliver silence when an admin or
+    // user asked for it"; degrading to "keep answering" on a DB blip
+    // defeats every layer at once.
     const isPaused = mock(async () => {
       throw new Error("DB down");
     });
+    const classify = mock(yesLLM);
+    const onMeterEvent = mock(async () => {});
     const { chat, invokeMessage: invoke } = makeChat();
     const log = makeLogger();
     await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], log, {
       isEnabled: () => true,
-      classify: yesLLM,
+      classify,
       workspace: baseWorkspace,
       channelAllowlist: ["C-allowed"],
       workspaceId: "ws_1",
       isPaused,
       onPauseRequest: mock(async () => {}),
+      onMeterEvent,
     });
     const thread = makeThread("C-allowed");
     await invoke(thread, makeMessage());
-    expect(thread._addReaction).toHaveBeenCalledTimes(1);
-    expect(log.warn).toHaveBeenCalled();
+    expect(thread._addReaction).not.toHaveBeenCalled();
+    expect(log.error).toHaveBeenCalled();
+    // Fail-closed must short-circuit BEFORE the classifier runs — a
+    // future refactor that moves the throw-catch inside the classifier
+    // loop would still pass the addReaction assertion but leak LLM
+    // cost to a kill-switched workspace.
+    expect(classify).not.toHaveBeenCalled();
+    // And no meter row should land for a silenced message (no
+    // classify/react/anything to record).
+    expect(onMeterEvent).not.toHaveBeenCalled();
   });
 
   it("@atlas pause in a channel writes a channel-24h row and skips classification", async () => {
@@ -983,10 +1001,14 @@ describe("registerProactiveListener — monthly quota cap (#2301)", () => {
     expect(capReachedEvents.length).toBe(50);
   });
 
-  it("fails open on getQuotaStatus throw — Atlas keeps answering", async () => {
+  it("fails open on getQuotaStatus throw — Atlas keeps answering AND meter row carries quotaReadFailed", async () => {
     const classify = mock(yesLLM);
     const getQuotaStatus = mock(async () => {
       throw new Error("quota read failed");
+    });
+    const meterEvents: ProactiveMeterEvent[] = [];
+    const onMeterEvent = mock(async (e: ProactiveMeterEvent) => {
+      meterEvents.push(e);
     });
     const { chat, invokeMessage: invoke } = makeChat();
     const log = makeLogger();
@@ -1000,6 +1022,7 @@ describe("registerProactiveListener — monthly quota cap (#2301)", () => {
         channelAllowlist: ["C-allowed"],
         workspaceId: "ws_1",
         getQuotaStatus,
+        onMeterEvent,
       },
     );
     const thread = makeThread("C-allowed");
@@ -1009,7 +1032,18 @@ describe("registerProactiveListener — monthly quota cap (#2301)", () => {
     // Failed-open: classifier still runs, reaction still fires.
     expect(classify).toHaveBeenCalledTimes(1);
     expect(thread._addReaction).toHaveBeenCalledTimes(1);
-    expect(log.warn).toHaveBeenCalled();
+    // Post-1.5.0 polish: a quota throw now logs at `error` because
+    // the monthly cap is silently bypassed during the outage window.
+    expect(log.error).toHaveBeenCalled();
+    // Polish round 2 (post-review): the bypass is recorded on the
+    // SINGLE post-classification classify meter row as
+    // `metadata.quotaReadFailed: true` — NOT a separate bypass row
+    // (the earlier two-row pattern double-counted classifies and
+    // defeated the cost ceiling). Filtering admin analytics on this
+    // flag surfaces every per-message bypass in the rollup.
+    const classifyRows = meterEvents.filter((e) => e.eventType === "classify");
+    expect(classifyRows.length).toBe(1);
+    expect(classifyRows[0]!.metadata?.quotaReadFailed).toBe(true);
   });
 
   it("proceeds to classifier when capReached=false", async () => {
@@ -1077,6 +1111,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       ReadonlyArray<{ entityName: string; denyMetrics: string[] }>
     >;
     refusalCopy?: string;
+    allowAnswerWhenEntitiesUnknown?: boolean;
     onMeterEvent?: (event: unknown) => Promise<void> | void;
   } = {}) {
     const { chat, invokeMessage, invokeReaction } = makeChat();
@@ -1091,6 +1126,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       executeQueryProactive: opts.executeQueryProactive,
       getPublicDataset: opts.getPublicDataset,
       refusalCopy: opts.refusalCopy,
+      allowAnswerWhenEntitiesUnknown: opts.allowAnswerWhenEntitiesUnknown,
       onMeterEvent: opts.onMeterEvent as Parameters<typeof registerProactiveListener>[2]["onMeterEvent"],
     });
     return { chat, log, invokeMessage, invokeReaction };
@@ -1178,7 +1214,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       { entityName: "marketing.users", denyMetrics: [] },
     ]);
     const executeQueryProactive = mock(
-      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string }) => ({
+      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null }) => ({
         answer: `Echo: ${q}`,
         entitiesReferenced: ["marketing.users"],
       }),
@@ -1195,7 +1231,11 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
     expect(executeQueryProactive).toHaveBeenCalledTimes(1);
     // The sentinel empty-string atlasUserId tells the host this is the
     // public-dataset path; the host then constrains the agent.
-    expect(executeQueryProactive.mock.calls[0]![1].atlasUserId).toBe("");
+    // Post-1.5.0 polish: `null` sentinel (was `""` previously) so hosts
+    // must deliberately handle the unlinked-asker branch — a typo'd
+    // empty string from upstream is no longer indistinguishable from
+    // "intentional public-dataset call".
+    expect(executeQueryProactive.mock.calls[0]![1].atlasUserId).toBeNull();
     // Answer card + subscribe → one thread.post for the answer.
     expect(thread.post).toHaveBeenCalledTimes(1);
     expect(thread.subscribe).toHaveBeenCalledTimes(1);
@@ -1207,7 +1247,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       { entityName: "marketing.users", denyMetrics: [] },
     ]);
     const executeQueryProactive = mock(
-      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string }) => ({
+      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null }) => ({
         answer: `Echo: ${q}`,
         entitiesReferenced: ["finance.revenue"],
       }),
@@ -1243,7 +1283,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       { entityName: "finance.revenue", denyMetrics: [] },
     ]);
     const executeQueryProactive = mock(
-      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string }) => ({
+      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null }) => ({
         answer: `Echo: ${q}`,
         entitiesReferenced: ["finance.revenue", "finance.customers"],
       }),
@@ -1274,7 +1314,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       { entityName: "marketing.users", denyMetrics: ["email"] },
     ]);
     const executeQueryProactive = mock(
-      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string }) => ({
+      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null }) => ({
         answer: `Echo: ${q}`,
         entitiesReferenced: ["marketing.users"],
         metricsReferenced: ["signup_date", "email"],
@@ -1298,6 +1338,145 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
     const publicRefused = meterCalls.find((c) => c.eventType === "public_refused");
     expect(publicRefused).toBeDefined();
     expect(publicRefused?.metadata?.refusedEntities).toEqual(["marketing.users"]);
+  });
+
+  it("entitiesReferenced-missing → refuse (fail-closed default, post-1.5.0 polish)", async () => {
+    // Default posture: a result without `entitiesReferenced` is the
+    // exact failure mode #2297 was designed to prevent — agent could
+    // be reading data outside the allowlist via a non-entity path
+    // (cached results, hallucination, non-entity tool). Refuse with
+    // `reason: "entitiesReferenced-missing"` so the discoverability
+    // rollup distinguishes "no curation" from "agent didn't introspect".
+    const onMeterEvent = mock(async () => {});
+    const getPublicDataset = mock(async () => [
+      { entityName: "marketing.users", denyMetrics: [] },
+    ]);
+    const executeQueryProactive = mock(
+      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null }) => ({
+        answer: `Echo: ${q}`,
+        // No entitiesReferenced field at all.
+      }),
+    );
+    const { invokeMessage, invokeReaction } = await setup({
+      userResolver: unlinkedResolver,
+      executeQueryProactive,
+      getPublicDataset,
+      onMeterEvent,
+    });
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage({ id: "M1" }));
+    await invokeReaction(triggerReaction(thread));
+
+    expect(thread.post).toHaveBeenCalledTimes(2); // refusal + link
+    const meterCalls = onMeterEvent.mock.calls.map(
+      (c) =>
+        (c as unknown[])[0] as { eventType: string; metadata?: Record<string, unknown> },
+    );
+    const publicRefused = meterCalls.find((c) => c.eventType === "public_refused");
+    expect(publicRefused).toBeDefined();
+    expect(publicRefused?.metadata?.reason).toBe("entitiesReferenced-missing");
+  });
+
+  it("empty entitiesReferenced array also refuses (not a meta-answer hole)", async () => {
+    // Same fail-closed posture as missing — an empty array is
+    // exploitable for the same reason (agent answered via a non-entity
+    // path). Earlier polish let this through as "meta answer"; review
+    // flagged it as a hole.
+    const onMeterEvent = mock(async () => {});
+    const getPublicDataset = mock(async () => [
+      { entityName: "marketing.users", denyMetrics: [] },
+    ]);
+    const executeQueryProactive = mock(
+      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null }) => ({
+        answer: `Echo: ${q}`,
+        entitiesReferenced: [], // empty array
+      }),
+    );
+    const { invokeMessage, invokeReaction } = await setup({
+      userResolver: unlinkedResolver,
+      executeQueryProactive,
+      getPublicDataset,
+      onMeterEvent,
+    });
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage({ id: "M1" }));
+    await invokeReaction(triggerReaction(thread));
+
+    expect(thread.post).toHaveBeenCalledTimes(2);
+    const meterCalls = onMeterEvent.mock.calls.map(
+      (c) =>
+        (c as unknown[])[0] as { eventType: string; metadata?: Record<string, unknown> },
+    );
+    const publicRefused = meterCalls.find((c) => c.eventType === "public_refused");
+    expect(publicRefused).toBeDefined();
+    expect(publicRefused?.metadata?.reason).toBe("entitiesReferenced-missing");
+  });
+
+  it("allowAnswerWhenEntitiesUnknown=true bypasses the entity-introspection refusal", async () => {
+    // Opt-out for hosts whose agent genuinely can't surface
+    // `entitiesReferenced` (and who have a compensating control like
+    // RLS or SQL-time allowlist enforcement). Without the flag this
+    // path refuses; with the flag the result is allowed through.
+    const getPublicDataset = mock(async () => [
+      { entityName: "marketing.users", denyMetrics: [] },
+    ]);
+    const executeQueryProactive = mock(
+      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null }) => ({
+        answer: `Echo: ${q}`,
+        // No entitiesReferenced
+      }),
+    );
+    const { invokeMessage, invokeReaction } = await setup({
+      userResolver: unlinkedResolver,
+      executeQueryProactive,
+      getPublicDataset,
+      allowAnswerWhenEntitiesUnknown: true,
+    });
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage({ id: "M1" }));
+    await invokeReaction(triggerReaction(thread));
+
+    // With the opt-out, only the answer card is posted via
+    // `thread.post` (1 post). The offer card from the channel-message
+    // phase goes through `thread.postEphemeral`, not `post`. The
+    // refusal+link pair would be 2 posts via `post`, so a count of 1
+    // confirms the bypass let the agent answer through.
+    expect(thread.post).toHaveBeenCalledTimes(1);
+    expect(executeQueryProactive).toHaveBeenCalledTimes(1);
+  });
+
+  it("userResolver throw refuses with apology — does NOT downgrade linked askers to public-dataset", async () => {
+    // CRITICAL silent-permission-downgrade fix (post-1.5.0 polish).
+    // Pre-polish, a userResolver throw produced `atlasUserId: undefined`
+    // which the listener treated as "unlinked" → public-dataset path
+    // with `atlasUserId: null`. A linked Atlas user whose resolver
+    // hiccupped would silently have their RLS bypassed and see an
+    // answer constrained to the workspace's public allowlist instead.
+    // Now: resolver throw → apology post + return, no public-dataset
+    // call at all.
+    const throwingResolver: ProactiveUserResolver = mock(async () => {
+      throw new Error("user-resolver-DB-down");
+    });
+    const executeQueryProactive = mock(echoExecute);
+    const getPublicDataset = mock(async () => [
+      { entityName: "marketing.users", denyMetrics: [] },
+    ]);
+    const { invokeMessage, invokeReaction, log } = await setup({
+      userResolver: throwingResolver,
+      executeQueryProactive,
+      getPublicDataset,
+    });
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage({ id: "M1" }));
+    await invokeReaction(triggerReaction(thread));
+
+    expect(throwingResolver).toHaveBeenCalled();
+    // Apology copy posted; agent NEVER invoked (would silently leak
+    // through the public-dataset path under the pre-polish code).
+    expect(thread.post).toHaveBeenCalledTimes(1);
+    expect(executeQueryProactive).not.toHaveBeenCalled();
+    expect(getPublicDataset).not.toHaveBeenCalled();
+    expect(log.error).toHaveBeenCalled();
   });
 
   it("admin-supplied refusalCopy overrides the default", async () => {

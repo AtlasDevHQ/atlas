@@ -1604,6 +1604,8 @@ export function createChatBridge(
           // Public dataset (#2297).
           getPublicDataset: proactiveConfig.getPublicDataset,
           refusalCopy: proactiveConfig.refusalCopy,
+          allowAnswerWhenEntitiesUnknown:
+            proactiveConfig.allowAnswerWhenEntitiesUnknown,
         });
         proactiveRecentAnswers = handle.recentAnswers;
       })

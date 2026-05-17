@@ -28,59 +28,22 @@ import {
   internalQuery,
 } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import type {
+  ProactiveMeterEventType as ProactiveEventType,
+  ProactiveMeterOutcome as ProactiveOutcome,
+  ProactiveMeterEvent,
+} from "@useatlas/types";
 
 const log = createLogger("answer-meter");
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-
-/**
- * Lifecycle stages a proactive interaction passes through.
- *
- * `public_refused` (#2297) is emitted when an unlinked asker reaches
- * the answer flow but the question's referenced entities aren't on
- * the workspace's curated public dataset. The discoverability rollup
- * in the admin console groups these by `metadata.entityName` so an
- * admin can see "what topic do non-linked askers keep trying" and
- * one-click widen the allowlist.
- */
-export type ProactiveEventType =
-  | "classify"
-  | "react"
-  | "offer"
-  | "accept"
-  | "feedback"
-  | "public_refused";
-
-/**
- * Outcomes captured on `feedback` events. `no-feedback` covers the
- * inactivity timeout — distinguishing "user thumb'd nothing" from
- * "user thumb-down'd" is important for the admin analytics panel.
- */
-export type ProactiveOutcome =
-  | "helpful"
-  | "not-helpful"
-  | "wrong-data"
-  | "no-feedback";
-
-/** One row in `proactive_meter_events`. */
-export interface ProactiveMeterEvent {
-  workspaceId: string;
-  channelId: string;
-  messageId?: string | null;
-  eventType: ProactiveEventType;
-  outcome?: ProactiveOutcome | null;
-  /** LLM tokens consumed. 0 for non-classify or prefilter-rejected. */
-  tokens?: number;
-  /** Cost estimate in micro-USD (1e-6 USD). 0 until pricing wires. */
-  costMicroUsd?: number;
-  /** Classifier confidence in [0, 1], 2 decimal precision. */
-  confidence?: number | null;
-  /** Asker (classify/react/offer/accept) or feedback giver (feedback). */
-  actorUserId?: string | null;
-  metadata?: Record<string, unknown>;
-}
+// Re-export with the local alias names so existing imports keep
+// working. Canonical shapes live in `@useatlas/types/proactive` — the
+// post-1.5.0 polish unified the wire types so plugin + API can't drift.
+// `ProactiveEventType` is the local API-side alias for the canonical
+// `ProactiveMeterEventType`; `ProactiveOutcome` mirrors
+// `ProactiveMeterOutcome`. The aliases preserve the legacy local names
+// without forcing every consumer to rename their imports in this PR.
+export type { ProactiveEventType, ProactiveOutcome, ProactiveMeterEvent };
 
 /**
  * Per-channel rollup row returned by `summary`. Mirrors the top-level
@@ -287,22 +250,52 @@ export async function recordMeterEvent(event: ProactiveMeterEvent): Promise<void
     event.actorUserId ?? null,
     metadataJson,
   ];
+  // Single retry with a short backoff before dropping the row. The
+  // meter is the billing source-of-truth and feeds the quota cap — a
+  // dropped row both under-bills AND under-counts the next quota
+  // check. One retry recovers from transient pool-exhaustion /
+  // network blips; sustained outages still surface as `log.error` so
+  // on-call alerting fires.
   try {
-    // Resolves only after the row is committed so callers can `await`
-    // the meter write before logging the audit row and keep the two in
-    // lock-step. Failures degrade to a warning rather than throwing
-    // because the caller path (the plugin listener handler) must never
-    // crash the Chat SDK loop.
     await internalQuery(INSERT_SQL, params);
-  } catch (err: unknown) {
-    log.warn(
-      {
-        err: err instanceof Error ? err.message : String(err),
-        eventType: event.eventType,
-        workspaceId: event.workspaceId,
-      },
-      "proactive_meter_events insert failed — meter row dropped",
-    );
+    return;
+  } catch (firstErr) {
+    try {
+      // 250ms is short enough that the Chat SDK handler isn't visibly
+      // delayed and long enough to clear a transient pool spike.
+      await new Promise<void>((resolve) => setTimeout(resolve, 250));
+      await internalQuery(INSERT_SQL, params);
+      log.info(
+        {
+          eventType: event.eventType,
+          workspaceId: event.workspaceId,
+          firstError:
+            firstErr instanceof Error ? firstErr.message : String(firstErr),
+        },
+        "proactive_meter_events insert succeeded after one retry",
+      );
+      return;
+    } catch (secondErr: unknown) {
+      // Both attempts failed — drop the row, log at error so on-call
+      // alerting + the billing-reconcile job catch the gap. The caller
+      // path (the plugin listener handler) must never crash the Chat
+      // SDK loop, so the throw is swallowed at this layer.
+      log.error(
+        {
+          firstError:
+            firstErr instanceof Error ? firstErr.message : String(firstErr),
+          err:
+            secondErr instanceof Error
+              ? secondErr.message
+              : String(secondErr),
+          eventType: event.eventType,
+          workspaceId: event.workspaceId,
+          channelId: event.channelId,
+          messageId: event.messageId ?? null,
+        },
+        "proactive_meter_events insert failed twice — meter row dropped (billing + quota under-count this event)",
+      );
+    }
   }
 }
 

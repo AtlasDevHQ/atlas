@@ -34,6 +34,17 @@
 -- entity twice updates the existing row rather than creating a
 -- duplicate. The admin UI uses this so a save-and-reopen idempotently
 -- reproduces the allowlist.
+--
+-- Content Mode System opt-out (CLAUDE.md §Content Mode System):
+--   `proactive_public_dataset` is a per-workspace policy table — it
+--   controls what unlinked askers may query, applied LIVE on every
+--   public-channel question. There is no "draft a public-dataset
+--   change and publish later" workflow: a curation change should
+--   take effect immediately, not wait for a workspace-wide publish.
+--   The audit trail lives in `audit_log` (`proactive.*` actions) so
+--   a publish-style staging surface would be redundant. Carving out
+--   from the mode system intentionally; opt in later only if a
+--   draft → publish UX for the allowlist is explicitly requested.
 
 CREATE TABLE IF NOT EXISTS proactive_public_dataset (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),

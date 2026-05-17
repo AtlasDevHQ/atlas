@@ -35,8 +35,16 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { AnnouncementOutcome } from "@useatlas/types";
 
 const log = createLogger("proactive-announcement-coordinator");
+
+// Re-export so existing consumers keep their import paths. Canonical
+// shape lives in `@useatlas/types/proactive` — tagged union on
+// `reason` replaces the pre-polish `reason: string` so metrics
+// consumers can pivot on the rejection class without parsing the
+// message.
+export type { AnnouncementOutcome };
 
 // ---------------------------------------------------------------------------
 // Port / dependency shapes
@@ -65,10 +73,10 @@ export interface ChatAnnouncer {
   }): Promise<{ ok: true; messageId?: string } | { ok: false; reason: string }>;
 }
 
-/** Result returned to the admin route layer. */
-export type AnnouncementOutcome =
-  | { posted: true; messageId?: string }
-  | { posted: false; reason: string };
+// `AnnouncementOutcome` is now imported + re-exported from
+// `@useatlas/types`. The local declaration was removed in the
+// post-1.5.0 polish; the tagged-union shape catches the rejection
+// class at the type level (was a bare `reason: string` before).
 
 // ---------------------------------------------------------------------------
 // Pure helpers — exported for unit tests
@@ -121,20 +129,19 @@ export interface AnnounceActivationInput {
  * Post the activation announcement if (and only if) it has never been
  * posted for this workspace.
  *
- * Race safety: the stamp is written via a conditional UPDATE
- * (`WHERE announcement_posted_at IS NULL`) immediately AFTER the post
- * succeeds. If two admin requests race the enable flip:
- *   - Both will read `announcement_posted_at = NULL` from the pre-check
- *     SELECT (or skip it).
- *   - Both will call the announcer (two posts at worst — acceptable;
- *     we'd rather double-announce than swallow the first attempt
- *     because of a transient lookup miss).
- *   - Only one UPDATE actually flips the row from NULL to NOW(); the
- *     loser returns posted: true but does not double-stamp.
- *
- * In practice the admin PUT path is serialised per workspace by the
- * admin UI's optimistic locking — the race window is academic, but
- * pinning the conditional UPDATE eliminates it for completeness.
+ * Race safety: the stamp is **claimed atomically BEFORE the post**.
+ * Concurrent admin enable flips race on a single conditional UPDATE
+ * (`SET announcement_posted_at = NOW() WHERE announcement_posted_at
+ * IS NULL`); Postgres serialises the writes and exactly one UPDATE
+ * affects a row. The winner proceeds to post the announcement; the
+ * losers see `rowCount = 0` and return `already_posted` without
+ * calling the announcer. This guarantees at-most-one post per
+ * workspace under any concurrency, at the cost of: if the announcer
+ * call fails after the stamp is taken, we treat the announcement as
+ * delivered (no retry). That trade is correct here — `chat.post` is
+ * the cheap side and double-announcing erodes end-user trust more
+ * than silently dropping a single failed post; admins can re-trigger
+ * via a follow-up "Resend announcement" affordance if needed.
  */
 export async function announceActivation(
   input: AnnounceActivationInput,
@@ -149,25 +156,68 @@ export async function announceActivation(
     return { posted: false, reason: "no_internal_db" };
   }
 
-  // Pre-check: short-circuit on the already-posted path so the announcer
-  // never runs for a workspace that's already past the one-shot. This
-  // is the hot path (every admin save after the first announcement
-  // hits it).
-  const rows = await internalQuery<{ announcement_posted_at: Date | null }>(
-    `SELECT announcement_posted_at
-       FROM workspace_proactive_config
-      WHERE workspace_id = $1`,
-    [workspaceId],
-  );
-
-  if (rows.length === 0) {
-    // No config row yet — caller flipped enable without going through
-    // the admin route's materialise step. Treat as "nothing to do" so we
-    // never announce a workspace that hasn't been configured at all.
-    return { posted: false, reason: "no_config_row" };
+  // Atomic claim — conditional UPDATE returning the row id when the
+  // claim succeeds. Postgres serialises racing UPDATEs; exactly one
+  // racer flips the row from NULL to NOW(). Losers (and re-enables
+  // after the first announcement) see zero rows back and short-circuit
+  // before the announcer runs.
+  let claimedRows: { id: unknown }[];
+  try {
+    claimedRows = await internalQuery<{ id: unknown }>(
+      `UPDATE workspace_proactive_config
+          SET announcement_posted_at = NOW(),
+              updated_at = NOW()
+        WHERE workspace_id = $1
+          AND announcement_posted_at IS NULL
+        RETURNING workspace_id AS id`,
+      [workspaceId],
+    );
+  } catch (err) {
+    log.warn(
+      {
+        workspaceId,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "Activation announcement claim UPDATE failed — leaving stamp NULL for retry",
+    );
+    return {
+      posted: false,
+      reason: "claim_update_failed",
+      message: err instanceof Error ? err.message : String(err),
+    };
   }
-  if (rows[0].announcement_posted_at !== null) {
-    return { posted: false, reason: "already_posted" };
+
+  if (claimedRows.length === 0) {
+    // Either no config row exists (admin flipped enable without going
+    // through the materialise step) or the row is already stamped.
+    // Distinguish for the caller: an admin debugging "why didn't the
+    // announcement fire?" benefits from the difference. The probe
+    // SELECT is wrapped in its own try/catch so a transient pool
+    // exhaustion between the claim UPDATE and this probe degrades
+    // gracefully to `already_posted` rather than throwing a 500 from
+    // the admin PUT — the route layer treats this as a non-blocking
+    // side-effect per the module header.
+    try {
+      const probe = await internalQuery<{ announcement_posted_at: Date | null }>(
+        `SELECT announcement_posted_at
+           FROM workspace_proactive_config
+          WHERE workspace_id = $1`,
+        [workspaceId],
+      );
+      if (probe.length === 0) {
+        return { posted: false, reason: "no_config_row" };
+      }
+      return { posted: false, reason: "already_posted" };
+    } catch (err) {
+      log.warn(
+        {
+          workspaceId,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "Activation announcement probe SELECT failed after claim UPDATE returned 0 rows — assuming already_posted",
+      );
+      return { posted: false, reason: "already_posted" };
+    }
   }
 
   const markdown = buildAnnouncementMessage();
@@ -180,45 +230,33 @@ export async function announceActivation(
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // The stamp is already taken — we cannot retry without a manual
+    // admin-driven reset. Logged at warn so on-call sees the failure.
     log.warn(
       { workspaceId, channelId, err: message },
-      "Activation announcement post threw — leaving stamp NULL for retry",
+      "Activation announcement post threw AFTER stamp was claimed — announcement will not retry without admin reset",
     );
-    return { posted: false, reason: `announcer_threw:${message}` };
+    return { posted: false, reason: "announcer_threw", message };
   }
 
   if (!announceResult.ok) {
     log.warn(
       { workspaceId, channelId, reason: announceResult.reason },
-      "Activation announcement post rejected — leaving stamp NULL for retry",
+      "Activation announcement post rejected AFTER stamp was claimed — announcement will not retry without admin reset",
     );
-    return { posted: false, reason: announceResult.reason };
-  }
-
-  // Stamp the row only after a successful post. Conditional WHERE so a
-  // racing winner doesn't get clobbered by a slower loser (see race
-  // safety note above).
-  try {
-    await internalQuery(
-      `UPDATE workspace_proactive_config
-          SET announcement_posted_at = NOW(),
-              updated_at = NOW()
-        WHERE workspace_id = $1
-          AND announcement_posted_at IS NULL`,
-      [workspaceId],
-    );
-  } catch (err) {
-    // Stamp failure is logged but doesn't downgrade the outcome — the
-    // message DID land in the channel. A subsequent enable flip will
-    // re-attempt; the announcer implementation is responsible for its
-    // own dedupe if double-posting is unacceptable.
-    log.warn(
-      {
-        workspaceId,
-        err: err instanceof Error ? err.message : String(err),
-      },
-      "Stamped activation announcement but UPDATE failed — may re-announce",
-    );
+    // Map the announcer's bare-string reason into the tagged outcome.
+    // `NULL_ANNOUNCER` reports `no_announcer_configured` (recognised
+    // at the type level); every other rejection from a real platform
+    // announcer is treated as `announcer_rejected` with the platform
+    // message attached. Replaces the pre-polish bare-string passthrough.
+    if (announceResult.reason === "no_announcer_configured") {
+      return { posted: false, reason: "no_announcer_configured" };
+    }
+    return {
+      posted: false,
+      reason: "announcer_rejected",
+      message: announceResult.reason,
+    };
   }
 
   log.info(

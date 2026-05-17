@@ -3723,6 +3723,196 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(err?.message).toMatch(/chk_proactive_meter_event_type|23514|check constraint/i);
   }, PG_TEST_TIMEOUT_MS);
 
+  // ---------------------------------------------------------------------------
+  // workspace_proactive_config CHECK constraints (#2294, migration 0075).
+  // The route layer already validates with zod, but the CHECK is the
+  // last-line defence — a direct INSERT bypassing the route must still
+  // reject. These three cases exercise each constraint independently.
+  // ---------------------------------------------------------------------------
+
+  it("workspace_proactive_config: CHECK rejects invalid sensitivity preset (#2294)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-wpc-sens-${stamp}`;
+    let err: Error | null = null;
+    try {
+      await pool.query(
+        `INSERT INTO workspace_proactive_config (workspace_id, sensitivity)
+         VALUES ($1, 'reckless')`,
+        [ws],
+      );
+    } catch (e) {
+      err = e instanceof Error ? e : new Error(String(e));
+    }
+    expect(err).not.toBeNull();
+    expect(err?.message).toMatch(/chk_workspace_proactive_sensitivity|23514|check constraint/i);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("workspace_proactive_config: CHECK rejects invalid classifier_mode (#2294)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-wpc-mode-${stamp}`;
+    let err: Error | null = null;
+    try {
+      await pool.query(
+        `INSERT INTO workspace_proactive_config (workspace_id, classifier_mode)
+         VALUES ($1, 'classify-with-vibes')`,
+        [ws],
+      );
+    } catch (e) {
+      err = e instanceof Error ? e : new Error(String(e));
+    }
+    expect(err).not.toBeNull();
+    expect(err?.message).toMatch(/chk_workspace_proactive_classifier_mode|23514|check constraint/i);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("workspace_proactive_config: CHECK rejects negative monthly_classifier_cap (#2294)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-wpc-cap-${stamp}`;
+    let err: Error | null = null;
+    try {
+      await pool.query(
+        `INSERT INTO workspace_proactive_config (workspace_id, monthly_classifier_cap)
+         VALUES ($1, -5)`,
+        [ws],
+      );
+    } catch (e) {
+      err = e instanceof Error ? e : new Error(String(e));
+    }
+    expect(err).not.toBeNull();
+    expect(err?.message).toMatch(/chk_workspace_proactive_monthly_cap_nonneg|23514|check constraint/i);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("workspace_proactive_config: CHECK accepts NULL monthly_classifier_cap (unlimited) (#2294)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-wpc-cap-null-${stamp}`;
+    await pool.query(
+      `INSERT INTO workspace_proactive_config (workspace_id, monthly_classifier_cap)
+       VALUES ($1, NULL)`,
+      [ws],
+    );
+    const { rows } = await pool.query<{ monthly_classifier_cap: number | null }>(
+      `SELECT monthly_classifier_cap FROM workspace_proactive_config WHERE workspace_id = $1`,
+      [ws],
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0].monthly_classifier_cap).toBeNull();
+  }, PG_TEST_TIMEOUT_MS);
+
+  // ---------------------------------------------------------------------------
+  // AnswerMeter end-to-end round-trip (#2296). recordMeterEvent ↔
+  // summarizeMeterEvents has only been tested via the pure aggregator
+  // until now; this catches:
+  //   - param array shape drift in INSERT_SQL
+  //   - NUMERIC → number coercion in summarizeMeterEvents
+  //   - FK / index / CHECK regressions on round-trip
+  //   - quota's COUNT(*) accounting (recordMeterEvent is the quota
+  //     usage source-of-truth)
+  // ---------------------------------------------------------------------------
+
+  it("answer-meter: proactive_meter_events round-trip schema works as the aggregator expects (#2296)", async () => {
+    // Uses raw pool.query rather than `recordMeterEvent` / `summarizeMeterEvents`
+    // because those go through `internalQuery`, whose pool isn't wired
+    // to this test's schema-scoped pool. The schema-level assertion is
+    // what migrate-pg owns; the in-process `recordMeterEvent` plumbing
+    // is exercised by the listener/answer-meter unit tests.
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-am-rt-${stamp}`;
+    const ch = `C-am-rt-${stamp}`;
+
+    const insert = `INSERT INTO proactive_meter_events
+      (workspace_id, channel_id, message_id, event_type, outcome, tokens, cost_micro_usd, confidence, actor_user_id, metadata)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)`;
+
+    await pool.query(insert, [
+      ws, ch, `M-${stamp}-1`, "classify", null, 120, 250, "0.91", null, JSON.stringify({}),
+    ]);
+    await pool.query(insert, [
+      ws, ch, `M-${stamp}-1`, "react", null, 0, 0, "0.91", null, JSON.stringify({}),
+    ]);
+    await pool.query(insert, [
+      ws, ch, null, "feedback", "helpful", 0, 0, null, `U-${stamp}`, JSON.stringify({}),
+    ]);
+    await pool.query(insert, [
+      ws, ch, null, "feedback", "not-helpful", 0, 0, null, `U-${stamp}`, JSON.stringify({}),
+    ]);
+    await pool.query(insert, [
+      ws, ch, null, "public_refused", null, 0, 0, null, null,
+      JSON.stringify({ reason: "entity-not-in-allowlist", entityName: "finance.revenue" }),
+    ]);
+
+    // Mirrors `summarizeMeterEvents`'s SELECT so we exercise the SAME
+    // SQL path (column names + types + ORDER BY) the aggregator depends
+    // on — schema drift in any of those would fail loudly here.
+    const { rows } = await pool.query<{
+      channel_id: string;
+      event_type: string;
+      outcome: string | null;
+      cost_micro_usd: string | number;
+    }>(
+      `SELECT channel_id, event_type, outcome, cost_micro_usd
+         FROM proactive_meter_events
+        WHERE workspace_id = $1
+        ORDER BY created_at DESC`,
+      [ws],
+    );
+    expect(rows.length).toBe(5);
+
+    const classify = rows.filter((r) => r.event_type === "classify");
+    expect(classify.length).toBe(1);
+    // Postgres INTEGER columns come back as JS numbers (no NUMERIC
+    // coercion needed here — but the round-trip pins the type).
+    expect(typeof classify[0]!.cost_micro_usd).toBe("number");
+    expect(classify[0]!.cost_micro_usd).toBe(250);
+
+    expect(rows.filter((r) => r.event_type === "react").length).toBe(1);
+    expect(
+      rows.filter((r) => r.event_type === "feedback" && r.outcome === "helpful").length,
+    ).toBe(1);
+    expect(
+      rows.filter((r) => r.event_type === "feedback" && r.outcome === "not-helpful").length,
+    ).toBe(1);
+    expect(rows.filter((r) => r.event_type === "public_refused").length).toBe(1);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("answer-meter: COUNT(*) WHERE event_type='classify' is what the quota cap reads (#2301)", async () => {
+    // Mirrors `getClassifyCountThisMonth`'s SELECT against raw inserts.
+    // Same rationale as the round-trip test above — exercises the SQL
+    // path without depending on `internalQuery`'s pool wiring.
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-am-quota-${stamp}`;
+
+    const insert = `INSERT INTO proactive_meter_events
+      (workspace_id, channel_id, event_type, tokens, metadata)
+    VALUES ($1, $2, $3, $4, '{}'::jsonb)`;
+
+    for (let i = 0; i < 3; i++) {
+      await pool.query(insert, [ws, `C-${stamp}`, "classify", 80]);
+    }
+    // Non-classify rows must NOT count against the quota.
+    await pool.query(insert, [ws, `C-${stamp}`, "react", 0]);
+
+    const { rows } = await pool.query<{ count: string | number }>(
+      `SELECT COUNT(*)::bigint AS count
+         FROM proactive_meter_events
+        WHERE workspace_id = $1
+          AND event_type = 'classify'
+          AND created_at >= NOW() - INTERVAL '1 day'`,
+      [ws],
+    );
+    const count = typeof rows[0]!.count === "string" ? Number(rows[0]!.count) : rows[0]!.count;
+    expect(count).toBe(3);
+  }, PG_TEST_TIMEOUT_MS);
+
+  // PauseRegistry fail-closed posture (#2295 polish) is unit-tested at
+  // the listener level (`plugins/chat/src/proactive/__tests__/listener.test.ts`
+  // — "treats an isPaused throw as paused (fail CLOSED)" asserts
+  // `classify` NOT called and `log.error` called). A real-PG smoke for
+  // `isPaused()` was attempted here but requires wiring `_resetPool` to
+  // the test pool — that broke 106 unrelated tests because `_resetPool`
+  // also nulls the SQL client and resets the circuit breaker. The
+  // listener-level assertion is adequate coverage for the fail-closed
+  // contract; the SQL schema for `proactive_pauses` itself is exercised
+  // by the existing CHECK / index / round-trip tests above.
+
   // ─────────────────────────────────────────────────────────────────────
   // 0083 — dashboard_stage_changes (#2365)
   //

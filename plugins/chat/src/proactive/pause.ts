@@ -103,9 +103,11 @@ export interface PauseDecision {
  * `{ paused: true, layer, until? }` for the highest-precedence matching
  * row (workspace-kill > admin-channel > user-optout > channel-24h).
  *
- * Implementations should never throw — failures should resolve as
- * `{ paused: false }` (fail open at the read boundary; we'd rather
- * Atlas keep answering than go silent because the registry hiccupped).
+ * Implementations MUST fail CLOSED on registry errors — return
+ * `{ paused: true, layer: "workspace-kill" }` (or rethrow; the listener
+ * catches and silences). The kill switch's product contract is
+ * "deliver silence when an admin or user asked for it"; a fail-open
+ * posture on DB blip defeats all four layers at once.
  */
 export type IsPausedFn = (input: {
   workspaceId: string;

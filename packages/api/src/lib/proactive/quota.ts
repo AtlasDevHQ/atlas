@@ -30,8 +30,17 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { ProactiveQuotaStatus } from "@useatlas/types";
 
 const log = createLogger("proactive:quota");
+
+/**
+ * Local alias. The canonical wire shape lives in
+ * `@useatlas/types/proactive` as `ProactiveQuotaStatus`; this name is
+ * the existing API-side alias preserved for back-compat. Both sides
+ * now reference the same type so plugin↔API can't drift.
+ */
+export type WorkspaceQuotaStatus = ProactiveQuotaStatus;
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -73,20 +82,10 @@ export function isOverQuota(count: number, cap: number | null | undefined): bool
 // DB-backed reads
 // ---------------------------------------------------------------------------
 
-/**
- * Live quota snapshot. The analytics endpoint and the listener both
- * resolve this — the listener uses `capReached` to short-circuit, the
- * UI uses `classifyCountThisMonth` + `monthlyClassifierCap` to render
- * the usage bar.
- */
-export interface WorkspaceQuotaStatus {
-  /** Cap value persisted on `workspace_proactive_config`. */
-  monthlyClassifierCap: number | null;
-  /** Distinct classify rows since `startOfMonthUTC(now)`. */
-  classifyCountThisMonth: number;
-  /** Pure `isOverQuota(classifyCountThisMonth, monthlyClassifierCap)`. */
-  capReached: boolean;
-}
+// The canonical `WorkspaceQuotaStatus` shape lives in
+// `@useatlas/types/proactive` (as `ProactiveQuotaStatus`) and is
+// aliased at the top of this file. The local interface declaration
+// was removed in the post-1.5.0 polish so plugin + API can't drift.
 
 /**
  * Read the workspace's cap value. Returns `null` when the workspace
@@ -143,8 +142,15 @@ export async function getClassifyCountThisMonth(
  * every render. Both are cheap thanks to the 0078 index.
  *
  * Fails open on read errors — `capReached: false` keeps Atlas
- * answering when the meter table hiccups. Logs at warn so an on-call
- * sees the read failure without the user seeing Atlas go silent.
+ * answering when the meter table hiccups. Logs at `error` for
+ * log-scrape dashboards (the workspace's monthly cap is silently
+ * bypassed during the outage window, so the billing tail is
+ * exposed — operators need to see it). Note: the API logger is
+ * plain pino; there's no Sentry/PagerDuty wired on the catch path,
+ * so "alerting" is operator-initiated via log streams. The listener
+ * stamps `metadata.quotaReadFailed: true` on the post-classification
+ * meter row so the per-workspace analytics rollup shows the per-
+ * message bypass count too.
  */
 export async function getWorkspaceQuotaStatus(
   workspaceId: string,
@@ -165,17 +171,18 @@ export async function getWorkspaceQuotaStatus(
       capReached: isOverQuota(count, cap),
     };
   } catch (err) {
-    log.warn(
+    log.error(
       {
         err: err instanceof Error ? err.message : String(err),
         workspaceId,
       },
-      "Proactive quota read failed — failing open (Atlas keeps answering)",
+      "Proactive quota read failed — failing open (Atlas keeps answering, monthly cap NOT enforced this request)",
     );
     return {
       monthlyClassifierCap: null,
       classifyCountThisMonth: 0,
       capReached: false,
+      readFailed: true,
     };
   }
 }

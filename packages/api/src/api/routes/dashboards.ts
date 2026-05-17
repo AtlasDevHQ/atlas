@@ -1121,7 +1121,7 @@ authed.openapi(publishDraftRoute, async (c) => {
     if (result.reason === "no_draft") {
       return c.json({ error: "not_found", message: "No draft to publish." }, 404);
     }
-    if (result.reason === "dashboard_missing") {
+    if (result.reason === "dashboard_not_found") {
       return c.json({ error: "not_found", message: "Dashboard not found." }, 404);
     }
     if (result.reason === "stale_baseline") {
@@ -1154,20 +1154,34 @@ authed.openapi(publishDraftRoute, async (c) => {
 
 authed.openapi(discardDraftRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    const { requestId: _requestId } = yield* RequestContext;
+    const { requestId } = yield* RequestContext;
     const { user } = yield* AuthContext;
     const { id } = c.req.valid("param");
     if (!UUID_RE.test(id)) {
-      return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
+      return c.json({ error: "invalid_request", message: "Invalid dashboard ID format.", requestId }, 400);
     }
     if (!isDashboardDraftsEnabled()) {
       const fail = draftsFlagOffResponse();
       return c.json(fail.body, fail.status);
     }
     if (!user?.id) {
-      return c.json({ error: "auth_required", message: "Drafts require an authenticated user." }, 401);
+      return c.json({ error: "auth_required", message: "Drafts require an authenticated user.", requestId }, 401);
     }
-    yield* Effect.promise(() => discardDraft(user.id, id));
+    // `discardDraft` returns `false` on an internal-DB throw — surface
+    // as 500-with-requestId so the user sees something went wrong
+    // rather than a 204 that lies about the deletion. The 204 path
+    // covers the (intentional) idempotent zero-row-deleted case.
+    const ok = yield* Effect.promise(() => discardDraft(user.id, id));
+    if (!ok) {
+      return c.json(
+        {
+          error: "internal_error",
+          message: "Could not discard the draft. The database may be temporarily unavailable — try again.",
+          requestId,
+        },
+        500,
+      );
+    }
     return c.body(null, 204);
   }), { label: "discard draft" });
 });
@@ -1213,7 +1227,7 @@ authed.openapi(rebaseDraftRoute, async (c) => {
     if (result.reason === "no_draft") {
       return c.json({ error: "not_found", message: "No draft to rebase." }, 404);
     }
-    if (result.reason === "dashboard_missing") {
+    if (result.reason === "dashboard_not_found") {
       return c.json({ error: "not_found", message: "Dashboard not found." }, 404);
     }
     if (result.reason === "conflict") {
@@ -2175,9 +2189,25 @@ authed.openapi(screenshotDashboardRoute, async (c) => {
     if (!result.ok) {
       switch (result.reason) {
         case "no_db":
-          return c.json({ error: "not_available", message: result.message }, 404);
+          // Internal DB unavailable — infra failure, not a missing
+          // resource. 503 + Retry-After so callers retry instead of
+          // treating it as a 404.
+          return c.json(
+            { error: "not_available", message: result.message, requestId },
+            503,
+            { "Retry-After": "5" },
+          );
         case "dashboard_not_found":
-          return c.json({ error: "not_found", message: result.message }, 404);
+          return c.json({ error: "not_found", message: result.message, requestId }, 404);
+        case "dashboard_unavailable":
+          // Snapshot lookup failed with a non-not-found reason (DB error,
+          // unknown failure mode). 503 so paging surfaces it correctly;
+          // distinct from `render_failed` which is a Playwright problem.
+          return c.json(
+            { error: "dashboard_unavailable", message: result.message, requestId },
+            503,
+            { "Retry-After": "5" },
+          );
         case "browser_unavailable":
           return c.json({ error: "browser_unavailable", message: result.message, requestId }, 503);
         case "render_failed":

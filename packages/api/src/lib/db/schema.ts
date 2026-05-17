@@ -1701,7 +1701,7 @@ export const dashboardUserDrafts = pgTable(
   ],
 );
 
-// 0080 — Per-user staged destructive ops on dashboards (#2365, PRD #2362).
+// 0083 — Per-user staged destructive ops on dashboards (#2365, PRD #2362).
 // The bound chat agent's `removeCard` and `updateCardSql` tools do NOT
 // mutate the draft directly; they queue a row here. Accepting a stage
 // applies the change to the draft via the versioning module; discarding

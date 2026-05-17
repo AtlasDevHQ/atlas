@@ -187,6 +187,12 @@ export const CHAT_CONTEXT_WARNING_CODES = [
   "semantic_layer_unavailable",
   "learned_patterns_unavailable",
   "plan_limit_warning",
+  // 1.4.6 — chat-as-dashboard-editor. The drawer-side chat requested a
+  // bind to a dashboard but the bind / resolve failed (dashboard
+  // deleted, internal DB transient outage, race). Without this signal
+  // the chat silently degrades to the default agent and the user gets
+  // a "agent ignores my edits" experience.
+  "bound_dashboard_unavailable",
 ] as const;
 
 export type ChatContextWarningCode = (typeof CHAT_CONTEXT_WARNING_CODES)[number];

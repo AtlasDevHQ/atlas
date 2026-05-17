@@ -23,10 +23,12 @@
  *     user already has a valid Better Auth cookie. We forward it to the
  *     headless browser instead of doing a fresh `signInEmail` per shot —
  *     dodges the rate-limit failure mode the spike hit.
- *   - **Draft-aware behavior**: gated on `ATLAS_DASHBOARD_DRAFTS_ENABLED`
- *     for forward-compat with #2364 (drafts foundation, not yet merged).
- *     v1 ships the published-only path; when #2364 lands, swap the URL
- *     and the cache key derivation below.
+ *   - **Per-(user, dashboard) cache key**: the hash mixes `userId` so a
+ *     future per-user draft view can invalidate cleanly. Today the snapshot
+ *     hash is computed from the published row only — a user with an active
+ *     draft sees the published PNG, not their draft view. Mixing the
+ *     draft pointer into `computeSnapshotHash` is tracked as a 1.4.7
+ *     follow-up; the existing cache shape already supports it.
  */
 
 import { createHash } from "node:crypto";
@@ -43,6 +45,14 @@ const log = createLogger("dashboard-screenshot");
 export type ScreenshotFailReason =
   | "no_db"
   | "dashboard_not_found"
+  /**
+   * Internal DB query for the snapshot hash failed (or returned an error
+   * reason we didn't enumerate). Distinct from `render_failed` so the
+   * route layer can map it to 500-with-requestId rather than 400 — and
+   * distinct from `dashboard_not_found` so a buggy `getDashboard`
+   * upstream cannot mask an infra outage as a 404.
+   */
+  | "dashboard_unavailable"
   | "render_failed"
   | "browser_unavailable";
 
@@ -110,10 +120,12 @@ function cacheSet(key: string, png: Buffer): void {
 }
 
 /**
- * Drop every cache entry for a dashboard. Wired to:
- *   - any accepted draft mutation through the bound editor tools (this slice)
- *   - any accepted stage from #2365 (when that lands — the staging module
- *     should call this on stage commit)
+ * Drop every cache entry for a dashboard. Called by:
+ *   - safe-op mutations through the bound editor tools (`addCard` /
+ *     `updateCard` / `updateLayout` / `updateDashboardMeta`).
+ *   - destructive-op stage acceptance via `acceptStagedChange` (#2365).
+ *   - publish via the `/draft/publish` route — published moved, every
+ *     editor's cached view is stale.
  *
  * Drops across ALL users — a mutation by user A invalidates user B's
  * cached view of the same dashboard too, because the published baseline
@@ -142,10 +154,9 @@ export function _screenshotCacheSize(): number {
 
 /**
  * Compute a deterministic hash of the dashboard's contents that flips on
- * any user-visible change. Today (published-only) this is title + per-card
- * id/title/sql/chartConfig/layout/position + updatedAt. When #2364
- * (drafts) ships, this should mix the user's draft pointer (which itself
- * mutates on every accepted edit) so the key naturally invalidates per-user.
+ * any user-visible change: title + per-card id/title/sql/chartConfig/layout
+ * /position + updatedAt. The cache key separately mixes in `userId` so a
+ * future per-user draft view can invalidate without touching this hash.
  */
 async function computeSnapshotHash(
   dashboardId: string,
@@ -155,7 +166,17 @@ async function computeSnapshotHash(
   if (!dash.ok) {
     if (dash.reason === "no_db") return { ok: false, reason: "no_db" };
     if (dash.reason === "not_found") return { ok: false, reason: "dashboard_not_found" };
-    return { ok: false, reason: "render_failed" };
+    // Any other failure reason (today "error"; future-proof against new
+    // ones the dashboards helper might add) is an infra failure, NOT a
+    // render failure and NOT a 404. Surface as `dashboard_unavailable`
+    // so the route layer can return 500-with-requestId. Collapsing the
+    // path to `render_failed` here would mask an internal DB outage
+    // (or worse, a buggy cross-org masking) as a Playwright problem.
+    log.warn(
+      { dashboardId, reason: dash.reason },
+      "computeSnapshotHash: dashboard lookup failed with non-not_found reason",
+    );
+    return { ok: false, reason: "dashboard_unavailable" };
   }
   const payload = {
     id: dash.data.id,
@@ -373,7 +394,26 @@ function parseCookieHeader(header: string): ParsedCookie[] {
     .map((part) => {
       const eq = part.indexOf("=");
       if (eq === -1) return { name: part, value: "" };
-      return { name: part.slice(0, eq).trim(), value: part.slice(eq + 1).trim() };
+      const name = part.slice(0, eq).trim();
+      const rawValue = part.slice(eq + 1).trim();
+      // Cookie values are percent-encoded per RFC 6265 when they carry
+      // characters outside the cookie-octet set (commonly `;`, `,`,
+      // `%`, whitespace). Better Auth session cookies are typically
+      // base64url so this is usually a no-op, but a percent-encoded
+      // value would otherwise be passed verbatim to Playwright and
+      // fail the auth handshake.
+      let value = rawValue;
+      try {
+        value = decodeURIComponent(rawValue);
+      } catch (err) {
+        // Malformed percent-escape — keep the raw value and log so the
+        // operator sees the drift. (Better Auth never emits these.)
+        log.debug(
+          { err: errorMessage(err), name },
+          "parseCookieHeader: cookie value not valid percent-encoded; using raw",
+        );
+      }
+      return { name, value };
     });
 }
 
@@ -384,11 +424,10 @@ function parseCookieHeader(header: string): ParsedCookie[] {
 /**
  * Render or fetch-from-cache a screenshot of the dashboard.
  *
- * TODO(#2364): when the drafts foundation lands, derive the snapshot hash
- * from the user's draft pointer (if any) instead of the published baseline.
- * Today (published-only) the cache key includes userId for forward-compat
- * symmetry only — every user gets the same PNG for the same published
- * snapshot.
+ * The snapshot hash is derived from the published row only — a user with
+ * an active draft sees the published PNG, not their draft view. The
+ * cache key already mixes `userId` so a future "draft-aware hash" can
+ * land without changing the cache shape (1.4.7 follow-up).
  */
 export async function screenshotDashboard(opts: ScreenshotOpts): Promise<ScreenshotResult> {
   const startedAt = Date.now();
@@ -403,7 +442,9 @@ export async function screenshotDashboard(opts: ScreenshotOpts): Promise<Screens
           ? "Screenshots require an internal database."
           : snap.reason === "dashboard_not_found"
             ? "Dashboard not found."
-            : "Could not compute dashboard snapshot.",
+            : snap.reason === "dashboard_unavailable"
+              ? "Could not load the dashboard for rendering. The database may be temporarily unavailable — try again."
+              : "Could not compute dashboard snapshot.",
     };
   }
 

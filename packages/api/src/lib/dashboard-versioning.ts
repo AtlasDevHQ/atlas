@@ -36,18 +36,19 @@
  *     tools (`packages/api/src/lib/tools/bound-dashboard.ts`) route
  *     mutations through `applyChangeToDraft` + `saveDraft` when the
  *     `ATLAS_DASHBOARD_DRAFTS_ENABLED` flag is on.
+ *  4. `DraftChange` extended with `removeCard` + `editSql` variants
+ *     in #2365 so the stage-tracker can replay accepted destructive
+ *     ops through the same `applyChangeToDraft` path.
+ *  5. `materializeDraftView` powers `GET /:id?view=draft` so the
+ *     editor sees their draft state without touching the published
+ *     dashboard row that other viewers see.
  *
- * Out of scope for this slice (#2364):
- *  - The destructive-op stage tracker (#2365) — `removeCard` / `updateCardSql`
- *    are NOT modelled here; they're still safe-op-only at the tool layer.
- *  - The Publish UI (#2521) — surface that calls `publishDraft`.
- *  - The "your baseline has changed" banner — read-side of #2521.
- *
- * Feature-flag note: `ATLAS_DASHBOARD_DRAFTS_ENABLED` defaults to false.
- * `isDashboardDraftsEnabled()` is the single gate; the bound editor
- * tools check it before routing through this module. When OFF, the
- * tools mutate `dashboards` / `dashboard_cards` directly (legacy
- * behavior preserved).
+ * Feature-flag note: `ATLAS_DASHBOARD_DRAFTS_ENABLED` defaults to TRUE
+ * as of #2521. `isDashboardDraftsEnabled()` is the single gate; the
+ * bound editor tools check it before routing through this module.
+ * Setting the env to `"false"` (exact match) opts back into the
+ * legacy direct-published path for operators who want to disable the
+ * draft surface entirely.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -73,12 +74,10 @@ const log = createLogger("dashboard-versioning");
 // ---------------------------------------------------------------------------
 
 /**
- * Whether the per-user-draft routing is active. Defaults to TRUE as of
- * #2521 — the Publish UI shipped in the same slice that flipped this
- * default, so every editor now routes through drafts by default. Set
- * `ATLAS_DASHBOARD_DRAFTS_ENABLED=false` (exact string match) to opt out
- * — operators who want the pre-#2364 last-write-wins behavior must
- * explicitly disable it.
+ * Whether the per-user-draft routing is active. Defaults to TRUE.
+ * Setting `ATLAS_DASHBOARD_DRAFTS_ENABLED=false` (exact string match)
+ * opts back into the legacy direct-published path for operators who
+ * want to disable the draft surface entirely.
  *
  * The strict-string match is deliberate: "0" / "no" / "off" do NOT
  * disable, so a typo in an opt-out env var fails closed (drafts stay
@@ -103,7 +102,12 @@ export function isDashboardDraftsEnabled(): boolean {
  * fields; it never mutates share tokens or schedules.
  */
 export interface DashboardSnapshotCard {
-  /** Card id. NULL-string for cards added inside the draft and not yet persisted with a UUID. */
+  /**
+   * Card id. The bound editor tools (`addCard`, `createDashboard`)
+   * mint a fresh UUID at the moment a card is staged into the draft,
+   * so this is always a populated UUID — the publish path uses the
+   * same id when inserting the row into `dashboard_cards`.
+   */
   id: string;
   position: number;
   title: string;
@@ -320,16 +324,19 @@ export type PublishMergeResult =
  *   4. Card in draft, present in baseline+published, only the draft side
  *      changed → update published.
  *
- *   5. Card in baseline + published but absent from draft → no-op. The
- *      slice #2364 does NOT model card removal in the draft (no
- *      destructive ops yet). Adding `removeCard` to `DraftChange` is
- *      the #2365 slice's job; this branch will then translate to a
- *      `deleteCard` op.
+ *   5. Card in baseline + published but absent from draft → translates
+ *      to a `deleteCard` op (the user removed the card via #2365's
+ *      `removeCard` stage; the snapshot reflects the post-accept state).
  *
  *   6. Meta (title / description) — overwrite whenever the draft's value
  *      differs from published's current value. No baseline check because
  *      the meta is small and intent is usually "I changed the title,
- *      publish it." A future slice can tighten this.
+ *      publish it." Note this is the one *silent-overwrite* carve-out in
+ *      an otherwise conflict-aware merge: two users renaming the title
+ *      off the same baseline will have the second publisher's value win
+ *      without a 409. The stale-baseline guard in `publishDraft` makes
+ *      this rare in practice (rebase is forced when published has
+ *      moved), and meta is the cheapest field to re-edit by hand.
  *
  * Pure: no DB, no IO.
  */
@@ -512,8 +519,7 @@ export function rebaseDraftSnapshot(
     if (!dCard) {
       // Draft never had this card. Either it's net-new in published
       // (carry it forward) or it existed in baseline but the draft
-      // removed it (#2364 doesn't model removal, so this branch can't
-      // hit today; #2365 will care).
+      // removed it via a `removeCard` change (#2365).
       mergedCards.push(np);
       continue;
     }
@@ -739,7 +745,18 @@ export async function discardDraft(userId: string, dashboardId: string): Promise
 
 export type PublishDraftResult =
   | { ok: true; opsApplied: number }
-  | { ok: false; reason: "no_db" | "no_draft" | "dashboard_missing" | "stale_baseline" | "error" }
+  | { ok: false; reason: "no_db" | "no_draft" | "dashboard_not_found" | "error" }
+  | {
+      ok: false;
+      reason: "stale_baseline";
+      /**
+       * The published row's `updated_at` at the moment the publish was
+       * refused. The UI uses this to render "X changed since you last
+       * loaded the draft" without a second round-trip — it's the same
+       * timestamp `rebaseDraft` would set as the new `publishedBaselineAt`.
+       */
+      currentBaselineAt: string;
+    }
   | { ok: false; reason: "conflict"; conflicts: PublishConflict[] };
 
 /**
@@ -772,19 +789,23 @@ export async function publishDraft(opts: {
   if (!draftRow) return { ok: false, reason: "no_draft" };
 
   const published = await opts.loadDashboardForOrg(opts.dashboardId, opts.orgId);
-  if (!published) return { ok: false, reason: "dashboard_missing" };
+  if (!published) return { ok: false, reason: "dashboard_not_found" };
 
-  // Stale-baseline guard: when published has moved since the user
-  // forked, force the user to rebase first. The route layer surfaces
-  // this as a 409 with `reason: "stale_baseline"` so the UI can prompt
-  // for rebase. Even though `publishDraftMerge` is correct with the
-  // persisted baseline, requiring rebase here ensures the user has
-  // SEEN the changes before they publish over them — refusing to
-  // diff-merge without an explicit rebase is the "your baseline has
-  // changed" user-experience the PRD's user story 13 calls out.
-  // (CLAUDE.md "prefer errors over silent fallbacks".)
+  // Stale-baseline guard (early path). When published has moved since
+  // the user forked, refuse to publish and surface the new baseline so
+  // the UI can render "X changed since you last loaded the draft"
+  // without a second round-trip. The route layer maps this to a 409
+  // with `reason: "stale_baseline"`. Even though `publishDraftMerge`
+  // would be correct against the persisted baseline, requiring an
+  // explicit rebase ensures the user has SEEN the changes before
+  // publishing over them — PRD user story 13 + CLAUDE.md "prefer
+  // errors over silent fallbacks".
+  //
+  // This pre-check avoids opening a transaction in the common no-race
+  // case; the real serialization happens inside the transaction below
+  // (`SELECT … FOR UPDATE`).
   if (published.updatedAt !== draftRow.publishedBaselineAt) {
-    return { ok: false, reason: "stale_baseline" };
+    return { ok: false, reason: "stale_baseline", currentBaselineAt: published.updatedAt };
   }
 
   const merge = publishDraftMerge(
@@ -800,6 +821,33 @@ export async function publishDraft(opts: {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+
+    // Stale-baseline guard (transactional path). The early check above
+    // closes the common case; this re-check inside the transaction
+    // serializes concurrent publishes against each other so two users
+    // both passing the early check can't both write — `FOR UPDATE`
+    // takes the row lock until COMMIT/ROLLBACK, and the second caller
+    // sees the first caller's bumped `updated_at` after it re-reads.
+    // Without this guard the second publish would apply its ops on
+    // top of the first's state silently, defeating the "your baseline
+    // has changed" promise.
+    const lockResult = await client.query(
+      `SELECT updated_at FROM dashboards
+        WHERE id = $1 AND deleted_at IS NULL
+        FOR UPDATE`,
+      [opts.dashboardId],
+    );
+    const lockedRow = lockResult.rows[0] as { updated_at: Date | string } | undefined;
+    if (!lockedRow) {
+      await client.query("ROLLBACK");
+      return { ok: false, reason: "dashboard_not_found" };
+    }
+    const lockedBaselineAt = String(lockedRow.updated_at);
+    if (lockedBaselineAt !== draftRow.publishedBaselineAt) {
+      await client.query("ROLLBACK");
+      return { ok: false, reason: "stale_baseline", currentBaselineAt: lockedBaselineAt };
+    }
+
     let opsApplied = 0;
     for (const op of merge.ops) {
       switch (op.kind) {
@@ -902,7 +950,7 @@ export async function publishDraft(opts: {
 
 export type RebaseDraftResult =
   | { ok: true; snapshot: DashboardSnapshot; newBaselineAt: string }
-  | { ok: false; reason: "no_db" | "no_draft" | "dashboard_missing" | "error" }
+  | { ok: false; reason: "no_db" | "no_draft" | "dashboard_not_found" | "error" }
   | { ok: false; reason: "conflict"; conflicts: PublishConflict[] };
 
 /**
@@ -922,7 +970,7 @@ export async function rebaseDraft(opts: {
   const draftRow = await loadDraft(opts.userId, opts.dashboardId);
   if (!draftRow) return { ok: false, reason: "no_draft" };
   const published = await opts.loadDashboardForOrg(opts.dashboardId, opts.orgId);
-  if (!published) return { ok: false, reason: "dashboard_missing" };
+  if (!published) return { ok: false, reason: "dashboard_not_found" };
 
   // Rebase is a no-op when nothing has moved on published since the
   // user forked. Fast-forward returns the existing snapshot + the same
@@ -991,35 +1039,52 @@ export function materializeDraftView(
   published: DashboardWithCards,
   draft: DashboardSnapshot,
 ): DashboardWithCards {
+  // For card timestamps we forward the published row's `updatedAt` —
+  // the draft doesn't track per-card timestamps and stamping a fresh
+  // `new Date()` here would make a draft view's cards look like they
+  // were "edited just now" every time it's rendered. Falling back to
+  // the parent dashboard's timestamp is the closest non-misleading
+  // value; the API consumer that cares about per-card timestamps
+  // should hit the published view, not the draft overlay.
+  const fallbackTimestamp = published.updatedAt;
+  // Preserve any cached columns/rows from the matching published card
+  // so the draft overlay doesn't render with empty placeholders when
+  // the user hasn't actually changed the card's SQL.
+  const publishedById = new Map(published.cards.map((c) => [c.id, c]));
   return {
     ...published,
     title: draft.title,
     description: draft.description,
-    cards: draft.cards.map((c, idx) => snapshotCardToDashboardCard(c, published.id, idx)),
+    cards: draft.cards.map((c) =>
+      snapshotCardToDashboardCard(c, published.id, fallbackTimestamp, publishedById.get(c.id)),
+    ),
   };
 }
 
 function snapshotCardToDashboardCard(
   c: DashboardSnapshotCard,
   dashboardId: string,
-  fallbackIndex: number,
+  fallbackTimestamp: string,
+  publishedCard?: DashboardCard,
 ): DashboardCard {
   // Best-effort row → card via the existing helper for consistency
   // with the published read path.
   return rowToCard({
     id: c.id,
     dashboard_id: dashboardId,
-    position: c.position ?? fallbackIndex,
+    // `DashboardSnapshotCard.position` is required (number), so the
+    // `??` previously here was dead-code. Use as-is.
+    position: c.position,
     title: c.title,
     sql: c.sql,
     chart_config: c.chartConfig,
-    cached_columns: null,
-    cached_rows: null,
-    cached_at: null,
+    cached_columns: publishedCard?.cachedColumns ?? null,
+    cached_rows: publishedCard?.cachedRows ?? null,
+    cached_at: publishedCard?.cachedAt ?? null,
     connection_group_id: c.connectionGroupId,
     layout: c.layout,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
+    created_at: publishedCard?.createdAt ?? fallbackTimestamp,
+    updated_at: publishedCard?.updatedAt ?? fallbackTimestamp,
   });
 }
 

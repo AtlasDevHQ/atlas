@@ -1,4 +1,4 @@
--- 0080 — Per-user staged destructive ops on dashboards (#2365, PRD #2362).
+-- 0083 — Per-user staged destructive ops on dashboards (#2365, PRD #2362).
 --
 -- The bound chat agent's destructive ops (`removeCard`, `updateCardSql`)
 -- do NOT mutate the user's draft directly. They stage as ghost changes

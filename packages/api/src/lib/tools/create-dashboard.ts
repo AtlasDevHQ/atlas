@@ -144,6 +144,12 @@ If any card has invalid SQL the whole call is rejected — no dashboard row is c
     }
     const ownerId = user.id;
     const orgId = user.activeOrganizationId ?? null;
+    // #2369 follow-up: honor the conversation's content scope so a
+    // chat created in a specific environment (1.4.4) produces cards
+    // bound to that environment. Without this, every chat-created
+    // dashboard's cards default to the workspace `default` group view
+    // regardless of which env the conversation was in.
+    const conversationGroupId = reqCtx?.connectionGroupId ?? null;
 
     try {
       // ---- per-card SQL validation (BEFORE opening transaction) ----
@@ -218,7 +224,7 @@ If any card has invalid SQL the whole call is rejected — no dashboard row is c
           title: v.card.title,
           sql: v.card.sql,
           chartConfig: v.card.chartConfig,
-          connectionGroupId: null,
+          connectionGroupId: conversationGroupId,
           layout: v.card.layout ?? null,
         }));
 
@@ -240,10 +246,17 @@ If any card has invalid SQL the whole call is rejected — no dashboard row is c
           cards: [],
         };
 
+        // ON CONFLICT DO NOTHING mirrors `forkOrLoadDraft`'s shape so
+        // both write paths converge if a future code path ever calls
+        // `createDashboard` against an existing dashboardId — today the
+        // composite PK collision is impossible (brand-new UUID), but
+        // the symmetry keeps a confusing PK violation from ever
+        // bypassing the sanitized error envelope this tool returns.
         await client.query(
           `INSERT INTO dashboard_user_drafts
              (user_id, dashboard_id, draft, baseline, published_baseline_at)
-           VALUES ($1, $2, $3::jsonb, $4::jsonb, $5)`,
+           VALUES ($1, $2, $3::jsonb, $4::jsonb, $5)
+           ON CONFLICT (user_id, dashboard_id) DO NOTHING`,
           [
             ownerId,
             dashboardId,

@@ -204,6 +204,7 @@ describe("runMigrations", () => {
         "0078_proactive_meter_events.sql",
         "0079_dashboard_user_drafts.sql",
         "0080_proactive_public_dataset.sql",
+        "0081_workspace_proactive_announcement_posted_at.sql",
       ],
     });
 

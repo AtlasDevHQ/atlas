@@ -65,6 +65,17 @@ export async function loadGroupRoutingContext(
     );
     const groupId = connRows[0]?.group_id ?? null;
     if (!groupId) {
+      // Distinguish "connection ungrouped" (expected for legacy 1×1
+      // installs) from "connection not found / archived" (suspect — the
+      // agent rendered a multi-member prompt but the runtime sees no
+      // matching row, so the agent's `scope: "all"` is silently
+      // downgraded to single-env). Log loudly per CLAUDE.md "Never
+      // silently swallow errors".
+      const reason = connRows.length === 0 ? "connection-not-found" : "connection-ungrouped";
+      log.warn(
+        { orgId, currentConnectionId, reason },
+        "Group routing context degraded to 1×1 — agent's scope hint may be silently downgraded",
+      );
       return fallback;
     }
 

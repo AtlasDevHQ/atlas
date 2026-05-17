@@ -36,7 +36,7 @@ import {
   RLSError, PluginRejectedError,
 } from "@atlas/api/lib/effect/errors";
 import { EXECUTE_SQL_TOOL_DESCRIPTION } from "./descriptions";
-import { resolveRoutingPlan } from "@atlas/api/lib/env-routing";
+import { resolveRoutingPlan, type RoutingMode, type RoutingReason } from "@atlas/api/lib/env-routing";
 import { loadGroupRoutingContext } from "@atlas/api/lib/env-routing/lookup";
 import { mergeMemberResults } from "@atlas/api/lib/multi-env-merger";
 
@@ -757,11 +757,7 @@ function applyRLSEffect(
 }
 
 /**
- * Execute a validated query with tracing, cache write, audit logging, plugin hooks,
- * and error filtering. Called inside withSourceSlot — concurrency release is automatic.
- */
-/**
- * Build the OTel attribute set for the `atlas.sql.execute` span (#2519).
+ * Build the OTel attribute set for the `atlas.sql.execute` span.
  *
  * Exported for unit testing: capturing live spans requires wiring an
  * `InMemorySpanExporter` into the global tracer provider, which is
@@ -774,15 +770,20 @@ function applyRLSEffect(
  *   - `atlas.connection_id` — which member ran the query.
  *   - `atlas.routing_mode` — `auto` | `pin` | `all` (defaults to `auto`).
  *
- * Conditionally emits `atlas.connection_group_id` when the caller passed
- * one (typically the fanout path, where the group lookup already
- * resolved the id).
+ * Conditionally emits:
+ *   - `atlas.connection_group_id` when the caller passed one (typically
+ *     the fanout path, where the group lookup already resolved the id).
+ *   - `atlas.routing_reason` when the caller threaded the planner's
+ *     `RoutingReason` discriminator (single-env back-compat callers
+ *     don't have one). Lets observers attribute fanout vs single-env
+ *     decisions without joining audit rows.
  */
 export function buildSqlExecuteSpanAttrs(opts: {
   dbType: string;
   connectionId: string;
-  routingMode?: "auto" | "pin" | "all";
+  routingMode?: RoutingMode;
   connectionGroupId?: string;
+  routingReason?: RoutingReason;
 }): Record<string, string | number | boolean> {
   const attrs: Record<string, string | number | boolean> = {
     "db.system": opts.dbType,
@@ -791,6 +792,9 @@ export function buildSqlExecuteSpanAttrs(opts: {
   };
   if (opts.connectionGroupId) {
     attrs["atlas.connection_group_id"] = opts.connectionGroupId;
+  }
+  if (opts.routingReason) {
+    attrs["atlas.routing_reason"] = opts.routingReason;
   }
   return attrs;
 }
@@ -809,17 +813,19 @@ function executeAndAuditEffect(opts: {
   cacheKey: string | null;
   hookMetadata: Record<string, unknown>;
   dispatchHook: (event: "afterQuery", ctx: Record<string, unknown>) => Promise<void>;
-  /** Parent audit row id when this execution is one leg of a fanout (#2519). */
+  /** Parent audit row id when this execution is one leg of a fanout. */
   parentAuditId?: string;
-  /** Routing mode for the parent `executeSQL` call ("auto" | "pin" | "all"). Stamped on the OTel span (#2519). */
-  routingMode?: "auto" | "pin" | "all";
-  /** Connection group id (for the OTel `atlas.connection_group_id` attribute, #2519). */
+  /** Routing mode for the parent `executeSQL` call. Stamped on the OTel span. */
+  routingMode?: RoutingMode;
+  /** Connection group id (for the OTel `atlas.connection_group_id` attribute). */
   connectionGroupId?: string;
+  /** Planner reason that picked this connection (for the OTel `atlas.routing_reason` attribute). */
+  routingReason?: RoutingReason;
 }): Effect.Effect<Record<string, unknown>, QueryExecutionError> {
   const {
     db, dbType, connId, orgId, targetHost, querySql, queryTimeout,
     rowLimit, explanation, classification, cacheKey, hookMetadata, dispatchHook,
-    parentAuditId, routingMode, connectionGroupId,
+    parentAuditId, routingMode, connectionGroupId, routingReason,
   } = opts;
 
   const start = performance.now();
@@ -832,6 +838,7 @@ function executeAndAuditEffect(opts: {
     connectionId: connId,
     routingMode,
     connectionGroupId,
+    routingReason,
   });
 
   return Effect.tryPromise({
@@ -871,7 +878,10 @@ function executeAndAuditEffect(opts: {
           parentAuditId,
         });
       } catch (auditErr) {
-        log.warn({ err: auditErr }, "Failed to write query audit log");
+        log.warn(
+          { err: auditErr instanceof Error ? auditErr.message : String(auditErr) },
+          "Failed to write query audit log",
+        );
       }
 
       // Filter sensitive errors before returning to the agent
@@ -931,7 +941,10 @@ function executeAndAuditEffect(opts: {
               parentAuditId,
             });
           } catch (auditErr) {
-            log.warn({ err: auditErr }, "Failed to write query audit log");
+            log.warn(
+              { err: auditErr instanceof Error ? auditErr.message : String(auditErr) },
+              "Failed to write query audit log",
+            );
           }
 
           try {
@@ -1346,22 +1359,30 @@ async function executeSqlForConnection({
   connId,
   parentAuditId,
   routingMode,
+  routingReason,
 }: {
   readonly sql: string;
   readonly explanation: string;
   readonly connId: string;
   /**
    * Parent audit row id when this execution is one leg of a cross-environment
-   * fanout (#2519). Threaded through every `logQueryAudit` call below so each
-   * audit row carries the linkage. Undefined for single-env executions.
+   * fanout. Threaded through every `logQueryAudit` call below so each audit
+   * row carries the linkage. Undefined for single-env executions.
    */
   readonly parentAuditId?: string;
   /**
-   * Routing mode for the parent `executeSQL` call ("auto" | "pin" | "all").
-   * Stamped on the OTel span so traces can attribute fanout behavior
-   * without joining audit rows. Defaults to "auto" when not threaded.
+   * Routing mode for the parent `executeSQL` call. Stamped on the OTel
+   * span so traces can attribute fanout behavior without joining audit
+   * rows. Defaults to "auto" when not threaded.
    */
-  readonly routingMode?: "auto" | "pin" | "all";
+  readonly routingMode?: RoutingMode;
+  /**
+   * Planner reason that picked this connection (e.g. `agent-all`,
+   * `picker-pin`, `1x1-group`). Stamped on the OTel span as
+   * `atlas.routing_reason` so observers can distinguish fanout-by-agent
+   * from fanout-by-picker without joining audit rows.
+   */
+  readonly routingReason?: RoutingReason;
 }): Promise<Record<string, unknown>> {
     // The full pipeline runs as an Effect.gen program. Tagged errors flow through
     // the error channel; expected rejections (validation, approval, cache) return
@@ -1654,7 +1675,7 @@ async function executeSqlForConnection({
           return yield* executeAndAuditEffect({
             db, dbType, connId, orgId, targetHost, querySql, queryTimeout,
             rowLimit, explanation, classification, cacheKey: cacheKey ?? null,
-            hookMetadata, dispatchHook, parentAuditId, routingMode,
+            hookMetadata, dispatchHook, parentAuditId, routingMode, routingReason,
           });
         }),
       ).pipe(
@@ -1705,9 +1726,16 @@ async function executeSqlFanout(args: {
   readonly sql: string;
   readonly explanation: string;
   readonly connectionIds: readonly string[];
-  readonly connectionGroupId?: string;
+  /**
+   * Planner reason that picked this fanout (one of `agent-all` /
+   * `picker-all`). Threaded into each leg's OTel span as
+   * `atlas.routing_reason` so observers can distinguish "agent decided
+   * to fan out" from "user forced fanout via picker" without joining
+   * audit rows.
+   */
+  readonly fanoutReason: RoutingReason;
 }): Promise<Record<string, unknown>> {
-  const { sql, explanation, connectionIds, connectionGroupId } = args;
+  const { sql, explanation, connectionIds, fanoutReason } = args;
 
   // Write the parent audit row up front so each leg's audit insert can
   // reference it. The parent carries no per-environment metadata
@@ -1721,16 +1749,25 @@ async function executeSqlFanout(args: {
   // column default so the value is in scope locally for the children.
   const parentAuditId = crypto.randomUUID();
   try {
+    // `source_id` is intentionally omitted on the parent row: every other
+    // audit_log row stamps source_id with a connection id, so overloading
+    // it with a connection_group_id would silently drop the parent from
+    // forensic queries that JOIN against `connections.id` or filter by
+    // `source_id IN (<connection ids>)`. The children carry the real
+    // connection ids; the group dimension is recoverable by JOINing
+    // children's `source_id` back to `connections.group_id`.
     logQueryAudit({
       id: parentAuditId,
       sql: sql.slice(0, 2000),
       durationMs: 0,
       rowCount: connectionIds.length,
       success: true,
-      sourceId: connectionGroupId,
     });
   } catch (auditErr) {
-    log.warn({ err: auditErr }, "Failed to write fanout parent audit row");
+    log.warn(
+      { err: auditErr instanceof Error ? auditErr.message : String(auditErr) },
+      "Failed to write fanout parent audit row",
+    );
   }
 
   const startTimes = new Map<string, number>();
@@ -1743,6 +1780,7 @@ async function executeSqlFanout(args: {
         connId,
         parentAuditId,
         routingMode: "all",
+        routingReason: fanoutReason,
       });
     }),
   );
@@ -1776,8 +1814,9 @@ async function executeSqlFanout(args: {
   });
 
   const merged = mergeMemberResults(memberResults);
-  const failedCount = merged.envContributions.filter((c: { error: string | null }) => c.error !== null).length;
-  const successCount = merged.envContributions.length - failedCount;
+  const successCount = merged.envContributions.filter(
+    (c: { error: string | null }) => c.error === null,
+  ).length;
   const totalExecutionMs = merged.envContributions.reduce(
     (acc: number, c: { durationMs: number }) => Math.max(acc, c.durationMs),
     0,
@@ -1901,6 +1940,7 @@ export const executeSQL = tool({
         explanation,
         connId: plan.connectionId,
         routingMode,
+        routingReason: plan.reason,
       });
       return attachSingleEnvContribution(result, plan.connectionId);
     }
@@ -1908,16 +1948,24 @@ export const executeSQL = tool({
       sql,
       explanation,
       connectionIds: plan.connectionIds,
-      connectionGroupId: ctx.groupId,
+      fanoutReason: plan.reason,
     });
   },
 });
 
 /**
  * Wrap a single-env executeSQL result with a 1-element `envContributions`
- * array so SDK consumers see the same wire shape for both single and
- * fanout responses (#2519). Mutates a copy of the input; never overwrites
- * a contribution the leaf may have already provided.
+ * array so SDK consumers see the same wire shape for single and fanout
+ * responses — they branch on length, not presence.
+ *
+ * Pure — returns a new object via spread; the input is not mutated.
+ * Never overwrites a contribution the leaf may have already provided.
+ *
+ * Failure-shape coercion: when the leaf returned `success: false` and
+ * its `error` field is not a string (e.g. a future code path that uses
+ * `message` instead of `error`), we surface a sentinel rather than
+ * letting the contribution claim `error: null`, which would falsely
+ * present the failed execution as a success row to SDK consumers.
  */
 function attachSingleEnvContribution(
   result: Record<string, unknown>,
@@ -1934,9 +1982,12 @@ function attachSingleEnvContribution(
   const durationMs = typeof result["executionMs"] === "number"
     ? (result["executionMs"] as number)
     : 0;
-  const error = result["success"] === false && typeof result["error"] === "string"
-    ? (result["error"] as string)
-    : null;
+  let error: string | null = null;
+  if (result["success"] === false) {
+    error = typeof result["error"] === "string"
+      ? (result["error"] as string)
+      : "Execution failed (no error message available)";
+  }
   return {
     ...result,
     envContributions: [{ connectionId, rowCount, error, durationMs }],

@@ -1,4 +1,5 @@
 import type { ComponentType } from "react";
+import type { ConnectionContribution } from "@useatlas/types/execute-sql";
 
 /** Props passed to custom tool renderers. */
 export interface ToolRendererProps<T = unknown> {
@@ -16,7 +17,12 @@ export interface ToolRendererProps<T = unknown> {
 /*  Known tool result types                                            */
 /* ------------------------------------------------------------------ */
 
-/** Result shape from the executeSQL tool. Subset covering fields most useful for rendering. */
+/**
+ * Result shape from the executeSQL tool. Subset covering fields most
+ * useful for rendering, including `envContributions` (single-env
+ * executions emit a 1-element array; fanout emits N) so a custom
+ * renderer can show per-env row counts + errors uniformly.
+ */
 export type SQLToolResult =
   | {
       success: true;
@@ -25,10 +31,12 @@ export type SQLToolResult =
       truncated?: boolean;
       explanation?: string;
       row_count?: number;
+      envContributions?: readonly ConnectionContribution[];
     }
   | {
       success: false;
       error: string;
+      envContributions?: readonly ConnectionContribution[];
     };
 
 /** Result shape from the explore tool (semantic layer exploration output). */

@@ -664,6 +664,11 @@ export const ADMIN_ACTIONS = {
     channelDelete: "proactive.channel_delete",
     workspaceKillEnable: "proactive.workspace_kill_enable",
     workspaceKillDisable: "proactive.workspace_kill_disable",
+    // Slice #2296 — lifecycle audit row siblings of the meter events.
+    classify: "proactive.classify",
+    react: "proactive.react",
+    answer: "proactive.answer",
+    feedback: "proactive.feedback",
   },
   /**
    * Compliance / PII-classification mutations. `pii_config_update` covers
@@ -759,46 +764,6 @@ export const ADMIN_ACTIONS = {
    */
   cache: {
     flush: "cache.flush",
-  },
-  /**
-   * Proactive-chat lifecycle (#2296). Mirrors the five-stage
-   * `AnswerMeter` event type but at the audit-row granularity — one
-   * row per state transition rather than one row per classifier call.
-   *
-   * - `classify` — emitted when the listener decides whether a message
-   *   was an answerable question. Metadata: `{ channelId, messageId,
-   *   isQuestion, confidence, llmInvoked, tokens }`. Volume-bounded by
-   *   the regex prefilter so a chatty channel produces at most one row
-   *   per non-empty human message.
-   *
-   * - `react` — emitted when policy decides to interject with the
-   *   reaction emoji. Metadata: `{ channelId, messageId, confidence,
-   *   reason }`. Distinct from `classify` so forensic queries can ask
-   *   "how often did the policy actually fire?" without scanning every
-   *   classify row.
-   *
-   * - `answer` — reserved for the reply-path slice (#2293). Will be
-   *   emitted once per answer message the proactive flow posts back.
-   *
-   * - `feedback` — emitted when an asker submits thumbs / outcome on
-   *   a proactive answer. Metadata: `{ channelId, messageId, outcome }`
-   *   where outcome ∈ `helpful | not-helpful | wrong-data |
-   *   no-feedback`. Pivot for the admin "worst-rated answer" link.
-   *
-   * `targetType` is always `proactive`; `targetId` is the channelId so
-   * forensic queries can pivot on a specific channel without
-   * decomposing metadata.
-   *
-   * The parallel `proactive_meter_events` row carries cost + tokens —
-   * audit is human-readable, meter is per-event accounting. Don't try
-   * to collapse them: the audit retention window is workspace-policy
-   * driven; the meter retention window is billing-policy driven.
-   */
-  proactive: {
-    classify: "proactive.classify",
-    react: "proactive.react",
-    answer: "proactive.answer",
-    feedback: "proactive.feedback",
   },
 } as const;
 

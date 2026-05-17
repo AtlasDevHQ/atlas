@@ -102,13 +102,6 @@ export interface ProactiveListenerConfig {
   /**
    * Active workspace id. Stamped on every meter / audit event so rows
    * pivot cleanly on the workspace, not the channel. Optional: when
-   * omitted the listener emits events with an empty string and the
-   * host can decide whether to record. The current single-workspace
-   * self-hosted setup doesn't need this; the SaaS multitenancy slice
-   * does.
-   */
-  workspaceId?: string;
-  /**
    * Optional host-injected meter callback (#2296). Receives one event
    * per classify (always) and one per react (when the policy
    * interjects). Failures are swallowed inside the listener so a meter

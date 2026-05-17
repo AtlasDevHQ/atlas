@@ -662,6 +662,8 @@ export const ADMIN_ACTIONS = {
     workspaceUpdate: "proactive.workspace_update",
     channelUpsert: "proactive.channel_upsert",
     channelDelete: "proactive.channel_delete",
+    workspaceKillEnable: "proactive.workspace_kill_enable",
+    workspaceKillDisable: "proactive.workspace_kill_disable",
   },
   /**
    * Compliance / PII-classification mutations. `pii_config_update` covers
@@ -757,18 +759,6 @@ export const ADMIN_ACTIONS = {
    */
   cache: {
     flush: "cache.flush",
-  },
-  /**
-   * Proactive chat kill-switch lifecycle (#2295, PRD #2291). The
-   * workspace-wide pause is the only proactive surface that lives
-   * under admin / owner (vs platform_admin) — per-channel and per-user
-   * layers are user-driven (`@atlas pause`, DM `unsubscribe`) so they
-   * don't go through this audit catalog. Enterprise-gated; emitted from
-   * `/api/v1/admin/proactive/pause` POST + DELETE handlers.
-   */
-  proactive: {
-    workspaceKillEnable: "proactive.workspace_kill_enable",
-    workspaceKillDisable: "proactive.workspace_kill_disable",
   },
 } as const;
 

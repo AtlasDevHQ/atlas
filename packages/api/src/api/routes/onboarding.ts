@@ -12,6 +12,7 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
   AuthContext,
+  ResidencyResolver,
 } from "@atlas/api/lib/effect/services";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
@@ -904,7 +905,8 @@ onboarding.openapi(
 // Region selection during signup
 // ---------------------------------------------------------------------------
 
-import { loadResidency, getResidencyDomainError } from "./shared-residency";
+import { residencyDomainError } from "./shared-residency";
+import { ResidencyError } from "@atlas/api/lib/residency/errors";
 import { RegionPickerItemSchema } from "@useatlas/schemas";
 
 // OnboardingRegionSchema previously duplicated this shape inline; the signup
@@ -1026,8 +1028,8 @@ onboarding.openapi(getRegionsRoute, async (c) => {
       return c.json({ error: "not_available", message: "Onboarding requires managed auth mode.", requestId }, 404);
     }
 
-    const mod = yield* Effect.promise(() => loadResidency());
-    if (!mod) {
+    const mod = yield* ResidencyResolver;
+    if (!mod.available) {
       return c.json({ configured: false, defaultRegion: "none", availableRegions: [] }, 200);
     }
 
@@ -1041,7 +1043,7 @@ onboarding.openapi(getRegionsRoute, async (c) => {
       }));
       return c.json({ configured: true, defaultRegion, availableRegions }, 200);
     } catch (err) {
-      if (err instanceof mod.ResidencyError && err.code === "not_configured") {
+      if (err instanceof ResidencyError && err.code === "not_configured") {
         return c.json({ configured: false, defaultRegion: "none", availableRegions: [] }, 200);
       }
       throw err;
@@ -1054,7 +1056,6 @@ onboarding.openapi(getRegionsRoute, async (c) => {
 onboarding.openapi(
   assignRegionRoute,
   async (c) => {
-    const mod = await loadResidency();
     return runEffect(c, Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
       const { orgId } = yield* AuthContext;
@@ -1069,14 +1070,15 @@ onboarding.openapi(
 
       const { region } = c.req.valid("json");
 
-      if (!mod) {
+      const mod = yield* ResidencyResolver;
+      if (!mod.available) {
         return c.json({ error: "not_available", message: "Data residency is not available in this deployment.", requestId }, 404);
       }
 
       const result = yield* mod.assignWorkspaceRegion(orgId, region);
       log.info({ orgId, region, requestId }, "Workspace region assigned during signup");
       return c.json(result, 200);
-    }), { label: "assign region during signup", domainErrors: mod ? [getResidencyDomainError(mod)] : undefined });
+    }), { label: "assign region during signup", domainErrors: [residencyDomainError] });
   },
   (result, c) => {
     if (!result.success) {

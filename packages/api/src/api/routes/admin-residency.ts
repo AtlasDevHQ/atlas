@@ -12,7 +12,7 @@ import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { runEffect } from "@atlas/api/lib/effect/hono";
-import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
+import { RequestContext, AuthContext, ResidencyResolver } from "@atlas/api/lib/effect/services";
 import { hasInternalDB, queryEffect } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
@@ -23,6 +23,7 @@ import {
   resetMigrationForRetry,
   cancelMigration,
 } from "@atlas/api/lib/residency/migrate";
+import { ResidencyError } from "@atlas/api/lib/residency/errors";
 import { MIGRATION_STATUSES, type RegionMigration } from "@useatlas/types";
 import { RegionMigrationSchema, MigrationStatusResponseSchema } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -182,7 +183,7 @@ function scheduleMigrationExecution(
 // Lazy EE loader — fail-graceful when enterprise is disabled
 // ---------------------------------------------------------------------------
 
-import { loadResidency, getResidencyDomainError } from "./shared-residency";
+import { residencyDomainError } from "./shared-residency";
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -475,13 +476,13 @@ adminResidency.use(requirePermission("admin:settings"));
 
 // GET / — workspace residency status
 adminResidency.openapi(getStatusRoute, async (c) => {
-  const mod = await loadResidency();
   return runEffect(
     c,
     Effect.gen(function* () {
       const { orgId } = yield* AuthContext;
+      const mod = yield* ResidencyResolver;
 
-      if (!mod) {
+      if (!mod.available) {
         return c.json(
           {
             configured: false,
@@ -508,7 +509,7 @@ adminResidency.openapi(getStatusRoute, async (c) => {
           isDefault: id === defaultRegion,
         }));
       } catch (err) {
-        if (err instanceof mod.ResidencyError && err.code === "not_configured") {
+        if (err instanceof ResidencyError && err.code === "not_configured") {
           configured = false;
         } else {
           throw err;
@@ -541,13 +542,12 @@ adminResidency.openapi(getStatusRoute, async (c) => {
         200,
       );
     }),
-    { label: "get residency status", domainErrors: mod ? [getResidencyDomainError(mod)] : undefined },
+    { label: "get residency status", domainErrors: [residencyDomainError] },
   );
 });
 
 // PUT / — assign region to workspace
 adminResidency.openapi(assignRegionRoute, async (c) => {
-  const mod = await loadResidency();
   const ipAddress = clientIP(c);
   const { region } = c.req.valid("json");
 
@@ -555,8 +555,9 @@ adminResidency.openapi(assignRegionRoute, async (c) => {
     c,
     Effect.gen(function* () {
       const { orgId } = yield* AuthContext;
+      const mod = yield* ResidencyResolver;
 
-      if (!mod) {
+      if (!mod.available) {
         return c.json({ error: "not_available", message: "Data residency is not available in this deployment." }, 404);
       }
 
@@ -599,7 +600,7 @@ adminResidency.openapi(assignRegionRoute, async (c) => {
       });
       return c.json(result, 200);
     }),
-    { label: "assign workspace region", domainErrors: mod ? [getResidencyDomainError(mod)] : undefined },
+    { label: "assign workspace region", domainErrors: [residencyDomainError] },
   );
 });
 
@@ -643,7 +644,6 @@ adminResidency.openapi(getMigrationStatusRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 adminResidency.openapi(requestMigrationRoute, async (c) => {
-  const mod = await loadResidency();
   return runEffect(
     c,
     Effect.gen(function* () {
@@ -659,7 +659,8 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
         return c.json({ error: "not_available", message: "Migration tracking requires an internal database.", requestId }, 404);
       }
 
-      if (!mod) {
+      const mod = yield* ResidencyResolver;
+      if (!mod.available) {
         return c.json({ error: "not_available", message: "Data residency is not available in this deployment.", requestId }, 404);
       }
 
@@ -765,7 +766,7 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
 
       return c.json(migration, 201);
     }),
-    { label: "request region migration", domainErrors: mod ? [getResidencyDomainError(mod)] : undefined },
+    { label: "request region migration", domainErrors: [residencyDomainError] },
   );
 });
 

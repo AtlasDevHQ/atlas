@@ -11,7 +11,7 @@
  * All exported functions return Effect — callers use `yield*` in Effect.gen.
  */
 
-import { Data, Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { getConfig } from "@atlas/api/lib/config";
 import type { ResidencyConfig } from "@atlas/api/lib/config";
 import { requireInternalDBEffect } from "../lib/db-guard";
@@ -22,23 +22,29 @@ import {
   setWorkspaceRegion,
 } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import {
+  ResidencyResolver,
+  type ResidencyResolverShape,
+} from "@atlas/api/lib/effect/services";
+import {
+  ResidencyError,
+  type ResidencyErrorCode,
+} from "@atlas/api/lib/residency/errors";
 import type { RegionStatus, WorkspaceRegion } from "@useatlas/types";
 
 const log = createLogger("ee:residency");
 
 // ── Typed errors ────────────────────────────────────────────────────
 
-export type ResidencyErrorCode =
-  | "not_configured"
-  | "invalid_region"
-  | "already_assigned"
-  | "workspace_not_found"
-  | "no_internal_db";
-
-export class ResidencyError extends Data.TaggedError("ResidencyError")<{
-  message: string;
-  code: ResidencyErrorCode;
-}> {}
+/**
+ * `ResidencyError` now lives in core (`@atlas/api/lib/residency/errors`)
+ * so the `ResidencyResolver` Tag in `lib/effect/services.ts` can type its
+ * failure channel without core importing from `@atlas/ee`. Re-exported
+ * here for back-compat — pre-#2564 EE consumers that imported
+ * `ResidencyError` / `ResidencyErrorCode` from this path keep working
+ * unchanged (same `_tag`, same payload shape, same `instanceof` semantics).
+ */
+export { ResidencyError, type ResidencyErrorCode };
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -240,3 +246,38 @@ export function isConfiguredRegion(region: string): boolean {
   if (!config?.residency) return false;
   return region in config.residency.regions;
 }
+
+// ── Tag wiring (#2564 — slice 2/11 of #2017) ─────────────────────────
+//
+// Bridges the module's functions into the `ResidencyResolver` Tag so
+// core call sites (`lib/db/connection.ts`, `api/routes/platform-residency.ts`,
+// `api/routes/shared-residency.ts`, …) can `yield* ResidencyResolver`
+// instead of dynamic-importing this module. Aggregated into
+// `ee/src/layers.ts:EELayer`; the no-op default in
+// `lib/effect/services.ts:NoopResidencyResolverLayer` covers self-hosted
+// installs where this module never loads.
+
+/**
+ * Build the `ResidencyResolver` service from this module's exports.
+ * Reports `available: true` so route handlers know to surface the real
+ * residency surface rather than the "feature disabled" branch. Each
+ * method delegates to the corresponding function above; semantics are
+ * identical to the pre-#2564 dynamic-import path.
+ */
+export const makeResidencyResolverLive = (): ResidencyResolverShape => ({
+  available: true,
+  resolveRegionDatabaseUrl,
+  listRegions,
+  getDefaultRegion,
+  getConfiguredRegions,
+  assignWorkspaceRegion,
+  getWorkspaceRegionAssignment,
+  listWorkspaceRegions,
+  isConfiguredRegion,
+});
+
+/** Layer that registers the real residency resolver under the core Tag. */
+export const ResidencyResolverLive: Layer.Layer<ResidencyResolver> = Layer.sync(
+  ResidencyResolver,
+  makeResidencyResolverLive,
+);

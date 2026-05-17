@@ -158,9 +158,85 @@ mock.module("effect", () => {
   return { Effect, Cause: mockCause, Option: mockOption };
 });
 
+// --- Residency resolver mock (#2564) ---
+// Post-#2564 the route yields `ResidencyResolver` from the
+// `EnterpriseLayer` instead of dynamic-importing the EE module. The
+// services mock returns an iterable Tag whose value is a mutable
+// `mockResidencyResolver` shape — tests still flip `mockResidencyConfigured`
+// etc. before each scenario, and the route's `yield* ResidencyResolver`
+// sees the up-to-date object on the next call.
+
+let mockAssignment: { workspaceId: string; region: string; assignedAt: string } | null =
+  null;
+let mockAssignResult: { workspaceId: string; region: string; assignedAt: string } | null =
+  null;
+let mockAssignError: Error | null = null;
+let mockResidencyConfigured = true;
+const mockResidencyAvailable = true;
+let mockDefaultRegion = "us-east";
+let mockRegions: Record<string, { label: string; databaseUrl: string }> = {
+  "us-east": { label: "US East", databaseUrl: "postgresql://us" },
+  "eu-west": { label: "EU West", databaseUrl: "postgresql://eu" },
+  "ap-southeast": { label: "Asia Pacific", databaseUrl: "postgresql://ap" },
+};
+
+// Reused `_tag: "ResidencyError"` shape — both the route's `instanceof`
+// check (via the mocked core errors module below) and the test mocks
+// reference this class so domain mapping + instanceof land on the same
+// type. Constructor mirrors the real Data.TaggedError signature so route
+// code paths constructing the error don't need a shim.
+class MockResidencyError extends Error {
+  public readonly _tag = "ResidencyError" as const;
+  public readonly code: string;
+  constructor(args: { message: string; code: string }) {
+    super(args.message);
+    this.name = "ResidencyError";
+    this.code = args.code;
+  }
+}
+
+mock.module("@atlas/api/lib/residency/errors", () => ({
+  ResidencyError: MockResidencyError,
+}));
+
+// Tag shim — same `[Symbol.iterator]` trick as AuthContext so the route's
+// `yield* ResidencyResolver` resolves to `mockResidencyResolver`. Read on
+// each yield so mutating fields between tests takes effect immediately.
+const fakeResidencyResolver = {
+  [Symbol.iterator]: function* (): Generator<unknown, unknown> {
+    return yield {
+      get available() { return mockResidencyAvailable; },
+      resolveRegionDatabaseUrl: () => mockEffectIterable(null),
+      listRegions: () => mockEffectIterable([]),
+      getDefaultRegion: () => {
+        if (!mockResidencyConfigured)
+          throw new MockResidencyError({ message: "not configured", code: "not_configured" });
+        return mockDefaultRegion;
+      },
+      getConfiguredRegions: () => {
+        if (!mockResidencyConfigured)
+          throw new MockResidencyError({ message: "not configured", code: "not_configured" });
+        return mockRegions;
+      },
+      assignWorkspaceRegion: () => {
+        if (mockAssignError) {
+          return withPipe({
+            [Symbol.iterator]: () => ({ next: () => { throw mockAssignError; } }),
+          });
+        }
+        return mockEffectIterable(mockAssignResult);
+      },
+      getWorkspaceRegionAssignment: () => mockEffectIterable(mockAssignment),
+      listWorkspaceRegions: () => mockEffectIterable([]),
+      isConfiguredRegion: () => true,
+    };
+  },
+};
+
 mock.module("@atlas/api/lib/effect/services", () => ({
   AuthContext: fakeAuthContext,
   RequestContext: { [Symbol.iterator]: function* (): Generator<unknown, unknown> { return yield { requestId: "test-req-1", startTime: Date.now() }; } },
+  ResidencyResolver: fakeResidencyResolver,
   makeRequestContextLayer: () => ({}),
   makeAuthContextLayer: () => ({}),
 }));
@@ -294,57 +370,10 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: mock(async () => 0),
 }));
 
-// --- EE residency mock ---
-
-let mockAssignment: { workspaceId: string; region: string; assignedAt: string } | null =
-  null;
-let mockAssignResult: { workspaceId: string; region: string; assignedAt: string } | null =
-  null;
-let mockAssignError: Error | null = null;
-let mockResidencyConfigured = true;
-let mockDefaultRegion = "us-east";
-let mockRegions: Record<string, { label: string; databaseUrl: string }> = {
-  "us-east": { label: "US East", databaseUrl: "postgresql://us" },
-  "eu-west": { label: "EU West", databaseUrl: "postgresql://eu" },
-  "ap-southeast": { label: "Asia Pacific", databaseUrl: "postgresql://ap" },
-};
-
-class MockResidencyError extends Error {
-  constructor(
-    message: string,
-    public readonly code: string,
-  ) {
-    super(message);
-    this.name = "ResidencyError";
-  }
-}
-
-mock.module("@atlas/ee/platform/residency", () => ({
-  getDefaultRegion: () => {
-    if (!mockResidencyConfigured)
-      throw new MockResidencyError("not configured", "not_configured");
-    return mockDefaultRegion;
-  },
-  getConfiguredRegions: () => {
-    if (!mockResidencyConfigured)
-      throw new MockResidencyError("not configured", "not_configured");
-    return mockRegions;
-  },
-  getWorkspaceRegionAssignment: () => mockEffectIterable(mockAssignment),
-  assignWorkspaceRegion: () => {
-    if (mockAssignError) {
-      return withPipe({
-        [Symbol.iterator]: () => ({ next: () => { throw mockAssignError; } }),
-      });
-    }
-    return mockEffectIterable(mockAssignResult);
-  },
-  ResidencyError: MockResidencyError,
-  listRegions: () => mockEffectIterable([]),
-  listWorkspaceRegions: () => mockEffectIterable([]),
-  resolveRegionDatabaseUrl: () => mockEffectIterable(null),
-  isConfiguredRegion: () => true,
-}));
+// The residency surface is mocked via the `ResidencyResolver` Tag wired
+// into the `@atlas/api/lib/effect/services` module-mock above (post-#2564).
+// No need to also stub `@atlas/ee/platform/residency` — the route no
+// longer dynamic-imports it.
 
 mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   checkIPAllowlist: mock(() => ({ allowed: true })),
@@ -612,10 +641,10 @@ describe("PUT /api/v1/admin/residency", () => {
   });
 
   it("returns 409 when region already assigned", async () => {
-    mockAssignError = new MockResidencyError(
-      'Workspace is already assigned to region "us-east".',
-      "already_assigned",
-    );
+    mockAssignError = new MockResidencyError({
+      message: 'Workspace is already assigned to region "us-east".',
+      code: "already_assigned",
+    });
     const res = await request("PUT", "/", { region: "eu-west" });
     expect(res.status).toBe(409);
     const json = (await res.json()) as { error: string; message: string };
@@ -623,10 +652,10 @@ describe("PUT /api/v1/admin/residency", () => {
   });
 
   it("returns 400 for invalid region", async () => {
-    mockAssignError = new MockResidencyError(
-      'Invalid region "mars-1".',
-      "invalid_region",
-    );
+    mockAssignError = new MockResidencyError({
+      message: 'Invalid region "mars-1".',
+      code: "invalid_region",
+    });
     const res = await request("PUT", "/", { region: "mars-1" });
     expect(res.status).toBe(400);
     const json = (await res.json()) as { error: string; message: string };
@@ -634,10 +663,10 @@ describe("PUT /api/v1/admin/residency", () => {
   });
 
   it("returns 404 when workspace not found", async () => {
-    mockAssignError = new MockResidencyError(
-      'Workspace "org-1" not found.',
-      "workspace_not_found",
-    );
+    mockAssignError = new MockResidencyError({
+      message: 'Workspace "org-1" not found.',
+      code: "workspace_not_found",
+    });
     const res = await request("PUT", "/", { region: "eu-west" });
     expect(res.status).toBe(404);
   });
@@ -950,10 +979,10 @@ describe("admin residency — F-32 audit emission", () => {
     // Permanent decisions deserve failure audits — the attempt itself is
     // useful evidence. Without this, a 409 "already assigned" probe that
     // reveals the current region leaves no forensic record.
-    mockAssignError = new MockResidencyError(
-      'Workspace is already assigned to region "us-east".',
-      "already_assigned",
-    );
+    mockAssignError = new MockResidencyError({
+      message: 'Workspace is already assigned to region "us-east".',
+      code: "already_assigned",
+    });
     const res = await request("PUT", "/", { region: "eu-west" });
     expect(res.status).toBe(409);
     expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
@@ -991,10 +1020,10 @@ describe("admin residency — F-32 audit emission", () => {
     // verbatim in admin_action_log.metadata, the DB password leaks into the
     // audit row compliance reviewers read directly. The local
     // `errorMessage` helper must scrub `proto://user:pass@host` userinfo.
-    mockAssignError = new MockResidencyError(
-      "setWorkspaceRegion failed: postgresql://admin:s3cret@db.internal/atlas — timeout",
-      "invalid_region",
-    );
+    mockAssignError = new MockResidencyError({
+      message: "setWorkspaceRegion failed: postgresql://admin:s3cret@db.internal/atlas — timeout",
+      code: "invalid_region",
+    });
     await request("PUT", "/", { region: "eu-west" });
     expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
     const entry = mockLogAdminAction.mock.calls[0]![0];

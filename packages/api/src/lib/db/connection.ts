@@ -24,6 +24,8 @@ import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { getConfig } from "@atlas/api/lib/config";
 import type { HealthStatus } from "@atlas/api/lib/connection-types";
+import { ResidencyResolver } from "@atlas/api/lib/effect/services";
+import { EnterpriseLayer } from "@atlas/api/lib/effect/enterprise-layer";
 
 export type { HealthStatus } from "@atlas/api/lib/connection-types";
 
@@ -1429,24 +1431,23 @@ export async function getRegionAwareConnection(
   orgId: string,
   connectionId: string = "default",
 ): Promise<RegionAwareResult> {
-  let resolveRegionDatabaseUrlFn: Awaited<typeof import("@atlas/ee/platform/residency")>["resolveRegionDatabaseUrl"];
-  try {
-    ({ resolveRegionDatabaseUrl: resolveRegionDatabaseUrlFn } = await import("@atlas/ee/platform/residency"));
-  } catch (err) {
-    // ee module not installed — non-enterprise deployment, use default
-    if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND") {
-      return { db: connections.getForOrg(orgId, connectionId), resolvedConnId: connectionId };
-    }
-    // EE module exists but failed to load — this is a real error.
-    // Data residency cannot be guaranteed; refuse to silently downgrade.
-    log.error({ err: errorMessage(err), orgId }, "Residency module failed to load — cannot guarantee data residency");
-    throw err instanceof Error ? err : new Error(String(err));
-  }
+  // Inverts the pre-#2564 `await import("@atlas/ee/platform/residency")`.
+  // Resolves the route via the `ResidencyResolver` Tag — EE provides the
+  // real implementation through `EnterpriseLayer`, self-hosted falls
+  // through to the no-op (`resolveRegionDatabaseUrl => null`). Layer
+  // construction is referentially stable across calls; the dynamic
+  // `await import("@atlas/ee/layers")` inside `ConditionalEELayer` hits
+  // Node's module cache after the first load.
+  const resolveRegion = Effect.gen(function* () {
+    const residency = yield* ResidencyResolver;
+    return yield* residency.resolveRegionDatabaseUrl(orgId);
+  });
 
   let regionInfo: { databaseUrl: string; datasourceUrl?: string; region: string } | null;
   try {
-    const { Effect } = await import("effect");
-    regionInfo = await Effect.runPromise(resolveRegionDatabaseUrlFn(orgId));
+    regionInfo = await Effect.runPromise(
+      resolveRegion.pipe(Effect.provide(EnterpriseLayer)),
+    );
   } catch (err) {
     log.warn(
       { err: errorMessage(err), orgId },

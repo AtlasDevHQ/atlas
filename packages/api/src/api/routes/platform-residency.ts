@@ -14,11 +14,11 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
-import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
+import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
+  ResidencyResolver,
 } from "@atlas/api/lib/effect/services";
-import { ResidencyError } from "@atlas/ee/platform/residency";
 import {
   WorkspaceRegionSchema,
   RegionsResponseSchema,
@@ -27,6 +27,7 @@ import {
 
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
+import { residencyDomainError } from "./shared-residency";
 
 const log = createLogger("platform-residency");
 
@@ -136,53 +137,30 @@ const listAssignmentsRoute = createRoute({
 });
 
 // ---------------------------------------------------------------------------
-// Module loader (lazy import — fail gracefully when ee is unavailable)
-// ---------------------------------------------------------------------------
-
-type ResidencyModule = typeof import("@atlas/ee/platform/residency");
-
-const residencyDomainError = domainError(ResidencyError, {
-  not_configured: 404,
-  invalid_region: 400,
-  already_assigned: 409,
-  workspace_not_found: 404,
-  no_internal_db: 503,
-});
-
-async function loadResidency(): Promise<ResidencyModule | null> {
-  try {
-    return await import("@atlas/ee/platform/residency");
-  } catch (err) {
-    if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND") {
-      return null;
-    }
-    log.error(
-      { err: err instanceof Error ? err : new Error(String(err)) },
-      "Failed to load residency module — unexpected error",
-    );
-    throw err;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
 const platformResidency = createPlatformRouter();
+
+const notAvailableBody = (requestId: string) => ({
+  error: "not_available" as const,
+  message: "Data residency requires enterprise features to be enabled.",
+  requestId,
+});
 
 // ── List regions ─────────────────────────────────────────────────────
 
 platformResidency.openapi(listRegionsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
+    const residency = yield* ResidencyResolver;
 
-    const mod = yield* Effect.promise(() => loadResidency());
-    if (!mod) {
-      return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
+    if (!residency.available) {
+      return c.json(notAvailableBody(requestId), 404);
     }
 
-    const regions = yield* mod.listRegions();
-    const defaultRegion = mod.getDefaultRegion();
+    const regions = yield* residency.listRegions();
+    const defaultRegion = residency.getDefaultRegion();
     return c.json({ regions, defaultRegion }, 200);
   }), { label: "list regions", domainErrors: [residencyDomainError] });
 });
@@ -193,13 +171,13 @@ platformResidency.openapi(getWorkspaceRegionRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const workspaceId = c.req.param("id");
+    const residency = yield* ResidencyResolver;
 
-    const mod = yield* Effect.promise(() => loadResidency());
-    if (!mod) {
-      return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
+    if (!residency.available) {
+      return c.json(notAvailableBody(requestId), 404);
     }
 
-    const assignment = yield* mod.getWorkspaceRegionAssignment(workspaceId);
+    const assignment = yield* residency.getWorkspaceRegionAssignment(workspaceId);
     if (!assignment) {
       return c.json({ error: "not_found", message: `Workspace "${workspaceId}" has no region assigned.`, requestId }, 404);
     }
@@ -214,13 +192,13 @@ platformResidency.openapi(assignRegionRoute, async (c) => {
     const { requestId } = yield* RequestContext;
     const workspaceId = c.req.param("id");
     const body = c.req.valid("json");
+    const residency = yield* ResidencyResolver;
 
-    const mod = yield* Effect.promise(() => loadResidency());
-    if (!mod) {
-      return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
+    if (!residency.available) {
+      return c.json(notAvailableBody(requestId), 404);
     }
 
-    const assignment = yield* mod.assignWorkspaceRegion(workspaceId, body.region);
+    const assignment = yield* residency.assignWorkspaceRegion(workspaceId, body.region);
     log.info({ workspaceId, region: body.region, requestId }, "Region assigned to workspace");
 
     logAdminAction({
@@ -241,13 +219,13 @@ platformResidency.openapi(assignRegionRoute, async (c) => {
 platformResidency.openapi(listAssignmentsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
+    const residency = yield* ResidencyResolver;
 
-    const mod = yield* Effect.promise(() => loadResidency());
-    if (!mod) {
-      return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
+    if (!residency.available) {
+      return c.json(notAvailableBody(requestId), 404);
     }
 
-    const assignments = yield* mod.listWorkspaceRegions();
+    const assignments = yield* residency.listWorkspaceRegions();
     return c.json({ assignments }, 200);
   }), { label: "list region assignments", domainErrors: [residencyDomainError] });
 });

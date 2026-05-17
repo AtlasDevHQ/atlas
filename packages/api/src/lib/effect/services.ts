@@ -811,23 +811,101 @@ export function createAuthContextTestLayer(
 // change for a no-op default that already returns the "feature disabled"
 // sentinel.
 
-// ── ResidencyResolver (#2564) ────────────────────────────────────────
+// ── ResidencyResolver (#2564 — slice 2/11 of #2017) ──────────────────
 //
-// Replaces `await import("@atlas/ee/platform/residency")` in
-// `lib/db/connection.ts`. EE resolves an org's home region for
-// per-region pool routing; core's no-op returns `null` (single-region).
+// Inverts `await import("@atlas/ee/platform/residency")` across
+// `lib/db/connection.ts`, `api/routes/platform-residency.ts`, and
+// `api/routes/shared-residency.ts`. The Tag exposes the module's public
+// surface as Effect-returning methods (plus an `available` discriminator
+// for routes that need to render an "unavailable" branch). The no-op
+// default returns the "feature disabled" shape so self-hosted builds
+// without EE branch cleanly; EE's `ee/src/layers.ts` overlays the real
+// `Layer.effect`. `ResidencyError` lives in `lib/residency/errors.ts`
+// so this contract can be typed without pulling in `@atlas/ee`.
+
+type ResidencyRegionRoute = {
+  readonly databaseUrl: string;
+  readonly datasourceUrl?: string;
+  readonly region: string;
+};
+type RegionStatus = import("@useatlas/types").RegionStatus;
+type WorkspaceRegion = import("@useatlas/types").WorkspaceRegion;
+type ResidencyConfigRegions = import("@atlas/api/lib/config").ResidencyConfig["regions"];
+type ResidencyError = import("@atlas/api/lib/residency/errors").ResidencyError;
 
 export interface ResidencyResolverShape {
-  readonly resolveRegion: (orgId: string) => Promise<string | null>;
+  /** False when EE residency is not loaded — routes should surface "not_available". */
+  readonly available: boolean;
+  /** Region-route lookup used by `connection.ts` to overlay per-region datasources. */
+  readonly resolveRegionDatabaseUrl: (
+    workspaceId: string,
+  ) => Effect.Effect<ResidencyRegionRoute | null>;
+  /** Configured regions with workspace counts. Fails with `ResidencyError("not_configured")` when no-op. */
+  readonly listRegions: () => Effect.Effect<RegionStatus[], ResidencyError>;
+  /** Default region. Throws `ResidencyError("not_configured")` synchronously when no-op. */
+  readonly getDefaultRegion: () => string;
+  /** Region-id → config map. Throws `ResidencyError("not_configured")` synchronously when no-op. */
+  readonly getConfiguredRegions: () => ResidencyConfigRegions;
+  /** Assign a region to a workspace. Region is immutable once set. */
+  readonly assignWorkspaceRegion: (
+    workspaceId: string,
+    region: string,
+  ) => Effect.Effect<WorkspaceRegion, ResidencyError | Error>;
+  /** Get a workspace's region assignment, or null if unassigned. */
+  readonly getWorkspaceRegionAssignment: (
+    workspaceId: string,
+  ) => Effect.Effect<WorkspaceRegion | null, ResidencyError | Error>;
+  /** All workspace region assignments (admin view). */
+  readonly listWorkspaceRegions: () => Effect.Effect<WorkspaceRegion[], ResidencyError | Error>;
+  /** True when `region` is a configured region. */
+  readonly isConfiguredRegion: (region: string) => boolean;
 }
 export class ResidencyResolver extends Context.Tag("ResidencyResolver")<
   ResidencyResolver,
   ResidencyResolverShape
 >() {}
+
+/**
+ * No-op default: residency is unavailable. Effect-returning methods
+ * fail with `ResidencyError("not_configured")` or return null/empty
+ * sentinels — whichever matches the prior "EE module missing" behavior
+ * at the call site. Synchronous getters throw the same error so the
+ * existing `try { mod.getDefaultRegion() } catch (err instanceof mod.ResidencyError)`
+ * branch in routes still fires unchanged.
+ *
+ * Lazy-requires the error class to keep this module free of a hard
+ * import on `lib/residency/errors` — services.ts is reached very early
+ * in the dep graph and an eager import there has bitten us before with
+ * mock.module() ordering surprises (see feedback_bun_test_async_mock_module).
+ */
 export const NoopResidencyResolverLayer: Layer.Layer<ResidencyResolver> =
-  Layer.succeed(ResidencyResolver, {
-    resolveRegion: async () => null,
-  } satisfies ResidencyResolverShape);
+  Layer.sync(ResidencyResolver, () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { ResidencyError: ResidencyErrorClass } = require("@atlas/api/lib/residency/errors") as {
+      ResidencyError: new (args: { message: string; code: "not_configured" }) => ResidencyError;
+    };
+    const notConfigured = () =>
+      new ResidencyErrorClass({
+        message:
+          "Data residency is not configured. Add a 'residency' section to atlas.config.ts with region definitions.",
+        code: "not_configured",
+      });
+    return {
+      available: false,
+      resolveRegionDatabaseUrl: () => Effect.succeed(null),
+      listRegions: () => Effect.fail(notConfigured()),
+      getDefaultRegion: () => {
+        throw notConfigured();
+      },
+      getConfiguredRegions: () => {
+        throw notConfigured();
+      },
+      assignWorkspaceRegion: () => Effect.fail(notConfigured()),
+      getWorkspaceRegionAssignment: () => Effect.succeed(null),
+      listWorkspaceRegions: () => Effect.succeed([]),
+      isConfiguredRegion: () => false,
+    } satisfies ResidencyResolverShape;
+  });
 
 // ── ModelRouter (#2565) ──────────────────────────────────────────────
 //

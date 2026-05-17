@@ -27,6 +27,7 @@ import {
   AuthContext,
   makeAuthContextLayer,
 } from "./services";
+import { EnterpriseLayer, type EnterpriseSubsystem } from "./enterprise-layer";
 
 // ── Domain error mapping ────────────────────────────────────────────
 
@@ -390,14 +391,27 @@ export interface RunEffectOptions {
  */
 export async function runEffect<A, E>(
   c: Context,
-  program: Effect.Effect<A, E, RequestContext | AuthContext> | Effect.Effect<A, E, never>,
+  program:
+    | Effect.Effect<A, E, RequestContext | AuthContext | EnterpriseSubsystem>
+    | Effect.Effect<A, E, never>,
   options?: RunEffectOptions,
 ): Promise<A> {
-  // Provide Hono context as Effect Context layers (same bridge as runHandler)
+  // Provide Hono context + enterprise subsystem layers. The enterprise
+  // layer carries no-op defaults for every EE Tag (overlaid by the real
+  // EE implementations via `Layer.mergeAll`'s last-wins semantics) so a
+  // handler that `yield* ResidencyResolver` resolves without each route
+  // having to provide the layer manually. Layer.mergeAll is referentially
+  // stable, so Effect memoizes the construction across requests.
   const contextLayer = buildContextLayer(c);
-  const provided = contextLayer
-    ? (program as Effect.Effect<A, E, RequestContext | AuthContext>).pipe(Effect.provide(contextLayer))
-    : program as Effect.Effect<A, E, never>;
+  const provided: Effect.Effect<A, E, never> = contextLayer
+    ? (program as Effect.Effect<
+        A,
+        E,
+        RequestContext | AuthContext | EnterpriseSubsystem
+      >).pipe(Effect.provide(Layer.merge(contextLayer, EnterpriseLayer)))
+    : (program as Effect.Effect<A, E, EnterpriseSubsystem>).pipe(
+        Effect.provide(EnterpriseLayer),
+      );
 
   const exit = await Effect.runPromiseExit(provided);
 
@@ -561,11 +575,10 @@ export function runHandler<T>(
     catch: (err) => (err instanceof Error ? err : new Error(String(err))),
   });
 
-  // Provide Hono context as Effect Context layers
-  const contextLayer = buildContextLayer(c);
-  const provided = contextLayer
-    ? program.pipe(Effect.provide(contextLayer))
-    : program;
-
-  return runEffect(c, provided, { label, domainErrors: options?.domainErrors });
+  // Context + enterprise provision happens once inside runEffect — no need
+  // to provide them here too. The wrapper used to re-provide contextLayer
+  // before delegating; that double-provide was redundant and would now
+  // also need to layer in EnterpriseLayer to type-check, so we hand the
+  // raw program through and let runEffect's single provide handle it.
+  return runEffect(c, program, { label, domainErrors: options?.domainErrors });
 }

@@ -114,8 +114,9 @@ export type {
   ProactiveConfig,
 } from "./config";
 
-// Proactive chat layer (slices #2292 reaction-first tracer, #2293 reaction-to-answer, #2298 feedback)
+// Proactive chat layer (slices #2292 reaction-first tracer, #2293 reaction-to-answer, #2295 kill switch, #2298 feedback)
 export type {
+  ChannelPauseLayer,
   ChannelProactiveConfig,
   ClassificationResult,
   FeedbackCollectorFn,
@@ -124,7 +125,11 @@ export type {
   FeedbackSource,
   InterjectionAction,
   InterjectionDecision,
+  IsPausedFn,
   LLMClassifierFn,
+  OnPauseRequestFn,
+  PauseDecision,
+  PauseLayer,
   PendingAnswerEntry,
   ProactiveAsker,
   ProactiveExecuteQuery,
@@ -138,6 +143,7 @@ export type {
   WorkspaceProactiveConfig,
 } from "./proactive";
 export {
+  CHANNEL_PAUSE_DURATION_MS,
   PROACTIVE_ANSWER_ACTION_ID,
   PROACTIVE_DISMISS_ACTION_ID,
   PROACTIVE_FB_HELPFUL_ACTION_ID,
@@ -160,11 +166,14 @@ export {
   buildWrongDataModal,
   classifyMessage,
   decideInterjection,
+  detectPauseCommand,
+  detectUnsubscribeDM,
   outcomeForActionId,
   parseFeedbackSlashArgs,
   regexPreFilter,
   registerProactiveListener,
   resolveChannelAllowlist,
+  resolvePauseRequest,
   shouldAnswerOnReaction,
 } from "./proactive";
 export type { ReactionConfig, IReactionLifecycle } from "./features/reactions";

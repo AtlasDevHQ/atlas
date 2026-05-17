@@ -102,6 +102,7 @@ function makeChat() {
 
 interface ThreadDouble {
   channelId: string;
+  isDM: boolean;
   createSentMessageFromMessage: ReturnType<typeof mock>;
   postEphemeral: ReturnType<typeof mock>;
   post: ReturnType<typeof mock>;
@@ -109,10 +110,11 @@ interface ThreadDouble {
   _addReaction: ReturnType<typeof mock>;
 }
 
-function makeThread(channelId = "C-allowed"): ThreadDouble {
+function makeThread(channelId = "C-allowed", opts: { isDM?: boolean } = {}): ThreadDouble {
   const addReaction = mock(async () => {});
   return {
     channelId,
+    isDM: opts.isDM ?? false,
     createSentMessageFromMessage: mock(() => ({ addReaction })),
     postEphemeral: mock(async () => ({ id: "E1", threadId: channelId, raw: {} })),
     post: mock(async () => ({ id: "P1" })),
@@ -706,5 +708,175 @@ describe("handleProactiveFeedbackSlash", () => {
       recentAnswers: new RecentAnswers(),
     });
     expect(handled).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Kill switch (#2295)
+// ---------------------------------------------------------------------------
+
+describe("registerProactiveListener — kill switch", () => {
+  it("skips classification AND reaction when isPaused returns paused", async () => {
+    const isPaused = mock(async () => ({ paused: true, layer: "workspace-kill" as const }));
+    const classify = mock(yesLLM);
+    const { chat, invokeMessage: invoke } = makeChat();
+    await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], makeLogger(), {
+      isEnabled: () => true,
+      classify,
+      workspace: baseWorkspace,
+      channelAllowlist: ["C-allowed"],
+      workspaceId: "ws_1",
+      isPaused,
+      onPauseRequest: mock(async () => {}),
+    });
+    const thread = makeThread("C-allowed");
+    await invoke(thread, makeMessage());
+    expect(isPaused).toHaveBeenCalledTimes(1);
+    expect(classify).not.toHaveBeenCalled();
+    expect(thread._addReaction).not.toHaveBeenCalled();
+  });
+
+  it("reacts when isPaused returns not paused + classification is confident", async () => {
+    const isPaused = mock(async () => ({ paused: false }));
+    const { chat, invokeMessage: invoke } = makeChat();
+    await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], makeLogger(), {
+      isEnabled: () => true,
+      classify: yesLLM,
+      workspace: baseWorkspace,
+      channelAllowlist: ["C-allowed"],
+      workspaceId: "ws_1",
+      isPaused,
+      onPauseRequest: mock(async () => {}),
+    });
+    const thread = makeThread("C-allowed");
+    await invoke(thread, makeMessage());
+    expect(isPaused).toHaveBeenCalledTimes(1);
+    expect(thread._addReaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats an isPaused throw as not paused (fail open)", async () => {
+    const isPaused = mock(async () => {
+      throw new Error("DB down");
+    });
+    const { chat, invokeMessage: invoke } = makeChat();
+    const log = makeLogger();
+    await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], log, {
+      isEnabled: () => true,
+      classify: yesLLM,
+      workspace: baseWorkspace,
+      channelAllowlist: ["C-allowed"],
+      workspaceId: "ws_1",
+      isPaused,
+      onPauseRequest: mock(async () => {}),
+    });
+    const thread = makeThread("C-allowed");
+    await invoke(thread, makeMessage());
+    expect(thread._addReaction).toHaveBeenCalledTimes(1);
+    expect(log.warn).toHaveBeenCalled();
+  });
+
+  it("@atlas pause in a channel writes a channel-24h row and skips classification", async () => {
+    const onPauseRequest = mock(async () => {});
+    const classify = mock(yesLLM);
+    const { chat, invokeMessage: invoke } = makeChat();
+    await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], makeLogger(), {
+      isEnabled: () => true,
+      classify,
+      workspace: baseWorkspace,
+      channelAllowlist: ["C-allowed"],
+      workspaceId: "ws_1",
+      isPaused: mock(async () => ({ paused: false })),
+      onPauseRequest,
+    });
+    const thread = makeThread("C-allowed");
+    await invoke(thread, makeMessage({ text: "@atlas pause" }));
+    expect(onPauseRequest).toHaveBeenCalledTimes(1);
+    expect((onPauseRequest.mock.calls[0] as unknown[])?.[0]).toMatchObject({
+      workspaceId: "ws_1",
+      channelId: "C-allowed",
+      layer: "channel-24h",
+    });
+    expect(classify).not.toHaveBeenCalled();
+    expect(thread._addReaction).not.toHaveBeenCalled();
+  });
+
+  it("DM `unsubscribe` writes a user-optout row and skips classification", async () => {
+    const onPauseRequest = mock(async () => {});
+    const classify = mock(yesLLM);
+    const { chat, invokeMessage: invoke } = makeChat();
+    await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], makeLogger(), {
+      isEnabled: () => true,
+      classify,
+      workspace: baseWorkspace,
+      channelAllowlist: ["C-allowed"],
+      workspaceId: "ws_1",
+      isPaused: mock(async () => ({ paused: false })),
+      onPauseRequest,
+    });
+    const thread = makeThread("D-direct", { isDM: true });
+    await invoke(thread, makeMessage({ text: "unsubscribe" }));
+    expect(onPauseRequest).toHaveBeenCalledTimes(1);
+    expect((onPauseRequest.mock.calls[0] as unknown[])?.[0]).toMatchObject({
+      workspaceId: "ws_1",
+      channelId: null,
+      layer: "user-optout",
+      durationMs: null,
+    });
+    expect(classify).not.toHaveBeenCalled();
+  });
+
+  it("does not treat literal `unsubscribe` in a non-DM channel as a pause command", async () => {
+    const onPauseRequest = mock(async () => {});
+    const { chat, invokeMessage: invoke } = makeChat();
+    await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], makeLogger(), {
+      isEnabled: () => true,
+      classify: yesLLM,
+      workspace: baseWorkspace,
+      channelAllowlist: ["C-allowed"],
+      workspaceId: "ws_1",
+      isPaused: mock(async () => ({ paused: false })),
+      onPauseRequest,
+    });
+    const thread = makeThread("C-allowed");
+    await invoke(thread, makeMessage({ text: "unsubscribe" }));
+    expect(onPauseRequest).not.toHaveBeenCalled();
+  });
+
+  it("@atlas pause write failure is logged but never throws", async () => {
+    const onPauseRequest = mock(async () => {
+      throw new Error("write failed");
+    });
+    const { chat, invokeMessage: invoke } = makeChat();
+    const log = makeLogger();
+    await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], log, {
+      isEnabled: () => true,
+      classify: yesLLM,
+      workspace: baseWorkspace,
+      channelAllowlist: ["C-allowed"],
+      workspaceId: "ws_1",
+      isPaused: mock(async () => ({ paused: false })),
+      onPauseRequest,
+    });
+    const thread = makeThread("C-allowed");
+    await invoke(thread, makeMessage({ text: "@atlas pause" }));
+    expect(onPauseRequest).toHaveBeenCalledTimes(1);
+    expect(log.warn).toHaveBeenCalled();
+  });
+
+  it("is a no-op for kill-switch checks when workspaceId is omitted", async () => {
+    const isPaused = mock(async () => ({ paused: true, layer: "workspace-kill" as const }));
+    const { chat, invokeMessage: invoke } = makeChat();
+    await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], makeLogger(), {
+      isEnabled: () => true,
+      classify: yesLLM,
+      workspace: baseWorkspace,
+      channelAllowlist: ["C-allowed"],
+      // No workspaceId — listener should NOT call isPaused.
+      isPaused,
+    });
+    const thread = makeThread("C-allowed");
+    await invoke(thread, makeMessage());
+    expect(isPaused).not.toHaveBeenCalled();
+    expect(thread._addReaction).toHaveBeenCalledTimes(1);
   });
 });

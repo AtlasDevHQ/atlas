@@ -1838,7 +1838,6 @@ export const oauthClientWorkspaceGrants = pgTable(
 // for hosted MCP is now Better Auth's `oauthAccessToken` /
 // `oauthRefreshToken` schema, which Better Auth's runtime owns.
 
-// ---------------------------------------------------------------------------
 // Proactive chat admin opt-in (#2294, PRD #2291). Two tables back the
 // workspace-level admin console for proactive mode:
 //   - workspace_proactive_config — 1 row per workspace, master toggle +
@@ -1896,5 +1895,49 @@ export const channelProactiveConfig = pgTable(
     ),
     uniqueIndex("uq_channel_proactive_workspace_channel").on(t.workspaceId, t.channelId),
     index("idx_channel_proactive_workspace").on(t.workspaceId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Proactive chat — three-layer kill switch + per-user opt-out (#2295,
+// PRD #2291). Single table backs four orthogonal pause shapes:
+//
+//   workspace-kill   one row, channel_id NULL, user_id NULL, expires_at NULL.
+//                    Admin "pause all proactive" — wins over everything.
+//   admin-channel    per-channel admin deny. channel_id NOT NULL,
+//                    user_id NULL, expires_at NULL.
+//   user-optout      DM `unsubscribe`. workspace-scoped per user;
+//                    channel_id NULL, user_id NOT NULL, expires_at NULL.
+//   channel-24h      In-channel `@atlas pause`. channel_id NOT NULL,
+//                    user_id NULL, expires_at = now() + 24h.
+//
+// Precedence resolved in app layer (`decidePauseFromRows`):
+//   workspace-kill > admin-channel > user-optout > channel-24h
+//
+// Expired rows are ignored at read time; no sweeper at MVP.
+// ---------------------------------------------------------------------------
+
+export const proactivePauses = pgTable(
+  "proactive_pauses",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: text("workspace_id").notNull(),
+    channelId: text("channel_id"),
+    userId: text("user_id"),
+    layer: text("layer").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "chk_proactive_pauses_layer",
+      sql`${t.layer} IN ('channel-24h', 'admin-channel', 'workspace-kill', 'user-optout')`,
+    ),
+    index("idx_proactive_pauses_lookup").on(t.workspaceId, t.channelId, t.expiresAt),
+    // Partial index keyed on (workspace, user) — keeps user-optout
+    // lookups (DM `unsubscribe`) off the wide workspace scan.
+    index("idx_proactive_pauses_user")
+      .on(t.workspaceId, t.userId)
+      .where(sql`${t.userId} IS NOT NULL`),
   ],
 );

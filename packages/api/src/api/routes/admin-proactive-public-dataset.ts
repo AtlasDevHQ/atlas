@@ -208,7 +208,7 @@ const refusedRollupRoute = createRoute({
   tags: ["Admin - Proactive Chat"],
   summary: "List refused-topics rollup",
   description:
-    "Discoverability rollup powering the admin console's Refused topics panel: how often unlinked askers tried to ask about an entity NOT on the allowlist, grouped by entity name. Defaults to a 30-day moving window; since=<n>[dhms] overrides the lookback. Capped at 365 days. The admin UI pairs each row with a one-click Make-public affordance.",
+    "Discoverability rollup powering the admin console's Refused topics panel: how often unlinked askers tried to ask about an entity NOT on the allowlist, grouped by entity name. Defaults to a 30-day moving window; `since=<n>[dhms]` overrides the lookback. Capped at 365 days. The admin UI pairs each row with a one-click Make-public affordance.",
   request: {
     query: z.object({
       since: z.string().min(1).optional().openapi({

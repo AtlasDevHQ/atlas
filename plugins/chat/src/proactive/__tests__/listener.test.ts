@@ -10,6 +10,7 @@
 
 import { describe, expect, it, mock } from "bun:test";
 import {
+  handleProactiveFeedbackSlash,
   PROACTIVE_REACTION,
   registerProactiveListener,
   resolveChannelAllowlist,
@@ -18,6 +19,15 @@ import {
   PROACTIVE_ANSWER_ACTION_ID,
   PROACTIVE_DISMISS_ACTION_ID,
 } from "../../cards/proactive-answer-card";
+import {
+  PROACTIVE_FB_HELPFUL_ACTION_ID,
+  PROACTIVE_FB_NOT_HELPFUL_ACTION_ID,
+  PROACTIVE_FB_WRONG_DATA_ACTION_ID,
+  PROACTIVE_FB_WRONG_DATA_INPUT_ID,
+  PROACTIVE_FB_WRONG_DATA_MODAL_ID,
+  RecentAnswers,
+  type FeedbackCollectorFn,
+} from "../feedback";
 import type {
   LLMClassifierFn,
   WorkspaceProactiveConfig,
@@ -46,6 +56,7 @@ function makeChat() {
   let messageHandler: AnyHandler | null = null;
   let reactionHandler: AnyHandler | null = null;
   const actionHandlers = new Map<string, AnyHandler>();
+  const modalSubmitHandlers = new Map<string, AnyHandler>();
 
   const chat = {
     onNewMessage: mock((_pattern: RegExp, handler: AnyHandler) => {
@@ -54,8 +65,12 @@ function makeChat() {
     onReaction: mock((_filter: unknown[], handler: AnyHandler) => {
       reactionHandler = handler;
     }),
-    onAction: mock((actionId: string, handler: AnyHandler) => {
-      actionHandlers.set(actionId, handler);
+    onAction: mock((actionIdOrIds: string | string[], handler: AnyHandler) => {
+      const ids = Array.isArray(actionIdOrIds) ? actionIdOrIds : [actionIdOrIds];
+      for (const id of ids) actionHandlers.set(id, handler);
+    }),
+    onModalSubmit: mock((callbackId: string, handler: AnyHandler) => {
+      modalSubmitHandlers.set(callbackId, handler);
     }),
   };
 
@@ -74,8 +89,14 @@ function makeChat() {
       if (!handler) throw new Error(`no handler for action ${actionId}`);
       await handler(event);
     },
+    invokeModalSubmit: async (callbackId: string, event: unknown) => {
+      const handler = modalSubmitHandlers.get(callbackId);
+      if (!handler) throw new Error(`no modal submit handler for ${callbackId}`);
+      return handler(event);
+    },
     isRegistered: () => messageHandler !== null,
     handlerCount: () => actionHandlers.size,
+    modalCount: () => modalSubmitHandlers.size,
   };
 }
 
@@ -178,8 +199,8 @@ describe("registerProactiveListener — gating", () => {
     expect(chat.onNewMessage).not.toHaveBeenCalled();
   });
 
-  it("registers all three handler types when enabled", async () => {
-    const { chat, isRegistered, handlerCount } = makeChat();
+  it("registers all expected handler types when enabled", async () => {
+    const { chat, isRegistered, handlerCount, modalCount } = makeChat();
     await registerProactiveListener(chat as any, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
@@ -189,7 +210,10 @@ describe("registerProactiveListener — gating", () => {
     expect(isRegistered()).toBe(true);
     expect(chat.onNewMessage).toHaveBeenCalledTimes(1);
     expect(chat.onReaction).toHaveBeenCalledTimes(1);
-    expect(handlerCount()).toBe(2); // Yes,answer + Not now
+    // Offer card: Yes,answer + Not now. Feedback row: Helpful, Not helpful, Wrong data.
+    expect(handlerCount()).toBe(5);
+    // Wrong-data textarea modal.
+    expect(modalCount()).toBe(1);
   });
 });
 
@@ -486,5 +510,201 @@ describe("registerProactiveListener — button handlers", () => {
     });
     expect(executeQueryProactive).not.toHaveBeenCalled();
     expect(thread.post).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feedback button + modal handlers (slice #2298)
+// ---------------------------------------------------------------------------
+
+describe("registerProactiveListener — feedback buttons", () => {
+  async function setup(collector?: FeedbackCollectorFn) {
+    const { chat, invokeAction, invokeModalSubmit } = makeChat();
+    const log = makeLogger();
+    const calls: unknown[] = [];
+    const wrapped: FeedbackCollectorFn = collector
+      ? collector
+      : async (ev) => {
+          calls.push(ev);
+        };
+    const handle = await registerProactiveListener(chat as any, log, {
+      isEnabled: () => true,
+      classify: yesLLM,
+      workspace: baseWorkspace,
+      channelAllowlist: ["C-allowed"],
+      userResolver: linkedResolver,
+      executeQueryProactive: echoExecute,
+      feedbackCollector: wrapped,
+    });
+    return { chat, log, invokeAction, invokeModalSubmit, calls, handle };
+  }
+
+  function makeActionEvent(actionId: string, value = "answer-msg-1") {
+    return {
+      actionId,
+      adapter: { name: "slack" },
+      messageId: "answer-msg-1",
+      thread: makeThread("C-allowed"),
+      threadId: "C-allowed",
+      user: { isMe: false, isBot: false, userId: "U-asker", userName: "alice" },
+      value,
+      openModal: mock(async () => ({ viewId: "V1" })),
+      raw: {},
+    };
+  }
+
+  it("routes the Helpful button to the feedback collector", async () => {
+    const { invokeAction, calls } = await setup();
+    await invokeAction(PROACTIVE_FB_HELPFUL_ACTION_ID, makeActionEvent(PROACTIVE_FB_HELPFUL_ACTION_ID));
+    expect(calls).toHaveLength(1);
+    const ev = calls[0] as { outcome: string; source: string };
+    expect(ev.outcome).toBe("helpful");
+    expect(ev.source).toBe("button");
+  });
+
+  it("routes the Not helpful button to the feedback collector", async () => {
+    const { invokeAction, calls } = await setup();
+    await invokeAction(PROACTIVE_FB_NOT_HELPFUL_ACTION_ID, makeActionEvent(PROACTIVE_FB_NOT_HELPFUL_ACTION_ID));
+    expect(calls).toHaveLength(1);
+    const ev = calls[0] as { outcome: string };
+    expect(ev.outcome).toBe("not-helpful");
+  });
+
+  it("opens the wrong-data modal on Wrong data and defers the record to modal submit", async () => {
+    const { invokeAction, invokeModalSubmit, calls } = await setup();
+    const ev = makeActionEvent(PROACTIVE_FB_WRONG_DATA_ACTION_ID);
+    await invokeAction(PROACTIVE_FB_WRONG_DATA_ACTION_ID, ev);
+
+    expect(ev.openModal).toHaveBeenCalledTimes(1);
+    expect(calls).toHaveLength(0);
+
+    await invokeModalSubmit(PROACTIVE_FB_WRONG_DATA_MODAL_ID, {
+      adapter: { name: "slack" },
+      callbackId: PROACTIVE_FB_WRONG_DATA_MODAL_ID,
+      privateMetadata: "answer-msg-1",
+      user: { isMe: false, isBot: false, userId: "U-asker", userName: "alice" },
+      values: { [PROACTIVE_FB_WRONG_DATA_INPUT_ID]: "MRR figure is stale" },
+      raw: {},
+    });
+
+    expect(calls).toHaveLength(1);
+    const rec = calls[0] as { outcome: string; context?: string; source: string };
+    expect(rec.outcome).toBe("wrong-data");
+    expect(rec.context).toBe("MRR figure is stale");
+    expect(rec.source).toBe("modal");
+  });
+
+  it("records a button click even when the modal cannot be opened", async () => {
+    const { invokeAction, calls } = await setup();
+    const ev = makeActionEvent(PROACTIVE_FB_WRONG_DATA_ACTION_ID);
+    ev.openModal = mock(async () => {
+      throw new Error("modals not supported on this platform");
+    });
+    await invokeAction(PROACTIVE_FB_WRONG_DATA_ACTION_ID, ev);
+
+    expect(calls).toHaveLength(1);
+    const rec = calls[0] as { outcome: string; source: string };
+    expect(rec.outcome).toBe("wrong-data");
+    expect(rec.source).toBe("button");
+  });
+
+  it("silently no-ops when no feedbackCollector is configured", async () => {
+    const { chat, invokeAction } = makeChat();
+    await registerProactiveListener(chat as any, makeLogger(), {
+      isEnabled: () => true,
+      classify: yesLLM,
+      workspace: baseWorkspace,
+      channelAllowlist: ["C-allowed"],
+      // feedbackCollector deliberately omitted
+    });
+    // Should not throw even though no collector is wired
+    await invokeAction(PROACTIVE_FB_HELPFUL_ACTION_ID, {
+      actionId: PROACTIVE_FB_HELPFUL_ACTION_ID,
+      adapter: { name: "slack" },
+      messageId: "answer-msg-1",
+      thread: makeThread("C-allowed"),
+      threadId: "C-allowed",
+      user: { isMe: false, isBot: false, userId: "U-asker", userName: "alice" },
+      value: "answer-msg-1",
+      openModal: mock(async () => undefined),
+      raw: {},
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleProactiveFeedbackSlash — `/atlas feedback <text>` (slice #2298)
+// ---------------------------------------------------------------------------
+
+describe("handleProactiveFeedbackSlash", () => {
+  it("returns false when the args are not a feedback subcommand", async () => {
+    const calls: unknown[] = [];
+    const handled = await handleProactiveFeedbackSlash({
+      text: "how many users last month",
+      channelId: "C-allowed",
+      asker: { platform: "slack", externalUserId: "U-asker", userName: "alice" },
+      config: {
+        isEnabled: () => true,
+        classify: yesLLM,
+        workspace: baseWorkspace,
+        feedbackCollector: async (ev) => {
+          calls.push(ev);
+        },
+      },
+      log: makeLogger(),
+      recentAnswers: new RecentAnswers(),
+    });
+    expect(handled).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("routes a feedback subcommand to the collector and falls back to recent answer", async () => {
+    const calls: unknown[] = [];
+    const recent = new RecentAnswers();
+    recent.record("C-allowed", "U-asker", {
+      threadId: "T-1",
+      answerMessageId: "M-1",
+      question: "what was MRR",
+      answer: "MRR was $X",
+    });
+    const handled = await handleProactiveFeedbackSlash({
+      text: "feedback figure looks stale",
+      channelId: "C-allowed",
+      asker: { platform: "slack", externalUserId: "U-asker", userName: "alice" },
+      config: {
+        isEnabled: () => true,
+        classify: yesLLM,
+        workspace: baseWorkspace,
+        feedbackCollector: async (ev) => {
+          calls.push(ev);
+        },
+      },
+      log: makeLogger(),
+      recentAnswers: recent,
+    });
+    expect(handled).toBe(true);
+    expect(calls).toHaveLength(1);
+    const ev = calls[0] as { context?: string; source: string; answerMessageId: string; threadId: string };
+    expect(ev.context).toBe("figure looks stale");
+    expect(ev.source).toBe("slash-command");
+    expect(ev.answerMessageId).toBe("M-1");
+    expect(ev.threadId).toBe("T-1");
+  });
+
+  it("returns false when no feedbackCollector is configured", async () => {
+    const handled = await handleProactiveFeedbackSlash({
+      text: "feedback some text",
+      channelId: "C-allowed",
+      asker: { platform: "slack", externalUserId: "U-asker", userName: "alice" },
+      config: {
+        isEnabled: () => true,
+        classify: yesLLM,
+        workspace: baseWorkspace,
+        // feedbackCollector deliberately omitted
+      },
+      log: makeLogger(),
+      recentAnswers: new RecentAnswers(),
+    });
+    expect(handled).toBe(false);
   });
 });

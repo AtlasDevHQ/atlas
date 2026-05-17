@@ -19,6 +19,7 @@ import type {
   ProactiveExecuteQuery,
   ProactiveUserResolver,
 } from "./proactive/answerer";
+import type { FeedbackCollectorFn } from "./proactive/feedback";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -448,6 +449,15 @@ export interface ProactiveConfig {
   linkUrl?: string;
   /** Platform name (`"slack"` etc.) recorded in `ProactiveAsker`. */
   platform?: string;
+
+  // ---- Slice #2298: feedback collection ----
+
+  /**
+   * Persists feedback from button clicks, the wrong-data modal, and
+   * the `/atlas feedback <text>` slash subcommand. Host typically
+   * writes to the meter / evals dataset.
+   */
+  feedbackCollector?: FeedbackCollectorFn;
 }
 
 // ---------------------------------------------------------------------------
@@ -703,6 +713,13 @@ const ProactiveConfigSchema = z
       .optional(),
     linkUrl: z.string().url("proactive.linkUrl must be a valid URL").optional(),
     platform: z.string().min(1).optional(),
+    feedbackCollector: z
+      .any()
+      .refine(
+        (v) => v === undefined || typeof v === "function",
+        "proactive.feedbackCollector must be a function",
+      )
+      .optional(),
   })
   .optional();
 

@@ -1696,3 +1696,61 @@ A new `boot-smoke` job in `.github/workflows/deploy-validation.yml` builds `depl
 - **Zero behavioural regressions** in the existing suite (174 admin tests, 126 affected api tests, 145 web tests all green).
 
 **Category:** Application-layer closure of a schema-invariant contract opened in win #59. The pattern: when a schema partial-unique-index changes the natural key, the helpers that read by the partial key need the same parameter set as the writers, and the frontend that displays the rows needs the same composite identity as the React keys. Caught by a multi-agent audit, not by passing tests — three of the four bug paths had test coverage that asserted the *current* (broken) shape.
+
+---
+
+## 61. `environment-routing` — pure routing policy for the agent-decided `scope` parameter (#2516)
+
+**Date:** 2026-05-17
+**Issue:** #2516 (parent PRD #2515 — agent-routed cross-environment querying)
+**Milestone:** 1.4.5 — Cross-environment querying
+**Branch:** `slice-2516-exec-scope`
+
+**Before:** the chat env picker forced the user to pre-choose one member of the active connection group before every turn. A multi-region question ("revenue trends across regions this week") could only be served by sending three messages and eyeballing them, or by pinning to one env and remembering the other two exist. The routing decision had no home — there was no module that said "given a question, the picker mode, and the available members, what should we run the SQL against?" so the question lived in the user's head.
+
+**The win:** every routing rule moved into one pure module: `packages/api/src/lib/env-routing/index.ts`. The module takes `{ agentScope, currentMember, members, primaryMember?, pickerMode? }` and returns a `RoutingPlan` tagged `single | fanout` plus an audit-grade `reason` string and a warnings array. No DB, no IO, no fetch — the caller resolves the impure inputs (active group, members, primary) elsewhere and hands them in.
+
+- **The decision table is exhaustively covered.** Every branch — 1×1 group, picker `pin` / `all` overrides, agent `scope: "all"` / `"this"` / `<named member>` / `<unknown member>` — has a unit test asserting both the resolved member set and the discriminator `reason`. Adding a new routing branch (e.g. slice 3's `pickerMode = "auto"` made explicit) means adding one case to the table plus one test; the rest of the policy is untouched.
+- **Pin / all picker overrides land before the picker UI ships.** Slice 3 wires `conversations.routing_mode` to the `pickerMode` parameter; slice 1 already validates the override semantics ("pin wins over agent's `all`," "all wins over agent's `this`") so the picker work is wiring, not policy.
+- **1×1 short-circuit is structural.** Single-member groups (the 1:1 backfill from 1.4.4, single-connection orgs) never fan out regardless of what the agent or picker say — the policy collapses to "use the one member you have." This removes a class of "what if the user pinned to all on a 1×1 group" bugs the picker would otherwise have to defend against.
+- **Unknown-member fallback degrades, doesn't fault.** When the agent emits a `scope` string that doesn't match any member (a prompt drift or model hallucination), the planner falls back to the group's primary with a warning rather than 500-ing the tool call. The audit warning surfaces the divergence to the operator.
+
+**What got unbundled:**
+- **The routing rules became a single named function call.** Slice 2's agent-prompt change and slice 3's picker can both call `resolveRoutingPlan` with their respective inputs and trust the policy is consistent. Without this module, the prompt prompt would need its own logic for "what does `scope: 'all'` mean" and the picker would need its own logic for "what does `pickerMode: 'pin'` mean," and the two would inevitably drift.
+- **The reason discriminator is the audit attribute.** `RoutingReason` values (`agent-all`, `picker-pin`, `1x1-group`, etc.) feed directly into the `atlas.routing_mode` OTel span attribute slated for slice 4. Pinning the reason in tests means the audit dimension can't silently change.
+
+**Impact:**
+- **One pure module** (~165 lines including JSDoc) holds every routing decision.
+- **18 unit tests** in `env-routing/__tests__/index.test.ts` cover the full decision table.
+- **Zero pre-existing call sites changed.** `executeSQL` was the first consumer; slices 2 + 3 wire the agent prompt and picker.
+
+**Category:** Pure policy module extracted ahead of the behaviour-flipping slice. Same family as wins #58 (`withGroupScope`) and #59 (group-scoped entities) — land the deep module first as a no-op, then the behaviour change becomes parametric.
+
+---
+
+## 62. `multi-env-result-merger` — pure merger for fanned-out `executeSQL` results (#2516)
+
+**Date:** 2026-05-17
+**Issue:** #2516 (parent PRD #2515 — agent-routed cross-environment querying)
+**Milestone:** 1.4.5 — Cross-environment querying
+**Branch:** `slice-2516-exec-scope`
+
+**Before:** fanned-out queries didn't exist, so neither did the result-merge logic. The PRD called for one merged table with a prepended `__env__` column and a parallel `envContributions: [{ connectionId, rowCount, error, durationMs }]` array, plus a NULL-fill column union when members diverge and string-coercion when same-named columns disagree on type. Without a module, that logic would live inline in `executeSQL`'s already-overgrown ~1700-line file.
+
+**The win:** every merge rule moved into one pure module: `packages/api/src/lib/multi-env-merger/index.ts`. The function takes `MemberExecutionResult[]` (per-member columns/rows/error/durationMs) and returns `{ columns, rows, envContributions }` with `__env__` prepended. No DB, no IO. Slice 4's `@useatlas/types` wire shape (`ConnectionContribution`) is the same record shape returned here.
+
+- **Column union with NULL fill is one pass.** Successful members contribute to the union in order of first appearance; the merge loop NULL-fills missing keys without per-member special-casing.
+- **Partial failure splits cleanly.** A member that errored contributes nothing to `rows` but every member (success or fail) gets an `envContributions` entry, so the operator sees what happened. All-failure → success=false with summary; partial failure → success=true with envContributions showing the divergence. The agent's recovery loop kicks in only on the all-failure case.
+- **Type coercion is conservative.** A column is string-coerced only when more than one primitive `typeof` is observed across all members' rows (null doesn't vote). Uniformly-typed columns pass through unchanged — int stays int, date stays date.
+- **`__env__` collision defence.** A member that happens to expose a column literally named `__env__` doesn't clobber the sentinel — our prepend always wins, and the imposter column is dropped.
+
+**What got unbundled:**
+- **The wire shape is the same record returned here.** Slice 4 publishes `ConnectionContribution` in `@useatlas/types`; SDK consumers reading `envContributions[]` from the response see the same field names + types as the merger emits. No mapping layer; no drift risk.
+- **Empty / degenerate / fanout-of-one all collapse to the same shape.** Zero members → `{ columns: [__env__], rows: [], envContributions: [] }`; single-member fanout → same shape as the multi-member case. Downstream code (UI, SDK, audit) handles one branch.
+
+**Impact:**
+- **One pure module** (~130 lines including JSDoc) holds every merge rule.
+- **13 unit tests** in `multi-env-merger/__tests__/index.test.ts` cover same-schema, schema-divergence, partial failure, all-failure, all-empty, type coercion, ordering, and the `__env__` collision case.
+- **`executeSQL`'s fanout dispatch** (`executeSqlFanout`) is ~45 lines — orchestration only, no merge logic inline.
+
+**Category:** Pure data-transformation module extracted ahead of the behaviour-flipping slice. The merger's interface (`MemberExecutionResult[]` → `MergedResult`) is the same shape slice 4 ships on the wire, so the type contract from the merger flows straight through to the SDK without a translation step.

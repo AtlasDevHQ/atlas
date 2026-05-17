@@ -3221,12 +3221,66 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(allowed[0]?.id).toBe(groupId);
   }, PG_TEST_TIMEOUT_MS);
 
-  // 0073 — proactive_meter_events CHECK constraints + index reachability.
-  // A future drop of either CHECK silently accepts garbage rows the admin
-  // analytics rollup would then misinterpret. The smoke also exercises
-  // the index path: an EXPLAIN over the workspace+created_at predicate
-  // must hit one of the two indexes we shipped.
-  it("proactive_meter_events: accepts a canonical classify row", async () => {
+  // ─────────────────────────────────────────────────────────────────────
+  // 0073 — conversations.bound_dashboard_id (#2363)
+  // ─────────────────────────────────────────────────────────────────────
+
+  it("0073: conversations.bound_dashboard_id is a nullable uuid (#2363)", async () => {
+    const { rows } = await pool.query<{
+      data_type: string;
+      is_nullable: string;
+      udt_name: string;
+    }>(
+      `SELECT data_type, is_nullable, udt_name
+         FROM information_schema.columns
+        WHERE table_name = 'conversations'
+          AND column_name = 'bound_dashboard_id'
+          AND table_schema = current_schema()`,
+    );
+    expect(rows[0]?.udt_name).toBe("uuid");
+    expect(rows[0]?.is_nullable).toBe("YES");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0073: ON DELETE SET NULL preserves the conversation when its dashboard is removed (#2363)", async () => {
+    const stamp = Date.now();
+    const orgId = `org-2363-${stamp}`;
+    const dashRows = await pool.query<{ id: string }>(
+      `INSERT INTO dashboards (org_id, owner_id, title) VALUES ($1, 'u-2363', 'Bound test') RETURNING id`,
+      [orgId],
+    );
+    const dashboardId = dashRows.rows[0]?.id as string;
+
+    const convRows = await pool.query<{ id: string }>(
+      `INSERT INTO conversations (user_id, org_id, bound_dashboard_id)
+       VALUES ('u-2363', $1, $2)
+       RETURNING id`,
+      [orgId, dashboardId],
+    );
+    const conversationId = convRows.rows[0]?.id as string;
+
+    // Sanity — binding stuck.
+    const bound = await pool.query<{ bound_dashboard_id: string | null }>(
+      `SELECT bound_dashboard_id FROM conversations WHERE id = $1`,
+      [conversationId],
+    );
+    expect(bound.rows[0]?.bound_dashboard_id).toBe(dashboardId);
+
+    // Hard-delete the dashboard. The FK is ON DELETE SET NULL, so the
+    // conversation row must survive with the pointer cleared.
+    await pool.query(`DELETE FROM dashboards WHERE id = $1`, [dashboardId]);
+    const after = await pool.query<{ bound_dashboard_id: string | null }>(
+      `SELECT bound_dashboard_id FROM conversations WHERE id = $1`,
+      [conversationId],
+    );
+    expect(after.rows.length).toBe(1);
+    expect(after.rows[0]?.bound_dashboard_id).toBeNull();
+  }, PG_TEST_TIMEOUT_MS);
+
+  // ─────────────────────────────────────────────────────────────────────
+  // 0074 — proactive_meter_events (#2296) — CHECK constraints + roundtrip.
+  // ─────────────────────────────────────────────────────────────────────
+
+  it("proactive_meter_events: accepts a canonical classify row (#2296)", async () => {
     const workspaceId = `org-meter-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
     await pool.query(
       `INSERT INTO proactive_meter_events
@@ -3240,11 +3294,10 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
     expect(rows[0]?.tokens).toBe(120);
     expect(rows[0]?.cost_micro_usd).toBe(75);
-    // NUMERIC comes back as a string from `pg`; coerce here.
     expect(Number(rows[0]?.confidence)).toBeCloseTo(0.91, 2);
   }, PG_TEST_TIMEOUT_MS);
 
-  it("proactive_meter_events: rejects an unknown event_type with 23514", async () => {
+  it("proactive_meter_events: rejects an unknown event_type with 23514 (#2296)", async () => {
     const workspaceId = `org-meter-bad-evt-${Date.now()}`;
     await expect(
       pool.query(
@@ -3255,7 +3308,7 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     ).rejects.toMatchObject({ code: "23514" });
   }, PG_TEST_TIMEOUT_MS);
 
-  it("proactive_meter_events: rejects an unknown outcome with 23514", async () => {
+  it("proactive_meter_events: rejects an unknown outcome with 23514 (#2296)", async () => {
     const workspaceId = `org-meter-bad-out-${Date.now()}`;
     await expect(
       pool.query(
@@ -3266,9 +3319,7 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     ).rejects.toMatchObject({ code: "23514" });
   }, PG_TEST_TIMEOUT_MS);
 
-  it("proactive_meter_events: summary query roundtrips with NUMERIC confidence", async () => {
-    // Real round-trip through the helper module's INSERT path is the gate
-    // — the route + meter both reach this query under load.
+  it("proactive_meter_events: summary query roundtrips with NUMERIC confidence (#2296)", async () => {
     const workspaceId = `org-meter-rt-${Date.now()}`;
     await pool.query(
       `INSERT INTO proactive_meter_events

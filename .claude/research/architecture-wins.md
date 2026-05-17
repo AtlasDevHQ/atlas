@@ -1754,3 +1754,37 @@ A new `boot-smoke` job in `.github/workflows/deploy-validation.yml` builds `depl
 - **`executeSQL`'s fanout dispatch** (`executeSqlFanout`) is ~45 lines — orchestration only, no merge logic inline.
 
 **Category:** Pure data-transformation module extracted ahead of the behaviour-flipping slice. The merger's interface (`MemberExecutionResult[]` → `MergedResult`) is the same shape slice 4 ships on the wire, so the type contract from the merger flows straight through to the SDK without a translation step.
+
+## 63. `boundChatContext` — conversation↔dashboard binding as one module (#2363)
+
+**Date:** 2026-05-17
+**Issue:** #2363 (1.4.6 tracer-bullet for the chat-as-dashboard-editor PRD #2362)
+**Milestone:** 1.4.6 — Chat as dashboard editor
+**Branch:** `feat/2363-tracer-bullet-drawer`
+
+**Before:** the chat-as-dashboard-editor PRD #2362 needs a chat drawer on `/dashboards/[id]` that runs against a "bound" agent — narrower tool surface, different system prompt, a per-turn card summary, and a way for subsequent turns to know "this conversation is editing dashboard X." The naive shape would have been three separate things: a body field on `/api/v1/chat`, an ad-hoc branch in `chat.ts` to swap the registry, and another branch in `agent.ts` to swap the prompt — all reaching across modules to coordinate. Plus a separate read path for the history tab (#2368) that re-implements the dashboard-scoped conversation lookup.
+
+**The win:** `lib/bound-chat-context.ts` is the single module that owns the relationship.
+
+- **`bindConversationToDashboard(conversationId, dashboardId, { orgId })`** — verifies the dashboard exists in the caller's org via `getDashboard` BEFORE writing the FK, then stamps `conversations.bound_dashboard_id`. Mirrors #2424's connectionGroupId pre-write gate exactly — same shape: trusted DB FK + untrusted-input org check at the application layer.
+- **`resolveBoundDashboard(conversationId, { orgId })`** — the route's *only* read path. Returns the dashboard + cards or one of three failure reasons (`not_bound`, `dashboard_missing`, `error`); the route treats each as "fall back to the default agent" so a missing dashboard never hard-fails a chat turn.
+- **`listSessionsForDashboard(dashboardId, orgId)`** — workspace-scoped session listing for the #2368 history tab. Same module, same idiom — readers reuse the exact same column the writer stamps, no helper duplication.
+- **`buildCardSummary(cards)`** is PURE.** Pure: takes a card array, returns a string. No DB, no Effect, no logger. The bound system prompt that `agent.ts` injects gets the same string the `getDashboardState` tool returns, so the agent's mental model of "what cards exist" is always consistent across in-context summary vs. on-demand tool call.
+- **`BOUND_AGENT_PROMPT_GUIDANCE`** is a string constant — the dashboard-composition rules (grid is 24 wide; KPI rows tall=4; trend cards w=12/24, h=8; chart-type heuristics) live as data, exported once, swapped in by `agent.ts:buildSystemPrompt` when the optional `boundDashboardContext` param is set.
+
+**Tools follow the same factory shape.** `createBoundDashboardTools({ dashboardId, orgId })` returns the six safe-op tool definitions closed over the resolved ids — the LLM cannot supply `dashboardId` itself, which is the *whole point* of binding. `buildBoundDashboardRegistry` composes them with `explore` + `executeSQL` into a frozen registry. The chat route's bound-mode branch is one swap: `toolRegistry = buildBoundDashboardRegistry(boundDashboardForAgent.toolContext)`.
+
+**What got unbundled:**
+- **"Is this conversation bound?" is now a one-line resolve, not a join scattered across two routes.** `chat.ts` calls `resolveBoundDashboard(conversationId, { orgId })`; `dashboards/[id]/sessions` (slice #2368) calls `listSessionsForDashboard(dashboardId, orgId)`. Same column, same module, no cross-route SQL duplication.
+- **The bound-mode system prompt is data, not code.** `BOUND_AGENT_PROMPT_GUIDANCE` is an export; agent.ts just picks the suffix based on the presence of `boundDashboardContext`. A future slice changing the dashboard-composition rules edits one constant.
+- **Test surface stays narrow.** Pure `buildCardSummary` gets a unit test with no DB. `bind` / `resolve` / `listSessions` each get tests against an injected mock pool (`_resetPool(mockPool)` — same idiom as `conversations.test.ts`); no `mock.module()` (`bun:test` deadlocks on async mock factories per [[feedback_bun_test_async_mock_module]]).
+- **Schema mirror is one column + one partial index.** `0073_conversation_bound_dashboard.sql` + matching `schema.ts` entry (drift check enforces in same PR). FK is `ON DELETE SET NULL` because the audit trail (sessions list) should survive dashboard delete.
+
+**Impact:**
+- **1 new module** (`lib/bound-chat-context.ts`, ~200 lines including the prompt constant) + 1 module for the tool factory (`lib/tools/bound-dashboard.ts`) + 1 for the registry (`lib/tools/bound-dashboard-registry.ts`).
+- **`agent.ts` changes:** 3 small edits — one new optional param (`boundDashboardContext`), one branch in `buildSystemPrompt` (swap suffix + prepend cardSummary), threaded through `buildSystemParam` + `runAgent`.
+- **`chat.ts` changes:** 1 new body field (`boundDashboardId`), one block to `bindConversationToDashboard` on create, one block to `resolveBoundDashboard` after load/create, one ternary to swap the registry, one spread to forward `boundDashboardContext`. No re-architecting of the existing routing / budget / persistence layers.
+- **Tests:** 11 cases in `bound-chat-context.test.ts` (bind / resolve / list / pure summary / prompt constant), 9 in `bound-dashboard.test.ts` (factory shape + each tool's happy/sad path).
+- **One frontend file** (`bound-chat-drawer.tsx`) drives the entire UI — uses `useChat` directly with a slim `DefaultChatTransport` that always carries `boundDashboardId`. The existing heavyweight `AtlasChat` stays untouched.
+
+**Category:** Deep module that absorbs a binding relationship + its tool factory + its prompt constant + its listing query. Same pattern as the win #58 → win #59 → win #60 chain — when a module's contract is "this is the only place that knows X," every reader downstream can be a one-line call. The PRD #2362 follow-ups (#2364 drafts, #2365 stage tracker, #2368 history, #2369 createDashboard) all consume this module without re-deriving the relationship.

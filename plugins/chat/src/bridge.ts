@@ -46,7 +46,8 @@ import {
 } from "./features/file-upload";
 import { createReactionLifecycle } from "./features/reactions";
 import type { IReactionLifecycle } from "./features/reactions";
-import { registerProactiveListener } from "./proactive/listener";
+import { handleProactiveFeedbackSlash, registerProactiveListener } from "./proactive/listener";
+import type { RecentAnswers } from "./proactive/feedback";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -943,6 +944,54 @@ export function createChatBridge(
   // --- onSlashCommand: /<configurable> <question> ---
   const commandName = config.slashCommandName ?? "/atlas";
   chat.onSlashCommand(commandName, async (event) => {
+    // Slice #2298: `/atlas feedback <text>` routes to the proactive
+    // feedback collector before falling through to the question flow.
+    if (config.proactive && proactiveRecentAnswers) {
+      try {
+        const handled = await handleProactiveFeedbackSlash({
+          text: event.text,
+          channelId: event.channel.id,
+          asker: {
+            platform: event.adapter?.name ?? config.proactive.platform ?? "unknown",
+            externalUserId: event.user.userId,
+            userName: event.user.userName,
+          },
+          config: {
+            isEnabled: config.proactive.isEnabled,
+            classify: config.proactive.classify,
+            workspace: config.proactive.workspace,
+            channelAllowlist: config.proactive.channelAllowlist,
+            channelConfigs: config.proactive.channelConfigs,
+            userResolver: config.proactive.userResolver,
+            executeQueryProactive: config.proactive.executeQueryProactive,
+            linkUrl: config.proactive.linkUrl,
+            platform: config.proactive.platform,
+            feedbackCollector: config.proactive.feedbackCollector,
+            slashCommandName: config.slashCommandName,
+          },
+          log,
+          recentAnswers: proactiveRecentAnswers,
+        });
+        if (handled) {
+          try {
+            await event.channel.postEphemeral(
+              event.user,
+              { markdown: "Thanks for the feedback." },
+              { fallbackToDM: false },
+            );
+          } catch {
+            // Ack is best-effort.
+          }
+          return;
+        }
+      } catch (err) {
+        log.warn(
+          { err: err instanceof Error ? err : new Error(String(err)) },
+          "Proactive feedback slash routing threw — falling back to standard question flow",
+        );
+      }
+    }
+
     const question = event.text?.trim();
     const channelId = event.channel.id;
 
@@ -1504,15 +1553,16 @@ export function createChatBridge(
     );
   });
 
-  // --- Proactive listener (slices #2292, #2293) ---
+  // --- Proactive listener (slices #2292, #2293, #2298) ---
   // Only registers when proactive config is present AND the host-supplied
   // gate (`isEnterpriseEnabled() && workspaceFlag`) returns true. Failures
   // never block the rest of the bridge from coming up.
+  let proactiveRecentAnswers: RecentAnswers | null = null;
   if (config.proactive) {
     const proactiveConfig = config.proactive;
     Promise.resolve()
-      .then(() =>
-        registerProactiveListener(chat, log, {
+      .then(async () => {
+        const handle = await registerProactiveListener(chat, log, {
           isEnabled: proactiveConfig.isEnabled,
           classify: proactiveConfig.classify,
           workspace: proactiveConfig.workspace,
@@ -1522,8 +1572,11 @@ export function createChatBridge(
           executeQueryProactive: proactiveConfig.executeQueryProactive,
           linkUrl: proactiveConfig.linkUrl,
           platform: proactiveConfig.platform,
-        }),
-      )
+          feedbackCollector: proactiveConfig.feedbackCollector,
+          slashCommandName: config.slashCommandName,
+        });
+        proactiveRecentAnswers = handle.recentAnswers;
+      })
       .catch((err) => {
         log.error(
           { err: err instanceof Error ? err : new Error(String(err)) },

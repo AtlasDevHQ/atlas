@@ -85,8 +85,9 @@ describe("runMigrations", () => {
     // + 0070 (rename synthetic __global__ group names, #2417)
     // + 0071 (connection_groups.status enum, Phase 4 archive cascade, #2413)
     // + 0072 (cleanup empty synthetic group orphans, #2506)
-    // + 0073 (proactive_meter_events, #2296) = 74.
-    expect(count).toBe(74);
+    // + 0073 (conversations.bound_dashboard_id, #2363)
+    // + 0074 (proactive_meter_events, #2296) = 75.
+    expect(count).toBe(75);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -188,7 +189,8 @@ describe("runMigrations", () => {
         "0070_rename_synthetic_global_group_names.sql",
         "0071_connection_groups_status.sql",
         "0072_cleanup_empty_synthetic_groups.sql",
-        "0073_proactive_meter_events.sql",
+        "0073_conversation_bound_dashboard.sql",
+        "0074_proactive_meter_events.sql",
       ],
     });
 

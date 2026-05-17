@@ -43,7 +43,7 @@ export type BindResult = { ok: true } | { ok: false; reason: BindFailReason };
 
 export type ResolveResult =
   | { ok: true; dashboard: DashboardWithCards }
-  | { ok: false; reason: "no_db" | "not_bound" | "dashboard_missing" | "error" };
+  | { ok: false; reason: "no_db" | "not_bound" | "dashboard_not_found" | "error" };
 
 /**
  * Bind a conversation row to a dashboard. Verifies the dashboard exists
@@ -90,7 +90,7 @@ export async function bindConversationToDashboard(
 /**
  * Read the dashboard a conversation is currently bound to, including
  * its cards. Returns `not_bound` for conversations without a binding
- * (the default for non-drawer chats) and `dashboard_missing` if the
+ * (the default for non-drawer chats) and `dashboard_not_found` if the
  * binding points at a dashboard that was deleted or no longer belongs
  * to the caller's org (the latter is the cross-tenant safety net the
  * route handler relies on — even though the FK enforces existence at
@@ -117,7 +117,7 @@ export async function resolveBoundDashboard(
       // propagated through cache) OR no longer belongs to the caller's org.
       // Either way the right surface to the caller is "treat as unbound" —
       // the chat falls back to the default agent without the editor tools.
-      if (dash.reason === "not_found") return { ok: false, reason: "dashboard_missing" };
+      if (dash.reason === "not_found") return { ok: false, reason: "dashboard_not_found" };
       return { ok: false, reason: "error" };
     }
     return { ok: true, dashboard: dash.data };
@@ -189,9 +189,9 @@ export async function listSessionsForDashboard(
       title: r.title,
       createdAt: String(r.created_at),
       updatedAt: String(r.updated_at),
-      messageCount: typeof r.message_count === "number"
-        ? r.message_count
-        : parseInt(r.message_count, 10) || 0,
+      // `pg` returns COUNT(*) as a string by default; coerce uniformly.
+      // `Number("0")` returns 0 (truthy via `|| 0` would discard it).
+      messageCount: Number(r.message_count) || 0,
     }));
   } catch (err) {
     log.error(
@@ -265,6 +265,14 @@ export async function getSessionTranscript(
     if (convRows.length === 0) return { ok: false, reason: "not_found" };
     const conv = convRows[0]!;
 
+    // LIMIT to bound the response: a runaway bound conversation
+    // (thousands of agent turns) would otherwise serialize every
+    // message into one ~MB response and risk OOM-ing the API process.
+    // 1000 messages is well above any natural editing session; the
+    // History tab is a read-only audit surface so older messages
+    // would be paginated in a follow-up rather than always shipping
+    // every byte.
+    const TRANSCRIPT_MESSAGE_CAP = 1000;
     const msgRows = await internalQuery<{
       id: string;
       conversation_id: string;
@@ -275,8 +283,9 @@ export async function getSessionTranscript(
       `SELECT id, conversation_id, role, content, created_at
          FROM messages
         WHERE conversation_id = $1
-        ORDER BY created_at ASC`,
-      [conversationId],
+        ORDER BY created_at ASC
+        LIMIT $2`,
+      [conversationId, TRANSCRIPT_MESSAGE_CAP],
     );
 
     return {
@@ -359,6 +368,8 @@ export const BOUND_AGENT_PROMPT_GUIDANCE = `You are editing a saved dashboard, n
 3. **For changes to existing cards:** call \`getCardDetail(id)\` first to read the current SQL / chartConfig if you need them. Then call \`updateCard\` with only the fields that change.
 4. **For layout changes:** call \`updateLayout\` with the full set of card placements you want. The grid is 24 columns wide and uses (x, y, w, h) per card.
 5. **For "what is this card?" questions:** call \`getCardDetail(id)\` and explain in plain language. Don't mutate.
+6. **For card removal:** call \`removeCard(cardId)\`. This is a DESTRUCTIVE op — it STAGES a ghost change the user accepts or discards inline; it does NOT mutate immediately. The dashboard view renders the targeted card with a strikethrough overlay until the user resolves the stage. Don't loop back to \`getDashboardState\` in the same turn to verify removal; the stage is still pending.
+7. **For SQL rewrites:** call \`getCardDetail\` → \`executeSQL\` (validate) → \`updateCardSql(cardId, newSql)\`. Also DESTRUCTIVE / stage-required. The UI surfaces a side-by-side diff the user accepts or discards.
 
 ## Grid Layout
 
@@ -385,7 +396,8 @@ Treat \`semantic/metrics/*.yml\` as authoritative. If a measure exists, use its 
 
 - \`getDashboardState\` returns the current dashboard meta + the same compact card summary the system prompt injects. Use it when you need a fresh read mid-conversation (e.g. after several mutations).
 - \`getCardDetail(id)\` is the only way to fetch a card's SQL / chartConfig — keep it scoped to the cards you actually need.
-- \`addCard\` / \`updateCard\` / \`updateLayout\` / \`updateDashboardMeta\` commit immediately to the dashboard. There is no undo in this tracer-bullet slice.
+- \`addCard\` / \`updateCard\` / \`updateLayout\` / \`updateDashboardMeta\` are SAFE ops. They commit immediately to the user's draft (when drafts are enabled) or directly to published (legacy fallback). The user can discard the draft entirely via the Publish UI — but there is no per-edit undo, so favor "ask first" on ambiguous changes.
+- \`removeCard\` / \`updateCardSql\` are DESTRUCTIVE ops. They DON'T mutate immediately — they stage a ghost change the user accepts or discards inline. Surface a short confirmation ("Staged removal of <title> — accept to confirm or discard to keep it") rather than declaring the change as done.
 - Do NOT call \`executeSQL\` to mutate data — it is read-only. Use it to validate a card's query before calling \`addCard\`.
 - **Vision is available.** \`screenshotDashboard()\` captures the dashboard as the user currently sees it and feeds the PNG back to you as a multimodal image. Use it when the user asks about **spatial position** ("the card on the right", "the bottom row"), **visual layout** ("does this feel balanced?"), or any question where pixels are clearer than the card-id summary. The screenshot is cached and invalidated automatically on every successful mutation, so calling it twice in a row is cheap.
 

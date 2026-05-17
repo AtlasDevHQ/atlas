@@ -726,6 +726,17 @@ chat.openapi(chatRoute, async (c) => {
         // Populated after conversation load/create when the row carries
         // a `bound_dashboard_id`. Drives the bound-mode tool registry
         // + system-prompt swap below.
+        // Tracks why the chat ended up unbound when the client asked
+        // for binding. Drives a `bound_unavailable` contextWarning the
+        // drawer renders so the user knows their edits aren't being
+        // captured (instead of the silent degrade-to-default-agent
+        // fallback that the early review caught).
+        let boundFailureReason:
+          | "dashboard_not_found"
+          | "conversation_not_found"
+          | "error"
+          | "no_db"
+          | null = null;
         let boundDashboardForAgent:
           | {
               cardSummary: string;
@@ -1001,6 +1012,12 @@ chat.openapi(chatRoute, async (c) => {
                       },
                       "Failed to bind conversation to dashboard — chat will run unbound",
                     );
+                    // Remember the bind failure so we can push a
+                    // contextWarning into the stream below — without it
+                    // the drawer would silently run the default agent
+                    // and the user would never know their edits weren't
+                    // being captured.
+                    boundFailureReason = bound.reason;
                   }
                 }
               }
@@ -1014,7 +1031,7 @@ chat.openapi(chatRoute, async (c) => {
         // load/create. Reads the persisted `bound_dashboard_id` so
         // follow-up turns inherit the binding without resending it.
         // Falls back to the default agent when the resolve returns
-        // `not_bound` / `dashboard_missing` (deleted between turns) /
+        // `not_bound` / `dashboard_not_found` (deleted between turns) /
         // `error` — the route never hard-fails on a binding lookup.
         if (conversationId) {
           const resolved = await resolveBoundDashboard(conversationId, {
@@ -1045,8 +1062,30 @@ chat.openapi(chatRoute, async (c) => {
               { requestId, conversationId, reason: resolved.reason },
               "resolveBoundDashboard failed — falling back to default agent",
             );
+            boundFailureReason = "error";
+          } else if (resolved.reason === "dashboard_not_found" && requestedBoundDashboardId) {
+            // The dashboard got deleted between turns (FK SET NULL
+            // cleared the binding). Treat as a bind failure so the
+            // drawer surfaces the loss rather than silently turning
+            // into an unbound chat that won't edit anything.
+            boundFailureReason = "dashboard_not_found";
+          } else if (requestedBoundDashboardId && resolved.reason === "not_bound" && !boundFailureReason) {
+            // The client supplied boundDashboardId but the persisted
+            // row carries no binding. If the bind step above set
+            // `boundFailureReason`, we already know why. Otherwise
+            // something stripped the binding between the bind UPDATE
+            // and this resolve — surface as a generic error so the
+            // drawer alerts the user instead of "agent works but
+            // won't edit" silent failure.
+            log.warn(
+              { requestId, conversationId, dashboardId: requestedBoundDashboardId },
+              "Bound chat resolved as not_bound despite request — possible binding race",
+            );
+            boundFailureReason = "error";
           }
-          // not_bound / no_db / dashboard_missing → silent fallback to default agent
+          // not_bound (no request) / no_db / dashboard_not_found without
+          // a requested bind → silent fallback to default agent (the
+          // chat surface is the root `/` page, not the drawer).
         }
   
         try {
@@ -1121,6 +1160,28 @@ chat.openapi(chatRoute, async (c) => {
           // reduced context AND the user needs to know their answer was
           // generated against fallback data.
           const contextWarnings: ChatContextWarning[] = [];
+
+          // Surface bind/resolve failures from the bound-chat surface
+          // as a context warning the drawer renders. Without this the
+          // chat runs against the default agent — fine semantics, but
+          // the user gets a "agent ignores my edit requests" experience
+          // with no signal anything went wrong. (Review followup —
+          // silent-failure C2 + C3.)
+          if (boundFailureReason && requestedBoundDashboardId) {
+            const detail =
+              boundFailureReason === "dashboard_not_found"
+                ? "That dashboard is no longer available — edits in this chat will not take effect. Open a different dashboard to continue editing."
+                : boundFailureReason === "no_db"
+                  ? "Dashboard editing is unavailable: the workspace database is not reachable. Try again shortly."
+                  : "Could not load the dashboard context for this chat — edits will not be applied. Reopen the chat drawer to retry.";
+            contextWarnings.push({
+              severity: "warning",
+              code: "bound_dashboard_unavailable",
+              title: "Dashboard editing unavailable",
+              detail,
+              requestId,
+            });
+          }
 
           // Call runAgent first so errors (provider auth, config, etc.) are
           // caught by the outer try-catch and returned as proper JSON errors.

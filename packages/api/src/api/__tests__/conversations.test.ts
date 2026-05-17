@@ -148,6 +148,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   // success — tests that exercise the picker write path override
   // locally.
   updateConversationRoutingMode: mock(() => Promise.resolve({ ok: true as const })),
+  resolveRoutingMode: mock((m: "auto" | "pin" | "all" | null | undefined = null) => m ?? "pin"),
   // Type exports (no runtime value — needed so mock.module doesn't break re-exports)
 }));
 

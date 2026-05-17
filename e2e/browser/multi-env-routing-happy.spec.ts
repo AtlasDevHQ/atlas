@@ -129,11 +129,13 @@ test.describe("multi-env routing — happy path @llm", () => {
     await input.fill(COMPARATIVE_QUESTION);
     await input.press("Enter");
 
-    // Look for an executeSQL tool-call result — single-env path keeps the
-    // legacy `{columns, rows}` shape (no `__env__` prepend).
+    // Anchor on the response actually rendering — a fixed sleep lets
+    // this test pass vacuously against slow providers (cold-start
+    // latency > sleep length means the table never gets a chance to
+    // render, so the negative assertion succeeds for the wrong reason).
+    const firstRow = page.locator('table tbody tr').first();
+    await firstRow.waitFor({ state: "visible", timeout: 120_000 });
     const noEnvHeader = page.locator('table thead th', { hasText: "__env__" });
-    // Wait a bit for the response; assert the merged shape never appears.
-    await page.waitForTimeout(20_000);
     expect(await noEnvHeader.count(), "Pin mode must not produce a merged __env__ table").toBe(0);
   });
 

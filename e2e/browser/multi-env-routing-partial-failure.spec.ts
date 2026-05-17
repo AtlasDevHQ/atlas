@@ -68,14 +68,14 @@ test.describe("multi-env routing — partial failure @llm", () => {
     const probe = await request.get(`${API_URL}/api/v1/admin/connections/${FAILED_ENV_ID}`, {
       headers: { origin: API_URL, "x-atlas-mode": "developer" },
     });
-    if (probe.status() === 200) {
-      const body = (await probe.json()) as { url?: string } | null;
-      originalUrlBackup = body?.url ?? ORIGINAL_URL;
-    } else {
-      originalUrlBackup = ORIGINAL_URL;
-    }
+    const snapshotUrl: string = probe.status() === 200
+      ? ((await probe.json()) as { url?: string } | null)?.url ?? ORIGINAL_URL
+      : ORIGINAL_URL;
 
-    // Corrupt the connection URL so the fanout sees one failure.
+    // Corrupt the connection URL so the fanout sees one failure. Only
+    // record the snapshot in `originalUrlBackup` AFTER the corruption
+    // PATCH succeeds — that way a failure here doesn't trigger a
+    // restore in afterAll that overwrites a URL we never touched.
     const patch = await request.patch(`${API_URL}/api/v1/admin/connections/${FAILED_ENV_ID}`, {
       headers: { origin: API_URL, "x-atlas-mode": "developer", "content-type": "application/json" },
       data: { url: BROKEN_URL },
@@ -85,17 +85,29 @@ test.describe("multi-env routing — partial failure @llm", () => {
         true,
         `Could not corrupt ${FAILED_ENV_ID} URL (${patch.status()}) — partial-failure spec needs admin write access.`,
       );
+      return;
     }
+    originalUrlBackup = snapshotUrl;
   });
 
   test.afterAll(async () => {
     if (request && originalUrlBackup != null) {
       // Restore the original URL so a partial failure here doesn't poison
-      // every subsequent test run.
-      await request.patch(`${API_URL}/api/v1/admin/connections/${FAILED_ENV_ID}`, {
+      // every subsequent test run. Log a non-200 response so CI surfaces
+      // "manual cleanup required" instead of silently leaving a broken
+      // seed in place for the next invocation.
+      const restore = await request.patch(`${API_URL}/api/v1/admin/connections/${FAILED_ENV_ID}`, {
         headers: { origin: API_URL, "x-atlas-mode": "developer", "content-type": "application/json" },
         data: { url: originalUrlBackup },
       });
+      if (restore.status() !== 200) {
+        // eslint-disable-next-line no-console -- diagnostic for the next CI run
+        console.error(
+          `[multi-env-routing-partial-failure] MANUAL CLEANUP REQUIRED: ` +
+            `failed to restore ${FAILED_ENV_ID} URL (status ${restore.status()}). ` +
+            `Re-seed via 'bun scripts/seed-multi-env.ts' before retrying.`,
+        );
+      }
     }
     await request?.dispose();
   });

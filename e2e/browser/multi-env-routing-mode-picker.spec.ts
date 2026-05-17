@@ -26,7 +26,12 @@ import {
  * `@llm` suite exercises.
  */
 
-test.describe("multi-env routing-mode picker @llm", () => {
+// Previously tagged `@llm` because the picker renders inside an
+// auth-gated chat shell — but the spec sends no messages, so a real
+// model isn't required. Re-tagged so the picker UI smoke runs in the
+// default browser-tests matrix and not just the LLM-budgeted job; a
+// picker-regression should surface on every PR, not only LLM CI.
+test.describe("multi-env routing-mode picker", () => {
   test.use({ storageState: "e2e/browser/multi-env-storage.json" });
 
   let request: APIRequestContext;

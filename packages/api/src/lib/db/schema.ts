@@ -82,6 +82,11 @@ export const auditLog = pgTable(
       .where(sql`actor_kind IS NOT NULL`),
     index("idx_audit_log_client_id").on(t.clientId).where(sql`client_id IS NOT NULL`),
     index("idx_audit_log_parent_audit_id").on(t.parentAuditId).where(sql`parent_audit_id IS NOT NULL`),
+    // Migration 0079 makes this FK DEFERRABLE INITIALLY DEFERRED so the
+    // fanout's fire-and-forget parent + child INSERTs can race without
+    // 23503 violations. drizzle-orm does not expose deferrability as a
+    // first-class option; the deferrability is declared in the SQL
+    // migration and verified by `migrate-pg.test.ts`.
     foreignKey({
       columns: [t.parentAuditId],
       foreignColumns: [t.id],

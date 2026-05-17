@@ -42,6 +42,7 @@ import {
   resolveGroupForConnection,
   settleConversationSteps,
   updateConversationRoutingMode,
+  resolveRoutingMode,
 } from "@atlas/api/lib/conversations";
 import type { ConversationRoutingMode } from "@useatlas/types/conversation";
 import {
@@ -1154,7 +1155,7 @@ chat.openapi(chatRoute, async (c) => {
               // pre-#2518 chats. The tool's own default ('auto') only
               // kicks in for non-chat callers (MCP / scheduler / direct
               // tool tests).
-              routingMode: effectiveRoutingMode ?? "pin",
+              routingMode: resolveRoutingMode(effectiveRoutingMode),
             },
             () =>
               runAgent({

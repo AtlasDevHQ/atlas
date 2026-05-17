@@ -1521,6 +1521,70 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows[0]?.routing_mode).toBeNull();
   }, PG_TEST_TIMEOUT_MS);
 
+  it("audit_log.parent_audit_id: column exists, is nullable uuid, and FK is DEFERRABLE INITIALLY DEFERRED", async () => {
+    // Slice 4 (#2519) acceptance criterion: parent_audit_id column +
+    // self-FK to audit_log(id). Slice's follow-up (this PR) makes the FK
+    // DEFERRABLE INITIALLY DEFERRED so the fanout's fire-and-forget
+    // parent + child INSERTs can race without 23503 violations.
+    const { rows: colRows } = await pool.query<{ data_type: string; is_nullable: string }>(
+      `SELECT data_type, is_nullable FROM information_schema.columns
+        WHERE table_name = 'audit_log' AND column_name = 'parent_audit_id'`,
+    );
+    expect(colRows[0]?.data_type).toBe("uuid");
+    expect(colRows[0]?.is_nullable).toBe("YES");
+
+    // Partial index for fanout-only lookups exists.
+    const { rows: idxRows } = await pool.query<{ indexname: string }>(
+      `SELECT indexname FROM pg_indexes
+        WHERE tablename = 'audit_log' AND indexname = 'idx_audit_log_parent_audit_id'`,
+    );
+    expect(idxRows.length).toBe(1);
+
+    // FK is deferrable. `pg_constraint.condeferrable` is true for
+    // DEFERRABLE constraints; `condeferred` is true for INITIALLY
+    // DEFERRED. Both must hold for the fanout's race-free linkage to
+    // work without explicit `SET CONSTRAINTS ALL DEFERRED`.
+    const { rows: fkRows } = await pool.query<{ condeferrable: boolean; condeferred: boolean }>(
+      `SELECT condeferrable, condeferred FROM pg_constraint
+        WHERE conname = 'audit_log_parent_audit_id_fkey'`,
+    );
+    expect(fkRows[0]?.condeferrable).toBe(true);
+    expect(fkRows[0]?.condeferred).toBe(true);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("audit_log.parent_audit_id: child INSERT BEFORE parent INSERT in same transaction succeeds (deferrability proof)", async () => {
+    // Pre-DEFERRABLE behaviour: this race produced 23503. After 0079 the
+    // FK only checks at COMMIT, so the ordering invariant the fanout's
+    // fire-and-forget audit writers depend on is structurally enforced.
+    const parentId = "00000000-0000-0000-0000-000000000099";
+    const childId = "00000000-0000-0000-0000-000000000098";
+    await pool.query("BEGIN");
+    try {
+      // Child first — would fail with 23503 if FK were immediate.
+      await pool.query(
+        `INSERT INTO audit_log (id, sql, duration_ms, success, auth_mode, parent_audit_id)
+          VALUES ($1, 'SELECT 1', 0, true, 'none', $2)`,
+        [childId, parentId],
+      );
+      // Parent after child.
+      await pool.query(
+        `INSERT INTO audit_log (id, sql, duration_ms, success, auth_mode)
+          VALUES ($1, 'parent', 0, true, 'none')`,
+        [parentId],
+      );
+      await pool.query("COMMIT");
+    } catch (err) {
+      await pool.query("ROLLBACK");
+      throw err;
+    }
+    const { rows } = await pool.query<{ id: string; parent_audit_id: string | null }>(
+      `SELECT id, parent_audit_id FROM audit_log WHERE id IN ($1, $2) ORDER BY id`,
+      [parentId, childId],
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows.find((r) => r.id === childId)?.parent_audit_id).toBe(parentId);
+  }, PG_TEST_TIMEOUT_MS);
+
   it("conversations: connection_id and connection_group_id can hold independent values (per-turn override shape)", async () => {
     // The slice's core invariant: a conversation can pin its content
     // scope to a multi-member "prod" group while its execution target

@@ -60,3 +60,18 @@ export type {
   StarterPromptsResponse,
   FavoriteStarterPrompt,
 } from "@useatlas/types/starter-prompt";
+
+// Cross-environment routing wire types — re-exported from @useatlas/types
+// so embedders writing a custom `executeSQL` tool renderer can read
+// `envContributions[]` (per-env row count + error + durationMs) from
+// both single-env and fanout responses with the same wire shape.
+export type {
+  ConnectionContribution,
+  ExecuteSqlResult,
+  ExecuteSqlSuccessResult,
+  ExecuteSqlFailureResult,
+} from "@useatlas/types/execute-sql";
+
+// Conversation routing-mode wire type so embedders can render the
+// three-state Auto/Pin/All picker against the persisted column.
+export type { ConversationRoutingMode } from "@useatlas/types/conversation";

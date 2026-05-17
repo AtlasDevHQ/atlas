@@ -97,6 +97,28 @@ export type CrudDataResult<T> = { ok: true; data: T } | { ok: false; reason: Cru
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Resolve a persisted `routing_mode` value into the runtime three-state
+ * union, applying the documented NULL → `"pin"` back-compat default.
+ *
+ * Centralises the default in one place — pre-fix, the chat route resolved
+ * NULL → "pin" while `tools/sql.ts` resolved missing-routingMode → "auto",
+ * which is a real correctness gap for any caller that didn't go through
+ * the chat route's stamping step (MCP, scheduler, unit tests).
+ *
+ * Web's `effectiveMode` helper in `chat/env-picker.tsx` must mirror this
+ * default — the picker UI converts NULL → "pin" for the trigger label
+ * and the mode-row highlight. Drift between them is a UX bug, not a
+ * correctness bug, so the duplication is acceptable until web can import
+ * api-internal helpers (which it deliberately cannot per CLAUDE.md
+ * "frontend is a pure HTTP client").
+ */
+export function resolveRoutingMode(
+  stored: import("@useatlas/types/conversation").ConversationRoutingMode | null | undefined,
+): import("@useatlas/types/conversation").ConversationRoutingMode {
+  return stored ?? "pin";
+}
+
 function rowToConversation(r: Record<string, unknown>): Conversation {
   return {
     id: r.id as string,

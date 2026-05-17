@@ -619,6 +619,13 @@ export function createApiTestMocks(
     // exercise the picker toggle path, and they override locally when
     // they do.
     updateConversationRoutingMode: mock(() => Promise.resolve({ ok: true as const })),
+    // NULL → "pin" back-compat default helper used by the chat route to
+    // resolve a conversation's persisted `routing_mode`. Mocked as a pure
+    // pass-through so tests can simulate either an explicit mode or the
+    // legacy NULL → "pin" coercion without further wiring.
+    resolveRoutingMode: mock(
+      (m: "auto" | "pin" | "all" | null | undefined = null) => m ?? "pin",
+    ),
   }));
 
   // ── Security ──────────────────────────────────────────────────

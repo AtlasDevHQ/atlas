@@ -208,6 +208,12 @@ describe("buildSystemParam — scope guidance section (slice 2)", () => {
     expect(prompt).toContain("scope: \"all\"");
     expect(prompt).toContain("scope: \"this\"");
     expect(prompt).toContain("Conservative-by-default");
+    // Three category headers must appear — guards against a future prompt
+    // trim silently dropping the comparative-intent heuristics that
+    // drive fanout decisions.
+    expect(prompt).toContain("Comparative intent");
+    expect(prompt).toContain("Single-environment cue");
+    expect(prompt).toContain("ambiguous");
   });
 
   it("omits the scope guidance section when routingContext is absent", () => {

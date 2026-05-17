@@ -1716,11 +1716,11 @@ A new `boot-smoke` job in `.github/workflows/deploy-validation.yml` builds `depl
 - **Unknown-member fallback degrades, doesn't fault.** When the agent emits a `scope` string that doesn't match any member (a prompt drift or model hallucination), the planner falls back to the group's primary with a warning rather than 500-ing the tool call. The audit warning surfaces the divergence to the operator.
 
 **What got unbundled:**
-- **The routing rules became a single named function call.** Slice 2's agent-prompt change and slice 3's picker can both call `resolveRoutingPlan` with their respective inputs and trust the policy is consistent. Without this module, the prompt prompt would need its own logic for "what does `scope: 'all'` mean" and the picker would need its own logic for "what does `pickerMode: 'pin'` mean," and the two would inevitably drift.
-- **The reason discriminator is the audit attribute.** `RoutingReason` values (`agent-all`, `picker-pin`, `1x1-group`, etc.) feed directly into the `atlas.routing_mode` OTel span attribute slated for slice 4. Pinning the reason in tests means the audit dimension can't silently change.
+- **The routing rules became a single named function call.** Slice 2's agent-prompt change and slice 3's picker can both call `resolveRoutingPlan` with their respective inputs and trust the policy is consistent. Without this module, the agent prompt would need its own logic for "what does `scope: 'all'` mean" and the picker would need its own logic for "what does `pickerMode: 'pin'` mean," and the two would inevitably drift.
+- **The reason discriminator is an audit + OTel attribute.** `RoutingReason` values (`agent-all`, `picker-pin`, `1x1-group`, etc.) flow into the `atlas.routing_reason` OTel span attribute on every `atlas.sql.execute` span (single + fanout legs). Pinning the reason in tests means the trace dimension can't silently change. The follow-up to milestone 1.4.5 wired this end-to-end after the original slice shipped — the reason had been generated but not consumed.
 
 **Impact:**
-- **One pure module** (~165 lines including JSDoc) holds every routing decision.
+- **One pure module** holds every routing decision; the run-time logic is ~110 effective lines (the rest is structured JSDoc).
 - **18 unit tests** in `env-routing/__tests__/index.test.ts` cover the full decision table.
 - **Zero pre-existing call sites changed.** `executeSQL` was the first consumer; slices 2 + 3 wire the agent prompt and picker.
 
@@ -1749,9 +1749,9 @@ A new `boot-smoke` job in `.github/workflows/deploy-validation.yml` builds `depl
 - **Empty / degenerate / fanout-of-one all collapse to the same shape.** Zero members → `{ columns: [__env__], rows: [], envContributions: [] }`; single-member fanout → same shape as the multi-member case. Downstream code (UI, SDK, audit) handles one branch.
 
 **Impact:**
-- **One pure module** (~130 lines including JSDoc) holds every merge rule.
+- **One pure module** holds every merge rule (run-time logic ~70 effective lines; the rest is structured JSDoc).
 - **13 unit tests** in `multi-env-merger/__tests__/index.test.ts` cover same-schema, schema-divergence, partial failure, all-failure, all-empty, type coercion, ordering, and the `__env__` collision case.
-- **`executeSQL`'s fanout dispatch** (`executeSqlFanout`) is ~45 lines — orchestration only, no merge logic inline.
+- **`executeSQL`'s fanout dispatch** (`executeSqlFanout`) is orchestration only — the merge logic stays in the pure module.
 
 **Category:** Pure data-transformation module extracted ahead of the behaviour-flipping slice. The merger's interface (`MemberExecutionResult[]` → `MergedResult`) is the same shape slice 4 ships on the wire, so the type contract from the merger flows straight through to the SDK without a translation step.
 

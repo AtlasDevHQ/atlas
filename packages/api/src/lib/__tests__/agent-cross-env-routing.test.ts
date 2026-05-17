@@ -138,6 +138,7 @@ mock.module("@atlas/api/lib/cache/index", () => ({
 // ---------------------------------------------------------------------------
 
 const { runAgent } = await import("@atlas/api/lib/agent");
+const { withRequestContext } = await import("@atlas/api/lib/logger");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -451,4 +452,70 @@ describe("agent cross-env routing — executeSQL `scope`", () => {
     // Only the default connection's handler ran
     expect(memberCallCounts.get("default")).toBe(1);
   });
+
+  // -----------------------------------------------------------------------
+  // 5. All-failure fanout — every member errors, agent gets success: false
+  //    with a summary message that names every failed env.
+  // -----------------------------------------------------------------------
+
+  it("scope: 'all' with every member failing → success=false summary + envContributions error per env", async () => {
+    setMemberHandler("us-int", async () => {
+      throw new Error("pg: relation does not exist");
+    });
+    setMemberHandler("eu", async () => {
+      throw new Error("ECONNREFUSED");
+    });
+    setMemberHandler("apac", async () => {
+      throw new Error("timeout");
+    });
+
+    let streamIdx = 0;
+    mockModel = new MockLanguageModelV3({
+      doStream: async () => {
+        const allSteps: LanguageModelV3StreamPart[][] = [
+          makeToolStepChunks("executeSQL", {
+            sql: "SELECT region FROM orders",
+            explanation: "Compare across regions",
+            scope: "all",
+          }),
+          [
+            { type: "text-delta", id: "text-0", delta: "All envs failed." },
+            { type: "finish", usage: MOCK_USAGE, finishReason: { unified: "stop", raw: "end_turn" } },
+          ],
+        ];
+        if (streamIdx >= allSteps.length) {
+          return { stream: convertArrayToReadableStream(allSteps[allSteps.length - 1]) };
+        }
+        return { stream: convertArrayToReadableStream(allSteps[streamIdx++]) };
+      },
+    });
+
+    const result = await withRequestContext(
+      { requestId: "test-all-fail", connectionId: "us-int", connectionGroupId: "prod" },
+      () => runAgent({ messages: userMessages("Compare across regions") }),
+    );
+    const steps = await result.steps;
+    const sqlResults = findToolResults(steps, "executeSQL") as SQLOutput[];
+
+    expect(sqlResults).toHaveLength(1);
+    const first = sqlResults[0]!;
+    // The agent's recovery loop hinges on success=false for all-failure.
+    expect(first.success).toBe(false);
+    expect(first.error).toContain("All 3 environments failed");
+    expect(first.error).toContain("us-int");
+    expect(first.error).toContain("eu");
+    expect(first.error).toContain("apac");
+    // envContributions still describes each env so SDK consumers /
+    // downstream UI can render per-env error chips.
+    expect(first.envContributions).toHaveLength(3);
+    for (const contrib of first.envContributions ?? []) {
+      expect(contrib.error).not.toBeNull();
+      expect(contrib.rowCount).toBe(0);
+    }
+  });
+
+  // Unknown-member fallback is covered exhaustively in the pure-module
+  // unit tests (`env-routing/__tests__/index.test.ts` — "scope:
+  // '<unknown id>' → fall back to primary with warning"). The
+  // integration end-to-end here would duplicate that coverage.
 });

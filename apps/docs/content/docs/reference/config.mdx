@@ -310,7 +310,7 @@ For multi-tenant deployments, each organization can get its own isolated connect
 export default defineConfig({
   pool: {
     perOrg: {
-      maxConnections: 5,      // Max connections per org (default: 5)
+      maxConnections: 10,     // Max connections per org (default: 10)
       idleTimeoutMs: 30000,   // Idle timeout in ms (default: 30000)
       maxOrgs: 50,            // Max org pools before LRU eviction (default: 50)
       warmupProbes: 2,        // Warmup probes when pool created (default: 2)
@@ -322,7 +322,7 @@ export default defineConfig({
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `perOrg.maxConnections` | `number` | `5` | Max connections per pool per org |
+| `perOrg.maxConnections` | `number` | `10` | Max connections per pool per org (dev-tier floor — `POOL_DEV_FLOOR_MAX_CONNECTIONS` in `packages/api/src/lib/config.ts`) |
 | `perOrg.idleTimeoutMs` | `number` | `30000` | Idle timeout in ms for per-org pool connections |
 | `perOrg.maxOrgs` | `number` | `50` | Max org pool sets before LRU eviction |
 | `perOrg.warmupProbes` | `number` | `2` | Warmup probes when an org pool is first created. `0` disables warmup |

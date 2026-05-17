@@ -144,11 +144,15 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
 
 ## Active
 
-_No active milestone. 1.4.5 + 1.4.6 + 1.5.0 all closed 2026-05-17. Next milestone selection lives in `/next`._
+- **1.5.1 — Architecture Deepening** ([milestone #48](https://github.com/AtlasDevHQ/atlas/milestones/48), 3 issues) — internal refactors, no user-facing feature; each shippable independently. Pattern matches 0.9.3 + 0.9.4. Scope: invert core→ee dependency ([#2017](https://github.com/AtlasDevHQ/atlas/issues/2017) — 23 files import from `@atlas/ee`, hot path included), agent-auth provider on OAuth 2.1 ([#2058](https://github.com/AtlasDevHQ/atlas/issues/2058)), explore tool refactor ([#2123](https://github.com/AtlasDevHQ/atlas/issues/2123), unblocked now that multi-source shipped). [#2109](https://github.com/AtlasDevHQ/atlas/issues/2109) (durable MCP session store) + [#2055](https://github.com/AtlasDevHQ/atlas/issues/2055) (Redis-shaped perf) stay out of this milestone — both are trigger-gated by traffic, not scheduled work.
 
 ## Planned
 
 _None queued. See `/next` for candidates._
+
+## Parked
+
+- **SaaS Trust & Compliance** — clustered candidate ([#1928](https://github.com/AtlasDevHQ/atlas/issues/1928) SOC 2 + ISO 27001 + pen test + IR drills, [#1922](https://github.com/AtlasDevHQ/atlas/issues/1922) DPA PDF, [#1936](https://github.com/AtlasDevHQ/atlas/issues/1936) OpenStatus Starter). Not milestoned yet — promote when enterprise pipeline signals adoption pressure.
 
 ---
 

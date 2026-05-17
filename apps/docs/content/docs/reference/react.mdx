@@ -952,7 +952,8 @@ type ChatErrorCode =
   | "workspace_check_failed"
   | "workspace_throttled"
   | "workspace_suspended"
-  | "workspace_deleted";
+  | "workspace_deleted"
+  | "conversation_budget_exceeded";
 
 // ChatErrorInfo — parsed error details (use parseChatError() to extract)
 interface ChatErrorInfo {
@@ -1003,8 +1004,33 @@ import type {
   UseConversationsOptions,
   UseConversationsReturn,
   FavoriteStarterPrompt,
+
+  // Cross-environment routing (1.4.5)
+  ConnectionContribution,
+  ExecuteSqlResult,
+  ExecuteSqlSuccessResult,
+  ExecuteSqlFailureResult,
+  ConversationRoutingMode,
+
+  // MCP onboarding hook
+  UseMcpConnectOptions,
+  UseMcpConnectReturn,
+  UseMcpConnectStatus,
+  UseMcpConnectMode,
 } from "@useatlas/react";
 ```
+
+### Cross-environment routing types
+
+When a conversation runs against a multi-member connection group, the `executeSQL` tool result carries a `envContributions` array (one entry per group member) alongside the merged `columns` / `rows`. Custom tool renderers that consume the wire type directly should import these from `@useatlas/react`:
+
+| Type | Description |
+|------|-------------|
+| `ConnectionContribution` | `{ connectionId, rowCount, durationMs, error }` per env. Read `error` to render partial-failure badges |
+| `ExecuteSqlResult` | Discriminated union of success/failure — `success: true` carries `columns`, `rows`, `truncated`, `envContributions`; `success: false` carries `error` plus the partial `envContributions` that did execute |
+| `ConversationRoutingMode` | `"auto"` / `"pin"` / `"all"` — the persisted routing mode for the conversation. Embedders that render the env/member picker should branch on this to show the right active state |
+
+See the [Cross-Environment Scope](/deployment/multi-datasource#cross-environment-scope-routing-145) guide for the partial-failure rendering pattern and the conversation-routing semantics.
 
 ### Starter-prompt types
 

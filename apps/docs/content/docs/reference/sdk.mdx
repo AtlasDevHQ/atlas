@@ -944,8 +944,139 @@ import type {
   GetStarterPromptsOptions,
   FetchStarterPromptsConfig,
   FetchStarterPromptsCredentials,
+
+  // MCP onboarding (1.4.1 — #2079)
+  AtlasMcpErrorCode,
+  BeginConnectOptions,
+  BeginConnectResult,
+  BuildConfigOptions,
+  CompleteConnectOptions,
+  CompleteConnectResult,
+  ConnectMachineToMachineOptions,
+  ConnectMachineToMachineResult,
+  ListAgentsResponse,
+  McpBareConfig,
+  McpClientConfig,
+  McpClientId,
+  McpHttpServer,
+  McpWrappedConfig,
+  RevokeAgentResponse,
+
+  // Cross-environment querying (1.4.5 — PRD #2515)
+  ConnectionContribution,
+  ExecuteSqlResult,
+  ExecuteSqlSuccessResult,
+  ExecuteSqlFailureResult,
 } from "@useatlas/sdk";
+
+// Runtime classes (not types) — imported separately
+import { AtlasMcpError } from "@useatlas/sdk";
 ```
+
+---
+
+## MCP Onboarding
+
+The SDK exports a set of helpers for onboarding an MCP client (Claude Desktop, Cursor, ChatGPT) to a hosted Atlas workspace, plus the same helpers bound as `client.mcp.*` methods on the client returned by `createAtlasClient()`. The standalone-function form is the right choice when you're building a setup CLI or onboarding script that hasn't yet authenticated with an Atlas workspace; the bound form is convenient inside an authenticated app where the API key is already in scope.
+
+```typescript
+// Standalone — no AtlasClient required. Useful in setup CLIs that
+// negotiate the OAuth handshake before any other Atlas API is called.
+import { beginConnect, completeConnect, buildConfig } from "@useatlas/sdk";
+
+const begin = await beginConnect({ apiUrl: "https://api.useatlas.dev" });
+// → { authorizeUrl, codeVerifier, state }
+// Open `authorizeUrl` in the browser; capture the redirect's `code`.
+
+const complete = await completeConnect({
+  apiUrl: "https://api.useatlas.dev",
+  code: callbackCode,
+  codeVerifier: begin.codeVerifier,
+});
+// → { accessToken, refreshToken, expiresAt, ... }
+
+const config = buildConfig({
+  client: "claude-desktop",        // McpClientId
+  apiUrl: "https://api.useatlas.dev",
+  workspaceId: "ws_abc123",
+  accessToken: complete.accessToken,
+});
+// → McpClientConfig — paste-ready JSON for the target MCP client
+```
+
+For headless / CI usage, `connectMachineToMachine` skips the browser hop and exchanges a long-lived M2M secret for an MCP-scoped token:
+
+```typescript
+import { connectMachineToMachine } from "@useatlas/sdk";
+
+const result = await connectMachineToMachine({
+  apiUrl: "https://api.useatlas.dev",
+  clientId: process.env.ATLAS_M2M_CLIENT_ID!,
+  clientSecret: process.env.ATLAS_M2M_CLIENT_SECRET!,
+  workspaceId: "ws_abc123",
+});
+// → { accessToken, expiresAt, ... }
+```
+
+### When to use `atlas.mcp.*` vs the standalone helpers
+
+| | `atlas.mcp.beginConnect(...)` (bound) | `beginConnect(...)` (standalone) |
+|--|--|--|
+| Requires `AtlasClient` | Yes — call after `createAtlasClient(...)` | No — pure function, takes `apiUrl` directly |
+| API key in scope | Yes — inherits from the client | No — onboarding helpers don't carry user credentials |
+| Best for | Authenticated apps adding "Connect MCP" UI | Setup CLIs, scaffolders, MCP-client wrappers |
+
+Both call shapes return identical wire shapes — the bound form is a thin convenience wrapper that calls the standalone helper with the client's `baseUrl`.
+
+### Errors
+
+MCP onboarding throws `AtlasMcpError` (distinct from `AtlasError`) with a discriminated `code` of type `AtlasMcpErrorCode`. Catch it specifically when wiring onboarding into your UI so you can render onboarding-specific recovery (re-prompt for browser, expired OAuth state, etc.):
+
+```typescript
+import { AtlasMcpError } from "@useatlas/sdk";
+
+try {
+  await completeConnect({ ... });
+} catch (err) {
+  if (err instanceof AtlasMcpError) {
+    console.error(`[${err.code}] ${err.message}`);
+  } else {
+    throw err;
+  }
+}
+```
+
+---
+
+## Cross-Environment Querying
+
+The 1.4.5 cross-environment scope ([multi-datasource routing guide](/deployment/multi-datasource#cross-environment-scope-routing-145)) lets a single conversation route SQL across multiple group members (`us-int` + `eu` + `apac`) and merge the results. Wire-level, every `executeSQL` tool call now carries a `envContributions: ConnectionContribution[]` array — a 1-element array for single-env executions, one entry per group member for fanouts:
+
+```typescript
+import type {
+  ConnectionContribution,
+  ExecuteSqlResult,
+  ExecuteSqlSuccessResult,
+  ExecuteSqlFailureResult,
+} from "@useatlas/sdk";
+
+// Branch on result.envContributions.length to decide whether to render
+// side-by-side panes (fanout) or a single result table (single-env).
+function renderResult(result: ExecuteSqlSuccessResult) {
+  if (result.envContributions.length > 1) {
+    // Fanout — render per-env panes with row count and durationMs
+    return result.envContributions.map((env: ConnectionContribution) => ({
+      connectionId: env.connectionId,
+      rowCount: env.rowCount,
+      durationMs: env.durationMs,
+      error: env.error,           // partial failures are non-fatal
+    }));
+  }
+  return result.rows;
+}
+```
+
+`ExecuteSqlResult` is a discriminated union — `success: true` carries `columns`, `rows`, `truncated`, and `envContributions`; `success: false` carries `error` and the partial `envContributions` that did execute (so partial failures stay observable). See the [Multi-Datasource Routing guide](/deployment/multi-datasource#cross-environment-scope-routing-145) for the partial-failure rendering pattern.
 
 ---
 

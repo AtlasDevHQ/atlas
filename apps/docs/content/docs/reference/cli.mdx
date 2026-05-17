@@ -1,6 +1,6 @@
 ---
 title: CLI Reference
-description: Complete reference for the Atlas CLI — init, diff, migrate, import, export, migrate-import, index, learn, improve, query, doctor, validate, mcp, completions, and more.
+description: Complete reference for the Atlas CLI — init, diff, migrate, import, export, migrate-import, index, learn, improve, query, doctor, validate, mcp, eval, canonical-eval, smoke, completions, and more.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -286,6 +286,53 @@ bun run atlas -- eval [options]
 | `--csv` | CSV output |
 | `--json` | JSON summary output |
 
+## canonical-eval
+
+Run the canonical-question eval harness against a known semantic layer. This is the self-hosted equivalent of the CI gate that protects the agent's text-to-SQL accuracy on the canonical NovaMart questions. Three modes are available:
+
+- **deterministic** (default) — typed dispatch via `findMetricById(id)` → `executeSQL(sql)`. No LLM. Mirrors what the typed MCP `runMetric` tool does. Fast, hermetic, suitable for pre-commit and PR gates.
+- **`--llm`** — runs the full agent loop and snapshot-asserts on the SQL pattern of the last `executeSQL` call. Requires a configured LLM provider.
+- **`--mcp-llm`** — hands an LLM the same MCP tool surface a real client (Claude Desktop, Cursor) sees and grades the tool-call sequence. Acceptance floor: ≥90% passing per question.
+
+```bash
+bun run atlas -- canonical-eval [options]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--schema <name>` | `ecommerce` | Canonical-eval schema (only `ecommerce` ships today; stays open-ended for future seeds) |
+| `--questions <path>` | `eval/canonical-questions/questions.json` | Path to the canonical questions fixture |
+| `--llm` | — | Run the full agent loop and assert on the snapshot SQL. Mutually exclusive with `--mcp-llm` |
+| `--mcp-llm` | — | Dispatch through the real MCP route via an LLM. Mutually exclusive with `--llm` |
+| `--baseline <path>` | `eval/canonical-questions/mcp-llm-baseline.json` | Per-question latency baseline file for `--mcp-llm` mode |
+| `--write-baseline` | — | With `--mcp-llm`, write the run's per-question latencies back to `--baseline`. Errors out in other modes |
+| `--tool-selection` | — | With `--mcp-llm`, swap to the held-out tool-selection fixture and grade on first-tool match. Acceptance floor lives in the fixture's `rubric.acceptance_floor` (default 0.9) |
+| `--tool-selection-fixture <path>` | `eval/canonical-questions/tool-selection.json` | Path to the tool-selection fixture |
+| `--json` | — | Machine-readable JSON output |
+
+**Requires** `ATLAS_DATASOURCE_URL` to point at a Postgres instance the harness can seed with the demo dataset (`bun run db:up` provisions one locally). The harness backs up your existing `semantic/` directory to `.semantic-backup-canonical-eval/`, installs the canonical NovaMart semantic layer for the run, and restores it on exit.
+
+**Examples:**
+
+```bash
+# Deterministic mode — typed dispatch, no LLM, fast
+bun run atlas -- canonical-eval
+
+# Full agent loop, asserting on snapshot SQL
+bun run atlas -- canonical-eval --llm
+
+# MCP dispatch via an LLM — exercises the real client tool surface
+bun run atlas -- canonical-eval --mcp-llm
+
+# Re-seed the per-question latency baseline
+bun run atlas -- canonical-eval --mcp-llm --write-baseline
+
+# Held-out tool-selection accuracy run (#2075 audit)
+bun run atlas -- canonical-eval --mcp-llm --tool-selection
+```
+
+**Exit codes:** 0 = all pass, 1 = at least one failure or accuracy below the acceptance floor, 2 = restore failure (the original `semantic/` directory may need manual recovery from `.semantic-backup-canonical-eval/`).
+
 ## smoke
 
 Run end-to-end smoke tests against a running Atlas deployment.
@@ -396,6 +443,7 @@ bun run atlas -- migrate diff [options]
 | Flag | Description |
 |------|-------------|
 | `--from <hash>` | Source snapshot hash (prefix match) |
+| `--snapshot <hash>` | Alias for `--from` — used when `--from` is omitted |
 | `--to <hash>` | Target snapshot hash (prefix match). When used with `--from`, diffs between two snapshots |
 | `--source <name>` | Use `semantic/{name}/` subdirectory |
 

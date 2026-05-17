@@ -133,7 +133,7 @@ export function parseSinceMs(raw: string | undefined): number {
 const listEntriesRoute = createRoute({
   method: "get",
   path: "/",
-  tags: ["Admin - Proactive Chat"],
+  tags: ["Admin — Proactive Chat"],
   summary: "List public-dataset entries",
   description:
     "Returns the curated allowlist of semantic entity names that an unlinked asker may ask about in public channels. Ordered by entity name. Empty allowlist is the default for a freshly-enabled workspace - Atlas refuses every public-channel question until an admin opts in entity-by-entity.",
@@ -152,7 +152,7 @@ const listEntriesRoute = createRoute({
 const upsertEntryRoute = createRoute({
   method: "post",
   path: "/",
-  tags: ["Admin - Proactive Chat"],
+  tags: ["Admin — Proactive Chat"],
   summary: "Upsert a public-dataset entry",
   description:
     "Creates or replaces an allowlist entry on (workspaceId, entityName). Sending the same entityName twice replaces the persisted denyMetrics. Send denyMetrics: [] to clear the deny list on an existing entry. Idempotent.",
@@ -177,7 +177,7 @@ const upsertEntryRoute = createRoute({
 const deleteEntryRoute = createRoute({
   method: "delete",
   path: "/{entityName}",
-  tags: ["Admin - Proactive Chat"],
+  tags: ["Admin — Proactive Chat"],
   summary: "Delete a public-dataset entry",
   description:
     "Removes the allowlist entry for (workspaceId, entityName). Idempotent - 404 when the row was already gone.",
@@ -205,7 +205,7 @@ const deleteEntryRoute = createRoute({
 const refusedRollupRoute = createRoute({
   method: "get",
   path: "/refused",
-  tags: ["Admin - Proactive Chat"],
+  tags: ["Admin — Proactive Chat"],
   summary: "List refused-topics rollup",
   description:
     "Discoverability rollup powering the admin console's Refused topics panel: how often unlinked askers tried to ask about an entity NOT on the allowlist, grouped by entity name. Defaults to a 30-day moving window; `since=<n>[dhms]` overrides the lookback. Capped at 365 days. The admin UI pairs each row with a one-click Make-public affordance.",

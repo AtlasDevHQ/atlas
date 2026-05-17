@@ -1,18 +1,21 @@
 /**
- * Bound dashboard editor tools (#2363).
+ * Bound dashboard editor tools (#2363, #2365 destructive ops).
  *
- * Six safe-op tools the bound agent gets when the chat is opened on a
+ * Eight tools the bound agent gets when the chat is opened on a
  * dashboard. The factory function `createBoundDashboardTools` closes the
  * tools over the dashboardId + orgId resolved from the conversation's
  * `bound_dashboard_id` — the LLM cannot supply the dashboard id itself,
  * which is the whole point of binding (a turn cannot redirect mutations
  * at a different dashboard than the one the user opened).
  *
- * Destructive ops (`removeCard`, `updateCardSql`) are intentionally OUT
- * of this slice — they ship in #2365 as `stage_required` envelopes with
- * ghost-overlay accept/discard. Including them here would defeat the
- * tracer-bullet scope; last-write-wins to published is tolerable for
- * the safe set but not for delete / SQL rewrite.
+ * The six SAFE-op tools (`getDashboardState`, `getCardDetail`, `addCard`,
+ * `updateCard`, `updateLayout`, `updateDashboardMeta`) commit immediately
+ * (to the user's draft when `ATLAS_DASHBOARD_DRAFTS_ENABLED=true`, else
+ * straight to published). The two NEW destructive tools (`removeCard` and
+ * `updateCardSql`, added in #2365) do NOT mutate. They write a row to
+ * `dashboard_stage_changes` and return a `stage_required` envelope; the
+ * UI surfaces inline Accept / Discard affordances that hit the
+ * `/dashboards/[id]/stage/[stageId]/accept|discard` routes.
  */
 
 import * as crypto from "crypto";
@@ -44,6 +47,7 @@ import {
   materializeDraftView,
   type DashboardSnapshotCard,
 } from "@atlas/api/lib/dashboard-versioning";
+import { stageChange } from "@atlas/api/lib/stage-tracker";
 
 const log = createLogger("tool:bound-dashboard");
 
@@ -509,6 +513,170 @@ export function createBoundDashboardTools(
     },
   });
 
+  // -------------------------------------------------------------------------
+  // Destructive ops (#2365) — stage rather than mutate. Both tools return
+  // `stage_required` envelopes the UI surfaces as inline ghost overlays.
+  // The agent NEVER sees a direct mutation result for these — accept /
+  // discard is the user's call.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Read the current card by id, preferring the draft view when drafts
+   * are enabled + a userId is present. Used by the destructive tools to
+   * snapshot `currentTitle` / `currentSql` into the stage payload so the
+   * UI diff overlay doesn't drift if the card mutates between stage and
+   * accept.
+   */
+  async function readCurrentCard(cardId: string): Promise<
+    | { ok: true; title: string; sql: string }
+    | { ok: false; error: string }
+  > {
+    if (isDashboardDraftsEnabled() && ctx.userId) {
+      const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined });
+      if (!dash.ok) {
+        return { ok: false, error: `Could not read dashboard: ${dash.reason}` };
+      }
+      const draftRow = await forkOrLoadDraft(ctx.userId, dash.data);
+      if (draftRow) {
+        const sc = draftRow.snapshot.cards.find((c) => c.id === cardId);
+        if (sc) return { ok: true, title: sc.title, sql: sc.sql };
+        return { ok: false, error: `Card ${cardId} not found on this dashboard.` };
+      }
+    }
+    const card = await getCard(cardId, dashboardId);
+    if (!card.ok) {
+      return { ok: false, error: `Could not read card ${cardId}: ${card.reason}` };
+    }
+    return { ok: true, title: card.data.title, sql: card.data.sql };
+  }
+
+  const removeCardTool = tool({
+    description: `Stage removal of a card from the dashboard. This is a DESTRUCTIVE operation — it does NOT mutate immediately. Instead it queues a ghost change the user accepts or discards inline. Use this when the user asks to delete / remove / drop a card. The dashboard view renders the targeted card with a strikethrough overlay until the user resolves the stage.
+
+Returns a \`stage_required\` envelope with the stage id; the chat UI renders Accept / Discard affordances alongside your message. Do NOT call \`removeCard\` and then try to verify the card is gone via \`getDashboardState\` in the same turn — the stage is still pending until the user acts.`,
+    inputSchema: z.object({
+      cardId: z.string().min(1).describe("Card id (from the compact summary)"),
+    }),
+    execute: async ({ cardId }) => {
+      try {
+        if (!ctx.userId) {
+          return {
+            kind: "err" as const,
+            error: "removeCard requires an authenticated user — stages are per-user.",
+          };
+        }
+        const current = await readCurrentCard(cardId);
+        if (!current.ok) {
+          return { kind: "err" as const, error: current.error };
+        }
+        const result = await stageChange({
+          dashboardId,
+          userId: ctx.userId,
+          payload: { kind: "remove_card", cardId },
+        });
+        if (!result.ok) {
+          return {
+            kind: "err" as const,
+            error:
+              result.reason === "no_db"
+                ? "Stage tracker requires an internal database."
+                : "Could not queue the stage. Try again.",
+          };
+        }
+        return {
+          kind: "stage_required" as const,
+          stageId: result.stage.id,
+          stageKind: "remove_card" as const,
+          target: { cardId, currentTitle: current.title },
+        };
+      } catch (err) {
+        log.warn(
+          { err: errorMessage(err), dashboardId, cardId },
+          "removeCard tool failed unexpectedly",
+        );
+        return {
+          kind: "err" as const,
+          error: "removeCard failed unexpectedly. Try again.",
+        };
+      }
+    },
+  });
+
+  const updateCardSqlTool = tool({
+    description: `Stage a SQL rewrite for a card. This is a DESTRUCTIVE operation — it does NOT mutate immediately. Instead it queues a ghost change with a side-by-side SQL diff overlay the user accepts or discards inline. Use this when the user asks to change a card's query or rewrite its SQL.
+
+ALWAYS:
+1. Call \`getCardDetail(cardId)\` first to read the current SQL.
+2. Call \`executeSQL\` on the proposed new SQL to verify shape + correctness.
+3. Then call \`updateCardSql(cardId, newSql)\` with the validated query.
+
+The tool validates the new SQL against the analytics datasource before staging; if validation fails the stage is NOT created and the error is returned so you can fix it and retry. Returns a \`stage_required\` envelope; the chat UI renders the diff + Accept / Discard.`,
+    inputSchema: z.object({
+      cardId: z.string().min(1).describe("Card id (from the compact summary)"),
+      newSql: z.string().min(1).describe("Proposed replacement SELECT query"),
+    }),
+    execute: async ({ cardId, newSql }) => {
+      try {
+        if (!ctx.userId) {
+          return {
+            kind: "err" as const,
+            error: "updateCardSql requires an authenticated user — stages are per-user.",
+          };
+        }
+        const validation = await validateSQL(newSql, undefined);
+        if (!validation.valid) {
+          return {
+            kind: "err" as const,
+            error: `SQL validation failed: ${validation.error}. Fix the query and retry.`,
+          };
+        }
+        const current = await readCurrentCard(cardId);
+        if (!current.ok) {
+          return { kind: "err" as const, error: current.error };
+        }
+        const result = await stageChange({
+          dashboardId,
+          userId: ctx.userId,
+          payload: {
+            kind: "edit_sql",
+            cardId,
+            newSql,
+            currentSql: current.sql,
+          },
+        });
+        if (!result.ok) {
+          return {
+            kind: "err" as const,
+            error:
+              result.reason === "no_db"
+                ? "Stage tracker requires an internal database."
+                : "Could not queue the stage. Try again.",
+          };
+        }
+        return {
+          kind: "stage_required" as const,
+          stageId: result.stage.id,
+          stageKind: "edit_sql" as const,
+          target: {
+            cardId,
+            currentTitle: current.title,
+            currentSql: current.sql,
+            newSql,
+          },
+        };
+      } catch (err) {
+        log.warn(
+          { err: errorMessage(err), dashboardId, cardId },
+          "updateCardSql tool failed unexpectedly",
+        );
+        return {
+          kind: "err" as const,
+          error: "updateCardSql failed unexpectedly. Try again.",
+        };
+      }
+    },
+  });
+
   return {
     getDashboardState,
     getCardDetail,
@@ -517,6 +685,8 @@ export function createBoundDashboardTools(
     updateLayout: updateLayoutTool,
     updateDashboardMeta: updateDashboardMetaTool,
     screenshotDashboard: screenshotDashboardTool,
+    removeCard: removeCardTool,
+    updateCardSql: updateCardSqlTool,
   };
 }
 
@@ -555,4 +725,17 @@ Use \`screenshotDashboard()\` to capture the dashboard as the user currently see
 - The screenshot is cached on a per-(dashboard, user) basis and short-TTL (60s); calling twice in a row without mutating is free.
 - Card mutations (\`addCard\`, \`updateCard\`, \`updateLayout\`, \`updateDashboardMeta\`) invalidate the cache automatically — you'll get a fresh shot on the next call.
 - Don't echo the base64 payload back to the user. The shot is for your eyes only.`,
+
+  removeCard: `### Stage card removal (destructive — requires user accept)
+Use \`removeCard(cardId)\` when the user asks to delete / remove / drop a card. This does NOT mutate immediately — it queues a ghost change the user accepts or discards inline. The dashboard renders the staged card with a strikethrough overlay. After calling \`removeCard\`, surface a short confirmation to the user ("Staged removal of <title> — accept to confirm or discard to keep it"). Do NOT loop back to \`getDashboardState\` to verify removal in the same turn; the stage is still pending until the user resolves it.`,
+
+  updateCardSql: `### Stage a SQL rewrite (destructive — requires user accept)
+Use \`updateCardSql(cardId, newSql)\` when the user asks to change a card's query. This does NOT mutate immediately — it queues a ghost change with a side-by-side SQL diff overlay the user accepts or discards inline.
+
+ALWAYS:
+1. Call \`getCardDetail(cardId)\` first to read the current SQL.
+2. Call \`executeSQL\` on the new SQL to verify shape + correctness against the analytics datasource.
+3. Then call \`updateCardSql\` with the validated query.
+
+The tool re-validates the SQL before staging; invalid queries are rejected without queueing.`,
 };

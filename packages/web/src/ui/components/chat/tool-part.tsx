@@ -9,6 +9,7 @@ import { SQLResultCard } from "./sql-result-card";
 import { ActionApprovalCard } from "../actions/action-approval-card";
 import { PythonResultCard, type PythonProgressData } from "./python-result-card";
 import { CreateDashboardCard } from "./create-dashboard-card";
+import { StageChangeCard } from "./stage-change-card";
 import type { PreviousExecution } from "../notebook/types";
 
 /** Extract the tool invocation ID from an AI SDK tool part. */
@@ -54,6 +55,11 @@ export const ToolPart = memo(function ToolPart({
     }
     case "createDashboard":
       return <CreateDashboardCard part={part} />;
+    // #2365 — bound editor destructive tools return `stage_required`
+    // envelopes; both render via the same accept/discard card.
+    case "removeCard":
+    case "updateCardSql":
+      return <StageChangeCard part={part} />;
     default: {
       const result = getToolResult(part);
       if (isActionToolResult(result)) {

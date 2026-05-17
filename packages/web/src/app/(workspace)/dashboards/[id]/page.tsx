@@ -27,6 +27,8 @@ import { DashboardShareDialog } from "./share-dialog";
 import { DashboardGrid } from "@/ui/components/dashboards/dashboard-grid";
 import { DashboardTopBar } from "@/ui/components/dashboards/dashboard-topbar";
 import { nextTileLayout, withAutoLayout } from "@/ui/components/dashboards/auto-layout";
+import { StageProvider } from "@/ui/components/dashboards/stage-context";
+import type { StagedChange } from "@/ui/lib/types";
 import { selectNextAfterDelete } from "../select-recent";
 import type { Density } from "@/ui/components/dashboards/grid-constants";
 import type {
@@ -45,6 +47,16 @@ export default function DashboardViewPage() {
   const { data: dashboard, loading, error, refetch } = useAdminFetch<DashboardWithCards>(
     `/api/v1/dashboards/${id}`,
   );
+
+  // #2365 — pending destructive stages for THIS user on THIS dashboard.
+  // Drives the ghost overlay on the grid (strikethrough + side-by-side
+  // diff). Per-user; teammates never see each other's pending stages.
+  // Refetched whenever the chat tool fires a stage or the user accepts /
+  // discards via `<StageChangeCard>`.
+  const { data: stagesData, refetch: refetchStages } = useAdminFetch<{ stages: StagedChange[] }>(
+    `/api/v1/dashboards/${id}/stage`,
+  );
+  const stages: StagedChange[] = stagesData?.stages ?? [];
 
   const { mutate, error: mutationError } = useAdminMutation({ invalidates: refetch });
 
@@ -261,8 +273,17 @@ export default function DashboardViewPage() {
       )
     : [];
 
+  // The stage handler fires when the user clicks Accept / Discard in the
+  // bound chat drawer. We refetch BOTH the dashboard (the draft cards
+  // changed after an accept) AND the stage list (the row is no longer
+  // pending). Both calls are cheap (org-scoped GETs).
+  function handleStagesChanged() {
+    refetch();
+    refetchStages();
+  }
+
   return (
-    <>
+    <StageProvider value={{ dashboardId: id, onStagesChanged: handleStagesChanged }}>
       <div className="flex h-full flex-1 flex-col overflow-auto">
         {loading && (
           <div className="space-y-4 px-4 py-6 sm:px-6">
@@ -419,6 +440,7 @@ export default function DashboardViewPage() {
                   cards={cardsForGrid}
                   editing={editing}
                   refreshingId={refreshingCardId}
+                  stages={stages}
                   onLayoutChange={handleLayoutChange}
                   onRefresh={handleRefreshCard}
                   onDuplicate={handleDuplicate}
@@ -461,7 +483,7 @@ export default function DashboardViewPage() {
           onOpenChange={setChatOpen}
           dashboardId={dashboard.id}
           dashboardTitle={dashboard.title}
-          onDashboardMutated={refetch}
+          onDashboardMutated={handleStagesChanged}
         />
       )}
 
@@ -485,6 +507,6 @@ export default function DashboardViewPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </>
+    </StageProvider>
   );
 }

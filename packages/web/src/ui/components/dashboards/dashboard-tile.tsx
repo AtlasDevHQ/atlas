@@ -28,7 +28,7 @@ import { DataTable } from "@/ui/components/chat/data-table";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { cn } from "@/lib/utils";
 import { timeAgo } from "./time-ago";
-import type { DashboardCard } from "@/ui/lib/types";
+import type { DashboardCard, StagedChange } from "@/ui/lib/types";
 
 const ResultChart = dynamic(
   () => import("@/ui/components/chart/result-chart").then((m) => ({ default: m.ResultChart })),
@@ -46,6 +46,15 @@ interface DashboardTileProps {
   editing: boolean;
   fullscreen: boolean;
   isRefreshing: boolean;
+  /**
+   * #2365 — pending destructive stage targeting this card, if any.
+   *   - `remove_card` → renders strikethrough banner on top of the tile.
+   *   - `edit_sql` → renders side-by-side SQL diff overlay.
+   * `null` = no stage; tile renders normally. The actual Accept/Discard
+   * affordance lives in the chat drawer (`<StageChangeCard>`), not on
+   * the tile — the tile just signals "this is what's about to happen".
+   */
+  stage?: StagedChange | null;
   onFullscreen: (cardId: string) => void;
   onRefresh: (cardId: string) => void;
   onDuplicate: (cardId: string) => void;
@@ -58,6 +67,7 @@ export function DashboardTile({
   editing,
   fullscreen,
   isRefreshing,
+  stage,
   onFullscreen,
   onRefresh,
   onDuplicate,
@@ -82,12 +92,24 @@ export function DashboardTile({
     setTitleEditing(false);
   }
 
+  // #2365 — discriminate the pending stage payload kind. The grid
+  // already filters to PENDING stages; we trust the type here.
+  const removeStage = stage?.kind === "remove_card" ? stage : null;
+  const editSqlStage = stage?.kind === "edit_sql" ? stage : null;
+  const editSqlPayload =
+    editSqlStage && editSqlStage.payload.kind === "edit_sql" ? editSqlStage.payload : null;
+
   return (
     <div
       className={cn(
-        "dash-tile flex h-full w-full flex-col rounded-xl border border-zinc-200 bg-white text-zinc-900 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100",
+        "dash-tile relative flex h-full w-full flex-col rounded-xl border border-zinc-200 bg-white text-zinc-900 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100",
         "hover:border-zinc-300 dark:hover:border-zinc-700",
+        // Ring colour signals which kind of ghost change is staged.
+        removeStage && "ring-2 ring-red-400/60 ring-offset-1",
+        editSqlStage && "ring-2 ring-amber-400/60 ring-offset-1",
       )}
+      data-stage-kind={stage?.kind ?? undefined}
+      data-stage-id={stage?.id ?? undefined}
     >
       <div
         className={cn(
@@ -138,8 +160,12 @@ export function DashboardTile({
           </div>
         ) : (
           <h3
-            className="line-clamp-1 flex-1 text-sm font-semibold tracking-tight"
+            className={cn(
+              "line-clamp-1 flex-1 text-sm font-semibold tracking-tight",
+              removeStage && "line-through decoration-red-500 decoration-2 text-zinc-500",
+            )}
             title={card.title}
+            data-testid={removeStage ? "tile-title-strikethrough" : "tile-title"}
           >
             {card.title}
           </h3>
@@ -258,6 +284,59 @@ export function DashboardTile({
         </span>
         {hasData && <span className="tabular-nums">{rows.length} rows</span>}
       </div>
+
+      {/* #2365 — remove_card ghost overlay: tinted scrim + banner. */}
+      {removeStage && (
+        <div
+          aria-hidden="true"
+          data-testid="ghost-overlay-remove"
+          className="pointer-events-none absolute inset-0 z-10 flex items-end justify-center rounded-xl bg-red-50/30 dark:bg-red-950/15"
+        >
+          <div className="pointer-events-auto m-3 inline-flex items-center gap-2 rounded-md bg-red-600/90 px-2.5 py-1 text-[11px] font-medium text-white shadow-sm">
+            <Trash2 className="size-3" />
+            Staged for removal — accept in chat
+          </div>
+        </div>
+      )}
+
+      {/* #2365 — edit_sql ghost overlay: side-by-side SQL diff. Rendered
+          as an absolute-positioned panel so the tile chart underneath
+          isn't disturbed. */}
+      {editSqlPayload && (
+        <div
+          data-testid="ghost-overlay-edit-sql"
+          className="absolute inset-0 z-10 flex flex-col rounded-xl bg-amber-50/95 px-3 py-2.5 backdrop-blur-sm dark:bg-amber-950/85"
+        >
+          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-medium text-amber-900 dark:text-amber-200">
+            <Pencil className="size-3" />
+            Staged SQL rewrite — accept in chat
+          </div>
+          <div className="grid min-h-0 flex-1 gap-2 sm:grid-cols-2">
+            <div className="flex min-h-0 flex-col">
+              <div className="mb-0.5 text-[10px] uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                Current
+              </div>
+              <pre
+                data-testid="ghost-sql-current"
+                className="min-h-0 flex-1 overflow-auto rounded border border-amber-200 bg-white px-1.5 py-1 font-mono text-[11px] text-zinc-800 dark:border-amber-900/40 dark:bg-zinc-950 dark:text-zinc-200"
+              >
+                {editSqlPayload.currentSql}
+              </pre>
+            </div>
+            <div className="flex min-h-0 flex-col">
+              <div className="mb-0.5 text-[10px] uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                Proposed
+              </div>
+              <pre
+                data-testid="ghost-sql-proposed"
+                className="min-h-0 flex-1 overflow-auto rounded border border-amber-200 bg-white px-1.5 py-1 font-mono text-[11px] text-zinc-800 dark:border-amber-900/40 dark:bg-zinc-950 dark:text-zinc-200"
+              >
+                {editSqlPayload.newSql}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

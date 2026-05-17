@@ -123,6 +123,13 @@ export default function DashboardViewPage() {
   // /:id/draft` (which forks-on-first-call) on every page load.
   const [draftView, setDraftView] = useState<DashboardWithCards | null>(null);
   const [draftViewLoading, setDraftViewLoading] = useState(false);
+  // Separate from the useAdminMutation `draftError` below so a failed
+  // GET on the draft view (which doesn't go through the mutation hook)
+  // can surface to the Publish modal without colliding with mutation
+  // errors. Without this, a failed GET silently produced an empty
+  // modal with no diff and a disabled Publish button — invisible to
+  // anyone not watching devtools.
+  const [draftViewError, setDraftViewError] = useState<string | null>(null);
 
   // Dedicated mutation hook for draft ops. We want a separate error
   // surface from the shared `mutate` above (which is reused for card +
@@ -343,6 +350,7 @@ export default function DashboardViewPage() {
   // modal's own banner rather than the page's.
   async function handleOpenPublishModal() {
     clearDraftError();
+    setDraftViewError(null);
     setPublishModalOpen(true);
     setDraftView(null);
     setDraftViewLoading(true);
@@ -354,14 +362,22 @@ export default function DashboardViewPage() {
         const json = (await res.json()) as DraftViewResponse;
         setDraftView(json.view ?? null);
       } else {
-        console.debug(`[dashboard] Failed to fetch draft view: ${res.status}`);
+        // Surface the failure to the modal banner. Without this the
+        // modal opens with no diff, the Publish button stays disabled,
+        // and the user has no signal that the fetch failed — the
+        // console.debug fallback was invisible to anyone not watching
+        // devtools.
+        const body = await res.json().catch(() => ({} as Record<string, unknown>));
+        const rid = typeof body?.requestId === "string" ? body.requestId : null;
+        const msg = typeof body?.message === "string"
+          ? body.message
+          : `Could not load draft view (${res.status}).`;
+        setDraftViewError(rid ? `${msg} (request ${rid})` : msg);
         setDraftView(null);
       }
     } catch (err) {
-      console.debug(
-        "[dashboard] Network error fetching draft view:",
-        err instanceof Error ? err.message : String(err),
-      );
+      const detail = err instanceof Error ? err.message : String(err);
+      setDraftViewError(`Network error fetching draft view: ${detail}`);
       setDraftView(null);
     } finally {
       setDraftViewLoading(false);
@@ -686,6 +702,7 @@ export default function DashboardViewPage() {
         loading={draftViewLoading}
         publishing={publishing}
         error={draftError}
+        viewError={draftViewError}
         onConfirm={handleConfirmPublish}
       />
     </StageProvider>

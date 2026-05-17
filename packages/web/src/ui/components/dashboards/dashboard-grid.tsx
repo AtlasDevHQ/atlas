@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   GridLayout,
   useContainerWidth,
@@ -47,28 +47,25 @@ export function DashboardGrid({
 }: DashboardGridProps) {
   const { width, containerRef, mounted } = useContainerWidth();
   const [fullscreenId, setFullscreenId] = useState<string | null>(null);
-  const placed = useMemo(() => withAutoLayout(cards), [cards]);
+  // React Compiler memoizes pure derives; manual useMemo was forbidden
+  // by CLAUDE.md for perf-only cases.
+  const placed = withAutoLayout(cards);
   // Index stages by cardId. A single card can have multiple stages in
   // pathological cases (agent staged delete + the user clarified, agent
-  // restaged a SQL edit). The first pending one wins for overlay purposes
-  // — a definitive resolution flips one specific stage, the rest stay
-  // visible until they're individually accepted or discarded. Useful
-  // correctness invariant: the overlay never lies about WHICH stage is
-  // pending; it shows the most-recent pending one.
-  const stagesByCardId = useMemo(() => {
-    const map = new Map<string, StagedChange>();
-    for (const s of stages ?? []) {
-      if (s.status !== "pending") continue;
-      const cardId = (s.payload as { cardId?: string }).cardId;
-      if (!cardId) continue;
-      // Keep the most-recently-staged one — overlay reflects current intent.
-      const existing = map.get(cardId);
-      if (!existing || existing.createdAt < s.createdAt) {
-        map.set(cardId, s);
-      }
+  // restaged a SQL edit). The most-recently-staged pending one wins
+  // for overlay purposes — a definitive resolution flips one specific
+  // stage, the rest stay visible until they're individually accepted
+  // or discarded. The overlay reflects current intent.
+  const stagesByCardId = new Map<string, StagedChange>();
+  for (const s of stages ?? []) {
+    if (s.status !== "pending") continue;
+    const cardId = (s.payload as { cardId?: string }).cardId;
+    if (!cardId) continue;
+    const existing = stagesByCardId.get(cardId);
+    if (!existing || existing.createdAt < s.createdAt) {
+      stagesByCardId.set(cardId, s);
     }
-    return map;
-  }, [stages]);
+  }
 
   // Esc must exit fullscreen *before* the page-level handler exits edit mode,
   // so the user gets one Esc per dialog-like layer.

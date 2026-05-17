@@ -83,10 +83,24 @@ function StageChangeCardInner({ stage }: { stage: StageRequiredPayload }) {
         },
       );
       if (!response.ok) {
-        const body = await response.json().catch(() => ({} as Record<string, unknown>));
-        const msg = typeof body?.message === "string" ? body.message : `Could not ${action} the stage.`;
+        const body = await response.json().catch((parseErr: unknown) => {
+          // Server returned non-JSON (proxy error page, gateway timeout,
+          // HTML 5xx) — log to devtools so a debugging operator sees the
+          // parse failure with a correlation hint from the response status.
+          console.debug(
+            `[stage-change-card] non-JSON ${response.status} response on ${action}:`,
+            parseErr instanceof Error ? parseErr.message : String(parseErr),
+          );
+          return {} as Record<string, unknown>;
+        });
+        const msg = typeof body?.message === "string"
+          ? body.message
+          : `Could not ${action} the stage.`;
+        // Surface `requestId` to the user so support tickets carry a
+        // correlation key the API logs can be searched by.
+        const rid = typeof body?.requestId === "string" ? body.requestId : null;
         setResolution("error");
-        setErrMessage(msg);
+        setErrMessage(rid ? `${msg} (request ${rid})` : msg);
         return;
       }
       setResolution(action === "accept" ? "accepted" : "discarded");

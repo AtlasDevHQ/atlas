@@ -32,7 +32,7 @@ import {
   type DashboardSnapshot,
   type DashboardSnapshotCard,
 } from "../dashboard-versioning";
-import type { DashboardWithCards } from "../dashboard-types";
+import type { DashboardWithCards, DashboardCard } from "../dashboard-types";
 
 // ---------------------------------------------------------------------------
 // Snapshot fixtures
@@ -576,6 +576,56 @@ describe("materializeDraftView", () => {
     // Untracked fields fall through from published.
     expect(view.shareToken).toBe("tok");
   });
+
+  it("preserves cached_columns / cached_rows / cachedAt from the matching published card", () => {
+    // Without this fall-through, a draft view would render cards as
+    // empty placeholders even when the user only changed the title.
+    const baseCard = card("c1", { title: "pub" });
+    // Build the published row directly so we can inject the cached-*
+    // fields that the dashboardWithCards helper hard-nulls.
+    const publishedCardRow: DashboardCard = {
+      id: baseCard.id,
+      dashboardId: "dash-1",
+      position: baseCard.position,
+      title: baseCard.title,
+      sql: baseCard.sql,
+      chartConfig: baseCard.chartConfig,
+      cachedColumns: ["a", "b"],
+      cachedRows: [{ a: 1, b: 2 }],
+      cachedAt: "2026-05-01T00:00:00.000Z",
+      connectionGroupId: baseCard.connectionGroupId,
+      layout: baseCard.layout,
+      createdAt: "2026-05-01T00:00:00.000Z",
+      updatedAt: "2026-05-01T00:00:00.000Z",
+    };
+    const published: DashboardWithCards = {
+      ...dashboardWithCards([], {}),
+      cards: [publishedCardRow],
+    };
+    const draft = snapshot([{ ...baseCard, title: "draft" }], {});
+    const view = materializeDraftView(published, draft);
+    expect(view.cards[0].cachedColumns).toEqual(["a", "b"]);
+    expect(view.cards[0].cachedRows).toEqual([{ a: 1, b: 2 }]);
+    expect(view.cards[0].cachedAt).toBe("2026-05-01T00:00:00.000Z");
+  });
+
+  it("falls back to published.updatedAt for card timestamps instead of new Date()", () => {
+    // Forward-compat: a draft view rendered twice should show the
+    // same card timestamps (so ordering-by-updated_at consumers
+    // don't see "everything edited just now"). New cards (no matching
+    // published row) inherit the parent dashboard's updatedAt as a
+    // best-effort fallback.
+    const published = dashboardWithCards([card("c1", { title: "pub" })], {
+      updatedAt: "2026-05-10T00:00:00.000Z",
+    });
+    const draft = snapshot(
+      [card("c1", { title: "draft" }), card("c2", { position: 1, title: "new" })],
+      { title: "Draft Title" },
+    );
+    const view = materializeDraftView(published, draft);
+    expect(view.cards[1].updatedAt).toBe("2026-05-10T00:00:00.000Z");
+    expect(view.cards[1].createdAt).toBe("2026-05-10T00:00:00.000Z");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -825,7 +875,7 @@ describe("dashboard-versioning DB helpers", () => {
       expect(result.reason).toBe("no_draft");
     });
 
-    it("returns dashboard_missing when the parent dashboard is gone", async () => {
+    it("returns dashboard_not_found when the parent dashboard is gone", async () => {
       enableInternalDB();
       const snap = snapshot([card("c1")]);
       setResults({ rows: [draftRow({ draft: snap })] });
@@ -837,7 +887,7 @@ describe("dashboard-versioning DB helpers", () => {
       });
       expect(result.ok).toBe(false);
       if (result.ok) return;
-      expect(result.reason).toBe("dashboard_missing");
+      expect(result.reason).toBe("dashboard_not_found");
     });
 
     it("returns stale_baseline when published has moved underneath the draft", async () => {
@@ -914,9 +964,11 @@ describe("dashboard-versioning DB helpers", () => {
         rows: [draftRow({ draft: draftWithAdd.snapshot, baseline })],
       });
 
-      // BEGIN, INSERT card, touch dashboards, DELETE draft, COMMIT.
+      // BEGIN, SELECT updated_at FOR UPDATE (lock + re-check), INSERT
+      // card, touch dashboards, DELETE draft, COMMIT.
       setClientResults(
         { rows: [] }, // BEGIN
+        { rows: [{ updated_at: "2026-05-17T00:00:00.000Z" }] }, // SELECT FOR UPDATE
         { rows: [] }, // INSERT INTO dashboard_cards
         { rows: [] }, // UPDATE dashboards SET updated_at
         { rows: [] }, // DELETE FROM dashboard_user_drafts
@@ -953,16 +1005,21 @@ describe("dashboard-versioning DB helpers", () => {
       expect(draftAdd.ok).toBe(true);
       if (!draftAdd.ok) return;
       setResults({ rows: [draftRow({ draft: draftAdd.snapshot, baseline })] });
-      // BEGIN succeeds, then the next op throws.
-      let firstCall = true;
+      // BEGIN + SELECT FOR UPDATE succeed, then the next op throws.
+      let serviced = 0;
       clientThrow = null;
       clientCalls = [];
       const customClient: InternalPoolClient = {
         query: async (sql: string, params?: unknown[]) => {
           clientCalls.push({ sql, params });
-          if (firstCall) {
-            firstCall = false;
-            return { rows: [] };
+          serviced++;
+          // 1. BEGIN
+          if (serviced === 1) return { rows: [] };
+          // 2. SELECT updated_at FOR UPDATE — return matching baseline
+          //    so the in-tx stale guard passes and we proceed to the
+          //    real op (which throws on call 3).
+          if (serviced === 2) {
+            return { rows: [{ updated_at: "2026-05-17T00:00:00.000Z" }] };
           }
           if (sql === "ROLLBACK") return { rows: [] };
           throw new Error("synthetic op failure");
@@ -992,6 +1049,63 @@ describe("dashboard-versioning DB helpers", () => {
       expect(result.reason).toBe("error");
       expect(clientCalls.some((c) => c.sql === "ROLLBACK")).toBe(true);
       expect(releaseCalls).toBe(1);
+    });
+
+    it("returns stale_baseline (with currentBaselineAt) when SELECT FOR UPDATE sees published moved post-pre-check", async () => {
+      // Concurrent-publish race: pre-tx check passes (published.updatedAt
+      // == draftRow.publishedBaselineAt), but inside the transaction the
+      // FOR UPDATE select sees a NEWER updated_at because another user's
+      // publish committed in the gap. The lock catches it, rolls back,
+      // and returns stale_baseline with the new baseline so the UI can
+      // surface "X changed since you last loaded the draft" without a
+      // second round-trip.
+      enableInternalDB();
+      const baseline = snapshot([card("c1")]);
+      const draftAdd = applyChangeToDraft(baseline, {
+        kind: "addCard",
+        card: card("c-new", { position: 1 }),
+      });
+      expect(draftAdd.ok).toBe(true);
+      if (!draftAdd.ok) return;
+      setResults({
+        rows: [
+          draftRow({
+            draft: draftAdd.snapshot,
+            baseline,
+            publishedBaselineAt: "2026-05-17T00:00:00.000Z",
+          }),
+        ],
+      });
+      setClientResults(
+        { rows: [] }, // BEGIN
+        // SELECT updated_at FOR UPDATE — another user's publish already
+        // committed; the locked row shows a NEWER timestamp than the
+        // draft's persisted baseline.
+        { rows: [{ updated_at: "2026-05-17T05:00:00.000Z" }] },
+        { rows: [] }, // ROLLBACK
+      );
+
+      const published = dashboardWithCards([card("c1")], {
+        // Pre-tx check still matches (cached read) so the race is
+        // realistic — only the lock catches it.
+        updatedAt: "2026-05-17T00:00:00.000Z",
+      });
+      const result = await publishDraft({
+        userId: "u1",
+        dashboardId: "dash-1",
+        orgId: "org-1",
+        loadDashboardForOrg: async () => published,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.reason).toBe("stale_baseline");
+      if (result.reason !== "stale_baseline") return;
+      expect(result.currentBaselineAt).toBe("2026-05-17T05:00:00.000Z");
+      // Rolled back, no DELETE / INSERT happened.
+      const sqls = clientCalls.map((c) => c.sql).join("\n");
+      expect(sqls).toContain("ROLLBACK");
+      expect(sqls).not.toContain("INSERT INTO dashboard_cards");
+      expect(sqls).not.toContain("DELETE FROM dashboard_user_drafts");
     });
   });
 

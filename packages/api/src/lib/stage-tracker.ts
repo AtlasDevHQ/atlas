@@ -51,8 +51,10 @@ import {
   applyChangeToDraft,
   forkOrLoadDraft,
   type DraftChange,
+  type DashboardSnapshot,
 } from "@atlas/api/lib/dashboard-versioning";
 import { getDashboard } from "@atlas/api/lib/dashboards";
+import { invalidateDashboardScreenshot } from "@atlas/api/lib/dashboard-screenshot";
 
 const log = createLogger("stage-tracker");
 
@@ -383,12 +385,47 @@ export async function acceptStagedChange(opts: {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+
+    // Re-load the draft under FOR UPDATE so any safe-op writes that
+    // landed between our pre-tx `forkOrLoadDraft` (line above) and now
+    // are picked up. Without this re-read the stage acceptance would
+    // overwrite the user's interleaved safe-op edit (lost-update
+    // window). The pre-tx `applied.snapshot` is discarded if the draft
+    // row has moved; we re-apply against the fresh snapshot inside the
+    // lock so the transaction commits a strictly monotonic draft.
+    // (review-2-followup: race fix for #2365 acceptStagedChange.)
+    const draftLock = await client.query(
+      `SELECT draft FROM dashboard_user_drafts
+        WHERE user_id = $1 AND dashboard_id = $2
+        FOR UPDATE`,
+      [opts.userId, row.dashboardId],
+    );
+    const draftLockRow = draftLock.rows[0] as { draft: unknown } | undefined;
+    if (!draftLockRow) {
+      // Draft was discarded between fork-or-load and now (rare).
+      await client.query("ROLLBACK");
+      return { ok: false, reason: "no_draft" };
+    }
+    const draftRaw = draftLockRow.draft;
+    const currentSnapshot: DashboardSnapshot =
+      typeof draftRaw === "string"
+        ? (JSON.parse(draftRaw) as DashboardSnapshot)
+        : (draftRaw as DashboardSnapshot);
+    const reapplied = applyChangeToDraft(currentSnapshot, transition.change);
+    if (!reapplied.ok) {
+      // The card the stage targets is no longer in the draft — likely a
+      // safe-op `removeCard` racing this accept. Surface as unknown_card
+      // so the UI clears the stage and the user can retry against the
+      // fresh snapshot.
+      await client.query("ROLLBACK");
+      return { ok: false, reason: "unknown_card" };
+    }
     await client.query(
       `UPDATE dashboard_user_drafts
           SET draft = $1::jsonb,
               updated_at = now()
         WHERE user_id = $2 AND dashboard_id = $3`,
-      [JSON.stringify(applied.snapshot), opts.userId, row.dashboardId],
+      [JSON.stringify(reapplied.snapshot), opts.userId, row.dashboardId],
     );
     const updateRows = await client.query(
       `UPDATE dashboard_stage_changes
@@ -401,13 +438,19 @@ export async function acceptStagedChange(opts: {
                   created_at, updated_at, applied_at, discarded_at`,
       [opts.stageId, opts.userId],
     );
-    await client.query("COMMIT");
     if (updateRows.rows.length === 0) {
-      // The row flipped under us between the load and the UPDATE — surface
-      // as not_found so the UI re-fetches the stage list. The transaction
-      // committed an idempotent draft update; the next render reconciles.
+      // The stage row flipped under us (concurrent accept or discard)
+      // between the pre-tx load and now. Rollback the draft write so
+      // we don't commit an apply on top of a status the user already
+      // resolved differently. Surface as not_found so the UI re-fetches.
+      await client.query("ROLLBACK");
       return { ok: false, reason: "not_found" };
     }
+    await client.query("COMMIT");
+    // The draft snapshot moved; any cached screenshot keyed on the
+    // old draft is now stale. The screenshot module's TTL is a
+    // backstop; the explicit invalidate is the primary contract.
+    invalidateDashboardScreenshot(row.dashboardId);
     return {
       ok: true,
       stage: rowToStagedChange(updateRows.rows[0]!),

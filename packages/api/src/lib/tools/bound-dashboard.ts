@@ -202,7 +202,7 @@ export function createBoundDashboardTools(
   });
 
   const addCardTool = tool({
-    description: `Add a new card to the dashboard. Validates the SQL against the analytics datasource before persisting; if validation fails the card is NOT added and the error is returned so you can fix it and retry. Use AFTER \`executeSQL\` has confirmed the column names — \`chartConfig.categoryColumn\` and \`valueColumns\` must match the SQL output. The grid is 24 columns wide; layout is optional (auto-laid below the lowest existing card when omitted).`,
+    description: `Add a new card to the dashboard. Validates the SQL against the analytics datasource before persisting; if validation fails the card is NOT added and the error is returned so you can fix it and retry. Use AFTER \`executeSQL\` has confirmed the column names — \`chartConfig.categoryColumn\` and \`valueColumns\` must match the SQL output. The grid is 24 columns wide. Layout is optional — when omitted the card stages with no placement and the grid renderer auto-arranges it at view time. Pass a layout if you want a specific {x, y, w, h} on the 24-column grid.`,
     inputSchema: z.object({
       title: z.string().min(1).max(200).describe("Card title (visible to the user)"),
       sql: z.string().min(1).describe("Read-only SELECT query"),
@@ -224,10 +224,14 @@ export function createBoundDashboardTools(
         // updateCard / updateLayout calls in the same session resolve.
         const draftCard: DashboardSnapshotCard = {
           id: crypto.randomUUID(),
-          // Position is recomputed at publish time when the merge runs;
-          // for the in-progress draft, append at the end of the current
-          // snapshot. The agent doesn't care about exact positions in
-          // an editing session — only at view + publish time.
+          // Position is left at 0 for the in-progress draft; the
+          // dashboard renderer's auto-layout (`withAutoLayout`)
+          // assigns a tile placement at view time, and the publish
+          // path inserts the row with the post-merge position. The
+          // agent should call `updateLayout` if it wants a specific
+          // placement; the chat surface doesn't need positions to
+          // disambiguate cards (the bound prompt's card summary uses
+          // ids).
           position: 0,
           title,
           sql,

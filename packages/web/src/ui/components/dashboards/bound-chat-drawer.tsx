@@ -15,10 +15,11 @@
  *     transcript panel rendering messages with the same Markdown +
  *     ToolPart components used in the live drawer.
  *
- * Last-write-wins is intentional in this tracer-bullet: safe mutations
- * (addCard, updateCard title/chartConfig/layout, updateDashboardMeta)
- * commit immediately to the published dashboard. Drafts arrive in
- * #2364; destructive ops + ghost overlays in #2365.
+ * Safe mutations (addCard, updateCard title/chartConfig/layout,
+ * updateDashboardMeta) commit immediately to the user's draft. The
+ * Publish UI on the dashboard page promotes the draft to published
+ * via a diff-confirm modal. Destructive ops (removeCard, updateCardSql)
+ * stage as ghost overlays the user accepts or discards inline.
  */
 
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
@@ -54,7 +55,7 @@ interface BoundChatDrawerProps {
   /**
    * Called whenever a tool completes — the dashboard view re-fetches so
    * the new card / updated title / new layout shows up immediately. The
-   * tracer-bullet doesn't try to be surgical about which tools warrant
+   * drawer doesn't try to be surgical about which tools warrant
    * a refetch; every tool result triggers one. Plenty of room for
    * smarter invalidation in a follow-up.
    */
@@ -150,11 +151,43 @@ export function BoundChatDrawer({
     // `useChat` instance below picks up the cleared conversation ref.
   }, [apiUrl, isCrossOrigin, dashboardId, sessionKey]);
 
+  // `bound_dashboard_unavailable` warnings are pushed by the chat route
+  // when bind/resolve failed and the request had explicitly asked to be
+  // bound. Without surfacing them the drawer would silently run the
+  // default agent ("I'd love to help… but I can't see any dashboard")
+  // and the user would never know their edits weren't being captured.
+  const [boundUnavailable, setBoundUnavailable] = useState<{
+    title: string;
+    detail: string;
+  } | null>(null);
+
+  // Clear the warning between sessions so a previous run's banner
+  // doesn't leak into the new conversation.
+  useEffect(() => {
+    if (open) setBoundUnavailable(null);
+  }, [open, sessionKey]);
+
+  const handleStreamData = useCallback((dataPart: { type: string; data: unknown }) => {
+    if (dataPart.type !== "data-context-warning") return;
+    const data = dataPart.data as
+      | { code?: string; title?: string; detail?: string }
+      | null
+      | undefined;
+    if (!data || data.code !== "bound_dashboard_unavailable") return;
+    setBoundUnavailable({
+      title: typeof data.title === "string" ? data.title : "Dashboard editing unavailable",
+      detail:
+        typeof data.detail === "string"
+          ? data.detail
+          : "Edits in this chat won't take effect. Reopen the drawer to retry.",
+    });
+  }, []);
+
   const { messages, sendMessage, status, error } = useChat({
     transport,
-    // useChat re-mounts when the key on the calling component changes.
-    // We don't need onData here — bound mode doesn't surface Python
-    // progress and the bound editor tools don't emit custom data parts.
+    // Subscribe to the same `data-context-warning` channel the main
+    // chat uses so the bound flow can surface bind/resolve failures.
+    onData: handleStreamData as never,
   });
 
   const isLoading = status === "streaming" || status === "submitted";
@@ -166,16 +199,16 @@ export function BoundChatDrawer({
   // (cheap, but explicit).
   const lastMsg = messages[messages.length - 1];
   const lastMsgId = lastMsg?.id;
-  const lastMsgToolFingerprint = useMemo(() => {
-    if (!lastMsg || lastMsg.role !== "assistant") return "";
-    let fp = "";
+  // Pure derived string. React Compiler memoizes; manual useMemo
+  // was forbidden by CLAUDE.md for perf-only cases.
+  let lastMsgToolFingerprint = "";
+  if (lastMsg && lastMsg.role === "assistant") {
     for (const part of lastMsg.parts ?? []) {
       if (!isToolUIPart(part)) continue;
       const p = part as { state?: string; toolCallId?: string };
-      fp += `${p.toolCallId ?? ""}:${p.state ?? ""};`;
+      lastMsgToolFingerprint += `${p.toolCallId ?? ""}:${p.state ?? ""};`;
     }
-    return fp;
-  }, [lastMsg]);
+  }
 
   useEffect(() => {
     if (!onDashboardMutated || !lastMsgToolFingerprint) return;
@@ -188,16 +221,13 @@ export function BoundChatDrawer({
     }
   }, [lastMsgToolFingerprint, lastMsgId, onDashboardMutated]);
 
-  const handleSubmit = useCallback(
-    async (e: React.FormEvent<HTMLFormElement>) => {
-      e.preventDefault();
-      const text = input.trim();
-      if (!text || isLoading) return;
-      setInput("");
-      await sendMessage({ text });
-    },
-    [input, isLoading, sendMessage],
-  );
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const text = input.trim();
+    if (!text || isLoading) return;
+    setInput("");
+    await sendMessage({ text });
+  }
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -255,6 +285,17 @@ export function BoundChatDrawer({
               {isLoading && messages[messages.length - 1]?.role === "user" && (
                 <div className="my-2">
                   <TypingIndicator />
+                </div>
+              )}
+
+              {boundUnavailable && (
+                <div
+                  role="alert"
+                  data-testid="bound-unavailable-banner"
+                  className="my-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-300"
+                >
+                  <div className="font-medium">{boundUnavailable.title}</div>
+                  <div className="mt-1">{boundUnavailable.detail}</div>
                 </div>
               )}
 
@@ -419,10 +460,7 @@ function HistoryTranscriptPanel({
     `/api/v1/dashboards/${dashboardId}/sessions/${sessionId}`,
   );
 
-  const transformed = useMemo(
-    () => (data ? transformMessages(data.messages) : []),
-    [data],
-  );
+  const transformed = data ? transformMessages(data.messages) : [];
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">

@@ -42,6 +42,12 @@ interface PublishDiffModalProps {
   /** Result of POST /:id/draft/publish. Modal stays open on error so the user can read it. */
   publishing: boolean;
   error: FetchError | null;
+  /**
+   * Error from the initial GET /:id/draft fetch that powers the diff.
+   * Separate from `error` (which tracks the publish mutation) so an
+   * empty modal doesn't leave the user wondering why there's no diff.
+   */
+  viewError?: string | null;
   onConfirm: () => Promise<void> | void;
 }
 
@@ -52,6 +58,7 @@ export function PublishDiffModal({
   loading,
   publishing,
   error,
+  viewError,
   onConfirm,
 }: PublishDiffModalProps) {
   // Local "confirmed" guard avoids a double-submit when the user mashes
@@ -96,6 +103,16 @@ export function PublishDiffModal({
           {loading && (
             <div className="px-1 py-2 text-sm text-zinc-500 dark:text-zinc-400">
               Computing diff…
+            </div>
+          )}
+
+          {!loading && viewError && (
+            <div
+              role="alert"
+              data-testid="publish-diff-view-error"
+              className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400"
+            >
+              {viewError}
             </div>
           )}
 

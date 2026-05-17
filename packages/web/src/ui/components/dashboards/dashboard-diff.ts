@@ -6,10 +6,9 @@
  * `GET /:id/draft`), compute the user-facing change set:
  *
  *   - added: cards present in the draft, absent from published
- *   - removed: cards present in published, absent from the draft
- *     (NOTE: the #2364 slice does not yet support removing cards in the
- *     draft path, so this list is empty today; the modal still renders
- *     the row so a future slice can light it up without a UI rewrite)
+ *   - removed: cards present in published, absent from the draft —
+ *     populated when the user has accepted a `removeCard` stage (#2365)
+ *     that the apply path dropped from the draft snapshot
  *   - changed: cards present in both, with at least one field differing
  *     (title / sql / chartConfig / connectionGroupId / layout)
  *   - meta: title / description diff (independent of card-level diff)

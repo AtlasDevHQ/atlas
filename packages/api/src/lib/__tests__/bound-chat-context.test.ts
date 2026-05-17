@@ -242,7 +242,7 @@ describe("bound-chat-context module", () => {
       if (!r.ok) expect(r.reason).toBe("not_bound");
     });
 
-    it("returns dashboard_missing when the bound dashboard is gone / cross-org", async () => {
+    it("returns dashboard_not_found when the bound dashboard is gone / cross-org", async () => {
       enableInternalDB();
       setResults(
         { rows: [{ bound_dashboard_id: "dash-X" }] }, // conversation lookup
@@ -250,7 +250,7 @@ describe("bound-chat-context module", () => {
       );
       const r = await resolveBoundDashboard("conv-1", { orgId: "org-1" });
       expect(r.ok).toBe(false);
-      if (!r.ok) expect(r.reason).toBe("dashboard_missing");
+      if (!r.ok) expect(r.reason).toBe("dashboard_not_found");
     });
 
     it("returns the dashboard + cards on success", async () => {
@@ -462,10 +462,14 @@ describe("bound-chat-context module", () => {
         expect(r.data.messages[0]!.role).toBe("user");
         expect(r.data.messages[1]!.role).toBe("assistant");
       }
-      // Second query is the messages fetch, scoped to conversation only
+      // Second query is the messages fetch, scoped to conversation
+      // only, plus a defensive LIMIT to bound the response (DoS guard
+      // — a runaway bound chat with 10k turns would otherwise serialize
+      // every message in one shot).
       const msgSql = queryCalls[1]!.sql;
       expect(msgSql).toMatch(/conversation_id = \$1/);
-      expect(queryCalls[1]!.params).toEqual(["conv-1"]);
+      expect(msgSql).toMatch(/LIMIT \$2/);
+      expect(queryCalls[1]!.params).toEqual(["conv-1", 1000]);
     });
 
     it("reads workspace-wide — does NOT add a user-ownership predicate", async () => {

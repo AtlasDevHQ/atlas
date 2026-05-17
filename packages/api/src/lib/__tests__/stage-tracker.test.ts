@@ -583,4 +583,245 @@ describe("stage-tracker DB helpers", () => {
       expect(result.reason).toBe("not_found");
     });
   });
+
+  // -----------------------------------------------------------------------
+  // acceptStagedChange — applies the staged change to the draft + flips
+  // status in one transaction. Covers the race-fix from the 1.4.6 review:
+  // the draft snapshot is RE-LOADED inside the transaction under FOR
+  // UPDATE so a safe-op edit between the pre-tx load and the tx-write
+  // can't be overwritten.
+  // -----------------------------------------------------------------------
+
+  describe("acceptStagedChange()", () => {
+    // Shared fixture: a published dashboard with one card the stage will
+    // remove + a draft snapshot mirroring it. The pool returns:
+    //   1. loadStagedChange → the pending stage row
+    //   2. getDashboard → dashboards row + cards rows
+    //   3. forkOrLoadDraft.loadDraft → the existing draft row
+    // Then transactional client calls:
+    //   1. BEGIN
+    //   2. SELECT draft FOR UPDATE → returns the same draft jsonb
+    //   3. UPDATE dashboard_user_drafts SET draft = $1
+    //   4. UPDATE dashboard_stage_changes SET status='applied' RETURNING ...
+    //   5. COMMIT
+    function arrangeHappyPath(opts: { inTxDraftOverride?: object } = {}) {
+      const stageRowFixture = {
+        id: "stage-1",
+        dashboard_id: "dash-1",
+        user_id: "user-1",
+        kind: "remove_card",
+        payload: { kind: "remove_card", cardId: "card-1" },
+        status: "pending",
+        created_at: "2026-05-17T00:00:00Z",
+        updated_at: "2026-05-17T00:00:00Z",
+        applied_at: null,
+        discarded_at: null,
+      };
+      const dashboardRow = {
+        id: "dash-1",
+        org_id: "org-1",
+        owner_id: "u1",
+        title: "Test dash",
+        description: null,
+        share_token: null,
+        share_expires_at: null,
+        share_mode: "public",
+        refresh_schedule: null,
+        last_refresh_at: null,
+        next_refresh_at: null,
+        card_count: 1,
+        created_at: "2026-05-17T00:00:00Z",
+        updated_at: "2026-05-17T00:00:00Z",
+      };
+      const cardRow = {
+        id: "card-1",
+        dashboard_id: "dash-1",
+        position: 0,
+        title: "Card 1",
+        sql: "SELECT 1",
+        chart_config: { type: "table", categoryColumn: "x", valueColumns: ["x"] },
+        cached_columns: null,
+        cached_rows: null,
+        cached_at: null,
+        connection_group_id: null,
+        layout: null,
+        created_at: "2026-05-17T00:00:00Z",
+        updated_at: "2026-05-17T00:00:00Z",
+      };
+      const draftSnapshot = {
+        dashboardId: "dash-1",
+        title: "Test dash",
+        description: null,
+        cards: [
+          {
+            id: "card-1",
+            position: 0,
+            title: "Card 1",
+            sql: "SELECT 1",
+            chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["x"] },
+            connectionGroupId: null,
+            layout: null,
+          },
+        ],
+      };
+      const draftRowFixture = {
+        user_id: "user-1",
+        dashboard_id: "dash-1",
+        draft: draftSnapshot,
+        baseline: draftSnapshot,
+        published_baseline_at: "2026-05-17T00:00:00Z",
+        created_at: "2026-05-17T00:00:00Z",
+        updated_at: "2026-05-17T00:00:00Z",
+      };
+      setQueryResults(
+        { rows: [stageRowFixture] }, // loadStagedChange
+        { rows: [dashboardRow] }, // getDashboard SELECT dashboards
+        { rows: [cardRow] }, // getDashboard SELECT cards
+        { rows: [draftRowFixture] }, // forkOrLoadDraft → loadDraft
+      );
+      setClientResults(
+        { rows: [] }, // BEGIN
+        // SELECT draft FOR UPDATE — returns either the same snapshot
+        // (happy path) or the override (race / mutation cases).
+        { rows: [{ draft: opts.inTxDraftOverride ?? draftSnapshot }] },
+        { rows: [] }, // UPDATE dashboard_user_drafts
+        {
+          rows: [
+            {
+              ...stageRowFixture,
+              status: "applied",
+              applied_at: "2026-05-17T01:00:00Z",
+              updated_at: "2026-05-17T01:00:00Z",
+            },
+          ],
+        }, // UPDATE dashboard_stage_changes RETURNING
+        { rows: [] }, // COMMIT
+      );
+    }
+
+    it("applies remove_card to the draft + flips status to applied in one transaction", async () => {
+      enableInternalDB();
+      arrangeHappyPath();
+      const { acceptStagedChange } = await import("../stage-tracker");
+      const result = await acceptStagedChange({
+        stageId: "stage-1",
+        userId: "user-1",
+        orgId: "org-1",
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("unreachable");
+      expect(result.applied).toBe(true);
+      expect(result.stage.status).toBe("applied");
+      // The transaction MUST hold the lock before mutating — the
+      // SELECT FOR UPDATE is the race-fix from the 1.4.6 review.
+      const sqls = clientCalls.map((c) => c.sql).join("\n");
+      expect(clientCalls[0]?.sql).toBe("BEGIN");
+      expect(sqls).toMatch(/SELECT draft FROM dashboard_user_drafts[\s\S]*FOR UPDATE/);
+      expect(sqls).toMatch(/UPDATE dashboard_user_drafts/);
+      expect(sqls).toMatch(/UPDATE dashboard_stage_changes/);
+      expect(sqls).toContain("COMMIT");
+      expect(clientReleased).toBe(true);
+    });
+
+    it("returns unknown_card when the in-tx re-load shows the card was already removed by a safe op", async () => {
+      // The pre-tx fork-or-load resolves the card; before the transaction
+      // grabs the lock, a concurrent safe-op `updateCard` (or a prior
+      // accept for the same card) removed it. The in-tx re-load + re-apply
+      // surfaces `unknown_card` and ROLLBACKs so the stage row stays
+      // pending — the user can discard it next.
+      enableInternalDB();
+      arrangeHappyPath({
+        inTxDraftOverride: {
+          dashboardId: "dash-1",
+          title: "Test dash",
+          description: null,
+          cards: [], // card-1 is gone in the in-tx snapshot
+        },
+      });
+      const { acceptStagedChange } = await import("../stage-tracker");
+      const result = await acceptStagedChange({
+        stageId: "stage-1",
+        userId: "user-1",
+        orgId: "org-1",
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.reason).toBe("unknown_card");
+      // Rolled back; no UPDATEs landed.
+      const sqls = clientCalls.map((c) => c.sql).join("\n");
+      expect(sqls).toContain("ROLLBACK");
+      expect(sqls).not.toMatch(/UPDATE dashboard_stage_changes/);
+      expect(clientReleased).toBe(true);
+    });
+
+    it("returns no_draft and rolls back when the draft was discarded between fork-or-load and FOR UPDATE", async () => {
+      enableInternalDB();
+      arrangeHappyPath();
+      // Override just the in-tx draft lock to return zero rows.
+      setClientResults(
+        { rows: [] }, // BEGIN
+        { rows: [] }, // SELECT FOR UPDATE — empty
+        { rows: [] }, // ROLLBACK
+      );
+      const { acceptStagedChange } = await import("../stage-tracker");
+      const result = await acceptStagedChange({
+        stageId: "stage-1",
+        userId: "user-1",
+        orgId: "org-1",
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.reason).toBe("no_draft");
+      // The SELECT FOR UPDATE contains the substring "UPDATE", but no
+      // mutating statement should have landed — assert no UPDATE
+      // statement on either table specifically.
+      const sqls = clientCalls.map((c) => c.sql).join("\n");
+      expect(sqls).toContain("ROLLBACK");
+      expect(sqls).not.toMatch(/UPDATE dashboard_user_drafts/);
+      expect(sqls).not.toMatch(/UPDATE dashboard_stage_changes/);
+    });
+
+    it("returns rejected when the stage is already discarded (no_op transition)", async () => {
+      enableInternalDB();
+      setQueryResults({
+        rows: [
+          {
+            id: "stage-1",
+            dashboard_id: "dash-1",
+            user_id: "user-1",
+            kind: "remove_card",
+            payload: { kind: "remove_card", cardId: "card-1" },
+            status: "discarded",
+            created_at: "2026-05-17T00:00:00Z",
+            updated_at: "2026-05-17T00:30:00Z",
+            applied_at: null,
+            discarded_at: "2026-05-17T00:30:00Z",
+          },
+        ],
+      });
+      const { acceptStagedChange } = await import("../stage-tracker");
+      const result = await acceptStagedChange({
+        stageId: "stage-1",
+        userId: "user-1",
+        orgId: "org-1",
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.reason).toBe("rejected");
+    });
+
+    it("returns not_found for a cross-user stage id (per-user gate)", async () => {
+      enableInternalDB();
+      setQueryResults({ rows: [] });
+      const { acceptStagedChange } = await import("../stage-tracker");
+      const result = await acceptStagedChange({
+        stageId: "stage-1",
+        userId: "user-other",
+        orgId: "org-1",
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error("unreachable");
+      expect(result.reason).toBe("not_found");
+    });
+  });
 });

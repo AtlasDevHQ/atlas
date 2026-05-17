@@ -32,6 +32,7 @@ plugins/mcp/src/_oauth-helper/
 packages/api/src/lib/db/migrations/meta/
 routeTree.gen.ts
 e2e/browser/storage-state.json
+e2e/browser/multi-env-storage.json
 e2e/browser/test-results/
 # Playwright dumps test-results/ at cwd when run from repo root.
 /test-results/

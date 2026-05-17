@@ -179,3 +179,34 @@ export interface ProactiveMeterEvent {
 export type ProactiveMeterEventFn = (
   event: ProactiveMeterEvent,
 ) => Promise<void> | void;
+
+// ---------------------------------------------------------------------------
+// Monthly quota cap (#2301)
+// ---------------------------------------------------------------------------
+
+/**
+ * Quota snapshot returned by the host. Mirrors `WorkspaceQuotaStatus`
+ * from `@atlas/api/lib/proactive/quota` shape-by-shape — declared
+ * here so the plugin doesn't import `@atlas/api`.
+ */
+export interface ProactiveQuotaStatus {
+  /** Cap value persisted on the workspace config. Null = unlimited. */
+  monthlyClassifierCap: number | null;
+  /** Distinct classify rows since the start of the current UTC month. */
+  classifyCountThisMonth: number;
+  /** True when `classifyCountThisMonth >= monthlyClassifierCap`. */
+  capReached: boolean;
+}
+
+/**
+ * Host-injected quota reader. Consulted BEFORE the classifier on every
+ * channel message — pays a single DB read (well-indexed) and short-
+ * circuits the LLM call when the workspace has hit its monthly cap.
+ *
+ * Implementations should never throw. Failures are caught by the
+ * listener and treated as "no quota info" (Atlas keeps answering)
+ * so a quota outage never crashes the SDK event loop.
+ */
+export type GetQuotaStatusFn = (input: {
+  workspaceId: string;
+}) => Promise<ProactiveQuotaStatus>;

@@ -2164,9 +2164,9 @@ Architecture-wins ledger: #54 (`useSession()` widened), #55 (`URLSecret` / `Opaq
 
 ---
 
-## 1.4.4 — Multi-environment semantic layer — CODE-COMPLETE
+## 1.4.4 — Multi-environment semantic layer — CLOSED
 
-Code-complete 2026-05-16. Milestone [#45](https://github.com/AtlasDevHQ/atlas/milestones/45), 11 original issues shipped + 17-finding closeout audit + 1 hardening follow-up. GitHub milestone close gated on manual verification [#2443](https://github.com/AtlasDevHQ/atlas/issues/2443). Lets a single workspace point a single semantic layer at multiple connections (dev/staging/prod, US/EU/APAC) with group-scoped content (entities, dashboards, scheduled tasks, approvals, PII, prompts) and atomic publish + atomic archive cascade.
+Closed 2026-05-17. Milestone [#45](https://github.com/AtlasDevHQ/atlas/milestones/45), 64 issues — biggest schema shift since 1.0. Lets a single workspace point a single semantic layer at multiple connections (dev/staging/prod, US/EU/APAC) with group-scoped content (entities, dashboards, scheduled tasks, approvals, PII, prompts) and atomic publish + atomic archive cascade.
 
 ### Connection groups foundation
 
@@ -2212,5 +2212,79 @@ Code-complete 2026-05-16. Milestone [#45](https://github.com/AtlasDevHQ/atlas/mi
 - [x] Honest re-scope of `multi-env-admin.spec.ts` ([#2420](https://github.com/AtlasDevHQ/atlas/issues/2420), [PR #2442](https://github.com/AtlasDevHQ/atlas/pull/2442)) — renamed to `*.integration.spec.ts` (it's UI integration via `page.route` mocks, not e2e); stripped misused `@llm` tags. Real route-level e2e for PII / approvals / scheduled-tasks / chat routing deferred to [#2441](https://github.com/AtlasDevHQ/atlas/issues/2441).
 
 Architecture-wins ledger: #58 (`withGroupScope` prep), #59 (`connection_groups` foundation), #60 (semantic-entity overlay-aware ambiguity).
+
+### Dogfood follow-on (2026-05-16) + closeout batches
+
+Three post-code-complete waves before milestone close:
+
+- [x] Admin data-layer IA reshape ([PRD #2458](https://github.com/AtlasDevHQ/atlas/issues/2458), 5 slices #2459–#2463) — drift badges on `/admin/semantic` tree, `Group by [Type|Env]` toggle on `/admin/connections`, drift drawer with column-level diff + reconcile actions, zero-table empty state, `/admin/schema-diff` retired ([#2480](https://github.com/AtlasDevHQ/atlas/pull/2480) — pre-customer so no migration needed). Surfaced by [#2453](https://github.com/AtlasDevHQ/atlas/issues/2453) internal dogfood pass.
+- [x] SaaS plan + trial onboarding ([PRD #2464](https://github.com/AtlasDevHQ/atlas/issues/2464), 4 slices #2465–#2468) — every SaaS signup gets a 14-day trial at workspace creation; one-time backfill for existing free workspaces; trial countdown banner on `/admin/billing`; `user-configured` copy retired from `/admin/model-config`. Closes the [#2456](https://github.com/AtlasDevHQ/atlas/issues/2456) "free tier on SaaS" gap.
+- [x] First verification wave (8 parallel agents, ~1h) — chat empty-state DB overlay ([#2481](https://github.com/AtlasDevHQ/atlas/issues/2481)), ConnectionRegistry boot-hydrate ([#2482](https://github.com/AtlasDevHQ/atlas/issues/2482)), SaaS demo-conn leak fix ([#2483](https://github.com/AtlasDevHQ/atlas/issues/2483)), Add Connection env field + 429 surfacing ([#2484](https://github.com/AtlasDevHQ/atlas/issues/2484) / [#2485](https://github.com/AtlasDevHQ/atlas/issues/2485)), admin MFA gate consistency ([#2486](https://github.com/AtlasDevHQ/atlas/issues/2486)), post-signup landing race ([#2487](https://github.com/AtlasDevHQ/atlas/issues/2487)), stale-bundle cache headers ([#2488](https://github.com/AtlasDevHQ/atlas/issues/2488)).
+- [x] Second verification wave (2 parallel) — `/admin` Overview platform/org split ([#2489](https://github.com/AtlasDevHQ/atlas/issues/2489)) + `/admin/connections` live-count parity ([#2490](https://github.com/AtlasDevHQ/atlas/issues/2490)).
+- [x] Third verification wave (PM browser-driven, 5 parallel) — useAdminFetch empty-path CORS ([#2502](https://github.com/AtlasDevHQ/atlas/issues/2502)), entity-count drift across admin surfaces ([#2503](https://github.com/AtlasDevHQ/atlas/issues/2503)), missing chat env picker ([#2504](https://github.com/AtlasDevHQ/atlas/issues/2504)), agent `default`-leak on SaaS ([#2505](https://github.com/AtlasDevHQ/atlas/issues/2505)), orphan empty env group ([#2506](https://github.com/AtlasDevHQ/atlas/issues/2506)), Cloudflare CSP beacon ([#2501](https://github.com/AtlasDevHQ/atlas/issues/2501)).
+- [x] Path-A real route-level e2e ([#2441](https://github.com/AtlasDevHQ/atlas/issues/2441), [PR #2514](https://github.com/AtlasDevHQ/atlas/pull/2514)) — multi-group Playwright coverage against three local Postgres on 5433/5434/5435 with divergent seeds. Closes the deferred 1.4.4 path.
+- [x] Scheduled-tasks `connectionGroupId` validation parity ([#2512](https://github.com/AtlasDevHQ/atlas/issues/2512), [PR #2513](https://github.com/AtlasDevHQ/atlas/pull/2513)) — closes a POST/PUT validation gap left over from the #2424 application-layer FK gate.
+- [x] Manual end-to-end verification ([#2443](https://github.com/AtlasDevHQ/atlas/issues/2443)) — walkthrough of every multi-env path before milestone close.
+
+---
+
+## 1.4.5 — Cross-environment querying — CLOSED
+
+Closed 2026-05-17. Milestone [#47](https://github.com/AtlasDevHQ/atlas/milestones/47), 6 issues. Agent-routed cross-environment querying — given a workspace with multiple environments (connection groups sharing the same schema), the agent picks a routing scope per question. Auto for environment-specific queries, Pin for stable single-source results, All envs to fan out and merge under an `environment` discriminator column. Partial-failure is first-class; child queries roll up to a parent via `query_audit.parent_audit_id`. PRD [#2515](https://github.com/AtlasDevHQ/atlas/issues/2515).
+
+### Slices
+
+- [x] Slice 1 — `executeSQL` `scope` param + deep modules ([#2516](https://github.com/AtlasDevHQ/atlas/issues/2516), [PR #2522](https://github.com/AtlasDevHQ/atlas/pull/2522)) — new `environment-routing` and `multi-env-result-merger` deep modules own the dispatch decision and fan-out merge. `executeSQL` exposes `scope: "auto" | "pin" | "all"`. Architecture-wins #61 + #62.
+- [x] Slice 2 — agent system prompt teaches scope decision ([#2517](https://github.com/AtlasDevHQ/atlas/issues/2517), [PR #2524](https://github.com/AtlasDevHQ/atlas/pull/2524)) — heuristics documented in-prompt so the agent pins for dashboard-card SQL but fans out for "compare X across environments". Eval canonical questions cover both halves.
+- [x] Slice 3 — Auto/Pin/All-envs picker + `conversations.routing_mode` ([#2518](https://github.com/AtlasDevHQ/atlas/issues/2518), [PR #2532](https://github.com/AtlasDevHQ/atlas/pull/2532)) — persisted on the conversation row; three-state shadcn picker UI; request-context plumbing carries it into the agent loop.
+- [x] Slice 4 — audit log `parent_audit_id` + `envContributions` wire format ([#2519](https://github.com/AtlasDevHQ/atlas/issues/2519), [PR #2527](https://github.com/AtlasDevHQ/atlas/pull/2527)) — admin audit views see one logical query plus its physical fan-out children; `ExecuteSqlResult.envContributions` carries per-environment row counts + errors; `atlas.routing_mode` OTel attribute on every agent step.
+- [x] Slice 5 — browser e2e specs ([#2520](https://github.com/AtlasDevHQ/atlas/issues/2520), [PR #2535](https://github.com/AtlasDevHQ/atlas/pull/2535)) — `@llm`-tagged happy-path + partial-failure specs; skip cleanly when no overlay / LLM key present.
+- [x] Review follow-up ([PR #2541](https://github.com/AtlasDevHQ/atlas/pull/2541)) — FK race fix, react re-exports, RoutingReason → OTel, NULL → pin resolver, and 12 smaller fixes.
+
+Architecture-wins ledger: #61 (`environment-routing`), #62 (`multi-env-result-merger`).
+
+---
+
+## 1.4.6 — Chat as dashboard editor — CLOSED
+
+Closed 2026-05-17. Milestone [#46](https://github.com/AtlasDevHQ/atlas/milestones/46), 9 issues. Dashboards gain a chat-bound editor — open the chat drawer on any dashboard page and the agent picks up a `boundDashboardId` context so `executeSQL` / `createCard` / `updateCardSql` / `removeCard` target the dashboard automatically. Every admin mutation flows into the caller's personal draft of the dashboard; Publish promotes the draft via an atomic three-way merge against a persisted baseline. A new `screenshotDashboard` vision tool lets the agent see the rendered dashboard so it can answer "why is this card flat?" from pixels. PRD [#2362](https://github.com/AtlasDevHQ/atlas/issues/2362).
+
+### Slices
+
+- [x] Tracer-bullet drawer + bound dashboard editor tools ([#2363](https://github.com/AtlasDevHQ/atlas/issues/2363), [PR #2525](https://github.com/AtlasDevHQ/atlas/pull/2525)) — bound chat context + safe-op editor tools + bound-mode registry; `conversations.bound_dashboard_id` migration (0073) with matching `pgTable` mirror. Architecture-wins #63.
+- [x] Per-user drafts foundation ([#2364](https://github.com/AtlasDevHQ/atlas/issues/2364), [PR #2534](https://github.com/AtlasDevHQ/atlas/pull/2534)) — `dashboard-versioning` deep module owns transactional `publishDraft` with a persisted `baseline jsonb` for exact three-way merge + stale-baseline 409 guard. `dashboard_user_drafts` migration (0079). `ATLAS_DASHBOARD_DRAFTS_ENABLED` flag default-OFF at first ship. Architecture-wins #64.
+- [x] History tab + sessions endpoints ([#2368](https://github.com/AtlasDevHQ/atlas/issues/2368), [PR #2533](https://github.com/AtlasDevHQ/atlas/pull/2533)) — `GET .../sessions{,/:id}` workspace-wide; read-only transcript renders in shadcn Tabs alongside the live chat drawer.
+- [x] Screenshot pipeline spike → go decision ([#2366](https://github.com/AtlasDevHQ/atlas/issues/2366), comment thread on [#2362](https://github.com/AtlasDevHQ/atlas/issues/2362)) — p50 1.2–1.5s warm, 33/33 OK; v1 primary approved despite 2–3× over the PRD 300–500ms target. Productionisation wins queued: pooled browsers, no per-shot sign-in, cropped sidebar.
+- [x] `screenshotDashboard` vision tool ([#2367](https://github.com/AtlasDevHQ/atlas/issues/2367), [PR #2538](https://github.com/AtlasDevHQ/atlas/pull/2538)) — long-lived Chromium pool, per-(user, dashboard) cache, mutation-invalidated.
+- [x] Stage tracker + ghost overlays for destructive ops ([#2365](https://github.com/AtlasDevHQ/atlas/issues/2365), [PR #2544](https://github.com/AtlasDevHQ/atlas/pull/2544)) — `stage-tracker` deep module owns pure idempotent `pending → applied` / `pending → discarded` transitions; `dashboard_stage_changes` migration (0083); `removeCard` + `updateCardSql` return `stage_required` envelopes; UI overlays ghosts on affected cards.
+- [x] `createDashboard` reframe + bound continuity handoff ([#2369](https://github.com/AtlasDevHQ/atlas/issues/2369), [PR #2542](https://github.com/AtlasDevHQ/atlas/pull/2542)) — renamed from `proposeDashboard`; persists a real row in the user's draft; root chat hands off to the bound drawer via `?openChat=true` so creation → edit is one continuous conversation.
+- [x] Publish UI + diff modal + flag flip ([#2521](https://github.com/AtlasDevHQ/atlas/issues/2521), [PR #2543](https://github.com/AtlasDevHQ/atlas/pull/2543)) — draft badge, `PublishDiffModal` with diff renderer, baseline-changed banner with one-click rebase, `ATLAS_DASHBOARD_DRAFTS_ENABLED` flipped to default-ON.
+- [x] Review follow-up ([PR #2547](https://github.com/AtlasDevHQ/atlas/pull/2547)) — race conditions, error surfacing, comment drift.
+
+**Coordination note:** all 8 slices launched as parallel subagent worktrees with auto-merge; survived heavy rebase pressure from concurrent 1.5.0 / 1.4.5 sessions landing the same afternoon (8 migrations / 12 PRs into main during the window).
+
+Architecture-wins ledger: #63 (boundChatContext), #64 (dashboard-versioning), plus stage-tracker + screenshot pipeline entries in the win doc.
+
+---
+
+## 1.5.0 — Proactive Chat — CLOSED
+
+Closed 2026-05-17. Milestone [#43](https://github.com/AtlasDevHQ/atlas/milestone/43), 11 issues. `/ee`-gated paid tier, Slack-first. Atlas listens for data-shaped messages in opt-in channels and reacts; a reaction lets the asker pull an answer without summoning. Opens the "1.5.x = Atlas Everywhere" narrative. PRD [#2291](https://github.com/AtlasDevHQ/atlas/issues/2291).
+
+### Slices
+
+- [x] Reaction-first tracer ([#2292](https://github.com/AtlasDevHQ/atlas/issues/2292), [PR #2523](https://github.com/AtlasDevHQ/atlas/pull/2523)) — listens in opt-in Slack channels, classifies messages as data questions with a sensitivity-tunable confidence threshold, reacts with a single emoji.
+- [x] Reaction-to-answer flow ([#2293](https://github.com/AtlasDevHQ/atlas/issues/2293), [PR #2526](https://github.com/AtlasDevHQ/atlas/pull/2526)) — covers both linked and unlinked askers.
+- [x] Admin opt-in console + persisted config ([#2294](https://github.com/AtlasDevHQ/atlas/issues/2294), [PR #2528](https://github.com/AtlasDevHQ/atlas/pull/2528)) — Settings → Slack → Proactive Mode with workspace + per-channel config.
+- [x] Three-layer kill switch + per-user opt-out ([#2295](https://github.com/AtlasDevHQ/atlas/issues/2295), [PR #2529](https://github.com/AtlasDevHQ/atlas/pull/2529) + polish [PR #2545](https://github.com/AtlasDevHQ/atlas/pull/2545)) — channel members `@atlas pause` for 24h, admins disable workspace-wide, users DM `unsubscribe`. All three short-circuit before classification. Post-merge polish hardened the kill switch to **fail-closed** + allowlist enforcement + observability tightening.
+- [x] Answer meter + audit integration ([#2296](https://github.com/AtlasDevHQ/atlas/issues/2296), [PR #2530](https://github.com/AtlasDevHQ/atlas/pull/2530)) — every reaction, expansion, answer lands in `query_audit` with a `proactive` actor kind; meter tracks monthly quota usage.
+- [x] Public dataset for non-linked askers ([#2297](https://github.com/AtlasDevHQ/atlas/issues/2297), [PR #2540](https://github.com/AtlasDevHQ/atlas/pull/2540)) — HITL admin review surface before posting; design partners can ramp public-Q&A confidence before flipping the switch.
+- [x] Inline feedback buttons + `/atlas feedback` ([#2298](https://github.com/AtlasDevHQ/atlas/issues/2298), [PR #2529](https://github.com/AtlasDevHQ/atlas/pull/2529)) — 👍/👎 on every proactive answer + free-form slash command; rows feed the future sensitivity-tuning loop.
+- [x] Sensitivity preset rationale + per-channel override coverage ([#2299](https://github.com/AtlasDevHQ/atlas/issues/2299), [PR #2536](https://github.com/AtlasDevHQ/atlas/pull/2536)) — low / medium / high presets ship with documented confidence thresholds, expected misfire rate, workspace-visible reasoning trail.
+- [x] Activation announcement + install consent ([#2300](https://github.com/AtlasDevHQ/atlas/issues/2300), [PR #2539](https://github.com/AtlasDevHQ/atlas/pull/2539)) — one-time disclosure to the admin-configured announcement channel on first enable; install flow gates on admin acknowledging the data-handling policy; idempotent on re-enable.
+- [x] Monthly classifier quota cap ([#2301](https://github.com/AtlasDevHQ/atlas/issues/2301), [PR #2537](https://github.com/AtlasDevHQ/atlas/pull/2537)) — workspace-level monthly cap, hard-stops proactive answers when exceeded; admin alerts at 80%/95%/100%; resets on billing anchor.
+- [x] Shared types release ([PR #2546](https://github.com/AtlasDevHQ/atlas/pull/2546)) — `@useatlas/types@0.1.3` adds the proactive chat wire shapes.
+
+Full instrumentation in production; awaiting design-partner adoption to hit the <5% misfire / ≥70% acceptance bar before promoting beyond Slack (Teams/Discord/Google Chat adapters are wired but feature-flagged off).
 
 ---

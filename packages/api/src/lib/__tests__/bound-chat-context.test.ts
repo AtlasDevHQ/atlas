@@ -495,5 +495,13 @@ describe("bound-chat-context module", () => {
       expect(BOUND_AGENT_PROMPT_GUIDANCE).toContain("updateCard");
       expect(BOUND_AGENT_PROMPT_GUIDANCE).toContain("Suggested Follow-ups");
     });
+
+    it("mentions vision is available for spatial questions (#2367)", () => {
+      // The agent must know `screenshotDashboard` exists when answering
+      // "what's on the bottom-right?" — otherwise it'll only ever reach
+      // for the textual card summary.
+      expect(BOUND_AGENT_PROMPT_GUIDANCE).toContain("screenshotDashboard");
+      expect(BOUND_AGENT_PROMPT_GUIDANCE.toLowerCase()).toContain("spatial");
+    });
   });
 });

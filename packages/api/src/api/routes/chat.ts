@@ -734,7 +734,13 @@ chat.openapi(chatRoute, async (c) => {
                 // #2364 — propagate userId so the bound editor tools can
                 // route writes through the user's draft when the drafts
                 // flag is on.
+                // #2367 — also used by the screenshot tool as part of the
+                // per-user cache key.
                 userId?: string | null;
+                // #2367 — forwarded `Cookie:` header so the screenshot
+                // tool's headless browser can authenticate against the
+                // bound dashboard's web route without a fresh sign-in.
+                cookieHeader?: string | null;
               };
             }
           | null = null;
@@ -1023,7 +1029,14 @@ chat.openapi(chatRoute, async (c) => {
                 // can route mutations through the per-user draft when
                 // `ATLAS_DASHBOARD_DRAFTS_ENABLED=true`. Anonymous
                 // bound chats stay on the legacy direct-published path.
+                // #2367 — also used by the screenshot tool as part of
+                // the per-user cache key (forward-compat with the per-
+                // user draft view that lands as drafts mature).
                 userId: authResult.user?.id ?? null,
+                // #2367 — forwarded to the screenshot tool's headless
+                // browser so it can authenticate against the dashboard's
+                // web route without doing a fresh sign-in.
+                cookieHeader: req.headers.get("cookie"),
               },
             };
           } else if (resolved.reason === "error") {

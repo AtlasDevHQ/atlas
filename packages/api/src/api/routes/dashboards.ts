@@ -17,6 +17,7 @@ import {
   listSessionsForDashboard,
   getSessionTranscript,
 } from "@atlas/api/lib/bound-chat-context";
+import { screenshotDashboard } from "@atlas/api/lib/dashboard-screenshot";
 import {
   createDashboard,
   getDashboard,
@@ -694,6 +695,29 @@ const getDashboardSessionRoute = createRoute({
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Dashboard or session not found", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const screenshotDashboardRoute = createRoute({
+  method: "get",
+  path: "/{id}/screenshot",
+  tags: ["Dashboards"],
+  summary: "Render a PNG screenshot of the dashboard",
+  description:
+    "Renders the dashboard in a headless Chromium and returns the captured PNG. Scoped to the calling user — when #2364 (drafts foundation) lands, draft views are returned per-user, otherwise the published baseline is captured. Output is cached by (dashboardId, userId, snapshotHash) and invalidated on every mutation. Used internally by the bound agent's `screenshotDashboard` tool (#2367); also exposable to UI for in-conversation previews.",
+  request: {
+    params: z.object({
+      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
+    }),
+  },
+  responses: {
+    200: { description: "PNG screenshot", content: { "image/png": { schema: z.string().openapi({ format: "binary" }) } } },
+    400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    404: { description: "Dashboard not found", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Headless browser unavailable", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -1777,6 +1801,66 @@ authed.openapi(getDashboardSessionRoute, async (c) => {
     }
     return c.json(result.data, 200);
   }), { label: "get dashboard session transcript" });
+});
+
+// ---------------------------------------------------------------------------
+// GET /:id/screenshot — render PNG (#2367)
+// ---------------------------------------------------------------------------
+
+authed.openapi(screenshotDashboardRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId, user } = yield* AuthContext;
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
+    }
+    if (!user?.id) {
+      // Defence-in-depth — authed should already block this path, but
+      // the screenshot cache key requires a stable userId so refuse
+      // explicitly rather than caching under "anonymous".
+      return c.json({ error: "auth_required", message: "Authentication required for screenshots.", requestId }, 401);
+    }
+
+    const result = yield* Effect.promise(() =>
+      screenshotDashboard({
+        dashboardId: id,
+        userId: user.id,
+        orgId,
+        cookieHeader: c.req.raw.headers.get("cookie"),
+      }),
+    );
+    if (!result.ok) {
+      switch (result.reason) {
+        case "no_db":
+          return c.json({ error: "not_available", message: result.message }, 404);
+        case "dashboard_not_found":
+          return c.json({ error: "not_found", message: result.message }, 404);
+        case "browser_unavailable":
+          return c.json({ error: "browser_unavailable", message: result.message, requestId }, 503);
+        case "render_failed":
+          return c.json({ error: "render_failed", message: result.message, requestId }, 500);
+        default: {
+          const _exhaustive: never = result.reason;
+          return c.json({ error: "internal_error", message: `Unhandled: ${_exhaustive}`, requestId }, 500);
+        }
+      }
+    }
+
+    return new Response(new Uint8Array(result.png), {
+      status: 200,
+      headers: {
+        "Content-Type": "image/png",
+        "Content-Length": String(result.png.length),
+        // Short caller-side cache; the server-side LRU is the primary
+        // win. `private` because the PNG is scoped to the user (#2364
+        // forward-compat).
+        "Cache-Control": "private, max-age=10",
+        "X-Atlas-Screenshot-Cached": result.cached ? "1" : "0",
+        "X-Atlas-Screenshot-Duration-Ms": String(result.durationMs),
+      },
+    });
+  }), { label: "screenshot dashboard" });
 });
 
 // Mount authenticated routes

@@ -32,6 +32,36 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
   runUserQueryPipeline: undefined as never,
 }));
 
+// #2367 — screenshot module is mocked to avoid pulling Playwright into
+// the unit-test graph. Tests assert the tool wires through correctly and
+// that mutating tools call `invalidateDashboardScreenshot`.
+type ScreenshotResult = import("@atlas/api/lib/dashboard-screenshot").ScreenshotResult;
+const screenshotMock = mock(
+  async (
+    _opts: {
+      dashboardId: string;
+      userId: string;
+      orgId: string | null | undefined;
+      cookieHeader?: string | null;
+    },
+  ): Promise<ScreenshotResult> => ({
+    ok: true,
+    png: Buffer.from("FAKE-PNG"),
+    cached: false,
+    durationMs: 5,
+  }),
+);
+const invalidateScreenshotMock = mock((_dashboardId: string) => {});
+
+mock.module("@atlas/api/lib/dashboard-screenshot", () => ({
+  screenshotDashboard: screenshotMock,
+  invalidateDashboardScreenshot: invalidateScreenshotMock,
+  closeScreenshotBrowser: async () => {},
+  _resetScreenshotCache: () => {},
+  _screenshotCacheSize: () => 0,
+  _setRenderFn: () => {},
+}));
+
 const { createBoundDashboardTools } = await import("../bound-dashboard");
 
 // ---------------------------------------------------------------------------
@@ -124,6 +154,8 @@ describe("createBoundDashboardTools", () => {
     queryResults = [];
     queryResultIndex = 0;
     validateSQLMock.mockClear();
+    screenshotMock.mockClear();
+    invalidateScreenshotMock.mockClear();
     delete process.env.DATABASE_URL;
     _resetPool(null);
   });
@@ -138,13 +170,14 @@ describe("createBoundDashboardTools", () => {
   // Factory shape
   // -------------------------------------------------------------------
 
-  it("returns the six safe-op editor tools and nothing else", () => {
+  it("returns the safe-op editor tools (six edit tools + screenshotDashboard) and nothing else", () => {
     const tools = createBoundDashboardTools(ctx);
     const names = Object.keys(tools).sort();
     expect(names).toEqual([
       "addCard",
       "getCardDetail",
       "getDashboardState",
+      "screenshotDashboard",
       "updateCard",
       "updateDashboardMeta",
       "updateLayout",
@@ -344,5 +377,143 @@ describe("createBoundDashboardTools", () => {
     );
     expect(result.kind).toBe("err");
     expect(queryCalls).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------
+  // screenshotDashboard (#2367)
+  // -------------------------------------------------------------------
+
+  describe("screenshotDashboard", () => {
+    const ctxWithUser = {
+      dashboardId: "dash-1",
+      orgId: "org-1" as string | null | undefined,
+      userId: "user-1" as string | null,
+      cookieHeader: "atlas-session=abc" as string | null,
+    };
+
+    it("forwards dashboardId / userId / cookie to the render pipeline", async () => {
+      const tools = createBoundDashboardTools(ctxWithUser);
+      const result = await runTool<{
+        kind: "ok";
+        mediaType: string;
+        sizeBytes: number;
+        cached: boolean;
+      }>(tools.screenshotDashboard, {});
+      expect(result.kind).toBe("ok");
+      expect(result.mediaType).toBe("image/png");
+      expect(result.sizeBytes).toBeGreaterThan(0);
+      expect(screenshotMock).toHaveBeenCalledTimes(1);
+      const call = screenshotMock.mock.calls[0][0];
+      expect(call).toMatchObject({
+        dashboardId: "dash-1",
+        userId: "user-1",
+        orgId: "org-1",
+        cookieHeader: "atlas-session=abc",
+      });
+    });
+
+    it("refuses to render without a userId (defence-in-depth for the per-user cache key)", async () => {
+      const tools = createBoundDashboardTools({ ...ctxWithUser, userId: null });
+      const result = await runTool<{ kind: "err"; error: string }>(
+        tools.screenshotDashboard,
+        {},
+      );
+      expect(result.kind).toBe("err");
+      expect(result.error).toMatch(/authenticated user/i);
+      expect(screenshotMock).not.toHaveBeenCalled();
+    });
+
+    it("surfaces render_failed as a tool error so the LLM can recover", async () => {
+      screenshotMock.mockImplementationOnce(async () => ({
+        ok: false as const,
+        reason: "render_failed" as const,
+        message: "Could not render dashboard screenshot. Try again or simplify the dashboard.",
+      }));
+      const tools = createBoundDashboardTools(ctxWithUser);
+      const result = await runTool<{ kind: "err"; error: string }>(
+        tools.screenshotDashboard,
+        {},
+      );
+      expect(result.kind).toBe("err");
+      expect(result.error).toMatch(/render dashboard screenshot/i);
+    });
+
+    it("addCard invalidates the screenshot cache on success", async () => {
+      enableInternalDB();
+      setResults(
+        { rows: [{ next_pos: 1 }] },
+        {
+          rows: [
+            {
+              ...cardRow,
+              id: "card-99",
+              position: 1,
+              title: "From-tool card",
+            },
+          ],
+        },
+      );
+      const tools = createBoundDashboardTools(ctxWithUser);
+      const result = await runTool<{ kind: "ok" }>(tools.addCard, {
+        title: "From-tool card",
+        sql: "SELECT 1",
+        chartConfig: { type: "table", categoryColumn: "x", valueColumns: ["x"] },
+      });
+      expect(result.kind).toBe("ok");
+      expect(invalidateScreenshotMock).toHaveBeenCalledWith("dash-1");
+    });
+
+    it("updateCard invalidates the screenshot cache on success", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ id: "card-1" }] });
+      const tools = createBoundDashboardTools(ctxWithUser);
+      await runTool(tools.updateCard, { cardId: "card-1", title: "Renamed" });
+      expect(invalidateScreenshotMock).toHaveBeenCalledWith("dash-1");
+    });
+
+    it("updateLayout invalidates the screenshot cache when any placement succeeds", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ id: "card-1" }] });
+      const tools = createBoundDashboardTools(ctxWithUser);
+      await runTool(tools.updateLayout, {
+        layouts: [{ cardId: "card-1", x: 0, y: 0, w: 12, h: 8 }],
+      });
+      expect(invalidateScreenshotMock).toHaveBeenCalledWith("dash-1");
+    });
+
+    it("updateDashboardMeta invalidates the screenshot cache on success", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ id: "dash-1" }] });
+      const tools = createBoundDashboardTools(ctxWithUser);
+      await runTool(tools.updateDashboardMeta, { title: "New title" });
+      expect(invalidateScreenshotMock).toHaveBeenCalledWith("dash-1");
+    });
+
+    it("emits a multimodal image-data part via toModelOutput", async () => {
+      const tools = createBoundDashboardTools(ctxWithUser);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tool = tools.screenshotDashboard as any;
+      const result = await runTool<{ kind: "ok"; _base64: string; mediaType: string }>(
+        tool,
+        {},
+      );
+      expect(result.kind).toBe("ok");
+      expect(typeof result._base64).toBe("string");
+      expect(result._base64.length).toBeGreaterThan(0);
+      // toModelOutput is what the AI SDK calls to assemble the multimodal turn.
+      // We assert the shape so a future SDK bump that changes the contract
+      // breaks this test loudly rather than silently degrading to text-only.
+      const modelOutput = tool.toModelOutput({
+        toolCallId: "call-1",
+        input: {},
+        output: result,
+      });
+      expect(modelOutput.type).toBe("content");
+      expect(Array.isArray(modelOutput.value)).toBe(true);
+      const imagePart = modelOutput.value[0];
+      expect(imagePart.type).toBe("image-data");
+      expect(imagePart.mediaType).toBe("image/png");
+      expect(imagePart.data).toBe(result._base64);
+    });
   });
 });

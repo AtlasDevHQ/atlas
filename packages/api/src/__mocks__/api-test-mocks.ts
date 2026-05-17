@@ -614,6 +614,11 @@ export function createApiTestMocks(
     // exercise the routing override this mock locally via mock.module.
     resolveGroupForConnection: mock(() => Promise.resolve(null)),
   verifyGroupBelongsToOrg: mock(() => Promise.resolve("ok")),
+    // #2518 — three-state Auto/Pin/All picker write path. Default to a
+    // no-op success — chat-route tests don't write the row unless they
+    // exercise the picker toggle path, and they override locally when
+    // they do.
+    updateConversationRoutingMode: mock(() => Promise.resolve({ ok: true as const })),
   }));
 
   // ── Security ──────────────────────────────────────────────────

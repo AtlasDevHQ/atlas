@@ -132,8 +132,8 @@ describe("conversations module", () => {
       const result = await createConversation({ userId: "u1", title: "Test" });
       expect(result).toEqual({ id: "conv-123" });
       expect(queryCalls[0].sql).toContain("INSERT INTO conversations");
-      // [user_id, title, surface, connection_id, connection_group_id, org_id]
-      expect(queryCalls[0].params).toEqual(["u1", "Test", "web", null, null, null]);
+      // [user_id, title, surface, connection_id, connection_group_id, routing_mode, org_id]
+      expect(queryCalls[0].params).toEqual(["u1", "Test", "web", null, null, null, null]);
     });
 
     it("returns null when no DB", async () => {
@@ -154,7 +154,7 @@ describe("conversations module", () => {
       setResults({ rows: [{ id: "conv-456" }] });
 
       await createConversation({});
-      expect(queryCalls[0].params).toEqual([null, null, "web", null, null, null]);
+      expect(queryCalls[0].params).toEqual([null, null, "web", null, null, null, null]);
     });
 
     it("accepts custom surface and connectionId", async () => {
@@ -162,7 +162,7 @@ describe("conversations module", () => {
       setResults({ rows: [{ id: "conv-789" }] });
 
       await createConversation({ surface: "api", connectionId: "wh" });
-      expect(queryCalls[0].params).toEqual([null, null, "api", "wh", null, null]);
+      expect(queryCalls[0].params).toEqual([null, null, "api", "wh", null, null, null]);
     });
 
     it("includes orgId when provided", async () => {
@@ -171,7 +171,7 @@ describe("conversations module", () => {
 
       const result = await createConversation({ userId: "u1", orgId: "org-123" });
       expect(result).toEqual({ id: "conv-org" });
-      expect(queryCalls[0].params).toEqual(["u1", null, "web", null, null, "org-123"]);
+      expect(queryCalls[0].params).toEqual(["u1", null, "web", null, null, null, "org-123"]);
     });
 
     // #2345 — group-aware routing. Both columns are independent;
@@ -193,6 +193,7 @@ describe("conversations module", () => {
         "web",
         "us-int",
         "g_prod",
+        null,
         "org-1",
       ]);
     });
@@ -216,6 +217,7 @@ describe("conversations module", () => {
         "web",
         null,
         "g_prod",
+        null,
         "org-1",
       ]);
     });
@@ -1458,7 +1460,7 @@ describe("conversations module", () => {
         orgId: "org-B",
       });
       expect(result).toEqual({ ok: false, reason: "not_found" });
-      expect(queryCalls[0].sql).toContain("SELECT id, title, surface, connection_id, connection_group_id, org_id");
+      expect(queryCalls[0].sql).toContain("SELECT id, title, surface, connection_id, connection_group_id, routing_mode, org_id");
       expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
       expect(queryCalls[0].params).toEqual(["src-c1", "u1", "org-B"]);
     });
@@ -1473,7 +1475,7 @@ describe("conversations module", () => {
         orgId: "org-B",
       });
       expect(result).toEqual({ ok: false, reason: "not_found" });
-      expect(queryCalls[0].sql).toContain("SELECT id, title, surface, connection_id, connection_group_id, org_id");
+      expect(queryCalls[0].sql).toContain("SELECT id, title, surface, connection_id, connection_group_id, routing_mode, org_id");
       expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
       expect(queryCalls[0].params).toEqual(["src-c1", "u1", "org-B"]);
     });

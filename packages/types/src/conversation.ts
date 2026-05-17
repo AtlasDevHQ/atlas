@@ -3,6 +3,22 @@
 export type MessageRole = "user" | "assistant" | "system" | "tool";
 export type Surface = "web" | "api" | "mcp" | "slack" | "notebook";
 
+/**
+ * Three-state cross-environment routing picker for a conversation (#2518):
+ *
+ *   - `"auto"` — agent's `scope` decides per turn. Default for new
+ *     conversations created via the picker's Auto mode.
+ *   - `"pin"` — force single-env execution against the conversation's
+ *     stored `connectionId`; the agent's `scope` override is ignored.
+ *   - `"all"` — force fanout across every member of the active group;
+ *     the agent's `scope` override is ignored.
+ *
+ * `null` on a persisted row is read as `"pin"` (back-compat — pre-#2518
+ * rows carry a non-null `connectionId` and the safest interpretation
+ * is "stay pinned to that member").
+ */
+export type ConversationRoutingMode = "auto" | "pin" | "all";
+
 export interface Conversation {
   id: string;
   userId: string | null;
@@ -23,6 +39,19 @@ export interface Conversation {
    * runtime falls back to single-connection behavior in that case.
    */
   connectionGroupId: string | null;
+  /**
+   * Three-state Auto/Pin/All picker state (#2518). `null` on existing
+   * rows is read as `"pin"` by the runtime — pre-#2518 conversations
+   * carry a single `connectionId` and the safest interpretation is
+   * "stay pinned to that member". New conversations created via the
+   * Auto picker mode persist `"auto"`; explicit Pin / All selections
+   * persist their literal values.
+   *
+   * Optional in the type so pre-#2518 test fixtures and external
+   * SDK consumers can construct a `Conversation` without supplying
+   * the field; the runtime treats missing the same as `null`.
+   */
+  routingMode?: ConversationRoutingMode | null;
   starred: boolean;
   createdAt: string;
   updatedAt: string;

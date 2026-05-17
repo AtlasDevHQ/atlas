@@ -158,6 +158,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   renameBranch: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   resolveGroupForConnection: mock(() => Promise.resolve(null)),
   verifyGroupBelongsToOrg: mock(() => Promise.resolve("ok")),
+  updateConversationRoutingMode: mock(() => Promise.resolve({ ok: true as const })),
 }));
 
 // Import after mocks are registered

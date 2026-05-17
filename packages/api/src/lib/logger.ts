@@ -74,6 +74,16 @@ interface RequestContext {
    */
   connectionId?: string;
   connectionGroupId?: string;
+  /**
+   * #2518 — three-state Auto/Pin/All cross-environment picker state for
+   * the conversation. The chat route stamps this from the resolved
+   * conversation row (or the per-turn body override) so `executeSQL`
+   * can pass it to {@link resolveRoutingPlan} as `pickerMode`. NULL in
+   * the DB / undefined here is treated as `"pin"` for back-compat —
+   * pre-#2518 conversations whose `connection_id` already names a
+   * single member keep single-execution semantics.
+   */
+  routingMode?: import("@atlas/api/lib/env-routing").RoutingMode;
 }
 
 const requestStore = new AsyncLocalStorage<RequestContext>();

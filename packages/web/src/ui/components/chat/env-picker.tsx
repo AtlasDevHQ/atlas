@@ -1,30 +1,40 @@
 "use client";
 
 /**
- * Chat header env/member picker (#2345).
+ * Chat header env/member picker (#2345, #2518).
  *
- * Shows the conversation's active group and member (e.g. "prod /
- * us-int"). Clicking opens a dropdown of every member in every group
- * the user has access to. Selecting a different member is a *per-turn*
- * override — the conversation's stored `connection_id` is unchanged;
- * the picker holds the override in component state and `useAtlasChat`
- * forwards it on the next request via the transport body.
+ * Three-state cross-environment routing picker (PRD #2515, slice 3
+ * issue #2518):
  *
- * Selecting a different group changes the *content scope*. Group
- * changes propagate to the conversation row on the next turn (the
- * server persists the new value when the body carries
- * `connectionGroupId`), so subsequent turns inherit the new scope
- * without the user having to re-pick.
+ *   - **Auto** (default for new conversations) — the agent's `scope`
+ *     argument on `executeSQL` decides per turn. Routes to the active
+ *     member by default and fans out only when the agent asks for it.
+ *   - **Pin to <member>** — force single-env execution against the
+ *     selected member; the agent's `scope` override is ignored.
+ *   - **All envs** — force fanout across every member of the active
+ *     group; the agent's `scope` override is ignored.
  *
- * Renders nothing only in the truly trivial 1×1 case: one group with
- * one member. Multi-singleton workspaces (the 0062 1:1 backfill shape)
- * still surface the picker so the 1.4.4 feature is discoverable; a
+ * The dropdown also lists every member of the active group below the
+ * three modes so the user can flip the pinned member without unpinning.
+ * Picking a member from that list implicitly switches the mode to
+ * `pin` (you can't "select a member" in fanout — it's structurally
+ * meaningless).
+ *
+ * 1×1 case (one group with one member): the picker stays hidden.
+ * Multi-singleton workspaces (the 0062 1:1 backfill shape) still
+ * surface the picker so the 1.4.4 feature is discoverable; a
  * dropdown footer hints that admins can merge connections into shared
  * environments. See #2408.
+ *
+ * Group changes propagate to the conversation row on the next turn
+ * (the server persists the new value when the body carries
+ * `connectionGroupId`), so subsequent turns inherit the new scope
+ * without the user having to re-pick. Routing-mode changes flow the
+ * same way via `routingMode`.
  */
 
 import { useEffect, useState } from "react";
-import { Layers, AlertCircle } from "lucide-react";
+import { Layers, AlertCircle, Sparkles, Pin, Globe2, Check } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -36,6 +46,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { stripGroupPrefix } from "@/ui/lib/strip-group-prefix";
 import type { MeConnectionGroupsEmptyReason } from "@/ui/lib/types";
+import type { ConversationRoutingMode } from "@useatlas/types/conversation";
+
+export type { ConversationRoutingMode };
 
 export interface ChatEnvMember {
   readonly connectionId: string;
@@ -47,6 +60,18 @@ export interface ChatEnvGroup {
   readonly id: string;
   readonly name: string;
   readonly members: ReadonlyArray<ChatEnvMember>;
+}
+
+/**
+ * Payload for {@link ChatEnvPickerProps.onSelect}. The parent receives
+ * the full triple every time so it can persist any subset onto the
+ * conversation row without the picker having to know which fields the
+ * server treats as content-scope vs. per-turn execution-target.
+ */
+export interface ChatEnvSelection {
+  readonly groupId: string;
+  readonly connectionId: string;
+  readonly routingMode: ConversationRoutingMode;
 }
 
 export interface ChatEnvPickerProps {
@@ -72,12 +97,20 @@ export interface ChatEnvPickerProps {
   /** Currently active member (execution target). `null` ⇒ inherit from group's first member. */
   readonly activeConnectionId: string | null;
   /**
-   * Called when the user picks a new group + member pair from the
-   * dropdown. The parent component decides whether this is a per-turn
-   * override (just update local state) or a content-scope change
-   * (also update the conversation row on the next request).
+   * #2518 — three-state cross-environment routing mode for the active
+   * conversation. `null` (or omitted, for back-compat with pre-#2518
+   * call sites) is treated as `"pin"` — pre-#2518 conversations carry
+   * a single `connectionId` and the safest interpretation is "stay
+   * pinned to that member".
    */
-  readonly onSelect: (next: { groupId: string; connectionId: string }) => void;
+  readonly activeRoutingMode?: ConversationRoutingMode | null;
+  /**
+   * Called when the user picks a new group / member / mode triple from
+   * the dropdown. The parent decides whether this is a per-turn
+   * override (just update local state) or a persistent change (the
+   * server stamps the new value onto the conversation row).
+   */
+  readonly onSelect: (next: ChatEnvSelection) => void;
 }
 
 /**
@@ -115,12 +148,26 @@ function isKnownEmptyReason(value: unknown): value is MeConnectionGroupsEmptyRea
   return typeof value === "string" && value in EMPTY_REASON_COPY;
 }
 
+/**
+ * Back-compat default — NULL on the conversation row means "pin", not
+ * "auto". Pre-#2518 rows carry a non-null `connection_id` and the
+ * safest interpretation is "stay pinned to that member". The default
+ * lives behind a helper so chip-label / mode-state logic stays in
+ * lockstep.
+ */
+function effectiveMode(
+  mode: ConversationRoutingMode | null,
+): ConversationRoutingMode {
+  return mode ?? "pin";
+}
+
 export function ChatEnvPicker({
   groups,
   emptyReason = null,
   transportError = null,
   activeGroupId,
   activeConnectionId,
+  activeRoutingMode = null,
   onSelect,
 }: ChatEnvPickerProps): React.ReactElement | null {
   // Empty list + a reason ⇒ render a diagnostic chip instead of
@@ -168,18 +215,61 @@ export function ChatEnvPicker({
     activeGroup?.members.find((m) => m.connectionId === activeConnectionId) ??
     activeGroup?.members[0];
 
+  const mode = effectiveMode(activeRoutingMode);
   const groupLabel = activeGroup ? stripGroupPrefix(activeGroup.name) : "—";
   const memberLabel = activeMember?.connectionId ?? "—";
-  // Collapse "warehouse / warehouse" → "warehouse" when the stripped
-  // group name and the member id are the same value (the common 0062
-  // backfill shape: g_<connId> + one member named <connId>).
-  const chipLabel = groupLabel === memberLabel ? memberLabel : `${groupLabel} / ${memberLabel}`;
+
+  // Chip label tracks the picker's mode so the trigger always reflects
+  // the routing the next turn will use. The compact forms keep the
+  // chip readable when group/member names are long.
+  let chipLabel: string;
+  let ChipIcon: typeof Layers;
+  if (mode === "auto") {
+    chipLabel = `Auto · ${groupLabel}`;
+    ChipIcon = Sparkles;
+  } else if (mode === "all") {
+    chipLabel = `All · ${groupLabel}`;
+    ChipIcon = Globe2;
+  } else {
+    // Pin — show the member name. Collapse "warehouse / warehouse" →
+    // "warehouse" when the stripped group name and the member id match
+    // (the common 0062 backfill shape: g_<connId> + one member named
+    // <connId>).
+    chipLabel = groupLabel === memberLabel ? memberLabel : `${groupLabel} / ${memberLabel}`;
+    ChipIcon = Pin;
+  }
 
   // When every group has at most one member (the 0062 backfill shape,
   // or a defensive-empty group), the dropdown has no actual
   // multi-member choice to offer. Surface a hint so admins discover
   // that merging connections into a shared environment is possible.
   const allSingletons = groups.every((g) => g.members.length <= 1);
+
+  // The active group's member list is the source the Pin/Member rows
+  // render from. We re-resolve here (vs. consuming `activeGroup` directly)
+  // so a defensive-empty group renders an "empty" affordance rather than
+  // a silent zero-length list.
+  const activeMembers = activeGroup?.members ?? [];
+
+  // Mode dispatch — every selection produces the full triple so the
+  // parent can persist whichever subset matters. Implicit rules:
+  //   - Switching mode keeps the current member as the execution
+  //     target (pinned mode targets it; auto/all also need a sensible
+  //     `currentMember` for the server-side routing lookup).
+  //   - Selecting a member from the member list implies `pin` mode —
+  //     you can't "select a member" in fanout, and the most natural
+  //     interpretation is "pin to that one".
+  const handleModeSelect = (nextMode: ConversationRoutingMode) => {
+    if (!activeGroup || !activeMember) return;
+    onSelect({
+      groupId: activeGroup.id,
+      connectionId: activeMember.connectionId,
+      routingMode: nextMode,
+    });
+  };
+  const handleMemberSelect = (groupId: string, connectionId: string) => {
+    onSelect({ groupId, connectionId, routingMode: "pin" });
+  };
 
   return (
     <DropdownMenu>
@@ -189,22 +279,103 @@ export function ChatEnvPicker({
           size="sm"
           className="h-8 gap-1.5 rounded-full border border-zinc-200 px-2.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-900"
           data-testid="chat-env-picker-trigger"
-          aria-label={`Active environment: ${groupLabel}, member: ${memberLabel}. Change.`}
+          data-mode={mode}
+          aria-label={`Cross-environment routing: ${chipLabel}. Change.`}
         >
-          <Layers className="size-3.5 text-zinc-500" aria-hidden />
+          <ChipIcon className="size-3.5 text-zinc-500" aria-hidden />
           <span data-testid="chat-env-picker-label">{chipLabel}</span>
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-64" data-testid="chat-env-picker-menu">
-        {groups.map((group, idx) => (
-          <ChatEnvGroupSection
-            key={group.id}
-            group={group}
-            activeConnectionId={activeMember?.connectionId ?? null}
-            onSelect={onSelect}
-            isLast={idx === groups.length - 1}
-          />
-        ))}
+      <DropdownMenuContent
+        align="end"
+        className="w-72"
+        data-testid="chat-env-picker-menu"
+      >
+        {/* Mode section — three states with the current mode marked. */}
+        <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-500">
+          Routing
+        </DropdownMenuLabel>
+        <ChatEnvModeItem
+          mode="auto"
+          active={mode === "auto"}
+          icon={Sparkles}
+          title="Auto"
+          subtitle="Agent decides per turn"
+          onSelect={() => handleModeSelect("auto")}
+        />
+        <ChatEnvModeItem
+          mode="pin"
+          active={mode === "pin"}
+          icon={Pin}
+          title={`Pin to ${memberLabel}`}
+          subtitle="Lock execution to one member"
+          onSelect={() => handleModeSelect("pin")}
+        />
+        <ChatEnvModeItem
+          mode="all"
+          active={mode === "all"}
+          icon={Globe2}
+          title="All envs"
+          subtitle="Fan out to every member"
+          onSelect={() => handleModeSelect("all")}
+        />
+
+        {activeGroup && activeMembers.length > 0 && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-500">
+              {stripGroupPrefix(activeGroup.name)} members
+            </DropdownMenuLabel>
+            {activeMembers.map((member) => {
+              // Pin highlight only when the current mode is pin AND we're
+              // on the member it pins to — otherwise highlighting the
+              // member would falsely suggest "this is the active target"
+              // while routing is in Auto/All.
+              const isActive =
+                mode === "pin" && member.connectionId === activeMember?.connectionId;
+              return (
+                <DropdownMenuItem
+                  key={member.connectionId}
+                  onSelect={() =>
+                    handleMemberSelect(activeGroup.id, member.connectionId)
+                  }
+                  className="flex items-center justify-between gap-2 text-xs"
+                  data-testid={`chat-env-picker-member-${member.connectionId}`}
+                  data-active={isActive}
+                >
+                  <span className="flex items-center gap-1.5 truncate">
+                    {isActive && <Check className="size-3 text-primary" aria-hidden />}
+                    <span className="truncate">{member.connectionId}</span>
+                  </span>
+                  <span className="text-[10px] uppercase tracking-wider text-zinc-400">
+                    {member.dbType}
+                  </span>
+                </DropdownMenuItem>
+              );
+            })}
+          </>
+        )}
+
+        {groups.length > 1 && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-500">
+              Other environments
+            </DropdownMenuLabel>
+            {groups
+              .filter((g) => g.id !== activeGroup?.id)
+              .map((group) => (
+                <ChatEnvOtherGroupItem
+                  key={group.id}
+                  group={group}
+                  onSelect={(connectionId) =>
+                    handleMemberSelect(group.id, connectionId)
+                  }
+                />
+              ))}
+          </>
+        )}
+
         {allSingletons && (
           <>
             <DropdownMenuSeparator />
@@ -225,53 +396,85 @@ export function ChatEnvPicker({
   );
 }
 
-function ChatEnvGroupSection({
-  group,
-  activeConnectionId,
+function ChatEnvModeItem({
+  mode,
+  active,
+  icon: Icon,
+  title,
+  subtitle,
   onSelect,
-  isLast,
+}: {
+  mode: ConversationRoutingMode;
+  active: boolean;
+  icon: typeof Layers;
+  title: string;
+  subtitle: string;
+  onSelect: () => void;
+}): React.ReactElement {
+  return (
+    <DropdownMenuItem
+      onSelect={onSelect}
+      className="flex items-start gap-2 text-xs"
+      data-testid={`chat-env-picker-mode-${mode}`}
+      data-active={active}
+    >
+      <Icon
+        className={`mt-0.5 size-3.5 ${active ? "text-primary" : "text-zinc-500"}`}
+        aria-hidden
+      />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <span className={`truncate ${active ? "font-medium" : ""}`}>{title}</span>
+        <span className="truncate text-[10px] text-zinc-500 dark:text-zinc-400">
+          {subtitle}
+        </span>
+      </div>
+      {active && <Check className="size-3.5 shrink-0 text-primary" aria-hidden />}
+    </DropdownMenuItem>
+  );
+}
+
+/**
+ * Row for a member of a *different* group. Selecting it switches both
+ * the active group and pins to that member — the natural "I want to
+ * work in a different environment" gesture.
+ */
+function ChatEnvOtherGroupItem({
+  group,
+  onSelect,
 }: {
   group: ChatEnvGroup;
-  activeConnectionId: string | null;
-  onSelect: ChatEnvPickerProps["onSelect"];
-  isLast: boolean;
+  onSelect: (connectionId: string) => void;
 }): React.ReactElement {
   const label = stripGroupPrefix(group.name);
   return (
     <>
-      <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-500">
-        {label}
-      </DropdownMenuLabel>
       {group.members.length === 0 ? (
         <DropdownMenuItem
           disabled
           className="text-xs italic text-zinc-400"
           data-testid={`chat-env-picker-empty-${group.id}`}
         >
-          No members
+          {label} — no members
         </DropdownMenuItem>
       ) : (
-        group.members.map((member) => {
-          const active = member.connectionId === activeConnectionId;
-          return (
-            <DropdownMenuItem
-              key={member.connectionId}
-              onSelect={() =>
-                onSelect({ groupId: group.id, connectionId: member.connectionId })
-              }
-              className="flex items-center justify-between gap-2 text-xs"
-              data-testid={`chat-env-picker-member-${member.connectionId}`}
-              data-active={active}
-            >
+        group.members.map((member) => (
+          <DropdownMenuItem
+            key={`${group.id}:${member.connectionId}`}
+            onSelect={() => onSelect(member.connectionId)}
+            className="flex items-center justify-between gap-2 text-xs"
+            data-testid={`chat-env-picker-other-${group.id}-${member.connectionId}`}
+          >
+            <span className="flex min-w-0 items-center gap-1.5 truncate">
+              <span className="truncate text-zinc-500">{label}</span>
+              <span className="text-zinc-300">/</span>
               <span className="truncate">{member.connectionId}</span>
-              <span className="text-[10px] uppercase tracking-wider text-zinc-400">
-                {member.dbType}
-              </span>
-            </DropdownMenuItem>
-          );
-        })
+            </span>
+            <span className="text-[10px] uppercase tracking-wider text-zinc-400">
+              {member.dbType}
+            </span>
+          </DropdownMenuItem>
+        ))
       )}
-      {!isLast && <DropdownMenuSeparator />}
     </>
   );
 }

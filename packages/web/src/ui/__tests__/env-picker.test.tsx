@@ -13,16 +13,41 @@ mock.module("@/components/ui/dropdown-menu", () => {
       React.createElement(tag, rest, children as React.ReactNode);
   const div = passthrough("div");
   const hr = () => React.createElement("hr");
+  // Items wire Radix's `onSelect` to a regular `onClick` so the
+  // testing-library `fireEvent.click` path triggers the same callback
+  // path the real Radix Item exposes. Without this bridge the
+  // mock-divs swallow `onSelect` and #2518's selection-flow tests
+  // can't observe the parent's `onSelect` reaction.
+  const itemWithSelect = ({
+    children,
+    onSelect,
+    asChild: _asChild,
+    ...rest
+  }: {
+    children?: ReactNode;
+    asChild?: boolean;
+    onSelect?: (e: unknown) => void;
+  } & Record<string, unknown>) =>
+    React.createElement(
+      "div",
+      {
+        ...rest,
+        onClick: () => {
+          if (typeof onSelect === "function") onSelect({});
+        },
+      },
+      children as React.ReactNode,
+    );
   return {
     DropdownMenu: div,
     DropdownMenuPortal: div,
     DropdownMenuTrigger: div,
     DropdownMenuContent: div,
     DropdownMenuGroup: div,
-    DropdownMenuItem: div,
-    DropdownMenuCheckboxItem: div,
+    DropdownMenuItem: itemWithSelect,
+    DropdownMenuCheckboxItem: itemWithSelect,
     DropdownMenuRadioGroup: div,
-    DropdownMenuRadioItem: div,
+    DropdownMenuRadioItem: itemWithSelect,
     DropdownMenuLabel: div,
     DropdownMenuSeparator: hr,
     DropdownMenuShortcut: passthrough("span"),
@@ -635,3 +660,217 @@ describe("ChatEnvPicker transportError (#2504)", () => {
     ).not.toBeNull();
   });
 });
+
+// ── #2518 — three-state Auto/Pin/All picker ──────────────────────────
+
+describe("ChatEnvPicker three-state routing mode (#2518)", () => {
+  const multiMemberGroup: ChatEnvGroup[] = [
+    {
+      id: "g_prod",
+      name: "prod",
+      members: [
+        { connectionId: "us-int", dbType: "postgres", description: null },
+        { connectionId: "eu", dbType: "postgres", description: null },
+        { connectionId: "apac", dbType: "postgres", description: null },
+      ],
+    },
+  ];
+
+  test("trigger reflects 'Pin' as the default when activeRoutingMode is null (back-compat)", () => {
+    const { container } = render(
+      <ChatEnvPicker
+        groups={multiMemberGroup}
+        activeGroupId="g_prod"
+        activeConnectionId="eu"
+        activeRoutingMode={null}
+        onSelect={noop}
+      />,
+    );
+    const trigger = container.querySelector('[data-testid="chat-env-picker-trigger"]');
+    expect(trigger?.getAttribute("data-mode")).toBe("pin");
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-label"]')?.textContent,
+    ).toBe("prod / eu");
+  });
+
+  test("trigger reflects 'Auto' when activeRoutingMode='auto'", () => {
+    const { container } = render(
+      <ChatEnvPicker
+        groups={multiMemberGroup}
+        activeGroupId="g_prod"
+        activeConnectionId="eu"
+        activeRoutingMode="auto"
+        onSelect={noop}
+      />,
+    );
+    const trigger = container.querySelector('[data-testid="chat-env-picker-trigger"]');
+    expect(trigger?.getAttribute("data-mode")).toBe("auto");
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-label"]')?.textContent,
+    ).toContain("Auto");
+  });
+
+  test("trigger reflects 'All' when activeRoutingMode='all'", () => {
+    const { container } = render(
+      <ChatEnvPicker
+        groups={multiMemberGroup}
+        activeGroupId="g_prod"
+        activeConnectionId="eu"
+        activeRoutingMode="all"
+        onSelect={noop}
+      />,
+    );
+    const trigger = container.querySelector('[data-testid="chat-env-picker-trigger"]');
+    expect(trigger?.getAttribute("data-mode")).toBe("all");
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-label"]')?.textContent,
+    ).toContain("All");
+  });
+
+  test("dropdown renders all three modes with the current mode marked active", () => {
+    const { container } = render(
+      <ChatEnvPicker
+        groups={multiMemberGroup}
+        activeGroupId="g_prod"
+        activeConnectionId="eu"
+        activeRoutingMode="auto"
+        onSelect={noop}
+      />,
+    );
+    const auto = container.querySelector('[data-testid="chat-env-picker-mode-auto"]');
+    const pin = container.querySelector('[data-testid="chat-env-picker-mode-pin"]');
+    const all = container.querySelector('[data-testid="chat-env-picker-mode-all"]');
+    expect(auto).not.toBeNull();
+    expect(pin).not.toBeNull();
+    expect(all).not.toBeNull();
+    expect(auto?.getAttribute("data-active")).toBe("true");
+    expect(pin?.getAttribute("data-active")).toBe("false");
+    expect(all?.getAttribute("data-active")).toBe("false");
+  });
+
+  test("selecting Auto produces a triple with routingMode='auto' keeping the current member", () => {
+    let captured: { groupId: string; connectionId: string; routingMode: string } | null = null;
+    const { container } = render(
+      <ChatEnvPicker
+        groups={multiMemberGroup}
+        activeGroupId="g_prod"
+        activeConnectionId="eu"
+        activeRoutingMode="pin"
+        onSelect={(next) => {
+          captured = next;
+        }}
+      />,
+    );
+    const auto = container.querySelector<HTMLElement>(
+      '[data-testid="chat-env-picker-mode-auto"]',
+    );
+    auto?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(captured).not.toBeNull();
+    expect(captured!.routingMode).toBe("auto");
+    expect(captured!.groupId).toBe("g_prod");
+    expect(captured!.connectionId).toBe("eu");
+  });
+
+  test("selecting All produces a triple with routingMode='all' keeping the current member", () => {
+    let captured: { groupId: string; connectionId: string; routingMode: string } | null = null;
+    const { container } = render(
+      <ChatEnvPicker
+        groups={multiMemberGroup}
+        activeGroupId="g_prod"
+        activeConnectionId="eu"
+        activeRoutingMode="pin"
+        onSelect={(next) => {
+          captured = next;
+        }}
+      />,
+    );
+    const all = container.querySelector<HTMLElement>(
+      '[data-testid="chat-env-picker-mode-all"]',
+    );
+    all?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(captured).not.toBeNull();
+    expect(captured!.routingMode).toBe("all");
+  });
+
+  test("member-list selection forces routingMode='pin' implicitly", () => {
+    // The user picks a member from the per-group section while in Auto.
+    // The natural interpretation is "pin to that member" — you can't
+    // 'select a member' in fanout.
+    let captured: { groupId: string; connectionId: string; routingMode: string } | null = null;
+    const { container } = render(
+      <ChatEnvPicker
+        groups={multiMemberGroup}
+        activeGroupId="g_prod"
+        activeConnectionId="eu"
+        activeRoutingMode="auto"
+        onSelect={(next) => {
+          captured = next;
+        }}
+      />,
+    );
+    const apac = container.querySelector<HTMLElement>(
+      '[data-testid="chat-env-picker-member-apac"]',
+    );
+    apac?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(captured).not.toBeNull();
+    expect(captured!.routingMode).toBe("pin");
+    expect(captured!.connectionId).toBe("apac");
+    expect(captured!.groupId).toBe("g_prod");
+  });
+
+  test("1×1 group keeps the picker hidden even with activeRoutingMode set (acceptance criterion)", () => {
+    const groups: ChatEnvGroup[] = [
+      {
+        id: "g_only",
+        name: "only",
+        members: [{ connectionId: "only", dbType: "postgres", description: null }],
+      },
+    ];
+    const { container } = render(
+      <ChatEnvPicker
+        groups={groups}
+        activeGroupId="g_only"
+        activeConnectionId="only"
+        activeRoutingMode="auto"
+        onSelect={noop}
+      />,
+    );
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-trigger"]'),
+    ).toBeNull();
+    expect(container.firstChild).toBeNull();
+  });
+
+  test("member highlight uses Pin mode only (Auto/All members don't show as the 'active target')", () => {
+    const { container: autoContainer } = render(
+      <ChatEnvPicker
+        groups={multiMemberGroup}
+        activeGroupId="g_prod"
+        activeConnectionId="eu"
+        activeRoutingMode="auto"
+        onSelect={noop}
+      />,
+    );
+    const euInAuto = autoContainer.querySelector(
+      '[data-testid="chat-env-picker-member-eu"]',
+    );
+    expect(euInAuto?.getAttribute("data-active")).toBe("false");
+
+    cleanup();
+
+    const { container: pinContainer } = render(
+      <ChatEnvPicker
+        groups={multiMemberGroup}
+        activeGroupId="g_prod"
+        activeConnectionId="eu"
+        activeRoutingMode="pin"
+        onSelect={noop}
+      />,
+    );
+    const euInPin = pinContainer.querySelector(
+      '[data-testid="chat-env-picker-member-eu"]',
+    );
+    expect(euInPin?.getAttribute("data-active")).toBe("true");
+  });
+});
+

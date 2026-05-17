@@ -269,6 +269,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   settleConversationSteps: mock(() => {}),
   resolveGroupForConnection: mock(() => Promise.resolve(null)),
   verifyGroupBelongsToOrg: mockVerifyGroupBelongsToOrg,
+  updateConversationRoutingMode: mock(() => Promise.resolve({ ok: true as const })),
 }));
 
 mock.module("@atlas/api/lib/semantic", () => ({

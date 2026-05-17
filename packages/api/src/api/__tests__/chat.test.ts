@@ -163,6 +163,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   renameBranch: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   resolveGroupForConnection: mock(() => Promise.resolve(null)),
   verifyGroupBelongsToOrg: mockVerifyGroupBelongsToOrg,
+  updateConversationRoutingMode: mock(() => Promise.resolve({ ok: true as const })),
 }));
 
 const mockGetPluginTools: Mock<() => unknown> = mock(() => undefined);
@@ -353,6 +354,53 @@ describe("POST /api/v1/chat", () => {
     // the nested withRequestContext frame, this flips red.
     expect(capturedContext?.connectionId).toBe("eu-conn-id");
     expect(capturedContext?.connectionGroupId).toBe("g_prod");
+  });
+
+  // #2518 — three-state Auto/Pin/All picker. Body's `routingMode`
+  // lands in the `withRequestContext` frame so `executeSQL` can pass
+  // it to `resolveRoutingPlan` as `pickerMode`. Mirror of the #2414
+  // test above for the routing-mode plumbing.
+  it("propagates per-turn routingMode into the ALS frame the agent sees (#2518)", async () => {
+    const { getRequestContext } = await import("@atlas/api/lib/logger");
+    let capturedContext: ReturnType<typeof getRequestContext> | undefined;
+    mockRunAgent.mockImplementationOnce(() => {
+      capturedContext = getRequestContext();
+      return Promise.resolve({
+        toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
+        toUIMessageStream: () => new ReadableStream({ start(c) { c.close(); } }),
+        text: Promise.resolve("answer"),
+      } as unknown as Awaited<ReturnType<typeof mockRunAgent>>);
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "hi" }] }],
+        routingMode: "all",
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(capturedContext?.routingMode).toBe("all");
+  });
+
+  // #2518 — back-compat default. When neither the body nor the
+  // persisted conversation row carries a routing mode (pre-#2518
+  // chats), the chat route stamps 'pin' on the ALS frame so the
+  // agent's `scope: "all"` hints don't suddenly start fanning out on
+  // legacy chats. The tool's own default ('auto') only kicks in for
+  // non-chat callers (MCP / scheduler / direct tool tests).
+  it("stamps routingMode='pin' on the ALS frame when neither body nor conversation row supplies one (#2518)", async () => {
+    const { getRequestContext } = await import("@atlas/api/lib/logger");
+    let capturedContext: ReturnType<typeof getRequestContext> | undefined;
+    mockRunAgent.mockImplementationOnce(() => {
+      capturedContext = getRequestContext();
+      return Promise.resolve({
+        toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
+        toUIMessageStream: () => new ReadableStream({ start(c) { c.close(); } }),
+        text: Promise.resolve("answer"),
+      } as unknown as Awaited<ReturnType<typeof mockRunAgent>>);
+    });
+    const response = await app.fetch(makeRequest()); // No routingMode in body
+    expect(response.status).toBe(200);
+    expect(capturedContext?.routingMode).toBe("pin");
   });
 
   // F-74 regression pin: the chat handler MUST pass `bucket: "chat"` so the

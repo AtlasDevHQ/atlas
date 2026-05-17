@@ -105,6 +105,15 @@ function rowToConversation(r: Record<string, unknown>): Conversation {
     surface: (r.surface as Surface) ?? "web",
     connectionId: (r.connection_id as string) ?? null,
     connectionGroupId: (r.connection_group_id as string) ?? null,
+    // #2518 — three-state Auto/Pin/All picker state. Pre-0073 rows have
+    // a NULL `routing_mode` column; the runtime reads NULL as "pin"
+    // (see `ConversationRoutingMode` jsdoc). We surface the raw NULL
+    // here so the chat route can distinguish "user picked Auto" from
+    // "row predates the column"; the back-compat default lands at the
+    // routing edge, not at the read.
+    routingMode: isConversationRoutingMode(r.routing_mode)
+      ? r.routing_mode
+      : null,
     starred: r.starred === true,
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
@@ -112,6 +121,13 @@ function rowToConversation(r: Record<string, unknown>): Conversation {
       ? (r.notebook_state as Conversation["notebookState"])
       : null,
   };
+}
+
+/** Type guard — keeps an unknown DB string from leaking into a typed union. */
+function isConversationRoutingMode(
+  value: unknown,
+): value is import("@useatlas/types/conversation").ConversationRoutingMode {
+  return value === "auto" || value === "pin" || value === "all";
 }
 
 /** Generate a short title from the first user question. */
@@ -141,14 +157,21 @@ export async function createConversation(opts: {
    * `addMessage`-style fire-and-forget shape is preserved.
    */
   connectionGroupId?: string | null;
+  /**
+   * #2518 — three-state Auto/Pin/All picker state. NULL persists when
+   * the caller wants the read-side back-compat default ("pin") to
+   * apply (e.g. legacy chat-creation paths that predate the picker);
+   * explicit `"auto"` / `"pin"` / `"all"` opt into the new wiring.
+   */
+  routingMode?: import("@useatlas/types/conversation").ConversationRoutingMode | null;
   orgId?: string | null;
 }): Promise<{ id: string } | null> {
   if (!hasInternalDB()) return null;
   try {
     const rows = opts.id
       ? await internalQuery<{ id: string }>(
-          `INSERT INTO conversations (id, user_id, title, surface, connection_id, connection_group_id, org_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
+          `INSERT INTO conversations (id, user_id, title, surface, connection_id, connection_group_id, routing_mode, org_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
            RETURNING id`,
           [
             opts.id,
@@ -157,12 +180,13 @@ export async function createConversation(opts: {
             opts.surface ?? "web",
             opts.connectionId ?? null,
             opts.connectionGroupId ?? null,
+            opts.routingMode ?? null,
             opts.orgId ?? null,
           ],
         )
       : await internalQuery<{ id: string }>(
-          `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, org_id)
-           VALUES ($1, $2, $3, $4, $5, $6)
+          `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, org_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
            RETURNING id`,
           [
             opts.userId ?? null,
@@ -170,6 +194,7 @@ export async function createConversation(opts: {
             opts.surface ?? "web",
             opts.connectionId ?? null,
             opts.connectionGroupId ?? null,
+            opts.routingMode ?? null,
             opts.orgId ?? null,
           ],
         );
@@ -177,6 +202,35 @@ export async function createConversation(opts: {
   } catch (err) {
     log.error({ err: errorMessage(err) }, "createConversation failed");
     return null;
+  }
+}
+
+/**
+ * #2518 — update the conversation's `routing_mode`. Returns { ok: true }
+ * on a row update, `not_found` when the conversation doesn't belong to
+ * the caller (scoped via {@link scopeClause}). Fail-open semantics
+ * match the rest of this file: a no-DB / error result is logged but the
+ * chat turn still proceeds (the row stays at its previous value and the
+ * runtime falls back to its read-side default).
+ */
+export async function updateConversationRoutingMode(
+  id: string,
+  routingMode: import("@useatlas/types/conversation").ConversationRoutingMode,
+  userId?: string | null,
+  orgId?: string | null,
+): Promise<CrudResult> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    const scope = scopeClause(3, userId, orgId);
+    const rows = await internalQuery<{ id: string }>(
+      `UPDATE conversations SET routing_mode = $1, updated_at = now()
+       WHERE id = $2${scope.sql} RETURNING id`,
+      [routingMode, id, ...scope.params],
+    );
+    return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
+  } catch (err) {
+    log.error({ err: errorMessage(err) }, "updateConversationRoutingMode failed");
+    return { ok: false, reason: "error" };
   }
 }
 
@@ -537,7 +591,7 @@ export async function getConversation(
   try {
     const scope = scopeClause(2, userId, orgId);
     const convRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, user_id, title, surface, connection_id, connection_group_id, starred, notebook_state, created_at, updated_at
+      `SELECT id, user_id, title, surface, connection_id, connection_group_id, routing_mode, starred, notebook_state, created_at, updated_at
        FROM conversations WHERE id = $1${scope.sql}`,
       [id, ...scope.params],
     );
@@ -609,7 +663,7 @@ export async function listConversations(opts?: {
       params,
     );
     const dataRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, user_id, title, surface, connection_id, connection_group_id, starred, created_at, updated_at
+      `SELECT id, user_id, title, surface, connection_id, connection_group_id, routing_mode, starred, created_at, updated_at
        FROM conversations ${where}
        ORDER BY updated_at DESC LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
       [...params, limit, offset],
@@ -686,7 +740,7 @@ export async function forkConversation(opts: {
     // source row's org_id; scopeClause rejects mismatches (NULL-safe for legacy rows).
     const sourceScope = scopeClause(2, opts.userId, opts.orgId);
     const sourceRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, title, surface, connection_id, connection_group_id, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
+      `SELECT id, title, surface, connection_id, connection_group_id, routing_mode, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
       [opts.sourceId, ...sourceScope.params],
     );
     if (sourceRows.length === 0) return { ok: false, reason: "not_found" };
@@ -722,14 +776,15 @@ export async function forkConversation(opts: {
     // the user keeps the same env context after branching.
     const orgId = opts.orgId ?? (source.org_id as string) ?? null;
     const newConv = await internalQuery<{ id: string }>(
-      `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, org_id)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, org_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
       [
         opts.userId ?? null,
         `${sourceTitle} (fork)`,
         (source.surface as string) ?? "web",
         (source.connection_id as string) ?? null,
         (source.connection_group_id as string) ?? null,
+        (source.routing_mode as string) ?? null,
         orgId,
       ],
     );
@@ -873,7 +928,7 @@ export async function convertToNotebook(opts: {
     // Verify source exists and caller has access in both the user + org dimensions.
     const sourceScope = scopeClause(2, opts.userId, opts.orgId);
     const sourceRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, title, surface, connection_id, connection_group_id, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
+      `SELECT id, title, surface, connection_id, connection_group_id, routing_mode, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
       [opts.sourceId, ...sourceScope.params],
     );
     if (sourceRows.length === 0) return { ok: false, reason: "not_found" };
@@ -883,17 +938,18 @@ export async function convertToNotebook(opts: {
     const orgId = opts.orgId ?? (source.org_id as string) ?? null;
 
     // Create new conversation with surface "notebook". Carries forward
-    // both routing columns so the notebook preserves the source's env
-    // context.
+    // both routing columns + the picker mode so the notebook preserves
+    // the source's env context end-to-end.
     const newConv = await internalQuery<{ id: string }>(
-      `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, org_id)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, org_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
       [
         opts.userId ?? null,
         `${sourceTitle} (notebook)`,
         "notebook",
         (source.connection_id as string) ?? null,
         (source.connection_group_id as string) ?? null,
+        (source.routing_mode as string) ?? null,
         orgId,
       ],
     );
@@ -1135,7 +1191,7 @@ export async function getSharedConversation(
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
     const convRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, user_id, org_id, title, surface, connection_id, connection_group_id, starred, share_expires_at, share_mode, notebook_state, created_at, updated_at
+      `SELECT id, user_id, org_id, title, surface, connection_id, connection_group_id, routing_mode, starred, share_expires_at, share_mode, notebook_state, created_at, updated_at
        FROM conversations
        WHERE share_token = $1`,
       [token],

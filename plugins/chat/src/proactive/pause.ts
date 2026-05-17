@@ -46,11 +46,22 @@ export function detectPauseCommand(text: string): boolean {
   if (!text) return false;
   const normalised = text.trim().toLowerCase();
   if (normalised.length === 0) return false;
-  // Match `@atlas pause`, `<@U...|atlas> pause`, or `atlas pause` —
-  // require `pause` to appear within a few chars of an `atlas` reference
-  // so a sentence that mentions Atlas elsewhere and uses the word
-  // `pause` for an unrelated meaning doesn't trigger.
-  return /(?:@?atlas\b|<@[^>]*\|?atlas>)[\s,!:;.-]{0,4}pause\b/.test(normalised);
+  // Bound the inspection window. Chat platforms cap a single message
+  // around the kilobyte range; capping here defeats any ReDoS attempt
+  // built around long pathological inputs. Real `@atlas pause`
+  // commands sit well inside this window.
+  const window = normalised.length > 4096 ? normalised.slice(0, 4096) : normalised;
+  // Two independent forms, tested with separate regexes so neither
+  // alternation backtracks into the other:
+  //   1. plain-prose `atlas` / `@atlas` (with word boundary) followed
+  //      by punctuation + `pause`
+  //   2. Slack-style platform mention `<@U…|atlas>` followed by
+  //      punctuation + `pause`. The mention body is bounded to 64
+  //      chars to keep the matcher linear (CodeQL js/polynomial-redos).
+  return (
+    /(?:^|[^a-z0-9])@?atlas\b[\s,!:;.-]{0,4}pause\b/.test(window) ||
+    /<@[a-z0-9_-]{1,64}\|atlas>[\s,!:;.-]{0,4}pause\b/.test(window)
+  );
 }
 
 /**

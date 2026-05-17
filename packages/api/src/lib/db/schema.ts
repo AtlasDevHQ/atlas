@@ -1947,6 +1947,11 @@ export const workspaceProactiveConfig = pgTable(
     classifierMode: text("classifier_mode").notNull().default("regex-prefilter"),
     announcementChannelId: text("announcement_channel_id"),
     monthlyClassifierCap: integer("monthly_classifier_cap"),
+    // One-shot idempotency stamp for the activation announcement
+    // (#2300). NULL means the AnnouncementCoordinator may post the
+    // first-time-enable message to `announcement_channel_id`; NOT NULL
+    // means it already fired and disable→re-enable is a no-op.
+    announcementPostedAt: timestamp("announcement_posted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

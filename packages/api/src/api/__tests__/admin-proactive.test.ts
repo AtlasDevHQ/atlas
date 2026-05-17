@@ -158,6 +158,39 @@ mock.module("@atlas/api/lib/logger", () => ({
   getRequestContext: () => null,
 }));
 
+// --- Announcement coordinator mock (#2300). The PUT route calls
+//     `announceActivation` after every false→true `enabled` transition;
+//     the unit test for the coordinator itself covers DB idempotency,
+//     so here we just want to assert (a) the route invokes it with the
+//     right args and (b) failures inside the announcement path don't
+//     fail the API call. ---
+
+let mockAnnounceOutcome: { posted: boolean; reason?: string; messageId?: string } = {
+  posted: true,
+  messageId: "m-1",
+};
+let mockAnnounceCalls: Array<{ workspaceId: string; channelId: string }> = [];
+const mockAnnounceActivation: Mock<
+  (input: { workspaceId: string; channelId: string; announcer: unknown }) => Promise<unknown>
+> = mock(async (input) => {
+  mockAnnounceCalls.push({ workspaceId: input.workspaceId, channelId: input.channelId });
+  return mockAnnounceOutcome;
+});
+
+mock.module("@atlas/api/lib/proactive/announcement-coordinator", () => ({
+  announceActivation: mockAnnounceActivation,
+  buildAnnouncementMessage: () => "stub",
+  NULL_ANNOUNCER: { postChannelAnnouncement: async () => ({ ok: false, reason: "stub" }) },
+}));
+
+mock.module("@atlas/api/lib/proactive/announcer-registry", () => ({
+  registerChatAnnouncer: () => {},
+  clearChatAnnouncer: () => {},
+  getChatAnnouncer: () => ({
+    postChannelAnnouncement: async () => ({ ok: false, reason: "stub" }),
+  }),
+}));
+
 // --- Audit mock ---
 
 interface CapturedAuditEntry {
@@ -191,6 +224,7 @@ function nowRow(overrides: Partial<Record<string, unknown>>) {
     classifier_mode: "regex-prefilter",
     announcement_channel_id: null,
     monthly_classifier_cap: null,
+    announcement_posted_at: null,
     created_at: now,
     updated_at: now,
     ...overrides,
@@ -218,6 +252,9 @@ function resetMocks() {
   mockInternalRows = [];
   mockInternalQuery.mockClear();
   mockLogAdminAction.mockClear();
+  mockAnnounceActivation.mockClear();
+  mockAnnounceCalls = [];
+  mockAnnounceOutcome = { posted: true, messageId: "m-1" };
   mockAuthenticateRequest.mockImplementation(() =>
     Promise.resolve({
       authenticated: true,
@@ -319,9 +356,13 @@ describe("PUT /api/v1/admin/proactive/workspace", () => {
   beforeEach(resetMocks);
 
   it("updates the workspace row and emits an audit entry", async () => {
-    // 1st query: INSERT … ON CONFLICT DO NOTHING; 2nd: partial UPDATE.
+    // Query order:
+    //   0: INSERT … ON CONFLICT DO NOTHING (materialise)
+    //   1: SELECT enabled (pre-update snapshot for the #2300 transition)
+    //   2: partial UPDATE … RETURNING
     mockInternalRows = [
       [],
+      [{ enabled: false }],
       [
         nowRow({
           enabled: true,
@@ -348,7 +389,7 @@ describe("PUT /api/v1/admin/proactive/workspace", () => {
     expect(json.monthlyClassifierCap).toBe(5000);
 
     // UPDATE SQL must list every touched column.
-    const updateSql = lastQueries[1]?.sql ?? "";
+    const updateSql = lastQueries[2]?.sql ?? "";
     expect(updateSql).toContain("enabled =");
     expect(updateSql).toContain("sensitivity =");
     expect(updateSql).toContain("classifier_mode =");
@@ -369,15 +410,15 @@ describe("PUT /api/v1/admin/proactive/workspace", () => {
   });
 
   it("supports clearing announcementChannelId via null", async () => {
-    mockInternalRows = [[], [nowRow({ announcement_channel_id: null })]];
+    mockInternalRows = [[], [{ enabled: false }], [nowRow({ announcement_channel_id: null })]];
     const res = await request("PUT", "/workspace", {
       announcementChannelId: null,
     });
     expect(res.status).toBe(200);
-    const updateSql = lastQueries[1]?.sql ?? "";
+    const updateSql = lastQueries[2]?.sql ?? "";
     expect(updateSql).toContain("announcement_channel_id =");
     // Param-1 should be the explicit null we just sent.
-    expect(lastQueries[1]?.params[0]).toBeNull();
+    expect(lastQueries[2]?.params[0]).toBeNull();
   });
 
   it("rejects an invalid sensitivity enum with 422", async () => {
@@ -400,6 +441,94 @@ describe("PUT /api/v1/admin/proactive/workspace", () => {
     expect(res.status).toBe(403);
     const json = (await res.json()) as { error: string };
     expect(json.error).toBe("enterprise_required");
+  });
+
+  // #2300 — activation announcement trigger.
+  describe("activation announcement (#2300)", () => {
+    it("invokes announceActivation on a false→true transition with channel set", async () => {
+      mockInternalRows = [
+        [],
+        [{ enabled: false }],
+        [nowRow({ enabled: true, announcement_channel_id: "C-ann" })],
+      ];
+      const res = await request("PUT", "/workspace", {
+        enabled: true,
+        announcementChannelId: "C-ann",
+      });
+      expect(res.status).toBe(200);
+      expect(mockAnnounceActivation).toHaveBeenCalledTimes(1);
+      expect(mockAnnounceCalls[0]).toMatchObject({
+        workspaceId: "org-1",
+        channelId: "C-ann",
+      });
+    });
+
+    it("does NOT announce when enabled was already true (no transition)", async () => {
+      mockInternalRows = [
+        [],
+        [{ enabled: true }],
+        [nowRow({ enabled: true, announcement_channel_id: "C-ann" })],
+      ];
+      const res = await request("PUT", "/workspace", {
+        enabled: true,
+        sensitivity: "eager",
+      });
+      expect(res.status).toBe(200);
+      expect(mockAnnounceActivation).not.toHaveBeenCalled();
+    });
+
+    it("does NOT announce when no announcement_channel_id is configured", async () => {
+      mockInternalRows = [
+        [],
+        [{ enabled: false }],
+        [nowRow({ enabled: true, announcement_channel_id: null })],
+      ];
+      const res = await request("PUT", "/workspace", { enabled: true });
+      expect(res.status).toBe(200);
+      expect(mockAnnounceActivation).not.toHaveBeenCalled();
+    });
+
+    it("does NOT announce when the request disables proactive mode", async () => {
+      mockInternalRows = [
+        [],
+        [{ enabled: true }],
+        [nowRow({ enabled: false, announcement_channel_id: "C-ann" })],
+      ];
+      const res = await request("PUT", "/workspace", { enabled: false });
+      expect(res.status).toBe(200);
+      expect(mockAnnounceActivation).not.toHaveBeenCalled();
+    });
+
+    it("still returns 200 when announceActivation throws (best-effort)", async () => {
+      mockInternalRows = [
+        [],
+        [{ enabled: false }],
+        [nowRow({ enabled: true, announcement_channel_id: "C-ann" })],
+      ];
+      mockAnnounceActivation.mockImplementationOnce(async () => {
+        throw new Error("boom");
+      });
+      const res = await request("PUT", "/workspace", {
+        enabled: true,
+        announcementChannelId: "C-ann",
+      });
+      expect(res.status).toBe(200);
+    });
+
+    it("still returns 200 when announceActivation reports posted: false", async () => {
+      mockInternalRows = [
+        [],
+        [{ enabled: false }],
+        [nowRow({ enabled: true, announcement_channel_id: "C-ann" })],
+      ];
+      mockAnnounceOutcome = { posted: false, reason: "already_posted" };
+      const res = await request("PUT", "/workspace", {
+        enabled: true,
+        announcementChannelId: "C-ann",
+      });
+      expect(res.status).toBe(200);
+      expect(mockAnnounceActivation).toHaveBeenCalledTimes(1);
+    });
   });
 });
 

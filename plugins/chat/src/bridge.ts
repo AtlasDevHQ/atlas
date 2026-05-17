@@ -403,6 +403,24 @@ export interface ChatBridge {
     userId: string,
     message: string | { card: CardElement; fallbackText: string },
   ): Promise<{ messageId: string } | null>;
+  /**
+   * Post a one-shot announcement message to a channel (#2300).
+   *
+   * Used by the host's `AnnouncementCoordinator` when an admin first
+   * enables proactive mode in a workspace. Goes through the adapter's
+   * native `postChannelMessage` (Slack `chat.postMessage` with no
+   * `thread_ts`, Teams root-of-channel post, etc), not DMs.
+   *
+   * Returns `{ messageId }` on success, `null` when the adapter is not
+   * configured, does not support channel posts, or the post fails.
+   * Failures log at warn — never throws so the coordinator can treat
+   * post outcomes as data, not exceptions.
+   */
+  postChannelAnnouncement(
+    platform: ChatPlatform,
+    channelId: string,
+    message: string | { card: CardElement; fallbackText: string },
+  ): Promise<{ messageId: string } | null>;
   /** Shut down the Chat SDK instance and clean up resources. */
   shutdown(): Promise<void>;
 }
@@ -1685,6 +1703,48 @@ export function createChatBridge(
         log.error(
           { err: err instanceof Error ? err : new Error(String(err)), platform, userId, dmThreadId },
           "sendDirectMessage: failed to post message to DM channel",
+        );
+        return null;
+      }
+    },
+
+    async postChannelAnnouncement(
+      platform: ChatPlatform,
+      channelId: string,
+      message: string | { card: CardElement; fallbackText: string },
+    ): Promise<{ messageId: string } | null> {
+      const adapter = adapters[platform];
+      if (!adapter) {
+        log.warn({ platform, channelId }, "postChannelAnnouncement: adapter not configured");
+        return null;
+      }
+
+      if (!adapter.postChannelMessage) {
+        log.warn(
+          { platform, channelId },
+          "postChannelAnnouncement: adapter does not support top-level channel posts",
+        );
+        return null;
+      }
+
+      try {
+        const postableMessage = typeof message === "string"
+          ? { markdown: message }
+          : { card: message.card, fallbackText: message.fallbackText };
+        const sent = await adapter.postChannelMessage(channelId, postableMessage);
+        log.info(
+          { platform, channelId, messageId: sent.id },
+          "Channel announcement posted",
+        );
+        return { messageId: sent.id };
+      } catch (err) {
+        log.error(
+          {
+            err: err instanceof Error ? err : new Error(String(err)),
+            platform,
+            channelId,
+          },
+          "postChannelAnnouncement: adapter rejected channel post",
         );
         return null;
       }

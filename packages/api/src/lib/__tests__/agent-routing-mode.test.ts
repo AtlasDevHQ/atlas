@@ -293,9 +293,12 @@ describe("agent routing-mode picker — executeSQL `routingMode`", () => {
     expect(memberCallCounts.get("us-int") ?? 0).toBe(0);
     expect(memberCallCounts.get("eu")).toBe(1);
     expect(memberCallCounts.get("apac") ?? 0).toBe(0);
-    // Single-env shape: no __env__ prepend.
+    // Single-env shape: no __env__ prepend (per-row sentinel only on
+    // fanout). The single-env path post-#2519 still wraps the result
+    // with a 1-element `envContributions` array for wire symmetry.
     expect(first.columns).toEqual(["region", "revenue"]);
-    expect(first.envContributions).toBeUndefined();
+    expect(first.envContributions).toHaveLength(1);
+    expect(first.envContributions?.[0]?.connectionId).toBe("eu");
   });
 
   // -----------------------------------------------------------------------

@@ -5,11 +5,14 @@
  * Slice #2293: when the asker (or anyone) reacts 🤖 back, or clicks
  * the "Yes, answer" button on the ephemeral offer, post the answer
  * in-thread.
+ * Slice #2296: emit `classify` / `react` meter events to the host so
+ * the AnswerMeter table picks up per-event cost + outcome.
  *
  * The plugin never imports `@atlas/ee` or `@atlas/api` directly. The
  * host wires `isEnabled` (`isEnterpriseEnabled() && workspaceFlag`),
- * `classify` (LLM call), `userResolver` (asker → Atlas user), and
- * `executeQueryProactive` (Atlas agent on behalf of the asker).
+ * `classify` (LLM call), `userResolver` (asker → Atlas user),
+ * `executeQueryProactive` (Atlas agent on behalf of the asker), and
+ * `onMeterEvent` (proactive_meter_events writer).
  */
 
 import { emoji } from "chat";
@@ -35,6 +38,8 @@ import type {
   LLMClassifierFn,
   OnPauseRequestFn,
   ProactiveGateFn,
+  ProactiveMeterEvent,
+  ProactiveMeterEventFn,
   RecentActivity,
   WorkspaceProactiveConfig,
 } from "./types";
@@ -91,6 +96,18 @@ export interface ProactiveListenerConfig {
   linkUrl?: string;
   /** Platform name (`"slack"` etc.) used in `ProactiveAsker`. */
   platform?: string;
+
+  // ---- Slice #2296 additions ----
+
+  /**
+   * Active workspace id. Stamped on every meter / audit event so rows
+   * pivot cleanly on the workspace, not the channel. Optional: when
+   * Optional host-injected meter callback (#2296). Receives one event
+   * per classify (always) and one per react (when the policy
+   * interjects). Failures are swallowed inside the listener so a meter
+   * outage never crashes the Chat SDK loop.
+   */
+  onMeterEvent?: ProactiveMeterEventFn;
 
   // ---- Slice #2298 additions: feedback collection ----
 
@@ -217,7 +234,10 @@ export async function registerProactiveListener(
     "Proactive listener registered",
   );
 
-  // Per-channel last-interjection timestamps for rate limiting.
+  // Per-channel last-interjection timestamps for rate limiting. In-memory
+  // is fine for slices #2292–#2293 — #2296 layered in a durable meter
+  // row but kept the cooldown gate cheap and local; cross-host cooldown
+  // could ride the same `proactive_meter_events` table in a later slice.
   const recent = new Map<string, RecentActivity>();
   // Pending answers awaiting a reaction-back or button-click.
   const pending = new PendingAnswers();
@@ -225,8 +245,32 @@ export async function registerProactiveListener(
   // slice #2298 `/atlas feedback <text>` fallback path.
   const recentAnswers = new RecentAnswers();
 
+  // Local helper: route an event through the host meter callback,
+  // swallowing failures so a meter outage never propagates into the
+  // SDK event loop. Stamps `workspaceId` from the registration config
+  // so callers don't have to repeat it at every call site.
+  const emitMeter = async (
+    partial: Omit<ProactiveMeterEvent, "workspaceId">,
+  ): Promise<void> => {
+    if (!config.onMeterEvent) return;
+    try {
+      await config.onMeterEvent({
+        workspaceId: config.workspaceId ?? "",
+        ...partial,
+      });
+    } catch (err) {
+      log.warn(
+        {
+          err: err instanceof Error ? err : new Error(String(err)),
+          eventType: partial.eventType,
+        },
+        "Proactive meter callback threw — suppressed",
+      );
+    }
+  };
+
   // -------------------------------------------------------------------------
-  // Channel-message hook: classify + react
+  // Channel-message hook: classify + react + record asker for later answer
   // -------------------------------------------------------------------------
   chat.onNewMessage(/.+/, async (thread: Thread, message: Message) => {
     try {
@@ -363,6 +407,26 @@ export async function registerProactiveListener(
         "Proactive classification decision",
       );
 
+      // Meter: every classify call lands a row. Tokens are populated
+      // when the LLM actually ran; `0` on a regex-prefilter rejection
+      // so the billing aggregator can split prefilter-rejected from
+      // LLM-invoked calls without re-scanning metadata.
+      await emitMeter({
+        channelId,
+        messageId: message.id,
+        eventType: "classify",
+        confidence: classification.confidence,
+        tokens: classification.llmInvoked ? estimateClassifyTokens(text) : 0,
+        actorUserId: message.author.userId ?? null,
+        metadata: {
+          isQuestion: classification.isQuestion,
+          llmInvoked: classification.llmInvoked,
+          candidate: classification.candidate,
+          action: decision.action,
+          reason: decision.reason,
+        },
+      });
+
       if (decision.action !== "react") return;
 
       const sent = thread.createSentMessageFromMessage(message);
@@ -372,6 +436,19 @@ export async function registerProactiveListener(
       const platform = adapterPlatform(undefined, config.platform);
       const asker = askerFromAuthor(message.author, platform);
       pending.record(thread.channelId, message.id, { text, asker });
+
+      // Meter: reaction landed — emit a `react` row so the admin
+      // analytics panel and the eventual billing aggregator have a
+      // clean "how often did the policy actually fire?" count without
+      // scanning every classify row.
+      await emitMeter({
+        channelId,
+        messageId: message.id,
+        eventType: "react",
+        confidence: classification.confidence,
+        actorUserId: message.author.userId ?? null,
+        metadata: { reason: decision.reason },
+      });
 
       // Send an ephemeral "Yes, answer" offer card to the asker — only
       // they see it, so the channel stays clean even when the asker
@@ -805,4 +882,28 @@ async function safeResolveUser(
     );
     return { atlasUserId: undefined };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Token estimation (heuristic)
+// ---------------------------------------------------------------------------
+
+/**
+ * Cheap token estimate for the classify call.
+ *
+ * The classifier prompt is short and fixed-format; the input is bounded
+ * by the prefilter's `MAX_MESSAGE_CHARS`. A rough `chars / 4` heuristic
+ * is good enough for the meter — billing accuracy lands when the
+ * classifier callback widens its return type to surface real provider
+ * usage (#2287 line of work). The host can always overwrite `tokens`
+ * in `onMeterEvent` once the real numbers are wired.
+ *
+ * Kept inline rather than re-exported because the plugin must not
+ * depend on `@atlas/api`.
+ */
+function estimateClassifyTokens(text: string): number {
+  // ~80 tokens of system prompt + the message itself at ~4 chars/token.
+  const PROMPT_OVERHEAD = 80;
+  if (typeof text !== "string" || text.length === 0) return PROMPT_OVERHEAD;
+  return PROMPT_OVERHEAD + Math.ceil(text.length / 4);
 }

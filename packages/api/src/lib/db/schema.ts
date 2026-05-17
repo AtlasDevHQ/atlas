@@ -16,6 +16,7 @@ import {
   boolean,
   integer,
   bigint,
+  numeric,
   real,
   doublePrecision,
   timestamp,
@@ -1834,6 +1835,49 @@ export const oauthClientWorkspaceGrants = pgTable(
   (t) => [
     primaryKey({ columns: [t.clientId, t.workspaceId] }),
     index("idx_oauth_client_workspace_grants_workspace").on(t.workspaceId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Proactive chat answer meter (#2296) — see migration 0073 for design notes.
+// Five event types track the proactive lifecycle (classify → react → offer
+// → accept → feedback). Cost stored as integer micro-USD (millionths).
+// ---------------------------------------------------------------------------
+
+export const proactiveMeterEvents = pgTable(
+  "proactive_meter_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: text("workspace_id").notNull(),
+    channelId: text("channel_id").notNull(),
+    messageId: text("message_id"),
+    eventType: text("event_type").notNull(),
+    outcome: text("outcome"),
+    tokens: integer("tokens").notNull().default(0),
+    costMicroUsd: integer("cost_micro_usd").notNull().default(0),
+    confidence: numeric("confidence", { precision: 3, scale: 2 }),
+    actorUserId: text("actor_user_id"),
+    metadata: jsonb("metadata").notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("idx_proactive_meter_events_workspace_created").on(
+      t.workspaceId,
+      t.createdAt.desc(),
+    ),
+    index("idx_proactive_meter_events_workspace_type_created").on(
+      t.workspaceId,
+      t.eventType,
+      t.createdAt.desc(),
+    ),
+    check(
+      "chk_proactive_meter_event_type",
+      sql`event_type IN ('classify', 'react', 'offer', 'accept', 'feedback')`,
+    ),
+    check(
+      "chk_proactive_meter_outcome",
+      sql`outcome IS NULL OR outcome IN ('helpful', 'not-helpful', 'wrong-data', 'no-feedback')`,
+    ),
   ],
 );
 

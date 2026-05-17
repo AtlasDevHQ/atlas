@@ -3286,15 +3286,6 @@ describeIfPg("migrate-pg (real Postgres)", () => {
 
   // ─────────────────────────────────────────────────────────────────────
   // 0073 — conversations.bound_dashboard_id (#2363)
-  //
-  // The chat-as-dashboard-editor drawer (PRD #2362) stamps this FK on the
-  // conversation row so subsequent turns inherit the binding and the
-  // history tab (#2368) can list sessions per dashboard. Two real-PG
-  // assertions matter:
-  //   1. Column shape — nullable uuid with the right FK target.
-  //   2. ON DELETE SET NULL behavior — deleting the dashboard preserves
-  //      the audit trail by NULLing the pointer instead of cascading
-  //      the conversation row away.
   // ─────────────────────────────────────────────────────────────────────
 
   it("0073: conversations.bound_dashboard_id is a nullable uuid (#2363)", async () => {

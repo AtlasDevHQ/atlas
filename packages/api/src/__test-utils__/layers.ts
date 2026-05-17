@@ -39,6 +39,11 @@ import {
   createPluginTestLayer,
   type PluginRegistryShape,
 } from "@atlas/api/lib/effect/services";
+import {
+  AnswerMeter,
+  createAnswerMeterTestLayer,
+  type AnswerMeterShape,
+} from "@atlas/api/lib/proactive/answer-meter";
 import { createConnectionTestLayer } from "../__mocks__/connection";
 
 // ── Re-exports for convenience ──────────────────────────────────────
@@ -48,14 +53,17 @@ export {
   createRequestContextTestLayer,
   createAuthContextTestLayer,
   createPluginTestLayer,
+  createAnswerMeterTestLayer,
   ConnectionRegistry,
   RequestContext,
   AuthContext,
   PluginRegistry,
+  AnswerMeter,
   type ConnectionRegistryShape,
   type RequestContextShape,
   type AuthContextShape,
   type PluginRegistryShape,
+  type AnswerMeterShape,
 };
 
 // ── Default connection layer ────────────────────────────────────────

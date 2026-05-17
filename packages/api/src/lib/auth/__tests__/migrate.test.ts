@@ -323,6 +323,7 @@ describe("migrateAuthTables", () => {
             { name: "0075_proactive_chat_config.sql" },
             { name: "0076_proactive_pauses.sql" },
             { name: "0077_conversations_routing_mode.sql" },
+            { name: "0078_proactive_meter_events.sql" },
           ],
         };
       }

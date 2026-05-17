@@ -664,6 +664,11 @@ export const ADMIN_ACTIONS = {
     channelDelete: "proactive.channel_delete",
     workspaceKillEnable: "proactive.workspace_kill_enable",
     workspaceKillDisable: "proactive.workspace_kill_disable",
+    // Slice #2296 — lifecycle audit row siblings of the meter events.
+    classify: "proactive.classify",
+    react: "proactive.react",
+    answer: "proactive.answer",
+    feedback: "proactive.feedback",
   },
   /**
    * Compliance / PII-classification mutations. `pii_config_update` covers

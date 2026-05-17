@@ -207,6 +207,31 @@ mock.module("@atlas/api/lib/dashboards", () => ({
   rowToCard: realDashboards.rowToCard,
 }));
 
+// #2368 — bound-chat-context mocks for the new sessions endpoints.
+// Real module exports must stay surface-complete (CLAUDE.md "Mock all
+// exports — partial mocks cause SyntaxError"); copy the unmocked ones
+// from the real module.
+const realBoundChatContext = await import("@atlas/api/lib/bound-chat-context");
+
+const mockListSessionsForDashboard = mock(
+  (): Promise<import("@atlas/api/lib/bound-chat-context").BoundSessionSummary[]> =>
+    Promise.resolve([]),
+);
+
+const mockGetSessionTranscript = mock(
+  (): Promise<import("@atlas/api/lib/bound-chat-context").SessionTranscriptResult> =>
+    Promise.resolve({ ok: false, reason: "not_found" }),
+);
+
+mock.module("@atlas/api/lib/bound-chat-context", () => ({
+  bindConversationToDashboard: realBoundChatContext.bindConversationToDashboard,
+  resolveBoundDashboard: realBoundChatContext.resolveBoundDashboard,
+  listSessionsForDashboard: mockListSessionsForDashboard,
+  getSessionTranscript: mockGetSessionTranscript,
+  buildCardSummary: realBoundChatContext.buildCardSummary,
+  BOUND_AGENT_PROMPT_GUIDANCE: realBoundChatContext.BOUND_AGENT_PROMPT_GUIDANCE,
+}));
+
 // --- Other mocks required by app index.ts ---
 
 mock.module("@atlas/api/lib/agent", () => ({
@@ -379,6 +404,10 @@ describe("dashboard routes", () => {
       truncated: false,
       maskingApplied: false,
     });
+    mockListSessionsForDashboard.mockReset();
+    mockListSessionsForDashboard.mockResolvedValue([]);
+    mockGetSessionTranscript.mockReset();
+    mockGetSessionTranscript.mockResolvedValue({ ok: false, reason: "not_found" });
   });
 
   afterEach(() => {
@@ -1346,6 +1375,191 @@ describe("dashboard routes", () => {
       expect(denialLog!.obj.actorUserId).toBe("u-orphan");
       expect(denialLog!.obj.actorOrgId).toBeUndefined();
       assertNoRawTokenInAnyLog(rawToken);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/v1/dashboards/:id/sessions  (#2368 — History tab list)
+  // -------------------------------------------------------------------------
+
+  describe("GET /api/v1/dashboards/:id/sessions", () => {
+    it("returns 400 for an invalid dashboard id", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/dashboards/not-a-uuid/sessions"),
+      );
+      expect(response.status).toBe(400);
+      // Listing must not be reached when the id is malformed
+      expect(mockListSessionsForDashboard).not.toHaveBeenCalled();
+    });
+
+    it("returns 404 when the dashboard is missing (org-scoped lookup fails) and never lists sessions cross-org", async () => {
+      mockGetDashboard.mockResolvedValueOnce({ ok: false, reason: "not_found" });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/sessions`),
+      );
+      expect(response.status).toBe(404);
+      // Critical: org-scoping is enforced via getDashboard. If the dashboard
+      // is not visible to this org we must NOT proceed to list sessions —
+      // otherwise a guessed dashboardId leaks bound sessions across orgs.
+      expect(mockListSessionsForDashboard).not.toHaveBeenCalled();
+    });
+
+    it("returns 200 with sessions when the dashboard is in the caller's org", async () => {
+      mockListSessionsForDashboard.mockResolvedValueOnce([
+        {
+          conversationId: "11111111-1111-1111-1111-111111111111",
+          userId: "u-author",
+          title: "Edited the trend",
+          createdAt: "2026-05-17T10:00:00Z",
+          updatedAt: "2026-05-17T10:30:00Z",
+          messageCount: 6,
+        },
+        {
+          conversationId: "22222222-2222-2222-2222-222222222222",
+          userId: null,
+          title: null,
+          createdAt: "2026-05-16T08:00:00Z",
+          updatedAt: "2026-05-16T08:05:00Z",
+          messageCount: 0,
+        },
+      ]);
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/sessions`),
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { sessions: Array<Record<string, unknown>> };
+      expect(body.sessions).toHaveLength(2);
+      expect(body.sessions[0]!.conversationId).toBe("11111111-1111-1111-1111-111111111111");
+      expect(body.sessions[0]!.messageCount).toBe(6);
+      // Org-scoping is the gate — assert the module was called with caller's org.
+      expect(mockListSessionsForDashboard).toHaveBeenCalledWith(VALID_ID, "org-1");
+    });
+
+    it("returns 401 when authentication fails", async () => {
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: false as const,
+        mode: "simple-key" as const,
+        status: 401 as const,
+        error: "API key required",
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/sessions`),
+      );
+      expect(response.status).toBe(401);
+      expect(mockListSessionsForDashboard).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/v1/dashboards/:id/sessions/:sessionId (#2368 — transcript)
+  // -------------------------------------------------------------------------
+
+  describe("GET /api/v1/dashboards/:id/sessions/:sessionId", () => {
+    const VALID_SESSION_ID = "33333333-3333-3333-3333-333333333333";
+
+    it("returns 400 for invalid id formats", async () => {
+      const response = await app.fetch(
+        new Request(
+          `http://localhost/api/v1/dashboards/${VALID_ID}/sessions/not-a-uuid`,
+        ),
+      );
+      expect(response.status).toBe(400);
+      expect(mockGetSessionTranscript).not.toHaveBeenCalled();
+    });
+
+    it("returns 404 when the dashboard is missing without leaking session existence", async () => {
+      mockGetDashboard.mockResolvedValueOnce({ ok: false, reason: "not_found" });
+      const response = await app.fetch(
+        new Request(
+          `http://localhost/api/v1/dashboards/${VALID_ID}/sessions/${VALID_SESSION_ID}`,
+        ),
+      );
+      expect(response.status).toBe(404);
+      // Org gate fires first — we must never fetch a transcript when the
+      // dashboard isn't visible to this org. Otherwise an attacker could
+      // probe which sessionIds exist by varying dashboardId.
+      expect(mockGetSessionTranscript).not.toHaveBeenCalled();
+    });
+
+    it("returns 404 when the session isn't bound to this dashboard", async () => {
+      mockGetSessionTranscript.mockResolvedValueOnce({ ok: false, reason: "not_found" });
+      const response = await app.fetch(
+        new Request(
+          `http://localhost/api/v1/dashboards/${VALID_ID}/sessions/${VALID_SESSION_ID}`,
+        ),
+      );
+      expect(response.status).toBe(404);
+      // Still passed the dashboard gate but the module rejected the binding
+      expect(mockGetSessionTranscript).toHaveBeenCalledWith(
+        VALID_ID,
+        VALID_SESSION_ID,
+        "org-1",
+      );
+    });
+
+    it("returns the transcript when the caller is workspace-scoped (not just the author)", async () => {
+      mockGetSessionTranscript.mockResolvedValueOnce({
+        ok: true,
+        data: {
+          conversationId: VALID_SESSION_ID,
+          dashboardId: VALID_ID,
+          // Author is a DIFFERENT user from the caller — workspace-wide read
+          // means the request still succeeds. Regression guard against a
+          // future refactor that swaps to per-user ownership.
+          userId: "someone-else",
+          title: "Refactored the trend cards",
+          createdAt: "2026-05-17T10:00:00Z",
+          updatedAt: "2026-05-17T10:30:00Z",
+          messages: [
+            {
+              id: "msg-1",
+              conversationId: VALID_SESSION_ID,
+              role: "user",
+              content: [{ type: "text", text: "make card 3 a bar chart" }],
+              createdAt: "2026-05-17T10:00:01Z",
+            },
+            {
+              id: "msg-2",
+              conversationId: VALID_SESSION_ID,
+              role: "assistant",
+              content: [{ type: "text", text: "done" }],
+              createdAt: "2026-05-17T10:00:05Z",
+            },
+          ],
+        },
+      });
+      const response = await app.fetch(
+        new Request(
+          `http://localhost/api/v1/dashboards/${VALID_ID}/sessions/${VALID_SESSION_ID}`,
+        ),
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        conversationId: string;
+        userId: string;
+        messages: Array<Record<string, unknown>>;
+      };
+      expect(body.conversationId).toBe(VALID_SESSION_ID);
+      expect(body.userId).toBe("someone-else");
+      expect(body.messages).toHaveLength(2);
+      expect(mockGetSessionTranscript).toHaveBeenCalledWith(
+        VALID_ID,
+        VALID_SESSION_ID,
+        "org-1",
+      );
+    });
+
+    it("returns 500 with requestId when the module surface errors", async () => {
+      mockGetSessionTranscript.mockResolvedValueOnce({ ok: false, reason: "error" });
+      const response = await app.fetch(
+        new Request(
+          `http://localhost/api/v1/dashboards/${VALID_ID}/sessions/${VALID_SESSION_ID}`,
+        ),
+      );
+      expect(response.status).toBe(500);
+      const body = (await response.json()) as { requestId?: string; error: string };
+      expect(body.error).toBe("internal_error");
+      expect(typeof body.requestId).toBe("string");
     });
   });
 });

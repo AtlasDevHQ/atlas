@@ -1,13 +1,19 @@
 "use client";
 
 /**
- * Bound chat drawer (#2363).
+ * Bound chat drawer (#2363, History tab in #2368).
  *
  * Right-side Sheet that opens on `/dashboards/[id]` and runs a chat
  * conversation bound to that dashboard. Each drawer-open creates a
  * fresh conversation (a new `useChat` instance, new transport, new
- * conversation row on the server) — past sessions for this dashboard
- * are listed in the History tab in slice #2368.
+ * conversation row on the server).
+ *
+ * Two tabs:
+ *   - Chat: the live bound conversation (#2363 surface).
+ *   - History: workspace-wide list of past bound sessions for this
+ *     dashboard (#2368). Clicking a session opens a read-only
+ *     transcript panel rendering messages with the same Markdown +
+ *     ToolPart components used in the live drawer.
  *
  * Last-write-wins is intentional in this tracer-bullet: safe mutations
  * (addCard, updateCard title/chartConfig/layout, updateDashboardMeta)
@@ -17,7 +23,7 @@
 
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport, type UIMessage } from "ai";
+import { DefaultChatTransport, type UIMessage, isToolUIPart } from "ai";
 import {
   Sheet,
   SheetContent,
@@ -28,13 +34,17 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Send, MessagesSquare } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Send, MessagesSquare, ArrowLeft, History, MessageCircle, User } from "lucide-react";
 import { useAtlasConfig } from "@/ui/context";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { Markdown } from "@/ui/components/chat/markdown";
 import { ToolPart } from "@/ui/components/chat/tool-part";
 import { TypingIndicator } from "@/ui/components/chat/typing-indicator";
 import { parseSuggestions } from "@/ui/lib/helpers";
-import { isToolUIPart } from "ai";
+import { transformMessages } from "@useatlas/types/conversation";
+import type { Message } from "@useatlas/types/conversation";
 
 interface BoundChatDrawerProps {
   open: boolean;
@@ -49,6 +59,33 @@ interface BoundChatDrawerProps {
    * smarter invalidation in a follow-up.
    */
   onDashboardMutated?: () => void;
+}
+
+// ---------------------------------------------------------------------------
+// Wire types for the History tab (matches the API surface added in #2368)
+// ---------------------------------------------------------------------------
+
+interface SessionSummary {
+  conversationId: string;
+  userId: string | null;
+  title: string | null;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+}
+
+interface SessionListResponse {
+  sessions: SessionSummary[];
+}
+
+interface SessionTranscriptResponse {
+  conversationId: string;
+  dashboardId: string;
+  userId: string | null;
+  title: string | null;
+  createdAt: string;
+  updatedAt: string;
+  messages: Message[];
 }
 
 export function BoundChatDrawer({
@@ -67,15 +104,20 @@ export function BoundChatDrawer({
   // session is a fresh `useChat` instance with its own message list +
   // its own server-side conversation row.
   const [sessionKey, setSessionKey] = useState(0);
+  // Active tab + selected history session id (null = list view).
+  const [activeTab, setActiveTab] = useState<"chat" | "history">("chat");
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
 
   // Reset session id + conversation pointer on every drawer open. This
   // matches the PRD's "fresh conversation per drawer-open" requirement
   // (each open starts a new bound conversation; history accessible via
-  // the #2368 tab).
+  // the History tab).
   useEffect(() => {
     if (open) {
       conversationIdRef.current = null;
       setSessionKey((k) => k + 1);
+      setActiveTab("chat");
+      setSelectedSessionId(null);
     }
   }, [open]);
 
@@ -173,67 +215,288 @@ export function BoundChatDrawer({
           </SheetDescription>
         </SheetHeader>
 
-        <ScrollArea className="flex-1 px-4 py-3">
-          {messages.length === 0 && (
-            <div className="space-y-3 py-6 text-sm text-zinc-500 dark:text-zinc-400">
-              <p>
-                Tell the agent what to change. Examples:
-              </p>
-              <ul className="space-y-1 pl-4">
-                <li>&ldquo;Add a card showing weekly signups&rdquo;</li>
-                <li>&ldquo;Rename card 2 to &lsquo;Active Users&rsquo;&rdquo;</li>
-                <li>&ldquo;Make card 3 a bar chart&rdquo;</li>
-                <li>&ldquo;What is card 1 counting?&rdquo;</li>
-              </ul>
-            </div>
-          )}
-
-          {messages.map((m: UIMessage) => (
-            <BoundChatMessage key={m.id} message={m} />
-          ))}
-
-          {isLoading && messages[messages.length - 1]?.role === "user" && (
-            <div className="my-2">
-              <TypingIndicator />
-            </div>
-          )}
-
-          {error && (
-            <div
-              role="alert"
-              className="my-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400"
-            >
-              {error.message || "The agent hit an error. Try again."}
-            </div>
-          )}
-        </ScrollArea>
-
-        <form
-          onSubmit={handleSubmit}
-          className="border-t border-zinc-200 px-4 py-3 dark:border-zinc-800"
+        <Tabs
+          value={activeTab}
+          onValueChange={(v) => setActiveTab(v as "chat" | "history")}
+          className="flex min-h-0 flex-1 flex-col gap-0"
         >
-          <div className="flex items-center gap-2">
-            <Input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask the agent to edit this dashboard…"
-              disabled={isLoading}
-              autoFocus
-              className="flex-1"
-              aria-label="Message"
-            />
-            <Button type="submit" size="icon" disabled={!input.trim() || isLoading}>
-              <Send className="size-4" aria-hidden="true" />
-              <span className="sr-only">Send</span>
-            </Button>
-          </div>
-        </form>
+          <TabsList variant="line" className="mx-4 mt-2 w-fit">
+            <TabsTrigger value="chat">
+              <MessageCircle className="size-3.5" aria-hidden="true" />
+              Chat
+            </TabsTrigger>
+            <TabsTrigger value="history">
+              <History className="size-3.5" aria-hidden="true" />
+              History
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent
+            value="chat"
+            className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
+          >
+            <ScrollArea className="flex-1 px-4 py-3">
+              {messages.length === 0 && (
+                <div className="space-y-3 py-6 text-sm text-zinc-500 dark:text-zinc-400">
+                  <p>Tell the agent what to change. Examples:</p>
+                  <ul className="space-y-1 pl-4">
+                    <li>&ldquo;Add a card showing weekly signups&rdquo;</li>
+                    <li>&ldquo;Rename card 2 to &lsquo;Active Users&rsquo;&rdquo;</li>
+                    <li>&ldquo;Make card 3 a bar chart&rdquo;</li>
+                    <li>&ldquo;What is card 1 counting?&rdquo;</li>
+                  </ul>
+                </div>
+              )}
+
+              {messages.map((m: UIMessage) => (
+                <BoundChatMessage key={m.id} message={m} />
+              ))}
+
+              {isLoading && messages[messages.length - 1]?.role === "user" && (
+                <div className="my-2">
+                  <TypingIndicator />
+                </div>
+              )}
+
+              {error && (
+                <div
+                  role="alert"
+                  className="my-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400"
+                >
+                  {error.message || "The agent hit an error. Try again."}
+                </div>
+              )}
+            </ScrollArea>
+
+            <form
+              onSubmit={handleSubmit}
+              className="border-t border-zinc-200 px-4 py-3 dark:border-zinc-800"
+            >
+              <div className="flex items-center gap-2">
+                <Input
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  placeholder="Ask the agent to edit this dashboard…"
+                  disabled={isLoading}
+                  autoFocus
+                  className="flex-1"
+                  aria-label="Message"
+                />
+                <Button type="submit" size="icon" disabled={!input.trim() || isLoading}>
+                  <Send className="size-4" aria-hidden="true" />
+                  <span className="sr-only">Send</span>
+                </Button>
+              </div>
+            </form>
+          </TabsContent>
+
+          <TabsContent
+            value="history"
+            className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
+          >
+            {selectedSessionId ? (
+              <HistoryTranscriptPanel
+                dashboardId={dashboardId}
+                sessionId={selectedSessionId}
+                onBack={() => setSelectedSessionId(null)}
+              />
+            ) : (
+              <HistorySessionList
+                dashboardId={dashboardId}
+                onSelect={setSelectedSessionId}
+                // Only fetch the list when the tab is actually visible —
+                // keeps the drawer-open fast for users who never look at
+                // history. `useAdminFetch`'s TanStack Query cache still
+                // dedupes across tab toggles.
+                enabled={activeTab === "history"}
+              />
+            )}
+          </TabsContent>
+        </Tabs>
       </SheetContent>
     </Sheet>
   );
 }
 
-function BoundChatMessage({ message }: { message: UIMessage }) {
+// ---------------------------------------------------------------------------
+// History tab — session list
+// ---------------------------------------------------------------------------
+
+function HistorySessionList({
+  dashboardId,
+  onSelect,
+  enabled,
+}: {
+  dashboardId: string;
+  onSelect: (sessionId: string) => void;
+  enabled: boolean;
+}) {
+  const { data, loading, error } = useAdminFetch<SessionListResponse>(
+    `/api/v1/dashboards/${dashboardId}/sessions`,
+    { enabled },
+  );
+
+  if (loading) {
+    return (
+      <div className="space-y-2 px-4 py-3" data-testid="history-loading">
+        <Skeleton className="h-14 w-full" />
+        <Skeleton className="h-14 w-full" />
+        <Skeleton className="h-14 w-full" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div
+        role="alert"
+        className="m-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400"
+      >
+        Could not load session history. {error.message}
+      </div>
+    );
+  }
+
+  const sessions = data?.sessions ?? [];
+
+  if (sessions.length === 0) {
+    return (
+      <div className="px-4 py-8 text-sm text-zinc-500 dark:text-zinc-400">
+        <p>No previous chat sessions yet.</p>
+        <p className="mt-1 text-xs">
+          Every time you open this drawer, a new bound conversation appears
+          here once you send a message.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <ScrollArea className="flex-1 px-4 py-3">
+      <ul className="space-y-2">
+        {sessions.map((s) => (
+          <li key={s.conversationId}>
+            <button
+              type="button"
+              onClick={() => onSelect(s.conversationId)}
+              className="block w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-left text-sm transition hover:border-primary/40 hover:bg-zinc-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:bg-zinc-900"
+            >
+              <div className="truncate font-medium text-zinc-900 dark:text-zinc-100">
+                {s.title?.trim() || "Untitled session"}
+              </div>
+              <div className="mt-1 flex items-center gap-3 text-xs text-zinc-500 dark:text-zinc-400">
+                <span className="inline-flex items-center gap-1">
+                  <User className="size-3" aria-hidden="true" />
+                  {s.userId ?? "Unknown"}
+                </span>
+                <span>{formatStartedAt(s.createdAt)}</span>
+                <span>
+                  {s.messageCount} message{s.messageCount === 1 ? "" : "s"}
+                </span>
+              </div>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </ScrollArea>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// History tab — read-only transcript panel
+// ---------------------------------------------------------------------------
+
+function HistoryTranscriptPanel({
+  dashboardId,
+  sessionId,
+  onBack,
+}: {
+  dashboardId: string;
+  sessionId: string;
+  onBack: () => void;
+}) {
+  const { data, loading, error } = useAdminFetch<SessionTranscriptResponse>(
+    `/api/v1/dashboards/${dashboardId}/sessions/${sessionId}`,
+  );
+
+  const transformed = useMemo(
+    () => (data ? transformMessages(data.messages) : []),
+    [data],
+  );
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex items-center gap-2 border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onBack}
+          className="h-7 gap-1 px-2 text-xs"
+        >
+          <ArrowLeft className="size-3.5" aria-hidden="true" />
+          All sessions
+        </Button>
+        {data?.title && (
+          <span className="truncate text-xs text-zinc-500 dark:text-zinc-400">
+            {data.title}
+          </span>
+        )}
+      </div>
+
+      <ScrollArea className="flex-1 px-4 py-3">
+        {loading && (
+          <div className="space-y-3" data-testid="transcript-loading">
+            <Skeleton className="h-10 w-3/4" />
+            <Skeleton className="h-20 w-full" />
+            <Skeleton className="h-10 w-2/3" />
+          </div>
+        )}
+
+        {error && !loading && (
+          <div
+            role="alert"
+            className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400"
+          >
+            Could not load transcript. {error.message}
+          </div>
+        )}
+
+        {!loading && !error && transformed.length === 0 && (
+          <div className="py-6 text-sm text-zinc-500 dark:text-zinc-400">
+            This session has no messages.
+          </div>
+        )}
+
+        {transformed.map((m) => (
+          <BoundChatMessage
+            key={m.id}
+            message={m as unknown as UIMessage}
+            readOnly
+          />
+        ))}
+
+        {data && !loading && (
+          <div className="mt-6 border-t border-dashed border-zinc-200 pt-3 text-[10px] uppercase tracking-wide text-zinc-400 dark:border-zinc-800">
+            Read-only transcript — started {formatStartedAt(data.createdAt)}
+            {data.userId ? ` by ${data.userId}` : ""}
+          </div>
+        )}
+      </ScrollArea>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Shared message renderer (used by both live chat + read-only transcript)
+// ---------------------------------------------------------------------------
+
+function BoundChatMessage({
+  message,
+  readOnly = false,
+}: {
+  message: UIMessage;
+  readOnly?: boolean;
+}) {
   const isUser = message.role === "user";
   // Split text and tool parts so tool results render inline as cards
   // between the assistant's text turns (matches the main AtlasChat
@@ -247,7 +510,13 @@ function BoundChatMessage({ message }: { message: UIMessage }) {
       .join("");
     return (
       <div className="my-3 flex justify-end">
-        <div className="max-w-[80%] rounded-2xl bg-primary px-3 py-2 text-sm text-primary-foreground">
+        <div
+          className={
+            readOnly
+              ? "max-w-[80%] rounded-2xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-700 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-200"
+              : "max-w-[80%] rounded-2xl bg-primary px-3 py-2 text-sm text-primary-foreground"
+          }
+        >
           {text}
         </div>
       </div>
@@ -272,4 +541,24 @@ function BoundChatMessage({ message }: { message: UIMessage }) {
       })}
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function formatStartedAt(iso: string): string {
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return d.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  } catch {
+    // intentionally ignored: bad date string falls back to the raw ISO string.
+    return iso;
+  }
 }

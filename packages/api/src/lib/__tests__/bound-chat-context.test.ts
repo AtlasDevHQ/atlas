@@ -11,6 +11,7 @@ import {
   bindConversationToDashboard,
   resolveBoundDashboard,
   listSessionsForDashboard,
+  getSessionTranscript,
   buildCardSummary,
   BOUND_AGENT_PROMPT_GUIDANCE,
 } from "../bound-chat-context";
@@ -361,6 +362,124 @@ describe("bound-chat-context module", () => {
       const sentSql = queryCalls[0].sql;
       expect(sentSql).not.toMatch(/c\.org_id/);
       expect(queryCalls[0].params).toEqual(["dash-1"]);
+    });
+  });
+
+  // -------------------------------------------------------------------
+  // getSessionTranscript (#2368) — workspace-wide read, no user-ownership
+  // gate; dashboard binding + org scope are the only filters.
+  // -------------------------------------------------------------------
+
+  describe("getSessionTranscript", () => {
+    it("returns no_db when internal DB is unavailable", async () => {
+      const r = await getSessionTranscript("dash-1", "conv-1", "org-1");
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.reason).toBe("no_db");
+    });
+
+    it("threads dashboardId + conversationId + org-IS-NULL fallback into the predicate", async () => {
+      enableInternalDB();
+      setResults({
+        rows: [
+          {
+            id: "conv-1",
+            user_id: "user-1",
+            title: "Sess",
+            created_at: "2026-05-17T10:00:00Z",
+            updated_at: "2026-05-17T10:30:00Z",
+          },
+        ],
+      }, { rows: [] });
+      await getSessionTranscript("dash-1", "conv-1", "org-1");
+      const convSql = queryCalls[0]!.sql;
+      expect(convSql).toMatch(/bound_dashboard_id = \$1/);
+      expect(convSql).toMatch(/id = \$2/);
+      expect(convSql).toMatch(/org_id = \$3 OR org_id IS NULL/);
+      expect(queryCalls[0]!.params).toEqual(["dash-1", "conv-1", "org-1"]);
+    });
+
+    it("returns not_found when the conversation isn't bound to this dashboard (org_id mismatch suppressed too)", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+      const r = await getSessionTranscript("dash-1", "ghost", "org-1");
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.reason).toBe("not_found");
+    });
+
+    it("omits the org clause when no orgId is supplied (self-hosted single-tenant)", async () => {
+      enableInternalDB();
+      setResults({ rows: [{
+        id: "conv-1", user_id: null, title: null,
+        created_at: "2026-05-17", updated_at: "2026-05-17",
+      }] }, { rows: [] });
+      await getSessionTranscript("dash-1", "conv-1", null);
+      const convSql = queryCalls[0]!.sql;
+      expect(convSql).not.toMatch(/org_id/);
+      expect(queryCalls[0]!.params).toEqual(["dash-1", "conv-1"]);
+    });
+
+    it("returns the transcript with messages in created_at order", async () => {
+      enableInternalDB();
+      setResults(
+        {
+          rows: [
+            {
+              id: "conv-1",
+              user_id: "user-A",
+              title: "Edited the trend",
+              created_at: "2026-05-17T10:00:00Z",
+              updated_at: "2026-05-17T10:30:00Z",
+            },
+          ],
+        },
+        {
+          rows: [
+            {
+              id: "msg-1",
+              conversation_id: "conv-1",
+              role: "user",
+              content: [{ type: "text", text: "add a churn card" }],
+              created_at: "2026-05-17T10:00:01Z",
+            },
+            {
+              id: "msg-2",
+              conversation_id: "conv-1",
+              role: "assistant",
+              content: [{ type: "text", text: "done" }],
+              created_at: "2026-05-17T10:00:05Z",
+            },
+          ],
+        },
+      );
+      const r = await getSessionTranscript("dash-1", "conv-1", "org-1");
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.data.conversationId).toBe("conv-1");
+        expect(r.data.dashboardId).toBe("dash-1");
+        expect(r.data.userId).toBe("user-A");
+        expect(r.data.title).toBe("Edited the trend");
+        expect(r.data.messages).toHaveLength(2);
+        expect(r.data.messages[0]!.role).toBe("user");
+        expect(r.data.messages[1]!.role).toBe("assistant");
+      }
+      // Second query is the messages fetch, scoped to conversation only
+      const msgSql = queryCalls[1]!.sql;
+      expect(msgSql).toMatch(/conversation_id = \$1/);
+      expect(queryCalls[1]!.params).toEqual(["conv-1"]);
+    });
+
+    it("reads workspace-wide — does NOT add a user-ownership predicate", async () => {
+      // Regression guard: the workspace-visibility ACL is the entire
+      // point of this slice. If a future refactor adds `user_id = $N`
+      // to the gate, the History tab silently goes per-user.
+      enableInternalDB();
+      setResults({ rows: [{
+        id: "conv-1", user_id: "someone-else", title: null,
+        created_at: "2026-05-17", updated_at: "2026-05-17",
+      }] }, { rows: [] });
+      await getSessionTranscript("dash-1", "conv-1", "org-1");
+      const convSql = queryCalls[0]!.sql;
+      expect(convSql).not.toMatch(/user_id\s*=/);
     });
   });
 

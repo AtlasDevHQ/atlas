@@ -35,9 +35,22 @@ import {
   buildProactiveAnswerCard,
   buildProactiveOfferCard,
   buildUnlinkedAskerPrompt,
+  buildWrongDataModal,
   PROACTIVE_ANSWER_ACTION_ID,
   PROACTIVE_DISMISS_ACTION_ID,
 } from "../cards/proactive-answer-card";
+import {
+  outcomeForActionId,
+  parseFeedbackSlashArgs,
+  PROACTIVE_FB_HELPFUL_ACTION_ID,
+  PROACTIVE_FB_NOT_HELPFUL_ACTION_ID,
+  PROACTIVE_FB_WRONG_DATA_ACTION_ID,
+  PROACTIVE_FB_WRONG_DATA_INPUT_ID,
+  PROACTIVE_FB_WRONG_DATA_MODAL_ID,
+  RecentAnswers,
+  type FeedbackCollectorFn,
+  type ProactiveFeedbackEvent,
+} from "./feedback";
 
 // ---------------------------------------------------------------------------
 // Public config
@@ -71,6 +84,21 @@ export interface ProactiveListenerConfig {
   linkUrl?: string;
   /** Platform name (`"slack"` etc.) used in `ProactiveAsker`. */
   platform?: string;
+
+  // ---- Slice #2298 additions: feedback collection ----
+
+  /**
+   * Persistence callback for `[Helpful] [Not helpful] [Wrong data]`
+   * clicks, the wrong-data modal, and `/atlas feedback <text>`. The
+   * host typically writes to the meter / evals dataset.
+   */
+  feedbackCollector?: FeedbackCollectorFn;
+  /**
+   * Configured slash-command name (e.g. `/atlas`). Used to register a
+   * `feedback`-subcommand handler. Defaults to `/atlas` to match the
+   * bridge default; pass the same value you pass to `slashCommandName`.
+   */
+  slashCommandName?: string;
 }
 
 /**
@@ -128,15 +156,25 @@ function askerFromAuthor(author: Author, platform: string): ProactiveAsker {
  * for every message so a workspace toggle flip takes effect without
  * a restart.
  */
+export interface ProactiveListenerHandle {
+  /**
+   * Shared registry of recent Atlas answers per (channel, user) — used
+   * by the bridge's `/atlas feedback <text>` subcommand fallback (see
+   * `handleProactiveFeedbackSlash`). Null when the listener never
+   * registered (gate closed at boot).
+   */
+  recentAnswers: RecentAnswers | null;
+}
+
 export async function registerProactiveListener(
   chat: Chat,
   log: PluginLogger,
   config: ProactiveListenerConfig,
-): Promise<void> {
+): Promise<ProactiveListenerHandle> {
   const enabledAtRegistration = await config.isEnabled();
   if (!enabledAtRegistration) {
     log.debug("Proactive listener not registered — gate is closed");
-    return;
+    return { recentAnswers: null };
   }
 
   const allowlist = resolveChannelAllowlist(config.channelAllowlist);
@@ -146,6 +184,9 @@ export async function registerProactiveListener(
   const recent = new Map<string, RecentActivity>();
   // Pending answers awaiting a reaction-back or button-click.
   const pending = new PendingAnswers();
+  // Most-recent Atlas answer per (channelId, externalUserId) for the
+  // slice #2298 `/atlas feedback <text>` fallback path.
+  const recentAnswers = new RecentAnswers();
 
   // -------------------------------------------------------------------------
   // Channel-message hook: classify + react
@@ -238,7 +279,7 @@ export async function registerProactiveListener(
       }
       // Consume now so a second reactor doesn't double-fire.
       pending.consume(event.threadId, event.messageId);
-      await runAnswerFlow(event.thread, event.threadId, decision.pending.text, decision.pending.asker, config, log);
+      await runAnswerFlow(event.thread, event.threadId, decision.pending.text, decision.pending.asker, config, log, recentAnswers);
     } catch (err) {
       log.warn(
         {
@@ -273,7 +314,7 @@ export async function registerProactiveListener(
         );
         return;
       }
-      await runAnswerFlow(event.thread, event.threadId, lookup.text, lookup.asker, config, log);
+      await runAnswerFlow(event.thread, event.threadId, lookup.text, lookup.asker, config, log, recentAnswers);
     } catch (err) {
       log.warn(
         {
@@ -300,6 +341,156 @@ export async function registerProactiveListener(
       );
     }
   });
+
+  // -------------------------------------------------------------------------
+  // Feedback button handlers (slice #2298)
+  // -------------------------------------------------------------------------
+  chat.onAction(
+    [
+      PROACTIVE_FB_HELPFUL_ACTION_ID,
+      PROACTIVE_FB_NOT_HELPFUL_ACTION_ID,
+      PROACTIVE_FB_WRONG_DATA_ACTION_ID,
+    ],
+    async (event) => {
+      try {
+        if (!(await config.isEnabled())) return;
+        const outcome = outcomeForActionId(event.actionId);
+        if (!outcome) return;
+
+        const platform = adapterPlatform(event.adapter, config.platform);
+        const asker = askerFromAuthor(event.user, platform);
+        const answerMessageId = event.messageId;
+
+        if (outcome === "wrong-data") {
+          // Open the textarea modal; the modal-submit handler below
+          // writes the actual feedback record with the freeform text.
+          const modal = buildWrongDataModal(answerMessageId);
+          if (modal && typeof event.openModal === "function") {
+            try {
+              await event.openModal(modal);
+              return; // record happens on submit
+            } catch (modalErr) {
+              log.debug(
+                { err: modalErr instanceof Error ? modalErr : new Error(String(modalErr)) },
+                "Proactive feedback: openModal failed — recording 'wrong-data' without freeform context",
+              );
+            }
+          }
+          // Platforms without modal support fall through and record
+          // the button click as-is.
+        }
+
+        await deliverFeedback(
+          {
+            threadId: event.threadId,
+            answerMessageId,
+            asker,
+            outcome,
+            source: "button",
+          },
+          config,
+          log,
+          event.thread,
+        );
+      } catch (err) {
+        log.warn(
+          { err: err instanceof Error ? err : new Error(String(err)), actionId: event.actionId },
+          "Proactive feedback button handler threw — suppressed",
+        );
+      }
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // Wrong-data modal submit (slice #2298)
+  // -------------------------------------------------------------------------
+  chat.onModalSubmit(PROACTIVE_FB_WRONG_DATA_MODAL_ID, async (event) => {
+    try {
+      if (!(await config.isEnabled())) return { action: "close" as const };
+
+      const platform = adapterPlatform(event.adapter, config.platform);
+      const asker = askerFromAuthor(event.user, platform);
+      const answerMessageId =
+        typeof event.privateMetadata === "string" ? event.privateMetadata : "";
+      const rawText = event.values?.[PROACTIVE_FB_WRONG_DATA_INPUT_ID];
+      const text = typeof rawText === "string" ? rawText.trim() : "";
+
+      await deliverFeedback(
+        {
+          threadId: "",
+          answerMessageId,
+          asker,
+          outcome: "wrong-data",
+          context: text || undefined,
+          source: "modal",
+        },
+        config,
+        log,
+        null,
+      );
+
+      return { action: "close" as const };
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err : new Error(String(err)) },
+        "Proactive wrong-data modal handler threw — suppressed",
+      );
+      return { action: "close" as const };
+    }
+  });
+
+  // Slice #2298: the `/atlas feedback <text>` subcommand is routed
+  // from the bridge's existing `onSlashCommand` handler so we don't
+  // register a duplicate listener for the same command. See
+  // `handleProactiveFeedbackSlash` below for the entry point.
+
+  return { recentAnswers };
+}
+
+// ---------------------------------------------------------------------------
+// Public: bridge-routed slash subcommand handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Try to handle an `/atlas feedback <text>` invocation. Returns true
+ * when the slash command was a feedback subcommand and was handled.
+ *
+ * The bridge calls this at the top of its `/atlas` slash handler. We
+ * keep it as a free function (rather than a closure captured during
+ * `registerProactiveListener`) so the bridge can call it directly
+ * with the shared `RecentAnswers` registry.
+ */
+export async function handleProactiveFeedbackSlash(args: {
+  text: string | undefined;
+  channelId: string;
+  asker: ProactiveAsker;
+  config: ProactiveListenerConfig;
+  log: PluginLogger;
+  recentAnswers: RecentAnswers;
+}): Promise<boolean> {
+  const { text, channelId, asker, config, log, recentAnswers } = args;
+  if (!config.feedbackCollector) return false;
+  const parsed = parseFeedbackSlashArgs(text);
+  if (parsed.kind !== "feedback") return false;
+
+  if (!(await config.isEnabled())) return false;
+
+  const recent = recentAnswers.lookup(channelId, asker.externalUserId);
+
+  await deliverFeedback(
+    {
+      threadId: recent?.threadId ?? "",
+      answerMessageId: recent?.answerMessageId ?? "",
+      asker,
+      outcome: "not-helpful",
+      context: parsed.text,
+      source: "slash-command",
+    },
+    config,
+    log,
+    null,
+  );
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -329,6 +520,7 @@ async function runAnswerFlow(
   asker: ProactiveAsker,
   config: ProactiveListenerConfig,
   log: PluginLogger,
+  recentAnswers: RecentAnswers,
 ): Promise<void> {
   const resolved = config.userResolver
     ? await safeResolveUser(config.userResolver, asker, log)
@@ -375,8 +567,25 @@ async function runAnswerFlow(
     return;
   }
 
+  // Post the answer with the feedback button row. The Chat SDK
+  // surfaces the answer card's own message ID as `event.messageId` on
+  // feedback button clicks, so we don't have to round-trip the answer
+  // id through the button `value`.
   const answer = buildProactiveAnswerCard(result.answer);
-  await thread.post(answer);
+  const sent = await thread.post(answer);
+  const answerMessageId =
+    typeof sent === "object" && sent != null && "id" in sent && typeof sent.id === "string"
+      ? sent.id
+      : "";
+
+  if (answerMessageId) {
+    recentAnswers.record(thread.channelId, asker.externalUserId, {
+      threadId,
+      answerMessageId,
+      question: text,
+      answer: result.answer,
+    });
+  }
 
   // Subscribe so follow-ups in the thread flow through the existing
   // `onSubscribedMessage` handler.
@@ -394,6 +603,53 @@ async function runAnswerFlow(
   log.info(
     { threadId, externalUserId: asker.externalUserId, atlasUserId: resolved.atlasUserId },
     "Proactive answer delivered to linked asker",
+  );
+}
+
+async function deliverFeedback(
+  event: ProactiveFeedbackEvent,
+  config: ProactiveListenerConfig,
+  log: PluginLogger,
+  thread: AnyThread | null,
+): Promise<void> {
+  if (!config.feedbackCollector) {
+    log.debug(
+      { outcome: event.outcome, source: event.source },
+      "Proactive feedback: no collector configured — discarding event",
+    );
+    return;
+  }
+  try {
+    await config.feedbackCollector(event);
+  } catch (err) {
+    log.warn(
+      {
+        err: err instanceof Error ? err : new Error(String(err)),
+        outcome: event.outcome,
+        source: event.source,
+      },
+      "Proactive feedbackCollector threw — feedback NOT recorded",
+    );
+    return;
+  }
+
+  if (thread && event.source === "button") {
+    try {
+      await thread.postEphemeral(event.asker.externalUserId, "Thanks for the feedback.", {
+        fallbackToDM: false,
+      });
+    } catch {
+      // Ack is best-effort. The feedback is already recorded.
+    }
+  }
+  log.info(
+    {
+      outcome: event.outcome,
+      source: event.source,
+      externalUserId: event.asker.externalUserId,
+      answerMessageId: event.answerMessageId,
+    },
+    "Proactive feedback recorded",
   );
 }
 

@@ -1837,3 +1837,64 @@ export const oauthClientWorkspaceGrants = pgTable(
 // here through the soak; migration 0047 drops the table. Token lifecycle
 // for hosted MCP is now Better Auth's `oauthAccessToken` /
 // `oauthRefreshToken` schema, which Better Auth's runtime owns.
+
+// ---------------------------------------------------------------------------
+// Proactive chat admin opt-in (#2294, PRD #2291). Two tables back the
+// workspace-level admin console for proactive mode:
+//   - workspace_proactive_config — 1 row per workspace, master toggle +
+//     defaults. Enterprise-gated at the route layer; the table exists on
+//     every tenant so future plan upgrades read pre-existing config
+//     without a migration.
+//   - channel_proactive_config   — N rows per workspace, per-channel
+//     allow/deny + optional sensitivity override. Unique on
+//     (workspace_id, channel_id) so a POST acts as an upsert.
+// ---------------------------------------------------------------------------
+
+export const workspaceProactiveConfig = pgTable(
+  "workspace_proactive_config",
+  {
+    workspaceId: text("workspace_id").primaryKey(),
+    enabled: boolean("enabled").notNull().default(false),
+    sensitivity: text("sensitivity").notNull().default("balanced"),
+    classifierMode: text("classifier_mode").notNull().default("regex-prefilter"),
+    announcementChannelId: text("announcement_channel_id"),
+    monthlyClassifierCap: integer("monthly_classifier_cap"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "chk_workspace_proactive_sensitivity",
+      sql`${t.sensitivity} IN ('cautious', 'balanced', 'eager')`,
+    ),
+    check(
+      "chk_workspace_proactive_classifier_mode",
+      sql`${t.classifierMode} IN ('regex-prefilter', 'classify-all')`,
+    ),
+    check(
+      "chk_workspace_proactive_monthly_cap_nonneg",
+      sql`${t.monthlyClassifierCap} IS NULL OR ${t.monthlyClassifierCap} >= 0`,
+    ),
+  ],
+);
+
+export const channelProactiveConfig = pgTable(
+  "channel_proactive_config",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: text("workspace_id").notNull(),
+    channelId: text("channel_id").notNull(),
+    allow: boolean("allow").notNull(),
+    sensitivity: text("sensitivity"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      "chk_channel_proactive_sensitivity",
+      sql`${t.sensitivity} IS NULL OR ${t.sensitivity} IN ('cautious', 'balanced', 'eager')`,
+    ),
+    uniqueIndex("uq_channel_proactive_workspace_channel").on(t.workspaceId, t.channelId),
+    index("idx_channel_proactive_workspace").on(t.workspaceId),
+  ],
+);

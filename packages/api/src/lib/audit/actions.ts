@@ -650,6 +650,20 @@ export const ADMIN_ACTIONS = {
     delete: "branding.delete",
   },
   /**
+   * Proactive chat admin opt-in (#2294, PRD #2291). The reaction-first
+   * tracer (#2292) shipped with an env-var allowlist; the admin console
+   * replaces it with persisted state. Every flip — master toggle,
+   * sensitivity, classifier mode, monthly cap, channel override
+   * upsert/delete — emits an audit row so a workspace admin can't
+   * silently widen the agent's interjection radius across the tenant
+   * without a forensic trail. Enterprise-gated.
+   */
+  proactive: {
+    workspaceUpdate: "proactive.workspace_update",
+    channelUpsert: "proactive.channel_upsert",
+    channelDelete: "proactive.channel_delete",
+  },
+  /**
    * Compliance / PII-classification mutations. `pii_config_update` covers
    * the PUT /classifications/{id} path (category / masking-strategy /
    * dismissed / reviewed changes on a single classification row).

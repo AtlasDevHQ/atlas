@@ -669,6 +669,9 @@ export const ADMIN_ACTIONS = {
     react: "proactive.react",
     answer: "proactive.answer",
     feedback: "proactive.feedback",
+    // Slice #2297 — admin writes to the unlinked-asker public dataset.
+    publicDatasetUpsert: "proactive.public_dataset_upsert",
+    publicDatasetDelete: "proactive.public_dataset_delete",
   },
   /**
    * Compliance / PII-classification mutations. `pii_config_update` covers

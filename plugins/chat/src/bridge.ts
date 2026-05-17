@@ -1578,10 +1578,14 @@ export function createChatBridge(
           workspaceId: proactiveConfig.workspaceId,
           isPaused: proactiveConfig.isPaused,
           onPauseRequest: proactiveConfig.onPauseRequest,
-          // AnswerMeter (#2296).
+          // AnswerMeter (#2296) — shared callback also covers
+          // public_refused emissions added in #2297.
           onMeterEvent: proactiveConfig.onMeterEvent,
           // Monthly quota cap (#2301).
           getQuotaStatus: proactiveConfig.getQuotaStatus,
+          // Public dataset (#2297).
+          getPublicDataset: proactiveConfig.getPublicDataset,
+          refusalCopy: proactiveConfig.refusalCopy,
         });
         proactiveRecentAnswers = handle.recentAnswers;
       })

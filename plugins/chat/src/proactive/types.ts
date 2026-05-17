@@ -135,13 +135,23 @@ export type OnPauseRequestFn = (request: {
 // Meter event (#2296)
 // ---------------------------------------------------------------------------
 
-/** Lifecycle stages tracked by the answer meter. */
+/**
+ * Lifecycle stages tracked by the answer meter.
+ *
+ * `public_refused` (#2297) joins the canonical five at the tail — the
+ * listener emits it when an unlinked asker reaches the answer flow but
+ * the question's referenced entities aren't on the workspace's
+ * proactive public dataset. The admin analytics panel buckets these
+ * separately so admins can see "what topic do non-linked askers keep
+ * trying" and decide whether to widen the allowlist.
+ */
 export type ProactiveMeterEventType =
   | "classify"
   | "react"
   | "offer"
   | "accept"
-  | "feedback";
+  | "feedback"
+  | "public_refused";
 
 /** Outcome values captured on `feedback` events. */
 export type ProactiveMeterOutcome =
@@ -210,3 +220,46 @@ export interface ProactiveQuotaStatus {
 export type GetQuotaStatusFn = (input: {
   workspaceId: string;
 }) => Promise<ProactiveQuotaStatus>;
+
+// ---------------------------------------------------------------------------
+// Public dataset for non-linked askers (#2297)
+// ---------------------------------------------------------------------------
+
+/**
+ * One entry on the curated allowlist of semantic entities an unlinked
+ * asker may ask about. Mirrors the host's `PublicDatasetEntry` shape so
+ * the plugin doesn't import from `@atlas/api`.
+ *
+ * `denyMetrics` is the per-entry escape hatch for "allow `users` but
+ * never `users.email`" — column / measure names within the entity that
+ * still refuse a public-asker query.
+ */
+export interface ProactivePublicDatasetEntry {
+  entityName: string;
+  denyMetrics: string[];
+}
+
+/**
+ * Host-injected fetch for the workspace's public-dataset allowlist.
+ * Consulted by the listener when an unlinked asker reaches the answer
+ * flow — every referenced entity must appear in the returned list, or
+ * the listener emits a `public_refused` meter event and returns the
+ * refusal copy. Failures are caught and treated as "empty allowlist"
+ * so a registry hiccup doesn't accidentally widen the refusal surface.
+ *
+ * The plugin never queries Postgres itself; the host implementation
+ * lives in `packages/api/src/lib/proactive/public-dataset.ts`.
+ */
+export type GetPublicDatasetFn = (input: {
+  workspaceId: string;
+}) => Promise<ReadonlyArray<ProactivePublicDatasetEntry>>;
+
+/**
+ * Default refusal copy used when an unlinked asker hits a question
+ * whose referenced entities aren't on the workspace's public dataset.
+ * Single string, content-blind by design (never names the entity the
+ * asker probed for) — admins can override via `proactive.refusalCopy`
+ * to match house style.
+ */
+export const DEFAULT_PROACTIVE_REFUSAL_COPY =
+  "I can only answer a curated set of questions in public channels. Link your Atlas account in DM to see this answer — or ask your admin to make this kind of question public.";

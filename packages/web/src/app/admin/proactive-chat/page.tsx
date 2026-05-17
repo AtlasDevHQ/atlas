@@ -284,6 +284,22 @@ function ConfigForm({ initial, refetchWorkspace }: ConfigFormProps) {
         />
         <ChannelOverridesTable />
       </section>
+
+      <section>
+        <SectionHeading
+          title="Public dataset"
+          description="Curated allowlist of semantic entities Atlas can answer about for non-linked askers in public channels. Empty by default — Atlas refuses every public-channel question until you opt in entity-by-entity."
+        />
+        <PublicDatasetSection />
+      </section>
+
+      <section>
+        <SectionHeading
+          title="Refused topics"
+          description="What unlinked askers tried to ask about in the last 30 days. Inline 'Make public' adds the entity to the allowlist in one click."
+        />
+        <RefusedTopicsPanel />
+      </section>
     </div>
   );
 }
@@ -735,6 +751,288 @@ function ChannelRow({
         feature="Proactive Chat"
         variant="inline"
         inlinePrefix="Remove failed."
+      />
+    </li>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Public dataset section (#2297)
+// ---------------------------------------------------------------------------
+
+const PublicDatasetEntrySchema = z.object({
+  entityName: z.string().min(1),
+  denyMetrics: z.array(z.string()),
+});
+
+type PublicDatasetEntryT = z.infer<typeof PublicDatasetEntrySchema>;
+
+const PublicDatasetListSchema = z
+  .object({ entries: z.array(PublicDatasetEntrySchema) })
+  .transform((r) => r.entries);
+
+const RefusedRollupRowSchema = z.object({
+  entityName: z.string(),
+  count: z.number().int().nonnegative(),
+});
+
+type RefusedRollupRowT = z.infer<typeof RefusedRollupRowSchema>;
+
+const RefusedRollupResponseSchema = z.object({
+  sinceMs: z.number().int().positive(),
+  rollup: z.array(RefusedRollupRowSchema),
+});
+
+function PublicDatasetSection() {
+  const { data, loading, error, refetch } = useAdminFetch<PublicDatasetEntryT[]>(
+    "/api/v1/admin/proactive/public-dataset",
+    { schema: PublicDatasetListSchema },
+  );
+
+  const upsert = useAdminMutation({
+    path: "/api/v1/admin/proactive/public-dataset",
+    method: "POST",
+    invalidates: refetch,
+  });
+
+  const [draftEntity, setDraftEntity] = useState("");
+  const [draftDeny, setDraftDeny] = useState("");
+
+  async function handleAdd() {
+    const entityName = draftEntity.trim();
+    if (!entityName) return;
+    const denyMetrics = draftDeny
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    const result = await upsert.mutate({
+      body: { entityName, denyMetrics },
+    });
+    if (result.ok) {
+      setDraftEntity("");
+      setDraftDeny("");
+    }
+  }
+
+  return (
+    <AdminContentWrapper
+      loading={loading}
+      error={error}
+      feature="Proactive Chat"
+      onRetry={refetch}
+      loadingMessage="Loading public dataset..."
+    >
+      <div className="space-y-4">
+        <div className="rounded-lg border bg-muted/30 p-4">
+          <p className="mb-3 text-[12px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Add entity
+          </p>
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="public-dataset-entity" className="text-[11px]">
+                Entity name
+              </Label>
+              <Input
+                id="public-dataset-entity"
+                placeholder="marketing.users"
+                value={draftEntity}
+                onChange={(e) => setDraftEntity(e.target.value)}
+                className="w-[220px] font-mono text-xs"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="public-dataset-deny" className="text-[11px]">
+                Deny metrics (comma-separated)
+              </Label>
+              <Input
+                id="public-dataset-deny"
+                placeholder="email, phone_number"
+                value={draftDeny}
+                onChange={(e) => setDraftDeny(e.target.value)}
+                className="w-[260px] font-mono text-xs"
+              />
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              onClick={handleAdd}
+              disabled={upsert.saving || !draftEntity.trim()}
+            >
+              {upsert.saving ? (
+                <Loader2 className="mr-1.5 size-3 animate-spin" />
+              ) : (
+                <Plus className="mr-1.5 size-3.5" />
+              )}
+              Save entity
+            </Button>
+          </div>
+          <MutationErrorSurface
+            error={upsert.error}
+            feature="Proactive Chat"
+            variant="inline"
+            inlinePrefix="Save failed."
+          />
+        </div>
+
+        {data && data.length > 0 ? (
+          <ul className="space-y-1.5">
+            {data.map((row) => (
+              <PublicDatasetRow key={row.entityName} row={row} refetch={refetch} />
+            ))}
+          </ul>
+        ) : (
+          <p className="rounded-md border border-dashed bg-muted/20 p-6 text-center text-[12px] text-muted-foreground">
+            No entities are public yet. Atlas will refuse every public-channel
+            question from non-linked askers until you opt in.
+          </p>
+        )}
+      </div>
+    </AdminContentWrapper>
+  );
+}
+
+function PublicDatasetRow({
+  row,
+  refetch,
+}: {
+  row: PublicDatasetEntryT;
+  refetch: () => void;
+}) {
+  const remove = useAdminMutation({
+    path: `/api/v1/admin/proactive/public-dataset/${encodeURIComponent(row.entityName)}`,
+    method: "DELETE",
+    invalidates: refetch,
+  });
+
+  const description =
+    row.denyMetrics.length > 0
+      ? `Public - deny metrics: ${row.denyMetrics.join(", ")}`
+      : "Public - all metrics allowed";
+
+  return (
+    <li>
+      <CompactRow
+        icon={Bot}
+        title={row.entityName}
+        description={description}
+        status="connected"
+        statusLabel="Public"
+        action={
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={() => remove.mutate({})}
+            disabled={remove.saving}
+            aria-label={`Remove ${row.entityName} from public dataset`}
+          >
+            {remove.saving ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <Trash2 className="size-3.5" />
+            )}
+          </Button>
+        }
+      />
+      <MutationErrorSurface
+        error={remove.error}
+        feature="Proactive Chat"
+        variant="inline"
+        inlinePrefix="Remove failed."
+      />
+    </li>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Refused topics rollup (#2297)
+// ---------------------------------------------------------------------------
+
+function RefusedTopicsPanel() {
+  const { data, loading, error, refetch } = useAdminFetch<
+    z.infer<typeof RefusedRollupResponseSchema>
+  >("/api/v1/admin/proactive/public-dataset/refused", {
+    schema: RefusedRollupResponseSchema,
+  });
+
+  const upsert = useAdminMutation({
+    path: "/api/v1/admin/proactive/public-dataset",
+    method: "POST",
+    invalidates: refetch,
+  });
+
+  async function handleMakePublic(entityName: string) {
+    await upsert.mutate({ body: { entityName, denyMetrics: [] } });
+  }
+
+  return (
+    <AdminContentWrapper
+      loading={loading}
+      error={error}
+      feature="Proactive Chat"
+      onRetry={refetch}
+      loadingMessage="Loading refused topics..."
+    >
+      {data && data.rollup.length > 0 ? (
+        <ul className="space-y-1.5">
+          {data.rollup.map((row) => (
+            <RefusedRollupRow
+              key={row.entityName}
+              row={row}
+              onMakePublic={() => handleMakePublic(row.entityName)}
+              saving={upsert.saving}
+            />
+          ))}
+        </ul>
+      ) : (
+        <p className="rounded-md border border-dashed bg-muted/20 p-6 text-center text-[12px] text-muted-foreground">
+          No refused topics in the last 30 days. Either the public dataset
+          covers everything askers are trying or nobody's asked yet.
+        </p>
+      )}
+      <MutationErrorSurface
+        error={upsert.error}
+        feature="Proactive Chat"
+        variant="inline"
+        inlinePrefix="Save failed."
+      />
+    </AdminContentWrapper>
+  );
+}
+
+function RefusedRollupRow({
+  row,
+  onMakePublic,
+  saving,
+}: {
+  row: RefusedRollupRowT;
+  onMakePublic: () => void;
+  saving: boolean;
+}) {
+  return (
+    <li>
+      <CompactRow
+        icon={Hash}
+        title={row.entityName}
+        description={`${row.count} refused question${row.count === 1 ? "" : "s"} in the last 30 days`}
+        status="disconnected"
+        statusLabel="Refused"
+        action={
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={onMakePublic}
+            disabled={saving}
+          >
+            {saving ? (
+              <Loader2 className="mr-1.5 size-3 animate-spin" />
+            ) : (
+              <Plus className="mr-1.5 size-3.5" />
+            )}
+            Make public
+          </Button>
+        }
       />
     </li>
   );

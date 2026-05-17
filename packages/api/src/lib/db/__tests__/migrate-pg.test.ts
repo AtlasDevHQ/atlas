@@ -3537,4 +3537,125 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
     expect(afterCount.rows[0]?.c).toBe(0);
   }, PG_TEST_TIMEOUT_MS);
+
+  // ---------------------------------------------------------------------------
+  // proactive_public_dataset (#2297) + extended meter event-type CHECK
+  // ---------------------------------------------------------------------------
+
+  it("proactive_public_dataset: round-trip insert + select preserves entity + deny_metrics (#2297)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-pd-rt-${stamp}`;
+
+    await pool.query(
+      `INSERT INTO proactive_public_dataset (workspace_id, entity_name, deny_metrics)
+       VALUES ($1, $2, $3::text[])`,
+      [ws, "marketing.users", ["email", "phone_number"]],
+    );
+    const { rows } = await pool.query<{ entity_name: string; deny_metrics: string[] }>(
+      `SELECT entity_name, deny_metrics
+         FROM proactive_public_dataset
+        WHERE workspace_id = $1`,
+      [ws],
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0].entity_name).toBe("marketing.users");
+    expect(rows[0].deny_metrics).toEqual(["email", "phone_number"]);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("proactive_public_dataset: unique index rejects duplicate (workspace_id, entity_name) (#2297)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-pd-dup-${stamp}`;
+
+    await pool.query(
+      `INSERT INTO proactive_public_dataset (workspace_id, entity_name)
+       VALUES ($1, $2)`,
+      [ws, "marketing.users"],
+    );
+
+    let err: Error | null = null;
+    try {
+      await pool.query(
+        `INSERT INTO proactive_public_dataset (workspace_id, entity_name)
+         VALUES ($1, $2)`,
+        [ws, "marketing.users"],
+      );
+    } catch (e) {
+      err = e instanceof Error ? e : new Error(String(e));
+    }
+    expect(err).not.toBeNull();
+    expect(err?.message).toMatch(/uq_proactive_public_dataset_workspace_entity|duplicate|23505/i);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("proactive_public_dataset: ON CONFLICT updates deny_metrics + updated_at (#2297)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-pd-upsert-${stamp}`;
+
+    await pool.query(
+      `INSERT INTO proactive_public_dataset (workspace_id, entity_name, deny_metrics)
+       VALUES ($1, $2, $3::text[])`,
+      [ws, "marketing.users", ["email"]],
+    );
+
+    await pool.query(
+      `INSERT INTO proactive_public_dataset (workspace_id, entity_name, deny_metrics)
+       VALUES ($1, $2, $3::text[])
+       ON CONFLICT (workspace_id, entity_name) DO UPDATE
+         SET deny_metrics = EXCLUDED.deny_metrics,
+             updated_at = NOW()`,
+      [ws, "marketing.users", ["email", "phone_number"]],
+    );
+
+    const { rows } = await pool.query<{ deny_metrics: string[] }>(
+      `SELECT deny_metrics FROM proactive_public_dataset
+        WHERE workspace_id = $1 AND entity_name = $2`,
+      [ws, "marketing.users"],
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0].deny_metrics).toEqual(["email", "phone_number"]);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("proactive_public_dataset: indexes are created (#2297)", async () => {
+    const { rows } = await pool.query<{ indexname: string }>(
+      `SELECT indexname FROM pg_indexes
+        WHERE tablename = 'proactive_public_dataset'
+        ORDER BY indexname`,
+    );
+    const names = rows.map((r) => r.indexname);
+    expect(names).toContain("uq_proactive_public_dataset_workspace_entity");
+    expect(names).toContain("idx_proactive_public_dataset_workspace");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("proactive_meter_events: accepts the new public_refused event_type (#2297)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-pr-${stamp}`;
+
+    await pool.query(
+      `INSERT INTO proactive_meter_events (workspace_id, channel_id, event_type, metadata)
+       VALUES ($1, $2, 'public_refused', $3::jsonb)`,
+      [ws, `C-${stamp}`, JSON.stringify({ entityName: "marketing.users" })],
+    );
+    const { rows } = await pool.query<{ event_type: string }>(
+      `SELECT event_type FROM proactive_meter_events WHERE workspace_id = $1`,
+      [ws],
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0].event_type).toBe("public_refused");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("proactive_meter_events: CHECK still rejects out-of-enum event_type (#2297)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-pr-bad-${stamp}`;
+    let err: Error | null = null;
+    try {
+      await pool.query(
+        `INSERT INTO proactive_meter_events (workspace_id, channel_id, event_type)
+         VALUES ($1, $2, 'not-a-real-type')`,
+        [ws, `C-${stamp}`],
+      );
+    } catch (e) {
+      err = e instanceof Error ? e : new Error(String(e));
+    }
+    expect(err).not.toBeNull();
+    expect(err?.message).toMatch(/chk_proactive_meter_event_type|23514|check constraint/i);
+  }, PG_TEST_TIMEOUT_MS);
 });

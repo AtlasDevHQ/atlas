@@ -138,7 +138,7 @@ const cardRow = {
 // AI SDK's `Tool` type has a structural `execute` signature parameterized
 // over the inputSchema; calling it generically in tests requires escaping
 // the per-tool type. We `any`-cast at the boundary, then narrow via the
-// caller's generic. Same trade as proposeDashboard.test.ts.
+// caller's generic. Same trade as create-dashboard.test.ts.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function runTool<T = unknown>(tool: any, args: unknown): Promise<T> {
   if (!tool?.execute) throw new Error("tool has no execute");

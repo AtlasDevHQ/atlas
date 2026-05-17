@@ -8,8 +8,8 @@
  * `listener.ts` for behaviour.
  *
  * Slice #2292 ships the reaction-first tracer: subscribe → classify →
- * react. Later slices add the reply, kill switches, admin config,
- * meter, and feedback.
+ * react. Slice #2295 layers in the three-tier kill switch + per-user
+ * opt-out — types live below.
  */
 
 /** Result of running a message through the question classifier. */
@@ -80,3 +80,53 @@ export type LLMClassifierFn = (text: string) => Promise<ClassificationResult>;
  * plugin itself does not import `@atlas/ee`.
  */
 export type ProactiveGateFn = () => boolean | Promise<boolean>;
+
+// ---------------------------------------------------------------------------
+// Kill switch (#2295) — three-layer pause + per-user opt-out
+// ---------------------------------------------------------------------------
+
+/**
+ * Channel-scoped pause layers (`channel_id IS NOT NULL`).
+ *
+ * Split from `PauseLayer` so the type-system makes a row that says it's
+ * `channel-24h` carry a non-null channel id at the type level.
+ */
+export type ChannelPauseLayer = "channel-24h" | "admin-channel";
+
+/**
+ * The four pause shapes recognised by the registry.
+ *
+ * - `channel-24h`     — in-channel `@atlas pause` (channel-scoped, 24h)
+ * - `admin-channel`   — per-channel admin deny (channel-scoped, indefinite)
+ * - `workspace-kill`  — admin "pause all proactive" (workspace-wide, indefinite)
+ * - `user-optout`     — DM `unsubscribe` (per-user, workspace-wide, indefinite)
+ */
+export type PauseLayer =
+  | ChannelPauseLayer
+  | "workspace-kill"
+  | "user-optout";
+
+/**
+ * Host-supplied callback that records a pause row.
+ *
+ * The listener never writes to the database directly — it builds the
+ * request shape (`@atlas pause` → 24h channel-scoped, DM `unsubscribe`
+ * → indefinite user-scoped) and hands it off to the host.
+ *
+ * Implementations may throw; the listener catches and logs at warn —
+ * a failed pause write must never crash the SDK event loop.
+ *
+ * `durationMs: null` ⇒ indefinite (no `expires_at`).
+ */
+export type OnPauseRequestFn = (request: {
+  workspaceId: string;
+  /** Channel id for channel-scoped pauses; null for workspace/user pauses. */
+  channelId: string | null;
+  userId: string;
+  layer: PauseLayer;
+  /** ms from `requestedAt`; null means indefinite. */
+  durationMs: number | null;
+  /** Epoch ms when the request was generated — passed through so the host
+   *  can compute `expires_at` deterministically in tests. */
+  requestedAt: number;
+}) => Promise<void>;

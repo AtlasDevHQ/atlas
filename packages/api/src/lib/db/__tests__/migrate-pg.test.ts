@@ -3284,4 +3284,90 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(after.rows.length).toBe(1);
     expect(after.rows[0]?.bound_dashboard_id).toBeNull();
   }, PG_TEST_TIMEOUT_MS);
+
+  // ---------------------------------------------------------------------------
+  // proactive_pauses (#2295)
+  // ---------------------------------------------------------------------------
+
+  it("proactive_pauses: layer CHECK constraint rejects unknown values (#2295)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-pp-bad-${stamp}`;
+    let err: Error | null = null;
+    try {
+      await pool.query(
+        `INSERT INTO proactive_pauses (workspace_id, channel_id, user_id, layer)
+         VALUES ($1, NULL, NULL, 'not-a-real-layer')`,
+        [ws],
+      );
+    } catch (e) {
+      err = e instanceof Error ? e : new Error(String(e));
+    }
+    expect(err).not.toBeNull();
+    // 23514 = check_violation
+    expect(err?.message).toMatch(/chk_proactive_pauses_layer|23514|check constraint/i);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("proactive_pauses: stores all four canonical layers (#2295)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-pp-canon-${stamp}`;
+    const channelId = `C-${stamp}`;
+    const userId = `U-${stamp}`;
+
+    await pool.query(
+      `INSERT INTO proactive_pauses (workspace_id, channel_id, user_id, layer, expires_at)
+       VALUES
+         ($1, NULL,        NULL,    'workspace-kill', NULL),
+         ($1, $2::text,    NULL,    'admin-channel',  NULL),
+         ($1, NULL,        $3::text, 'user-optout',   NULL),
+         ($1, $2::text,    NULL,    'channel-24h',    NOW() + INTERVAL '24 hours')`,
+      [ws, channelId, userId],
+    );
+
+    const { rows } = await pool.query<{ layer: string }>(
+      `SELECT layer FROM proactive_pauses WHERE workspace_id = $1 ORDER BY layer`,
+      [ws],
+    );
+    expect(rows.map((r) => r.layer).sort()).toEqual([
+      "admin-channel",
+      "channel-24h",
+      "user-optout",
+      "workspace-kill",
+    ]);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("proactive_pauses: expired-row predicate works in WHERE (#2295)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-pp-exp-${stamp}`;
+    const channelId = `C-${stamp}`;
+
+    // Two channel-24h rows: one already expired, one still active.
+    await pool.query(
+      `INSERT INTO proactive_pauses (workspace_id, channel_id, layer, expires_at) VALUES
+         ($1, $2, 'channel-24h', NOW() - INTERVAL '1 hour'),
+         ($1, $2, 'channel-24h', NOW() + INTERVAL '1 hour')`,
+      [ws, channelId],
+    );
+
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT id FROM proactive_pauses
+        WHERE workspace_id = $1
+          AND channel_id = $2
+          AND (expires_at IS NULL OR expires_at > NOW())`,
+      [ws, channelId],
+    );
+    expect(rows.length).toBe(1);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("proactive_pauses: lookup index is used for (workspace, channel) scans (#2295)", async () => {
+    // Sanity-check that the lookup index exists by name — EXPLAIN ANALYZE
+    // would be heavier; the index presence test is enough for drift detection.
+    const { rows } = await pool.query<{ indexname: string }>(
+      `SELECT indexname FROM pg_indexes
+        WHERE tablename = 'proactive_pauses'
+        ORDER BY indexname`,
+    );
+    const names = rows.map((r) => r.indexname);
+    expect(names).toContain("idx_proactive_pauses_lookup");
+    expect(names).toContain("idx_proactive_pauses_user");
+  }, PG_TEST_TIMEOUT_MS);
 });

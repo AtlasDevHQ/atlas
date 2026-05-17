@@ -16,6 +16,12 @@ import { emoji } from "chat";
 import type { Author, Chat, Message, ReactionEvent, Thread } from "chat";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
 import { classifyMessage } from "./classifier";
+import {
+  detectPauseCommand,
+  detectUnsubscribeDM,
+  resolvePauseRequest,
+  type IsPausedFn,
+} from "./pause";
 import { decideInterjection } from "./policy";
 import {
   PendingAnswers,
@@ -27,6 +33,7 @@ import {
 import type {
   ChannelProactiveConfig,
   LLMClassifierFn,
+  OnPauseRequestFn,
   ProactiveGateFn,
   RecentActivity,
   WorkspaceProactiveConfig,
@@ -99,6 +106,29 @@ export interface ProactiveListenerConfig {
    * bridge default; pass the same value you pass to `slashCommandName`.
    */
   slashCommandName?: string;
+
+  // ---- Slice #2295 additions (kill switch + per-user opt-out) ----
+
+  /**
+   * Workspace id threaded into the kill-switch callbacks. Required
+   * when `isPaused` or `onPauseRequest` is set. In single-tenant
+   * deployments this can be a constant; multi-tenant hosts pass the
+   * org id.
+   */
+  workspaceId?: string;
+  /**
+   * Pause-registry read API. Consulted BEFORE classification so the
+   * kill switch pays only a DB read, never an LLM call. When omitted
+   * no pause check happens — the legacy env-var allowlist path stays
+   * available for tests + dev.
+   */
+  isPaused?: IsPausedFn;
+  /**
+   * Pause-registry write API. Called when the listener detects an
+   * `@atlas pause` channel command or a DM `unsubscribe`. The plugin
+   * builds the request shape and hands it off to the host.
+   */
+  onPauseRequest?: OnPauseRequestFn;
 }
 
 /**
@@ -178,7 +208,14 @@ export async function registerProactiveListener(
   }
 
   const allowlist = resolveChannelAllowlist(config.channelAllowlist);
-  log.info({ allowlistSize: allowlist.size }, "Proactive listener registered");
+  log.info(
+    {
+      allowlistSize: allowlist.size,
+      killSwitch: Boolean(config.isPaused),
+      unsubscribe: Boolean(config.onPauseRequest),
+    },
+    "Proactive listener registered",
+  );
 
   // Per-channel last-interjection timestamps for rate limiting.
   const recent = new Map<string, RecentActivity>();
@@ -199,6 +236,104 @@ export async function registerProactiveListener(
       if (text.length === 0) return;
 
       const channelId = thread.channelId;
+      const userId = message.author.userId;
+      const isDM = thread.isDM === true;
+
+      // ---------------------------------------------------------------
+      // Pause-command intake (#2295) — runs BEFORE classification so
+      // a mute message never costs an LLM call.
+      // ---------------------------------------------------------------
+
+      // DM `unsubscribe` → workspace-wide user-optout row.
+      if (
+        isDM &&
+        config.workspaceId &&
+        config.onPauseRequest &&
+        detectUnsubscribeDM(text)
+      ) {
+        try {
+          await config.onPauseRequest(
+            resolvePauseRequest("dm-unsubscribe", {
+              workspaceId: config.workspaceId,
+              channelId,
+              userId,
+            }),
+          );
+          log.info(
+            { workspaceId: config.workspaceId, userId },
+            "Proactive: user opted out via DM unsubscribe",
+          );
+        } catch (err) {
+          log.warn(
+            { err: err instanceof Error ? err : new Error(String(err)) },
+            "Proactive: DM unsubscribe write failed — user still listed in proactive",
+          );
+        }
+        return;
+      }
+
+      // In-channel `@atlas pause` → 24h channel-scoped pause.
+      if (
+        !isDM &&
+        config.workspaceId &&
+        config.onPauseRequest &&
+        detectPauseCommand(text)
+      ) {
+        try {
+          await config.onPauseRequest(
+            resolvePauseRequest("channel-pause-command", {
+              workspaceId: config.workspaceId,
+              channelId,
+              userId,
+            }),
+          );
+          log.info(
+            { workspaceId: config.workspaceId, channelId, userId },
+            "Proactive: channel paused for 24h via @atlas pause",
+          );
+        } catch (err) {
+          log.warn(
+            { err: err instanceof Error ? err : new Error(String(err)) },
+            "Proactive: @atlas pause write failed — channel remains live",
+          );
+        }
+        return;
+      }
+
+      // ---------------------------------------------------------------
+      // Kill-switch lookup — runs BEFORE classification so we pay only
+      // a DB read when Atlas is silenced.
+      // ---------------------------------------------------------------
+      if (config.isPaused && config.workspaceId) {
+        try {
+          const pause = await config.isPaused({
+            workspaceId: config.workspaceId,
+            channelId,
+            userId,
+          });
+          if (pause.paused) {
+            log.debug(
+              {
+                workspaceId: config.workspaceId,
+                channelId,
+                userId,
+                layer: pause.layer,
+                until: pause.until,
+              },
+              "Proactive: skipped — pause registry says silent",
+            );
+            return;
+          }
+        } catch (err) {
+          // Fail open — momentary registry failure shouldn't silence
+          // the agent. Log + continue to the classifier.
+          log.warn(
+            { err: err instanceof Error ? err : new Error(String(err)) },
+            "Proactive: pause-registry read failed — treating as not paused",
+          );
+        }
+      }
+
       const channelAllowed = allowlist.has(channelId);
       const channelConfig = config.channelConfigs?.[channelId];
 

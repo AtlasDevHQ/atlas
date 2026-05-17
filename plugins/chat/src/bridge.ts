@@ -1574,6 +1574,10 @@ export function createChatBridge(
           platform: proactiveConfig.platform,
           feedbackCollector: proactiveConfig.feedbackCollector,
           slashCommandName: config.slashCommandName,
+          // Kill switch (#2295).
+          workspaceId: proactiveConfig.workspaceId,
+          isPaused: proactiveConfig.isPaused,
+          onPauseRequest: proactiveConfig.onPauseRequest,
         });
         proactiveRecentAnswers = handle.recentAnswers;
       })

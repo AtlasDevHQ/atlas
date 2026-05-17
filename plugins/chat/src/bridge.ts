@@ -1504,7 +1504,7 @@ export function createChatBridge(
     );
   });
 
-  // --- Proactive listener (slice #2292) ---
+  // --- Proactive listener (slices #2292, #2293) ---
   // Only registers when proactive config is present AND the host-supplied
   // gate (`isEnterpriseEnabled() && workspaceFlag`) returns true. Failures
   // never block the rest of the bridge from coming up.
@@ -1518,6 +1518,10 @@ export function createChatBridge(
           workspace: proactiveConfig.workspace,
           channelAllowlist: proactiveConfig.channelAllowlist,
           channelConfigs: proactiveConfig.channelConfigs,
+          userResolver: proactiveConfig.userResolver,
+          executeQueryProactive: proactiveConfig.executeQueryProactive,
+          linkUrl: proactiveConfig.linkUrl,
+          platform: proactiveConfig.platform,
         }),
       )
       .catch((err) => {

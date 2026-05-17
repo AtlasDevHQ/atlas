@@ -760,6 +760,41 @@ function applyRLSEffect(
  * Execute a validated query with tracing, cache write, audit logging, plugin hooks,
  * and error filtering. Called inside withSourceSlot — concurrency release is automatic.
  */
+/**
+ * Build the OTel attribute set for the `atlas.sql.execute` span (#2519).
+ *
+ * Exported for unit testing: capturing live spans requires wiring an
+ * `InMemorySpanExporter` into the global tracer provider, which is
+ * heavier than the value of catching a typo in the attribute keys. The
+ * pure builder is the load-bearing piece — the tracing glue around it
+ * is exercised by the cross-env routing integration test.
+ *
+ * Always emits:
+ *   - `db.system` — the underlying DB driver type.
+ *   - `atlas.connection_id` — which member ran the query.
+ *   - `atlas.routing_mode` — `auto` | `pin` | `all` (defaults to `auto`).
+ *
+ * Conditionally emits `atlas.connection_group_id` when the caller passed
+ * one (typically the fanout path, where the group lookup already
+ * resolved the id).
+ */
+export function buildSqlExecuteSpanAttrs(opts: {
+  dbType: string;
+  connectionId: string;
+  routingMode?: "auto" | "pin" | "all";
+  connectionGroupId?: string;
+}): Record<string, string | number | boolean> {
+  const attrs: Record<string, string | number | boolean> = {
+    "db.system": opts.dbType,
+    "atlas.connection_id": opts.connectionId,
+    "atlas.routing_mode": opts.routingMode ?? "auto",
+  };
+  if (opts.connectionGroupId) {
+    attrs["atlas.connection_group_id"] = opts.connectionGroupId;
+  }
+  return attrs;
+}
+
 function executeAndAuditEffect(opts: {
   db: DBConnection;
   dbType: DBType;
@@ -774,19 +809,36 @@ function executeAndAuditEffect(opts: {
   cacheKey: string | null;
   hookMetadata: Record<string, unknown>;
   dispatchHook: (event: "afterQuery", ctx: Record<string, unknown>) => Promise<void>;
+  /** Parent audit row id when this execution is one leg of a fanout (#2519). */
+  parentAuditId?: string;
+  /** Routing mode for the parent `executeSQL` call ("auto" | "pin" | "all"). Stamped on the OTel span (#2519). */
+  routingMode?: "auto" | "pin" | "all";
+  /** Connection group id (for the OTel `atlas.connection_group_id` attribute, #2519). */
+  connectionGroupId?: string;
 }): Effect.Effect<Record<string, unknown>, QueryExecutionError> {
   const {
     db, dbType, connId, orgId, targetHost, querySql, queryTimeout,
     rowLimit, explanation, classification, cacheKey, hookMetadata, dispatchHook,
+    parentAuditId, routingMode, connectionGroupId,
   } = opts;
 
   const start = performance.now();
+
+  // Per #2519: every executeSQL span (single + fanout legs) carries
+  // `atlas.routing_mode` and (when known) `atlas.connection_group_id`
+  // so traces can attribute fanout behavior without joining audit rows.
+  const spanAttrs = buildSqlExecuteSpanAttrs({
+    dbType,
+    connectionId: connId,
+    routingMode,
+    connectionGroupId,
+  });
 
   return Effect.tryPromise({
     try: () =>
       withSpan(
         "atlas.sql.execute",
-        { "db.system": dbType, "atlas.connection_id": connId },
+        spanAttrs,
         () => db.query(querySql, queryTimeout),
         (r) => ({ "atlas.row_count": r.rows.length, "atlas.column_count": r.columns.length }),
       ),
@@ -816,6 +868,7 @@ function executeAndAuditEffect(opts: {
           sourceId: connId, sourceType: dbType, targetHost,
           tablesAccessed: classification?.tablesAccessed,
           columnsAccessed: classification?.columnsAccessed,
+          parentAuditId,
         });
       } catch (auditErr) {
         log.warn({ err: auditErr }, "Failed to write query audit log");
@@ -875,6 +928,7 @@ function executeAndAuditEffect(opts: {
               sourceId: connId, sourceType: dbType, targetHost,
               tablesAccessed: classification?.tablesAccessed,
               columnsAccessed: classification?.columnsAccessed,
+              parentAuditId,
             });
           } catch (auditErr) {
             log.warn({ err: auditErr }, "Failed to write query audit log");
@@ -1290,10 +1344,24 @@ async function executeSqlForConnection({
   sql,
   explanation,
   connId,
+  parentAuditId,
+  routingMode,
 }: {
   readonly sql: string;
   readonly explanation: string;
   readonly connId: string;
+  /**
+   * Parent audit row id when this execution is one leg of a cross-environment
+   * fanout (#2519). Threaded through every `logQueryAudit` call below so each
+   * audit row carries the linkage. Undefined for single-env executions.
+   */
+  readonly parentAuditId?: string;
+  /**
+   * Routing mode for the parent `executeSQL` call ("auto" | "pin" | "all").
+   * Stamped on the OTel span so traces can attribute fanout behavior
+   * without joining audit rows. Defaults to "auto" when not threaded.
+   */
+  readonly routingMode?: "auto" | "pin" | "all";
 }): Promise<Record<string, unknown>> {
     // The full pipeline runs as an Effect.gen program. Tagged errors flow through
     // the error channel; expected rejections (validation, approval, cache) return
@@ -1324,6 +1392,7 @@ async function executeSqlForConnection({
         logQueryAudit({
           sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
           error: initial.auditError, sourceId: connId, sourceType: dbType,
+          parentAuditId,
         });
         return { success: false, error: initial.error, executionMs: 0 };
       }
@@ -1430,6 +1499,7 @@ async function executeSqlForConnection({
                   sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
                   error: `Approval required: ${firstRule.name}`,
                   sourceId: connId, sourceType: dbType, targetHost,
+                  parentAuditId,
                 });
                 return {
                   success: false,
@@ -1469,6 +1539,7 @@ async function executeSqlForConnection({
             logQueryAudit({
               sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: cached.rows.length,
               success: true, sourceId: connId, sourceType: dbType, targetHost,
+              parentAuditId,
             });
             // Apply PII masking to cached results (same as live query path)
             const cacheResponse = yield* Effect.tryPromise({
@@ -1545,6 +1616,7 @@ async function executeSqlForConnection({
                   sql: sql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
                   error: `Plugin rejected: ${error.message}`,
                   sourceId: connId, sourceType: dbType, targetHost,
+                  parentAuditId,
                 }),
               ),
             ),
@@ -1559,6 +1631,7 @@ async function executeSqlForConnection({
                 sql: normalizedMutated.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
                 error: `Plugin-rewritten SQL failed validation: ${revalidation.auditError}`,
                 sourceId: connId, sourceType: dbType, targetHost,
+                parentAuditId,
               });
               return { success: false, error: `Plugin-rewritten SQL failed validation: ${revalidation.error}`, executionMs: 0 };
             }
@@ -1581,7 +1654,7 @@ async function executeSqlForConnection({
           return yield* executeAndAuditEffect({
             db, dbType, connId, orgId, targetHost, querySql, queryTimeout,
             rowLimit, explanation, classification, cacheKey: cacheKey ?? null,
-            hookMetadata, dispatchHook,
+            hookMetadata, dispatchHook, parentAuditId, routingMode,
           });
         }),
       ).pipe(
@@ -1593,6 +1666,7 @@ async function executeSqlForConnection({
                 sql: sql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
                 error: `Rate limited: ${error.message}`,
                 sourceId: connId, sourceType: dbType, targetHost,
+                parentAuditId,
               }),
             );
           }
@@ -1620,18 +1694,56 @@ async function executeSqlForConnection({
  * Settled rejections (which the leaf function should not produce — it
  * already maps tagged errors to `{success: false}`) are coerced into a
  * `MemberExecutionResult.error` entry so the merger can surface them.
+ *
+ * Audit linkage (#2519): before fanning out, writes a single "parent"
+ * audit row with a pre-generated UUID and `parent_audit_id = NULL`. Each
+ * leg then receives that UUID via `parentAuditId` so its own audit row
+ * carries the back-reference. Cross-env turns become one logical step
+ * with N child executions in the audit dimension.
  */
 async function executeSqlFanout(args: {
   readonly sql: string;
   readonly explanation: string;
   readonly connectionIds: readonly string[];
+  readonly connectionGroupId?: string;
 }): Promise<Record<string, unknown>> {
-  const { sql, explanation, connectionIds } = args;
+  const { sql, explanation, connectionIds, connectionGroupId } = args;
+
+  // Write the parent audit row up front so each leg's audit insert can
+  // reference it. The parent carries no per-environment metadata
+  // (durationMs / rowCount come from the merge), is success=true on
+  // dispatch (the final aggregated outcome is reflected by the children
+  // + the merger's success/failure shape returned to the caller), and
+  // its id is what we thread into every leg.
+  //
+  // `crypto.randomUUID()` is available on Node 19+ and Bun — both are
+  // baseline for the API server. We use it instead of relying on the
+  // column default so the value is in scope locally for the children.
+  const parentAuditId = crypto.randomUUID();
+  try {
+    logQueryAudit({
+      id: parentAuditId,
+      sql: sql.slice(0, 2000),
+      durationMs: 0,
+      rowCount: connectionIds.length,
+      success: true,
+      sourceId: connectionGroupId,
+    });
+  } catch (auditErr) {
+    log.warn({ err: auditErr }, "Failed to write fanout parent audit row");
+  }
+
   const startTimes = new Map<string, number>();
   const settled = await Promise.allSettled(
     connectionIds.map((connId) => {
       startTimes.set(connId, performance.now());
-      return executeSqlForConnection({ sql, explanation, connId });
+      return executeSqlForConnection({
+        sql,
+        explanation,
+        connId,
+        parentAuditId,
+        routingMode: "all",
+      });
     }),
   );
 
@@ -1733,8 +1845,19 @@ export const executeSQL = tool({
 
     // Fast path: no agent-supplied scope (or explicit "this") preserves the
     // pre-#2516 behaviour exactly — single execution, no group lookup.
+    //
+    // Wraps the leaf result with a 1-element `envContributions` array so
+    // SDK consumers see the same wire shape for single-env and fanout
+    // responses (#2519). The leaf result already carries `success`,
+    // `columns`, `rows`, etc. — we only attach the contribution.
     if (scope === undefined || scope === "this") {
-      return executeSqlForConnection({ sql, explanation, connId: currentMember });
+      const result = await executeSqlForConnection({
+        sql,
+        explanation,
+        connId: currentMember,
+        routingMode: "auto",
+      });
+      return attachSingleEnvContribution(result, currentMember);
     }
 
     // Routing path: agent asked for fanout or a specific member. Resolve
@@ -1754,8 +1877,49 @@ export const executeSQL = tool({
     }
 
     if (plan.kind === "single") {
-      return executeSqlForConnection({ sql, explanation, connId: plan.connectionId });
+      const result = await executeSqlForConnection({
+        sql,
+        explanation,
+        connId: plan.connectionId,
+        routingMode: "auto",
+      });
+      return attachSingleEnvContribution(result, plan.connectionId);
     }
-    return executeSqlFanout({ sql, explanation, connectionIds: plan.connectionIds });
+    return executeSqlFanout({
+      sql,
+      explanation,
+      connectionIds: plan.connectionIds,
+      connectionGroupId: ctx.groupId,
+    });
   },
 });
+
+/**
+ * Wrap a single-env executeSQL result with a 1-element `envContributions`
+ * array so SDK consumers see the same wire shape for both single and
+ * fanout responses (#2519). Mutates a copy of the input; never overwrites
+ * a contribution the leaf may have already provided.
+ */
+function attachSingleEnvContribution(
+  result: Record<string, unknown>,
+  connectionId: string,
+): Record<string, unknown> {
+  if (Array.isArray(result["envContributions"])) {
+    return result;
+  }
+  const rowCount = typeof result["row_count"] === "number"
+    ? (result["row_count"] as number)
+    : Array.isArray(result["rows"])
+      ? (result["rows"] as unknown[]).length
+      : 0;
+  const durationMs = typeof result["executionMs"] === "number"
+    ? (result["executionMs"] as number)
+    : 0;
+  const error = result["success"] === false && typeof result["error"] === "string"
+    ? (result["error"] as string)
+    : null;
+  return {
+    ...result,
+    envContributions: [{ connectionId, rowCount, error, durationMs }],
+  };
+}

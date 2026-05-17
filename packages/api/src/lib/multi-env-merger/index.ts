@@ -39,6 +39,7 @@
  */
 
 import { ENV_COLUMN } from "@atlas/api/lib/env-routing";
+import type { ConnectionContribution as WireConnectionContribution } from "@useatlas/types";
 
 /** Outcome of running the same SQL against one member of a fanout. */
 export interface MemberExecutionResult {
@@ -54,16 +55,12 @@ export interface MemberExecutionResult {
 }
 
 /**
- * Per-member contribution surfaced in the merged result. Mirrors the
- * `ConnectionContribution` wire type defined in `@useatlas/types` (slice 4)
- * with the explicit-`null` error convention so the JSON wire is stable.
+ * Per-member contribution surfaced in the merged result. Re-exported
+ * from the `@useatlas/types` wire definition (#2519, slice 4) so the
+ * runtime and wire shapes cannot drift — adding a field to one without
+ * the other becomes a compile error at every call site.
  */
-export interface ConnectionContribution {
-  readonly connectionId: string;
-  readonly rowCount: number;
-  readonly error: string | null;
-  readonly durationMs: number;
-}
+export type ConnectionContribution = WireConnectionContribution;
 
 export interface MergedResult {
   readonly columns: readonly string[];
@@ -150,12 +147,15 @@ export function mergeMemberResults(
   }
 
   // --- Step 4: per-member contributions in input order ---
-  const envContributions: ConnectionContribution[] = memberResults.map((m) => ({
-    connectionId: m.connectionId,
-    rowCount: m.rows?.length ?? 0,
-    error: m.error ?? null,
-    durationMs: m.durationMs,
-  }));
+  const envContributions = memberResults.map(
+    (m) =>
+      ({
+        connectionId: m.connectionId,
+        rowCount: m.rows?.length ?? 0,
+        error: m.error ?? null,
+        durationMs: m.durationMs,
+      }) satisfies ConnectionContribution,
+  );
 
   const mergedColumns = [ENV_COLUMN, ...unionColumns];
 

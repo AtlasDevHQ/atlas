@@ -84,6 +84,7 @@ describe("logQueryAudit()", () => {
       null, // actor_kind (#2067)
       null, // client_id (#2067)
       null, // tool_name (#2067)
+      null, // parent_audit_id (#2519)
     ]);
   });
 
@@ -450,5 +451,97 @@ describe("logQueryAudit()", () => {
     });
 
     expect(queryCalls[0].params![7]).toBeNull();
+  });
+
+  // ── Cross-environment audit linkage (#2519) ─────────────────────────
+  //
+  // Fanned-out turns write 1 parent row + N children. The parent carries a
+  // caller-supplied id (so legs can reference it without a round-trip)
+  // and parent_audit_id NULL; each leg carries parent_audit_id = parent.id.
+
+  it("threads parent_audit_id onto child audit rows when supplied", () => {
+    enableInternalDB();
+    const parentId = "11111111-2222-3333-4444-555555555555";
+
+    logQueryAudit({
+      sql: "SELECT 1",
+      durationMs: 10,
+      rowCount: 1,
+      success: true,
+      parentAuditId: parentId,
+    });
+
+    expect(queryCalls).toHaveLength(1);
+    const params = queryCalls[0].params!;
+    expect(params[17]).toBe(parentId); // parent_audit_id slot
+    // Children don't override id — column default supplies it. The
+    // INSERT column list ends with `parent_audit_id`, not `id`, so
+    // there's no trailing `, id` appended.
+    expect(queryCalls[0].sql).not.toContain("parent_audit_id, id");
+    expect(params).toHaveLength(18);
+  });
+
+  it("includes caller-supplied id in INSERT when threading a parent row", () => {
+    enableInternalDB();
+    const parentId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+    logQueryAudit({
+      id: parentId,
+      sql: "SELECT * FROM ...",
+      durationMs: 0,
+      rowCount: 3,
+      success: true,
+      sourceId: "prod-group",
+    });
+
+    expect(queryCalls).toHaveLength(1);
+    const sql = queryCalls[0].sql;
+    expect(sql).toContain("parent_audit_id, id");
+    const params = queryCalls[0].params!;
+    expect(params[17]).toBeNull(); // parent row itself: parent_audit_id NULL
+    expect(params[18]).toBe(parentId); // id column appended at end
+  });
+
+  it("links parent and children with the same UUID across multiple writes", () => {
+    enableInternalDB();
+    const parentId = "33333333-4444-5555-6666-777777777777";
+
+    // Parent row
+    logQueryAudit({
+      id: parentId,
+      sql: "SELECT 1",
+      durationMs: 0,
+      rowCount: 2,
+      success: true,
+      sourceId: "prod-group",
+    });
+    // Two children
+    logQueryAudit({
+      sql: "SELECT 1",
+      durationMs: 15,
+      rowCount: 1,
+      success: true,
+      sourceId: "us-int",
+      parentAuditId: parentId,
+    });
+    logQueryAudit({
+      sql: "SELECT 1",
+      durationMs: 18,
+      rowCount: 1,
+      success: true,
+      sourceId: "eu",
+      parentAuditId: parentId,
+    });
+
+    expect(queryCalls).toHaveLength(3);
+    // Parent has its own id, no parent_audit_id
+    expect(queryCalls[0].params![17]).toBeNull();
+    expect(queryCalls[0].params![18]).toBe(parentId);
+    // Both children carry parent_audit_id = parent.id
+    expect(queryCalls[1].params![17]).toBe(parentId);
+    expect(queryCalls[2].params![17]).toBe(parentId);
+    // Sources are distinct per leg
+    expect(queryCalls[1].params![8]).toBe("us-int");
+    expect(queryCalls[2].params![8]).toBe("eu");
   });
 });

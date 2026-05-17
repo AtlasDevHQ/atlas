@@ -81,6 +81,20 @@ export {
   type FetchStarterPromptsCredentials,
 } from "./fetch-starter-prompts";
 
+// ── Cross-environment querying (PRD #2515, slice 4 #2519) ─────────────
+//
+// `executeSQL` returns `envContributions: ConnectionContribution[]` on
+// every successful invocation — a 1-element array for single-env
+// executions, one entry per group member for fanouts. SDK consumers
+// branch on `result.envContributions.length` to render side-by-side
+// panes or a single result table.
+export type {
+  ConnectionContribution,
+  ExecuteSqlResult,
+  ExecuteSqlSuccessResult,
+  ExecuteSqlFailureResult,
+} from "@useatlas/types";
+
 // ── MCP onboarding (#2079) ────────────────────────────────────────────
 //
 // Standalone helpers, also bound to `client.mcp.*` for the call shape

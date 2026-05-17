@@ -90,6 +90,10 @@
                   },
                   "connectionGroupId": {
                     "type": "string"
+                  },
+                  "boundDashboardId": {
+                    "type": "string",
+                    "format": "uuid"
                   }
                 },
                 "required": [

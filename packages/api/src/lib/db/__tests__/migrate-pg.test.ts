@@ -3220,4 +3220,68 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
     expect(allowed[0]?.id).toBe(groupId);
   }, PG_TEST_TIMEOUT_MS);
+
+  // ─────────────────────────────────────────────────────────────────────
+  // 0073 — conversations.bound_dashboard_id (#2363)
+  //
+  // The chat-as-dashboard-editor drawer (PRD #2362) stamps this FK on the
+  // conversation row so subsequent turns inherit the binding and the
+  // history tab (#2368) can list sessions per dashboard. Two real-PG
+  // assertions matter:
+  //   1. Column shape — nullable uuid with the right FK target.
+  //   2. ON DELETE SET NULL behavior — deleting the dashboard preserves
+  //      the audit trail by NULLing the pointer instead of cascading
+  //      the conversation row away.
+  // ─────────────────────────────────────────────────────────────────────
+
+  it("0073: conversations.bound_dashboard_id is a nullable uuid (#2363)", async () => {
+    const { rows } = await pool.query<{
+      data_type: string;
+      is_nullable: string;
+      udt_name: string;
+    }>(
+      `SELECT data_type, is_nullable, udt_name
+         FROM information_schema.columns
+        WHERE table_name = 'conversations'
+          AND column_name = 'bound_dashboard_id'
+          AND table_schema = current_schema()`,
+    );
+    expect(rows[0]?.udt_name).toBe("uuid");
+    expect(rows[0]?.is_nullable).toBe("YES");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0073: ON DELETE SET NULL preserves the conversation when its dashboard is removed (#2363)", async () => {
+    const stamp = Date.now();
+    const orgId = `org-2363-${stamp}`;
+    const dashRows = await pool.query<{ id: string }>(
+      `INSERT INTO dashboards (org_id, owner_id, title) VALUES ($1, 'u-2363', 'Bound test') RETURNING id`,
+      [orgId],
+    );
+    const dashboardId = dashRows.rows[0]?.id as string;
+
+    const convRows = await pool.query<{ id: string }>(
+      `INSERT INTO conversations (user_id, org_id, bound_dashboard_id)
+       VALUES ('u-2363', $1, $2)
+       RETURNING id`,
+      [orgId, dashboardId],
+    );
+    const conversationId = convRows.rows[0]?.id as string;
+
+    // Sanity — binding stuck.
+    const bound = await pool.query<{ bound_dashboard_id: string | null }>(
+      `SELECT bound_dashboard_id FROM conversations WHERE id = $1`,
+      [conversationId],
+    );
+    expect(bound.rows[0]?.bound_dashboard_id).toBe(dashboardId);
+
+    // Hard-delete the dashboard. The FK is ON DELETE SET NULL, so the
+    // conversation row must survive with the pointer cleared.
+    await pool.query(`DELETE FROM dashboards WHERE id = $1`, [dashboardId]);
+    const after = await pool.query<{ bound_dashboard_id: string | null }>(
+      `SELECT bound_dashboard_id FROM conversations WHERE id = $1`,
+      [conversationId],
+    );
+    expect(after.rows.length).toBe(1);
+    expect(after.rows[0]?.bound_dashboard_id).toBeNull();
+  }, PG_TEST_TIMEOUT_MS);
 });

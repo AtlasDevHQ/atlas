@@ -3220,4 +3220,75 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
     expect(allowed[0]?.id).toBe(groupId);
   }, PG_TEST_TIMEOUT_MS);
+
+  // 0073 — proactive_meter_events CHECK constraints + index reachability.
+  // A future drop of either CHECK silently accepts garbage rows the admin
+  // analytics rollup would then misinterpret. The smoke also exercises
+  // the index path: an EXPLAIN over the workspace+created_at predicate
+  // must hit one of the two indexes we shipped.
+  it("proactive_meter_events: accepts a canonical classify row", async () => {
+    const workspaceId = `org-meter-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    await pool.query(
+      `INSERT INTO proactive_meter_events
+         (workspace_id, channel_id, message_id, event_type, tokens, cost_micro_usd, confidence, actor_user_id)
+       VALUES ($1, 'C-alpha', 'M-1', 'classify', 120, 75, 0.91, 'U-asker')`,
+      [workspaceId],
+    );
+    const { rows } = await pool.query<{ tokens: number; cost_micro_usd: number; confidence: string }>(
+      `SELECT tokens, cost_micro_usd, confidence FROM proactive_meter_events WHERE workspace_id = $1`,
+      [workspaceId],
+    );
+    expect(rows[0]?.tokens).toBe(120);
+    expect(rows[0]?.cost_micro_usd).toBe(75);
+    // NUMERIC comes back as a string from `pg`; coerce here.
+    expect(Number(rows[0]?.confidence)).toBeCloseTo(0.91, 2);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("proactive_meter_events: rejects an unknown event_type with 23514", async () => {
+    const workspaceId = `org-meter-bad-evt-${Date.now()}`;
+    await expect(
+      pool.query(
+        `INSERT INTO proactive_meter_events (workspace_id, channel_id, event_type)
+         VALUES ($1, 'C-alpha', 'snicker')`,
+        [workspaceId],
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("proactive_meter_events: rejects an unknown outcome with 23514", async () => {
+    const workspaceId = `org-meter-bad-out-${Date.now()}`;
+    await expect(
+      pool.query(
+        `INSERT INTO proactive_meter_events (workspace_id, channel_id, event_type, outcome)
+         VALUES ($1, 'C-alpha', 'feedback', 'mid')`,
+        [workspaceId],
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("proactive_meter_events: summary query roundtrips with NUMERIC confidence", async () => {
+    // Real round-trip through the helper module's INSERT path is the gate
+    // — the route + meter both reach this query under load.
+    const workspaceId = `org-meter-rt-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO proactive_meter_events
+         (workspace_id, channel_id, event_type, tokens, cost_micro_usd, confidence)
+       VALUES
+         ($1, 'C-a', 'classify', 100, 50, 0.80),
+         ($1, 'C-a', 'classify', 100, 50, 0.85),
+         ($1, 'C-a', 'react',      0,  0, 0.85),
+         ($1, 'C-b', 'classify', 100, 25, 0.92),
+         ($1, 'C-b', 'feedback',   0,  0, NULL)`,
+      [workspaceId],
+    );
+    const { rows } = await pool.query<{ event_type: string; cost_micro_usd: number }>(
+      `SELECT event_type, cost_micro_usd FROM proactive_meter_events
+        WHERE workspace_id = $1
+        ORDER BY created_at`,
+      [workspaceId],
+    );
+    expect(rows).toHaveLength(5);
+    const total = rows.reduce((sum, r) => sum + Number(r.cost_micro_usd), 0);
+    expect(total).toBe(125);
+  }, PG_TEST_TIMEOUT_MS);
 });

@@ -488,3 +488,95 @@ describe("registerProactiveListener — button handlers", () => {
     expect(thread.post).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Meter event emission (#2296)
+// ---------------------------------------------------------------------------
+
+describe("registerProactiveListener — meter event emission (#2296)", () => {
+  it("emits a classify event for every classified message", async () => {
+    const events: Array<{ eventType: string; channelId: string }> = [];
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(chat as any, makeLogger(), {
+      isEnabled: () => true,
+      classify: yesLLM,
+      workspace: baseWorkspace,
+      channelAllowlist: ["C-allowed"],
+      workspaceId: "ws-1",
+      onMeterEvent: async (event) => {
+        events.push({ eventType: event.eventType, channelId: event.channelId });
+      },
+    });
+    await invokeMessage(makeThread("C-allowed"), makeMessage());
+    const classifyEvents = events.filter((e) => e.eventType === "classify");
+    expect(classifyEvents).toHaveLength(1);
+    expect(classifyEvents[0]?.channelId).toBe("C-allowed");
+  });
+
+  it("emits classify + react events when the policy interjects", async () => {
+    const events: Array<{ eventType: string }> = [];
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(chat as any, makeLogger(), {
+      isEnabled: () => true,
+      classify: yesLLM,
+      workspace: baseWorkspace,
+      channelAllowlist: ["C-allowed"],
+      workspaceId: "ws-1",
+      onMeterEvent: async (event) => {
+        events.push({ eventType: event.eventType });
+      },
+    });
+    await invokeMessage(makeThread("C-allowed"), makeMessage());
+    expect(events.map((e) => e.eventType)).toEqual(["classify", "react"]);
+  });
+
+  it("emits only a classify event when the policy skips", async () => {
+    const events: Array<{ eventType: string }> = [];
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(chat as any, makeLogger(), {
+      isEnabled: () => true,
+      classify: noLLM,
+      workspace: baseWorkspace,
+      channelAllowlist: ["C-allowed"],
+      workspaceId: "ws-1",
+      onMeterEvent: async (event) => {
+        events.push({ eventType: event.eventType });
+      },
+    });
+    await invokeMessage(makeThread("C-allowed"), makeMessage());
+    expect(events.map((e) => e.eventType)).toEqual(["classify"]);
+  });
+
+  it("does not crash when the meter callback throws", async () => {
+    const log = makeLogger();
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(chat as any, log, {
+      isEnabled: () => true,
+      classify: yesLLM,
+      workspace: baseWorkspace,
+      channelAllowlist: ["C-allowed"],
+      workspaceId: "ws-1",
+      onMeterEvent: async () => {
+        throw new Error("meter outage");
+      },
+    });
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage());
+    // Reaction still landed; meter failure was suppressed.
+    expect(thread._addReaction).toHaveBeenCalledTimes(1);
+    expect(log.warn).toHaveBeenCalled();
+  });
+
+  it("works when no meter callback is configured (back-compat)", async () => {
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(chat as any, makeLogger(), {
+      isEnabled: () => true,
+      classify: yesLLM,
+      workspace: baseWorkspace,
+      channelAllowlist: ["C-allowed"],
+    });
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage());
+    expect(thread._addReaction).toHaveBeenCalledTimes(1);
+  });
+});

@@ -8,8 +8,8 @@
  * `listener.ts` for behaviour.
  *
  * Slice #2292 ships the reaction-first tracer: subscribe → classify →
- * react. Later slices add the reply, kill switches, admin config,
- * meter, and feedback.
+ * react. Slice #2295 layers in the three-tier kill switch + per-user
+ * opt-out — those types live below.
  */
 
 /** Result of running a message through the question classifier. */
@@ -80,3 +80,109 @@ export type LLMClassifierFn = (text: string) => Promise<ClassificationResult>;
  * plugin itself does not import `@atlas/ee`.
  */
 export type ProactiveGateFn = () => boolean | Promise<boolean>;
+
+// ---------------------------------------------------------------------------
+// Kill switch (#2295) — three-layer pause + per-user opt-out
+// ---------------------------------------------------------------------------
+
+/**
+ * Channel-scoped pause layers (`channel_id IS NOT NULL`).
+ *
+ * Split from `PauseLayer` so the type-system makes a row that says it's
+ * `channel-24h` carry a non-null channel id at the type level.
+ */
+export type ChannelPauseLayer = "channel-24h" | "admin-channel";
+
+/**
+ * The four pause shapes recognised by the registry.
+ *
+ * - `channel-24h`     — in-channel `@atlas pause` (channel-scoped, 24h)
+ * - `admin-channel`   — per-channel admin deny (channel-scoped, indefinite)
+ * - `workspace-kill`  — admin "pause all proactive" (workspace-wide, indefinite)
+ * - `user-optout`     — DM `unsubscribe` (per-user, workspace-wide, indefinite)
+ */
+export type PauseLayer =
+  | ChannelPauseLayer
+  | "workspace-kill"
+  | "user-optout";
+
+/**
+ * Host-supplied callback that records a pause row.
+ *
+ * The listener never writes to the database directly — it builds the
+ * request shape (`@atlas pause` → 24h channel-scoped, DM `unsubscribe`
+ * → indefinite user-scoped) and hands it off to the host.
+ *
+ * Implementations may throw; the listener catches and logs at warn —
+ * a failed pause write must never crash the SDK event loop.
+ *
+ * `durationMs: null` ⇒ indefinite (no `expires_at`).
+ */
+export type OnPauseRequestFn = (request: {
+  workspaceId: string;
+  /** Channel id for channel-scoped pauses; null for workspace/user pauses. */
+  channelId: string | null;
+  userId: string;
+  layer: PauseLayer;
+  /** ms from `requestedAt`; null means indefinite. */
+  durationMs: number | null;
+  /** Epoch ms when the request was generated — passed through so the host
+   *  can compute `expires_at` deterministically in tests. */
+  requestedAt: number;
+}) => Promise<void>;
+
+// ---------------------------------------------------------------------------
+// Meter event (#2296)
+// ---------------------------------------------------------------------------
+
+/** Lifecycle stages tracked by the answer meter. */
+export type ProactiveMeterEventType =
+  | "classify"
+  | "react"
+  | "offer"
+  | "accept"
+  | "feedback";
+
+/** Outcome values captured on `feedback` events. */
+export type ProactiveMeterOutcome =
+  | "helpful"
+  | "not-helpful"
+  | "wrong-data"
+  | "no-feedback";
+
+/**
+ * Event emitted from the listener whenever the proactive flow advances
+ * a lifecycle stage. The plugin stays decoupled from `@atlas/api`; the
+ * host wires this callback into the AnswerMeter service.
+ *
+ * `tokens` / `costMicroUsd` / `confidence` are optional because not
+ * every event type carries them (a `react` event has confidence but
+ * no LLM tokens of its own — the tokens were already accounted for on
+ * the preceding `classify` event).
+ */
+export interface ProactiveMeterEvent {
+  /** Active workspace id (per-channel multitenancy support). */
+  workspaceId: string;
+  channelId: string;
+  messageId?: string | null;
+  eventType: ProactiveMeterEventType;
+  outcome?: ProactiveMeterOutcome | null;
+  tokens?: number;
+  costMicroUsd?: number;
+  confidence?: number | null;
+  actorUserId?: string | null;
+  /** Free-form bag for downstream debugging — never holds secrets. */
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Host-injected meter callback. The plugin never persists meter rows
+ * itself — it emits an event and the host wires it to the API's
+ * `AnswerMeter` service (which writes to `proactive_meter_events`).
+ *
+ * Implementations should never throw. Failures are swallowed inside
+ * the listener so the Chat SDK event loop never crashes.
+ */
+export type ProactiveMeterEventFn = (
+  event: ProactiveMeterEvent,
+) => Promise<void> | void;

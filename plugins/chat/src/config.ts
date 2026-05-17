@@ -15,6 +15,10 @@ import type {
   ProactiveGateFn,
   WorkspaceProactiveConfig,
 } from "./proactive/types";
+import type {
+  ProactiveExecuteQuery,
+  ProactiveUserResolver,
+} from "./proactive/answerer";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -411,7 +415,7 @@ export interface ChatPluginConfig {
   proactive?: ProactiveConfig;
 }
 
-/** Proactive chat configuration (slice #2292). */
+/** Proactive chat configuration. */
 export interface ProactiveConfig {
   /** Gate: returns true when proactive mode is allowed. */
   isEnabled: ProactiveGateFn;
@@ -426,6 +430,24 @@ export interface ProactiveConfig {
   channelAllowlist?: string[];
   /** Per-channel overrides keyed by channel ID. */
   channelConfigs?: Record<string, ChannelProactiveConfig>;
+
+  // ---- Slice #2293 additions: reaction-to-answer flow ----
+
+  /**
+   * Resolves a chat-platform user to an Atlas user. Linked askers run
+   * `executeQueryProactive` with their identity (RLS applies). Unlinked
+   * askers receive the link-Atlas stub.
+   */
+  userResolver?: ProactiveUserResolver;
+  /**
+   * Runs the Atlas agent on behalf of a linked asker. Wired by the host
+   * to `runAgent` / `runAgentEffect` with the asker's `AuthContext`.
+   */
+  executeQueryProactive?: ProactiveExecuteQuery;
+  /** Deep link surfaced in the unlinked-asker prompt. */
+  linkUrl?: string;
+  /** Platform name (`"slack"` etc.) recorded in `ProactiveAsker`. */
+  platform?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -665,6 +687,22 @@ const ProactiveConfigSchema = z
     workspace: ProactiveWorkspaceConfigSchema,
     channelAllowlist: z.array(z.string().min(1)).optional(),
     channelConfigs: z.record(z.string(), ProactiveChannelConfigSchema).optional(),
+    userResolver: z
+      .any()
+      .refine(
+        (v) => v === undefined || typeof v === "function",
+        "proactive.userResolver must be a function",
+      )
+      .optional(),
+    executeQueryProactive: z
+      .any()
+      .refine(
+        (v) => v === undefined || typeof v === "function",
+        "proactive.executeQueryProactive must be a function",
+      )
+      .optional(),
+    linkUrl: z.string().url("proactive.linkUrl must be a valid URL").optional(),
+    platform: z.string().min(1).optional(),
   })
   .optional();
 

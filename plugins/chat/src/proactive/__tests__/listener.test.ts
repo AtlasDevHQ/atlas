@@ -754,7 +754,13 @@ describe("registerProactiveListener — kill switch", () => {
     expect(thread._addReaction).toHaveBeenCalledTimes(1);
   });
 
-  it("treats an isPaused throw as not paused (fail open)", async () => {
+  it("treats an isPaused throw as paused (fail CLOSED — post-1.5.0 polish)", async () => {
+    // Post-1.5.0 the listener inverted its kill-switch posture from
+    // fail-open to fail-closed: a callback throw silences the listener
+    // for that message and logs at error so on-call sees the registry
+    // outage. The product contract is "deliver silence when an admin or
+    // user asked for it"; degrading to "keep answering" on a DB blip
+    // defeats every layer at once.
     const isPaused = mock(async () => {
       throw new Error("DB down");
     });
@@ -771,8 +777,8 @@ describe("registerProactiveListener — kill switch", () => {
     });
     const thread = makeThread("C-allowed");
     await invoke(thread, makeMessage());
-    expect(thread._addReaction).toHaveBeenCalledTimes(1);
-    expect(log.warn).toHaveBeenCalled();
+    expect(thread._addReaction).not.toHaveBeenCalled();
+    expect(log.error).toHaveBeenCalled();
   });
 
   it("@atlas pause in a channel writes a channel-24h row and skips classification", async () => {
@@ -1009,7 +1015,10 @@ describe("registerProactiveListener — monthly quota cap (#2301)", () => {
     // Failed-open: classifier still runs, reaction still fires.
     expect(classify).toHaveBeenCalledTimes(1);
     expect(thread._addReaction).toHaveBeenCalledTimes(1);
-    expect(log.warn).toHaveBeenCalled();
+    // Post-1.5.0 polish: a quota throw now logs at `error` (not warn)
+    // because the workspace's monthly cap is silently bypassed during
+    // the outage window; on-call alerting needs to see it.
+    expect(log.error).toHaveBeenCalled();
   });
 
   it("proceeds to classifier when capReached=false", async () => {
@@ -1178,7 +1187,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       { entityName: "marketing.users", denyMetrics: [] },
     ]);
     const executeQueryProactive = mock(
-      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string }) => ({
+      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null }) => ({
         answer: `Echo: ${q}`,
         entitiesReferenced: ["marketing.users"],
       }),
@@ -1195,7 +1204,11 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
     expect(executeQueryProactive).toHaveBeenCalledTimes(1);
     // The sentinel empty-string atlasUserId tells the host this is the
     // public-dataset path; the host then constrains the agent.
-    expect(executeQueryProactive.mock.calls[0]![1].atlasUserId).toBe("");
+    // Post-1.5.0 polish: `null` sentinel (was `""` previously) so hosts
+    // must deliberately handle the unlinked-asker branch — a typo'd
+    // empty string from upstream is no longer indistinguishable from
+    // "intentional public-dataset call".
+    expect(executeQueryProactive.mock.calls[0]![1].atlasUserId).toBeNull();
     // Answer card + subscribe → one thread.post for the answer.
     expect(thread.post).toHaveBeenCalledTimes(1);
     expect(thread.subscribe).toHaveBeenCalledTimes(1);
@@ -1207,7 +1220,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       { entityName: "marketing.users", denyMetrics: [] },
     ]);
     const executeQueryProactive = mock(
-      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string }) => ({
+      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null }) => ({
         answer: `Echo: ${q}`,
         entitiesReferenced: ["finance.revenue"],
       }),
@@ -1243,7 +1256,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       { entityName: "finance.revenue", denyMetrics: [] },
     ]);
     const executeQueryProactive = mock(
-      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string }) => ({
+      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null }) => ({
         answer: `Echo: ${q}`,
         entitiesReferenced: ["finance.revenue", "finance.customers"],
       }),
@@ -1274,7 +1287,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       { entityName: "marketing.users", denyMetrics: ["email"] },
     ]);
     const executeQueryProactive = mock(
-      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string }) => ({
+      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null }) => ({
         answer: `Echo: ${q}`,
         entitiesReferenced: ["marketing.users"],
         metricsReferenced: ["signup_date", "email"],

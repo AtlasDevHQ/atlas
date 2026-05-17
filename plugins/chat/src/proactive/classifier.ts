@@ -13,6 +13,7 @@
  * pure and testable — boundary mocking only.
  */
 
+import type { PluginLogger } from "@useatlas/plugin-sdk";
 import type {
   ClassificationResult,
   LLMClassifierFn,
@@ -102,6 +103,16 @@ export interface ClassifyMessageOptions {
   mode: WorkspaceProactiveConfig["classifierMode"];
   /** Injected LLM classifier — called only on candidates. */
   llm: LLMClassifierFn;
+  /**
+   * Optional logger. When provided, an LLM classifier exception is
+   * logged at `warn` (with type-narrowed error) before the result
+   * falls back to "not a question". Without a logger the failure is
+   * still represented on the result via `classifierErrored: true` but
+   * leaves no operator-visible trail — callers SHOULD pass a logger
+   * in production so a provider outage surfaces in logs rather than
+   * as a silent classification regression.
+   */
+  log?: PluginLogger;
 }
 
 /** Returned by `classifyMessage`. Adds gating info for testability. */
@@ -110,6 +121,15 @@ export interface ClassifyMessageResult extends ClassificationResult {
   candidate: boolean;
   /** Whether the LLM was actually invoked. */
   llmInvoked: boolean;
+  /**
+   * True when the LLM call threw and the result was downgraded to
+   * "not a question" by `safeClassify`. Surfaces the failure mode
+   * to callers (listener emits it into the `classify` meter row's
+   * `metadata` so an admin can distinguish "classifier silent because
+   * provider down" from "classifier silent because message was not a
+   * question").
+   */
+  classifierErrored?: boolean;
 }
 
 /**
@@ -122,12 +142,15 @@ export interface ClassifyMessageResult extends ClassificationResult {
  *
  * Errors from the injected LLM are caught and converted to a "not a
  * question" result so the listener fails closed — never react on a
- * classifier failure.
+ * classifier failure. The error is logged via `opts.log` (if provided)
+ * and surfaced on the result as `classifierErrored: true` so the meter
+ * can distinguish "silent because not a question" from "silent because
+ * the classifier provider is down".
  */
 export async function classifyMessage(
   opts: ClassifyMessageOptions,
 ): Promise<ClassifyMessageResult> {
-  const { text, mode, llm } = opts;
+  const { text, mode, llm, log } = opts;
 
   if (mode === "regex-prefilter") {
     const candidate = regexPreFilter(text);
@@ -139,7 +162,7 @@ export async function classifyMessage(
         llmInvoked: false,
       };
     }
-    const result = await safeClassify(llm, text);
+    const result = await safeClassify(llm, text, log);
     return { ...result, candidate: true, llmInvoked: true };
   }
 
@@ -152,18 +175,27 @@ export async function classifyMessage(
       llmInvoked: false,
     };
   }
-  const result = await safeClassify(llm, text);
+  const result = await safeClassify(llm, text, log);
   return { ...result, candidate: true, llmInvoked: true };
 }
 
 async function safeClassify(
   llm: LLMClassifierFn,
   text: string,
-): Promise<ClassificationResult> {
+  log: PluginLogger | undefined,
+): Promise<ClassificationResult & { classifierErrored?: boolean }> {
   try {
     return await llm(text);
-  } catch {
+  } catch (err) {
     // Fail closed: classifier errors should never produce an interjection.
-    return { isQuestion: false, confidence: 0 };
+    // Log + surface `classifierErrored: true` so a sustained outage shows
+    // up in logs AND in the meter's per-event metadata.
+    if (log) {
+      log.warn(
+        { err: err instanceof Error ? err : new Error(String(err)) },
+        "Proactive classifier LLM call threw — downgrading to not-a-question",
+      );
+    }
+    return { isQuestion: false, confidence: 0, classifierErrored: true };
   }
 }

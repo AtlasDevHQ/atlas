@@ -157,6 +157,18 @@ export interface ProactiveListenerConfig {
    * Defaults to `DEFAULT_PROACTIVE_REFUSAL_COPY`.
    */
   refusalCopy?: string;
+  /**
+   * Opt-out for hosts whose `executeQueryProactive` cannot report
+   * `entitiesReferenced` on the result. When `false` (the safe
+   * default), a result without `entitiesReferenced` is treated as
+   * "unknown entities" and refused (`public_refused` emitted with
+   * `reason: "entitiesReferenced-missing"`). Setting `true` lets
+   * such a result through — only enable when the host has another
+   * compensating control (e.g. RLS, a wrapper that enforces the
+   * allowlist at SQL time). Logs at warn on startup so the bypass
+   * is visible in boot logs.
+   */
+  allowAnswerWhenEntitiesUnknown?: boolean;
 
   // ---- Slice #2295 additions (kill switch + per-user opt-out) ----
 
@@ -267,6 +279,12 @@ export async function registerProactiveListener(
     },
     "Proactive listener registered",
   );
+  if (config.allowAnswerWhenEntitiesUnknown) {
+    log.warn(
+      { workspaceId: config.workspaceId },
+      "Proactive: allowAnswerWhenEntitiesUnknown=true — unlinked-asker results without entitiesReferenced will be allowed through. Public-dataset allowlist is NOT enforced for these results; the host must provide a compensating control.",
+    );
+  }
 
   // Per-channel last-interjection timestamps for rate limiting. In-memory
   // is fine for slices #2292–#2293 — #2296 layered in a durable meter
@@ -381,34 +399,43 @@ export async function registerProactiveListener(
       // ---------------------------------------------------------------
       // Kill-switch lookup — runs BEFORE classification so we pay only
       // a DB read when Atlas is silenced.
+      //
+      // Fails CLOSED on callback throw: a registry hiccup must not
+      // silently defeat workspace-kill / admin-channel / user-optout /
+      // channel-24h. The host-side `isPaused` (`pause-registry.ts`)
+      // already fails closed on DB error and returns a synthetic
+      // workspace-kill decision; this extra catch protects against
+      // a host implementation that throws (rather than returning) on
+      // failure, so the listener's posture matches the registry's
+      // regardless of host wiring.
       // ---------------------------------------------------------------
       if (config.isPaused && config.workspaceId) {
+        let pause: Awaited<ReturnType<IsPausedFn>>;
         try {
-          const pause = await config.isPaused({
+          pause = await config.isPaused({
             workspaceId: config.workspaceId,
             channelId,
             userId,
           });
-          if (pause.paused) {
-            log.debug(
-              {
-                workspaceId: config.workspaceId,
-                channelId,
-                userId,
-                layer: pause.layer,
-                until: pause.until,
-              },
-              "Proactive: skipped — pause registry says silent",
-            );
-            return;
-          }
         } catch (err) {
-          // Fail open — momentary registry failure shouldn't silence
-          // the agent. Log + continue to the classifier.
-          log.warn(
+          log.error(
             { err: err instanceof Error ? err : new Error(String(err)) },
-            "Proactive: pause-registry read failed — treating as not paused",
+            "Proactive: pause-registry callback threw — failing CLOSED (Atlas silenced)",
           );
+          return;
+        }
+        if (pause.paused) {
+          log.debug(
+            {
+              workspaceId: config.workspaceId,
+              channelId,
+              userId,
+              layer: pause.layer,
+              until: pause.until,
+            },
+            "Proactive: skipped — pause registry says silent",
+          );
+          return;
         }
       }
 
@@ -424,42 +451,64 @@ export async function registerProactiveListener(
       // instead of a silent gap. No reaction, no offer card.
       // ---------------------------------------------------------------
       if (config.getQuotaStatus && config.workspaceId) {
+        let quota: Awaited<ReturnType<GetQuotaStatusFn>> | null = null;
         try {
-          const quota = await config.getQuotaStatus({
+          quota = await config.getQuotaStatus({
             workspaceId: config.workspaceId,
           });
-          if (quota.capReached) {
-            log.debug(
-              {
-                workspaceId: config.workspaceId,
-                channelId,
-                classifyCountThisMonth: quota.classifyCountThisMonth,
-                monthlyClassifierCap: quota.monthlyClassifierCap,
-              },
-              "Proactive: skipped — monthly classifier cap reached",
-            );
-            await emitMeter({
-              channelId,
-              messageId: message.id,
-              eventType: "classify",
-              tokens: 0,
-              actorUserId: message.author.userId ?? null,
-              metadata: {
-                capReached: true,
-                skipped: "monthly-quota",
-                classifyCountThisMonth: quota.classifyCountThisMonth,
-                monthlyClassifierCap: quota.monthlyClassifierCap,
-              },
-            });
-            return;
-          }
         } catch (err) {
-          // Fail open — momentary read failure shouldn't silence the
-          // agent. Same posture as the pause registry above.
-          log.warn(
+          // Fail open on quota — cost ceiling, not a security control.
+          // BUT surface the bypass: log at error AND emit a meter row
+          // tagged `quota-read-failed` so the analytics rollup shows
+          // the per-message bypass count during the outage.
+          log.error(
             { err: err instanceof Error ? err : new Error(String(err)) },
-            "Proactive: quota read failed — treating as under cap",
+            "Proactive: quota callback threw — treating as under cap (monthly cap NOT enforced this request)",
           );
+          await emitMeter({
+            channelId,
+            messageId: message.id,
+            eventType: "classify",
+            tokens: 0,
+            actorUserId: message.author.userId ?? null,
+            metadata: { skipped: "quota-read-failed" },
+          });
+        }
+        if (quota?.readFailed) {
+          // Host returned the fail-open snapshot — same observability
+          // path as the catch above, no log (host already logged).
+          await emitMeter({
+            channelId,
+            messageId: message.id,
+            eventType: "classify",
+            tokens: 0,
+            actorUserId: message.author.userId ?? null,
+            metadata: { skipped: "quota-read-failed" },
+          });
+        } else if (quota?.capReached) {
+          log.debug(
+            {
+              workspaceId: config.workspaceId,
+              channelId,
+              classifyCountThisMonth: quota.classifyCountThisMonth,
+              monthlyClassifierCap: quota.monthlyClassifierCap,
+            },
+            "Proactive: skipped — monthly classifier cap reached",
+          );
+          await emitMeter({
+            channelId,
+            messageId: message.id,
+            eventType: "classify",
+            tokens: 0,
+            actorUserId: message.author.userId ?? null,
+            metadata: {
+              capReached: true,
+              skipped: "monthly-quota",
+              classifyCountThisMonth: quota.classifyCountThisMonth,
+              monthlyClassifierCap: quota.monthlyClassifierCap,
+            },
+          });
+          return;
         }
       }
 
@@ -467,6 +516,7 @@ export async function registerProactiveListener(
         text,
         mode: config.workspace.classifierMode,
         llm: config.classify,
+        log,
       });
 
       const decision = decideInterjection({
@@ -504,6 +554,10 @@ export async function registerProactiveListener(
           isQuestion: classification.isQuestion,
           llmInvoked: classification.llmInvoked,
           candidate: classification.candidate,
+          // Distinguishes "silent because not a question" from "silent
+          // because the LLM provider threw" so admins triaging a low
+          // react rate can spot a classifier outage in the rollup.
+          classifierErrored: classification.classifierErrored === true,
           action: decision.action,
           reason: decision.reason,
         },
@@ -862,12 +916,14 @@ async function runAnswerFlow(
   //     event is what drives the discoverability rollup.
   //
   //   - Unlinked asker, allowlist non-empty → call
-  //     `executeQueryProactive` with `atlasUserId: ""` (sentinel for
-  //     "no Atlas identity"). The host implementation is responsible
-  //     for constraining the agent to the allowlist. Post-execution
-  //     we intersect `entitiesReferenced` against the allowlist and
-  //     refuse if any out-of-allowlist entity slipped through —
-  //     belt-and-braces against an agent that ignores the constraint.
+  //     `executeQueryProactive` with `atlasUserId: null` (explicit
+  //     "no Atlas identity" — the type forces every host to handle
+  //     the public-dataset branch deliberately). The host implementation
+  //     is responsible for constraining the agent to the allowlist.
+  //     Post-execution we intersect `entitiesReferenced` against the
+  //     allowlist and refuse if any out-of-allowlist entity slipped
+  //     through — belt-and-braces against an agent that ignores the
+  //     constraint.
   if (!resolved.atlasUserId) {
     if (!config.getPublicDataset || !config.executeQueryProactive) {
       const prompt = buildUnlinkedAskerPrompt(config.linkUrl);
@@ -917,9 +973,11 @@ async function runAnswerFlow(
       publicResult = await config.executeQueryProactive(text, {
         threadId,
         asker,
-        // Sentinel — host implementations check for the empty string to
-        // skip RLS and constrain the agent to the allowlist instead.
-        atlasUserId: "",
+        // Explicit null: host implementations check for null to skip
+        // RLS and constrain the agent to the workspace's public-dataset
+        // allowlist. Nullable signature (vs an empty-string sentinel)
+        // forces deliberate null handling on every host.
+        atlasUserId: null,
       });
     } catch (err) {
       log.error(
@@ -935,18 +993,20 @@ async function runAnswerFlow(
       return;
     }
 
-    const refused = entitiesOutsideAllowlist(publicResult, allowlist);
-    if (refused.length > 0) {
-      const firstRefused = refused[0];
+    const allowlistCheck = checkResultAgainstAllowlist(publicResult, allowlist, {
+      allowWhenEntitiesUnknown: config.allowAnswerWhenEntitiesUnknown === true,
+    });
+    if (!allowlistCheck.allowed) {
+      const firstRefused = allowlistCheck.refusedEntities[0];
       await postPublicRefusal(thread, config, log, asker, threadId, firstRefused);
       await emitMeter({
         channelId: thread.channelId,
         eventType: "public_refused",
         actorUserId: asker.externalUserId,
         metadata: {
-          reason: "entity-not-in-allowlist",
+          reason: allowlistCheck.reason,
           entityName: firstRefused,
-          refusedEntities: refused,
+          refusedEntities: allowlistCheck.refusedEntities,
           askerExternalUserId: asker.externalUserId,
         },
       });
@@ -1016,26 +1076,61 @@ type ProactiveQueryResultLike = {
   metricsReferenced?: string[];
 };
 
+/** Discriminated allowlist verdict. */
+type AllowlistCheck =
+  | { allowed: true }
+  | {
+      allowed: false;
+      /** Refusal classification tag — pinned for audit/meter `metadata.reason`. */
+      reason:
+        | "entitiesReferenced-missing"
+        | "entity-not-in-allowlist"
+        | "metric-denied";
+      /** Refused entity names (may be empty when `reason === "entitiesReferenced-missing"`). */
+      refusedEntities: string[];
+    };
+
 /**
  * Walk the agent's reported entity touches against the workspace
- * allowlist and return the names that are out-of-allowlist (or that
- * touch a denied metric). Empty result === query is fully allowlisted.
+ * allowlist and return a structured verdict.
  *
- * When the host doesn't report `entitiesReferenced`, we conservatively
- * treat the result as "no information" and let the result through —
- * this matches the host wiring stage where the agent doesn't yet
- * surface entity introspection. Hosts that want strict enforcement
- * should populate `entitiesReferenced` in the result.
+ * Defaults to **fail-closed**: a result that omits `entitiesReferenced`
+ * is refused with `reason: "entitiesReferenced-missing"`. The opposite
+ * posture (allowing through on missing data) is the exact failure mode
+ * #2297 was meant to prevent. Hosts whose agent genuinely cannot report
+ * `entitiesReferenced` can opt out via
+ * `ProactiveListenerConfig.allowAnswerWhenEntitiesUnknown = true` after
+ * confirming a compensating control (RLS, allowlist enforcement at SQL
+ * time, etc.).
+ *
+ * Cross-entity joins: walks every referenced entity. A query that joins
+ * an allowlisted entity to a non-allowlisted entity refuses on the
+ * second entity.
  */
-function entitiesOutsideAllowlist(
+function checkResultAgainstAllowlist(
   result: ProactiveQueryResultLike,
   allowlist: ReadonlyArray<ProactivePublicDatasetEntry>,
-): string[] {
-  const entities = result.entitiesReferenced ?? [];
+  opts: { allowWhenEntitiesUnknown: boolean },
+): AllowlistCheck {
+  const entitiesReferenced = result.entitiesReferenced;
+  if (entitiesReferenced === undefined || entitiesReferenced === null) {
+    if (opts.allowWhenEntitiesUnknown) return { allowed: true };
+    return {
+      allowed: false,
+      reason: "entitiesReferenced-missing",
+      refusedEntities: [],
+    };
+  }
+  if (entitiesReferenced.length === 0) {
+    // The agent ran but reported no entity touches — treat as a meta
+    // answer (e.g. clarifying question) and let it through. The
+    // `metricsReferenced` list is irrelevant without an entity context.
+    return { allowed: true };
+  }
   const metrics = result.metricsReferenced ?? [];
-  if (entities.length === 0) return [];
   const refused: string[] = [];
-  for (const entity of entities) {
+  let denyMetricHit = false;
+  for (const entity of entitiesReferenced) {
     const entry = allowlist.find((row) => row.entityName === entity);
     if (!entry) {
       refused.push(entity);
@@ -1043,10 +1138,18 @@ function entitiesOutsideAllowlist(
     }
     if (entry.denyMetrics.length > 0) {
       const hit = metrics.find((m) => entry.denyMetrics.includes(m));
-      if (hit) refused.push(entity);
+      if (hit) {
+        refused.push(entity);
+        denyMetricHit = true;
+      }
     }
   }
-  return refused;
+  if (refused.length === 0) return { allowed: true };
+  return {
+    allowed: false,
+    reason: denyMetricHit ? "metric-denied" : "entity-not-in-allowlist",
+    refusedEntities: refused,
+  };
 }
 
 /**
@@ -1170,8 +1273,19 @@ async function deliverFeedback(
       await thread.postEphemeral(event.asker.externalUserId, "Thanks for the feedback.", {
         fallbackToDM: false,
       });
-    } catch {
-      // Ack is best-effort. The feedback is already recorded.
+    } catch (err) {
+      // Ack is best-effort — the feedback row was already persisted
+      // above, so a missing thank-you doesn't cost data. Log at debug
+      // (not warn) because a consistent ack failure is a UX bug worth
+      // investigating, but doesn't degrade core feedback collection.
+      log.debug(
+        {
+          err: err instanceof Error ? err : new Error(String(err)),
+          outcome: event.outcome,
+          source: event.source,
+        },
+        "Proactive feedback ack postEphemeral failed — feedback already recorded",
+      );
     }
   }
   log.info(

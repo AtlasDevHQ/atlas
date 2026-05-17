@@ -287,22 +287,52 @@ export async function recordMeterEvent(event: ProactiveMeterEvent): Promise<void
     event.actorUserId ?? null,
     metadataJson,
   ];
+  // Single retry with a short backoff before dropping the row. The
+  // meter is the billing source-of-truth and feeds the quota cap — a
+  // dropped row both under-bills AND under-counts the next quota
+  // check. One retry recovers from transient pool-exhaustion /
+  // network blips; sustained outages still surface as `log.error` so
+  // on-call alerting fires.
   try {
-    // Resolves only after the row is committed so callers can `await`
-    // the meter write before logging the audit row and keep the two in
-    // lock-step. Failures degrade to a warning rather than throwing
-    // because the caller path (the plugin listener handler) must never
-    // crash the Chat SDK loop.
     await internalQuery(INSERT_SQL, params);
-  } catch (err: unknown) {
-    log.warn(
-      {
-        err: err instanceof Error ? err.message : String(err),
-        eventType: event.eventType,
-        workspaceId: event.workspaceId,
-      },
-      "proactive_meter_events insert failed — meter row dropped",
-    );
+    return;
+  } catch (firstErr) {
+    try {
+      // 250ms is short enough that the Chat SDK handler isn't visibly
+      // delayed and long enough to clear a transient pool spike.
+      await new Promise<void>((resolve) => setTimeout(resolve, 250));
+      await internalQuery(INSERT_SQL, params);
+      log.info(
+        {
+          eventType: event.eventType,
+          workspaceId: event.workspaceId,
+          firstError:
+            firstErr instanceof Error ? firstErr.message : String(firstErr),
+        },
+        "proactive_meter_events insert succeeded after one retry",
+      );
+      return;
+    } catch (secondErr: unknown) {
+      // Both attempts failed — drop the row, log at error so on-call
+      // alerting + the billing-reconcile job catch the gap. The caller
+      // path (the plugin listener handler) must never crash the Chat
+      // SDK loop, so the throw is swallowed at this layer.
+      log.error(
+        {
+          firstError:
+            firstErr instanceof Error ? firstErr.message : String(firstErr),
+          err:
+            secondErr instanceof Error
+              ? secondErr.message
+              : String(secondErr),
+          eventType: event.eventType,
+          workspaceId: event.workspaceId,
+          channelId: event.channelId,
+          messageId: event.messageId ?? null,
+        },
+        "proactive_meter_events insert failed twice — meter row dropped (billing + quota under-count this event)",
+      );
+    }
   }
 }
 

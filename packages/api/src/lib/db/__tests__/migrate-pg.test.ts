@@ -3658,4 +3658,214 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(err).not.toBeNull();
     expect(err?.message).toMatch(/chk_proactive_meter_event_type|23514|check constraint/i);
   }, PG_TEST_TIMEOUT_MS);
+
+  // ---------------------------------------------------------------------------
+  // workspace_proactive_config CHECK constraints (#2294, migration 0075).
+  // The route layer already validates with zod, but the CHECK is the
+  // last-line defence — a direct INSERT bypassing the route must still
+  // reject. These three cases exercise each constraint independently.
+  // ---------------------------------------------------------------------------
+
+  it("workspace_proactive_config: CHECK rejects invalid sensitivity preset (#2294)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-wpc-sens-${stamp}`;
+    let err: Error | null = null;
+    try {
+      await pool.query(
+        `INSERT INTO workspace_proactive_config (workspace_id, sensitivity)
+         VALUES ($1, 'reckless')`,
+        [ws],
+      );
+    } catch (e) {
+      err = e instanceof Error ? e : new Error(String(e));
+    }
+    expect(err).not.toBeNull();
+    expect(err?.message).toMatch(/chk_workspace_proactive_sensitivity|23514|check constraint/i);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("workspace_proactive_config: CHECK rejects invalid classifier_mode (#2294)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-wpc-mode-${stamp}`;
+    let err: Error | null = null;
+    try {
+      await pool.query(
+        `INSERT INTO workspace_proactive_config (workspace_id, classifier_mode)
+         VALUES ($1, 'classify-with-vibes')`,
+        [ws],
+      );
+    } catch (e) {
+      err = e instanceof Error ? e : new Error(String(e));
+    }
+    expect(err).not.toBeNull();
+    expect(err?.message).toMatch(/chk_workspace_proactive_classifier_mode|23514|check constraint/i);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("workspace_proactive_config: CHECK rejects negative monthly_classifier_cap (#2294)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-wpc-cap-${stamp}`;
+    let err: Error | null = null;
+    try {
+      await pool.query(
+        `INSERT INTO workspace_proactive_config (workspace_id, monthly_classifier_cap)
+         VALUES ($1, -5)`,
+        [ws],
+      );
+    } catch (e) {
+      err = e instanceof Error ? e : new Error(String(e));
+    }
+    expect(err).not.toBeNull();
+    expect(err?.message).toMatch(/chk_workspace_proactive_monthly_cap_nonneg|23514|check constraint/i);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("workspace_proactive_config: CHECK accepts NULL monthly_classifier_cap (unlimited) (#2294)", async () => {
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-wpc-cap-null-${stamp}`;
+    await pool.query(
+      `INSERT INTO workspace_proactive_config (workspace_id, monthly_classifier_cap)
+       VALUES ($1, NULL)`,
+      [ws],
+    );
+    const { rows } = await pool.query<{ monthly_classifier_cap: number | null }>(
+      `SELECT monthly_classifier_cap FROM workspace_proactive_config WHERE workspace_id = $1`,
+      [ws],
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0].monthly_classifier_cap).toBeNull();
+  }, PG_TEST_TIMEOUT_MS);
+
+  // ---------------------------------------------------------------------------
+  // AnswerMeter end-to-end round-trip (#2296). recordMeterEvent ↔
+  // summarizeMeterEvents has only been tested via the pure aggregator
+  // until now; this catches:
+  //   - param array shape drift in INSERT_SQL
+  //   - NUMERIC → number coercion in summarizeMeterEvents
+  //   - FK / index / CHECK regressions on round-trip
+  //   - quota's COUNT(*) accounting (recordMeterEvent is the quota
+  //     usage source-of-truth)
+  // ---------------------------------------------------------------------------
+
+  it("answer-meter: round-trip insert + summarize matches the input rows (#2296)", async () => {
+    const { recordMeterEvent, summarizeMeterEvents } = await import(
+      "@atlas/api/lib/proactive/answer-meter"
+    );
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-am-rt-${stamp}`;
+    const ch = `C-am-rt-${stamp}`;
+
+    await recordMeterEvent({
+      workspaceId: ws,
+      channelId: ch,
+      eventType: "classify",
+      tokens: 120,
+      costMicroUsd: 250,
+      confidence: 0.91,
+      messageId: `M-${stamp}-1`,
+    });
+    await recordMeterEvent({
+      workspaceId: ws,
+      channelId: ch,
+      eventType: "react",
+      confidence: 0.91,
+      messageId: `M-${stamp}-1`,
+    });
+    await recordMeterEvent({
+      workspaceId: ws,
+      channelId: ch,
+      eventType: "feedback",
+      outcome: "helpful",
+      actorUserId: `U-${stamp}`,
+    });
+    await recordMeterEvent({
+      workspaceId: ws,
+      channelId: ch,
+      eventType: "feedback",
+      outcome: "not-helpful",
+      actorUserId: `U-${stamp}`,
+    });
+    await recordMeterEvent({
+      workspaceId: ws,
+      channelId: ch,
+      eventType: "public_refused",
+      metadata: { reason: "entity-not-in-allowlist", entityName: "finance.revenue" },
+    });
+
+    const summary = await summarizeMeterEvents(ws, 60_000);
+    expect(summary.classifyCount).toBe(1);
+    expect(summary.reactCount).toBe(1);
+    expect(summary.feedbackByOutcome.helpful).toBe(1);
+    expect(summary.feedbackByOutcome["not-helpful"]).toBe(1);
+    // NUMERIC cost_micro_usd MUST coerce to JS number, not string —
+    // string concatenation would produce "0250", catching the bug we
+    // re-introduced previously (#1832 era) where the coercion silently
+    // dropped on a driver upgrade.
+    expect(typeof summary.totalCostMicroUsd).toBe("number");
+    expect(summary.totalCostMicroUsd).toBe(250);
+    expect(summary.byChannel.length).toBe(1);
+    expect(summary.byChannel[0]!.channelId).toBe(ch);
+    expect(summary.byChannel[0]!.classifyCount).toBe(1);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("answer-meter: quota's COUNT(*) sees recordMeterEvent inserts (#2301)", async () => {
+    const { recordMeterEvent } = await import(
+      "@atlas/api/lib/proactive/answer-meter"
+    );
+    const { getClassifyCountThisMonth } = await import(
+      "@atlas/api/lib/proactive/quota"
+    );
+    const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-am-quota-${stamp}`;
+
+    const initial = await getClassifyCountThisMonth(ws);
+    expect(initial).toBe(0);
+
+    for (let i = 0; i < 3; i++) {
+      await recordMeterEvent({
+        workspaceId: ws,
+        channelId: `C-${stamp}`,
+        eventType: "classify",
+        tokens: 80,
+      });
+    }
+    // Non-classify rows must NOT count against the quota.
+    await recordMeterEvent({
+      workspaceId: ws,
+      channelId: `C-${stamp}`,
+      eventType: "react",
+    });
+
+    const after = await getClassifyCountThisMonth(ws);
+    expect(after).toBe(3);
+  }, PG_TEST_TIMEOUT_MS);
+
+  // ---------------------------------------------------------------------------
+  // PauseRegistry fail-closed posture (#2295, post-1.5.0 polish).
+  // isPaused() must return paused:true on DB error — the kill switch's
+  // product contract is "deliver silence when an admin or user asks for
+  // it". Simulated by pointing the helper at a non-existent table via
+  // a transient DDL drop + restore.
+  // ---------------------------------------------------------------------------
+
+  it("isPaused: fails CLOSED (paused=true, layer=workspace-kill) when underlying read throws (#2295 polish)", async () => {
+    const { isPaused } = await import(
+      "@atlas/api/lib/proactive/pause-registry"
+    );
+    // Temporarily rename the table so the underlying SELECT raises
+    // `42P01 — undefined_table`. Restore in the same test to avoid
+    // poisoning sibling cases.
+    await pool.query(
+      `ALTER TABLE proactive_pauses RENAME TO proactive_pauses__polish_tmp`,
+    );
+    try {
+      const decision = await isPaused({
+        workspaceId: "ws-fail-closed",
+        channelId: "C-fail-closed",
+      });
+      expect(decision.paused).toBe(true);
+      expect(decision.layer).toBe("workspace-kill");
+    } finally {
+      await pool.query(
+        `ALTER TABLE proactive_pauses__polish_tmp RENAME TO proactive_pauses`,
+      );
+    }
+  }, PG_TEST_TIMEOUT_MS);
 });

@@ -482,6 +482,15 @@ export interface ProactiveConfig {
    * entity the asker probed for.
    */
   refusalCopy?: string;
+  /**
+   * Opt-out for hosts whose `executeQueryProactive` cannot report
+   * `entitiesReferenced` on the result. Default `false` (fail-closed
+   * — results without entity introspection are refused). Setting
+   * `true` lets such results through; only enable when the host has
+   * another compensating control (RLS, allowlist enforcement at SQL
+   * time). Logs at warn on startup so the bypass is visible.
+   */
+  allowAnswerWhenEntitiesUnknown?: boolean;
   // (onMeterEvent declared below alongside the #2296 AnswerMeter wiring —
   //  shared callback covers the public_refused events from #2297.)
 
@@ -713,10 +722,35 @@ const FileUploadConfigSchema = z
   })
   .optional();
 
-const EmojiValueSchema = z.any().refine(
+/**
+ * Type-preserving helper for callback fields. `z.any().refine(typeof
+ * === "function")` flattens the inferred type to `any`; `z.custom<Fn>`
+ * keeps the strong TS signature so `ChatConfig["proactive"]["classify"]`
+ * stays typed as `LLMClassifierFn` rather than `any`.
+ *
+ * Runtime behaviour is unchanged: same `typeof === "function"` check,
+ * same error message. The difference is purely at the type level.
+ */
+function zCallback<Fn extends (...args: never[]) => unknown>(
+  message: string,
+): z.ZodType<Fn> {
+  return z.custom<Fn>((v) => typeof v === "function", { message });
+}
+
+/** Same shape as `zCallback` but for objects validated by a custom predicate. */
+function zCustomObject<T>(
+  predicate: (v: unknown) => boolean,
+  message: string,
+): z.ZodType<T> {
+  return z.custom<T>(predicate, { message });
+}
+
+const EmojiValueSchema = zCustomObject<{ name: string }>(
   (v: unknown) =>
     v === undefined ||
-    (typeof v === "object" && v !== null && typeof (v as Record<string, unknown>).name === "string"),
+    (typeof v === "object" &&
+      v !== null &&
+      typeof (v as Record<string, unknown>).name === "string"),
   "customEmoji values must be EmojiValue objects from Chat SDK's emoji helper (e.g., emoji.eyes, emoji.custom('my_emoji'))",
 ).optional();
 
@@ -750,90 +784,53 @@ const ProactiveChannelConfigSchema = z.object({
 
 const ProactiveConfigSchema = z
   .object({
-    isEnabled: z
-      .any()
-      .refine(
-        (v) => typeof v === "function",
-        "proactive.isEnabled must be a function returning boolean | Promise<boolean>",
-      ),
-    classify: z
-      .any()
-      .refine(
-        (v) => typeof v === "function",
-        "proactive.classify must be a function returning Promise<ClassificationResult>",
-      ),
+    isEnabled: zCallback<ProactiveGateFn>(
+      "proactive.isEnabled must be a function returning boolean | Promise<boolean>",
+    ),
+    classify: zCallback<LLMClassifierFn>(
+      "proactive.classify must be a function returning Promise<ClassificationResult>",
+    ),
     workspace: ProactiveWorkspaceConfigSchema,
     channelAllowlist: z.array(z.string().min(1)).optional(),
     channelConfigs: z.record(z.string(), ProactiveChannelConfigSchema).optional(),
-    userResolver: z
-      .any()
-      .refine(
-        (v) => v === undefined || typeof v === "function",
-        "proactive.userResolver must be a function",
-      )
-      .optional(),
-    executeQueryProactive: z
-      .any()
-      .refine(
-        (v) => v === undefined || typeof v === "function",
-        "proactive.executeQueryProactive must be a function",
-      )
-      .optional(),
+    userResolver: zCallback<ProactiveUserResolver>(
+      "proactive.userResolver must be a function",
+    ).optional(),
+    executeQueryProactive: zCallback<ProactiveExecuteQuery>(
+      "proactive.executeQueryProactive must be a function",
+    ).optional(),
     linkUrl: z.string().url("proactive.linkUrl must be a valid URL").optional(),
     platform: z.string().min(1).optional(),
-    feedbackCollector: z
-      .any()
-      .refine(
-        (v) => v === undefined || typeof v === "function",
-        "proactive.feedbackCollector must be a function",
-      )
-      .optional(),
+    feedbackCollector: zCallback<FeedbackCollectorFn>(
+      "proactive.feedbackCollector must be a function",
+    ).optional(),
     // Public dataset wiring (#2297). All three optional — when
     // `getPublicDataset` is omitted, the listener keeps the
     // unlinked-asker stub from #2293 (link-Atlas prompt only).
-    getPublicDataset: z
-      .any()
-      .refine(
-        (v) => v === undefined || typeof v === "function",
-        "proactive.getPublicDataset must be a function returning Promise<PublicDatasetEntry[]>",
-      )
-      .optional(),
+    getPublicDataset: zCallback<GetPublicDatasetFn>(
+      "proactive.getPublicDataset must be a function returning Promise<PublicDatasetEntry[]>",
+    ).optional(),
     refusalCopy: z.string().min(1).max(1024).optional(),
+    allowAnswerWhenEntitiesUnknown: z.boolean().optional(),
     // Kill-switch wiring (#2295). All three optional so the legacy
     // env-var allowlist mode (used by tests + dev) keeps working.
     workspaceId: z.string().min(1).optional(),
-    isPaused: z
-      .any()
-      .refine(
-        (v) => v === undefined || typeof v === "function",
-        "proactive.isPaused must be a function returning Promise<PauseDecision>",
-      )
-      .optional(),
-    onPauseRequest: z
-      .any()
-      .refine(
-        (v) => v === undefined || typeof v === "function",
-        "proactive.onPauseRequest must be a function returning Promise<void>",
-      )
-      .optional(),
+    isPaused: zCallback<IsPausedFn>(
+      "proactive.isPaused must be a function returning Promise<PauseDecision>",
+    ).optional(),
+    onPauseRequest: zCallback<OnPauseRequestFn>(
+      "proactive.onPauseRequest must be a function returning Promise<void>",
+    ).optional(),
     // AnswerMeter wiring (#2296). Optional — when omitted the listener
     // simply doesn't emit meter rows.
-    onMeterEvent: z
-      .any()
-      .refine(
-        (v) => v === undefined || typeof v === "function",
-        "proactive.onMeterEvent must be a function returning Promise<void> | void",
-      )
-      .optional(),
+    onMeterEvent: zCallback<ProactiveMeterEventFn>(
+      "proactive.onMeterEvent must be a function returning Promise<void> | void",
+    ).optional(),
     // Monthly quota wiring (#2301). Optional — when omitted no cap is
     // enforced and every message goes through the classifier.
-    getQuotaStatus: z
-      .any()
-      .refine(
-        (v) => v === undefined || typeof v === "function",
-        "proactive.getQuotaStatus must be a function returning Promise<ProactiveQuotaStatus>",
-      )
-      .optional(),
+    getQuotaStatus: zCallback<GetQuotaStatusFn>(
+      "proactive.getQuotaStatus must be a function returning Promise<ProactiveQuotaStatus>",
+    ).optional(),
   })
   .optional();
 
@@ -862,65 +859,44 @@ export const ChatConfigSchema = z.object({
       "slashCommandName must start with '/' followed by lowercase alphanumeric characters or hyphens (e.g. '/atlas', '/data-query')",
     )
     .optional(),
-  executeQuery: z
-    .any()
-    .refine(
-      (v) => typeof v === "function",
-      "executeQuery must be a function",
-    ),
-  checkRateLimit: z
-    .any()
-    .refine(
-      (v) => v === undefined || typeof v === "function",
-      "checkRateLimit must be a function",
-    )
-    .optional(),
-  scrubError: z
-    .any()
-    .refine(
-      (v) => v === undefined || typeof v === "function",
-      "scrubError must be a function",
-    )
-    .optional(),
-  actions: z
-    .any()
-    .refine(
-      (v) =>
-        v === undefined ||
-        (typeof v === "object" &&
-          v !== null &&
-          typeof v.approve === "function" &&
-          typeof v.deny === "function" &&
-          typeof v.get === "function"),
-      "actions must implement { approve, deny, get }",
-    )
-    .optional(),
-  conversations: z
-    .any()
-    .refine(
-      (v) =>
-        v === undefined ||
-        (typeof v === "object" &&
-          v !== null &&
-          typeof v.create === "function" &&
-          typeof v.addMessage === "function" &&
-          typeof v.get === "function" &&
-          typeof v.generateTitle === "function"),
-      "conversations must implement { create, addMessage, get, generateTitle }",
-    )
-    .optional(),
+  executeQuery: zCallback<ChatPluginConfig["executeQuery"]>(
+    "executeQuery must be a function",
+  ),
+  checkRateLimit: zCallback<NonNullable<ChatPluginConfig["checkRateLimit"]>>(
+    "checkRateLimit must be a function",
+  ).optional(),
+  scrubError: zCallback<NonNullable<ChatPluginConfig["scrubError"]>>(
+    "scrubError must be a function",
+  ).optional(),
+  actions: zCustomObject<ActionCallbacks>(
+    (v) =>
+      v === undefined ||
+      (typeof v === "object" &&
+        v !== null &&
+        typeof (v as Record<string, unknown>).approve === "function" &&
+        typeof (v as Record<string, unknown>).deny === "function" &&
+        typeof (v as Record<string, unknown>).get === "function"),
+    "actions must implement { approve, deny, get }",
+  ).optional(),
+  conversations: zCustomObject<ConversationCallbacks>(
+    (v) =>
+      v === undefined ||
+      (typeof v === "object" &&
+        v !== null &&
+        typeof (v as Record<string, unknown>).create === "function" &&
+        typeof (v as Record<string, unknown>).addMessage === "function" &&
+        typeof (v as Record<string, unknown>).get === "function" &&
+        typeof (v as Record<string, unknown>).generateTitle === "function"),
+    "conversations must implement { create, addMessage, get, generateTitle }",
+  ).optional(),
   streaming: StreamingConfigSchema,
   fileUpload: FileUploadConfigSchema,
   reactions: ReactionConfigSchema,
   ephemeral: EphemeralConfigSchema,
   proactive: ProactiveConfigSchema,
-  executeQueryStream: z
-    .any()
-    .refine(
-      (v) => v === undefined || typeof v === "function",
-      "executeQueryStream must be a function",
-    )
-    .optional(),
+  executeQueryStream: zCallback<NonNullable<ChatPluginConfig["executeQueryStream"]>>(
+    "executeQueryStream must be a function",
+  ).optional(),
 }).refine(
   (c) => {
     // Warn if streaming.enabled is explicitly true but executeQueryStream is missing

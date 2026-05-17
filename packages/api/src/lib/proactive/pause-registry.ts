@@ -25,7 +25,7 @@
  * unit tests can exercise the precedence + expiry truth table without
  * a database.
  */
-import { internalQuery, internalExecute, hasInternalDB } from "@atlas/api/lib/db/internal";
+import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("proactive:pause-registry");
@@ -194,9 +194,18 @@ async function fetchCandidateRows(input: {
 /**
  * Resolve a pause decision for `(workspaceId, channelId, userId?)`.
  *
- * Fails open on DB errors — returning `{ paused: false }` keeps the
- * agent answering when the registry hiccups. Logs at warn so an on-call
- * sees the read failure without the user seeing Atlas go silent.
+ * Fails CLOSED on DB errors — returning `{ paused: true, layer:
+ * "workspace-kill" }` keeps Atlas silent when the registry hiccups.
+ * The kill switch's product contract is "when an admin or user wanted
+ * silence, deliver silence" — degrading to "keep answering" on a DB
+ * blip defeats every layer (workspace-kill, admin-channel deny,
+ * user-optout, channel-24h). CLAUDE.md §Error Handling: "`catch
+ * { return false }` on a security check is a bug. Return 500, not a
+ * false negative." This is the catch.
+ *
+ * Logs at `error` (not `warn`) so on-call alerting surfaces the
+ * outage — a sustained read failure now produces user-visible silence
+ * AND an error log, both of which beat silent fail-open.
  */
 export async function isPaused(input: {
   workspaceId: string;
@@ -214,16 +223,16 @@ export async function isPaused(input: {
     });
     return decidePauseFromRows(rows, now);
   } catch (err) {
-    log.warn(
+    log.error(
       {
         err: err instanceof Error ? err : new Error(String(err)),
         workspaceId: input.workspaceId,
         channelId: input.channelId,
         userId: input.userId,
       },
-      "PauseRegistry read failed — failing open (Atlas keeps answering)",
+      "PauseRegistry read failed — failing CLOSED (Atlas silenced until registry recovers)",
     );
-    return { paused: false };
+    return { paused: true, layer: "workspace-kill" };
   }
 }
 
@@ -392,8 +401,4 @@ export async function handlePluginPauseRequest(request: {
     },
     "Proactive: pause row persisted",
   );
-  // `execute` (fire-and-forget) is intentionally avoided here — we want
-  // the plugin to see the write succeed before it returns to the user
-  // so a UI confirmation reflects reality.
-  void internalExecute;
 }

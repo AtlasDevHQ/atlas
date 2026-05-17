@@ -86,6 +86,14 @@ export interface WorkspaceQuotaStatus {
   classifyCountThisMonth: number;
   /** Pure `isOverQuota(classifyCountThisMonth, monthlyClassifierCap)`. */
   capReached: boolean;
+  /**
+   * True when the underlying DB read failed and the snapshot is the
+   * fail-open default (`cap: null`, `count: 0`, `capReached: false`).
+   * Listener uses this to emit a `classify` meter row tagged
+   * `skipped: "quota-read-failed"` so the bypass is visible in the
+   * per-workspace analytics rollup.
+   */
+  readFailed?: boolean;
 }
 
 /**
@@ -143,8 +151,12 @@ export async function getClassifyCountThisMonth(
  * every render. Both are cheap thanks to the 0078 index.
  *
  * Fails open on read errors — `capReached: false` keeps Atlas
- * answering when the meter table hiccups. Logs at warn so an on-call
- * sees the read failure without the user seeing Atlas go silent.
+ * answering when the meter table hiccups. Logs at `error` so on-call
+ * alerting fires on sustained outages (the workspace's monthly cap
+ * is silently bypassed during the outage window, so the billing tail
+ * is exposed — operators need to see it). The listener layers in a
+ * meter event `metadata.skipped: "quota-read-failed"` so the per-
+ * workspace analytics rollup shows the bypass count too.
  */
 export async function getWorkspaceQuotaStatus(
   workspaceId: string,
@@ -165,17 +177,18 @@ export async function getWorkspaceQuotaStatus(
       capReached: isOverQuota(count, cap),
     };
   } catch (err) {
-    log.warn(
+    log.error(
       {
         err: err instanceof Error ? err.message : String(err),
         workspaceId,
       },
-      "Proactive quota read failed — failing open (Atlas keeps answering)",
+      "Proactive quota read failed — failing open (Atlas keeps answering, monthly cap NOT enforced this request)",
     );
     return {
       monthlyClassifierCap: null,
       classifyCountThisMonth: 0,
       capReached: false,
+      readFailed: true,
     };
   }
 }

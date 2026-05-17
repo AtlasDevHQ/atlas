@@ -17,6 +17,17 @@
 -- on every tenant so a future plan upgrade can read pre-existing config
 -- without a schema migration, but rows only get written through the
 -- enterprise-gated admin surface.
+--
+-- Content Mode System opt-out (CLAUDE.md §Content Mode System):
+--   `workspace_proactive_config` and `channel_proactive_config` are
+--   per-workspace operational config (kill switch, sensitivity, monthly
+--   cap, per-channel allow/deny) — NOT shared draft content that ships
+--   through the `/api/v1/admin/publish` pipeline. They tune live agent
+--   behaviour the moment an admin saves, and there is no "draft a kill
+--   switch and publish it later" workflow that would make a `status`
+--   column meaningful. Carving out from the mode system intentionally;
+--   if a future feature wants draft → publish for these tables, retrofit
+--   `status` + register the table in `CONTENT_MODE_TABLES` then.
 
 CREATE TABLE IF NOT EXISTS workspace_proactive_config (
   workspace_id              TEXT PRIMARY KEY,

@@ -1911,7 +1911,7 @@ export const proactiveMeterEvents = pgTable(
     ),
     check(
       "chk_proactive_meter_event_type",
-      sql`event_type IN ('classify', 'react', 'offer', 'accept', 'feedback')`,
+      sql`event_type IN ('classify', 'react', 'offer', 'accept', 'feedback', 'public_refused')`,
     ),
     check(
       "chk_proactive_meter_outcome",

@@ -106,6 +106,27 @@ describe("decidePauseFromRows", () => {
     expect(decision.layer).toBe("channel-24h");
   });
 
+  it("all four layers active simultaneously → workspace-kill wins", () => {
+    // Cartesian-conflict regression: the pairwise tests above prove
+    // each adjacent precedence pair, but the listener actually feeds
+    // the resolver the full candidate set returned from PG. This case
+    // pins the documented `workspace-kill > admin-channel > user-optout
+    // > channel-24h` chain in one shot so a future refactor that re-
+    // orders `LAYER_PRIORITY` can't pass the pairwise tests yet break
+    // the multi-layer conflict in production.
+    const decision = decidePauseFromRows(
+      [
+        row({ id: "a", layer: "channel-24h", channelId: "C1", expiresAt: SOON }),
+        row({ id: "b", layer: "user-optout", userId: "U1", expiresAt: null }),
+        row({ id: "c", layer: "admin-channel", channelId: "C1", expiresAt: null }),
+        row({ id: "d", layer: "workspace-kill", expiresAt: null }),
+      ],
+      NOW,
+    );
+    expect(decision.paused).toBe(true);
+    expect(decision.layer).toBe("workspace-kill");
+  });
+
   it("workspace-kill still wins when expired admin-channel + active channel-24h are mixed", () => {
     // An expired admin-channel row is ignored entirely (priority does
     // not save it), but an active workspace-kill should still win over

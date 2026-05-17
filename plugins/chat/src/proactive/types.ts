@@ -206,6 +206,13 @@ export interface ProactiveQuotaStatus {
   classifyCountThisMonth: number;
   /** True when `classifyCountThisMonth >= monthlyClassifierCap`. */
   capReached: boolean;
+  /**
+   * True when the host's underlying DB read failed and the snapshot
+   * is a fail-open default. Listener emits a `classify` meter row
+   * tagged `skipped: "quota-read-failed"` when this is set so the
+   * bypass surfaces in the analytics rollup.
+   */
+  readFailed?: boolean;
 }
 
 /**

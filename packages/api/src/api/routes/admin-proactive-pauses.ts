@@ -30,7 +30,7 @@ import {
   persistPause,
 } from "@atlas/api/lib/proactive/pause-registry";
 import { AuthErrorSchema, ErrorSchema } from "./shared-schemas";
-import { createAdminRouter, requireOrgContext } from "./admin-router";
+import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
 const log = createLogger("admin-proactive-pauses");
 
@@ -135,6 +135,12 @@ const liftKillSwitchRoute = createRoute({
 
 const adminProactivePauses = createAdminRouter();
 adminProactivePauses.use(requireOrgContext());
+// Matches sibling proactive admin routers (admin-proactive.ts,
+// admin-proactive-public-dataset.ts) — keeps the permission flag
+// consistent across the surface so a future split of `admin:settings`
+// from generic admin can't accidentally widen the workspace-kill switch
+// past the rest of the proactive admin pages.
+adminProactivePauses.use(requirePermission("admin:settings"));
 
 // Internal sentinel — `isPaused` is called with a synthetic channelId so
 // the workspace-kill branch fires even when no real channel exists.

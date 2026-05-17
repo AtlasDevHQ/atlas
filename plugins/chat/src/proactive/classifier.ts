@@ -128,6 +128,13 @@ export interface ClassifyMessageResult extends ClassificationResult {
    * `metadata` so an admin can distinguish "classifier silent because
    * provider down" from "classifier silent because message was not a
    * question").
+   *
+   * Meaningful ONLY when `llmInvoked === true`. Regex-prefilter
+   * rejection (where `llmInvoked === false`) never sets this flag —
+   * the LLM was never called, so there's nothing to error on. Admin
+   * analytics filtering on this should always combine with
+   * `llmInvoked = true` to avoid attributing prefilter rejections to
+   * an LLM outage.
    */
   classifierErrored?: boolean;
 }

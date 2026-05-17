@@ -1,29 +1,42 @@
 /**
- * Shared types for the proactive chat layer.
+ * Plugin-side proactive chat types.
  *
- * Proactive mode lets Atlas listen to channel messages in opted-in
- * channels, classify them as answerable data questions, and react /
- * eventually answer without an explicit `@atlas` mention. This module
- * holds only the pure shapes — see `classifier.ts`, `policy.ts`, and
- * `listener.ts` for behaviour.
+ * Wire types (shapes shared between plugin and API host) live in
+ * `@useatlas/types/proactive` and are re-exported here so plugin-
+ * internal consumers keep their existing import paths. Plugin-only
+ * callback signatures (`LLMClassifierFn`, `OnPauseRequestFn`, etc.)
+ * stay declared in this module because they carry plugin-specific
+ * Promise/void variance the host doesn't import.
  *
- * Slice #2292 ships the reaction-first tracer: subscribe → classify →
- * react. Slice #2295 layers in the three-tier kill switch + per-user
- * opt-out — types live below.
+ * Slice #2292 ships the reaction-first tracer; slice #2295 the kill
+ * switch + per-user opt-out. The post-1.5.0 polish moved the shared
+ * shapes into `@useatlas/types` so the previous "shape-by-shape
+ * mirror" footgun can't reintroduce wire drift between plugin↔API.
  */
 
-/** Result of running a message through the question classifier. */
-export interface ClassificationResult {
-  /** Whether the message looks like an answerable data question. */
-  isQuestion: boolean;
-  /** Confidence in [0, 1] — 1.0 = certain, 0.0 = certainly not. */
-  confidence: number;
-  /** Optional short reason from the LLM, useful for audit + tuning. */
-  reasoning?: string;
-}
+export type {
+  ClassificationResult,
+  SensitivityPreset,
+  ChannelPauseLayer,
+  PauseLayer,
+  PauseDecision,
+  ProactiveMeterEventType,
+  ProactiveMeterOutcome,
+  ProactiveMeterEvent,
+  ProactiveQuotaStatus,
+  PublicDatasetEntry as ProactivePublicDatasetEntry,
+  AllowDecision,
+  AnnouncementOutcome,
+} from "@useatlas/types";
 
-/** Three-tier sensitivity preset. Maps to a confidence threshold in policy. */
-export type SensitivityPreset = "cautious" | "balanced" | "eager";
+import type {
+  ClassificationResult,
+  ProactiveMeterEvent,
+  PublicDatasetEntry as ProactivePublicDatasetEntry,
+  SensitivityPreset,
+  PauseLayer,
+  ProactiveQuotaStatus,
+} from "@useatlas/types";
 
 /** Workspace-level proactive settings. */
 export interface WorkspaceProactiveConfig {
@@ -84,27 +97,10 @@ export type ProactiveGateFn = () => boolean | Promise<boolean>;
 // ---------------------------------------------------------------------------
 // Kill switch (#2295) — three-layer pause + per-user opt-out
 // ---------------------------------------------------------------------------
-
-/**
- * Channel-scoped pause layers (`channel_id IS NOT NULL`).
- *
- * Split from `PauseLayer` so the type-system makes a row that says it's
- * `channel-24h` carry a non-null channel id at the type level.
- */
-export type ChannelPauseLayer = "channel-24h" | "admin-channel";
-
-/**
- * The four pause shapes recognised by the registry.
- *
- * - `channel-24h`     — in-channel `@atlas pause` (channel-scoped, 24h)
- * - `admin-channel`   — per-channel admin deny (channel-scoped, indefinite)
- * - `workspace-kill`  — admin "pause all proactive" (workspace-wide, indefinite)
- * - `user-optout`     — DM `unsubscribe` (per-user, workspace-wide, indefinite)
- */
-export type PauseLayer =
-  | ChannelPauseLayer
-  | "workspace-kill"
-  | "user-optout";
+//
+// `ChannelPauseLayer`, `PauseLayer`, `PauseDecision` live in
+// `@useatlas/types/proactive` and are re-exported at the top of this
+// module. Only callback signatures stay below.
 
 /**
  * Host-supplied callback that records a pause row.
@@ -134,49 +130,10 @@ export type OnPauseRequestFn = (request: {
 // ---------------------------------------------------------------------------
 // Meter event (#2296)
 // ---------------------------------------------------------------------------
-
-/**
- * Lifecycle stages tracked by the answer meter.
- *
- * `public_refused` (#2297) joins the canonical five at the tail — the
- * listener emits it when an unlinked asker reaches the answer flow but
- * the question's referenced entities aren't on the workspace's
- * proactive public dataset. The admin analytics panel buckets these
- * separately so admins can see "what topic do non-linked askers keep
- * trying" and decide whether to widen the allowlist.
- */
-export type ProactiveMeterEventType =
-  | "classify"
-  | "react"
-  | "offer"
-  | "accept"
-  | "feedback"
-  | "public_refused";
-
-/** Outcome values captured on `feedback` events. */
-export type ProactiveMeterOutcome =
-  | "helpful"
-  | "not-helpful"
-  | "wrong-data"
-  | "no-feedback";
-
-/**
- * Event emitted from the listener whenever the proactive flow advances
- * a lifecycle stage. The plugin stays decoupled from `@atlas/api`; the
- * host wires this callback into the AnswerMeter service.
- */
-export interface ProactiveMeterEvent {
-  workspaceId: string;
-  channelId: string;
-  messageId?: string | null;
-  eventType: ProactiveMeterEventType;
-  outcome?: ProactiveMeterOutcome | null;
-  tokens?: number;
-  costMicroUsd?: number;
-  confidence?: number | null;
-  actorUserId?: string | null;
-  metadata?: Record<string, unknown>;
-}
+//
+// `ProactiveMeterEventType`, `ProactiveMeterOutcome`, `ProactiveMeterEvent`
+// live in `@useatlas/types/proactive`. Only the plugin-side callback
+// signature stays below.
 
 /**
  * Host-injected meter callback. The plugin never persists meter rows
@@ -193,27 +150,9 @@ export type ProactiveMeterEventFn = (
 // ---------------------------------------------------------------------------
 // Monthly quota cap (#2301)
 // ---------------------------------------------------------------------------
-
-/**
- * Quota snapshot returned by the host. Mirrors `WorkspaceQuotaStatus`
- * from `@atlas/api/lib/proactive/quota` shape-by-shape — declared
- * here so the plugin doesn't import `@atlas/api`.
- */
-export interface ProactiveQuotaStatus {
-  /** Cap value persisted on the workspace config. Null = unlimited. */
-  monthlyClassifierCap: number | null;
-  /** Distinct classify rows since the start of the current UTC month. */
-  classifyCountThisMonth: number;
-  /** True when `classifyCountThisMonth >= monthlyClassifierCap`. */
-  capReached: boolean;
-  /**
-   * True when the host's underlying DB read failed and the snapshot
-   * is a fail-open default. Listener emits a `classify` meter row
-   * tagged `skipped: "quota-read-failed"` when this is set so the
-   * bypass surfaces in the analytics rollup.
-   */
-  readFailed?: boolean;
-}
+//
+// `ProactiveQuotaStatus` lives in `@useatlas/types/proactive`. Only the
+// host-injected fetcher signature stays below.
 
 /**
  * Host-injected quota reader. Consulted BEFORE the classifier on every
@@ -231,20 +170,10 @@ export type GetQuotaStatusFn = (input: {
 // ---------------------------------------------------------------------------
 // Public dataset for non-linked askers (#2297)
 // ---------------------------------------------------------------------------
-
-/**
- * One entry on the curated allowlist of semantic entities an unlinked
- * asker may ask about. Mirrors the host's `PublicDatasetEntry` shape so
- * the plugin doesn't import from `@atlas/api`.
- *
- * `denyMetrics` is the per-entry escape hatch for "allow `users` but
- * never `users.email`" — column / measure names within the entity that
- * still refuse a public-asker query.
- */
-export interface ProactivePublicDatasetEntry {
-  entityName: string;
-  denyMetrics: string[];
-}
+//
+// `PublicDatasetEntry` (re-exported here as `ProactivePublicDatasetEntry`)
+// and `AllowDecision` live in `@useatlas/types/proactive`. Only the
+// host-injected fetcher signature stays below.
 
 /**
  * Host-injected fetch for the workspace's public-dataset allowlist.

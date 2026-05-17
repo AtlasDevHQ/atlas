@@ -27,28 +27,15 @@
  */
 import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { PauseLayer, PauseDecision } from "@useatlas/types";
 
 const log = createLogger("proactive:pause-registry");
 
-// ---------------------------------------------------------------------------
-// Shared types
-// ---------------------------------------------------------------------------
-
-/** Layer values stored in `proactive_pauses.layer`. */
-export type PauseLayer =
-  | "workspace-kill"
-  | "admin-channel"
-  | "user-optout"
-  | "channel-24h";
-
-/** Outcome of a pause lookup. */
-export interface PauseDecision {
-  paused: boolean;
-  /** Epoch ms when the pause expires; undefined for indefinite pauses. */
-  until?: number;
-  /** Highest-precedence matching layer. Undefined when `paused === false`. */
-  layer?: PauseLayer;
-}
+// Re-export so existing consumers (`import { PauseLayer } from
+// "@atlas/api/lib/proactive/pause-registry"`) keep working. Canonical
+// definition lives in `@useatlas/types/proactive` — the post-1.5.0
+// polish unified the wire types so plugin + API can't drift.
+export type { PauseLayer, PauseDecision };
 
 /** Row shape read from `proactive_pauses`. */
 export interface PauseRow {
@@ -194,18 +181,29 @@ async function fetchCandidateRows(input: {
 /**
  * Resolve a pause decision for `(workspaceId, channelId, userId?)`.
  *
- * Fails CLOSED on DB errors — returning `{ paused: true, layer:
- * "workspace-kill" }` keeps Atlas silent when the registry hiccups.
- * The kill switch's product contract is "when an admin or user wanted
- * silence, deliver silence" — degrading to "keep answering" on a DB
- * blip defeats every layer (workspace-kill, admin-channel deny,
- * user-optout, channel-24h). CLAUDE.md §Error Handling: "`catch
- * { return false }` on a security check is a bug. Return 500, not a
- * false negative." This is the catch.
+ * Runtime callers (listener) default to fail CLOSED on DB errors —
+ * `{ paused: true, layer: "workspace-kill" }` keeps Atlas silent when
+ * the registry hiccups. The kill switch's product contract is "when
+ * an admin or user wanted silence, deliver silence"; degrading to
+ * "keep answering" on a DB blip defeats every layer at once.
+ * CLAUDE.md §Error Handling: "`catch { return false }` on a security
+ * check is a bug. Return 500, not a false negative." That's the
+ * default catch.
  *
- * Logs at `error` (not `warn`) so on-call alerting surfaces the
- * outage — a sustained read failure now produces user-visible silence
- * AND an error log, both of which beat silent fail-open.
+ * Admin-inspection callers (the GET status + POST enable-kill routes)
+ * pass `failOpenOnError: true` to opt out of the runtime safety
+ * posture — those callers are *deciding what to write* based on the
+ * current state, not *deciding whether to interject*. With fail-closed
+ * the POST enable-kill route would treat a transient DB error as
+ * "kill already on" and silently skip the INSERT, leaving the admin
+ * with a "successful" response and no kill row. With fail-open, the
+ * underlying DB error propagates as a 500 the admin actually sees.
+ *
+ * Both modes log at `error` so log-scrape dashboards surface the
+ * outage. Note: the API logger is plain pino — there's no Sentry /
+ * PagerDuty integration on the catch path, so "alerting" is
+ * operator-initiated via log streams. A real OTel/Sentry error
+ * transport is filed as 1.5.x infrastructure follow-up.
  */
 export async function isPaused(input: {
   workspaceId: string;
@@ -213,6 +211,17 @@ export async function isPaused(input: {
   userId?: string;
   /** Override `Date.now()` for deterministic tests. */
   now?: () => number;
+  /**
+   * Opt admin-inspection callers out of the fail-CLOSED posture. When
+   * `true`, a DB error rethrows so the surrounding route returns a
+   * 500 the admin can act on; when omitted (default), the function
+   * fails CLOSED and returns a synthetic workspace-kill decision so
+   * runtime callers (the chat listener) stay silent during outages.
+   *
+   * NEVER pass `true` from the runtime listener — that defeats the
+   * kill switch.
+   */
+  failOpenOnError?: boolean;
 }): Promise<PauseDecision> {
   const now = input.now ? input.now() : Date.now();
   try {
@@ -229,9 +238,15 @@ export async function isPaused(input: {
         workspaceId: input.workspaceId,
         channelId: input.channelId,
         userId: input.userId,
+        failOpenOnError: input.failOpenOnError === true,
       },
-      "PauseRegistry read failed — failing CLOSED (Atlas silenced until registry recovers)",
+      input.failOpenOnError === true
+        ? "PauseRegistry read failed — admin caller opted into fail-OPEN, rethrowing for 500 surface"
+        : "PauseRegistry read failed — failing CLOSED (Atlas silenced until registry recovers)",
     );
+    if (input.failOpenOnError === true) {
+      throw err instanceof Error ? err : new Error(String(err));
+    }
     return { paused: true, layer: "workspace-kill" };
   }
 }

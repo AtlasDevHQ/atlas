@@ -200,8 +200,15 @@ describe("announceActivation", () => {
     expect(lastQueries).toHaveLength(0);
   });
 
-  it("leaves the stamp NULL when the announcer rejects (retry-able)", async () => {
-    mockInternalRows = [[{ announcement_posted_at: null }]];
+  it("post-claim announcer rejection maps to announcer_rejected with the platform message", async () => {
+    // Post-1.5.0 polish: the bare `reason: string` was replaced by a
+    // tagged union. Platform announcer rejections (other than the
+    // recognised `no_announcer_configured` from NULL_ANNOUNCER) map
+    // to `{ reason: "announcer_rejected", message }`. The claim
+    // UPDATE is taken BEFORE the announcer call, so a rejection
+    // doesn't release the stamp — see module header for the
+    // race-safety / no-retry trade.
+    mockInternalRows = [[{ id: "org-1" }]];
     const announcer: ChatAnnouncer = {
       postChannelAnnouncement: async () => ({ ok: false, reason: "rate_limited" }),
     };
@@ -211,13 +218,20 @@ describe("announceActivation", () => {
       announcer,
     });
     expect(outcome.posted).toBe(false);
-    if (!outcome.posted) expect(outcome.reason).toBe("rate_limited");
-    // Only the SELECT — no UPDATE because we didn't post.
+    if (!outcome.posted && outcome.reason === "announcer_rejected") {
+      expect(outcome.message).toBe("rate_limited");
+    } else {
+      throw new Error(
+        `expected announcer_rejected outcome, got ${JSON.stringify(outcome)}`,
+      );
+    }
+    // Only the claim UPDATE ran — stamp already taken.
     expect(lastQueries).toHaveLength(1);
+    expect(lastQueries[0].sql).toContain("UPDATE workspace_proactive_config");
   });
 
-  it("leaves the stamp NULL when the announcer throws", async () => {
-    mockInternalRows = [[{ announcement_posted_at: null }]];
+  it("post-claim announcer throw maps to announcer_threw with the error message", async () => {
+    mockInternalRows = [[{ id: "org-1" }]];
     const announcer: ChatAnnouncer = {
       postChannelAnnouncement: async () => {
         throw new Error("network");
@@ -229,8 +243,12 @@ describe("announceActivation", () => {
       announcer,
     });
     expect(outcome.posted).toBe(false);
-    if (!outcome.posted) {
-      expect(outcome.reason.startsWith("announcer_threw")).toBe(true);
+    if (!outcome.posted && outcome.reason === "announcer_threw") {
+      expect(outcome.message).toBe("network");
+    } else {
+      throw new Error(
+        `expected announcer_threw outcome, got ${JSON.stringify(outcome)}`,
+      );
     }
     expect(lastQueries).toHaveLength(1);
   });

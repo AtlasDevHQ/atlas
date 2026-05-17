@@ -171,10 +171,15 @@ adminProactivePauses.openapi(getPauseStatusRoute, async (c) =>
         );
       }
 
+      // Admin inspection — opt into fail-OPEN so a transient DB error
+      // surfaces as a 500 instead of silently rendering "kill switch
+      // active" to the UI. See `isPaused` doc for the runtime-vs-admin
+      // posture split.
       const decision = yield* Effect.promise(() =>
         isPaused({
           workspaceId: orgId,
           channelId: WORKSPACE_PROBE_CHANNEL,
+          failOpenOnError: true,
         }),
       );
       const workspaceKillActive = decision.layer === "workspace-kill";
@@ -218,11 +223,17 @@ adminProactivePauses.openapi(enableKillSwitchRoute, async (c) =>
       }
 
       // Idempotent: only insert when no active kill row exists. Bypass
-      // the registry's probe to keep the SQL contract narrow.
+      // the registry's probe to keep the SQL contract narrow. Opt into
+      // fail-OPEN so a transient DB error rethrows (admin sees a 500
+      // and can retry) instead of silently treating "registry unknown"
+      // as "kill already on" — that would skip the INSERT, return ok,
+      // and leave the admin thinking the kill switch is live when no
+      // row exists.
       const status = yield* Effect.promise(() =>
         isPaused({
           workspaceId: orgId,
           channelId: WORKSPACE_PROBE_CHANNEL,
+          failOpenOnError: true,
         }),
       );
       if (status.layer !== "workspace-kill") {

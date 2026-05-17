@@ -35,8 +35,16 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { AnnouncementOutcome } from "@useatlas/types";
 
 const log = createLogger("proactive-announcement-coordinator");
+
+// Re-export so existing consumers keep their import paths. Canonical
+// shape lives in `@useatlas/types/proactive` — tagged union on
+// `reason` replaces the pre-polish `reason: string` so metrics
+// consumers can pivot on the rejection class without parsing the
+// message.
+export type { AnnouncementOutcome };
 
 // ---------------------------------------------------------------------------
 // Port / dependency shapes
@@ -65,10 +73,10 @@ export interface ChatAnnouncer {
   }): Promise<{ ok: true; messageId?: string } | { ok: false; reason: string }>;
 }
 
-/** Result returned to the admin route layer. */
-export type AnnouncementOutcome =
-  | { posted: true; messageId?: string }
-  | { posted: false; reason: string };
+// `AnnouncementOutcome` is now imported + re-exported from
+// `@useatlas/types`. The local declaration was removed in the
+// post-1.5.0 polish; the tagged-union shape catches the rejection
+// class at the type level (was a bare `reason: string` before).
 
 // ---------------------------------------------------------------------------
 // Pure helpers — exported for unit tests
@@ -174,7 +182,8 @@ export async function announceActivation(
     );
     return {
       posted: false,
-      reason: `claim_update_failed:${err instanceof Error ? err.message : String(err)}`,
+      reason: "claim_update_failed",
+      message: err instanceof Error ? err.message : String(err),
     };
   }
 
@@ -182,17 +191,33 @@ export async function announceActivation(
     // Either no config row exists (admin flipped enable without going
     // through the materialise step) or the row is already stamped.
     // Distinguish for the caller: an admin debugging "why didn't the
-    // announcement fire?" benefits from the difference.
-    const probe = await internalQuery<{ announcement_posted_at: Date | null }>(
-      `SELECT announcement_posted_at
-         FROM workspace_proactive_config
-        WHERE workspace_id = $1`,
-      [workspaceId],
-    );
-    if (probe.length === 0) {
-      return { posted: false, reason: "no_config_row" };
+    // announcement fire?" benefits from the difference. The probe
+    // SELECT is wrapped in its own try/catch so a transient pool
+    // exhaustion between the claim UPDATE and this probe degrades
+    // gracefully to `already_posted` rather than throwing a 500 from
+    // the admin PUT — the route layer treats this as a non-blocking
+    // side-effect per the module header.
+    try {
+      const probe = await internalQuery<{ announcement_posted_at: Date | null }>(
+        `SELECT announcement_posted_at
+           FROM workspace_proactive_config
+          WHERE workspace_id = $1`,
+        [workspaceId],
+      );
+      if (probe.length === 0) {
+        return { posted: false, reason: "no_config_row" };
+      }
+      return { posted: false, reason: "already_posted" };
+    } catch (err) {
+      log.warn(
+        {
+          workspaceId,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "Activation announcement probe SELECT failed after claim UPDATE returned 0 rows — assuming already_posted",
+      );
+      return { posted: false, reason: "already_posted" };
     }
-    return { posted: false, reason: "already_posted" };
   }
 
   const markdown = buildAnnouncementMessage();
@@ -211,7 +236,7 @@ export async function announceActivation(
       { workspaceId, channelId, err: message },
       "Activation announcement post threw AFTER stamp was claimed — announcement will not retry without admin reset",
     );
-    return { posted: false, reason: `announcer_threw:${message}` };
+    return { posted: false, reason: "announcer_threw", message };
   }
 
   if (!announceResult.ok) {
@@ -219,7 +244,19 @@ export async function announceActivation(
       { workspaceId, channelId, reason: announceResult.reason },
       "Activation announcement post rejected AFTER stamp was claimed — announcement will not retry without admin reset",
     );
-    return { posted: false, reason: announceResult.reason };
+    // Map the announcer's bare-string reason into the tagged outcome.
+    // `NULL_ANNOUNCER` reports `no_announcer_configured` (recognised
+    // at the type level); every other rejection from a real platform
+    // announcer is treated as `announcer_rejected` with the platform
+    // message attached. Replaces the pre-polish bare-string passthrough.
+    if (announceResult.reason === "no_announcer_configured") {
+      return { posted: false, reason: "no_announcer_configured" };
+    }
+    return {
+      posted: false,
+      reason: "announcer_rejected",
+      message: announceResult.reason,
+    };
   }
 
   log.info(

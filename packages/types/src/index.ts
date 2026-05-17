@@ -36,3 +36,4 @@ export * from "./mcp";
 export * from "./security";
 export * from "./preferences";
 export * from "./execute-sql";
+export * from "./proactive";

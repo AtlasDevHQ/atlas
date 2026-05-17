@@ -450,6 +450,13 @@ export async function registerProactiveListener(
       // "we saw a question and chose to skip it because of the cap"
       // instead of a silent gap. No reaction, no offer card.
       // ---------------------------------------------------------------
+      // Quota read state — folded into the single post-classification
+      // meter row below rather than emitted as a separate bypass row.
+      // The earlier two-row pattern double-counted every message during
+      // a quota outage (the cap monitors `event_type = 'classify'` rows
+      // without distinguishing skip-tagged ones), defeating the very
+      // cost-ceiling contract the bypass tag was meant to surface.
+      let quotaReadFailed = false;
       if (config.getQuotaStatus && config.workspaceId) {
         let quota: Awaited<ReturnType<GetQuotaStatusFn>> | null = null;
         try {
@@ -458,33 +465,21 @@ export async function registerProactiveListener(
           });
         } catch (err) {
           // Fail open on quota — cost ceiling, not a security control.
-          // BUT surface the bypass: log at error AND emit a meter row
-          // tagged `quota-read-failed` so the analytics rollup shows
-          // the per-message bypass count during the outage.
+          // Bypass is recorded on the post-classification meter row via
+          // `metadata.quotaReadFailed: true`, so an admin filter on
+          // `metadata-->>'quotaReadFailed' = 'true'` surfaces every
+          // bypass without double-counting the underlying `classify`
+          // event.
           log.error(
             { err: err instanceof Error ? err : new Error(String(err)) },
             "Proactive: quota callback threw — treating as under cap (monthly cap NOT enforced this request)",
           );
-          await emitMeter({
-            channelId,
-            messageId: message.id,
-            eventType: "classify",
-            tokens: 0,
-            actorUserId: message.author.userId ?? null,
-            metadata: { skipped: "quota-read-failed" },
-          });
+          quotaReadFailed = true;
         }
         if (quota?.readFailed) {
           // Host returned the fail-open snapshot — same observability
-          // path as the catch above, no log (host already logged).
-          await emitMeter({
-            channelId,
-            messageId: message.id,
-            eventType: "classify",
-            tokens: 0,
-            actorUserId: message.author.userId ?? null,
-            metadata: { skipped: "quota-read-failed" },
-          });
+          // path as the catch above. Host already logged at error.
+          quotaReadFailed = true;
         } else if (quota?.capReached) {
           log.debug(
             {
@@ -539,10 +534,12 @@ export async function registerProactiveListener(
         "Proactive classification decision",
       );
 
-      // Meter: every classify call lands a row. Tokens are populated
+      // Meter: every classify call lands ONE row. Tokens populated
       // when the LLM actually ran; `0` on a regex-prefilter rejection
       // so the billing aggregator can split prefilter-rejected from
-      // LLM-invoked calls without re-scanning metadata.
+      // LLM-invoked calls without re-scanning metadata. `quotaReadFailed`
+      // surfaces the per-message bypass without double-counting the
+      // classify event.
       await emitMeter({
         channelId,
         messageId: message.id,
@@ -558,6 +555,11 @@ export async function registerProactiveListener(
           // because the LLM provider threw" so admins triaging a low
           // react rate can spot a classifier outage in the rollup.
           classifierErrored: classification.classifierErrored === true,
+          // Per-message quota-bypass marker. True only when the cap
+          // would NOT have been enforced this request (host throw or
+          // host-side fail-open snapshot). Admin analytics filters on
+          // this to surface outage-driven bypass counts.
+          quotaReadFailed,
           action: decision.action,
           reason: decision.reason,
         },
@@ -870,9 +872,32 @@ async function runAnswerFlow(
   log: PluginLogger,
   recentAnswers: RecentAnswers,
 ): Promise<void> {
-  const resolved = config.userResolver
+  const resolved: ResolveOutcome = config.userResolver
     ? await safeResolveUser(config.userResolver, asker, log)
-    : { atlasUserId: undefined };
+    : { kind: "unlinked" };
+
+  // Resolver THREW → post the apology copy and return. Critical
+  // posture: do NOT downgrade to the public-dataset path because the
+  // asker may be a fully linked Atlas user whose per-user RLS scope
+  // would silently be replaced with the workspace's public allowlist.
+  // The user would see a "normal" answer with no signal that their
+  // identity wasn't enforced.
+  if (resolved.kind === "errored") {
+    try {
+      await thread.post(
+        "Sorry — I hit an error while answering. Try asking again or use `@atlas` directly.",
+      );
+    } catch (err) {
+      log.warn(
+        {
+          err: err instanceof Error ? err : new Error(String(err)),
+          threadId,
+        },
+        "Proactive answer: apology post after resolver throw also failed",
+      );
+    }
+    return;
+  }
 
   // Helper: route a meter event through the host (slice #2297 / #2296).
   // Shared with the public-dataset refusal branch below and the linked-
@@ -924,7 +949,7 @@ async function runAnswerFlow(
   //     allowlist and refuse if any out-of-allowlist entity slipped
   //     through — belt-and-braces against an agent that ignores the
   //     constraint.
-  if (!resolved.atlasUserId) {
+  if (resolved.kind === "unlinked") {
     if (!config.getPublicDataset || !config.executeQueryProactive) {
       const prompt = buildUnlinkedAskerPrompt(config.linkUrl);
       await thread.post(prompt);
@@ -1113,19 +1138,26 @@ function checkResultAgainstAllowlist(
   opts: { allowWhenEntitiesUnknown: boolean },
 ): AllowlistCheck {
   const entitiesReferenced = result.entitiesReferenced;
-  if (entitiesReferenced === undefined || entitiesReferenced === null) {
+  // Undefined / null AND empty-array are both treated as "no entity
+  // touch information". The empty-array case looks innocuous but is
+  // exploitable: a host whose agent answers by hallucinating,
+  // consulting a non-entity tool, or reading cached data outside the
+  // allowlist would produce `entitiesReferenced: []` while still
+  // posting arbitrary content. Default fail-closed for both; opt-in
+  // bypass for hosts that genuinely emit clarifying meta-answers from
+  // their agent (gated by the same `allowAnswerWhenEntitiesUnknown`
+  // flag the undefined case uses, since the failure mode is identical).
+  const hasEntityInfo =
+    entitiesReferenced !== undefined &&
+    entitiesReferenced !== null &&
+    entitiesReferenced.length > 0;
+  if (!hasEntityInfo) {
     if (opts.allowWhenEntitiesUnknown) return { allowed: true };
     return {
       allowed: false,
       reason: "entitiesReferenced-missing",
       refusedEntities: [],
     };
-  }
-  if (entitiesReferenced.length === 0) {
-    // The agent ran but reported no entity touches — treat as a meta
-    // answer (e.g. clarifying question) and let it through. The
-    // `metricsReferenced` list is irrelevant without an entity context.
-    return { allowed: true };
   }
   const metrics = result.metricsReferenced ?? [];
   const refused: string[] = [];
@@ -1299,22 +1331,54 @@ async function deliverFeedback(
   );
 }
 
+/**
+ * Returned by `safeResolveUser` so the caller can distinguish three
+ * states the resolver may produce:
+ *
+ *   - `kind: "linked"`   — `atlasUserId` is the resolved Atlas id.
+ *   - `kind: "unlinked"` — resolver explicitly returned `undefined`
+ *                          atlasUserId (this asker is genuinely not
+ *                          OAuth'd into a workspace user).
+ *   - `kind: "errored"`  — resolver threw. The caller MUST NOT treat
+ *                          this as `unlinked` — that would silently
+ *                          downgrade a linked Atlas user (whose
+ *                          identity wasn't enforced because of a
+ *                          transient host error) to the public-dataset
+ *                          path, bypassing per-user RLS. Caller should
+ *                          post an apology copy and return.
+ */
+type ResolveOutcome =
+  | { kind: "linked"; atlasUserId: string }
+  | { kind: "unlinked" }
+  | { kind: "errored" };
+
 async function safeResolveUser(
   resolver: ProactiveUserResolver,
   asker: ProactiveAsker,
   log: PluginLogger,
-): Promise<{ atlasUserId?: string }> {
+): Promise<ResolveOutcome> {
   try {
-    return await resolver(asker);
+    const resolved = await resolver(asker);
+    if (resolved.atlasUserId) {
+      return { kind: "linked", atlasUserId: resolved.atlasUserId };
+    }
+    return { kind: "unlinked" };
   } catch (err) {
-    log.warn(
+    // Distinguish "registry hiccup" from "resolver returned unlinked"
+    // — the caller treats only the second as a public-dataset path.
+    // Failing to distinguish was a CRITICAL silent permission
+    // downgrade: a linked Atlas user whose resolver threw would have
+    // their answer served from the public allowlist with
+    // `atlasUserId: null`, bypassing their per-user RLS without any
+    // visible signal.
+    log.error(
       {
         err: err instanceof Error ? err : new Error(String(err)),
         externalUserId: asker.externalUserId,
       },
-      "Proactive userResolver threw — treating asker as unlinked",
+      "Proactive userResolver threw — refusing the answer (do NOT downgrade linked askers to public-dataset on resolver failure)",
     );
-    return { atlasUserId: undefined };
+    return { kind: "errored" };
   }
 }
 

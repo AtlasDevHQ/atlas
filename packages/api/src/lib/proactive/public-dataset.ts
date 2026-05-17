@@ -32,25 +32,18 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { PublicDatasetEntry, AllowDecision } from "@useatlas/types";
 
 const log = createLogger("proactive:public-dataset");
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-
-/** One row in `proactive_public_dataset`. */
-export interface PublicDatasetEntry {
-  /** Fully-qualified entity name (e.g. `marketing.users`). */
-  entityName: string;
-  /** Column / measure names denied within this entity. May be empty. */
-  denyMetrics: string[];
-}
-
-/** Allowlist decision returned by `isEntityAllowed`. */
-export type AllowDecision =
-  | { allowed: true }
-  | { allowed: false; deniedReason: string };
+// Re-export so existing consumers keep their import paths. Canonical
+// definitions live in `@useatlas/types/proactive`. `AllowDecision` is
+// now a tagged union — `{ allowed: false; kind: "entity-not-in-allowlist" }`
+// or `{ allowed: false; kind: "metric-denied"; metric }` — replacing
+// the pre-polish flat `{ allowed: false; deniedReason: string }` so
+// audit consumers can pluck `metric` directly instead of parsing
+// `metric-denied:${metric}` packed strings.
+export type { PublicDatasetEntry, AllowDecision };
 
 /** Discoverability rollup row returned by `summarizePublicRefused`. */
 export interface PublicRefusedRollupRow {
@@ -95,7 +88,7 @@ export function isEntityAllowed(
 ): AllowDecision {
   const entry = allowlist.find((row) => row.entityName === entityName);
   if (!entry) {
-    return { allowed: false, deniedReason: "entity-not-in-allowlist" };
+    return { allowed: false, kind: "entity-not-in-allowlist" };
   }
   if (entry.denyMetrics.length === 0) {
     return { allowed: true };
@@ -104,9 +97,11 @@ export function isEntityAllowed(
     entry.denyMetrics.includes(metric),
   );
   if (denied) {
-    // Caller logs `denied` to audit, but the user-facing refusal copy
-    // never names the metric (content-blind, per HITL design).
-    return { allowed: false, deniedReason: `metric-denied:${denied}` };
+    // Caller logs `metric` to audit; the user-facing refusal copy
+    // never names the metric (content-blind, per HITL design). Tagged
+    // union shape replaces the pre-polish packed `metric-denied:${m}`
+    // string — audit consumers pluck `metric` directly.
+    return { allowed: false, kind: "metric-denied", metric: denied };
   }
   return { allowed: true };
 }

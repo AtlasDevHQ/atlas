@@ -28,59 +28,22 @@ import {
   internalQuery,
 } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import type {
+  ProactiveMeterEventType as ProactiveEventType,
+  ProactiveMeterOutcome as ProactiveOutcome,
+  ProactiveMeterEvent,
+} from "@useatlas/types";
 
 const log = createLogger("answer-meter");
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-
-/**
- * Lifecycle stages a proactive interaction passes through.
- *
- * `public_refused` (#2297) is emitted when an unlinked asker reaches
- * the answer flow but the question's referenced entities aren't on
- * the workspace's curated public dataset. The discoverability rollup
- * in the admin console groups these by `metadata.entityName` so an
- * admin can see "what topic do non-linked askers keep trying" and
- * one-click widen the allowlist.
- */
-export type ProactiveEventType =
-  | "classify"
-  | "react"
-  | "offer"
-  | "accept"
-  | "feedback"
-  | "public_refused";
-
-/**
- * Outcomes captured on `feedback` events. `no-feedback` covers the
- * inactivity timeout — distinguishing "user thumb'd nothing" from
- * "user thumb-down'd" is important for the admin analytics panel.
- */
-export type ProactiveOutcome =
-  | "helpful"
-  | "not-helpful"
-  | "wrong-data"
-  | "no-feedback";
-
-/** One row in `proactive_meter_events`. */
-export interface ProactiveMeterEvent {
-  workspaceId: string;
-  channelId: string;
-  messageId?: string | null;
-  eventType: ProactiveEventType;
-  outcome?: ProactiveOutcome | null;
-  /** LLM tokens consumed. 0 for non-classify or prefilter-rejected. */
-  tokens?: number;
-  /** Cost estimate in micro-USD (1e-6 USD). 0 until pricing wires. */
-  costMicroUsd?: number;
-  /** Classifier confidence in [0, 1], 2 decimal precision. */
-  confidence?: number | null;
-  /** Asker (classify/react/offer/accept) or feedback giver (feedback). */
-  actorUserId?: string | null;
-  metadata?: Record<string, unknown>;
-}
+// Re-export with the local alias names so existing imports keep
+// working. Canonical shapes live in `@useatlas/types/proactive` — the
+// post-1.5.0 polish unified the wire types so plugin + API can't drift.
+// `ProactiveEventType` is the local API-side alias for the canonical
+// `ProactiveMeterEventType`; `ProactiveOutcome` mirrors
+// `ProactiveMeterOutcome`. The aliases preserve the legacy local names
+// without forcing every consumer to rename their imports in this PR.
+export type { ProactiveEventType, ProactiveOutcome, ProactiveMeterEvent };
 
 /**
  * Per-channel rollup row returned by `summary`. Mirrors the top-level

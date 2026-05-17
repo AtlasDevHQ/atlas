@@ -726,7 +726,15 @@ chat.openapi(chatRoute, async (c) => {
         // a `bound_dashboard_id`. Drives the bound-mode tool registry
         // + system-prompt swap below.
         let boundDashboardForAgent:
-          | { cardSummary: string; toolContext: { dashboardId: string; orgId: string | null | undefined } }
+          | {
+              cardSummary: string;
+              toolContext: {
+                dashboardId: string;
+                orgId: string | null | undefined;
+                userId?: string | null;
+                cookieHeader?: string | null;
+              };
+            }
           | null = null;
         // F-77 — track the upfront reservation so the post-stream
         // settlement can refund any unused budget. `null` means no
@@ -1009,6 +1017,15 @@ chat.openapi(chatRoute, async (c) => {
               toolContext: {
                 dashboardId: resolved.dashboard.id,
                 orgId: authResult.user?.activeOrganizationId,
+                // #2367 — the screenshot tool needs both to render the
+                // user's view of the dashboard:
+                //   - userId  → part of the per-user cache key (forward-
+                //     compat with #2364 drafts; today same PNG per user)
+                //   - cookie  → forwarded to the headless browser so it
+                //     can authenticate against the dashboard's web route
+                //     without doing a fresh sign-in.
+                userId: authResult.user?.id ?? null,
+                cookieHeader: req.headers.get("cookie"),
               },
             };
           } else if (resolved.reason === "error") {

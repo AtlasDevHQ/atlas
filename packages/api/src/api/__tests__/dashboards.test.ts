@@ -232,6 +232,34 @@ mock.module("@atlas/api/lib/bound-chat-context", () => ({
   BOUND_AGENT_PROMPT_GUIDANCE: realBoundChatContext.BOUND_AGENT_PROMPT_GUIDANCE,
 }));
 
+// #2367 — screenshot pipeline mocks for the new route. Mock surface-complete
+// (CLAUDE.md "Mock all exports") and let individual tests override per case.
+type ScreenshotOptsMock = {
+  dashboardId: string;
+  userId: string;
+  orgId: string | null | undefined;
+  cookieHeader?: string | null;
+};
+const mockScreenshotDashboard = mock(
+  (
+    _opts: ScreenshotOptsMock,
+  ): Promise<import("@atlas/api/lib/dashboard-screenshot").ScreenshotResult> =>
+    Promise.resolve({
+      ok: true as const,
+      png: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), // PNG magic
+      cached: false,
+      durationMs: 7,
+    }),
+);
+mock.module("@atlas/api/lib/dashboard-screenshot", () => ({
+  screenshotDashboard: mockScreenshotDashboard,
+  invalidateDashboardScreenshot: () => {},
+  closeScreenshotBrowser: async () => {},
+  _resetScreenshotCache: () => {},
+  _screenshotCacheSize: () => 0,
+  _setRenderFn: () => {},
+}));
+
 // --- Other mocks required by app index.ts ---
 
 mock.module("@atlas/api/lib/agent", () => ({
@@ -1560,6 +1588,91 @@ describe("dashboard routes", () => {
       expect(response.status).toBe(500);
       const body = (await response.json()) as { requestId?: string; error: string };
       expect(body.error).toBe("internal_error");
+      expect(typeof body.requestId).toBe("string");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/v1/dashboards/:id/screenshot  (#2367 — vision tool)
+  // -------------------------------------------------------------------------
+
+  describe("GET /api/v1/dashboards/:id/screenshot", () => {
+    it("returns 400 for an invalid dashboard id (renderer never reached)", async () => {
+      mockScreenshotDashboard.mockClear();
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/dashboards/not-a-uuid/screenshot"),
+      );
+      expect(response.status).toBe(400);
+      expect(mockScreenshotDashboard).not.toHaveBeenCalled();
+    });
+
+    it("returns 200 with a PNG body and cache headers on success", async () => {
+      mockScreenshotDashboard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/screenshot`, {
+          headers: { cookie: "atlas-session=abc" },
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("image/png");
+      expect(response.headers.get("x-atlas-screenshot-cached")).toBe("0");
+      // Forwards user identity + cookie to the renderer — required so
+      // the headless browser can authenticate without a fresh sign-in.
+      const call = mockScreenshotDashboard.mock.calls[0]![0]!;
+      expect(call).toMatchObject({
+        dashboardId: VALID_ID,
+        userId: "u1",
+        orgId: "org-1",
+        cookieHeader: "atlas-session=abc",
+      });
+      const body = await response.arrayBuffer();
+      expect(body.byteLength).toBeGreaterThan(0);
+      const bytes = new Uint8Array(body);
+      // PNG magic
+      expect(bytes[0]).toBe(0x89);
+      expect(bytes[1]).toBe(0x50);
+    });
+
+    it("returns 404 when the dashboard is not in the caller's org", async () => {
+      mockScreenshotDashboard.mockResolvedValueOnce({
+        ok: false,
+        reason: "dashboard_not_found",
+        message: "Dashboard not found.",
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/screenshot`),
+      );
+      expect(response.status).toBe(404);
+    });
+
+    it("returns 503 when the headless browser is not installed", async () => {
+      mockScreenshotDashboard.mockResolvedValueOnce({
+        ok: false,
+        reason: "browser_unavailable",
+        message:
+          "Headless browser is not installed in this deployment. Screenshots are disabled.",
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/screenshot`),
+      );
+      expect(response.status).toBe(503);
+      const body = (await response.json()) as { error: string; requestId?: string };
+      expect(body.error).toBe("browser_unavailable");
+      expect(typeof body.requestId).toBe("string");
+    });
+
+    it("returns 500 with requestId when render_failed bubbles up", async () => {
+      mockScreenshotDashboard.mockResolvedValueOnce({
+        ok: false,
+        reason: "render_failed",
+        message: "Could not render dashboard screenshot. Try again or simplify the dashboard.",
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/screenshot`),
+      );
+      expect(response.status).toBe(500);
+      const body = (await response.json()) as { error: string; requestId?: string };
+      expect(body.error).toBe("render_failed");
       expect(typeof body.requestId).toBe("string");
     });
   });

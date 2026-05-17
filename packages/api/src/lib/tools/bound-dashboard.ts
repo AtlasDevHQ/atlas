@@ -31,6 +31,10 @@ import {
 } from "@atlas/api/lib/dashboards";
 import type { DashboardCardLayout } from "@atlas/api/lib/dashboard-types";
 import { buildCardSummary } from "@atlas/api/lib/bound-chat-context";
+import {
+  screenshotDashboard,
+  invalidateDashboardScreenshot,
+} from "@atlas/api/lib/dashboard-screenshot";
 
 const log = createLogger("tool:bound-dashboard");
 
@@ -43,6 +47,21 @@ const ChartConfigSchema = z.object({
 export interface BoundDashboardToolContext {
   dashboardId: string;
   orgId: string | null | undefined;
+  /**
+   * Caller identity. Used by `screenshotDashboard` (#2367) as part of the
+   * screenshot cache key so user A's draft view can never leak to user B
+   * when #2364 (drafts foundation) lands. May be null/undefined in
+   * unauthenticated dev paths — the tool will refuse to render.
+   */
+  userId?: string | null;
+  /**
+   * Forwarded `Cookie:` header from the original chat request. The
+   * screenshot tool's headless browser uses it to reach the auth-gated
+   * `/dashboards/[id]` page without a fresh sign-in. Optional — when
+   * absent, the screenshot tool falls back to
+   * `ATLAS_INTERNAL_SCREENSHOT_COOKIE` (only meaningful in dev/test).
+   */
+  cookieHeader?: string | null;
 }
 
 /**
@@ -54,7 +73,7 @@ export interface BoundDashboardToolContext {
 export function createBoundDashboardTools(
   ctx: BoundDashboardToolContext,
 ): ToolSet {
-  const { dashboardId, orgId } = ctx;
+  const { dashboardId, orgId, userId, cookieHeader } = ctx;
 
   const getDashboardState = tool({
     description: `Read the current state of the dashboard you are editing. Returns the title, description, and a compact summary of every card (id, title, chart type, position, layout). Call this when you need a fresh read after several mutations. Card SQL is NOT returned — use \`getCardDetail\` for that.`,
@@ -129,6 +148,8 @@ export function createBoundDashboardTools(
         if (!result.ok) {
           return { kind: "err" as const, error: `Could not add card: ${result.reason}` };
         }
+        // #2367 — published baseline shifted, drop cached screenshots.
+        invalidateDashboardScreenshot(dashboardId);
         return {
           kind: "ok" as const,
           card: {
@@ -175,6 +196,8 @@ export function createBoundDashboardTools(
         if (!result.ok) {
           return { kind: "err" as const, error: `Could not update card ${cardId}: ${result.reason}` };
         }
+        // #2367 — published baseline shifted, drop cached screenshots.
+        invalidateDashboardScreenshot(dashboardId);
         return { kind: "ok" as const, cardId, updated: Object.keys(updates) };
       } catch (err) {
         log.warn({ err: errorMessage(err), dashboardId, cardId }, "updateCard tool failed unexpectedly");
@@ -212,6 +235,8 @@ export function createBoundDashboardTools(
         results.push(r.ok ? { cardId, ok: true } : { cardId, ok: false, reason: r.reason });
       }
       const failed = results.filter((r) => !r.ok);
+      // #2367 — any successful placement shifts the published baseline.
+      if (results.some((r) => r.ok)) invalidateDashboardScreenshot(dashboardId);
       if (failed.length > 0) {
         return { kind: "partial" as const, results, failedCount: failed.length };
       }
@@ -238,7 +263,73 @@ export function createBoundDashboardTools(
       if (!result.ok) {
         return { kind: "err" as const, error: `Could not update dashboard: ${result.reason}` };
       }
+      // #2367 — title/description change is visible, drop cached screenshots.
+      invalidateDashboardScreenshot(dashboardId);
       return { kind: "ok" as const, updated: Object.keys(updates) };
+    },
+  });
+
+  const screenshotDashboardTool = tool({
+    description: `Capture a PNG screenshot of the dashboard as the user currently sees it and feed it back to you as a multimodal image. Call this when the user asks about **spatial position** ("the card on the right", "the bottom row", "what's in the top-left corner?"), about **visual layout** ("does this look balanced?", "what colors are showing?"), or when textual card summaries can't answer the question. The screenshot is cached aggressively — calling it twice in a row without mutating is cheap. Mutations to cards invalidate the cache automatically.`,
+    inputSchema: z.object({}).describe("No arguments — the dashboardId is bound to the conversation."),
+    execute: async () => {
+      if (!userId) {
+        return {
+          kind: "err" as const,
+          error: "Screenshot tool requires an authenticated user.",
+        };
+      }
+      const result = await screenshotDashboard({
+        dashboardId,
+        userId,
+        orgId,
+        cookieHeader: cookieHeader ?? null,
+      });
+      if (!result.ok) {
+        return { kind: "err" as const, error: result.message };
+      }
+      // Compact JSON envelope alongside the image — the image-data part
+      // is attached by `toModelOutput` below so the LLM sees a real
+      // multimodal turn instead of a base64 string buried in JSON.
+      return {
+        kind: "ok" as const,
+        mediaType: "image/png" as const,
+        sizeBytes: result.png.length,
+        cached: result.cached,
+        durationMs: result.durationMs,
+        // Base64 payload — pulled out by toModelOutput. Not exposed to
+        // anything else (system prompt rules tell the agent not to
+        // echo it back to the user).
+        _base64: result.png.toString("base64"),
+      };
+    },
+    toModelOutput: ({ output }) => {
+      const typed = output as {
+        kind: "ok" | "err";
+        _base64?: string;
+        mediaType?: string;
+        error?: string;
+      };
+      if (typed.kind !== "ok" || !typed._base64) {
+        return {
+          type: "error-text",
+          value: typed.error ?? "screenshotDashboard failed",
+        };
+      }
+      return {
+        type: "content",
+        value: [
+          {
+            type: "image-data",
+            data: typed._base64,
+            mediaType: typed.mediaType ?? "image/png",
+          },
+          {
+            type: "text",
+            text: "Above: PNG screenshot of the current dashboard view. Cards are laid out on a 24-column grid. Use spatial references against this image when the user asks about position or layout.",
+          },
+        ],
+      };
     },
   });
 
@@ -249,6 +340,7 @@ export function createBoundDashboardTools(
     updateCard: updateCardTool,
     updateLayout: updateLayoutTool,
     updateDashboardMeta: updateDashboardMetaTool,
+    screenshotDashboard: screenshotDashboardTool,
   };
 }
 
@@ -280,4 +372,11 @@ Use \`updateLayout\` to move multiple cards at once. Supply the layouts array wi
 
   updateDashboardMeta: `### Rename the dashboard / edit its description
 Use \`updateDashboardMeta\` to change the dashboard's title or description. Pass only the fields you want to change.`,
+
+  screenshotDashboard: `### See the dashboard with your own eyes (vision)
+Use \`screenshotDashboard()\` to capture the dashboard as the user currently sees it and feed the PNG back to you as a multimodal image. Call this when the user asks about **spatial position** ("what's on the bottom-right?", "is the trend on the top row?") or about **visual layout** ("does this feel balanced?"). The card summary in your system prompt has ids and positions but not pixels — pixels are what this tool gives you.
+
+- The screenshot is cached on a per-(dashboard, user) basis and short-TTL (60s); calling twice in a row without mutating is free.
+- Card mutations (\`addCard\`, \`updateCard\`, \`updateLayout\`, \`updateDashboardMeta\`) invalidate the cache automatically — you'll get a fresh shot on the next call.
+- Don't echo the base64 payload back to the user. The shot is for your eyes only.`,
 };

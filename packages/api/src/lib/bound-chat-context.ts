@@ -387,6 +387,7 @@ Treat \`semantic/metrics/*.yml\` as authoritative. If a measure exists, use its 
 - \`getCardDetail(id)\` is the only way to fetch a card's SQL / chartConfig — keep it scoped to the cards you actually need.
 - \`addCard\` / \`updateCard\` / \`updateLayout\` / \`updateDashboardMeta\` commit immediately to the dashboard. There is no undo in this tracer-bullet slice.
 - Do NOT call \`executeSQL\` to mutate data — it is read-only. Use it to validate a card's query before calling \`addCard\`.
+- **Vision is available.** \`screenshotDashboard()\` captures the dashboard as the user currently sees it and feeds the PNG back to you as a multimodal image. Use it when the user asks about **spatial position** ("the card on the right", "the bottom row"), **visual layout** ("does this feel balanced?"), or any question where pixels are clearer than the card-id summary. The screenshot is cached and invalidated automatically on every successful mutation, so calling it twice in a row is cheap.
 
 ## Suggested Follow-ups
 

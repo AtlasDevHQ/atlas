@@ -1,23 +1,29 @@
 /**
  * Proactive chat listener wiring.
  *
- * Registers an `onNewMessage` handler on the Chat SDK so that channel
- * messages (which would otherwise fall through) get classified and —
- * when policy says so — reacted to with 🤖.
+ * Slice #2292: subscribe → classify → react 🤖 on confident questions.
+ * Slice #2293: when the asker (or anyone) reacts 🤖 back, or clicks
+ * the "Yes, answer" button on the ephemeral offer, post the answer
+ * in-thread.
  *
- * Slice #2292 stops at the reaction. The reply path lands in #2293.
- *
- * Important: this module never imports `@atlas/ee` directly. The host
- * (typically `packages/api`) wires `isEnabled` to
- * `isEnterpriseEnabled() && workspaceFlag` so the plugin stays
- * decoupled from the enterprise gate.
+ * The plugin never imports `@atlas/ee` or `@atlas/api` directly. The
+ * host wires `isEnabled` (`isEnterpriseEnabled() && workspaceFlag`),
+ * `classify` (LLM call), `userResolver` (asker → Atlas user), and
+ * `executeQueryProactive` (Atlas agent on behalf of the asker).
  */
 
 import { emoji } from "chat";
-import type { Chat, Message, Thread } from "chat";
+import type { Author, Chat, Message, ReactionEvent, Thread } from "chat";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
 import { classifyMessage } from "./classifier";
 import { decideInterjection } from "./policy";
+import {
+  PendingAnswers,
+  shouldAnswerOnReaction,
+  type ProactiveAsker,
+  type ProactiveExecuteQuery,
+  type ProactiveUserResolver,
+} from "./answerer";
 import type {
   ChannelProactiveConfig,
   LLMClassifierFn,
@@ -25,36 +31,52 @@ import type {
   RecentActivity,
   WorkspaceProactiveConfig,
 } from "./types";
+import {
+  buildProactiveAnswerCard,
+  buildProactiveOfferCard,
+  buildUnlinkedAskerPrompt,
+  PROACTIVE_ANSWER_ACTION_ID,
+  PROACTIVE_DISMISS_ACTION_ID,
+} from "../cards/proactive-answer-card";
 
 // ---------------------------------------------------------------------------
 // Public config
 // ---------------------------------------------------------------------------
 
-/** Configuration for the proactive listener. */
 export interface ProactiveListenerConfig {
-  /** Gate: returns true when proactive mode is allowed (enterprise + workspace flag). */
+  /** Gate: true when proactive mode is allowed (enterprise + workspace flag). */
   isEnabled: ProactiveGateFn;
-  /** LLM classifier callback. Plugins do not own the model wiring. */
+  /** LLM classifier callback. */
   classify: LLMClassifierFn;
   /** Workspace-level config. */
   workspace: WorkspaceProactiveConfig;
-  /**
-   * Optional explicit channel allowlist. If omitted, the listener reads
-   * `ATLAS_PROACTIVE_CHANNELS` (comma-separated channel IDs). This is
-   * intentionally crude for slice #2292 — admin UI lands in #2294.
-   */
+  /** Explicit channel allowlist, else `ATLAS_PROACTIVE_CHANNELS`. */
   channelAllowlist?: string[];
   /** Per-channel overrides keyed by channel ID. */
   channelConfigs?: Record<string, ChannelProactiveConfig>;
+
+  // ---- Slice #2293 additions ----
+
+  /**
+   * Resolves a chat-platform user to an Atlas user. Linked askers get
+   * the answer with their RLS; unlinked askers see the stub.
+   */
+  userResolver?: ProactiveUserResolver;
+  /**
+   * Runs the Atlas agent on behalf of a linked asker. Host wires this
+   * to `runAgent` / `runAgentEffect` with the asker's `AuthContext`.
+   */
+  executeQueryProactive?: ProactiveExecuteQuery;
+  /** URL the unlinked-asker prompt deep-links to. */
+  linkUrl?: string;
+  /** Platform name (`"slack"` etc.) used in `ProactiveAsker`. */
+  platform?: string;
 }
 
 /**
- * Reaction emoji used when policy decides to interject.
- *
- * `robot_face` isn't in the Chat SDK's well-known emoji map, so we go
- * through the SDK's `custom()` escape hatch. The adapter resolves the
- * shortcode per platform (`:robot_face:` on Slack, 🤖 on Google Chat,
- * etc.) so the plugin stays free of raw Unicode.
+ * Reaction emoji used when policy decides to interject. `robot_face`
+ * isn't in the SDK well-known emoji map, so we use the `custom()`
+ * escape hatch and let each adapter resolve to its native shortcode.
  */
 export const PROACTIVE_REACTION = emoji.custom("robot_face");
 
@@ -62,7 +84,6 @@ export const PROACTIVE_REACTION = emoji.custom("robot_face");
 // Channel allowlist resolution
 // ---------------------------------------------------------------------------
 
-/** Resolve the channel allowlist from config or `ATLAS_PROACTIVE_CHANNELS`. */
 export function resolveChannelAllowlist(
   explicit: string[] | undefined,
   env: NodeJS.ProcessEnv = process.env,
@@ -78,6 +99,24 @@ export function resolveChannelAllowlist(
 }
 
 // ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/** Adapter platform name, when the SDK exposes it. */
+function adapterPlatform(adapter: { name?: string } | undefined, fallback?: string): string {
+  return adapter?.name ?? fallback ?? "unknown";
+}
+
+/** Build a ProactiveAsker from a message author. */
+function askerFromAuthor(author: Author, platform: string): ProactiveAsker {
+  return {
+    platform,
+    externalUserId: author.userId,
+    userName: author.userName,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Listener registration
 // ---------------------------------------------------------------------------
 
@@ -86,8 +125,8 @@ export function resolveChannelAllowlist(
  *
  * Does nothing (and logs at debug) when `isEnabled()` returns falsy at
  * registration time. The gate is *also* re-checked inside the handler
- * for every message so that a workspace toggle flip takes effect
- * without restart.
+ * for every message so a workspace toggle flip takes effect without
+ * a restart.
  */
 export async function registerProactiveListener(
   chat: Chat,
@@ -101,24 +140,19 @@ export async function registerProactiveListener(
   }
 
   const allowlist = resolveChannelAllowlist(config.channelAllowlist);
-  log.info(
-    { allowlistSize: allowlist.size },
-    "Proactive listener registered",
-  );
+  log.info({ allowlistSize: allowlist.size }, "Proactive listener registered");
 
-  // Per-channel last-interjection timestamps for rate limiting. In-memory
-  // is fine for slice #2292 — #2296 swaps in a durable meter.
+  // Per-channel last-interjection timestamps for rate limiting.
   const recent = new Map<string, RecentActivity>();
+  // Pending answers awaiting a reaction-back or button-click.
+  const pending = new PendingAnswers();
 
-  // Match any non-empty message. The classifier+policy gate downstream.
+  // -------------------------------------------------------------------------
+  // Channel-message hook: classify + react
+  // -------------------------------------------------------------------------
   chat.onNewMessage(/.+/, async (thread: Thread, message: Message) => {
     try {
-      // Re-check the gate per message so a workspace toggle flip wins
-      // without a restart.
       if (!(await config.isEnabled())) return;
-
-      // Bots (including this one) and empty messages bypass the
-      // classifier outright.
       if (message.author.isBot === true || message.author.isMe) return;
       const text = message.text?.trim() ?? "";
       if (text.length === 0) return;
@@ -158,8 +192,17 @@ export async function registerProactiveListener(
       const sent = thread.createSentMessageFromMessage(message);
       await sent.addReaction(PROACTIVE_REACTION);
       recent.set(channelId, { lastInterjectionAt: Date.now() });
+
+      const platform = adapterPlatform(undefined, config.platform);
+      const asker = askerFromAuthor(message.author, platform);
+      pending.record(thread.channelId, message.id, { text, asker });
+
+      // Send an ephemeral "Yes, answer" offer card to the asker — only
+      // they see it, so the channel stays clean even when the asker
+      // doesn't react back. Best-effort: a missing or fallback-disabled
+      // adapter is fine.
+      await postOfferCard(thread, message, log);
     } catch (err) {
-      // Listener must never crash the Chat SDK event loop.
       log.warn(
         {
           err: err instanceof Error ? err : new Error(String(err)),
@@ -169,4 +212,206 @@ export async function registerProactiveListener(
       );
     }
   });
+
+  // -------------------------------------------------------------------------
+  // Reaction-back hook: trigger the answer flow
+  // -------------------------------------------------------------------------
+  chat.onReaction([PROACTIVE_REACTION], async (event: ReactionEvent) => {
+    try {
+      if (!(await config.isEnabled())) return;
+      const lookup = pending.peek(event.threadId, event.messageId);
+      const decision = shouldAnswerOnReaction({
+        added: event.added,
+        reactor: event.user,
+        pending: lookup,
+      });
+      if (decision.action !== "answer") {
+        log.debug(
+          {
+            threadId: event.threadId,
+            messageId: event.messageId,
+            reason: decision.reason,
+          },
+          "Reaction-back skipped",
+        );
+        return;
+      }
+      // Consume now so a second reactor doesn't double-fire.
+      pending.consume(event.threadId, event.messageId);
+      await runAnswerFlow(event.thread, event.threadId, decision.pending.text, decision.pending.asker, config, log);
+    } catch (err) {
+      log.warn(
+        {
+          err: err instanceof Error ? err : new Error(String(err)),
+          messageId: event?.messageId,
+        },
+        "Proactive reaction-back handler threw — suppressed",
+      );
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // "Yes, answer" / "Not now" button handlers
+  // -------------------------------------------------------------------------
+  chat.onAction(PROACTIVE_ANSWER_ACTION_ID, async (event) => {
+    try {
+      if (!(await config.isEnabled())) return;
+      // Thread is null for view-based actions (e.g. home-tab buttons),
+      // which the proactive offer card never reaches.
+      if (!event.thread) return;
+      // `event.value` is the original message ID the offer card was
+      // built against.
+      const originalMessageId = typeof event.value === "string" ? event.value : "";
+      const lookup = pending.consume(event.threadId, originalMessageId);
+      if (!lookup) {
+        log.debug(
+          {
+            threadId: event.threadId,
+            messageId: originalMessageId,
+          },
+          "Proactive 'Yes, answer' clicked but no pending entry — likely expired or already answered",
+        );
+        return;
+      }
+      await runAnswerFlow(event.thread, event.threadId, lookup.text, lookup.asker, config, log);
+    } catch (err) {
+      log.warn(
+        {
+          err: err instanceof Error ? err : new Error(String(err)),
+          actionId: PROACTIVE_ANSWER_ACTION_ID,
+        },
+        "Proactive answer button handler threw — suppressed",
+      );
+    }
+  });
+
+  chat.onAction(PROACTIVE_DISMISS_ACTION_ID, async (event) => {
+    try {
+      const originalMessageId = typeof event.value === "string" ? event.value : "";
+      pending.consume(event.threadId, originalMessageId);
+      log.debug(
+        { threadId: event.threadId, messageId: originalMessageId },
+        "Proactive offer dismissed by asker",
+      );
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err : new Error(String(err)) },
+        "Proactive dismiss handler threw — suppressed",
+      );
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Internal: offer card + answer flow
+// ---------------------------------------------------------------------------
+
+type AnyThread = Thread<unknown, unknown>;
+
+async function postOfferCard(thread: AnyThread, message: Message, log: PluginLogger): Promise<void> {
+  try {
+    const offer = buildProactiveOfferCard(message.id);
+    await thread.postEphemeral(message.author, offer, { fallbackToDM: true });
+  } catch (err) {
+    // Failure to post the offer card must not poison the reaction
+    // flow — the asker can still react back manually.
+    log.debug(
+      { err: err instanceof Error ? err : new Error(String(err)) },
+      "Proactive offer card delivery failed — reaction-back path still available",
+    );
+  }
+}
+
+async function runAnswerFlow(
+  thread: AnyThread,
+  threadId: string,
+  text: string,
+  asker: ProactiveAsker,
+  config: ProactiveListenerConfig,
+  log: PluginLogger,
+): Promise<void> {
+  const resolved = config.userResolver
+    ? await safeResolveUser(config.userResolver, asker, log)
+    : { atlasUserId: undefined };
+
+  if (!resolved.atlasUserId) {
+    const prompt = buildUnlinkedAskerPrompt(config.linkUrl);
+    await thread.post(prompt);
+    log.info(
+      { threadId, externalUserId: asker.externalUserId },
+      "Proactive answer: posted unlinked-asker stub",
+    );
+    return;
+  }
+
+  if (!config.executeQueryProactive) {
+    log.warn(
+      { threadId },
+      "Proactive answer: linked asker resolved but executeQueryProactive not wired — falling back to unlinked prompt",
+    );
+    const prompt = buildUnlinkedAskerPrompt(config.linkUrl);
+    await thread.post(prompt);
+    return;
+  }
+
+  let result: { answer: string; followupSubscribe?: boolean };
+  try {
+    result = await config.executeQueryProactive(text, {
+      threadId,
+      asker,
+      atlasUserId: resolved.atlasUserId,
+    });
+  } catch (err) {
+    log.error(
+      {
+        err: err instanceof Error ? err : new Error(String(err)),
+        threadId,
+      },
+      "Proactive executeQueryProactive threw",
+    );
+    await thread.post(
+      "Sorry — I hit an error while answering. Try asking again or use `@atlas` directly.",
+    );
+    return;
+  }
+
+  const answer = buildProactiveAnswerCard(result.answer);
+  await thread.post(answer);
+
+  // Subscribe so follow-ups in the thread flow through the existing
+  // `onSubscribedMessage` handler.
+  if (result.followupSubscribe !== false) {
+    try {
+      await thread.subscribe();
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err : new Error(String(err)), threadId },
+        "Proactive thread.subscribe() failed — follow-ups via onSubscribedMessage may not fire",
+      );
+    }
+  }
+
+  log.info(
+    { threadId, externalUserId: asker.externalUserId, atlasUserId: resolved.atlasUserId },
+    "Proactive answer delivered to linked asker",
+  );
+}
+
+async function safeResolveUser(
+  resolver: ProactiveUserResolver,
+  asker: ProactiveAsker,
+  log: PluginLogger,
+): Promise<{ atlasUserId?: string }> {
+  try {
+    return await resolver(asker);
+  } catch (err) {
+    log.warn(
+      {
+        err: err instanceof Error ? err : new Error(String(err)),
+        externalUserId: asker.externalUserId,
+      },
+      "Proactive userResolver threw — treating asker as unlinked",
+    );
+    return { atlasUserId: undefined };
+  }
 }

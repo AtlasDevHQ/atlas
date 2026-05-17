@@ -114,26 +114,41 @@ export type {
   ProactiveConfig,
 } from "./config";
 
-// Proactive chat layer (slice #2292: reaction-first tracer)
+// Proactive chat layer (slices #2292 reaction-first tracer + #2293 reaction-to-answer)
 export type {
   ChannelProactiveConfig,
   ClassificationResult,
   InterjectionAction,
   InterjectionDecision,
   LLMClassifierFn,
+  PendingAnswerEntry,
+  ProactiveAsker,
+  ProactiveExecuteQuery,
   ProactiveGateFn,
+  ProactiveQueryResult,
+  ProactiveUserResolver,
+  ResolvedAsker,
   SensitivityPreset,
   WorkspaceProactiveConfig,
 } from "./proactive";
 export {
+  PROACTIVE_ANSWER_ACTION_ID,
+  PROACTIVE_DISMISS_ACTION_ID,
   PROACTIVE_REACTION,
+  PendingAnswers,
+  PENDING_ANSWER_MAX_ENTRIES,
+  PENDING_ANSWER_TTL_MS,
   RECENT_INTERJECTION_COOLDOWN_MS,
   SENSITIVITY_THRESHOLDS,
+  buildProactiveAnswerCard,
+  buildProactiveOfferCard,
+  buildUnlinkedAskerPrompt,
   classifyMessage,
   decideInterjection,
   regexPreFilter,
   registerProactiveListener,
   resolveChannelAllowlist,
+  shouldAnswerOnReaction,
 } from "./proactive";
 export type { ReactionConfig, IReactionLifecycle } from "./features/reactions";
 export { StatusEmoji, createReactionLifecycle } from "./features/reactions";

@@ -113,6 +113,12 @@ export const conversations = pgTable(
     // with `conversation_budget_exceeded` and the UI surfaces a
     // start-a-new-conversation affordance.
     totalSteps: integer("total_steps").notNull().default(0),
+    // 0073 — #2363 chat-as-dashboard-editor. When the chat drawer opens on
+    // `/dashboards/[id]` the request body supplies `boundDashboardId` and
+    // the conversation is stamped to that dashboard for its lifetime.
+    // Nullable so existing rows + non-drawer chats stay untouched.
+    // ON DELETE SET NULL keeps the audit trail when a dashboard is removed.
+    boundDashboardId: uuid("bound_dashboard_id").references(() => dashboards.id, { onDelete: "set null" }),
   },
   (t) => [
     index("idx_conversations_user").on(t.userId),
@@ -123,6 +129,7 @@ export const conversations = pgTable(
     check("chk_org_scoped_share", sql`share_mode <> 'org' OR org_id IS NOT NULL`),
     index("idx_conversations_org").on(t.orgId),
     index("idx_conversations_group").on(t.connectionGroupId, t.orgId),
+    index("idx_conversations_bound_dashboard").on(t.boundDashboardId).where(sql`bound_dashboard_id IS NOT NULL`),
   ],
 );
 

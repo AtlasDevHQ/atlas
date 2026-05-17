@@ -47,6 +47,7 @@ import {
   context as otelContext,
 } from "@opentelemetry/api";
 import { AtlasAiModel, type AtlasAiModelShape } from "./effect/ai";
+import { BOUND_AGENT_PROMPT_GUIDANCE } from "./bound-chat-context";
 
 const log = createLogger("agent");
 const tracer = trace.getTracer("atlas");
@@ -296,13 +297,30 @@ const PYTHON_GUIDANCE = `
 
 **Chart guidance:** prefer \`_atlas_chart\` (interactive Recharts) for bar/line/pie charts. Use \`chart_path()\` only for advanced matplotlib visualizations that Recharts cannot render.`;
 
+/**
+ * #2363 — bound dashboard editor context. When supplied, the agent
+ * swaps the generic data-analyst suffix for the dashboard-composition
+ * guidance and prepends a compact per-turn card summary so the model
+ * can reason about the cards by id without a `getDashboardState`
+ * round trip.
+ */
+export interface BoundDashboardAgentContext {
+  /** Pre-built compact card summary string from `buildCardSummary`. */
+  cardSummary: string;
+}
+
 function buildSystemPrompt(
   registry: ToolRegistry,
   orgSemanticIndex?: string,
   learnedPatternsSection?: string,
   routingContext?: ScopeRoutingContext,
+  boundDashboardContext?: BoundDashboardAgentContext,
 ): string {
-  let base = SYSTEM_PROMPT_PREFIX + "\n\n" + registry.describe() + "\n\n" + SYSTEM_PROMPT_SUFFIX;
+  const suffix = boundDashboardContext ? BOUND_AGENT_PROMPT_GUIDANCE : SYSTEM_PROMPT_SUFFIX;
+  let base = SYSTEM_PROMPT_PREFIX + "\n\n" + registry.describe() + "\n\n" + suffix;
+  if (boundDashboardContext) {
+    base += "\n\n" + boundDashboardContext.cardSummary;
+  }
 
   // Add Python guidance only when the tool is available
   if (registry.get("executePython")) {
@@ -388,8 +406,9 @@ export function buildSystemParam(
   orgSemanticIndex?: string,
   learnedPatternsSection?: string,
   routingContext?: ScopeRoutingContext,
+  boundDashboardContext?: BoundDashboardAgentContext,
 ): string | SystemModelMessage {
-  let content = buildSystemPrompt(registry, orgSemanticIndex, learnedPatternsSection, routingContext);
+  let content = buildSystemPrompt(registry, orgSemanticIndex, learnedPatternsSection, routingContext, boundDashboardContext);
 
   if (warnings && warnings.length > 0) {
     content += "\n\n## Warnings\n\n" + warnings.map((w) => `- ${w}`).join("\n");
@@ -585,6 +604,7 @@ export async function runAgent({
   maxSteps: maxStepsOverride,
   /** Optional pre-resolved AI model. When provided, skips provider resolution. */
   aiModel: injectedAiModel,
+  boundDashboardContext,
 }: {
   messages: UIMessage[];
   tools?: ToolRegistry;
@@ -610,6 +630,13 @@ export async function runAgent({
   maxSteps?: number;
   /** Pre-resolved AI model from Effect Context (P10c). */
   aiModel?: AtlasAiModelShape;
+  /**
+   * #2363 — bound dashboard editor context. When set the agent swaps to
+   * the dashboard-composition prompt and injects a compact card summary.
+   * The chat route resolves this from `conversations.bound_dashboard_id`
+   * after the conversation is created / loaded.
+   */
+  boundDashboardContext?: BoundDashboardAgentContext;
 }) {
   // Capture context eagerly — AsyncLocalStorage may have exited by the time onFinish fires
   const reqCtx = getRequestContext();
@@ -801,7 +828,7 @@ export async function runAgent({
   try {
     result = otelContext.with(agentCtx, () => streamText({
       model,
-      system: buildSystemParam(providerType, toolRegistry, warnings, orgSemanticIndex, learnedPatternsSection, scopeRoutingContext),
+      system: buildSystemParam(providerType, toolRegistry, warnings, orgSemanticIndex, learnedPatternsSection, scopeRoutingContext, boundDashboardContext),
       messages: modelMessages,
       tools,
       temperature: 0.2,

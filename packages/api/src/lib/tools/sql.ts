@@ -36,6 +36,9 @@ import {
   RLSError, PluginRejectedError,
 } from "@atlas/api/lib/effect/errors";
 import { EXECUTE_SQL_TOOL_DESCRIPTION } from "./descriptions";
+import { resolveRoutingPlan } from "@atlas/api/lib/env-routing";
+import { loadGroupRoutingContext } from "@atlas/api/lib/env-routing/lookup";
+import { mergeMemberResults } from "@atlas/api/lib/multi-env-merger";
 
 const log = createLogger("sql");
 
@@ -1272,30 +1275,26 @@ export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryO
   );
 }
 
-export const executeSQL = tool({
-  description: EXECUTE_SQL_TOOL_DESCRIPTION,
-
-  inputSchema: z.object({
-    sql: z.string().describe("The SELECT query to execute"),
-    explanation: z
-      .string()
-      .describe("Brief explanation of what this query does and why"),
-    connectionId: z
-      .string()
-      .optional()
-      .describe(
-        "Target connection ID. Check the entity YAML's `connection` field to determine which source a table belongs to. Omit for the default connection.",
-      ),
-  }),
-
-  execute: async ({ sql, explanation, connectionId }) => {
-    // Chat routes stamp the user-selected per-turn connection into
-    // RequestContext. The model normally omits `connectionId`, so fall back to
-    // that routed context before the legacy default to avoid executing against
-    // the wrong environment while conversation metadata says otherwise.
-    const requestContextConnectionId = getRequestContext()?.connectionId;
-    const connId = connectionId ?? requestContextConnectionId ?? "default";
-
+/**
+ * Single-environment SQL execution leaf used by both the back-compat path
+ * (no `scope`) and the agent-decided fanout path (`scope: "all"` or a
+ * named member id, PRD #2515 / slice 1 #2516). The body is the original
+ * `executeSQL.execute` pipeline; the dispatch lives in the tool wrapper
+ * below so existing callers see zero behaviour change.
+ *
+ * Returns the tool's `{success: true | false, ...}` response shape as an
+ * opaque record — the merger then reads `columns` / `rows` / `error` from
+ * each per-member outcome to compose the fanned-out result.
+ */
+async function executeSqlForConnection({
+  sql,
+  explanation,
+  connId,
+}: {
+  readonly sql: string;
+  readonly explanation: string;
+  readonly connId: string;
+}): Promise<Record<string, unknown>> {
     // The full pipeline runs as an Effect.gen program. Tagged errors flow through
     // the error channel; expected rejections (validation, approval, cache) return
     // as {success: false} values. At the boundary, catchAll maps errors to responses.
@@ -1610,5 +1609,153 @@ export const executeSQL = tool({
         ),
       ),
     );
+}
+
+/**
+ * Cross-environment fanout — runs `executeSqlForConnection` once per
+ * member of the active group in parallel via `Promise.allSettled`, then
+ * merges the outcomes into one result table with a prepended `__env__`
+ * column and parallel `envContributions` metadata.
+ *
+ * Settled rejections (which the leaf function should not produce — it
+ * already maps tagged errors to `{success: false}`) are coerced into a
+ * `MemberExecutionResult.error` entry so the merger can surface them.
+ */
+async function executeSqlFanout(args: {
+  readonly sql: string;
+  readonly explanation: string;
+  readonly connectionIds: readonly string[];
+}): Promise<Record<string, unknown>> {
+  const { sql, explanation, connectionIds } = args;
+  const startTimes = new Map<string, number>();
+  const settled = await Promise.allSettled(
+    connectionIds.map((connId) => {
+      startTimes.set(connId, performance.now());
+      return executeSqlForConnection({ sql, explanation, connId });
+    }),
+  );
+
+  const memberResults = settled.map((outcome, idx) => {
+    const connectionId = connectionIds[idx]!;
+    const startedAt = startTimes.get(connectionId);
+    const durationMsFallback = startedAt == null ? 0 : Math.round(performance.now() - startedAt);
+    if (outcome.status === "rejected") {
+      const reason = outcome.reason;
+      const message = reason instanceof Error ? reason.message : String(reason);
+      return {
+        connectionId,
+        error: message,
+        durationMs: durationMsFallback,
+      };
+    }
+    const value = outcome.value;
+    const success = value["success"] === true;
+    const durationMs = typeof value["executionMs"] === "number" ? (value["executionMs"] as number) : durationMsFallback;
+    if (success) {
+      return {
+        connectionId,
+        columns: (value["columns"] as readonly string[] | undefined) ?? [],
+        rows: (value["rows"] as readonly Record<string, unknown>[] | undefined) ?? [],
+        durationMs,
+      };
+    }
+    const errorMessage = typeof value["error"] === "string" ? (value["error"] as string) : "Query failed";
+    return { connectionId, error: errorMessage, durationMs };
+  });
+
+  const merged = mergeMemberResults(memberResults);
+  const failedCount = merged.envContributions.filter((c: { error: string | null }) => c.error !== null).length;
+  const successCount = merged.envContributions.length - failedCount;
+  const totalExecutionMs = merged.envContributions.reduce(
+    (acc: number, c: { durationMs: number }) => Math.max(acc, c.durationMs),
+    0,
+  );
+
+  // All members errored → surface as success=false with a summary message
+  // so the agent's recovery loop kicks in. Partial failures stay
+  // success=true with envContributions describing which env failed.
+  if (successCount === 0) {
+    const messages = merged.envContributions.map(
+      (c: { connectionId: string; error: string | null }) => `${c.connectionId}: ${c.error ?? "no rows"}`,
+    );
+    return {
+      success: false,
+      explanation,
+      error: `All ${merged.envContributions.length} environments failed — ${messages.join("; ")}`,
+      envContributions: merged.envContributions,
+      executionMs: totalExecutionMs,
+    };
+  }
+
+  return {
+    success: true,
+    explanation,
+    row_count: merged.rows.length,
+    columns: merged.columns,
+    rows: merged.rows,
+    truncated: false,
+    cached: false,
+    maskingApplied: false,
+    envContributions: merged.envContributions,
+    executionMs: totalExecutionMs,
+  };
+}
+
+export const executeSQL = tool({
+  description: EXECUTE_SQL_TOOL_DESCRIPTION,
+
+  inputSchema: z.object({
+    sql: z.string().describe("The SELECT query to execute"),
+    explanation: z
+      .string()
+      .describe("Brief explanation of what this query does and why"),
+    connectionId: z
+      .string()
+      .optional()
+      .describe(
+        "Target connection ID. Check the entity YAML's `connection` field to determine which source a table belongs to. Omit for the default connection.",
+      ),
+    scope: z
+      .string()
+      .optional()
+      .describe(
+        "Cross-environment routing override (PRD #2515). \"this\" or omitted runs against the conversation's current member; \"all\" fans out across every member of the active environment group; a member connection id routes to that specific environment. Only applies when the active group has more than one member.",
+      ),
+  }),
+
+  execute: async ({ sql, explanation, connectionId, scope }) => {
+    // Chat routes stamp the user-selected per-turn connection into
+    // RequestContext. The model normally omits `connectionId`, so fall back to
+    // that routed context before the legacy default to avoid executing against
+    // the wrong environment while conversation metadata says otherwise.
+    const requestContextConnectionId = getRequestContext()?.connectionId;
+    const currentMember = connectionId ?? requestContextConnectionId ?? "default";
+
+    // Fast path: no agent-supplied scope (or explicit "this") preserves the
+    // pre-#2516 behaviour exactly — single execution, no group lookup.
+    if (scope === undefined || scope === "this") {
+      return executeSqlForConnection({ sql, explanation, connId: currentMember });
+    }
+
+    // Routing path: agent asked for fanout or a specific member. Resolve
+    // the active group's members + primary, then run the pure routing
+    // module. Failures collapse to a 1×1 fallback so the tool call still
+    // returns a useful result.
+    const orgId = getRequestContext()?.user?.activeOrganizationId;
+    const ctx = await loadGroupRoutingContext(orgId, currentMember);
+    const { plan, warnings } = resolveRoutingPlan({
+      agentScope: scope,
+      currentMember: ctx.currentMember,
+      members: ctx.members,
+      primaryMember: ctx.primaryMember,
+    });
+    for (const w of warnings) {
+      log.warn({ connectionId: currentMember, scope, plan: plan.kind }, w);
+    }
+
+    if (plan.kind === "single") {
+      return executeSqlForConnection({ sql, explanation, connId: plan.connectionId });
+    }
+    return executeSqlFanout({ sql, explanation, connectionIds: plan.connectionIds });
   },
 });

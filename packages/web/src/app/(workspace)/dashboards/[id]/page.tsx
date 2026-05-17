@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { MessagesSquare, Plus, Sparkles, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -39,6 +39,7 @@ import type {
 export default function DashboardViewPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
 
   const { data: dashboard, loading, error, refetch } = useAdminFetch<DashboardWithCards>(
@@ -67,6 +68,19 @@ export default function DashboardViewPage() {
   // of that pattern cascaded into React #185 once refetches started landing
   // fast enough during multi-drag sessions.
   const [optimisticLayouts, setOptimisticLayouts] = useState<Record<string, DashboardCardLayout>>({});
+
+  // #2369 — creation-to-bound continuity. The chat-side
+  // `createDashboard` tool surfaces a "Continue editing" link that
+  // navigates here with `?openChat=true`. Auto-open the bound chat
+  // drawer once so the same conversation resumes in bound mode, then
+  // strip the param so a refresh doesn't keep reopening it.
+  useEffect(() => {
+    if (searchParams.get("openChat") !== "true") return;
+    setChatOpen(true);
+    // Replace the URL without the flag — `router.replace` keeps the
+    // browser history clean (no "back" landing on the auto-open).
+    router.replace(`/dashboards/${id}`);
+  }, [searchParams, router, id]);
 
   // Skip when typing in inputs.
   useEffect(() => {

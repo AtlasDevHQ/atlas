@@ -146,19 +146,19 @@ describe("defaultRegistry", () => {
   it("contains all core tools", () => {
     expect(defaultRegistry.get("explore")).toBeDefined();
     expect(defaultRegistry.get("executeSQL")).toBeDefined();
-    expect(defaultRegistry.get("proposeDashboard")).toBeDefined();
+    expect(defaultRegistry.get("createDashboard")).toBeDefined();
   });
 
   it("getAll returns exactly the core tools", () => {
     const all = defaultRegistry.getAll();
-    expect(Object.keys(all).sort()).toEqual(["executeSQL", "explore", "proposeDashboard"]);
+    expect(Object.keys(all).sort()).toEqual(["createDashboard", "executeSQL", "explore"]);
   });
 
   it("describe produces the expected workflow text", () => {
     const text = defaultRegistry.describe();
     expect(text).toContain("### 2. Explore the Semantic Layer");
     expect(text).toContain("### 3. Write and Execute SQL");
-    expect(text).toContain("### Propose a Dashboard");
+    expect(text).toContain("### Create a Dashboard");
   });
 
   it("is frozen — cannot register additional tools", () => {
@@ -196,7 +196,7 @@ describe("buildRegistry", () => {
       process.env.ATLAS_SANDBOX_URL = "http://localhost:8080";
       const { registry } = await buildRegistry();
       const names = Object.keys(registry.getAll()).sort();
-      expect(names).toEqual(["executePython", "executeSQL", "explore", "proposeDashboard"]);
+      expect(names).toEqual(["createDashboard", "executePython", "executeSQL", "explore"]);
       expect(registry.describe()).toContain("### 4. Analyze Data with Python");
     } finally {
       if (saved.enabled !== undefined) process.env.ATLAS_PYTHON_ENABLED = saved.enabled;
@@ -209,17 +209,17 @@ describe("buildRegistry", () => {
   it("returns core tools by default", async () => {
     const { registry } = await buildRegistry();
     const names = Object.keys(registry.getAll()).sort();
-    expect(names).toEqual(["executeSQL", "explore", "proposeDashboard"]);
+    expect(names).toEqual(["createDashboard", "executeSQL", "explore"]);
   });
 
   it("with includeActions includes createJiraTicket and sendEmailReport alongside core tools", async () => {
     const { registry } = await buildRegistry({ includeActions: true });
     const names = Object.keys(registry.getAll()).sort();
     expect(names).toEqual([
+      "createDashboard",
       "createJiraTicket",
       "executeSQL",
       "explore",
-      "proposeDashboard",
       "sendEmailReport",
     ]);
   });

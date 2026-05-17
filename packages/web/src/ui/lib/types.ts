@@ -173,10 +173,6 @@ export type {
   DashboardChartConfig,
   DashboardSuggestion,
   ChartType,
-  ProposedCard,
-  ProposedDashboardSpec,
-  ProposedCardValidationError,
-  ProposeDashboardResult,
   PreviewCardResponse,
 } from "@useatlas/types";
 export { CHART_TYPES } from "@useatlas/types";

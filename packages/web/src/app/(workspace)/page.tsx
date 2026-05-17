@@ -35,9 +35,6 @@ import { Button } from "@/components/ui/button";
 import { AskComposer } from "@/ui/components/ask-composer";
 import { ConnectDataPrompt } from "@/ui/components/connect-data-prompt";
 import { EmptyAskHero } from "@/ui/components/empty-ask-hero";
-import { useDashboardCanvasStore, type ProposedDashboardSpec } from "@/lib/stores/dashboard-canvas-store";
-import { DashboardCanvas } from "@/ui/components/dashboards/dashboard-canvas";
-import { getToolResult, isToolComplete } from "@/ui/lib/helpers";
 
 const OPENSTATUS_SLUG = process.env.NEXT_PUBLIC_OPENSTATUS_SLUG;
 const STATUS_URL = process.env.NEXT_PUBLIC_STATUS_URL;
@@ -206,50 +203,6 @@ function ChatPage() {
   }, [authMode, convos.fetchList]);
 
   const { messages, setMessages, sendMessage, status, error: chatError } = useChat({ transport });
-
-  const setCanvasSpec = useDashboardCanvasStore((s) => s.setSpec);
-  const canvasOpen = useDashboardCanvasStore((s) => s.view.kind === "open");
-  // Tracks tool-invocation ids we've already pushed into the canvas. A Set
-  // (vs. a single ref) means an older proposal re-rendering after a newer one
-  // can never overwrite the newer one — both ids stay marked consumed.
-  const consumedProposalsRef = useRef<Set<string>>(new Set());
-
-  // Push the latest completed, well-formed proposeDashboard result into the
-  // canvas store. Parts without a stable `toolInvocationId` are skipped (and
-  // logged) — synthesizing one from message indices would silently match
-  // unrelated parts after list mutations.
-  useEffect(() => {
-    for (let m = messages.length - 1; m >= 0; m--) {
-      const msg = messages[m];
-      if (msg.role !== "assistant" || !msg.parts) continue;
-      for (let p = msg.parts.length - 1; p >= 0; p--) {
-        const part = msg.parts[p];
-        if (!isToolUIPart(part)) continue;
-        if (getToolName(part) !== "proposeDashboard") continue;
-        if (!isToolComplete(part)) continue;
-
-        const invocationId = (part as { toolInvocationId?: unknown }).toolInvocationId;
-        if (typeof invocationId !== "string" || invocationId.length === 0) {
-          console.warn("[chat] proposeDashboard part missing toolInvocationId — skipping canvas push");
-          return;
-        }
-        if (consumedProposalsRef.current.has(invocationId)) return;
-
-        const raw = getToolResult(part) as unknown;
-        if (
-          typeof raw === "object" &&
-          raw !== null &&
-          (raw as { kind?: unknown }).kind === "ok" &&
-          typeof (raw as { spec?: unknown }).spec === "object" &&
-          (raw as { spec?: unknown }).spec !== null
-        ) {
-          consumedProposalsRef.current.add(invocationId);
-          setCanvasSpec((raw as { spec: ProposedDashboardSpec }).spec);
-        }
-        return; // most recent proposal found — even if it was an error, don't push older ones
-      }
-    }
-  }, [messages, setCanvasSpec]);
 
   const isLoading = status === "streaming" || status === "submitted";
 
@@ -436,12 +389,7 @@ function ChatPage() {
       <div className="flex h-full flex-1 flex-col overflow-hidden">
         <IncidentBanner slug={OPENSTATUS_SLUG} statusUrl={STATUS_URL} />
         <div className="flex flex-1 overflow-hidden">
-          <div
-            className={cn(
-              "flex flex-1 flex-col overflow-hidden",
-              canvasOpen && "min-w-0",
-            )}
-          >
+          <div className="flex flex-1 flex-col overflow-hidden">
             <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col overflow-hidden px-4 pt-4">
               {/* Top control row — env picker (left) + share dialog (right).
                   Renders only when at least one child is visible so the
@@ -679,12 +627,6 @@ function ChatPage() {
               )}
             </div>
           </div>
-
-          <DashboardCanvas
-            apiUrl={getApiUrl()}
-            getHeaders={getHeaders}
-            getCredentials={getCredentials}
-          />
         </div>
       </div>
     </GuidedTour>

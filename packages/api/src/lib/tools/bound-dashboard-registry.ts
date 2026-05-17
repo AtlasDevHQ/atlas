@@ -12,9 +12,11 @@
  *     should not run arbitrary Python in the middle of an edit session.
  *   - action plugins (createJiraTicket, sendEmailReport) — irrelevant to
  *     dashboard composition; including them just confuses the model.
- *   - proposeDashboard — superseded by the bound editor tools. The root-
- *     chat flow keeps proposeDashboard until #2369 reframes it as
- *     `createDashboard`; the bound flow drops it outright.
+ *   - createDashboard — superseded by the bound editor tools. The root-
+ *     chat flow uses `createDashboard` to mint a new dashboard + open
+ *     the bound editor; once inside the bound flow, further cards land
+ *     via `addCard` on the existing dashboard rather than minting a
+ *     second one.
  *
  * Plugin tools are NOT merged here. Plugin-registered tools target the
  * general agent loop; the bound surface is intentionally narrow. If a

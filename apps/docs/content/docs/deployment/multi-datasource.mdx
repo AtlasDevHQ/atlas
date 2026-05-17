@@ -266,6 +266,20 @@ These hints are surfaced in the agent's system prompt so it knows to query each 
 Cross-source join hints are informational — they tell the agent which tables are related across datasources, but the agent still needs to execute separate queries and combine results. There is no automatic query federation.
 </Callout>
 
+### Cross-environment scope routing (1.4.5+)
+
+When a workspace has multiple **connection groups** (environments — e.g. `us-int`, `eu`, `us-prod` all running the same schema; see [Dashboards → Environment](/guides/dashboards#environment-144)), the agent can fan a single question out across more than one member of the active group. Each chat conversation has a **routing mode** the user controls from the picker in the chat header:
+
+| Mode | Behavior |
+|------|----------|
+| **Auto** | The agent decides — picks one environment when the question is environment-specific ("how many EU orders today?") and fans out across all members for fleet-wide questions ("compare order volume across environments"). Default. |
+| **Pin** | Every `executeSQL` call targets the conversation's pinned environment. Use when you want stable, single-source results — e.g. building a dashboard card that will be published. |
+| **All envs** | Every `executeSQL` call fans out across all group members and merges the rows under an `environment` discriminator column. Audit rows for each child query roll up to a parent row via `query_audit.parent_audit_id`. |
+
+The `executeSQL` tool exposes a `scope` parameter (`auto` / `pin` / `all`) that the agent fills based on the mode. Results carry an `envContributions` wire field with per-environment row counts and any partial-failure errors, so a fan-out that succeeds on 2 of 3 environments returns the merged rows and surfaces the third as a degraded warning rather than failing the whole turn.
+
+OTel traces tag each agent step with `atlas.routing_mode` for cross-environment analytics; see [Observability](/platform-ops/observability).
+
 ---
 
 ## SDK and API usage

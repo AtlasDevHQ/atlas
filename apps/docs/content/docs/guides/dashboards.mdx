@@ -105,6 +105,30 @@ To revoke access, open the share dialog and click **Revoke**.
 
 ---
 
+## Chat as editor (1.4.6+)
+
+Dashboards have a built-in chat-bound editor. From a dashboard page, open the chat drawer to talk to Atlas about the cards you can see — the conversation is scoped to that dashboard and the agent gets a `boundDashboardId` context so its `executeSQL` / `createCard` / `updateCardSql` / `removeCard` tools target this dashboard automatically. Use it to ask "why is this card flat?", iterate on a SQL definition, or stage a new card without leaving the dashboard.
+
+### Per-user drafts
+
+Edits from the bound chat (and from direct admin actions when the flag is on) go into your **personal draft** of the dashboard — never directly to the published copy your teammates see. The draft is exact-three-way merged against the persisted baseline on publish, so a teammate publishing a non-overlapping change while you draft does **not** stomp your work; an overlapping change surfaces a "baseline changed" banner with a one-click rebase.
+
+The draft badge in the dashboard header shows your pending change count. Click **Publish** to promote the draft via `POST /api/v1/dashboards/:id/draft/publish`; the diff modal previews every staged change before you confirm. Discard with **Discard draft** to revert to the published view.
+
+### Stage tracker
+
+Destructive operations (card removal, SQL rewrites) return a `stage_required` envelope rather than applying immediately. The UI overlays a ghost on affected cards until you confirm — `Keep` discards the staged change, `Apply` commits it to your draft. The stage tracker is idempotent: applying or discarding a pending change twice is a no-op.
+
+### History tab
+
+Each dashboard's chat drawer has a **History** tab listing prior chat sessions tied to this dashboard (workspace-wide). Open any session for a read-only transcript so you can see what your team asked Atlas before — useful when picking up a dashboard mid-investigation.
+
+### Feature flag
+
+Set `ATLAS_DASHBOARD_DRAFTS_ENABLED=false` to disable per-user drafts entirely — admin mutations go straight to the published copy as in 1.4.5 and earlier. The flag defaults to `true`. See the [environment-variables reference](/reference/environment-variables#settings).
+
+---
+
 ## API Reference
 
 All dashboard operations are available via the REST API:

@@ -342,7 +342,7 @@
     },
     "packages/types": {
       "name": "@useatlas/types",
-      "version": "0.1.2",
+      "version": "0.1.3",
     },
     "packages/web": {
       "name": "@atlas/web",

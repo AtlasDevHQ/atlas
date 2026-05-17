@@ -25,12 +25,43 @@ import type {
 /**
  * Confidence thresholds per sensitivity preset.
  *
- * - cautious: only interject when the classifier is very sure (≥ 0.85)
- * - balanced: default (≥ 0.70)
- * - eager:    catch borderline cases too (≥ 0.55)
+ * Lower threshold ⇒ more interjections. The classifier returns a
+ * confidence in `[0, 1]`; this table is the only place those numbers
+ * become product-visible behaviour, so any tuning happens here.
  *
- * Values chosen to feel right at MVP; tune from design-partner data
- * before any broader rollout (see PRD §Stability bar).
+ * - cautious  (≥ 0.85) — only obvious data questions ("what was MRR
+ *                        last month?"). Designed for `#general`-style
+ *                        channels where additive noise costs more than
+ *                        the missed answer.
+ * - balanced  (≥ 0.70) — workspace default; most reasonable data
+ *                        questions pass, soft-mention "any idea on
+ *                        signups?" passes when the classifier is
+ *                        fairly sure.
+ * - eager     (≥ 0.55) — catches loose mentions of metrics ("curious
+ *                        about churn this week"). Intended for
+ *                        dedicated `#ask-data`-style channels where
+ *                        the social cost of an Atlas reaction is low.
+ *
+ * Rationale for the specific MVP values:
+ *
+ *  - The gap between presets (≈0.15) is wide enough that flipping a
+ *    channel from balanced→eager produces a visible behavioural change
+ *    (per User story 5 in PRD #2291 — "switch from Balanced to Eager
+ *    and observe more interjections").
+ *  - 0.85 leaves enough headroom below `1.0` that the cautious preset
+ *    still fires on real questions; we don't want it to behave like an
+ *    off switch.
+ *  - 0.55 is the lowest we're willing to go pre-stability-bar — below
+ *    that the classifier's signal-to-noise gets dominated by the LLM's
+ *    own miscalibration rather than by question quality.
+ *
+ * Per PRD #2291 §Stability bar, these values are MVP placeholders.
+ * Tune from design-partner data (misfire rate + acceptance rate
+ * captured by #2298 / `proactive_meter_events`) before any broader
+ * rollout — do not relax `eager` below 0.55 or tighten `cautious`
+ * above 0.95 without explicit acceptance-rate evidence. The
+ * `sensitivity-presets.test.ts` acceptance suite pins the values
+ * documented here, so a tuning PR must update both.
  */
 export const SENSITIVITY_THRESHOLDS: Record<SensitivityPreset, number> = {
   cautious: 0.85,

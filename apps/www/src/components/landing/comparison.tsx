@@ -30,6 +30,20 @@ const ROWS: ReadonlyArray<Row> = [
     textToSql: "Standalone app",
   },
   {
+    feature: "Dashboards as conversations",
+    atlas:
+      "Chat drawer is the editor — per-user drafts + atomic three-way-merge Publish over a persisted baseline",
+    bi: "Static dashboards with separate edit mode",
+    textToSql: "No dashboards",
+  },
+  {
+    feature: "Chat-platform reach",
+    atlas:
+      "Slack-native — answers questions in opt-in channels with a reaction-first tracer, fail-closed kill switch (Enterprise tier)",
+    bi: "Web app only — context-switch out of Slack",
+    textToSql: "Web app only",
+  },
+  {
     feature: "Deploy anywhere",
     atlas: "Docker, Railway, Vercel, or your own infra",
     bi: "Vendor-hosted",

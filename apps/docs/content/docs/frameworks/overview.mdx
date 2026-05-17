@@ -3,7 +3,7 @@ title: Bring Your Own Frontend
 description: Use Atlas with any frontend framework that can make HTTP requests.
 ---
 
-Atlas is a headless API. The built-in `@atlas/web` package is a Next.js reference client, but any frontend that can make HTTP requests and consume a streaming response can replace it.
+Atlas is a headless API. `@atlas/web` is the Next.js reference client that lives inside the Atlas monorepo at `packages/web/` — it ships with the repo and powers [app.useatlas.dev](https://app.useatlas.dev), but it is **not published to npm**. Any frontend that can make HTTP requests and consume a streaming response can replace it. The sections below describe its features so you know what to port; the source under `packages/web/src/ui/` is the canonical reference.
 
 ## Architecture
 
@@ -232,11 +232,11 @@ To build a working Atlas frontend, you only need:
 2. **Text rendering** -- display `type: "text"` parts from assistant messages
 3. **Tool result rendering** -- detect tool parts using `isToolUIPart(part)` from `"ai"` and render SQL results as a table
 
-Everything else -- conversation persistence, chart auto-detection, managed auth UI, markdown rendering -- is optional. The `@atlas/web` package provides all of these, but none are required. If you just want a chatbot that queries your database, the three items above are sufficient.
+Everything else -- conversation persistence, chart auto-detection, managed auth UI, markdown rendering -- is optional. The `packages/web/` reference client in the Atlas monorepo provides all of these, but none are required. If you just want a chatbot that queries your database, the three items above are sufficient.
 
-## What @atlas/web adds
+## What the reference client (packages/web) adds
 
-The built-in `@atlas/web` package adds these features on top of `@ai-sdk/react`. You can port any of them by reading the source in `packages/web/src/ui/`:
+The `packages/web/` reference client (the Next.js app behind [app.useatlas.dev](https://app.useatlas.dev), monorepo-only — not on npm) adds these features on top of `@ai-sdk/react`. You can port any of them by reading the source in `packages/web/src/ui/`:
 
 - **Conversation sidebar** with persistence (requires `DATABASE_URL`)
 - **Managed auth** (Better Auth sign-in/sign-up UI)

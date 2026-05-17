@@ -1,0 +1,204 @@
+---
+title: Proactive Chat — admin guide
+description: The 1.5.0 proactive chat tier — three-layer kill switch, classifier modes + monthly cap, public-dataset allowlist, feedback outcomes, and the one-shot activation announcement.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Proactive chat is the 1.5.0 (milestone #43) capability that lets Atlas **listen** in opt-in Slack channels, react to data-shaped questions with an emoji, and answer on tap. It is `/ee`-gated and currently **Slack-first only** — Teams, Discord, and Google Chat are wired but feature-flagged off until the bar in the [PRD](https://github.com/AtlasDevHQ/atlas/issues/2291) (≤5% misfire, ≥70% acceptance) is met on a chat platform.
+
+<Callout type="info" title="Paid tier">
+Proactive chat is part of Atlas Enterprise. The end-user disclosure surfaces in [`guides/slack.mdx`](/guides/slack); this guide is the admin/operator companion.
+</Callout>
+
+The whole surface lives at **Admin → Proactive Chat** (`/admin/proactive-chat`) as one consolidated page. The page is enterprise-gated — self-hosted free users see an upsell card instead of the form. Six sections, each backed by an admin API route under `/api/v1/admin/proactive/*`:
+
+1. [Activation toggle](#activation-toggle)
+2. [Behavior — sensitivity, classifier mode, announcement channel, monthly cap](#behavior)
+3. [Three-layer kill switch — workspace, channel, user](#three-layer-kill-switch)
+4. [Channel overrides](#channel-overrides)
+5. [Public dataset + refused-topics rollup (HITL)](#public-dataset-and-refused-topics)
+6. [Feedback loop](#feedback-loop)
+7. [Activation announcement](#activation-announcement)
+
+---
+
+## Activation toggle
+
+The master switch lives at the top of `/admin/proactive-chat`. When it is **off**, no proactive evaluation runs anywhere in the workspace; `/atlas` slash commands and `@atlas` mentions continue to work normally. Every flip emits an audit row in `admin_action_log`.
+
+Behind the scenes the switch writes `workspace_proactive_config.enabled`. The plugin host reads this on every classifier call, so flipping it off is effectively immediate — no restart, no waiting for a settings refresh.
+
+---
+
+## Behavior
+
+### Sensitivity
+
+Three values determine how readily the classifier decides a message is a data question:
+
+| Sensitivity | Behavior |
+|---|---|
+| `cautious` | Only obvious data questions — keywords + metric mentions explicit |
+| `balanced` (default) | Most reasonable data questions |
+| `eager` | Even loose mentions of metrics |
+
+The PRD's "promote beyond Slack" bar is **≤5% misfire / ≥70% acceptance** at `balanced`. The settings exist so workspaces can tune coverage vs noise without exposing raw confidence thresholds — drift the classifier and the labels retune in lockstep.
+
+### Classifier mode
+
+| Mode | Behavior |
+|---|---|
+| `regex-prefilter` (default) | Cheap — regex layer runs first, LLM classifier only on uncertainty |
+| `classify-all` | Expensive — LLM classifier on every candidate message |
+
+`classify-all` is only sensible with a tight channel allowlist or a small workspace; with a large channel set the LLM cost dominates.
+
+### Announcement channel
+
+Optional. When set, the workspace's one-shot activation announcement (see [Activation announcement](#activation-announcement) below) posts here on the first time proactive chat is enabled. Free-form channel ID — a future slice will swap in a channel picker sourced from the chat-platform API.
+
+### Monthly classifier cap
+
+Optional non-negative integer. Caps the number of classifier invocations per calendar month (UTC). When the cap is reached, proactive chat short-circuits before the classifier runs until the next month rolls over.
+
+The cap input renders a usage bar live underneath, with traffic-light coloring:
+
+- **Grey** (< 80%) — under cap, no concern
+- **Yellow** (≥ 80%, cap not reached) — approaching cap
+- **Red** (cap reached) — proactive is silently short-circuiting; resume next month
+
+There is no email or webhook alert at the thresholds today — the indicator is purely visual. Self-hosted operators wanting external alerts can query the `proactive_meter_events` table (see [Meter events](#meter-events) below).
+
+---
+
+## Three-layer kill switch
+
+Proactive chat is a trust-sensitive surface. Admins, channel members, and end-users each get an independent kill switch, all backed by a single `proactive_pauses` table (migration 0076). The four layers are queried in a single precedence-ordered scan; expired rows are ignored at read time so the common case never needs a sweeper.
+
+**Precedence (highest first):**
+
+| Layer | Source | Scope | Expiry |
+|---|---|---|---|
+| `workspace-kill` | Admin flips master toggle | Workspace-wide | None — until re-enabled |
+| `admin-channel` | Admin denies a channel via overrides | Per-channel | None — indefinite |
+| `user-optout` | End-user DMs `unsubscribe` to Atlas | Per-user, workspace-scoped | None — reversible via `subscribe` |
+| `channel-24h` | Any channel member runs `@atlas pause` | Per-channel | 24 hours |
+
+The fail-closed contract (hardened in PR #2545): if the pause table is unreachable at evaluation time, the listener treats the message as paused and suppresses the proactive answer. There is no fail-open mode — policy unavailability is policy denial.
+
+End-users can DM `unsubscribe` to opt out of proactive answers across the entire workspace, and DM `subscribe` to reverse it.
+
+<Callout type="warn">
+**Fail-closed semantics.** If the proactive evaluator can't reach `proactive_pauses` at evaluation time, the listener logs the error and suppresses the answer. There is no "fail-open" mode.
+</Callout>
+
+---
+
+## Channel overrides
+
+`/admin/proactive-chat` → **Channel overrides** section. Per-channel allow / deny with an optional per-channel sensitivity override:
+
+| Field | Purpose |
+|---|---|
+| **Channel ID** | Platform-specific channel identifier (`C0123456789` for Slack) |
+| **Allow proactive** | Switch — `Allow` adds the channel to the allowlist, `Deny` writes an `admin-channel` pause row |
+| **Sensitivity (optional)** | Override the workspace default for this channel only |
+
+A denied channel adds a row to `proactive_pauses` with `layer = 'admin-channel'`; removing the override clears it.
+
+---
+
+## Public dataset and refused topics
+
+When a chat user reacts to an Atlas-suggested answer but is **not OAuth'd to a workspace user** (a guest in a Slack Connect channel, a customer in a shared support channel), the proactive listener gates on a curated allowlist of semantic entities — the workspace's **public dataset**. This is the human-in-the-loop (HITL) gate for non-linked askers.
+
+`/admin/proactive-chat` → **Public dataset** + **Refused topics** sections.
+
+### Public-dataset allowlist
+
+`proactive_public_dataset` (migration 0080) is an entity-level allowlist. By default it is empty — Atlas refuses every public-channel question from non-linked askers until you opt in entity-by-entity.
+
+| Field | Purpose |
+|---|---|
+| **Entity name** | Fully-qualified entity name (e.g. `marketing.users`) |
+| **Deny metrics** | Comma-separated list of columns / measures that block a public-asker query even when the entity itself is allowed (e.g. `email, phone_number` on a `users` entity) |
+
+Cross-entity joins are strict — if `revenue` joins to `customers` and `customers` is not in the allowlist, the query is refused. Enforcement lives in `lib/proactive/public-dataset.ts`.
+
+### Refused-topics rollup
+
+The **Refused topics** section under public-dataset shows what unlinked askers tried to ask about in the last 30 days, grouped by entity. Each row carries a one-click **Make public** button that opens the allowlist with the refused entity pre-filled — saving turns a refused topic into an admin decision rather than silent friction.
+
+The rollup is fed by `proactive_meter_events` rows where `event_type = 'public_refused'` (added by migration 0080 — the only `proactive_meter_events` change in this slice).
+
+---
+
+## Feedback loop
+
+Every proactive answer ships with three feedback buttons and a `/atlas feedback` slash command. Outcomes are recorded in `proactive_meter_events` (`event_type = 'feedback'`, `outcome` ∈ `helpful` / `not-helpful` / `wrong-data` / `no-feedback`).
+
+### Inline feedback buttons
+
+Three buttons attached to each answer:
+
+| Button | Outcome | What happens |
+|---|---|---|
+| **Helpful** | `helpful` | Records the outcome and dismisses the buttons |
+| **Not helpful** | `not-helpful` | Same — outcome stored, no follow-up |
+| **Wrong data** | `wrong-data` | Opens a Slack modal with a textarea; the submitted text is stored on the meter row |
+
+The buttons are visible only to the user who originally asked, matching the Slack ephemeral-message contract.
+
+### `/atlas feedback <text>` slash command
+
+For freeform feedback ("this answer was technically right but missed the context"), the `/atlas feedback <text>` slash command writes a feedback row with the submitted text directly. No modal — the text is the entire argument to the command.
+
+### Meter events
+
+The `proactive_meter_events` table (migrations 0078 + 0080) records every lifecycle transition for admin analytics and (later) billing. Six event types:
+
+| Event | When it fires |
+|---|---|
+| `classify` | Classifier ran (with or without LLM). `tokens` carries usage; `0` when regex prefilter rejected before the LLM |
+| `react` | Policy decided to interject; reaction emoji applied |
+| `offer` | Atlas posted an answer-offer (reserved for the offer/accept slice) |
+| `accept` | Asker accepted the offer (reserved) |
+| `feedback` | Thumbs / outcome submitted post-answer (`outcome` column carries the value) |
+| `public_refused` | Public-channel question refused because the entity isn't in the allowlist (`metadata.entityName` powers the refused-topics rollup) |
+
+Self-hosted operators can build their own dashboards against this table — the audit-row trail in `admin_action_log` is intentionally separate so the meter stays per-event with cost while the audit row stays human-readable.
+
+---
+
+## Activation announcement
+
+When proactive mode is **first enabled** for a workspace, the AnnouncementCoordinator posts a one-time disclosure to the **Announcement channel** configured in the Behavior section. The post contains the same privacy disclosure that appears at OAuth install time (see [Slack — Workspace Disclosure](/guides/slack#4-workspace-disclosure)).
+
+Idempotency lives in `workspace_proactive_config.announcement_posted_at` (migration 0081) — a single timestamp column:
+
+- `NULL` → AnnouncementCoordinator may post
+- `NOT NULL` → AnnouncementCoordinator no-ops (even after a disable + re-enable)
+
+The stamp is intentionally not cleared on disable — re-announcing every toggle surfaces noise in shared channels and erodes trust with end-users who already saw the introduction message.
+
+---
+
+## Errors & troubleshooting
+
+Proactive-mode errors use the `proactive_*` error code prefix. The most common ones at admin time:
+
+| Symptom | Probable cause | Where to look |
+|---|---|---|
+| Classifier fires but no reaction | `proactive_pauses` row applies (precedence) | `/admin/proactive-chat` → channel overrides + DM `unsubscribe` audit |
+| Public-channel question silently refused | Entity not in `proactive_public_dataset` allowlist | Refused topics rollup → Make public |
+| Quota bar pinned at 100% | Hit `monthlyClassifierCap` for the month | Raise cap or wait for UTC month roll-over |
+| Announcement never posted on first enable | `announcement_posted_at` is non-null from a prior enable | `workspace_proactive_config` row |
+
+---
+
+## See also
+
+- [Slack integration](/guides/slack) — End-user disclosure and OAuth install flow
+- [Chat SDK Bridge → Proactive Direct Messages](/plugins/interactions/chat#proactive-direct-messages) — Plugin-level `sendDirectMessage()` mechanic
+- [Approval workflows](/guides/approval-workflows) — Related gate for query approvals (separate from proactive kill switches)

@@ -4,6 +4,8 @@
   "pages": [
     "auth",
     "widget",
+    "well-known",
+    "mcp",
     "actions",
     "admin",
     "admin-abuse-prevention",

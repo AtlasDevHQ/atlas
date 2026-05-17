@@ -34,7 +34,7 @@ export function EndCta() {
           </a>
         </div>
         <p className="mt-3.5 font-mono text-[11px] tracking-[0.04em] text-zinc-400">
-          works in claude desktop, cursor, continue · self-host is free
+          works in claude desktop, cursor, continue · slack-native (enterprise) · self-host is free
         </p>
       </div>
     </section>

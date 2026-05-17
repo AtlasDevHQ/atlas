@@ -9,6 +9,33 @@ A workspace that ships the same product to multiple replicas (US/EU/APAC, dev/st
 
 The chat surface knows which group it is talking to and which replica to execute SQL against. The two pieces are decoupled — content scope and execution target — and a per-turn override switches the execution target without losing the content scope.
 
+## Creating an environment from the admin console
+
+The day-to-day operator workflow lives at **Admin → Connections** with **Group by Environment** selected. Three flows are worth knowing:
+
+### Create a new environment
+
+1. Click **New environment** (or **Create environment** from any existing group's `…` menu)
+2. Pick a name (`prod`, `staging`, `eu-only`)
+3. Pick the initial members — connections that already exist. Members must share a schema; the wizard refuses to add a member whose columns don't reconcile with the group's existing members
+4. Save. Atlas flips the picked connections out of their auto-generated single-member groups and into the new shared one. Existing chat conversations and entities targeting the old (single-member) group's id stay routed — they don't migrate automatically; if you want them to follow the new group, edit the conversation's content scope from the chat header's env picker
+
+### Add or remove members
+
+Open a group's detail page and use **Add member** / **Remove member**. The add flow surfaces the schema-compatibility check; the remove flow refuses if removing the member would leave the group empty (delete the group instead).
+
+### Merge two single-connection deploys into one group
+
+When `us-int` and `eu` were created as separate top-level connections and should logically be the same `prod` environment, use **Merge into group** from either source group's `…` menu:
+
+1. Pick the target group
+2. The wizard renders the schema diff between the two groups' primary members. Column-level mismatches are flagged red; the merge is gated on resolving them (either reconcile the YAML drift in the [drift drawer](/guides/admin-console#drift-drawer-144) first, or accept the merge as-is if the mismatches are tolerable)
+3. Confirm — the source members move into the target group atomically and the source group is deleted
+
+### Archive a group
+
+Covered in detail under [Archiving a group](#archiving-a-group) below. The admin console exposes it as **Archive** in the group's `…` menu; the API equivalent is `POST /api/v1/admin/connection-groups/:id/archive`.
+
 ## Connection groups
 
 Connections live inside **connection groups**. Each group has a name (`prod`, `staging`, `eu-only`) and one or more member connections. Every existing connection automatically lands in a single-member group named after itself when you upgrade, so a single-connection deploy works exactly as before — the group is invisible until you add a second member.

@@ -105,6 +105,12 @@ export const conversations = pgTable(
     // entities, dashboards, etc. resolve). Two columns, two purposes —
     // they are deliberately decoupled.
     connectionGroupId: text("connection_group_id"),
+    // 0077 — three-state Auto/Pin/All picker state (#2518). NULL is
+    // read as "pin" by the runtime so pre-#2518 conversations whose
+    // `connection_id` already names a single member keep their
+    // single-execution behavior. Validation lives in the chat route's
+    // Zod schema (single source of truth) rather than a CHECK here.
+    routingMode: text("routing_mode"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
     // Saved/starred

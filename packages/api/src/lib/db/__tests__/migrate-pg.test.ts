@@ -1458,6 +1458,69 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows[0]?.connection_group_id).toBe(groupId);
   }, PG_TEST_TIMEOUT_MS);
 
+  // 0077 — conversations.routing_mode. Adds the three-state Auto/Pin/
+  // All picker column the cross-environment routing slice (#2518)
+  // lives on. What this set of assertions guards against:
+  //   - A future migration that flips `routing_mode` to NOT NULL
+  //     without a backfill — legacy conversations (pre-0077) must keep
+  //     booting with NULL on the column.
+  //   - A future migration that adds a too-strict CHECK constraint
+  //     that rejects the legitimate values. The Zod enum in the chat
+  //     route is the single source of truth; a DB-level CHECK is
+  //     intentionally omitted (see 0077).
+  it("conversations.routing_mode: column exists, is nullable, and accepts auto/pin/all", async () => {
+    const { rows } = await pool.query<{ is_nullable: string; data_type: string }>(
+      `SELECT is_nullable, data_type
+       FROM information_schema.columns
+       WHERE table_name = 'conversations'
+         AND column_name = 'routing_mode'
+         AND table_schema = current_schema()`,
+    );
+    expect(rows[0]?.data_type).toBe("text");
+    expect(rows[0]?.is_nullable).toBe("YES");
+
+    // The three documented values must all be writable. We probe with
+    // raw SQL (no application-layer validation) so a future CHECK
+    // constraint that diverges from the Zod enum fails this test
+    // loudly rather than silently dropping a picker selection.
+    const orgId = `org-rm-${Date.now()}`;
+    const userBase = `user-rm-${Date.now()}`;
+    for (const mode of ["auto", "pin", "all"] as const) {
+      await pool.query(
+        `INSERT INTO conversations (user_id, title, surface, routing_mode, org_id)
+         VALUES ($1, $2, 'web', $3, $4)`,
+        [`${userBase}-${mode}`, `Routing mode test (${mode})`, mode, orgId],
+      );
+    }
+    const persisted = await pool.query<{ routing_mode: string }>(
+      `SELECT routing_mode FROM conversations WHERE org_id = $1 ORDER BY routing_mode`,
+      [orgId],
+    );
+    expect(persisted.rows.map((r) => r.routing_mode)).toEqual(["all", "auto", "pin"]);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("conversations.routing_mode: pre-0077 rows stay readable as NULL (back-compat read-side default)", async () => {
+    // Legacy conversations (no routing_mode column when they were
+    // written) survive the migration with NULL on the new column.
+    // The runtime treats NULL as "pin" — pre-#2518 rows carry a
+    // single connection_id and the safest interpretation is "stay
+    // pinned to that member". This test inserts a row WITHOUT
+    // setting routing_mode (mimicking a pre-#2518 INSERT) and
+    // asserts the read surfaces NULL, not a synthetic default.
+    const orgId = `org-rm-legacy-${Date.now()}`;
+    const userId = `user-rm-legacy-${Date.now()}`;
+    await pool.query(
+      `INSERT INTO conversations (user_id, title, surface, connection_id, org_id)
+       VALUES ($1, 'Legacy pre-0077 row', 'web', 'us-int', $2)`,
+      [userId, orgId],
+    );
+    const { rows } = await pool.query<{ routing_mode: string | null }>(
+      `SELECT routing_mode FROM conversations WHERE user_id = $1`,
+      [userId],
+    );
+    expect(rows[0]?.routing_mode).toBeNull();
+  }, PG_TEST_TIMEOUT_MS);
+
   it("conversations: connection_id and connection_group_id can hold independent values (per-turn override shape)", async () => {
     // The slice's core invariant: a conversation can pin its content
     // scope to a multi-member "prod" group while its execution target

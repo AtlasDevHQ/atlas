@@ -20,7 +20,11 @@ import { Markdown } from "./chat/markdown";
 import { FollowUpChips } from "./chat/follow-up-chips";
 import { SuggestionChips } from "./chat/suggestion-chips";
 import { DeveloperChatEmptyState } from "./chat/developer-empty-state";
-import { ChatEnvPicker, useChatEnvGroups } from "./chat/env-picker";
+import {
+  ChatEnvPicker,
+  useChatEnvGroups,
+  type ConversationRoutingMode,
+} from "./chat/env-picker";
 import { useDevModeNoDrafts } from "../hooks/use-dev-mode-no-drafts";
 import type { QuerySuggestion } from "@/ui/lib/types";
 import { ShareDialog } from "./chat/share-dialog";
@@ -125,6 +129,9 @@ export function AtlasChat() {
   // without a picker.
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
+  // #2518 — three-state Auto/Pin/All cross-environment routing picker.
+  const [selectedRoutingMode, setSelectedRoutingMode] =
+    useState<ConversationRoutingMode | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const {
@@ -157,6 +164,7 @@ export function AtlasChat() {
     // next turn without rebuilding the transport.
     getConnectionId: () => selectedConnectionId,
     getConnectionGroupId: () => selectedGroupId,
+    getRoutingMode: () => selectedRoutingMode,
   });
 
   const managedSession = authClient.useSession();
@@ -547,9 +555,11 @@ export function AtlasChat() {
                     transportError={envGroupsQuery.error}
                     activeGroupId={selectedGroupId}
                     activeConnectionId={selectedConnectionId}
-                    onSelect={({ groupId, connectionId }) => {
+                    activeRoutingMode={selectedRoutingMode}
+                    onSelect={({ groupId, connectionId, routingMode }) => {
                       setSelectedGroupId(groupId);
                       setSelectedConnectionId(connectionId);
+                      setSelectedRoutingMode(routingMode);
                     }}
                   />
                   <Button

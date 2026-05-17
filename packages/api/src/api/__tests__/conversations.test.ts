@@ -144,6 +144,10 @@ mock.module("@atlas/api/lib/conversations", () => ({
   // override this mock locally.
   resolveGroupForConnection: mock(() => Promise.resolve(null)),
   verifyGroupBelongsToOrg: mock(() => Promise.resolve("ok")),
+  // #2518 — three-state routing-mode picker. Default to a no-op
+  // success — tests that exercise the picker write path override
+  // locally.
+  updateConversationRoutingMode: mock(() => Promise.resolve({ ok: true as const })),
   // Type exports (no runtime value — needed so mock.module doesn't break re-exports)
 }));
 

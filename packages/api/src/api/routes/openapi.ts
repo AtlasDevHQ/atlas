@@ -214,12 +214,155 @@ export const staticPaths: Record<string, unknown> = {
       },
     },
   },
+
+  // -------------------------------------------------------------------
+  // Well-Known — OAuth 2.1 + OIDC + RFC 9728 discovery
+  // -------------------------------------------------------------------
+  // These endpoints are read by MCP clients (Claude Desktop, ChatGPT,
+  // Cursor) and any RFC-conformant OAuth client. They publish issuer
+  // metadata, OIDC configuration, and the protected-resource document
+  // that ties the MCP audience to its authorization server. Only
+  // available when auth mode is `managed` (Better Auth).
+  "/.well-known/oauth-authorization-server/api/auth": {
+    get: {
+      operationId: "wellKnownOAuthAuthorizationServer",
+      summary: "OAuth 2.1 authorization-server metadata",
+      description:
+        "RFC 8414 OAuth authorization-server metadata document. Path-insertion form — " +
+        "the issuer's path (`/api/auth`) is appended after the well-known segment. " +
+        "Consumed by MCP clients during OAuth onboarding to discover token, authorize, " +
+        "registration, and introspection endpoints. " +
+        "Only available when auth mode is `managed`.",
+      tags: ["Well-Known"],
+      security: [],
+      responses: {
+        "200": {
+          description: "Authorization-server metadata (JSON)",
+          content: { "application/json": { schema: { type: "object" } } },
+        },
+        "404": errorResponse("Auth mode is not `managed` — metadata unavailable"),
+        "503": errorResponse("Metadata generation failed (transient — includes requestId)"),
+      },
+    },
+  },
+
+  "/.well-known/openid-configuration/api/auth": {
+    get: {
+      operationId: "wellKnownOpenIdConfiguration",
+      summary: "OpenID Connect discovery document",
+      description:
+        "OIDC discovery document (path-appending form). Same content as the OAuth " +
+        "authorization-server metadata plus OIDC-specific fields (userinfo endpoint, " +
+        "supported scopes, claim types). " +
+        "Only available when auth mode is `managed`.",
+      tags: ["Well-Known"],
+      security: [],
+      responses: {
+        "200": {
+          description: "OIDC configuration (JSON)",
+          content: { "application/json": { schema: { type: "object" } } },
+        },
+        "404": errorResponse("Auth mode is not `managed` — metadata unavailable"),
+        "503": errorResponse("Metadata generation failed (transient — includes requestId)"),
+      },
+    },
+  },
+
+  "/.well-known/oauth-protected-resource/mcp/{workspace_id}": {
+    get: {
+      operationId: "wellKnownOAuthProtectedResource",
+      summary: "RFC 9728 protected-resource metadata for hosted MCP",
+      description:
+        "RFC 9728 OAuth protected-resource metadata. Per the MCP authorization spec, " +
+        "the resource server (us) publishes one document per protected resource so the " +
+        "client can discover the auth server before making an authenticated request. " +
+        "`workspace_id` segments the path so a future per-workspace metadata extension " +
+        "(policy URLs, contact info) has somewhere to land without breaking clients hitting " +
+        "the canonical region resource. The returned `resource` URI must match the JWT `aud` " +
+        "exactly; workspace isolation is enforced via the `ATLAS_OAUTH_WORKSPACE_CLAIM` " +
+        "custom claim at the verifier. " +
+        "Only available when auth mode is `managed`.",
+      tags: ["Well-Known"],
+      security: [],
+      parameters: [
+        {
+          name: "workspace_id",
+          in: "path",
+          required: true,
+          schema: { type: "string" },
+          description: "Workspace identifier (segments the path; resource URI is region-scoped, not workspace-scoped).",
+        },
+      ],
+      responses: {
+        "200": {
+          description: "Protected-resource metadata (JSON)",
+          content: { "application/json": { schema: { type: "object" } } },
+        },
+        "400": errorResponse("Missing workspace_id"),
+        "404": errorResponse("Auth mode is not `managed` — metadata unavailable"),
+        "503": errorResponse("Metadata generation failed (transient — includes requestId)"),
+      },
+    },
+  },
+
+  // -------------------------------------------------------------------
+  // Hosted MCP — Server-Sent Events transport for MCP clients
+  // -------------------------------------------------------------------
+  "/mcp/{workspace_id}/sse": {
+    get: {
+      operationId: "hostedMcpSse",
+      summary: "Hosted MCP server (SSE transport)",
+      description:
+        "Hosted Model Context Protocol endpoint. MCP clients (Claude Desktop, ChatGPT, " +
+        "Cursor) connect here over Server-Sent Events to call tools (`executeSQL`, " +
+        "`explore`, typed metric tools) and list prompts. " +
+        "Authentication is OAuth 2.1 + RFC 9728: clients first hit " +
+        "`/.well-known/oauth-protected-resource/mcp/{workspace_id}` to discover the " +
+        "authorization server, complete the OAuth flow, then connect here with " +
+        "`Authorization: Bearer <token>`. The token's `aud` claim must match the " +
+        "advertised resource URI and `ATLAS_OAUTH_WORKSPACE_CLAIM` must match " +
+        "`workspace_id`. " +
+        "Concurrent session count is bounded by `ATLAS_MCP_MAX_SESSIONS` (default 100); " +
+        "exceeding it returns `503 too_many_sessions`. " +
+        "See the [MCP guide](/guides/mcp) for the full agent-onboarding flow.",
+      tags: ["MCP"],
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        {
+          name: "workspace_id",
+          in: "path",
+          required: true,
+          schema: { type: "string" },
+          description: "Workspace identifier — must match the `ATLAS_OAUTH_WORKSPACE_CLAIM` value in the bearer token.",
+        },
+      ],
+      responses: {
+        "200": {
+          description: "SSE stream (text/event-stream)",
+          content: { "text/event-stream": { schema: { type: "string" } } },
+        },
+        "401": errorResponse("Missing or invalid bearer token"),
+        "403": errorResponse("Token workspace claim does not match path workspace_id"),
+        "503": errorResponse("Session cap reached (too_many_sessions)"),
+      },
+    },
+  },
 };
 
-/** Static tag definitions for auth and widget. */
+/** Static tag definitions for auth, widget, well-known, and hosted MCP. */
 export const staticTags = [
   { name: "Auth", description: "Authentication routes (managed auth via Better Auth)" },
   { name: "Widget", description: "Embeddable chat widget (host page, loader script, assets)" },
+  {
+    name: "Well-Known",
+    description:
+      "OAuth 2.1 / OIDC / RFC 9728 discovery documents. Consumed by MCP clients (Claude Desktop, ChatGPT, Cursor) and any RFC-conformant OAuth client. Only available when auth mode is `managed`.",
+  },
+  {
+    name: "MCP",
+    description:
+      "Hosted Model Context Protocol endpoints. See the [MCP guide](/guides/mcp) for the agent-onboarding flow and tool surface.",
+  },
 ];
 
 /** Security scheme used across the API. */

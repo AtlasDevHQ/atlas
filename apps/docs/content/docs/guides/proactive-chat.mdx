@@ -1,0 +1,188 @@
+---
+title: Proactive Chat — admin guide
+description: The 1.5.0 proactive chat tier — kill switches, quotas, sensitivity presets, feedback loops, public-dataset HITL, and the activation announcement.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Proactive chat is the 1.5.0 (milestone #43) capability that lets Atlas **listen** in opt-in Slack channels, react to data-shaped questions with an emoji, and answer on tap. It is `/ee`-gated and currently **Slack-first only** — Teams, Discord, and Google Chat are wired but feature-flagged off until the bar in the [PRD](https://github.com/AtlasDevHQ/atlas/issues/2291) (≤5% misfire, ≥70% acceptance) is met on a chat platform.
+
+<Callout type="info" title="Paid tier">
+Proactive chat is part of Atlas Enterprise. The end-user disclosure surfaces in [`guides/slack.mdx`](/guides/slack); this guide is the admin/operator companion.
+</Callout>
+
+This guide covers the six admin surfaces that ship with proactive chat:
+
+1. [Three-layer kill switch](#three-layer-kill-switch) — workspace, channel, user
+2. [Per-month quota cap + meter](#monthly-quota--meter)
+3. [Sensitivity presets](#sensitivity-presets)
+4. [Feedback buttons + `/atlas feedback`](#feedback-loop)
+5. [Public-dataset HITL workflow](#public-dataset-hitl-workflow)
+6. [Activation announcement + install consent](#activation-announcement)
+
+---
+
+## Three-layer kill switch
+
+Proactive chat is a trust-sensitive surface. Admins, channel members, and end-users each get an independent kill switch, and the three layers are **fail-closed** — if any layer is unreachable at evaluation time, Atlas suppresses the proactive answer rather than risk surfacing one outside policy. The fail-closed contract was hardened in 1.5.0's polish PR (#2545).
+
+### Layer 1 — Workspace toggle (admin)
+
+**Route:** `/admin/proactive`
+
+The workspace-wide toggle is the master switch. When `Enabled` is off, no proactive evaluation runs anywhere in the workspace; `/atlas` slash commands and `@atlas` mentions continue to work normally.
+
+| Control | What it does |
+|---------|--------------|
+| **Enabled / Disabled** | Master switch. Disabling stops all proactive evaluation immediately |
+| **Channel allowlist** | List of channel IDs that proactive mode listens in. Empty = no channels |
+| **Sensitivity preset** | `low` / `medium` / `high` — see [Sensitivity presets](#sensitivity-presets) |
+| **Daily / monthly quotas** | See [Monthly quota & meter](#monthly-quota--meter) |
+| **Announcement channel** | Channel where the [activation announcement](#activation-announcement) posts on first enablement |
+
+### Layer 2 — Per-channel pause (channel members)
+
+**Slack command:** `@atlas pause` (in-channel)
+
+Any channel member — admin or not — can pause proactive answers in that channel for **24 hours** with `@atlas pause`. The pause is stored in the `proactive_pauses` table and the admin route `/admin/proactive/pauses` surfaces all active pauses across the workspace so admins can see who's silenced what:
+
+- **Pause owner** — the user who issued the pause
+- **Channel** — channel ID + name
+- **Expires** — timestamp when the pause auto-clears
+- **Reason** — optional free-text from `@atlas pause for <reason>`
+
+Admins can revoke a pause early from the same page (e.g. after coordinating an alternative). The pause overrides the channel allowlist — even if the channel is on the workspace allowlist, an active pause silences proactive evaluation.
+
+### Layer 3 — Per-user opt-out (end-users)
+
+**Slack DM:** `unsubscribe` (DM to `@atlas`)
+
+Any end-user can DM `unsubscribe` to Atlas to opt out of proactive answers **across the entire workspace**. Their user ID lands in the `proactive_opt_outs` table; subsequent proactive evaluations skip messages they author. Admins can audit the opt-out list from `/admin/proactive/opt-outs`.
+
+The opt-out is reversible — the user can DM `subscribe` to re-enable proactive answers for themselves.
+
+<Callout type="warn">
+**Fail-closed semantics.** If the proactive evaluator can't reach the workspace toggle, channel pause table, or per-user opt-out table at evaluation time, it logs the error and suppresses the answer. There is no "fail-open" mode — the contract is that policy unavailability is treated as policy denial.
+</Callout>
+
+---
+
+## Monthly quota & meter
+
+Proactive answers cost API tokens and operator attention. Each workspace gets a configurable per-month cap, tracked in the `proactive_meter_events` table.
+
+**Route:** `/admin/proactive/analytics`
+
+The page shows:
+
+- **Current month's usage** — bar chart of proactive answers / day this month
+- **Cap progress** — % of the configured cap consumed, with traffic-light coloring
+- **Alert thresholds** — flags fire at 80% (yellow), 95% (orange), and 100% (red); admins are emailed at the 80% and 100% thresholds via the configured email provider
+- **Cap exceeded** — when the workspace hits 100%, the workspace toggle flips itself to **Cap reached** state and proactive answers suppress for the rest of the month. The chat surfaces (slash commands, mentions) continue to work — the cap only affects the proactive listening tier
+
+To raise the cap, change the **Monthly quota** value on `/admin/proactive`. The change applies immediately and the suppression clears on the next evaluation.
+
+The `proactive_meter_events` table records every fire (`reaction_added`, `answer_sent`, `acceptance_logged`, `feedback_thumb_up`, `feedback_thumb_down`) with timestamps so the analytics page can compute the underlying rate metrics. Self-hosted operators with access to the internal database can write their own dashboards against this table.
+
+---
+
+## Sensitivity presets
+
+The sensitivity preset gates the confidence threshold that proactive evaluation uses to decide whether a message is data-shaped. Higher confidence = fewer answers but lower misfire rate.
+
+**Route:** `/admin/proactive` → Sensitivity dropdown
+
+| Preset | Confidence threshold | Expected misfire rate | When to use |
+|--------|---------------------|----------------------|-------------|
+| `low` | ≥ 0.85 | < 3% | Conservative default for new workspaces. Skews toward "only react when very sure" |
+| `medium` | ≥ 0.75 | 3–8% | The default for design partners after the first two weeks. Balances coverage and noise |
+| `high` | ≥ 0.65 | 8–15% | Power users who'd rather see a wrong-but-rejectable suggestion than miss a question. Pair with a tight kill-switch culture |
+
+The PRD's "promote beyond Slack" bar is **≤5% misfire / ≥70% acceptance** at the `medium` preset. The presets exist so workspaces can tune without exposing the raw threshold — drift the confidence model and the presets retune in lockstep.
+
+The sensitivity-preset rationale UI (#2299 / PR #2536) renders a short explanation next to each preset describing why that threshold is what it is, so an admin picking between `low` and `medium` doesn't have to dig into PRs to understand the trade-off.
+
+---
+
+## Feedback loop
+
+Every proactive answer ships with two affordances for telling Atlas it was wrong:
+
+### Inline feedback buttons
+
+Each answer carries thumbs-up / thumbs-down buttons (#2298 / PR #2529). Clicking either records a row in `proactive_meter_events` and surfaces on the analytics page as the **acceptance rate** metric. The buttons are visible only to the user who originally asked the question, matching the Slack ephemeral-message contract.
+
+### `/atlas feedback` slash command
+
+For freeform feedback ("this answer was technically right but missed the context"), the `/atlas feedback` slash command opens a modal where the user can pick the conversation they're commenting on and submit a description. Submissions land in `proactive_feedback` and surface on `/admin/proactive/feedback` for admin triage.
+
+Admins can use the feedback to:
+
+- Decide whether to lower the sensitivity preset (high false-positive rate)
+- Decide whether to raise it (high "missed it" rate)
+- Spot common confusion patterns and seed the [glossary](/semantic-layer/glossary-and-metrics) with disambiguating terms
+
+---
+
+## Public-dataset HITL workflow
+
+Proactive chat needs a special story for askers who aren't linked to the workspace's identity provider — e.g. a guest contributor in a Slack Connect channel, or a customer in a shared support channel. By default proactive evaluation skips messages from un-linked askers, but admins who want to surface answers to public datasets (where the RLS gate is "everyone reads everything") can opt into a human-in-the-loop (HITL) flow.
+
+**Route:** `/admin/proactive/public-dataset`
+
+The page shows:
+
+- **Eligible channels** — channels that are flagged as public-dataset eligible (configured per-channel)
+- **Pending review queue** — proactive answers that would have fired against un-linked askers, queued for admin review
+- **Review actions** — Approve (post the answer), Reject (drop silently), Dismiss-and-train (drop + record as a misfire for the sensitivity preset)
+
+The HITL flow runs out-of-band: the asker doesn't see a "your question is being reviewed" indicator (that would leak the existence of the channel allowlist). Atlas either posts the answer after admin approval or stays silent. Approval latency is logged so admins can see whether they're keeping up with the review queue or letting it grow stale.
+
+This is the right surface to use when you want Atlas to act in a Slack Connect channel without granting full workspace access to every external participant.
+
+---
+
+## Activation announcement
+
+When proactive mode is **first enabled** for a workspace, Atlas posts a one-time announcement to the admin-configured **announcement channel** (`/admin/proactive` → Announcement channel field). The announcement carries the same privacy disclosure that appears at OAuth install time:
+
+> **Atlas reads messages in channels you opt in to proactive mode.**
+>
+> By default Atlas only responds to direct mentions, slash commands, and DMs. If a workspace admin enables Atlas's proactive mode and adds a channel to the proactive allowlist, Atlas will read messages in that channel to detect data questions and may offer to answer them. Atlas does not monitor channels that have not been explicitly opted in.
+>
+> Users can DM Atlas with `unsubscribe` to opt out of proactive answers across the workspace. Channel members can also pause proactive mode in a channel for 24 hours with `@atlas pause`.
+
+The announcement post is recorded in `proactive_meter_events` as `announcement_posted` so admins can confirm it actually fired (and re-post manually if needed via the page's **Re-post announcement** button).
+
+### Install-flow consent gate
+
+The OAuth install flow surfaces the same disclosure **before** the workspace admin grants the OAuth scopes (#2300 / PR #2539). The disclosure includes:
+
+- What channels proactive mode will listen in (none initially — the workspace allowlist is empty until the admin adds channels)
+- How channel members pause and how users opt out
+- A link to this admin guide
+
+Admins must check a consent box before the OAuth grant proceeds — there's no path to enable proactive chat without explicit consent at install time.
+
+---
+
+## Errors & troubleshooting
+
+Proactive-mode errors use the `proactive_*` error code prefix. See [Error Codes](/reference/error-codes) for the full catalog. The most common ones at admin time:
+
+| Code | What it means | Where to look |
+|------|---------------|---------------|
+| `proactive_kill_switch_unreachable` | Fail-closed suppression — Atlas couldn't read the workspace toggle / channel pause / per-user opt-out table | Internal DB health |
+| `proactive_quota_exceeded` | Workspace hit the monthly cap | `/admin/proactive/analytics` |
+| `proactive_channel_not_allowed` | Message posted in a channel not on the workspace allowlist | `/admin/proactive` channel allowlist |
+| `proactive_user_opted_out` | Author has a row in `proactive_opt_outs` | `/admin/proactive/opt-outs` |
+| `proactive_below_threshold` | Confidence score below the sensitivity preset's gate | `/admin/proactive` sensitivity preset |
+
+---
+
+## See also
+
+- [Slack integration](/guides/slack) — End-user disclosure and OAuth install flow
+- [Chat SDK Bridge → Proactive Direct Messages](/plugins/interactions/chat#proactive-direct-messages) — Plugin-level mechanic
+- [Approval workflows](/guides/approval-workflows) — Related gate for query approvals (separate from proactive kill switches)
+- [Error codes](/reference/error-codes) — Full `proactive_*` error catalog

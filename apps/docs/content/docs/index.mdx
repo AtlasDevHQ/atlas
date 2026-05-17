@@ -5,99 +5,117 @@ description: Atlas is a YAML-defined semantic layer for analytics — authored b
 
 import { Callout } from "fumadocs-ui/components/callout";
 import { Cards, Card } from "fumadocs-ui/components/card";
+import { Accordion, Accordions } from "fumadocs-ui/components/accordion";
+
+Ask questions of your data in plain English. Atlas is the trust layer between your business questions and your SQL warehouse — agent-native, YAML-defined, deploy-anywhere.
 
 > Atlas is a YAML-defined semantic layer for analytics — authored by humans, consumed by AI agents.
 
-The semantic layer is the product. Everything else — the agent loop, the MCP server, the chat widget, the SQL validation pipeline — exists to make the YAML you write the source of truth for how questions become answers. Every field in the format exists because an LLM needs it: `sample_values` to ground the agent, `glossary.status: ambiguous` to force clarifying questions, `metrics.objective` to pick `MAX` vs `MIN`, `query_patterns` to teach canonical join shapes.
+## Pick your path
 
-## Get started
+Atlas works across four onboarding shapes. Pick the one that matches what you want to do — each card is a single CTA, and you can ignore the rest of the page until you've completed it.
 
-The lead path is **MCP**. Install Atlas as a Model Context Protocol server and start asking questions from Claude Desktop, Cursor, or Continue:
+<Cards>
+  <Card
+    title="Just try Atlas (no install)"
+    href="https://app.useatlas.dev/demo"
+    description="Open the hosted demo at demo.useatlas.dev and ask any of the canonical NovaMart questions — GMV, top categories, return reasons. No signup, no install."
+  />
+  <Card
+    title="Use Atlas in my AI agent"
+    href="/guides/mcp"
+    description="One command: bunx @useatlas/mcp init --hosted --write. Connects Claude Desktop, Cursor, ChatGPT, or Continue to a hosted Atlas workspace."
+  />
+  <Card
+    title="Sign up for the hosted SaaS"
+    href="/getting-started/hosted"
+    description="app.useatlas.dev — connect your DB, ask questions in the chat UI. Two-week free trial; no credit card."
+  />
+  <Card
+    title="Self-host on my infrastructure"
+    href="/getting-started/quick-start"
+    description="Docker, Vercel, Railway — your data never leaves your network. Free and AGPL-licensed."
+  />
+</Cards>
 
-```bash
-bunx @useatlas/mcp init --local            # print paste-ready config
-bunx @useatlas/mcp init --local --write    # merge into the detected client config (with a .bak)
-```
+## The semantic layer is the product
 
-Restart your client and try one of the canonical NovaMart demo questions:
+Everything else — the agent loop, the MCP server, the chat widget, the SQL validation pipeline — exists to make the YAML you write the source of truth for how questions become answers. Every field in the format exists because an LLM needs it: `sample_values` to ground the agent, `glossary.status: ambiguous` to force clarifying questions, `metrics.objective` to pick `MAX` vs `MIN`, `query_patterns` to teach canonical join shapes.
+
+The fastest way to feel why this works: try the [hosted demo](https://app.useatlas.dev/demo) and ask one of these canonical NovaMart questions, then read the SQL the agent wrote:
 
 - "What's our GMV this quarter?"
 - "What's our top-performing category by GMV this month?"
-- "Monthly GMV trend over the past 6 months."
 - "Show me revenue last quarter." — the agent asks which definition (GMV vs net revenue vs seller revenue) because `revenue` is `status: ambiguous` in the glossary
 - "What are our most common return reasons?"
 
-<Cards>
-  <Card title="MCP Server" href="/guides/mcp" description="Connect Claude Desktop, Cursor, or Continue with bunx @useatlas/mcp init" />
-  <Card title="The Semantic Layer" href="/semantic-layer" description="The YAML format that powers Atlas — entities, dimensions, measures, joins, glossary, metrics" />
-  <Card title="Hosted Quick Start" href="/getting-started/hosted" description="Sign up at app.useatlas.dev and start querying in minutes" />
-  <Card title="Self-Hosted Quick Start" href="/getting-started/quick-start" description="Local dev with Docker, Bun, and the NovaMart demo dataset" />
-</Cards>
+---
 
-## Getting Started
+## Go deeper
 
-- [Hosted Quick Start](/getting-started/hosted) -- Sign up at app.useatlas.dev and start querying in minutes
-- [Self-Hosted Quick Start](/getting-started/quick-start) -- Deploy Atlas on your own infrastructure
-- [Connect Your Data](/getting-started/connect-your-data) -- Connect to PostgreSQL, MySQL, or plugin-based sources (ClickHouse, Snowflake, DuckDB, Salesforce)
-- [Semantic Layer Reference](/getting-started/semantic-layer) -- The full YAML format reference (entities, dimensions, measures, joins, virtual dimensions, query patterns)
-- [Demo Dataset](/getting-started/demo-datasets) -- The NovaMart e-commerce dataset and its canonical questions
+<Accordions>
 
-## The Semantic Layer
+<Accordion title="Core concepts — the semantic layer YAML format">
 
-The YAML format is a first-class concept — read these before authoring anything in `semantic/`:
+The YAML format is a first-class concept. Read these before authoring anything in `semantic/`:
 
-- [Overview](/semantic-layer) -- The moat sentence, the canonical questions, and a 20-line YAML excerpt
-- [YAML Format](/semantic-layer/yaml-format) -- Pointer to the full field-level reference
-- [Glossary & Metrics](/semantic-layer/glossary-and-metrics) -- How glossary terms force clarifying questions and how metrics give the agent authoritative SQL
-- [Why YAML?](/semantic-layer/why-yaml) -- Why the semantic layer is files on disk, versioned and reviewable
+- [Overview](/semantic-layer) — The moat sentence, the canonical questions, and a 20-line YAML excerpt
+- [YAML Format](/semantic-layer/yaml-format) — Full field-level reference: entities, dimensions, measures, joins, virtual dimensions, query patterns
+- [Glossary & Metrics](/semantic-layer/glossary-and-metrics) — How glossary terms force clarifying questions and how metrics give the agent authoritative SQL
+- [Why YAML?](/semantic-layer/why-yaml) — Why the semantic layer is files on disk, versioned and reviewable
+- [Multi-environment semantic layer](/semantic-layer/multi-env) — One layer, several connections (dev/staging/prod, US/EU/APAC)
 
-## Guides
+</Accordion>
 
-- [MCP Server](/guides/mcp) -- Use Atlas in Claude Desktop, Cursor, and other MCP clients (the lead install path)
-- [Slack Integration](/guides/slack) -- Query your data from Slack with slash commands and threaded follow-ups
-- [Python Data Analysis](/guides/python) -- Sandboxed Python execution for charts and statistical analysis
-- [Scheduled Tasks](/guides/scheduled-tasks) -- Run recurring queries and deliver results via email, Slack, or webhook
-- [Actions Framework](/guides/actions) -- Approval-gated write operations (email, JIRA, and more)
-- [Admin Console](/guides/admin-console) -- Monitor connections, browse the semantic layer, and manage users
-- [Embedding Widget](/guides/embedding-widget) -- Add an Atlas chat widget to any website with a script tag
-- [Sharing Conversations](/guides/sharing-conversations) -- Share conversations via public links and embed them
-- [Troubleshooting](/guides/troubleshooting) -- Diagnose and fix common issues
+<Accordion title="Guides — surfaces that consume the semantic layer">
 
-## Deployment
+- [MCP Server](/guides/mcp) — Use Atlas in Claude Desktop, Cursor, and other MCP clients (the lead install path)
+- [Slack Integration](/guides/slack) — Query your data from Slack with slash commands and threaded follow-ups
+- [Proactive Chat](/guides/proactive-chat) — 1.5.0 admin guide: kill switches, quotas, sensitivity presets, public-dataset HITL
+- [Dashboards](/guides/dashboards) — Chat-bound dashboard editor with per-user drafts and atomic Publish (1.4.6)
+- [Python Data Analysis](/guides/python) — Sandboxed Python execution for charts and statistical analysis
+- [Scheduled Tasks](/guides/scheduled-tasks) — Recurring queries delivered via email, Slack, or webhook
+- [Actions Framework](/guides/actions) — Approval-gated write operations (email, JIRA, and more)
+- [Admin Console](/guides/admin-console) — Monitor connections, browse the semantic layer, manage users, reconcile schema drift
+- [Embedding Widget](/guides/embedding-widget) — Add an Atlas chat widget to any website with a script tag
+- [Sharing Conversations](/guides/sharing-conversations) — Share conversations via public links and embed them
+- [Troubleshooting](/guides/troubleshooting) — Diagnose and fix common issues
 
-- [Deploy](/deployment/deploy) -- One-click deploy to Railway, Vercel, or Docker
-- [Authentication](/deployment/authentication) -- Configure auth modes: none, API key, managed, BYOT
+</Accordion>
 
-## Frameworks
+<Accordion title="Reference — every flag, every env var, every endpoint">
 
-- [Bring Your Own Frontend](/frameworks/overview) -- Use Atlas with any frontend framework
-- Framework-specific guides for [React/Vite](/frameworks/react-vite), [Nuxt](/frameworks/nuxt), [SvelteKit](/frameworks/sveltekit), and [TanStack Start](/frameworks/tanstack-start)
+- [Environment Variables](/reference/environment-variables) — Complete env var reference with defaults
+- [CLI Reference](/reference/cli) — All commands: init, diff, query, doctor, validate, mcp, eval, canonical-eval, and more
+- [Configuration](/reference/config) — Declarative config with `atlas.config.ts`
+- [SDK Reference](/reference/sdk) — TypeScript SDK for programmatic API access, including MCP onboarding helpers and cross-environment querying types
+- [React Hooks Reference](/reference/react) — Headless React hooks for custom Atlas chat UIs
+- [API Reference](/reference/api) — HTTP API endpoints for chat, queries, conversations, well-known discovery, and hosted MCP
+- [Error Codes](/reference/error-codes) — Full catalog of every error code with retry guidance
 
-## Security
+</Accordion>
 
-- [SQL Validation Pipeline](/security/sql-validation) -- 7-layer defense-in-depth for read-only SQL enforcement
+<Accordion title="For developers — plugin authoring, architecture, frameworks">
 
-## Reference
+- [Bring Your Own Frontend](/frameworks/overview) — Use Atlas with any frontend framework (Nuxt, SvelteKit, React/Vite, TanStack Start)
+- [Plugin Authoring Guide](/plugins/authoring-guide) — Build datasource, context, interaction, action, and sandbox plugins
+- [Sandbox Architecture](/architecture/sandbox) — Platform-agnostic code execution sandboxing design
+- [SQL Validation Pipeline](/security/sql-validation) — 7-layer defense-in-depth for read-only SQL enforcement
+- [Atlas vs Alternatives](/comparisons) — Feature matrix comparing Atlas, WrenAI, Vanna, Metabase, Cube, and ThoughtSpot
 
-- [Environment Variables](/reference/environment-variables) -- Complete env var reference with defaults
-- [CLI Reference](/reference/cli) -- All commands: init, diff, query, doctor, validate, mcp, and more
-- [Configuration](/reference/config) -- Declarative config with `atlas.config.ts`
-- [SDK Reference](/reference/sdk) -- TypeScript SDK for programmatic API access
-- [React Hooks Reference](/reference/react) -- Headless React hooks for custom Atlas chat UIs
-- [API Reference](/reference/api) -- HTTP API endpoints for chat, queries, and conversations
+</Accordion>
 
-## Plugins
+<Accordion title="Deployment & operations">
 
-- [Plugin Authoring Guide](/plugins/authoring-guide) -- Build datasource, context, interaction, action, and sandbox plugins
+- [Deploy](/deployment/deploy) — One-click deploy to Railway, Vercel, or Docker
+- [Authentication](/deployment/authentication) — Configure auth modes: none, API key, managed, BYOT
+- [Multi-Datasource Routing](/deployment/multi-datasource) — Route per-conversation across datasources, including cross-environment scope (1.4.5)
+- [Schema Evolution](/deployment/schema-evolution) — Detecting database drift with `atlas diff` and the inline drift drawer
 
-## Architecture
+</Accordion>
 
-- [Sandbox Architecture](/architecture/sandbox) -- Platform-agnostic code execution sandboxing design
+</Accordions>
 
-## Comparisons
+## What's new
 
-- [Atlas vs Alternatives](/comparisons) -- Feature matrix comparing Atlas, WrenAI, Vanna, Metabase, Cube, and ThoughtSpot
-
-## Changelog
-
-- [Changelog](/changelog) -- What's new in Atlas
+- [Changelog](/changelog) — Atlas release notes

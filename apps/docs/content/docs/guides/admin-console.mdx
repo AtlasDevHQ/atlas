@@ -44,6 +44,51 @@ Lists all registered datasource connections with their database type, descriptio
 Connection URLs are encrypted at rest when `BETTER_AUTH_SECRET` or `ATLAS_ENCRYPTION_KEY` is set.
 </Callout>
 
+### Group by Type / Environment toggle (1.4.4)
+
+The connections list ships with a **Group by [Type | Environment]** toggle at the top of the table:
+
+- **By Type** (default) — connections cluster under their database type (`postgresql`, `mysql`, `clickhouse`, `snowflake`, …). Useful when you're auditing what kinds of stores Atlas is reading from
+- **By Environment** — connections cluster under their **connection group** (`prod`, `staging`, `eu-only`, …). This is the new view 1.4.4 introduced and is the right default for multi-environment workspaces — it makes "which replicas does `prod` actually have?" answerable at a glance
+
+Single-connection deploys see the same content under either view; the toggle is a no-op until you create a second group member. See [Multi-environment semantic layer](/semantic-layer/multi-env) for the underlying connection-group model.
+
+### Environments view
+
+When **Group by Environment** is active, each group renders as a section with the member connections nested under it. The section header shows:
+
+- Group name and member count
+- A status pill (Active / Archived) — archived groups render as a read-only tombstone (see [Archiving a group](/semantic-layer/multi-env#archiving-a-group))
+- A `…` menu for **Create environment**, **Merge into group**, and **Archive** actions
+
+#### Create an environment
+
+1. Click **Create environment** from any group's `…` menu, or **New environment** in the top-right
+2. Pick a name (`prod`, `staging`, `eu-only` — display label only; the underlying ID is the foreign key, so renaming later doesn't ripple)
+3. Pick one or more existing connections as initial members. Members must share a schema (the point is that they're replicas)
+4. Save — Atlas creates the group and flips the picked connections from their auto-generated single-member groups into the new shared one
+
+You can also create an empty group and add members later via the member picker on each connection's edit page.
+
+#### Merge into group (admin wizard)
+
+When you have two single-connection deploys that should logically be the same environment (e.g. `us-int` and `eu` were created separately and should both live under `prod`), use the **Merge into group** wizard:
+
+1. Click **Merge into group** from the source group's `…` menu
+2. Pick the target group
+3. Review the schema diff between the two groups' connections — the wizard flags column-level mismatches and refuses to merge if the schemas don't reconcile
+4. Confirm — Atlas moves the source group's members into the target group atomically. The source group becomes empty and is deleted
+
+#### Archive a group
+
+Retiring an environment (e.g. EU replica goes away, `staging` shuts down) goes through the archive cascade:
+
+1. Click **Archive** from the group's `…` menu and confirm in the dialog
+2. The cascade atomically: archives every `semantic_entities` row scoped to the group, disables every `scheduled_tasks` row, expires every pending `approval_queue` row, and flips the group itself to `status = 'archived'`
+3. The audit log captures the cascade counts (entities / tasks / approvals)
+
+Archived groups become read-only tombstones — they can no longer be renamed, assigned new members, or re-archived (the API returns 409). **Dashboard cards keep their group reference and keep rendering against the archived environment** — that's intentional for the initial cascade slice; plan to edit or remove cards that reference an archived group afterwards. See [Archiving a group](/semantic-layer/multi-env#archiving-a-group) for the full semantics.
+
 **Actions:**
 - **Add connection** — Create a new datasource with URL, database type, and optional description. For PostgreSQL, an optional schema field is also available. The URL field supports a show/hide toggle for credential safety
 - **Edit connection** — Update an existing connection's URL, type, or description
@@ -81,7 +126,35 @@ Browse entities by clicking them in the sidebar. The catalog shows `use_for` tag
 
 In **SaaS mode**, admins can create, edit, and delete entities directly from the UI with schema-aware autocomplete and full version history. See [Semantic Editor](/guides/semantic-editor) for the full guide.
 
-**Schema drift:** Drift between the live database schema and the semantic layer is surfaced inline on `/admin/semantic` — drifted entities are flagged in the tree, and the drawer shows added/removed columns and type mismatches with one-click reconcile actions. The drift-detection API (`GET /api/v1/admin/semantic/diff?connection=<id>`) returns structured JSON with `newTables`, `removedTables`, `tableDiffs`, `unchangedCount`, and a `summary` object.
+### Drift drawer (1.4.4)
+
+Drift between the live database schema and the semantic layer is surfaced inline on `/admin/semantic`. As of 1.4.4, the legacy `/admin/schema-diff` page is retired — drift now lives next to the entities it describes, so you no longer have to context-switch between two routes to reconcile schema changes.
+
+**File tree badges.** Entities whose live schema has drifted from their YAML get a badge in the file tree:
+
+- **N+** (green) — N columns exist in the database but are missing from the entity YAML
+- **N−** (orange) — N columns are declared in YAML but no longer exist in the database
+- **N≠** (red) — N columns exist in both but with a type mismatch
+
+Clicking a drifted entity opens its detail view with the drift drawer already expanded.
+
+**Column-level diff.** The drift drawer shows three columns side-by-side:
+
+| Column | What it shows |
+|--------|---------------|
+| **In database** | Columns the live DB schema reports for this table |
+| **In YAML** | Columns currently declared in the entity's `dimensions` block |
+| **Action** | Per-row reconcile button: **Add to YAML** (new column), **Remove from YAML** (removed column), or **Update YAML type** (type mismatch) |
+
+Clicking a per-row reconcile button writes the change directly to the entity YAML and refreshes the diff — no separate review step. For bulk drift (e.g. a freshly-added table with 20 new columns), use the **Reconcile all** button at the top of the drawer to apply every action at once.
+
+**Cross-connection diff.** When the workspace has multiple connection groups (1.4.4), the drift drawer is scoped to one group at a time. Pick the target group from the drawer header — the schema diff is computed against that group's primary member. To audit drift across all groups, run `atlas diff` from the CLI; the admin drawer is optimised for the day-to-day "the semantic layer caught up to last sprint's migration" workflow rather than a cross-environment audit.
+
+**API.** The drift-detection API (`GET /api/v1/admin/semantic/diff?connection=<id>&group=<id>`) returns structured JSON with `newTables`, `removedTables`, `tableDiffs`, `unchangedCount`, and a `summary` object. See [Schema Evolution](/deployment/schema-evolution) for the underlying drift contract.
+
+<Callout type="info">
+**If you're looking for `/admin/schema-diff`** — the page was retired in 1.4.4. Drift is now inline on `/admin/semantic` per the walkthrough above. The `GET /api/v1/admin/schema-diff` endpoint still exists for back-compat but the UI route redirects to `/admin/semantic`.
+</Callout>
 
 See [Semantic Layer](/getting-started/semantic-layer) for the YAML format reference.
 

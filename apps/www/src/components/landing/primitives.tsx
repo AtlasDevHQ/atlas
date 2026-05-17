@@ -123,10 +123,15 @@ export function Primitives() {
         <p className="mb-4 font-mono text-[11px] tracking-[0.06em] text-brand">
           // drop-in surfaces
         </p>
-        <div className="grid items-stretch gap-6 md:[grid-template-columns:1fr_1px_1fr_1px_1fr]">
+        <div className="grid items-stretch gap-6 md:[grid-template-columns:1fr_1px_1fr_1px_1fr_1px_1fr]">
           <DropInItem
             name="<AtlasChat />"
             desc="React widget. Inherits your tokens, speaks your data."
+          />
+          <div className="hidden h-full w-px bg-white/5 md:block" />
+          <DropInItem
+            name="dashboards.yml"
+            desc="Chat drawer is the editor. Per-user drafts, atomic Publish, persisted baseline."
           />
           <div className="hidden h-full w-px bg-white/5 md:block" />
           <DropInItem

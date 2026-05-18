@@ -151,41 +151,45 @@ const mockGetRoleByName = mock(() =>
 // `Effect.provide(EnterpriseLayer)` resolves the full chain.
 mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { Layer } = require("effect") as typeof import("effect");
+  const { Layer, ManagedRuntime } = require("effect") as typeof import("effect");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+  const testLayer = Layer.mergeAll(
+    Layer.succeed(services.RolesPolicy, {
+      customRolesActive: true,
+      checkPermission: () => Effect.succeed(null),
+      listRoles: () => Effect.succeed([]),
+      getRole: () => Effect.succeed(null),
+      getRoleByName: mockGetRoleByName as never,
+      createRole: () => Effect.die(new Error("not configured")),
+      updateRole: () => Effect.die(new Error("not configured")),
+      deleteRole: () => Effect.succeed(true),
+      listRoleMembers: () => Effect.succeed([]),
+      assignRole: mockAssignRole as never,
+    } as never),
+    Layer.succeed(services.IpAllowlistPolicy, {
+      available: false,
+      checkIPAllowlist: () => Effect.succeed({ allowed: true }),
+    } as never),
+    Layer.succeed(services.SSOPolicy, {
+      available: false,
+      extractEmailDomain: (email: string) => {
+        const at = email.lastIndexOf("@");
+        return at > 0 ? email.slice(at + 1).toLowerCase() : null;
+      },
+      isSSOEnforcedForDomain: () => Effect.succeed({ enforced: false }),
+      isSSOEnforced: () => Effect.succeed({ enforced: false }),
+    } as never),
+    Layer.succeed(services.SCIMProvenance, {
+      available: false,
+      isSCIMProvisioned: () => Effect.succeed(false),
+    } as never),
+  );
+  const testRuntime = ManagedRuntime.make(testLayer as never);
   return {
-    EnterpriseLayer: Layer.mergeAll(
-      Layer.succeed(services.RolesPolicy, {
-        customRolesActive: true,
-        checkPermission: () => Effect.succeed(null),
-        listRoles: () => Effect.succeed([]),
-        getRole: () => Effect.succeed(null),
-        getRoleByName: mockGetRoleByName as never,
-        createRole: () => Effect.die(new Error("not configured")),
-        updateRole: () => Effect.die(new Error("not configured")),
-        deleteRole: () => Effect.succeed(true),
-        listRoleMembers: () => Effect.succeed([]),
-        assignRole: mockAssignRole as never,
-      } as never),
-      Layer.succeed(services.IpAllowlistPolicy, {
-        available: false,
-        checkIPAllowlist: () => Effect.succeed({ allowed: true }),
-      } as never),
-      Layer.succeed(services.SSOPolicy, {
-        available: false,
-        extractEmailDomain: (email: string) => {
-          const at = email.lastIndexOf("@");
-          return at > 0 ? email.slice(at + 1).toLowerCase() : null;
-        },
-        isSSOEnforcedForDomain: () => Effect.succeed({ enforced: false }),
-        isSSOEnforced: () => Effect.succeed({ enforced: false }),
-      } as never),
-      Layer.succeed(services.SCIMProvenance, {
-        available: false,
-        isSCIMProvisioned: () => Effect.succeed(false),
-      } as never),
-    ),
+    EnterpriseLayer: testLayer,
+    getEnterpriseRuntime: () => testRuntime,
+    runEnterprise: (program: never) => testRuntime.runPromise(program),
   };
 });
 

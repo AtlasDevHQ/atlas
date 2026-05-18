@@ -10,31 +10,14 @@
  * `"self-hosted"`. `"auto"` returns `"saas"` only when BOTH enterprise
  * is enabled AND an internal database is configured.
  *
- * Lazy-requires the config + internal-DB modules to keep this file at
- * the bottom of the dep graph (same trick `enterprise-layer.ts` uses for
- * `isEnterpriseEnabledLocal`).
+ * Reads the enterprise flag via the canonical `enterprise-config.ts`
+ * helper (#2594 retired the local `isEnterpriseEnabledLocal` fork).
+ * `hasInternalDBLocal` stays lazy-`require`'d to keep `lib/db/internal`
+ * out of this file's eager dep graph.
  */
 
 import type { DeployMode, DeployModeSetting } from "@useatlas/types";
-
-/**
- * Read whether enterprise is enabled without importing from `@atlas/ee`.
- *
- * Mirrors `ee/src/index.ts:isEnterpriseEnabled` resolution order:
- *   1. `enterprise.enabled` in atlas.config.ts
- *   2. `ATLAS_ENTERPRISE_ENABLED` env var
- */
-function isEnterpriseEnabledLocal(): boolean {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { getConfig } = require("@atlas/api/lib/config") as {
-    getConfig: () => { enterprise?: { enabled?: boolean } } | null;
-  };
-  const config = getConfig();
-  if (config?.enterprise?.enabled !== undefined) {
-    return config.enterprise.enabled;
-  }
-  return process.env.ATLAS_ENTERPRISE_ENABLED === "true";
-}
+import { isEnterpriseEnabled } from "./enterprise-config";
 
 function hasInternalDBLocal(): boolean {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -64,11 +47,11 @@ export function resolveDeployMode(raw?: DeployModeSetting): DeployMode {
   }
 
   if (setting === "saas") {
-    return isEnterpriseEnabledLocal() ? "saas" : "self-hosted";
+    return isEnterpriseEnabled() ? "saas" : "self-hosted";
   }
 
   // "auto" — detect from environment
-  return isEnterpriseEnabledLocal() && hasInternalDBLocal()
+  return isEnterpriseEnabled() && hasInternalDBLocal()
     ? "saas"
     : "self-hosted";
 }

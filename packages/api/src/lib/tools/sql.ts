@@ -46,7 +46,7 @@ import {
   type ApprovalGateShape,
   type MaskingContext,
 } from "@atlas/api/lib/effect/services";
-import { EnterpriseLayer } from "@atlas/api/lib/effect/enterprise-layer";
+import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
 
 /**
  * Run `MaskingPolicy.applyMasking` via `EnterpriseLayer`. Promise-shaped
@@ -59,11 +59,11 @@ import { EnterpriseLayer } from "@atlas/api/lib/effect/enterprise-layer";
 function applyMaskingViaTag(
   ctx: MaskingContext,
 ): Promise<Record<string, unknown>[]> {
-  return Effect.runPromise(
+  return runEnterprise(
     Effect.gen(function* () {
       const masking = yield* MaskingPolicy;
       return yield* masking.applyMasking(ctx);
-    }).pipe(Effect.provide(EnterpriseLayer)),
+    }),
   );
 }
 
@@ -76,10 +76,10 @@ function applyMaskingViaTag(
  * paying for three separate `Effect.runPromise` round-trips (#2567).
  */
 function loadApprovalGate(): Promise<ApprovalGateShape> {
-  return Effect.runPromise(
+  return runEnterprise(
     Effect.gen(function* () {
       return yield* ApprovalGate;
-    }).pipe(Effect.provide(EnterpriseLayer)),
+    }),
   );
 }
 
@@ -94,11 +94,11 @@ function recordSlaMetric(
   durationMs: number,
   isError: boolean,
 ): Promise<void> {
-  return Effect.runPromise(
+  return runEnterprise(
     Effect.gen(function* () {
       const sla = yield* SlaMetrics;
       return yield* sla.recordQueryMetric(workspaceId, durationMs, isError);
-    }).pipe(Effect.provide(EnterpriseLayer)),
+    }),
   );
 }
 

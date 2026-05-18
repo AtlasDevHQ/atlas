@@ -33,17 +33,15 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { RetentionError } from "@atlas/api/lib/audit/retention-errors";
 import type { AnonymizeInitiatedBy } from "@useatlas/types";
 import { AuditRetention } from "@atlas/api/lib/effect/services";
-import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
+import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import { logAdminActionAwait, ADMIN_ACTIONS, type AdminActionEntry } from "@atlas/api/lib/audit";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
-
-const retentionDomainError = domainError(RetentionError, { validation: 400, not_found: 404 });
+import { retentionDomainError } from "./shared-retention";
 
 const log = createLogger("admin-action-retention");
 

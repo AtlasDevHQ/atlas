@@ -27,7 +27,7 @@ import {
   AuthContext,
   makeAuthContextLayer,
 } from "./services";
-import { EnterpriseLayer, type EnterpriseSubsystem } from "./enterprise-layer";
+import { getEnterpriseRuntime, type EnterpriseSubsystem } from "./enterprise-layer";
 
 // ── Domain error mapping ────────────────────────────────────────────
 
@@ -396,24 +396,26 @@ export async function runEffect<A, E>(
     | Effect.Effect<A, E, never>,
   options?: RunEffectOptions,
 ): Promise<A> {
-  // Provide Hono context + enterprise subsystem layers. The enterprise
-  // layer carries no-op defaults for every EE Tag (overlaid by the real
-  // EE implementations via `Layer.mergeAll`'s last-wins semantics) so a
-  // handler that `yield* ResidencyResolver` resolves without each route
-  // having to provide the layer manually. Layer.mergeAll is referentially
-  // stable, so Effect memoizes the construction across requests.
+  // Per-request contextLayer (RequestContext + AuthContext) is provided
+  // at the program level, then the program runs against the shared
+  // module-level EnterpriseRuntime (#2594). Pre-#2594 the bridge merged
+  // contextLayer + EnterpriseLayer per request — Layer.merge produces a
+  // fresh reference each time so Effect's per-Scope memoization couldn't
+  // amortize the EE-Layer's lazy `await import("@atlas/ee/layers")` or
+  // any other Layer.sync construction. With the ManagedRuntime, the
+  // EE-Layer constructs ONCE on first use and every request reuses the
+  // services; contextLayer remains per-request because it carries the
+  // request's `requestId` / `authResult` (lightweight Layer.succeed).
   const contextLayer = buildContextLayer(c);
-  const provided: Effect.Effect<A, E, never> = contextLayer
+  const contextProvided: Effect.Effect<A, E, EnterpriseSubsystem> = contextLayer
     ? (program as Effect.Effect<
         A,
         E,
         RequestContext | AuthContext | EnterpriseSubsystem
-      >).pipe(Effect.provide(Layer.merge(contextLayer, EnterpriseLayer)))
-    : (program as Effect.Effect<A, E, EnterpriseSubsystem>).pipe(
-        Effect.provide(EnterpriseLayer),
-      );
+      >).pipe(Effect.provide(contextLayer))
+    : (program as Effect.Effect<A, E, EnterpriseSubsystem>);
 
-  const exit = await Effect.runPromiseExit(provided);
+  const exit = await getEnterpriseRuntime().runPromiseExit(contextProvided);
 
   if (Exit.isSuccess(exit)) {
     return exit.value;

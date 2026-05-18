@@ -152,7 +152,8 @@ mock.module("@atlas/ee/layers", () => ({
       type MaskingContext = import("@atlas/api/lib/effect/services").MaskingContext;
       const maskingLayer = Layer.succeed(services.MaskingPolicy, {
         available: true,
-        applyMasking: (ctx: MaskingContext) => Effect.succeed([...ctx.rows]),
+        // Preserve reference identity — see services.ts:NoopMaskingPolicyLayer.
+        applyMasking: (ctx: MaskingContext) => Effect.succeed(ctx.rows),
         listPIIClassifications: () => Effect.succeed([]),
         updatePIIClassification: () => {
           if (mockUpdateError) return Effect.fail(mockUpdateError);

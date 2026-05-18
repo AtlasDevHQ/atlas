@@ -32,7 +32,7 @@ import {
 import { isWorkspaceMigrating } from "@atlas/api/lib/residency/readonly";
 import { Effect } from "effect";
 import { IpAllowlistPolicy } from "@atlas/api/lib/effect/services";
-import { EnterpriseLayer } from "@atlas/api/lib/effect/enterprise-layer";
+import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
 
 const log = createLogger("middleware");
 
@@ -139,28 +139,43 @@ async function rateLimitAndIPCheck(
     };
   }
 
-  // IP allowlist — via `IpAllowlistPolicy` Tag (#2570). Self-hosted +
-  // EE-not-loaded both flow through the no-op default which always allows.
-  // The try/catch is a defensive net for tests that shim `effect` /
-  // `EnterpriseLayer` without wiring the full Layer machinery; in
-  // production the EE-loaded path and the no-op default both succeed,
-  // so a runPromise reject here is a test-harness signal rather than a
-  // real allowlist outcome.
+  // IP allowlist — narrow `catch` for tests that omit `IpAllowlistPolicy`
+  // from their EnterpriseLayer mock (Effect surfaces this as "Service
+  // not found: IpAllowlistPolicy"). Everything else fails closed via 503.
+  // To be deleted once #2588 (`makeTestEnterpriseLayer`) lands.
   const orgId = authResult.user?.activeOrganizationId;
   if (orgId) {
     let ipCheck: { allowed: boolean } | null = null;
     try {
-      ipCheck = await Effect.runPromise(
+      ipCheck = await runEnterprise(
         Effect.gen(function* () {
           const policy = yield* IpAllowlistPolicy;
           return yield* policy.checkIPAllowlist(orgId, ip);
-        }).pipe(Effect.provide(EnterpriseLayer)),
+        }),
       );
     } catch (err) {
-      log.warn(
-        { err: err instanceof Error ? err.message : String(err), requestId, orgId },
-        "IP allowlist check unavailable — falling through (fail-open in test harness only)",
-      );
+      const msg = err instanceof Error ? err.message : String(err);
+      const isMissingTag =
+        msg.includes("Service not found") && msg.includes("IpAllowlist");
+      if (isMissingTag) {
+        log.warn(
+          { err: msg, requestId, orgId },
+          "IpAllowlist Tag not provided — test-harness fall-through",
+        );
+      } else {
+        log.error(
+          { err: msg, requestId, orgId },
+          "IP allowlist check failed — failing closed (no allowlist evaluation)",
+        );
+        return {
+          body: {
+            error: "service_unavailable",
+            message: "IP allowlist check could not be evaluated. Try again in a moment.",
+            requestId,
+          },
+          status: 503,
+        };
+      }
     }
     if (ipCheck && !ipCheck.allowed) {
       log.warn({ requestId, orgId, ip }, "IP not in workspace allowlist");

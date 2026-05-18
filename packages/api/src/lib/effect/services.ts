@@ -41,6 +41,24 @@ import type {
 
 const log = createLogger("effect:connection");
 
+// ── Shared Noop-layer helper (#2594) ────────────────────────────────
+//
+// Every enterprise Noop layer that fails self-hosted methods with
+// `EnterpriseError` previously open-coded the same 7-line block (lazy
+// `require()` of the error class + a `notAvailable` factory closure).
+// The lazy require is load-bearing — services.ts is reached early in
+// the dep graph and an eager static import of `lib/effect/errors` has
+// caused `mock.module()` ordering surprises (see
+// feedback_bun_test_async_mock_module). This helper preserves the
+// laziness, just dedups the boilerplate.
+function makeNotAvailable(message: string): () => import("@atlas/api/lib/effect/errors").EnterpriseError {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { EnterpriseError } = require("@atlas/api/lib/effect/errors") as {
+    EnterpriseError: new (message?: string) => import("@atlas/api/lib/effect/errors").EnterpriseError;
+  };
+  return () => new EnterpriseError(message);
+}
+
 // ── Service interface ────────────────────────────────────────────────
 
 /** Typed contract for the ConnectionRegistry Effect service. */
@@ -999,16 +1017,17 @@ export const NoopModelRouterLayer: Layer.Layer<ModelRouter> = Layer.sync(
   ModelRouter,
   () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { EnterpriseError: EnterpriseErrorClass } = require("@atlas/api/lib/effect/errors") as {
-      EnterpriseError: new (message?: string) => EnterpriseError;
-    };
-    const notAvailable = () => new EnterpriseErrorClass("Model routing requires enterprise features to be enabled.");
+    const notAvailable = makeNotAvailable("Model routing requires enterprise features to be enabled.");
     return {
       available: false,
       getWorkspaceModelConfig: () => Effect.succeed(null),
       getWorkspaceModelConfigRaw: () => Effect.succeed(null),
       setWorkspaceModelConfig: () => Effect.fail(notAvailable()),
-      deleteWorkspaceModelConfig: () => Effect.succeed(false),
+      // Was `Effect.succeed(false)` pre-#2594 — surfaced as 404
+      // "Config not found" via admin route, falsely telling the admin
+      // their config was already gone. Fail loudly so 403 envelope
+      // makes the EE-not-installed state explicit.
+      deleteWorkspaceModelConfig: () => Effect.fail(notAvailable()),
       testModelConfig: () => Effect.fail(notAvailable()),
       reconcileModelDeprecation: () =>
         Effect.succeed({ status: "healthy" as const, suggestion: null }),
@@ -1083,7 +1102,13 @@ export const NoopMaskingPolicyLayer: Layer.Layer<MaskingPolicy> = Layer.sync(
       });
     return {
       available: false,
-      applyMasking: (ctx) => Effect.succeed([...ctx.rows]),
+      // MUST preserve reference identity — callers in `tools/sql.ts`
+      // compute `maskingApplied = maskedRows !== result.rows`, and a
+      // fresh-array no-op (`[...ctx.rows]`) misreports `true` on every
+      // self-hosted query against a classified table. EE's real
+      // `applyMasking` returns `ctx.rows` directly on no-rules early-out
+      // paths for the same reason.
+      applyMasking: (ctx) => Effect.succeed(ctx.rows),
       listPIIClassifications: () => Effect.succeed([]),
       updatePIIClassification: (_orgId, id) => Effect.fail(notFound(id)),
       deletePIIClassification: (_orgId, id) => Effect.fail(notFound(id)),
@@ -1190,8 +1215,6 @@ export interface CreateApprovalRequestInput {
 }
 
 export interface ApprovalGateShape {
-  /** False when EE approval workflows aren't loaded — gate bypasses entirely. */
-  readonly available: boolean;
   /** Decide whether a query needs approval. No-op returns `{ required: false, matchedRules: [] }`. */
   readonly checkApprovalRequired: (
     orgId: string | undefined,
@@ -1267,23 +1290,27 @@ export const NoopApprovalGateLayer: Layer.Layer<ApprovalGate> = Layer.sync(
         message: `Approval request "${id}" not found.`,
         code: "not_found",
       });
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const notAvailable = makeNotAvailable("Approval workflows require enterprise features to be enabled.");
     return {
-      available: false,
       checkApprovalRequired: () =>
         Effect.succeed({ required: false, matchedRules: [] }),
       hasApprovedRequest: () => Effect.succeed(false),
-      // `createApprovalRequest` is only reached when checkApprovalRequired
-      // returns `required: true`. With the no-op gate that's never the
-      // case, so this is a defensive impl — die so a regression that
-      // routes through here is loud rather than silent.
-      createApprovalRequest: () =>
-        Effect.die("createApprovalRequest called against no-op ApprovalGate"),
+      // `createApprovalRequest` is reached when checkApprovalRequired
+      // returned `required: true`. The no-op never returns `required:
+      // true`, so this is a defensive impl — fail with EnterpriseError
+      // (not Effect.die) so any regression that lands here surfaces
+      // through the typed error channel and route-layer catchAll (→ 403)
+      // instead of bypassing both as an unrecoverable defect (→ 500).
+      createApprovalRequest: () => Effect.fail(notAvailable()),
       listApprovalRules: () => Effect.succeed([]),
       createApprovalRule: (_orgId, _input) =>
         Effect.fail(notFound("__no_op__")),
       updateApprovalRule: (_orgId, ruleId) =>
         Effect.fail(notFound(ruleId)),
-      deleteApprovalRule: () => Effect.succeed(false),
+      // Was `Effect.succeed(false)` pre-#2594 — silently lied that
+      // there was nothing to delete. Fail loudly via 403 envelope.
+      deleteApprovalRule: () => Effect.fail(notAvailable()),
       listApprovalRequests: () => Effect.succeed([]),
       getApprovalRequest: () => Effect.succeed(null),
       reviewApprovalRequest: (_orgId, requestId) =>
@@ -1336,22 +1363,30 @@ export class SlaMetrics extends Context.Tag("SlaMetrics")<
   SlaMetrics,
   SlaMetricsShape
 >() {}
-export const NoopSlaMetricsLayer: Layer.Layer<SlaMetrics> = Layer.succeed(
+// `Effect.fail(new EnterpriseError(...))` rather than `Effect.die(...)` on
+// the methods that have no sensible self-hosted return — defects bypass
+// `Effect.catchAll` and the typed error channel, so a route that catches
+// would still see a 500 with no `requestId`-correlated log. The `Error`
+// channel in the shape already accommodates EnterpriseError.
+export const NoopSlaMetricsLayer: Layer.Layer<SlaMetrics> = Layer.sync(
   SlaMetrics,
-  {
-    available: false,
-    recordQueryMetric: () => Effect.void,
-    getAllWorkspaceSLA: () => Effect.succeed([]),
-    getWorkspaceSLADetail: () =>
-      Effect.die("SLA monitoring requires enterprise features to be enabled."),
-    getThresholds: () =>
-      Effect.die("SLA monitoring requires enterprise features to be enabled."),
-    updateThresholds: () =>
-      Effect.die("SLA monitoring requires enterprise features to be enabled."),
-    getAlerts: () => Effect.succeed([]),
-    acknowledgeAlert: () => Effect.succeed(false),
-    evaluateAlerts: () => Effect.succeed([]),
-  } satisfies SlaMetricsShape,
+  () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const notAvailable = makeNotAvailable("SLA monitoring requires enterprise features to be enabled.");
+    return {
+      available: false,
+      recordQueryMetric: () => Effect.void,
+      getAllWorkspaceSLA: () => Effect.succeed([]),
+      getWorkspaceSLADetail: () => Effect.fail(notAvailable()),
+      getThresholds: () => Effect.fail(notAvailable()),
+      updateThresholds: () => Effect.fail(notAvailable()),
+      getAlerts: () => Effect.succeed([]),
+      // Was `Effect.succeed(false)` pre-#2594 — silently reported
+      // "alert not found" when EE was missing. Fail loudly.
+      acknowledgeAlert: () => Effect.fail(notAvailable()),
+      evaluateAlerts: () => Effect.succeed([]),
+    } satisfies SlaMetricsShape;
+  },
 );
 
 // ── BackupsManager (#2568 — slice 6/11 of #2017) ─────────────────────
@@ -1413,20 +1448,24 @@ export class BackupsManager extends Context.Tag("BackupsManager")<
   BackupsManager,
   BackupsManagerShape
 >() {}
-export const NoopBackupsManagerLayer: Layer.Layer<BackupsManager> = Layer.succeed(
+export const NoopBackupsManagerLayer: Layer.Layer<BackupsManager> = Layer.sync(
   BackupsManager,
-  {
+  () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const notAvailable = makeNotAvailable("Automated backups require enterprise features to be enabled.");
+    return {
     available: false,
-    getBackupConfig: () => Effect.die("Backups not configured."),
-    updateBackupConfig: () => Effect.die("Backups not configured."),
-    createBackup: () => Effect.die("Backups not configured."),
+    getBackupConfig: () => Effect.fail(notAvailable()),
+    updateBackupConfig: () => Effect.fail(notAvailable()),
+    createBackup: () => Effect.fail(notAvailable()),
     listBackups: () => Effect.succeed([]),
     getBackupById: () => Effect.succeed(null),
     purgeExpiredBackups: () => Effect.succeed(0),
-    verifyBackup: () => Effect.die("Backups not configured."),
-    requestRestore: () => Effect.die("Backups not configured."),
-    executeRestore: () => Effect.die("Backups not configured."),
-  } satisfies BackupsManagerShape,
+    verifyBackup: () => Effect.fail(notAvailable()),
+    requestRestore: () => Effect.fail(notAvailable()),
+    executeRestore: () => Effect.fail(notAvailable()),
+    } satisfies BackupsManagerShape;
+  },
 );
 
 // ── AuditRetention (#2569 — slice 7/11 of #2017) ─────────────────────
@@ -1535,25 +1574,28 @@ export const NoopAuditRetentionLayer: Layer.Layer<AuditRetention> = Layer.sync(
   AuditRetention,
   () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { EnterpriseError: EnterpriseErrorClass } = require("@atlas/api/lib/effect/errors") as {
-      EnterpriseError: new (message?: string) => EnterpriseErrorForRetention;
-    };
-    const notAvailable = () =>
-      new EnterpriseErrorClass("Audit retention requires enterprise features to be enabled.");
+    const notAvailable = makeNotAvailable("Audit retention requires enterprise features to be enabled.");
     return {
       available: false,
+      // Pure reads — "no policy configured" is honest on self-hosted.
       getRetentionPolicy: () => Effect.succeed(null),
-      setRetentionPolicy: () => Effect.fail(notAvailable()),
-      purgeExpiredEntries: () => Effect.succeed([]),
-      hardDeleteExpired: () => Effect.succeed({ deletedCount: 0 }),
-      exportAuditLog: () => Effect.fail(notAvailable()),
       getAdminActionRetentionPolicy: () => Effect.succeed(null),
+      // Destructive ops fail loudly so a misconfigured install doesn't
+      // silently report fake success (the GDPR `anonymizeUserAdminActions`
+      // pretend-succeed was the most consequential of the original bugs).
+      setRetentionPolicy: () => Effect.fail(notAvailable()),
+      purgeExpiredEntries: () => Effect.fail(notAvailable()),
+      hardDeleteExpired: () => Effect.fail(notAvailable()),
+      exportAuditLog: () => Effect.fail(notAvailable()),
       setAdminActionRetentionPolicy: () => Effect.fail(notAvailable()),
-      purgeAdminActionExpired: () => Effect.succeed([]),
-      anonymizeUserAdminActions: () =>
-        Effect.succeed({ anonymizedRowCount: 0 }),
-      previewAdminActionErasure: () =>
-        Effect.succeed({ anonymizableRowCount: 0 }),
+      purgeAdminActionExpired: () => Effect.fail(notAvailable()),
+      anonymizeUserAdminActions: () => Effect.fail(notAvailable()),
+      previewAdminActionErasure: () => Effect.fail(notAvailable()),
+      // Scheduler lifecycle stays as void no-ops — `makeSchedulerLive`
+      // calls these unconditionally at startup without a feature flag,
+      // and a no-op is the correct self-hosted behavior (no scheduler
+      // job to start, none to stop). Splitting AuditRetention into a
+      // separate AuditPurgeScheduler Tag is tracked as a follow-up.
       startAuditPurgeScheduler: () => {},
       stopAuditPurgeScheduler: () => {},
     } satisfies AuditRetentionShape;
@@ -1614,19 +1656,29 @@ export class IpAllowlistPolicy extends Context.Tag("IpAllowlistPolicy")<
   IpAllowlistPolicy,
   IpAllowlistPolicyShape
 >() {}
-export const NoopIpAllowlistPolicyLayer: Layer.Layer<IpAllowlistPolicy> =
-  Layer.succeed(IpAllowlistPolicy, {
-    available: false,
-    checkIPAllowlist: () => Effect.succeed({ allowed: true }),
-    listIPAllowlistEntries: () => Effect.succeed([]),
-    // Defensive: only reachable if the admin route bypasses the
-    // `available` check. Die so a regression that lands an entry on the
-    // no-op default is loud rather than a silent partial state.
-    addIPAllowlistEntry: () =>
-      Effect.die("IpAllowlistPolicy.addIPAllowlistEntry called against no-op default"),
-    removeIPAllowlistEntry: () => Effect.succeed(false),
-    invalidateCache: () => {},
-  } satisfies IpAllowlistPolicyShape);
+export const NoopIpAllowlistPolicyLayer: Layer.Layer<IpAllowlistPolicy> = Layer.sync(
+  IpAllowlistPolicy,
+  () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const notAvailable = makeNotAvailable("IP allowlist requires enterprise features to be enabled.");
+    return {
+      available: false,
+      checkIPAllowlist: () => Effect.succeed({ allowed: true }),
+      listIPAllowlistEntries: () => Effect.succeed([]),
+      // Defensive: only reachable if the admin route bypasses the
+      // `available` check. Fail with EnterpriseError (not Effect.die)
+      // so the route-layer catchAll surfaces a 403 instead of an
+      // unrecoverable 500 defect — matches the pattern across the other
+      // Noop layers post-#2594.
+      addIPAllowlistEntry: () => Effect.fail(notAvailable()),
+      // SECURITY: was `Effect.succeed(false)` pre-#2594 — route
+      // mapped to 404 "entry not found", falsely telling admin the
+      // IP was removed. Entry stayed in DB; IP retained access.
+      removeIPAllowlistEntry: () => Effect.fail(notAvailable()),
+      invalidateCache: () => {},
+    } satisfies IpAllowlistPolicyShape;
+  },
+);
 
 // ── SSOPolicy (#2570 — slice 8/11 of #2017) ──────────────────────────
 //
@@ -1721,11 +1773,7 @@ export const NoopSSOPolicyLayer: Layer.Layer<SSOPolicy> = Layer.sync(
   SSOPolicy,
   () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { EnterpriseError: EnterpriseErrorClass } = require("@atlas/api/lib/effect/errors") as {
-      EnterpriseError: new (message?: string) => EnterpriseErrorForAuth;
-    };
-    const notAvailable = () =>
-      new EnterpriseErrorClass("SSO requires enterprise features to be enabled.");
+    const notAvailable = makeNotAvailable("SSO requires enterprise features to be enabled.");
     // Pure-helper inline copy of EE's `extractEmailDomain`. Pre-#2570
     // middleware called the EE static export; now it reaches it through
     // the Tag. The no-op needs the same parse so a self-hosted middleware
@@ -1746,7 +1794,10 @@ export const NoopSSOPolicyLayer: Layer.Layer<SSOPolicy> = Layer.sync(
       getSSOProvider: () => Effect.succeed(null),
       createSSOProvider: () => Effect.fail(notAvailable()),
       updateSSOProvider: () => Effect.fail(notAvailable()),
-      deleteSSOProvider: () => Effect.succeed(false),
+      // SECURITY: was `Effect.succeed(false)` pre-#2594 — route
+      // returned 404, admin assumed provider gone. Provider stayed
+      // in DB, still routing SSO logins. Fail loudly.
+      deleteSSOProvider: () => Effect.fail(notAvailable()),
       verifyDomain: () => Effect.fail(notAvailable()),
       checkDomainAvailability: () => Effect.fail(notAvailable()),
       testSSOProvider: () => Effect.fail(notAvailable()) as never,
@@ -1826,15 +1877,14 @@ export const NoopSCIMProvenanceLayer: Layer.Layer<SCIMProvenance> = Layer.sync(
   SCIMProvenance,
   () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { EnterpriseError: EnterpriseErrorClass } = require("@atlas/api/lib/effect/errors") as {
-      EnterpriseError: new (message?: string) => EnterpriseErrorForAuth;
-    };
-    const notAvailable = () =>
-      new EnterpriseErrorClass("SCIM provisioning requires enterprise features to be enabled.");
+    const notAvailable = makeNotAvailable("SCIM provisioning requires enterprise features to be enabled.");
     return {
       available: false,
       listConnections: () => Effect.succeed([]),
-      deleteConnection: () => Effect.succeed(false),
+      // Was `Effect.succeed(false)` pre-#2594 — route returned 404
+      // so admin assumed the SCIM connection was deleted. Connection
+      // stayed in DB; SCIM kept provisioning. Fail loudly.
+      deleteConnection: () => Effect.fail(notAvailable()),
       getSyncStatus: () =>
         Effect.succeed({
           connections: 0,
@@ -1843,7 +1893,8 @@ export const NoopSCIMProvenanceLayer: Layer.Layer<SCIMProvenance> = Layer.sync(
         }),
       listGroupMappings: () => Effect.succeed([]),
       createGroupMapping: () => Effect.fail(notAvailable()),
-      deleteGroupMapping: () => Effect.succeed(false),
+      // Same destructive-noop pattern as deleteConnection — fail loudly.
+      deleteGroupMapping: () => Effect.fail(notAvailable()),
       resolveGroupToRole: () => Effect.succeed(null),
     } satisfies SCIMProvenanceShape;
   },
@@ -2013,20 +2064,27 @@ export const NoopRolesPolicyLayer: Layer.Layer<RolesPolicy> = Layer.sync(
       );
     return {
       customRolesActive: false,
-      // Skip the `custom_roles` DB read — self-hosted shouldn't have
-      // those rows seeded (the `seedBuiltinRoles` path is gated on
-      // `requireEnterprise`), and the read on every admin request
-      // would be wasted IO. EE's `RolesPolicyLive` re-binds to the
-      // full `checkPermission` so workspaces with seeded roles get
-      // the granular resolution.
+      // `checkPermission` deliberately delegates to the legacy resolver
+      // — every admin route depends on this surface, and the no-op MUST
+      // continue to authorize admin/owner/platform_admin on self-hosted
+      // installs. EE's `RolesPolicyLive` re-binds to the full
+      // `checkPermission` so workspaces with seeded roles get granular
+      // resolution. (See `lib/auth/permission-resolve.ts`.)
       checkPermission: checkPermissionLegacy,
-      listRoles: () => Effect.succeed([]),
-      getRole: () => Effect.succeed(null),
-      getRoleByName: () => Effect.succeed(null),
+      // All custom-role CRUD methods consistently fail with EnterpriseError
+      // on self-hosted. Pre-#2594 the reads silently returned empty arrays
+      // and the writes failed — UI dead-end (admin sees "no roles yet,
+      // click create" → click → 403). Failing both sides surfaces a single
+      // coherent gate the UI renders as the enterprise-upsell envelope.
+      // Admin tooling that needs to render different copy on self-hosted
+      // reads `customRolesActive: false` from the Tag's shape.
+      listRoles: () => Effect.fail(notAvailable("listRoles")),
+      getRole: () => Effect.fail(notAvailable("getRole")),
+      getRoleByName: () => Effect.fail(notAvailable("getRoleByName")),
       createRole: () => Effect.fail(notAvailable("createRole")),
       updateRole: () => Effect.fail(notAvailable("updateRole")),
       deleteRole: () => Effect.fail(notAvailable("deleteRole")),
-      listRoleMembers: () => Effect.succeed([]),
+      listRoleMembers: () => Effect.fail(notAvailable("listRoleMembers")),
       assignRole: () => Effect.fail(notAvailable("assignRole")),
     } satisfies RolesPolicyShape;
   },
@@ -2082,15 +2140,7 @@ export class Branding extends Context.Tag("Branding")<
 export const NoopBrandingLayer: Layer.Layer<Branding> = Layer.sync(
   Branding,
   () => {
-    const { EnterpriseError: EnterpriseErrorClass } =
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      require("@atlas/api/lib/effect/errors") as {
-        EnterpriseError: new (message?: string) => EnterpriseErrorForBranding;
-      };
-    const notAvailable = () =>
-      new EnterpriseErrorClass(
-        "Workspace branding requires enterprise features to be enabled.",
-      );
+    const notAvailable = makeNotAvailable("Workspace branding requires enterprise features to be enabled.",);
     return {
       available: false,
       getWorkspaceBranding: () => Effect.fail(notAvailable()),
@@ -2169,15 +2219,7 @@ export class Domains extends Context.Tag("Domains")<
 export const NoopDomainsLayer: Layer.Layer<Domains> = Layer.sync(
   Domains,
   () => {
-    const { EnterpriseError: EnterpriseErrorClass } =
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      require("@atlas/api/lib/effect/errors") as {
-        EnterpriseError: new (message?: string) => EnterpriseErrorForDomains;
-      };
-    const notAvailable = () =>
-      new EnterpriseErrorClass(
-        "Custom domains require enterprise features to be enabled.",
-      );
+    const notAvailable = makeNotAvailable("Custom domains require enterprise features to be enabled.",);
     return {
       available: false,
       registerDomain: () => Effect.fail(notAvailable()),
@@ -2231,19 +2273,10 @@ export class ProactiveGate extends Context.Tag("ProactiveGate")<
 export const NoopProactiveGateLayer: Layer.Layer<ProactiveGate> = Layer.sync(
   ProactiveGate,
   () => {
-    const { EnterpriseError: EnterpriseErrorClass } =
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      require("@atlas/api/lib/effect/errors") as {
-        EnterpriseError: new (message?: string) => EnterpriseErrorForProactive;
-      };
+    const notAvailable = makeNotAvailable("Proactive chat requires enterprise features to be enabled.");
     return {
       enabled: false,
-      requireEnabled: () =>
-        Effect.fail(
-          new EnterpriseErrorClass(
-            "Proactive chat requires enterprise features to be enabled.",
-          ),
-        ),
+      requireEnabled: () => Effect.fail(notAvailable()),
     } satisfies ProactiveGateShape;
   },
 );

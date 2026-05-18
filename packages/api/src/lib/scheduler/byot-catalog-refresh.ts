@@ -43,7 +43,7 @@ import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import type { AdminActionType } from "@atlas/api/lib/audit/actions";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { ModelRouter, type ModelRouterShape } from "@atlas/api/lib/effect/services";
-import { EnterpriseLayer } from "@atlas/api/lib/effect/enterprise-layer";
+import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
 import {
   type ByotRefreshCycleResult,
   type ByotCatalogRefreshSkipReason,
@@ -202,10 +202,10 @@ function probeModelRouter(): Promise<ModelRouterProbeResult> {
   if (_routerProbe) return _routerProbe;
   _routerProbe = (async () => {
     try {
-      const router = await Effect.runPromise(
+      const router = await runEnterprise(
         Effect.gen(function* () {
           return yield* ModelRouter;
-        }).pipe(Effect.provide(EnterpriseLayer)),
+        }),
       );
       if (!router.available) {
         return {

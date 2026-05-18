@@ -129,41 +129,48 @@ mock.module("@atlas/api/lib/auth/roles-errors", () => ({
 // return 500 instead of the expected 200/4xx.
 mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { Layer } = require("effect") as typeof import("effect");
+  const { Layer, ManagedRuntime } = require("effect") as typeof import("effect");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+  const testLayer = Layer.mergeAll(
+    Layer.succeed(services.RolesPolicy, {
+      customRolesActive: true,
+      checkPermission: () => Effect.succeed(null),
+      listRoles: mockListRoles as never,
+      getRole: mockGetRole as never,
+      getRoleByName: mockGetRoleByName as never,
+      createRole: mockCreateRole as never,
+      updateRole: mockUpdateRole as never,
+      deleteRole: mockDeleteRole as never,
+      listRoleMembers: mockListRoleMembers as never,
+      assignRole: mockAssignRole as never,
+    } as never),
+    Layer.succeed(services.IpAllowlistPolicy, {
+      available: false,
+      checkIPAllowlist: () => Effect.succeed({ allowed: true }),
+    } as never),
+    Layer.succeed(services.SSOPolicy, {
+      available: false,
+      extractEmailDomain: (email: string) => {
+        const at = email.lastIndexOf("@");
+        return at > 0 ? email.slice(at + 1).toLowerCase() : null;
+      },
+      isSSOEnforcedForDomain: () => Effect.succeed({ enforced: false }),
+      isSSOEnforced: () => Effect.succeed({ enforced: false }),
+    } as never),
+    Layer.succeed(services.SCIMProvenance, {
+      available: false,
+      isSCIMProvisioned: () => Effect.succeed(false),
+    } as never),
+  );
+  // Post-#2594: production code uses `runEnterprise` / `getEnterpriseRuntime`
+  // (module-level ManagedRuntime singleton). The test runtime is built
+  // against the test Layer so all the mocked Tag bindings flow through.
+  const testRuntime = ManagedRuntime.make(testLayer as never);
   return {
-    EnterpriseLayer: Layer.mergeAll(
-      Layer.succeed(services.RolesPolicy, {
-        customRolesActive: true,
-        checkPermission: () => Effect.succeed(null),
-        listRoles: mockListRoles as never,
-        getRole: mockGetRole as never,
-        getRoleByName: mockGetRoleByName as never,
-        createRole: mockCreateRole as never,
-        updateRole: mockUpdateRole as never,
-        deleteRole: mockDeleteRole as never,
-        listRoleMembers: mockListRoleMembers as never,
-        assignRole: mockAssignRole as never,
-      } as never),
-      Layer.succeed(services.IpAllowlistPolicy, {
-        available: false,
-        checkIPAllowlist: () => Effect.succeed({ allowed: true }),
-      } as never),
-      Layer.succeed(services.SSOPolicy, {
-        available: false,
-        extractEmailDomain: (email: string) => {
-          const at = email.lastIndexOf("@");
-          return at > 0 ? email.slice(at + 1).toLowerCase() : null;
-        },
-        isSSOEnforcedForDomain: () => Effect.succeed({ enforced: false }),
-        isSSOEnforced: () => Effect.succeed({ enforced: false }),
-      } as never),
-      Layer.succeed(services.SCIMProvenance, {
-        available: false,
-        isSCIMProvisioned: () => Effect.succeed(false),
-      } as never),
-    ),
+    EnterpriseLayer: testLayer,
+    getEnterpriseRuntime: () => testRuntime,
+    runEnterprise: (program: never) => testRuntime.runPromise(program),
   };
 });
 

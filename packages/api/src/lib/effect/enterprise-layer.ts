@@ -14,7 +14,7 @@
  * file plus the `@atlas/ee/layers` aggregator dynamic import below.
  */
 
-import { Effect, Layer } from "effect";
+import { Effect, Layer, ManagedRuntime } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   NoopEnterpriseDefaultsLayer,
@@ -62,19 +62,48 @@ function isEnterpriseEnabledLocal(): boolean {
 }
 
 /**
- * Conditional EE Layer. When enterprise is enabled, lazy-imports
- * `@atlas/ee/layers` and exposes its `EELayer`. Otherwise falls back to
- * `Layer.empty`. Wrapped in `Layer.unwrapEffect` so the dynamic import
- * is deferred to Layer construction time (not module load), and a
- * missing/broken `@atlas/ee` install never fails core startup — the
- * catch arm logs and falls back to the empty Layer, leaving the no-op
- * defaults from `NoopEnterpriseDefaultsLayer` in effect.
+ * Conditional EE Layer.
+ *
+ * - When enterprise is DISABLED, returns `Layer.empty`. The no-op
+ *   defaults from `NoopEnterpriseDefaultsLayer` cover every Tag and
+ *   self-hosted runs unchanged.
+ * - When enterprise is ENABLED, lazy-imports `@atlas/ee/layers` and
+ *   exposes its `EELayer`. The dynamic import is deferred to Layer
+ *   construction time (not module load) so a missing `@atlas/ee/`
+ *   build doesn't break core's module graph.
+ *
+ * **Load failure handling (#2594).** When enterprise is enabled but the
+ * `@atlas/ee/layers` import fails, this logs at ERROR with a structured
+ * `event: "enterprise.load_failed"` field (alertable by SaaS monitoring)
+ * then falls through to `Layer.empty`. Every enterprise subsystem then
+ * resolves to its no-op default for the request.
+ *
+ * **Known weak spot — not yet fail-closed at the consumer level.** The
+ * no-op defaults across the 16 Tags vary in how "fail-closed" they
+ * really are. Most are correct on self-hosted but inadequate on a SaaS
+ * install where `ATLAS_ENTERPRISE_ENABLED=true` but `ee/` failed to load:
+ *
+ *   - MaskingPolicy no-op passes rows through unmasked
+ *   - IpAllowlistPolicy no-op always allows
+ *   - ApprovalGate no-op never requires approval
+ *   - ResidencyResolver no-op returns null (route falls back to default
+ *     datasource — compliance break on EU workspaces)
+ *   - AuditRetention pure-read methods return null (mutating + destructive
+ *     methods now fail loudly post-#2594, but `getRetentionPolicy` would
+ *     still report "no policy" instead of the real one stored in the DB)
+ *
+ * Hardening this is tracked in #2589 — consumer-side "available"
+ * discriminator checks at each load-bearing call site. The change is
+ * too invasive for #2594 because it touches every test's mock setup
+ * (16 test files mock individual `@atlas/ee/*` modules without mocking
+ * the `@atlas/ee/layers` aggregator; any change that hard-fails the
+ * aggregator on partial-mock cascades through every consumer).
  *
  * This is the **single permitted runtime reference** to `@atlas/ee`
  * from core. Adding any other `@atlas/ee` or `isEnterpriseEnabled`
- * reference to `packages/api/src/` will fail the CI grep slice #2573
- * installs (the closeout grep allow-list covers this file + the
- * conditional import below).
+ * reference to `packages/api/src/` will fail the CI grep gate
+ * (`scripts/check-ee-imports.sh`); the allow-list covers this file
+ * plus the conditional import below.
  */
 const ConditionalEELayer: Layer.Layer<never> = Layer.unwrapEffect(
   Effect.sync(() => isEnterpriseEnabledLocal()).pipe(
@@ -88,9 +117,21 @@ const ConditionalEELayer: Layer.Layer<never> = Layer.unwrapEffect(
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       }).pipe(
         Effect.catchAll((err) => {
+          // Operator-visible structured log so SaaS monitoring picks this
+          // up — `enterprise.load_failed` is the alertable event. Fall
+          // through to `Layer.empty` so the request can still complete via
+          // the no-op defaults. The downgrade is intentional but documented
+          // as a known weak spot in the JSDoc above; consumer-side
+          // hardening tracked in #2589.
           log.error(
-            { err: err instanceof Error ? err.message : String(err) },
-            "Enterprise enabled but @atlas/ee/layers failed to load — falling back to no-op defaults",
+            {
+              err: err instanceof Error ? err.message : String(err),
+              event: "enterprise.load_failed",
+              flag: "ATLAS_ENTERPRISE_ENABLED",
+            },
+            "Enterprise enabled but @atlas/ee/layers failed to load — request will be " +
+              "served by no-op defaults across every enterprise subsystem. Fix the " +
+              "@atlas/ee install or set ATLAS_ENTERPRISE_ENABLED=false.",
           );
           return Effect.succeed(Layer.empty as Layer.Layer<never>);
         }),
@@ -126,16 +167,80 @@ export type EnterpriseSubsystem =
 
 /**
  * Composed enterprise Layer — no-op defaults overlaid by the conditional
- * EE layer (last-wins via `Layer.mergeAll`). Provided per-request by
- * `runEffect`/`runHandler` so route programs can `yield* ResidencyResolver`
+ * EE layer (last-wins via `Layer.mergeAll`). Provided to programs via
+ * the module-level `enterpriseRuntime` (see `getEnterpriseRuntime` +
+ * `runEnterprise` below) so route programs can `yield* ResidencyResolver`
  * without threading the layer through every handler.
  *
- * Construction is cheap: the no-op defaults are constants, and the
- * conditional EE layer's lazy `await import("@atlas/ee/layers")` hits
- * Node's module cache after the first load. Effect's Layer memoization
- * elides repeat work within a single program run.
+ * Construction is paid ONCE per process: the runtime materialises the
+ * layer the first time it's used and reuses the constructed services
+ * across all subsequent runs. Pre-#2594 the bridge re-wrapped this Layer
+ * with `Effect.provide(...)` per request — building a fresh runtime
+ * Scope per call, defeating Effect's reference-keyed memoization.
  */
 export const EnterpriseLayer: Layer.Layer<EnterpriseSubsystem> = Layer.mergeAll(
   NoopEnterpriseDefaultsLayer,
   ConditionalEELayer,
 );
+
+// ── Module-level ManagedRuntime (#2594) ──────────────────────────────
+//
+// Pre-#2594 every call site of `Effect.provide(EnterpriseLayer)` rebuilt
+// the Layer's runtime per call. A single admin request handling a SQL
+// execution rebuilt 6-8 times (auth middleware → IP allowlist →
+// admin-router permission ×2 → SQL masking/SLA/approval ×3), and the
+// EE-Layer's lazy `await import("@atlas/ee/layers")` re-allocated
+// the `Effect.tryPromise` wrapper per call. The JSDoc above claimed
+// "Effect's Layer memoization elides repeat work within a single program
+// run" — true for one run, but each `Effect.runPromise` is a separate run.
+//
+// `ManagedRuntime.make(EnterpriseLayer)` materializes the layer once on
+// first use. Subsequent `runtime.runPromise(...)` calls reuse the
+// constructed services — the dynamic EE import hits Node's module cache
+// AND Effect's Layer memoization simultaneously. Construction is lazy
+// (deferred to first call) so tests that `mock.module("@atlas/ee/layers")`
+// before any handler runs see their mocks.
+//
+// `runEnterprise(program)` is the canonical helper for the standalone
+// (non-Hono) call sites. The Hono bridge (`hono.ts:runEffect`) uses the
+// runtime directly so it can layer in per-request contextLayer.
+
+let _runtime: ManagedRuntime.ManagedRuntime<EnterpriseSubsystem, never> | null = null;
+
+/**
+ * Get (or lazily create) the module-level ManagedRuntime for the
+ * EnterpriseLayer. Lazy so tests can install `mock.module("@atlas/ee/layers")`
+ * before the first runtime build.
+ *
+ * The runtime is process-lifetime; no explicit dispose. The Layer's
+ * subsystems (Noop defaults + EELayer's Live impls) currently have no
+ * scoped finalizers, so leaking the runtime at process exit is fine.
+ * If a future EE Tag introduces a scoped finalizer, wire dispose into
+ * the existing shutdown handler in `buildAppLayer`.
+ */
+export function getEnterpriseRuntime(): ManagedRuntime.ManagedRuntime<EnterpriseSubsystem, never> {
+  if (_runtime === null) {
+    _runtime = ManagedRuntime.make(EnterpriseLayer);
+  }
+  return _runtime;
+}
+
+/**
+ * Run a program that requires `EnterpriseSubsystem` via the shared
+ * module-level runtime. Use this instead of
+ * `Effect.runPromise(program.pipe(Effect.provide(EnterpriseLayer)))` at
+ * any non-Hono call site (the Hono bridge uses `getEnterpriseRuntime()`
+ * directly so it can layer in per-request contextLayer).
+ *
+ * Rejects on typed failures in the program's `E` channel. EE-load
+ * failure does NOT reject — `ConditionalEELayer` logs at ERROR with
+ * `event: "enterprise.load_failed"` and falls through to no-op
+ * defaults; consumer-side fail-closed checks are tracked in #2589.
+ * Callers that need to introspect the failure cause should use
+ * `getEnterpriseRuntime().runPromiseExit(...)` directly.
+ */
+export function runEnterprise<A, E>(
+  program: Effect.Effect<A, E, EnterpriseSubsystem>,
+): Promise<A> {
+  return getEnterpriseRuntime().runPromise(program);
+}

@@ -16,7 +16,13 @@
  */
 
 import { describe, it, expect, beforeEach, mock } from "bun:test";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
+
+// Force enterprise on so `ConditionalEELayer` in
+// `lib/effect/enterprise-layer.ts` lazy-imports the mocked
+// `@atlas/ee/layers` aggregator (otherwise the no-op default fires
+// and every test sees `available: false`).
+process.env.ATLAS_ENTERPRISE_ENABLED = "true";
 
 // ---------------------------------------------------------------------------
 // Mock control variables
@@ -112,22 +118,103 @@ class FakeDecryptError extends Error {
   }
 }
 
+// Mock the core ResidencyError class kept as a stub (the residency
+// no-op resolver lazy-requires it via the EnterpriseLayer's no-op
+// defaults — without a mock here, the require() fails when the test
+// runs in isolation).
+mock.module("@atlas/api/lib/residency/errors", () => ({
+  ResidencyError: class ResidencyError extends Error {
+    public readonly _tag = "ResidencyError" as const;
+    constructor(args: { message: string; code: string }) {
+      super(args.message);
+    }
+  },
+}));
+
+// Mock the core ModelConfigDecryptError so the route's
+// `Effect.catchTag("ModelConfigDecryptError", ...)` matches the
+// FakeDecryptError thrown by the test layer below.
+mock.module("@atlas/api/lib/model-routing/errors", () => ({
+  ModelConfigError: class ModelConfigError extends Error {
+    public readonly _tag = "ModelConfigError" as const;
+    public readonly code: string;
+    constructor(args: { message: string; code: string }) {
+      super(args.message);
+      this.code = args.code;
+    }
+  },
+  ModelConfigDecryptError: FakeDecryptError,
+}));
+
+// Build the ModelRouter the scheduler will see via the `EnterpriseLayer`.
+// `getWorkspaceModelConfigRaw` translates the test's legacy flat-config
+// shape to the new `RawWorkspaceModelConfig` (typed credentials union)
+// — the scheduler's `loadRawConfig` adapter collapses it back. This
+// keeps the per-test fixture format unchanged while exercising the new
+// Tag contract.
+mock.module("@atlas/ee/layers", () => ({
+  EELayer: Layer.unwrapEffect(
+    Effect.sync(() => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+      type ModelConfigProvider = import("@useatlas/types").ModelConfigProvider;
+      return Layer.succeed(services.ModelRouter, {
+        available: true,
+        getWorkspaceModelConfig: () => Effect.die("not stubbed"),
+        getWorkspaceModelConfigRaw: (orgId: string) => {
+          const cfg = mockWorkspaceConfigs.get(orgId);
+          if (cfg === "DECRYPT_FAIL") {
+            return Effect.fail(new FakeDecryptError("cfg-" + orgId, "key rotated"));
+          }
+          if (!cfg) return Effect.succeed(null);
+          // Translate the flat fixture into the typed-credentials shape
+          // the new `RawWorkspaceModelConfig` exposes. Cast the provider
+          // string up to `ModelConfigProvider`: the per-test fixtures
+          // only use canonical values ("bedrock" / "gateway" /
+          // "anthropic" / "openai"), so the cast is safe.
+          const credentials =
+            cfg.provider === "bedrock"
+              ? {
+                  provider: "bedrock" as const,
+                  bundle:
+                    cfg.apiKey && cfg.apiKey !== "BAD_BUNDLE"
+                      ? { accessKeyId: "AKIA-test", secretAccessKey: "secret-test" }
+                      : null,
+                }
+              : cfg.provider === "gateway"
+                ? { provider: "gateway" as const, apiKey: cfg.apiKey }
+                : {
+                    provider: cfg.provider as Exclude<ModelConfigProvider, "bedrock" | "gateway">,
+                    apiKey: cfg.apiKey ?? "",
+                  };
+          return Effect.succeed({
+            provider: cfg.provider as ModelConfigProvider,
+            model: cfg.model,
+            baseUrl: cfg.baseUrl,
+            bedrockRegion: cfg.bedrockRegion,
+            credentials,
+          });
+        },
+        setWorkspaceModelConfig: () => Effect.die("not stubbed"),
+        deleteWorkspaceModelConfig: () => Effect.die("not stubbed"),
+        testModelConfig: () => Effect.die("not stubbed"),
+        reconcileModelDeprecation: () =>
+          Effect.succeed({ status: "healthy" as const, suggestion: null }),
+        parseBedrockCredentialBundle: (apiKey: string) => {
+          if (apiKey === "BAD_BUNDLE") return null;
+          return { accessKeyId: "AKIA-test", secretAccessKey: "secret-test" };
+        },
+      } satisfies import("@atlas/api/lib/effect/services").ModelRouterShape);
+    }),
+  ),
+}));
+
+// Keep a stub for the EE module itself so any leftover transitive
+// imports (admin-router.ts etc.) load without crashing on partial exports.
 mock.module("@atlas/ee/platform/model-routing", () => ({
   ModelConfigDecryptError: FakeDecryptError,
-  getWorkspaceModelConfigRaw: (orgId: string) => {
-    const cfg = mockWorkspaceConfigs.get(orgId);
-    if (cfg === "DECRYPT_FAIL") {
-      return Effect.fail(new FakeDecryptError("cfg-" + orgId, "key rotated"));
-    }
-    return Effect.succeed(cfg ?? null);
-  },
-  parseBedrockCredentialBundle: (apiKey: string) => {
-    if (apiKey === "BAD_BUNDLE") return null;
-    return {
-      accessKeyId: "AKIA-test",
-      secretAccessKey: "secret-test",
-      sessionToken: null,
-    };
+  ModelConfigError: class extends Error {
+    public readonly _tag = "ModelConfigError" as const;
   },
 }));
 

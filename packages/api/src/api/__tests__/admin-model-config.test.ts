@@ -19,7 +19,7 @@ import {
   mock,
   type Mock,
 } from "bun:test";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 
 // --- Unified mocks with admin user in org-1 ---
@@ -165,6 +165,55 @@ function rawConfigFromLegacy(legacy: {
   };
 }
 
+// Core ResidencyError stub — the residency Noop layer lazy-requires it
+// when EnterpriseLayer constructs (slice 2 #2564 contract).
+mock.module("@atlas/api/lib/residency/errors", () => ({
+  ResidencyError: class ResidencyError extends Error {
+    public readonly _tag = "ResidencyError" as const;
+    constructor(args: { message: string; code: string }) {
+      super(args.message);
+    }
+  },
+}));
+
+// Core model-routing errors mocked so the route's
+// `domainError(ModelConfigError, ...)` mapping uses the same class
+// instances the mocked ModelRouter throws.
+mock.module("@atlas/api/lib/model-routing/errors", () => ({
+  ModelConfigError: MockModelConfigError,
+  ModelConfigDecryptError: MockModelConfigDecryptError,
+}));
+
+// Mock the EE layer aggregator instead of `@atlas/ee/platform/model-routing`
+// directly: post-#2565 the route resolves model routing via the
+// `ModelRouter` Tag, and the `ConditionalEELayer` in
+// `lib/effect/enterprise-layer.ts` lazy-imports `@atlas/ee/layers`.
+// The mocked aggregator binds the test's `mockXxx` functions to the
+// Tag so existing test fixtures (mockSetWorkspaceModelConfig.mock.calls,
+// mockReconcileModelDeprecation, etc.) keep working.
+mock.module("@atlas/ee/layers", () => ({
+  EELayer: Layer.unwrapEffect(
+    Effect.sync(() => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+      return Layer.succeed(services.ModelRouter, {
+        available: true,
+        getWorkspaceModelConfig: mockGetWorkspaceModelConfig as never,
+        getWorkspaceModelConfigRaw: mockGetWorkspaceModelConfigRaw as never,
+        setWorkspaceModelConfig: mockSetWorkspaceModelConfig as never,
+        deleteWorkspaceModelConfig: mockDeleteWorkspaceModelConfig as never,
+        testModelConfig: mockTestModelConfig as never,
+        reconcileModelDeprecation: mockReconcileModelDeprecation as never,
+        parseBedrockCredentialBundle: () => null,
+      } as never);
+    }),
+  ),
+}));
+
+// Keep `@atlas/ee/platform/model-routing` mocked as a no-op stub so any
+// leftover transitive import path (e.g. another EE module re-exporting
+// from it) loads without partial-export errors. The route no longer
+// imports from this path directly post-#2565.
 mock.module("@atlas/ee/platform/model-routing", () => ({
   getWorkspaceModelConfig: mockGetWorkspaceModelConfig,
   getWorkspaceModelConfigRaw: mockGetWorkspaceModelConfigRaw,
@@ -172,6 +221,7 @@ mock.module("@atlas/ee/platform/model-routing", () => ({
   deleteWorkspaceModelConfig: mockDeleteWorkspaceModelConfig,
   testModelConfig: mockTestModelConfig,
   reconcileModelDeprecation: mockReconcileModelDeprecation,
+  parseBedrockCredentialBundle: () => null,
   ModelConfigError: MockModelConfigError,
   ModelConfigDecryptError: MockModelConfigDecryptError,
 }));

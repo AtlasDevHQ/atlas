@@ -9,7 +9,7 @@
  * All exported functions return Effect — callers use `yield*` in Effect.gen.
  */
 
-import { Data, Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import {
@@ -44,29 +44,38 @@ import type {
   TestModelConfigRequest,
 } from "@useatlas/types";
 import { MODEL_CONFIG_PROVIDERS } from "@useatlas/types";
+import {
+  ModelRouter,
+  type ModelRouterShape,
+} from "@atlas/api/lib/effect/services";
+import {
+  ModelConfigError,
+  ModelConfigDecryptError,
+  type ModelConfigErrorCode,
+} from "@atlas/api/lib/model-routing/errors";
+import type {
+  WorkspaceCredentials,
+  RawWorkspaceModelConfig,
+} from "@atlas/api/lib/auth/credentials";
 
 const log = createLogger("ee:model-routing");
 
 // ── Typed errors ────────────────────────────────────────────────────
 
-export type ModelConfigErrorCode = "validation" | "not_found" | "test_failed";
-
-export class ModelConfigError extends Data.TaggedError("ModelConfigError")<{
-  message: string;
-  code: ModelConfigErrorCode;
-}> {}
-
 /**
- * Raised by `getWorkspaceModelConfigRaw` when an encrypted API key cannot be
- * decrypted (typically a key-rotation drift between `ATLAS_ENCRYPTION_KEYS`
- * and the row's `api_key_key_version`). The agent loop must surface this to
- * the user — silently falling back to the platform default would bill the
- * platform without consent.
+ * `ModelConfigError`, `ModelConfigDecryptError`, and `ModelConfigErrorCode`
+ * live in `@atlas/api/lib/model-routing/errors` post-#2565 so the
+ * `ModelRouter` Tag in `lib/effect/services.ts` can type its failure
+ * channels without core code importing from `@atlas/ee`. Re-exported
+ * here for back-compat — pre-#2565 EE consumers continue to find these
+ * symbols at the same path with the same `_tag`, payload shape, and
+ * `instanceof` semantics.
  */
-export class ModelConfigDecryptError extends Data.TaggedError("ModelConfigDecryptError")<{
-  configId: string;
-  cause: string;
-}> {}
+export {
+  ModelConfigError,
+  ModelConfigDecryptError,
+  type ModelConfigErrorCode,
+};
 
 // ── Internal row shape ──────────────────────────────────────────────
 
@@ -96,31 +105,24 @@ interface ModelConfigRow {
 // alias in `@atlas/api/lib/bedrock-catalog` now resolves to the same type.
 
 /**
- * Discriminated union over the typed cred material a workspace row
- * carries after `api_key_encrypted` is decrypted. Internal to the
- * BYOT boundary — never appears on the wire.
- *
- * The bedrock arm's `bundle` is nullable so the post-decrypt JSON
- * shape failure travels as data rather than as a thrown error —
- * keeping it distinct from a true crypto failure
- * (`ModelConfigDecryptError`), which the row mapper raises before this
- * union is ever constructed.
+ * `WorkspaceCredentials` (the typed cred material a workspace row
+ * carries after decrypt) lives in `@atlas/api/lib/auth/credentials`
+ * post-#2565 so the `ModelRouter` Tag can type its method signatures
+ * without importing from `@atlas/ee`. Re-exported here for back-compat —
+ * `RawWorkspaceModelConfig` further down the file pulls from the same
+ * core module for consistency.
  */
-export type WorkspaceCredentials =
-  | { provider: "bedrock"; bundle: BedrockCredentialBundle | null }
-  | {
-      provider: Exclude<ModelConfigProvider, "bedrock" | "gateway">;
-      apiKey: string;
-    }
-  | { provider: "gateway"; apiKey: string | null };
+export type { WorkspaceCredentials };
 
 /**
- * Parse a string-encoded Bedrock credential bundle. Private to this
- * module — interpreting a stored row goes through the typed
- * `WorkspaceCredentials` union; the parser is only legal for
- * user-supplied form input on the test-config path.
+ * Parse a string-encoded Bedrock credential bundle. Exported so the
+ * `ModelRouter` Tag's `parseBedrockCredentialBundle` accessor can wrap
+ * it (used by the BYOT catalog refresh scheduler to build the cred
+ * payload before calling the bedrock catalog). Inside this module the
+ * call sites are unchanged — `getWorkspaceModelConfigRaw` routes
+ * through `buildWorkspaceCredentials` for the typed union.
  */
-function parseBedrockCredentialBundle(raw: string): BedrockCredentialBundle | null {
+export function parseBedrockCredentialBundle(raw: string): BedrockCredentialBundle | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -365,23 +367,17 @@ export const getWorkspaceModelConfig = (
   });
 
 /**
- * Decrypted workspace model configuration, internal shape. Returned by
- * `getWorkspaceModelConfigRaw` for the AI Layer + admin route layer.
+ * `RawWorkspaceModelConfig` (decrypted workspace model configuration,
+ * returned by `getWorkspaceModelConfigRaw` for the AI Layer + admin
+ * route layer) lives in `@atlas/api/lib/auth/credentials` post-#2565
+ * so the `ModelRouter` Tag's method signatures stay in core. Re-exported
+ * here so existing EE consumers find the type at the same path.
  *
- * The `credentials` field carries the typed cred material via a
- * discriminated union, so consumers no longer re-parse the JSON bundle
- * for bedrock or fork on `provider === "bedrock"` to read a separate
- * `apiKey` shape — they switch on `credentials.provider` and read the
- * matching field. The wire shape of `WorkspaceModelConfig` is
- * unchanged (it carries a masked `apiKeyMasked` + `apiKeyStatus`).
+ * The wire shape of `WorkspaceModelConfig` is unchanged (it carries a
+ * masked `apiKeyMasked` + `apiKeyStatus`); consumers switch on
+ * `credentials.provider` and read the matching field.
  */
-export interface RawWorkspaceModelConfig {
-  readonly provider: ModelConfigProvider;
-  readonly model: string;
-  readonly baseUrl: string | null;
-  readonly bedrockRegion: string | null;
-  readonly credentials: WorkspaceCredentials;
-}
+export type { RawWorkspaceModelConfig };
 
 /**
  * Build a `WorkspaceCredentials` value from a successfully decrypted
@@ -929,3 +925,37 @@ export const testModelConfig = (
       catch: promiseError,
     });
   });
+
+// ── Tag wiring (#2565 — slice 3/11 of #2017) ─────────────────────────
+//
+// Bridges this module's functions into the `ModelRouter` Tag so core
+// call sites (`lib/agent.ts`, `lib/scheduler/byot-catalog-refresh.ts`,
+// `api/routes/admin-model-config.ts`, …) can `yield* ModelRouter`
+// instead of dynamic-importing this module. Aggregated into
+// `ee/src/layers.ts:EELayer`; the no-op default in
+// `lib/effect/services.ts:NoopModelRouterLayer` covers self-hosted
+// installs where this module never loads.
+
+/**
+ * Build the `ModelRouter` service from this module's exports. Reports
+ * `available: true` so admin routes know to surface the real BYOT
+ * surface and the agent loop knows to attempt workspace-config
+ * resolution. Each method delegates to the corresponding function above;
+ * semantics are identical to the pre-#2565 dynamic-import path.
+ */
+export const makeModelRouterLive = (): ModelRouterShape => ({
+  available: true,
+  getWorkspaceModelConfig,
+  getWorkspaceModelConfigRaw,
+  setWorkspaceModelConfig,
+  deleteWorkspaceModelConfig,
+  testModelConfig,
+  reconcileModelDeprecation,
+  parseBedrockCredentialBundle,
+});
+
+/** Layer that registers the real model router under the core Tag. */
+export const ModelRouterLive: Layer.Layer<ModelRouter> = Layer.sync(
+  ModelRouter,
+  makeModelRouterLive,
+);

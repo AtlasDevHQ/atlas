@@ -42,6 +42,8 @@ import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import type { AdminActionType } from "@atlas/api/lib/audit/actions";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+import { ModelRouter, type ModelRouterShape } from "@atlas/api/lib/effect/services";
+import { EnterpriseLayer } from "@atlas/api/lib/effect/enterprise-layer";
 import {
   type ByotRefreshCycleResult,
   type ByotCatalogRefreshSkipReason,
@@ -181,80 +183,88 @@ function providerOfRow(row: StaleRow): ByotProvider {
 }
 
 // ---------------------------------------------------------------------------
-// EE module probe — cached once per pod lifetime
+// ModelRouter Tag probe — replaces the pre-#2565 `EeModule` import probe
 // ---------------------------------------------------------------------------
 
-interface EeModule {
-  getWorkspaceModelConfigRaw: (
-    orgId: string,
-  ) => Effect.Effect<RawWorkspaceConfig | null, { readonly _tag: string } | Error>;
-  ModelConfigDecryptError: new (...args: never) => Error;
-  parseBedrockCredentialBundle: (apiKey: string) => unknown;
-}
+type ModelRouterProbeResult =
+  | { kind: "ok"; router: ModelRouterShape }
+  | { kind: "unavailable"; reason: "missing" | "probe_error"; error: string };
 
-type EeProbeResult = { kind: "ok"; module: EeModule } | { kind: "unavailable"; reason: "missing" | "import_error"; error: string };
+let _routerProbe: Promise<ModelRouterProbeResult> | null = null;
 
-let _eeProbe: Promise<EeProbeResult> | null = null;
-
-function probeEeModule(): Promise<EeProbeResult> {
-  if (_eeProbe) return _eeProbe;
-  _eeProbe = (async () => {
+/**
+ * Resolve the `ModelRouter` Tag from `EnterpriseLayer` once per pod
+ * lifetime. When EE is not loaded the Tag resolves to the no-op default
+ * with `available: false` — the probe reports `kind: "unavailable"` so
+ * the cycle audits "ee_unavailable" rather than failing every row.
+ */
+function probeModelRouter(): Promise<ModelRouterProbeResult> {
+  if (_routerProbe) return _routerProbe;
+  _routerProbe = (async () => {
     try {
-      const mod = (await import("@atlas/ee/platform/model-routing")) as unknown as EeModule;
-      return { kind: "ok" as const, module: mod };
+      const router = await Effect.runPromise(
+        Effect.gen(function* () {
+          return yield* ModelRouter;
+        }).pipe(Effect.provide(EnterpriseLayer)),
+      );
+      if (!router.available) {
+        return {
+          kind: "unavailable" as const,
+          reason: "missing" as const,
+          error: "ee module not installed (ModelRouter no-op default)",
+        };
+      }
+      return { kind: "ok" as const, router };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (message.includes("Cannot find module") || message.includes("Cannot find package")) {
-        return { kind: "unavailable" as const, reason: "missing" as const, error: message };
-      }
-      // Distinct from "missing" so a build/syntax error doesn't pose as a
-      // self-hosted-without-EE install. The cycle audits this as a failure
-      // (not a deliberate ee_unavailable skip).
       log.warn(
         { err: message },
-        "EE module import failed with non-missing error — every row this cycle will fail",
+        "ModelRouter Tag resolution failed — every row this cycle will fail",
       );
-      return { kind: "unavailable" as const, reason: "import_error" as const, error: message };
+      return { kind: "unavailable" as const, reason: "probe_error" as const, error: message };
     }
   })();
-  return _eeProbe;
+  return _routerProbe;
 }
 
-/** Test-only: clear the cached EE probe so a fresh import is attempted. */
+/** Test-only: clear the cached ModelRouter probe so a fresh resolution is attempted. */
 export function _resetEeProbeForTests(): void {
-  _eeProbe = null;
+  _routerProbe = null;
 }
 
 // ---------------------------------------------------------------------------
 // Per-row refresh
 // ---------------------------------------------------------------------------
 
-interface RawWorkspaceConfig {
-  provider: string;
-  model: string;
-  apiKey: string | null;
-  baseUrl: string | null;
-  bedrockRegion: string | null;
-}
+type RawWorkspaceModelConfig =
+  import("@atlas/api/lib/auth/credentials").RawWorkspaceModelConfig;
 
 type LoadRawConfigResult =
-  | { kind: "ok"; config: RawWorkspaceConfig }
+  | { kind: "ok"; config: RawWorkspaceModelConfig }
   | { kind: "no_config" }
   | { kind: "decrypt_failed" }
   | { kind: "ee_unavailable" }
   | { kind: "unavailable"; error: string };
 
 async function loadRawConfig(orgId: string): Promise<LoadRawConfigResult> {
-  const probe = await probeEeModule();
+  const probe = await probeModelRouter();
   if (probe.kind === "unavailable") {
     return probe.reason === "missing"
       ? { kind: "ee_unavailable" }
       : { kind: "unavailable", error: probe.error };
   }
 
-  const program = probe.module.getWorkspaceModelConfigRaw(orgId).pipe(
-    Effect.map((config) =>
-      config ? ({ kind: "ok" as const, config }) : ({ kind: "no_config" as const }),
+  // The `ModelRouter` Tag returns the typed `credentials` union; the
+  // scheduler reads `credentials.bundle` directly for bedrock and
+  // `credentials.apiKey` for the rest (#2565). The pre-#2565 path
+  // re-parsed a JSON-stringified bundle via
+  // `parseBedrockCredentialBundle`; that double-parse is gone now that
+  // the cred lives as a typed value all the way through.
+  const program = probe.router.getWorkspaceModelConfigRaw(orgId).pipe(
+    Effect.map((rawConfig) =>
+      rawConfig
+        ? ({ kind: "ok" as const, config: rawConfig })
+        : ({ kind: "no_config" as const }),
     ),
     Effect.catchTag("ModelConfigDecryptError", () =>
       Effect.succeed({ kind: "decrypt_failed" as const }),
@@ -325,30 +335,49 @@ async function refreshOne(row: StaleRow, now: number): Promise<RefreshOutcome> {
   if (configResult.kind === "no_config") return { kind: "skipped", reason: "missing_byot_key" };
 
   const config = configResult.config;
-  if (!config.apiKey || config.provider !== row.provider) {
+  if (config.provider !== row.provider) {
     return { kind: "skipped", reason: "missing_byot_key" };
   }
 
-  // Bedrock-specific preconditions: region must exist (saved on the config
-  // row OR projected from the SQL JOIN), and the cred bundle must parse.
+  // Pull cred material off the typed `credentials` union. Bedrock's
+  // bundle is `null` precisely when the post-decrypt JSON parse failed
+  // (the `malformed_bedrock_bundle` skip); other providers carry the
+  // raw apiKey string. The fetcher takes both via separate args — the
+  // bedrock fetch ignores `apiKey`, the others ignore `bedrockBundle`.
+  //
+  // Narrow on `row.provider` (the discriminator the rest of the file
+  // walks) rather than `config.credentials.provider`: the earlier
+  // `config.provider !== row.provider` early-return guarantees they
+  // agree, and `row`-side narrowing lets TS resolve `row.bedrockRegion`
+  // on the bedrock arm.
+  let apiKey = "";
   let bedrockBundle: unknown = null;
   if (row.provider === "bedrock") {
-    const probe = await probeEeModule();
-    if (probe.kind === "unavailable") {
-      return probe.reason === "missing"
-        ? { kind: "skipped", reason: "ee_unavailable" }
-        : { kind: "failed", error: probe.error };
+    if (config.credentials.provider !== "bedrock" || !config.credentials.bundle) {
+      return { kind: "skipped", reason: "malformed_bedrock_bundle" };
     }
+    bedrockBundle = config.credentials.bundle;
     const region = config.bedrockRegion ?? row.bedrockRegion;
     if (!region) return { kind: "skipped", reason: "missing_byot_key" };
     // Mutate the discriminated row so the fetcher uses the resolved region.
     row = { provider: "bedrock", orgId: row.orgId, bedrockRegion: region };
-    bedrockBundle = probe.module.parseBedrockCredentialBundle(config.apiKey);
-    if (!bedrockBundle) return { kind: "skipped", reason: "malformed_bedrock_bundle" };
+  } else if (config.credentials.provider === "gateway") {
+    if (!config.credentials.apiKey) {
+      return { kind: "skipped", reason: "missing_byot_key" };
+    }
+    apiKey = config.credentials.apiKey;
+  } else if (config.credentials.provider !== "bedrock") {
+    apiKey = config.credentials.apiKey;
+    if (!apiKey) return { kind: "skipped", reason: "missing_byot_key" };
+  } else {
+    // Defensive: row.provider !== "bedrock" but credentials.provider === "bedrock"
+    // — should be unreachable since the earlier `config.provider !== row.provider`
+    // check fires first. Return a skip rather than a failed so the cycle moves on.
+    return { kind: "skipped", reason: "missing_byot_key" };
   }
 
   try {
-    const result = await fetchCatalogForRow(row, config.apiKey, bedrockBundle);
+    const result = await fetchCatalogForRow(row, apiKey, bedrockBundle);
     return { kind: "refreshed", modelCount: result.models.length, source: result.source };
   } catch (err) {
     return { kind: "failed", error: errorMessage(err) };

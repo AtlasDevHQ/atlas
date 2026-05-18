@@ -907,25 +907,114 @@ export const NoopResidencyResolverLayer: Layer.Layer<ResidencyResolver> =
     } satisfies ResidencyResolverShape;
   });
 
-// ── ModelRouter (#2565) ──────────────────────────────────────────────
+// ── ModelRouter (#2565 — slice 3/11 of #2017) ────────────────────────
 //
-// Replaces `await import("@atlas/ee/platform/model-routing")` in
-// `lib/agent.ts` + `lib/scheduler/byot-catalog-refresh.ts`. EE resolves
-// per-workspace BYOT model config; core's no-op returns `null` so the
-// agent falls back to env-var-configured providers.
+// Inverts every `@atlas/ee/platform/model-routing` reference in
+// `packages/api/src/`: the dynamic import in `lib/agent.ts`, the
+// `EeModule` probe in `lib/scheduler/byot-catalog-refresh.ts`, the
+// static admin-route imports in `api/routes/admin-model-config.ts`,
+// and the type-only `WorkspaceCredentials` reaches in
+// `lib/providers.ts` + `lib/effect/ai.ts`. EE overlays the real
+// implementation; the no-op default returns `available: false` +
+// null-shaped methods so self-hosted falls back to the env-var
+// `getModel()` provider without dynamic imports.
+//
+// `WorkspaceCredentials` + `RawWorkspaceModelConfig` live in
+// `lib/auth/credentials.ts`; `ModelConfigError` +
+// `ModelConfigDecryptError` live in `lib/model-routing/errors.ts`.
+
+type WorkspaceModelConfig = import("@useatlas/types").WorkspaceModelConfig;
+type SetWorkspaceModelConfigRequest = import("@useatlas/types").SetWorkspaceModelConfigRequest;
+type TestModelConfigRequest = import("@useatlas/types").TestModelConfigRequest;
+type RawWorkspaceModelConfig = import("@atlas/api/lib/auth/credentials").RawWorkspaceModelConfig;
+type ModelConfigError = import("@atlas/api/lib/model-routing/errors").ModelConfigError;
+type ModelConfigDecryptError = import("@atlas/api/lib/model-routing/errors").ModelConfigDecryptError;
+type EnterpriseError = import("@atlas/api/lib/effect/errors").EnterpriseError;
+type BedrockCredentialBundle = import("@useatlas/types").BedrockCredentialBundle;
+type GatewayCatalogModel = import("@useatlas/types").GatewayCatalogModel;
 
 export interface ModelRouterShape {
-  readonly getWorkspaceConfig: (orgId: string) => Promise<unknown | null>;
+  /** False when EE model-routing is not loaded — admin routes surface "not_available", agent loop falls back to platform default. */
+  readonly available: boolean;
+  /** Wire-safe (masked api key) workspace config for admin reads + agent reconcile. */
+  readonly getWorkspaceModelConfig: (
+    orgId: string,
+  ) => Effect.Effect<WorkspaceModelConfig | null, EnterpriseError | Error>;
+  /** Decrypted workspace config for provider resolution. WARNING: plaintext credentials. */
+  readonly getWorkspaceModelConfigRaw: (
+    orgId: string,
+  ) => Effect.Effect<RawWorkspaceModelConfig | null, ModelConfigDecryptError | Error>;
+  /** Create/update a workspace model config. */
+  readonly setWorkspaceModelConfig: (
+    orgId: string,
+    request: SetWorkspaceModelConfigRequest,
+  ) => Effect.Effect<WorkspaceModelConfig, EnterpriseError | ModelConfigError | Error>;
+  /** Delete the workspace config (returns whether a row was removed). */
+  readonly deleteWorkspaceModelConfig: (
+    orgId: string,
+  ) => Effect.Effect<boolean, EnterpriseError | Error>;
+  /** Probe a candidate provider+key against the upstream catalog. */
+  readonly testModelConfig: (
+    request: TestModelConfigRequest,
+  ) => Effect.Effect<
+    { success: boolean; message: string; modelName?: string },
+    EnterpriseError | ModelConfigError | Error
+  >;
+  /**
+   * Refresh the workspace's `model_status` against the latest catalog and
+   * surface any deprecation. Called from the admin reconcile button and
+   * the BYOT catalog refresh scheduler. Signature mirrors the EE function
+   * (`orgId`, `savedModelId`, `savedProvider`, `freshCatalog`) so the
+   * no-op layer can return the "healthy / no suggestion" sentinel.
+   */
+  readonly reconcileModelDeprecation: (
+    orgId: string,
+    savedModelId: string,
+    savedProvider: string,
+    freshCatalog: GatewayCatalogModel[],
+  ) => Effect.Effect<{ status: "healthy" | "deprecated"; suggestion: string | null }, Error>;
+  /**
+   * Parse a Bedrock cred JSON bundle. Used by the scheduler's per-row
+   * refresh path; returns null when the JSON shape doesn't validate.
+   */
+  readonly parseBedrockCredentialBundle: (apiKey: string) => BedrockCredentialBundle | null;
 }
 export class ModelRouter extends Context.Tag("ModelRouter")<
   ModelRouter,
   ModelRouterShape
 >() {}
-export const NoopModelRouterLayer: Layer.Layer<ModelRouter> = Layer.succeed(
+
+/**
+ * No-op default: BYOT model routing unavailable. Agent loop's
+ * workspace-config branch sees `available: false` and falls back to
+ * the env-var `getModel()` path. Admin routes branch on `available`
+ * to surface "feature unavailable".
+ *
+ * Lazy-requires the `EnterpriseError` class so this module stays free
+ * of eager imports on `lib/effect/errors` (services.ts is reached early
+ * in the dep graph; eager imports have caused mock.module() ordering
+ * surprises before — see feedback_bun_test_async_mock_module).
+ */
+export const NoopModelRouterLayer: Layer.Layer<ModelRouter> = Layer.sync(
   ModelRouter,
-  {
-    getWorkspaceConfig: async () => null,
-  } satisfies ModelRouterShape,
+  () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { EnterpriseError: EnterpriseErrorClass } = require("@atlas/api/lib/effect/errors") as {
+      EnterpriseError: new (message?: string) => EnterpriseError;
+    };
+    const notAvailable = () => new EnterpriseErrorClass("Model routing requires enterprise features to be enabled.");
+    return {
+      available: false,
+      getWorkspaceModelConfig: () => Effect.succeed(null),
+      getWorkspaceModelConfigRaw: () => Effect.succeed(null),
+      setWorkspaceModelConfig: () => Effect.fail(notAvailable()),
+      deleteWorkspaceModelConfig: () => Effect.succeed(false),
+      testModelConfig: () => Effect.fail(notAvailable()),
+      reconcileModelDeprecation: () =>
+        Effect.succeed({ status: "healthy" as const, suggestion: null }),
+      parseBedrockCredentialBundle: () => null,
+    } satisfies ModelRouterShape;
+  },
 );
 
 // ── MaskingPolicy (#2566) ────────────────────────────────────────────

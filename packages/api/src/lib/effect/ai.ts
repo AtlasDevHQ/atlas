@@ -167,7 +167,7 @@ export function makeWorkspaceAiModelLayer(config: {
   model: string;
   baseUrl: string | null;
   bedrockRegion: string | null;
-  credentials: import("@atlas/ee/platform/model-routing").WorkspaceCredentials;
+  credentials: import("@atlas/api/lib/auth/credentials").WorkspaceCredentials;
 }): Layer.Layer<AtlasAiModel, Error> {
   return Layer.effect(
     AtlasAiModel,

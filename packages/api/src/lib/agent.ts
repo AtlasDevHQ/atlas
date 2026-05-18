@@ -47,6 +47,8 @@ import {
   context as otelContext,
 } from "@opentelemetry/api";
 import { AtlasAiModel, type AtlasAiModelShape } from "./effect/ai";
+import { ModelRouter } from "./effect/services";
+import { EnterpriseLayer } from "./effect/enterprise-layer";
 import { BOUND_AGENT_PROMPT_GUIDANCE } from "./bound-chat-context";
 
 const log = createLogger("agent");
@@ -660,29 +662,34 @@ export async function runAgent({
     model = injectedAiModel.model;
     providerType = injectedAiModel.providerType;
   } else {
-    let workspaceConfig: import("@atlas/ee/platform/model-routing").RawWorkspaceModelConfig | null = null;
+    let workspaceConfig: import("@atlas/api/lib/auth/credentials").RawWorkspaceModelConfig | null = null;
     if (orgId && hasInternalDB()) {
-      const { Effect } = await import("effect");
-      const { getWorkspaceModelConfigRaw, ModelConfigDecryptError } =
-        await import("@atlas/ee/platform/model-routing");
+      // Resolve workspace model config via the `ModelRouter` Tag — EE
+      // provides the real implementation; self-hosted (no EE) sees the
+      // no-op default which returns null and the platform-default path
+      // below fires. Decrypt failure still surfaces as a user-visible
+      // error so the platform isn't silently billed against the
+      // workspace's consent. Other failures (DB unreachable, EE
+      // disabled, internal-query rejected) keep the
+      // log-and-fall-through behavior.
+      const { ModelConfigDecryptError } = await import(
+        "@atlas/api/lib/model-routing/errors"
+      );
+      const program = Effect.gen(function* () {
+        const router = yield* ModelRouter;
+        return yield* router.getWorkspaceModelConfigRaw(orgId);
+      });
       try {
-        workspaceConfig = await Effect.runPromise(getWorkspaceModelConfigRaw(orgId));
+        workspaceConfig = await Effect.runPromise(
+          program.pipe(Effect.provide(EnterpriseLayer)),
+        );
       } catch (err) {
-        // A decrypt failure must surface to the user — silently falling back
-        // to the platform default would bill the platform against their will.
-        // Other errors (DB unreachable, enterprise disabled, etc.) keep the
-        // existing log-and-fall-through behavior.
         if (err instanceof ModelConfigDecryptError) {
           throw new Error(
             "Your workspace's API key could not be decrypted. Re-enter it on the AI Provider settings page before continuing.",
             { cause: err },
           );
         }
-        // log.warn — the workspace may have intended to be billed
-        // against their own BYOT key; falling back to the platform
-        // default after a non-decrypt error (DB unreachable, EE
-        // disabled, internal-query failure) bills the platform on
-        // their behalf. Quiet-debug here would hide that swap.
         log.warn(
           { orgId, err: err instanceof Error ? err.message : String(err) },
           "Workspace model config not available — falling back to platform default",

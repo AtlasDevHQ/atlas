@@ -1294,19 +1294,43 @@ export const NoopApprovalGateLayer: Layer.Layer<ApprovalGate> = Layer.sync(
   },
 );
 
-// ── SlaMetrics (#2569) ───────────────────────────────────────────────
+// ── SlaMetrics (#2568 — slice 6/11 of #2017) ─────────────────────────
 //
-// Replaces `await import("@atlas/ee/sla/index")` in `lib/tools/sql.ts`.
-// EE records per-query latency / success metrics for SLA dashboards;
-// core's no-op drops the metric on the floor.
+// Inverts every `@atlas/ee/sla/*` reference in `packages/api/src/`:
+// the two `recordQueryMetric` dynamic imports in `lib/tools/sql.ts`,
+// and the `SLAModule` lazy-loader in `api/routes/platform-sla.ts`. EE
+// overlays the real implementation; the no-op default drops metrics
+// on the floor (matches pre-#2568 behavior when the EE module wasn't
+// installed) and returns `available: false` so admin platform-SLA
+// routes surface the existing 404 envelope.
+
+type WorkspaceSLASummary = import("@useatlas/types").WorkspaceSLASummary;
+type WorkspaceSLADetail = import("@useatlas/types").WorkspaceSLADetail;
+type SLAAlert = import("@useatlas/types").SLAAlert;
+type SLAAlertStatus = import("@useatlas/types").SLAAlertStatus;
+type SLAThresholds = import("@useatlas/types").SLAThresholds;
 
 export interface SlaMetricsShape {
-  readonly recordQueryMetric: (input: {
-    readonly sql: string;
-    readonly orgId?: string;
-    readonly durationMs: number;
-    readonly success: boolean;
-  }) => Promise<void>;
+  readonly available: boolean;
+  /** Fire-and-forget per-query metric write. No-op is a noop on the floor. */
+  readonly recordQueryMetric: (
+    workspaceId: string,
+    latencyMs: number,
+    isError: boolean,
+  ) => Effect.Effect<void>;
+  readonly getAllWorkspaceSLA: (hoursBack?: number) => Effect.Effect<WorkspaceSLASummary[], Error>;
+  readonly getWorkspaceSLADetail: (
+    workspaceId: string,
+    hoursBack?: number,
+  ) => Effect.Effect<WorkspaceSLADetail, Error>;
+  readonly getThresholds: (workspaceId?: string) => Effect.Effect<SLAThresholds, Error>;
+  readonly updateThresholds: (thresholds: SLAThresholds) => Effect.Effect<void, Error>;
+  readonly getAlerts: (
+    status?: SLAAlertStatus,
+    limit?: number,
+  ) => Effect.Effect<SLAAlert[], Error>;
+  readonly acknowledgeAlert: (alertId: string, actorId: string) => Effect.Effect<boolean, Error>;
+  readonly evaluateAlerts: () => Effect.Effect<SLAAlert[], Error>;
 }
 export class SlaMetrics extends Context.Tag("SlaMetrics")<
   SlaMetrics,
@@ -1315,19 +1339,75 @@ export class SlaMetrics extends Context.Tag("SlaMetrics")<
 export const NoopSlaMetricsLayer: Layer.Layer<SlaMetrics> = Layer.succeed(
   SlaMetrics,
   {
-    recordQueryMetric: async () => {},
+    available: false,
+    recordQueryMetric: () => Effect.void,
+    getAllWorkspaceSLA: () => Effect.succeed([]),
+    getWorkspaceSLADetail: () =>
+      Effect.die("SLA monitoring requires enterprise features to be enabled."),
+    getThresholds: () =>
+      Effect.die("SLA monitoring requires enterprise features to be enabled."),
+    updateThresholds: () =>
+      Effect.die("SLA monitoring requires enterprise features to be enabled."),
+    getAlerts: () => Effect.succeed([]),
+    acknowledgeAlert: () => Effect.succeed(false),
+    evaluateAlerts: () => Effect.succeed([]),
   } satisfies SlaMetricsShape,
 );
 
-// ── BackupsManager (#2570) ───────────────────────────────────────────
+// ── BackupsManager (#2568 — slice 6/11 of #2017) ─────────────────────
 //
-// Replaces `await import("@atlas/ee/backups/index")` in
+// Inverts the `BackupsModule` lazy-loader in
 // `api/routes/platform-backups.ts`. EE orchestrates automated backups;
-// core's no-op reports the feature is unavailable so the admin surface
-// renders the upsell.
+// the no-op reports `available: false` so the admin route surfaces a
+// 404 envelope (the existing "not_available" branch).
+
+export type BackupConfigShape = {
+  readonly schedule: string;
+  readonly retention_days: number;
+  readonly storage_path: string;
+};
+
+export type BackupRowShape = {
+  readonly id: string;
+  readonly created_at: string;
+  readonly size_bytes: string | null;
+  readonly status: string;
+  readonly storage_path: string;
+  readonly retention_expires_at: string;
+  readonly error_message: string | null;
+};
+
+export type CreateBackupResult = {
+  readonly id: string;
+  readonly storagePath: string;
+  readonly sizeBytes: number;
+  readonly status: string;
+};
 
 export interface BackupsManagerShape {
   readonly available: boolean;
+  readonly getBackupConfig: () => Effect.Effect<BackupConfigShape, Error>;
+  readonly updateBackupConfig: (config: {
+    schedule?: string;
+    retentionDays?: number;
+    storagePath?: string;
+  }) => Effect.Effect<void, Error>;
+  readonly createBackup: () => Effect.Effect<CreateBackupResult, Error>;
+  readonly listBackups: (limit?: number) => Effect.Effect<BackupRowShape[], Error>;
+  readonly getBackupById: (id: string) => Effect.Effect<BackupRowShape | null, Error>;
+  readonly purgeExpiredBackups: () => Effect.Effect<number, Error>;
+  readonly verifyBackup: (
+    backupId: string,
+  ) => Effect.Effect<{ verified: boolean; message: string }, Error>;
+  readonly requestRestore: (
+    backupId: string,
+  ) => Effect.Effect<{ confirmationToken: string; message: string }, Error>;
+  readonly executeRestore: (
+    confirmationToken: string,
+  ) => Effect.Effect<
+    { restored: boolean; preRestoreBackupId: string; message: string },
+    Error
+  >;
 }
 export class BackupsManager extends Context.Tag("BackupsManager")<
   BackupsManager,
@@ -1337,6 +1417,15 @@ export const NoopBackupsManagerLayer: Layer.Layer<BackupsManager> = Layer.succee
   BackupsManager,
   {
     available: false,
+    getBackupConfig: () => Effect.die("Backups not configured."),
+    updateBackupConfig: () => Effect.die("Backups not configured."),
+    createBackup: () => Effect.die("Backups not configured."),
+    listBackups: () => Effect.succeed([]),
+    getBackupById: () => Effect.succeed(null),
+    purgeExpiredBackups: () => Effect.succeed(0),
+    verifyBackup: () => Effect.die("Backups not configured."),
+    requestRestore: () => Effect.die("Backups not configured."),
+    executeRestore: () => Effect.die("Backups not configured."),
   } satisfies BackupsManagerShape,
 );
 

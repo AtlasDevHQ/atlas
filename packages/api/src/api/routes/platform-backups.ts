@@ -20,6 +20,7 @@ import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
+  BackupsManager,
 } from "@atlas/api/lib/effect/services";
 import { BackupEntrySchema, BackupConfigSchema } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -188,26 +189,9 @@ const updateConfigRoute = createRoute({
   },
 });
 
-// ---------------------------------------------------------------------------
-// Lazy import — ee module may not be installed
-// ---------------------------------------------------------------------------
-
-type BackupsModule = typeof import("@atlas/ee/backups/index");
-
-async function loadBackups(): Promise<BackupsModule | null> {
-  try {
-    return await import("@atlas/ee/backups/index");
-  } catch (err) {
-    if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND") {
-      return null;
-    }
-    log.error(
-      { err: err instanceof Error ? err : new Error(String(err)) },
-      "Failed to load backups module — unexpected error",
-    );
-    throw err;
-  }
-}
+// Post-#2568: backups are resolved through the `BackupsManager` Tag
+// (`yield* BackupsManager`); routes branch on `available` to render the
+// 404 "not_available" envelope when EE is missing.
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -245,8 +229,8 @@ platformBackups.openapi(listBackupsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
 
-    const backups = yield* Effect.promise(() => loadBackups());
-    if (!backups) {
+    const backups = yield* BackupsManager;
+    if (!backups.available) {
       return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
     }
 
@@ -261,8 +245,8 @@ platformBackups.openapi(createBackupRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
 
-    const backupsMod = yield* Effect.promise(() => loadBackups());
-    if (!backupsMod) {
+    const backupsMod = yield* BackupsManager;
+    if (!backupsMod.available) {
       return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
     }
 
@@ -283,7 +267,12 @@ platformBackups.openapi(createBackupRoute, async (c) => {
       id: result.id,
       createdAt: new Date().toISOString(),
       sizeBytes: result.sizeBytes,
-      status: result.status,
+      // Cast — the Tag's `CreateBackupResult.status` is broadened to
+      // `string` because the type lives in core (no enum re-export from
+      // `@useatlas/types`'s `BackupStatus` available to the Tag layer).
+      // EE only ever emits canonical enum values; the cast asserts what
+      // the wire shape already guarantees.
+      status: result.status as "in_progress" | "completed" | "failed" | "verified",
       storagePath: result.storagePath,
       retentionExpiresAt: new Date().toISOString(),
       errorMessage: null,
@@ -298,8 +287,8 @@ platformBackups.openapi(verifyBackupRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
 
-    const backupsMod = yield* Effect.promise(() => loadBackups());
-    if (!backupsMod) {
+    const backupsMod = yield* BackupsManager;
+    if (!backupsMod.available) {
       return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
     }
 
@@ -337,8 +326,8 @@ platformBackups.openapi(requestRestoreRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
 
-    const backupsMod = yield* Effect.promise(() => loadBackups());
-    if (!backupsMod) {
+    const backupsMod = yield* BackupsManager;
+    if (!backupsMod.available) {
       return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
     }
 
@@ -375,8 +364,8 @@ platformBackups.openapi(confirmRestoreRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
 
-    const backupsMod = yield* Effect.promise(() => loadBackups());
-    if (!backupsMod) {
+    const backupsMod = yield* BackupsManager;
+    if (!backupsMod.available) {
       return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
     }
 
@@ -414,8 +403,8 @@ platformBackups.openapi(getConfigRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
 
-    const backupsMod = yield* Effect.promise(() => loadBackups());
-    if (!backupsMod) {
+    const backupsMod = yield* BackupsManager;
+    if (!backupsMod.available) {
       return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
     }
 
@@ -434,8 +423,8 @@ platformBackups.openapi(updateConfigRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
 
-    const backupsMod = yield* Effect.promise(() => loadBackups());
-    if (!backupsMod) {
+    const backupsMod = yield* BackupsManager;
+    if (!backupsMod.available) {
       return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
     }
 

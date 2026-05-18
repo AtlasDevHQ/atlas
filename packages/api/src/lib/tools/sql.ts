@@ -42,6 +42,7 @@ import { mergeMemberResults } from "@atlas/api/lib/multi-env-merger";
 import {
   ApprovalGate,
   MaskingPolicy,
+  SlaMetrics,
   type ApprovalGateShape,
   type MaskingContext,
 } from "@atlas/api/lib/effect/services";
@@ -78,6 +79,25 @@ function loadApprovalGate(): Promise<ApprovalGateShape> {
   return Effect.runPromise(
     Effect.gen(function* () {
       return yield* ApprovalGate;
+    }).pipe(Effect.provide(EnterpriseLayer)),
+  );
+}
+
+/**
+ * Fire-and-forget SLA metric write (#2568). Resolves the `SlaMetrics`
+ * Tag and runs `recordQueryMetric` once. Errors are swallowed by the
+ * Tag's own catchAll (the no-op already returns `Effect.void`), so any
+ * unexpected throw lands on the caller's `.catch()` for diagnostic logs.
+ */
+function recordSlaMetric(
+  workspaceId: string,
+  durationMs: number,
+  isError: boolean,
+): Promise<void> {
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const sla = yield* SlaMetrics;
+      return yield* sla.recordQueryMetric(workspaceId, durationMs, isError);
     }).pipe(Effect.provide(EnterpriseLayer)),
   );
 }
@@ -898,17 +918,13 @@ function executeAndAuditEffect(opts: {
       connections.recordQuery(connId, durationMs, orgId);
       connections.recordError(connId, orgId);
 
-      // SLA metric (fire-and-forget, enterprise feature)
+      // SLA metric (fire-and-forget) — via `SlaMetrics` Tag (#2568)
       if (orgId) {
-        Promise.all([import("@atlas/ee/sla/index"), import("effect")])
-          .then(([{ recordQueryMetric }, { Effect: E }]) => E.runPromise(recordQueryMetric(orgId, durationMs, true)))
-          .catch((slaErr) => {
-            // Dynamic import failure = ee not installed (expected in non-enterprise).
-            // Runtime error from recordQueryMetric = log warning for diagnostics.
-            if (slaErr instanceof Error && !slaErr.message.includes("Cannot find module")) {
-              log.warn({ err: slaErr.message, connectionId: connId }, "SLA metric recording failed");
-            }
-          });
+        recordSlaMetric(orgId, durationMs, true).catch((slaErr) => {
+          if (slaErr instanceof Error) {
+            log.warn({ err: slaErr.message, connectionId: connId }, "SLA metric recording failed");
+          }
+        });
       }
 
       try {
@@ -947,19 +963,13 @@ function executeAndAuditEffect(opts: {
           connections.recordQuery(connId, durationMs, orgId);
           connections.recordSuccess(connId, orgId);
 
-          // SLA metric (fire-and-forget, enterprise feature)
+          // SLA metric (fire-and-forget) — via `SlaMetrics` Tag (#2568)
           if (orgId) {
-            try {
-              const { recordQueryMetric } = await import("@atlas/ee/sla/index");
-              const { Effect: E } = await import("effect");
-              void E.runPromise(recordQueryMetric(orgId, durationMs, false));
-            } catch (err) {
-              // Dynamic import failure = ee not installed (expected in non-enterprise).
-              // Runtime error from recordQueryMetric = log warning for diagnostics.
-              if (err instanceof Error && !err.message.includes("Cannot find module")) {
-                log.warn({ err: err.message, connectionId: connId }, "SLA metric recording failed");
+            void recordSlaMetric(orgId, durationMs, false).catch((slaErr) => {
+              if (slaErr instanceof Error) {
+                log.warn({ err: slaErr.message, connectionId: connId }, "SLA metric recording failed");
               }
-            }
+            });
           }
 
           // Cache write (fail open)

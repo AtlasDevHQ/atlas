@@ -1083,7 +1083,13 @@ export const NoopMaskingPolicyLayer: Layer.Layer<MaskingPolicy> = Layer.sync(
       });
     return {
       available: false,
-      applyMasking: (ctx) => Effect.succeed([...ctx.rows]),
+      // MUST preserve reference identity — callers in `tools/sql.ts`
+      // compute `maskingApplied = maskedRows !== result.rows`, and a
+      // fresh-array no-op (`[...ctx.rows]`) misreports `true` on every
+      // self-hosted query against a classified table. EE's real
+      // `applyMasking` returns `ctx.rows` directly on no-rules early-out
+      // paths for the same reason.
+      applyMasking: (ctx) => Effect.succeed(ctx.rows),
       listPIIClassifications: () => Effect.succeed([]),
       updatePIIClassification: (_orgId, id) => Effect.fail(notFound(id)),
       deletePIIClassification: (_orgId, id) => Effect.fail(notFound(id)),

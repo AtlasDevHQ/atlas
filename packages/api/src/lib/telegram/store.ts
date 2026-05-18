@@ -16,7 +16,7 @@ export type { TelegramInstallation, TelegramInstallationWithSecret } from "@atla
 
 const log = createLogger("telegram-store");
 
-const SELECT_COLS = "bot_id, bot_token_encrypted, bot_username, org_id, installed_at::text";
+const SELECT_COLS = "bot_id, bot_token_encrypted, bot_username, org_id, to_char(installed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS installed_at";
 
 // ---------------------------------------------------------------------------
 // Shared row parser

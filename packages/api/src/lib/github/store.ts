@@ -15,7 +15,7 @@ export type { GitHubInstallation, GitHubInstallationWithSecret } from "@atlas/ap
 
 const log = createLogger("github-store");
 
-const SELECT_COLS = "user_id, access_token_encrypted, username, org_id, installed_at::text";
+const SELECT_COLS = "user_id, access_token_encrypted, username, org_id, to_char(installed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS installed_at";
 
 // ---------------------------------------------------------------------------
 // Shared row parser

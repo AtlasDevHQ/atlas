@@ -60,7 +60,7 @@ function parseInstallationRow(
   };
 }
 
-const SELECT_COLS = "team_id, bot_token_encrypted, org_id, workspace_name, installed_at::text";
+const SELECT_COLS = "team_id, bot_token_encrypted, org_id, workspace_name, to_char(installed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS installed_at";
 
 // ---------------------------------------------------------------------------
 // Read operations

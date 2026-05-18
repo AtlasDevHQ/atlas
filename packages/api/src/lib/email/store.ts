@@ -179,7 +179,7 @@ export async function getEmailInstallationByOrg(
 
   try {
     const rows = await internalQuery<Record<string, unknown>>(
-      "SELECT config_id, provider, sender_address, config_encrypted, org_id, installed_at::text FROM email_installations WHERE org_id = $1",
+      "SELECT config_id, provider, sender_address, config_encrypted, org_id, to_char(installed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS installed_at FROM email_installations WHERE org_id = $1",
       [orgId],
     );
     if (rows.length > 0) {

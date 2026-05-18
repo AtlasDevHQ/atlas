@@ -16,7 +16,7 @@ export type { GChatInstallation, GChatInstallationWithSecret } from "@atlas/api/
 
 const log = createLogger("gchat-store");
 
-const SELECT_COLS = "project_id, service_account_email, credentials_json_encrypted, org_id, installed_at::text";
+const SELECT_COLS = "project_id, service_account_email, credentials_json_encrypted, org_id, to_char(installed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS installed_at";
 
 // ---------------------------------------------------------------------------
 // Shared row parser

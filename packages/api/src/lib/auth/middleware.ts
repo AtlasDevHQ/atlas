@@ -17,7 +17,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { getSetting } from "@atlas/api/lib/settings";
 import { Effect } from "effect";
 import { SSOPolicy } from "@atlas/api/lib/effect/services";
-import { EnterpriseLayer } from "@atlas/api/lib/effect/enterprise-layer";
+import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
 import { logAdminActionAwait, type AdminActionEntry } from "@atlas/api/lib/audit";
 import type { AuthMode } from "@useatlas/types";
 
@@ -371,10 +371,10 @@ async function checkSSOEnforcement(
   authMode: SSOEnforceableMode,
 ): Promise<AuthResult | null> {
   try {
-    const sso = await Effect.runPromise(
+    const sso = await runEnterprise(
       Effect.gen(function* () {
         return yield* SSOPolicy;
-      }).pipe(Effect.provide(EnterpriseLayer)),
+      }),
     );
     const domain = sso.extractEmailDomain(userLabel);
     if (!domain) return null;

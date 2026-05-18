@@ -15,7 +15,7 @@ import {
 } from "@atlas/api/lib/auth/middleware";
 import { Effect } from "effect";
 import { IpAllowlistPolicy } from "@atlas/api/lib/effect/services";
-import { EnterpriseLayer } from "@atlas/api/lib/effect/enterprise-layer";
+import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
 
 const log = createLogger("admin-auth");
 
@@ -84,11 +84,11 @@ export async function adminAuthPreamble(req: Request, requestId: string) {
   // EE-not-loaded both flow through the no-op default which always allows.
   const orgId = authResult.user?.activeOrganizationId;
   if (orgId) {
-    const ipCheck = await Effect.runPromise(
+    const ipCheck = await runEnterprise(
       Effect.gen(function* () {
         const policy = yield* IpAllowlistPolicy;
         return yield* policy.checkIPAllowlist(orgId, ip);
-      }).pipe(Effect.provide(EnterpriseLayer)),
+      }),
     );
     if (!ipCheck.allowed) {
       log.warn({ requestId, orgId, ip }, "IP not in workspace allowlist");

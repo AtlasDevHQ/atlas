@@ -14,7 +14,7 @@
  * file plus the `@atlas/ee/layers` aggregator dynamic import below.
  */
 
-import { Effect, Layer } from "effect";
+import { Effect, Layer, ManagedRuntime } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   NoopEnterpriseDefaultsLayer,
@@ -171,3 +171,87 @@ export const EnterpriseLayer: Layer.Layer<EnterpriseSubsystem, Error> = Layer.me
   NoopEnterpriseDefaultsLayer,
   ConditionalEELayer,
 );
+
+// ── Module-level ManagedRuntime (#2587) ──────────────────────────────
+//
+// Pre-#2587 every call site of `Effect.provide(EnterpriseLayer)` rebuilt
+// the Layer's runtime per call. A single admin request handling a SQL
+// execution rebuilt 6-8 times (auth middleware → IP allowlist →
+// admin-router permission ×2 → SQL masking/SLA/approval ×3), and the
+// EE-Layer's lazy `await import("@atlas/ee/layers")` re-allocated
+// the `Effect.tryPromise` wrapper per call. The JSDoc above claimed
+// "Effect's Layer memoization elides repeat work within a single program
+// run" — true for one run, but each `Effect.runPromise` is a separate run.
+//
+// `ManagedRuntime.make(EnterpriseLayer)` materializes the layer once on
+// first use. Subsequent `runtime.runPromise(...)` calls reuse the
+// constructed services — the dynamic EE import hits Node's module cache
+// AND Effect's Layer memoization simultaneously. Construction is lazy
+// (deferred to first call) so tests that `mock.module("@atlas/ee/layers")`
+// before any handler runs see their mocks.
+//
+// `runEnterprise(program)` is the canonical helper for the standalone
+// (non-Hono) call sites. The Hono bridge (`hono.ts:runEffect`) uses the
+// runtime directly so it can layer in per-request contextLayer.
+
+let _runtime: ManagedRuntime.ManagedRuntime<EnterpriseSubsystem, Error> | null = null;
+
+/**
+ * Get (or lazily create) the module-level ManagedRuntime for the
+ * EnterpriseLayer. Lazy so tests can install `mock.module("@atlas/ee/layers")`
+ * before the first runtime build.
+ *
+ * The runtime is process-lifetime; no explicit dispose. The Layer's
+ * subsystems (Noop defaults + EELayer's Live impls) currently have no
+ * scoped finalizers, so leaking the runtime at process exit is fine.
+ * If a future EE Tag introduces a scoped finalizer, wire dispose into
+ * the existing shutdown handler in `buildAppLayer`.
+ */
+export function getEnterpriseRuntime(): ManagedRuntime.ManagedRuntime<EnterpriseSubsystem, Error> {
+  if (_runtime === null) {
+    _runtime = ManagedRuntime.make(EnterpriseLayer);
+  }
+  return _runtime;
+}
+
+/**
+ * Run a program that requires `EnterpriseSubsystem` via the shared
+ * module-level runtime. Use this instead of
+ * `Effect.runPromise(program.pipe(Effect.provide(EnterpriseLayer)))` at
+ * any non-Hono call site (the Hono bridge uses `getEnterpriseRuntime()`
+ * directly so it can layer in per-request contextLayer).
+ *
+ * Rejects on EE-load failure when `ATLAS_ENTERPRISE_ENABLED=true` —
+ * caller should treat the rejection as an operator-visible deploy error
+ * (matching the fail-closed contract from #2587), not a per-request
+ * recoverable.
+ */
+export function runEnterprise<A, E>(
+  program: Effect.Effect<A, E, EnterpriseSubsystem>,
+): Promise<A> {
+  return getEnterpriseRuntime().runPromise(program);
+}
+
+/**
+ * Exit-returning variant for call sites that need to inspect the failure
+ * cause (defect vs typed failure vs interruption) without the
+ * `runPromise` reject path.
+ */
+export function runEnterpriseExit<A, E>(
+  program: Effect.Effect<A, E, EnterpriseSubsystem>,
+) {
+  return getEnterpriseRuntime().runPromiseExit(program);
+}
+
+/**
+ * Test-only: clear the cached runtime so a `mock.module("@atlas/ee/layers")`
+ * change between test files (or between test groups within a file) is
+ * picked up on the next runtime build. Production code should never call
+ * this; the runtime is process-lifetime.
+ */
+export function __resetEnterpriseRuntimeForTesting(): void {
+  if (_runtime !== null) {
+    void _runtime.dispose();
+    _runtime = null;
+  }
+}

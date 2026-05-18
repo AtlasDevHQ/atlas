@@ -32,7 +32,7 @@ import {
 import { isWorkspaceMigrating } from "@atlas/api/lib/residency/readonly";
 import { Effect } from "effect";
 import { IpAllowlistPolicy } from "@atlas/api/lib/effect/services";
-import { EnterpriseLayer } from "@atlas/api/lib/effect/enterprise-layer";
+import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
 
 const log = createLogger("middleware");
 
@@ -157,11 +157,11 @@ async function rateLimitAndIPCheck(
   if (orgId) {
     let ipCheck: { allowed: boolean } | null = null;
     try {
-      ipCheck = await Effect.runPromise(
+      ipCheck = await runEnterprise(
         Effect.gen(function* () {
           const policy = yield* IpAllowlistPolicy;
           return yield* policy.checkIPAllowlist(orgId, ip);
-        }).pipe(Effect.provide(EnterpriseLayer)),
+        }),
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

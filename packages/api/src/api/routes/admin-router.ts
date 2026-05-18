@@ -39,7 +39,7 @@ import { mfaRequired } from "./admin-mfa-required";
 import type { Permission } from "@atlas/api/lib/auth/permissions";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { RolesPolicy } from "@atlas/api/lib/effect/services";
-import { EnterpriseLayer } from "@atlas/api/lib/effect/enterprise-layer";
+import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
 
 const log = createLogger("admin-router:permission");
 
@@ -210,7 +210,7 @@ export function requirePermission(permission: Permission) {
     // envelope, preserving F-53 fail-closed semantics.
     let result: { body: Record<string, unknown>; status: 403 | 503 } | null;
     try {
-      result = await Effect.runPromise(
+      result = await runEnterprise(
         Effect.gen(function* () {
           const roles = yield* RolesPolicy;
           return yield* roles.checkPermission(
@@ -218,7 +218,7 @@ export function requirePermission(permission: Permission) {
             permission,
             requestId,
           );
-        }).pipe(Effect.provide(EnterpriseLayer)),
+        }),
       );
     } catch (err) {
       // Defect inside the Effect (e.g. unexpected throw) — fail closed with
@@ -261,11 +261,11 @@ export async function enforcePermission(
   requestId: string,
 ): Promise<{ body: Record<string, unknown>; status: 403 | 503 } | null> {
   try {
-    return await Effect.runPromise(
+    return await runEnterprise(
       Effect.gen(function* () {
         const roles = yield* RolesPolicy;
         return yield* roles.checkPermission(user, permission, requestId);
-      }).pipe(Effect.provide(EnterpriseLayer)),
+      }),
     );
   } catch (err) {
     log.error(

@@ -25,7 +25,7 @@ import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { getConfig } from "@atlas/api/lib/config";
 import type { HealthStatus } from "@atlas/api/lib/connection-types";
 import { ResidencyResolver } from "@atlas/api/lib/effect/services";
-import { EnterpriseLayer } from "@atlas/api/lib/effect/enterprise-layer";
+import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
 
 export type { HealthStatus } from "@atlas/api/lib/connection-types";
 
@@ -1445,9 +1445,7 @@ export async function getRegionAwareConnection(
 
   let regionInfo: { databaseUrl: string; datasourceUrl?: string; region: string } | null;
   try {
-    regionInfo = await Effect.runPromise(
-      resolveRegion.pipe(Effect.provide(EnterpriseLayer)),
-    );
+    regionInfo = await runEnterprise(resolveRegion);
   } catch (err) {
     log.warn(
       { err: errorMessage(err), orgId },

@@ -27,7 +27,7 @@ import {
   AuthContext,
   makeAuthContextLayer,
 } from "./services";
-import { EnterpriseLayer, type EnterpriseSubsystem } from "./enterprise-layer";
+import { getEnterpriseRuntime, type EnterpriseSubsystem } from "./enterprise-layer";
 
 // ── Domain error mapping ────────────────────────────────────────────
 
@@ -402,25 +402,29 @@ export async function runEffect<A, E>(
   // handler that `yield* ResidencyResolver` resolves without each route
   // having to provide the layer manually. Layer.mergeAll is referentially
   // stable, so Effect memoizes the construction across requests.
-  // `EnterpriseLayer` has `E = Error` post-#2587 — when EE is enabled
-  // but `@atlas/ee/layers` fails to load, the layer construction fails
-  // rather than silently downgrading to no-op defaults. The error
-  // surfaces here as an `Error` in the program's failure channel and is
-  // routed through `classifyError` below to a 500 (uncategorized — an
-  // operator-visible signal that the EE install is broken). Self-hosted
-  // never exercises this path.
+  // Provide per-request contextLayer (RequestContext + AuthContext) at
+  // the program level, then run via the shared module-level
+  // EnterpriseRuntime (#2587). Pre-#2587 the bridge merged
+  // contextLayer + EnterpriseLayer per request and called
+  // `Effect.runPromiseExit`, which rebuilt the Layer's runtime per call
+  // — `Layer.mergeAll` is referentially stable but the merged result
+  // wasn't (new reference per request defeats Effect's reference-keyed
+  // memoization). The ManagedRuntime memoizes EnterpriseLayer's
+  // construction across requests (including the EE-Layer's lazy
+  // `await import("@atlas/ee/layers")`). The Layer's `E = Error`
+  // channel propagates here as `E | Error` so a SaaS install with a
+  // broken `@atlas/ee/` build surfaces a typed failure routed through
+  // `classifyError` to a 500.
   const contextLayer = buildContextLayer(c);
-  const provided: Effect.Effect<A, E | Error, never> = contextLayer
+  const contextProvided: Effect.Effect<A, E, EnterpriseSubsystem> = contextLayer
     ? (program as Effect.Effect<
         A,
         E,
         RequestContext | AuthContext | EnterpriseSubsystem
-      >).pipe(Effect.provide(Layer.merge(contextLayer, EnterpriseLayer)))
-    : (program as Effect.Effect<A, E, EnterpriseSubsystem>).pipe(
-        Effect.provide(EnterpriseLayer),
-      );
+      >).pipe(Effect.provide(contextLayer))
+    : (program as Effect.Effect<A, E, EnterpriseSubsystem>);
 
-  const exit = await Effect.runPromiseExit(provided);
+  const exit = await getEnterpriseRuntime().runPromiseExit(contextProvided) as Exit.Exit<A, E | Error>;
 
   if (Exit.isSuccess(exit)) {
     return exit.value;

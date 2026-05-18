@@ -48,7 +48,7 @@ import {
 } from "@opentelemetry/api";
 import { AtlasAiModel, type AtlasAiModelShape } from "./effect/ai";
 import { ModelRouter } from "./effect/services";
-import { EnterpriseLayer } from "./effect/enterprise-layer";
+import { runEnterprise } from "./effect/enterprise-layer";
 import { BOUND_AGENT_PROMPT_GUIDANCE } from "./bound-chat-context";
 
 const log = createLogger("agent");
@@ -680,9 +680,7 @@ export async function runAgent({
         return yield* router.getWorkspaceModelConfigRaw(orgId);
       });
       try {
-        workspaceConfig = await Effect.runPromise(
-          program.pipe(Effect.provide(EnterpriseLayer)),
-        );
+        workspaceConfig = await runEnterprise(program);
       } catch (err) {
         if (err instanceof ModelConfigDecryptError) {
           throw new Error(

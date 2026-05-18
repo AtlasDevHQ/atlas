@@ -308,25 +308,11 @@ adminProactive.use(requireOrgContext());
 adminProactive.use(requirePermission("admin:settings"));
 
 /**
- * Enterprise gate. Sync throw inside the `runHandler` body so a
- * `runHandler` → `Effect.tryPromise` → defect-classification path lands
- * on `EnterpriseError` directly (its `name === "EnterpriseError"`
- * survives the `Error` re-wrap) and maps to 403 `enterprise_required`
- * via `classifyError`. The flag is re-read per call so a runtime flip
- * propagates without restart.
- *
- * The other three admin-proactive route files (analytics, pauses,
- * public-dataset) yield the `ProactiveGate` Tag because they use
- * `runEffect` + Effect.gen; this file's `runHandler`-based handlers
- * can't yield the Tag without a separate sync runtime
- * (`ConditionalEELayer` is async due to the lazy EE-layer import), so
- * the equivalent sync check is inlined here. The resulting
- * `EnterpriseError` has identical `_tag` + payload to the one the Tag
- * would produce.
- *
- * Uses the canonical `isEnterpriseEnabled` reader from
- * `lib/effect/enterprise-config.ts` — see #2594 for the consolidation
- * that retired the local `isEnterpriseEnabledSync` fork.
+ * Sync enterprise gate. Sibling admin-proactive route files use
+ * `runEffect` + `yield* ProactiveGate`; this file's `runHandler`-based
+ * handlers can't yield the Tag (ConditionalEELayer is async via the
+ * lazy EE-layer import), so the equivalent sync check is inlined.
+ * Resulting `EnterpriseError` has the same `_tag` + payload as the Tag.
  */
 function gateEnterprise(): void {
   if (!isEnterpriseEnabled()) {

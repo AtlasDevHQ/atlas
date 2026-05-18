@@ -139,20 +139,10 @@ async function rateLimitAndIPCheck(
     };
   }
 
-  // IP allowlist — via `IpAllowlistPolicy` Tag (#2570). Self-hosted +
-  // EE-disabled flow through the no-op default which always allows. The
-  // narrow `catch` is a defensive net for tests that shim `effect` /
-  // `EnterpriseLayer` without providing `IpAllowlistPolicy` (surfaces as
-  // an Effect "Service not found" defect); a fail-closed 503 covers any
-  // other error so a real production failure of the EE-loaded path or
-  // a backend DB outage surfaces loudly. Sibling call sites in
-  // `admin-auth.ts`, `auth-preamble.ts`, and `chat.ts` don't try/catch
-  // at all and 500 on the same failure mode — this file accepts the
-  // narrower fail-closed contract because middleware runs ahead of
-  // routes that may not have provided the Tag in their test layer (see
-  // #2588 — future follow-up extracts a shared `makeTestEnterpriseLayer`
-  // helper so every test provides the full Tag set and this defensive
-  // catch can be deleted).
+  // IP allowlist — narrow `catch` for tests that omit `IpAllowlistPolicy`
+  // from their EnterpriseLayer mock (Effect surfaces this as "Service
+  // not found: IpAllowlistPolicy"). Everything else fails closed via 503.
+  // To be deleted once #2588 (`makeTestEnterpriseLayer`) lands.
   const orgId = authResult.user?.activeOrganizationId;
   if (orgId) {
     let ipCheck: { allowed: boolean } | null = null;
@@ -165,23 +155,12 @@ async function rateLimitAndIPCheck(
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // Test-harness signals: the test omitted a Tag, partially mocked
-      // `@atlas/ee/*` (so EE-layer construction fails to find a real
-      // export), or shimmed the EE module aggregator. None of these
-      // happen in production — they're test-isolation artifacts.
-      //
-      // Production failure modes (DB outage in checkIPAllowlist, a
-      // genuine bug in `IpAllowlistPolicyLive`, etc.) don't match these
-      // patterns and fail closed below.
-      const isTestHarnessSignal =
-        (msg.includes("Service not found") && msg.includes("IpAllowlist")) ||
-        msg.includes("Cannot find module") ||
-        msg.includes("MODULE_NOT_FOUND") ||
-        msg.includes("@atlas/ee");
-      if (isTestHarnessSignal) {
+      const isMissingTag =
+        msg.includes("Service not found") && msg.includes("IpAllowlist");
+      if (isMissingTag) {
         log.warn(
           { err: msg, requestId, orgId },
-          "IpAllowlist check unreachable — test-harness fall-through (mock setup partial)",
+          "IpAllowlist Tag not provided — test-harness fall-through",
         );
       } else {
         log.error(

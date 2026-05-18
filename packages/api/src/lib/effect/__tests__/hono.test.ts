@@ -45,6 +45,17 @@ const {
   SchedulerExecutionError,
   DeliveryError,
   UnsafeRegionMigrationResetError,
+  // ── EE-domain errors (safety net — see #2593) ─────────────────────
+  RetentionError,
+  RoleError,
+  ApprovalError,
+  ResidencyError,
+  BrandingError,
+  DomainError,
+  ComplianceError,
+  ReportError,
+  ModelConfigError,
+  ModelConfigDecryptError,
 } = await import("../errors");
 
 // ---------------------------------------------------------------------------
@@ -243,6 +254,107 @@ describe("mapTaggedError", () => {
     expect(result.status).toBe(409);
     expect(result.code).toBe("conflict");
     expect(result.message).toBe("Cannot reset");
+  });
+
+  // ── EE-domain errors (safety-net mappings — see #2593) ──────────
+  //
+  // These tags ALSO flow through per-route `domainErrors: [...]`
+  // (which wins on `classifyError` precedence). The cases tested below
+  // are the safety net: an unwired route that yields one of these
+  // tagged errors gets a proper 4xx envelope instead of a generic 500.
+
+  it("maps RetentionError(validation) to 400", () => {
+    const result = mapTaggedError(new RetentionError({ message: "bad", code: "validation" }));
+    expect(result.status).toBe(400);
+    expect(result.code).toBe("bad_request");
+  });
+
+  it("maps RetentionError(not_found) to 404", () => {
+    const result = mapTaggedError(new RetentionError({ message: "missing", code: "not_found" }));
+    expect(result.status).toBe(404);
+    expect(result.code).toBe("not_found");
+  });
+
+  it("maps RoleError(builtin_protected) to 403", () => {
+    const result = mapTaggedError(new RoleError({ message: "builtin", code: "builtin_protected" }));
+    expect(result.status).toBe(403);
+    expect(result.code).toBe("forbidden");
+  });
+
+  it("maps RoleError(conflict) to 409", () => {
+    const result = mapTaggedError(new RoleError({ message: "dup", code: "conflict" }));
+    expect(result.status).toBe(409);
+    expect(result.code).toBe("conflict");
+  });
+
+  it("maps ApprovalError(expired) to 410", () => {
+    const result = mapTaggedError(new ApprovalError({ message: "expired", code: "expired" }));
+    expect(result.status).toBe(410);
+  });
+
+  it("maps ResidencyError(workspace_not_found) to 404", () => {
+    const result = mapTaggedError(
+      new ResidencyError({ message: "no workspace", code: "workspace_not_found" }),
+    );
+    expect(result.status).toBe(404);
+    expect(result.code).toBe("not_found");
+  });
+
+  it("maps ResidencyError(no_internal_db) to 503", () => {
+    const result = mapTaggedError(
+      new ResidencyError({ message: "no db", code: "no_internal_db" }),
+    );
+    expect(result.status).toBe(503);
+    expect(result.code).toBe("service_unavailable");
+  });
+
+  it("maps BrandingError(not_found) to 404", () => {
+    const result = mapTaggedError(new BrandingError({ message: "missing", code: "not_found" }));
+    expect(result.status).toBe(404);
+    expect(result.code).toBe("not_found");
+  });
+
+  it("maps DomainError(railway_error) to 502", () => {
+    const result = mapTaggedError(new DomainError({ message: "railway", code: "railway_error" }));
+    expect(result.status).toBe(502);
+    expect(result.code).toBe("upstream_error");
+  });
+
+  it("maps DomainError(no_internal_db) to 503", () => {
+    const result = mapTaggedError(new DomainError({ message: "no db", code: "no_internal_db" }));
+    expect(result.status).toBe(503);
+    expect(result.code).toBe("service_unavailable");
+  });
+
+  it("maps ComplianceError(conflict) to 409", () => {
+    const result = mapTaggedError(new ComplianceError({ message: "conflict", code: "conflict" }));
+    expect(result.status).toBe(409);
+    expect(result.code).toBe("conflict");
+  });
+
+  it("maps ReportError(not_available) to 404", () => {
+    const result = mapTaggedError(new ReportError({ message: "no report", code: "not_available" }));
+    expect(result.status).toBe(404);
+    expect(result.code).toBe("not_found");
+  });
+
+  it("maps ModelConfigError(test_failed) to 422", () => {
+    const result = mapTaggedError(
+      new ModelConfigError({ message: "test failed", code: "test_failed" }),
+    );
+    expect(result.status).toBe(422);
+    expect(result.code).toBe("unprocessable_entity");
+  });
+
+  it("maps ModelConfigDecryptError to 422 with sanitized message", () => {
+    const result = mapTaggedError(
+      new ModelConfigDecryptError({ configId: "cfg-1", cause: "key rotated" }),
+    );
+    expect(result.status).toBe(422);
+    expect(result.code).toBe("unprocessable_entity");
+    // Message stays generic — `configId` and `cause` are forensic-only.
+    expect(result.message).not.toContain("cfg-1");
+    expect(result.message).not.toContain("key rotated");
   });
 });
 

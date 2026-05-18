@@ -134,13 +134,30 @@ mock.module("@atlas/api/lib/auth/detect", () => ({
   resetAuthModeCache: () => {},
 }));
 
-// F-53 — admin routes now refine `adminAuth` with `requirePermission()` /
-// `enforcePermission()` from `@atlas/ee/auth/roles`. The default-allow mock
-// keeps existing tests focused on their own concern; the negative path is
-// covered separately in `routes/__tests__/permission-enforcement.test.ts`.
-// ALL named exports admin-roles.ts imports must be stubbed so module load
-// doesn't throw "Export named 'X' not found".
+// F-53 — admin routes refine `adminAuth` with `requirePermission()` /
+// `enforcePermission()`. Post-#2571 (slice 9/11 of #2017) the route layer
+// yields `RolesPolicy`; the no-op `NoopRolesPolicyLayer` delegates to
+// the core `permission-resolve.checkPermission` (legacy admin → all-flags
+// mapping). Negative-path coverage lives in
+// `routes/__tests__/permission-enforcement.test.ts`.
 import { Effect as F53Effect } from "effect";
+
+mock.module("@atlas/api/lib/auth/roles-errors", () => ({
+  RoleError: class extends Error {
+    public readonly _tag = "RoleError" as const;
+    public readonly code: string;
+    constructor(message: string, code: string) {
+      super(message);
+      this.name = "RoleError";
+      this.code = code;
+    }
+  },
+}));
+
+// Legacy module-mock stub for any transitive resolver chain. ALL named
+// exports admin-roles.ts imports must be stubbed so module load doesn't
+// throw "Export named 'X' not found" — slice 11 closeout #2573 will drop
+// this entirely.
 mock.module("@atlas/ee/auth/roles", () => ({
   PERMISSIONS: [
     "query", "query:raw_data", "admin:users", "admin:connections",

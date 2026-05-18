@@ -75,7 +75,7 @@ import { adminModelConfig } from "./admin-model-config";
 import { adminEmailProvider } from "./admin-email-provider";
 import { adminAuthPreamble, authErrorCode, requireAdminAuth } from "./admin-auth";
 import { enforcePermission } from "./admin-router";
-import type { Permission } from "@atlas/ee/auth/roles";
+import type { Permission } from "@atlas/api/lib/auth/permissions";
 import { adminUsage } from "./admin-usage";
 import { adminAuditRetention } from "./admin-audit-retention";
 import { adminActionRetention, adminEraseUser } from "./admin-action-retention";

@@ -59,14 +59,15 @@ mock.module("@atlas/api/lib/auth/detect", () => ({
   resetAuthModeCache: () => {},
 }));
 
-// F-53 — admin routes refine `adminAuth` with `enforcePermission()` from
-// `@atlas/ee/auth/roles`. Default-allow lets tests stay focused on
-// invitation lifecycle. ALL named exports must be stubbed: admin-roles.ts
-// (loaded transitively via the admin router) imports listRoles/createRole/
-// etc. statically; a partial mock surfaces as "Export named 'X' not found"
-// at module load and routes return 404 because the entire admin tree fails
-// to register.
+// F-53 — admin routes refine `adminAuth` with `enforcePermission()`.
+// Post-#2571 (slice 9/11 of #2017) the route layer yields `RolesPolicy`;
+// the no-op `NoopRolesPolicyLayer` delegates to the core
+// `permission-resolve.checkPermission` (legacy admin → all-flags
+// mapping), so admin/owner roles pass through without further wiring.
+// Legacy `@atlas/ee/auth/roles` module mock kept for transitive
+// resolver chains until slice 11 closeout #2573.
 import { Effect as F53Effect } from "effect";
+
 mock.module("@atlas/ee/auth/roles", () => ({
   PERMISSIONS: [
     "query", "query:raw_data", "admin:users", "admin:connections",

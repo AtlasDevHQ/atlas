@@ -131,8 +131,17 @@ const mockOption = {
 mock.module("effect", () => {
   const Effect = {
     gen: (genFn: () => Generator) => {
-      return { _tag: "EffectGen", genFn };
+      // Post-#2571 `admin-router.ts` does
+      // `Effect.gen(...).pipe(Effect.provide(EnterpriseLayer))` before
+      // `Effect.runPromise`. The shim's `runPromise` just resolves the
+      // value, so `pipe` is a passthrough that returns the gen result.
+      return {
+        _tag: "EffectGen",
+        genFn,
+        pipe: (..._ops: unknown[]) => ({ _tag: "EffectGen", genFn }),
+      };
     },
+    provide: (_layer: unknown) => (source: unknown) => source,
     promise: (fn: () => Promise<unknown>) => withPipe({
       [Symbol.iterator]: function* (): Generator<unknown, unknown> {
         return yield { _tag: "EffectPromise", fn };
@@ -153,7 +162,24 @@ mock.module("effect", () => {
       _tag: "TapErrorCause",
       fn,
     }),
-    runPromise: (value: unknown) => Promise.resolve(value),
+    runPromise: (value: unknown) => {
+      // If the value is an EffectGen (synthesized by `Effect.gen` above),
+      // execute the generator synchronously so `yield* RolesPolicy` and
+      // `yield* roles.checkPermission(...)` resolve under the same shim
+      // semantics the rest of this file relies on.
+      const v = value as { _tag?: string; genFn?: () => Generator } | unknown;
+      if (v && typeof v === "object" && (v as { _tag?: string })._tag === "EffectGen") {
+        const gen = (v as { genFn: () => Generator }).genFn();
+        let next = gen.next();
+        while (!next.done) {
+          // Inline-resolve iterables and plain values, matching the
+          // residency-route `runEffect` shim below.
+          next = gen.next(next.value);
+        }
+        return Promise.resolve(next.value);
+      }
+      return Promise.resolve(value);
+    },
   };
   // Layer + Context stubs so post-#2570 modules (`enterprise-layer.ts`,
   // `services.ts`) that statically reach for these symbols don't blow
@@ -286,11 +312,11 @@ mock.module("@atlas/api/lib/effect/services", () => ({
   ResidencyResolver: fakeResidencyResolver,
   makeRequestContextLayer: () => ({}),
   makeAuthContextLayer: () => ({}),
-  // Stubs for everything the post-#2570 EnterpriseLayer pulls in.
+  // Stubs for every Tag the post-#2570/#2571 EnterpriseLayer pulls in.
   // `Layer.succeed`-shaped no-ops are enough since the route under
-  // test doesn't exercise these Tags directly — they just need to
-  // not blow up the loader.
-  NoopEnterpriseDefaultsLayer: {},
+  // test only directly exercises `ResidencyResolver`; the others just
+  // need to not blow up the loader / shim's `yield* Tag`.
+  NoopEnterpriseDefaultsLayer: { _tag: "MockLayer" },
   IpAllowlistPolicy: stubTag({ available: false, checkIPAllowlist: () => ({ [Symbol.iterator]: function* (): Generator<unknown, unknown> { return yield { allowed: true }; } }) }),
   SSOPolicy: stubTag({ available: false, extractEmailDomain: () => null }),
   SCIMProvenance: stubTag({ available: false }),
@@ -302,6 +328,39 @@ mock.module("@atlas/api/lib/effect/services", () => ({
   SlaMetrics: stubTag({}),
   BackupsManager: stubTag({}),
   AuditRetention: stubTag({}),
+  // Slice 9/11 (#2571) — `admin-router.ts:requirePermission` yields
+  // `RolesPolicy` from `EnterpriseLayer`. Provide a default-allow
+  // `checkPermission` (Effect-shaped iterable returning null = allow)
+  // so the F-53 chokepoint short-circuits under the test Effect shim.
+  RolesPolicy: {
+    [Symbol.iterator]: function* (): Generator<unknown, unknown> {
+      const iterableAllow = { [Symbol.iterator]: function* (): Generator<unknown, unknown> { return yield null; } };
+      const iterableEmpty = { [Symbol.iterator]: function* (): Generator<unknown, unknown> { return yield []; } };
+      const iterableNull = { [Symbol.iterator]: function* (): Generator<unknown, unknown> { return yield null; } };
+      const iterableTrue = { [Symbol.iterator]: function* (): Generator<unknown, unknown> { return yield true; } };
+      return yield {
+        customRolesActive: true,
+        checkPermission: () => iterableAllow,
+        listRoles: () => iterableEmpty,
+        getRole: () => iterableNull,
+        getRoleByName: () => iterableNull,
+        createRole: () => iterableNull,
+        updateRole: () => iterableNull,
+        deleteRole: () => iterableTrue,
+        listRoleMembers: () => iterableEmpty,
+        assignRole: () => iterableNull,
+      };
+    },
+  },
+}));
+
+// Short-circuit `enterprise-layer.ts` — its production composition
+// uses real `Layer.unwrapEffect` which the local Effect shim doesn't
+// implement. The route's `Effect.provide(EnterpriseLayer)` becomes a
+// no-op because `Effect.runPromise` in the shim just returns the
+// value.
+mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
+  EnterpriseLayer: { _tag: "MockLayer" },
 }));
 
 // #1986 — Mirror the production tagged-error → HTTP mapping so route tests

@@ -696,13 +696,27 @@ export function createApiTestMocks(
 
   // ── EE: roles (custom-role permission resolution) ──
   //
-  // F-53 wires `checkPermission()` into every admin route, so a
-  // default-allow mock keeps tests focused on their own concern.
-  // ALL named exports admin-roles.ts imports must be stubbed: a partial
-  // mock surfaces as "Export named 'X' not found" at module load and
-  // the entire admin tree fails to register, which manifests as 404 on
-  // unrelated routes. Tests that exercise the F-53 enforcement path
-  // (`permission-enforcement.test.ts`) override `checkPermission` per-test.
+  // F-53 wires `checkPermission()` into every admin route. Post-#2571
+  // (slice 9/11 of #2017) the route layer yields the `RolesPolicy` Tag.
+  // The Tag's no-op default in `lib/effect/services.ts:NoopRolesPolicyLayer`
+  // delegates to `lib/auth/permission-resolve.ts:checkPermission` — the
+  // legacy admin/owner/platform_admin → all-flags + member → query
+  // mapping — so admin routes resolve permissions cleanly without EE
+  // being loaded. The legacy `@atlas/ee/auth/roles` module mock below
+  // stays for any transitive resolver chain (slice 11 closeout #2573
+  // will drop it entirely).
+
+  mock.module("@atlas/api/lib/auth/roles-errors", () => ({
+    RoleError: class extends Error {
+      public readonly _tag = "RoleError" as const;
+      public readonly code: string;
+      constructor(message: string, code: string) {
+        super(message);
+        this.name = "RoleError";
+        this.code = code;
+      }
+    },
+  }));
 
   mock.module("@atlas/ee/auth/roles", () => ({
     PERMISSIONS: [

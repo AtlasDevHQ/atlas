@@ -111,6 +111,64 @@ const mockAssignRole: Mock<(orgId: string, userId: string, roleName: string) => 
   () => Effect.die(new Error("not configured")),
 );
 
+// Slice 9/11 of #2017: routes yield `RolesPolicy` from
+// `EnterpriseLayer` and import `RoleError` from
+// `@atlas/api/lib/auth/roles-errors`. Stub the core error module so
+// `instanceof RoleError` checks in `domainError(RoleError)` resolve
+// against `MockRoleError` (the route code, the mock-CRUD functions
+// above, and the assertion path all share one class identity).
+mock.module("@atlas/api/lib/auth/roles-errors", () => ({
+  RoleError: MockRoleError,
+}));
+
+// We override `EnterpriseLayer` directly with a Layer that pre-binds
+// the mock CRUD functions. The Layer must aggregate every Tag the
+// middleware chain yields (post-#2570 added IP/SSO/SCIM via
+// `routes/middleware.ts` + `lib/auth/middleware.ts`), otherwise
+// `Effect.provide` resolves the missing Tags as defects and routes
+// return 500 instead of the expected 200/4xx.
+mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Layer } = require("effect") as typeof import("effect");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+  return {
+    EnterpriseLayer: Layer.mergeAll(
+      Layer.succeed(services.RolesPolicy, {
+        customRolesActive: true,
+        checkPermission: () => Effect.succeed(null),
+        listRoles: mockListRoles as never,
+        getRole: mockGetRole as never,
+        getRoleByName: mockGetRoleByName as never,
+        createRole: mockCreateRole as never,
+        updateRole: mockUpdateRole as never,
+        deleteRole: mockDeleteRole as never,
+        listRoleMembers: mockListRoleMembers as never,
+        assignRole: mockAssignRole as never,
+      } as never),
+      Layer.succeed(services.IpAllowlistPolicy, {
+        available: false,
+        checkIPAllowlist: () => Effect.succeed({ allowed: true }),
+      } as never),
+      Layer.succeed(services.SSOPolicy, {
+        available: false,
+        extractEmailDomain: (email: string) => {
+          const at = email.lastIndexOf("@");
+          return at > 0 ? email.slice(at + 1).toLowerCase() : null;
+        },
+        isSSOEnforcedForDomain: () => Effect.succeed({ enforced: false }),
+        isSSOEnforced: () => Effect.succeed({ enforced: false }),
+      } as never),
+      Layer.succeed(services.SCIMProvenance, {
+        available: false,
+        isSCIMProvisioned: () => Effect.succeed(false),
+      } as never),
+    ),
+  };
+});
+
+// Legacy module-mock stub for any transitive resolver chain. Slice 11
+// closeout #2573 will drop the EE module reference entirely.
 mock.module("@atlas/ee/auth/roles", () => ({
   RoleError: MockRoleError,
   listRoles: mockListRoles,

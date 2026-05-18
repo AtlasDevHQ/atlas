@@ -16,13 +16,16 @@
  * Slice 7/11 (#2569) — added `AuditRetentionLive`.
  * Slice 8/11 (#2570) — added `IpAllowlistPolicyLive` + `SSOPolicyLive`
  *   + `SCIMProvenanceLive` (auth subsystem trio).
+ * Slice 9/11 (#2571) — added `RolesPolicyLive` (custom-role CRUD +
+ *   F-53 permission chokepoint).
  * Slice 10/11 (#2572) — added `BrandingLive` + `DomainsLive` +
  *                       `ProactiveGateLive` + `DeployModeResolverLive`
  *                       (bundled to avoid four PRs of Tag scaffolding
  *                       overhead for narrow-surface subsystems).
  *
- * Slice 9/11 (#2571) follows the same pattern: one Tag, one Layer
- * entry. See the parent issue (#2017) for the rationale.
+ * Slice 11/11 (#2573 closeout) follows next: CI grep gate + symlink-stub
+ * job + back-compat shim cleanup. See the parent issue (#2017) for the
+ * rationale.
  */
 
 import { Layer } from "effect";
@@ -39,6 +42,7 @@ import type {
   ModelRouter,
   ProactiveGate,
   ResidencyResolver,
+  RolesPolicy,
   SCIMProvenance,
   SSOPolicy,
   SlaMetrics,
@@ -54,6 +58,7 @@ import { AuditRetentionLive } from "./audit/retention";
 import { IpAllowlistPolicyLive } from "./auth/ip-allowlist";
 import { SSOPolicyLive } from "./auth/sso";
 import { SCIMProvenanceLive } from "./auth/scim";
+import { RolesPolicyLive } from "./auth/roles";
 import { BrandingLive } from "./branding/white-label";
 import { DomainsLive } from "./platform/domains";
 import { ProactiveGateLive } from "./proactive-gate";
@@ -78,6 +83,7 @@ export const EELayer: Layer.Layer<
   | ModelRouter
   | ProactiveGate
   | ResidencyResolver
+  | RolesPolicy
   | SCIMProvenance
   | SSOPolicy
   | SlaMetrics
@@ -93,6 +99,7 @@ export const EELayer: Layer.Layer<
   IpAllowlistPolicyLive,
   SSOPolicyLive,
   SCIMProvenanceLive,
+  RolesPolicyLive,
   BrandingLive,
   DomainsLive,
   ProactiveGateLive,

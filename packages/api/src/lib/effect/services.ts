@@ -1849,28 +1849,187 @@ export const NoopSCIMProvenanceLayer: Layer.Layer<SCIMProvenance> = Layer.sync(
   },
 );
 
-// ── RolesPolicy (slice TBD) ──────────────────────────────────────────
+// ── RolesPolicy (#2571 — slice 9/11 of #2017) ────────────────────────
 //
-// Replaces `(await import("@atlas/ee/auth/roles")).checkPermission` in
-// `api/routes/admin-router.ts`. EE resolves user permissions via the
-// `custom_roles` table; core's no-op falls back to `LEGACY_ROLE_PERMISSIONS`
-// which EE already implements in `ee/src/auth/roles.ts` —
-// `RolesPolicy`'s shape will be the typed Permission flag set already
-// hosted in `@atlas/api/lib/auth/permissions`.
+// Inverts every `@atlas/ee/auth/roles` reference in `packages/api/src/`:
+// the `loadCheckPermission` lazy-import + `enforcePermission` chokepoint
+// in `api/routes/admin-router.ts`, the `checkPermission` call surface
+// used by `api/routes/admin.ts`, and the full custom-role CRUD imported
+// by `api/routes/admin-roles.ts`. Permission flag types (`Permission`,
+// `PERMISSIONS`, `isValidPermission`) already live in
+// `lib/auth/permissions.ts` post-#2563 — this Tag wires the EE-side
+// CRUD + permission resolution into a Layer.
+//
+// Fail-closed semantics: the no-op default returns
+// `Effect.fail(EnterpriseError(...))` for the CRUD surface and emits
+// the legacy F-53 503 `permissions_unavailable` shape from
+// `checkPermission` when EE isn't loaded. This preserves the existing
+// `loadCheckPermission` sentinel behaviour — an admin route can no
+// longer collapse a fail-closed branch into a misleading 403.
+//
+// `RoleError` lives in `lib/auth/roles-errors.ts` so the Tag's failure
+// channel stays typed without pulling in `@atlas/ee`.
+
+type RolePermission = import("@atlas/api/lib/auth/permissions").Permission;
+type AtlasUserForRoles = import("@atlas/api/lib/auth/types").AtlasUser;
+type RoleError = import("@atlas/api/lib/auth/roles-errors").RoleError;
+type EnterpriseErrorForRoles = import("@atlas/api/lib/effect/errors").EnterpriseError;
+
+/** Persisted custom role row shape — mirrors `ee/src/auth/roles.ts:CustomRole`. */
+export interface CustomRole {
+  id: string;
+  orgId: string;
+  name: string;
+  description: string;
+  permissions: RolePermission[];
+  isBuiltin: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateRoleInput {
+  readonly name: string;
+  readonly description?: string;
+  readonly permissions: string[];
+}
+
+export interface UpdateRoleInput {
+  readonly description?: string;
+  readonly permissions?: string[];
+}
+
+export interface RoleMember {
+  readonly userId: string;
+  readonly role: string;
+  readonly createdAt: string;
+}
+
+export interface AssignRoleResult {
+  readonly userId: string;
+  readonly role: string;
+}
+
+/**
+ * Permission-check response — shape preserved from EE's pre-#2571
+ * `checkPermission`: either `null` (allowed) or a JSON-ready body +
+ * HTTP status pair the Hono middleware renders directly.
+ */
+export type PermissionCheckResult =
+  | { readonly body: Record<string, unknown>; readonly status: 403 | 503 }
+  | null;
 
 export interface RolesPolicyShape {
-  /** True when EE has wired the custom-role surface; false → legacy mapping. */
+  /** True when EE has wired the custom-role surface; false → legacy mapping + fail-closed CRUD. */
   readonly customRolesActive: boolean;
+
+  // ── Permission check (no enterprise gate — falls back to legacy mapping) ──
+  /**
+   * Returns `null` when the user holds `permission`, or a 403/503 body
+   * to surface to the caller. The 503 path is the F-53 fail-closed
+   * branch (EE absent / loader failure) — keeps the legacy
+   * `permissions_unavailable` envelope so admin tooling sees the same
+   * shape it always has.
+   */
+  readonly checkPermission: (
+    user: AtlasUserForRoles | undefined,
+    permission: RolePermission,
+    requestId: string,
+  ) => Effect.Effect<PermissionCheckResult>;
+
+  // ── Custom role CRUD (enterprise-gated inside the EE impl) ──
+  readonly listRoles: (
+    orgId: string,
+  ) => Effect.Effect<CustomRole[], EnterpriseErrorForRoles | Error>;
+  readonly getRole: (
+    orgId: string,
+    roleId: string,
+  ) => Effect.Effect<CustomRole | null, EnterpriseErrorForRoles>;
+  readonly getRoleByName: (
+    orgId: string,
+    name: string,
+  ) => Effect.Effect<CustomRole | null, EnterpriseErrorForRoles>;
+  readonly createRole: (
+    orgId: string,
+    input: CreateRoleInput,
+  ) => Effect.Effect<CustomRole, RoleError | EnterpriseErrorForRoles | Error>;
+  readonly updateRole: (
+    orgId: string,
+    roleId: string,
+    input: UpdateRoleInput,
+  ) => Effect.Effect<CustomRole, RoleError | EnterpriseErrorForRoles | Error>;
+  readonly deleteRole: (
+    orgId: string,
+    roleId: string,
+  ) => Effect.Effect<boolean, RoleError | EnterpriseErrorForRoles | Error>;
+  readonly listRoleMembers: (
+    orgId: string,
+    roleId: string,
+  ) => Effect.Effect<RoleMember[], RoleError | EnterpriseErrorForRoles>;
+  readonly assignRole: (
+    orgId: string,
+    userId: string,
+    roleName: string,
+  ) => Effect.Effect<AssignRoleResult, RoleError | EnterpriseErrorForRoles | Error>;
 }
 export class RolesPolicy extends Context.Tag("RolesPolicy")<
   RolesPolicy,
   RolesPolicyShape
 >() {}
-export const NoopRolesPolicyLayer: Layer.Layer<RolesPolicy> = Layer.succeed(
+
+/**
+ * No-op default for self-hosted (EE not loaded) + the failure-mode
+ * fallback when EE's `RolesPolicyLive` can't bind.
+ *
+ * `checkPermission` delegates to the **real** `checkPermission` in
+ * `lib/auth/permission-resolve.ts` — both core (no EE) and EE-installed
+ * resolutions ultimately fall through to `LEGACY_ROLE_PERMISSIONS`
+ * (admin/owner/platform_admin → all flags; member → query pair). This
+ * preserves the pre-#2571 contract where self-hosted admins authored
+ * with role `admin` reach every admin route.
+ *
+ * Fail-closed semantics: if `permission-resolve.ts` fails to load
+ * (genuine module-load break), the Hono bridge catches the
+ * `Effect.runPromise` defect at the `requirePermission` call site and
+ * emits the 503 `permissions_unavailable` envelope — same shape as the
+ * pre-#2571 `loadCheckPermission` sentinel.
+ *
+ * CRUD methods reject with `EnterpriseError` because the custom-role
+ * surface is enterprise-only — the route handler's
+ * `domainError(RoleError)` mapping handles `RoleError`, and the Hono
+ * bridge maps `EnterpriseError` → 403 for the rest.
+ */
+export const NoopRolesPolicyLayer: Layer.Layer<RolesPolicy> = Layer.sync(
   RolesPolicy,
-  {
-    customRolesActive: false,
-  } satisfies RolesPolicyShape,
+  () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { EnterpriseError: EnterpriseErrorClass } = require("@atlas/api/lib/effect/errors") as {
+      EnterpriseError: new (message?: string) => EnterpriseErrorForRoles;
+    };
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { checkPermissionLegacy } = require("@atlas/api/lib/auth/permission-resolve") as typeof import("@atlas/api/lib/auth/permission-resolve");
+    const notAvailable = (feature: string) =>
+      new EnterpriseErrorClass(
+        `Custom roles (${feature}) require enterprise features to be enabled.`,
+      );
+    return {
+      customRolesActive: false,
+      // Skip the `custom_roles` DB read — self-hosted shouldn't have
+      // those rows seeded (the `seedBuiltinRoles` path is gated on
+      // `requireEnterprise`), and the read on every admin request
+      // would be wasted IO. EE's `RolesPolicyLive` re-binds to the
+      // full `checkPermission` so workspaces with seeded roles get
+      // the granular resolution.
+      checkPermission: checkPermissionLegacy,
+      listRoles: () => Effect.succeed([]),
+      getRole: () => Effect.succeed(null),
+      getRoleByName: () => Effect.succeed(null),
+      createRole: () => Effect.fail(notAvailable("createRole")),
+      updateRole: () => Effect.fail(notAvailable("updateRole")),
+      deleteRole: () => Effect.fail(notAvailable("deleteRole")),
+      listRoleMembers: () => Effect.succeed([]),
+      assignRole: () => Effect.fail(notAvailable("assignRole")),
+    } satisfies RolesPolicyShape;
+  },
 );
 
 // ── Branding (#2572 — slice 10/11 of #2017) ──────────────────────────

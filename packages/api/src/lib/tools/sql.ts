@@ -39,7 +39,12 @@ import { EXECUTE_SQL_TOOL_DESCRIPTION } from "./descriptions";
 import { resolveRoutingPlan, type RoutingMode, type RoutingReason } from "@atlas/api/lib/env-routing";
 import { loadGroupRoutingContext } from "@atlas/api/lib/env-routing/lookup";
 import { mergeMemberResults } from "@atlas/api/lib/multi-env-merger";
-import { MaskingPolicy, type MaskingContext } from "@atlas/api/lib/effect/services";
+import {
+  ApprovalGate,
+  MaskingPolicy,
+  type ApprovalGateShape,
+  type MaskingContext,
+} from "@atlas/api/lib/effect/services";
 import { EnterpriseLayer } from "@atlas/api/lib/effect/enterprise-layer";
 
 /**
@@ -57,6 +62,22 @@ function applyMaskingViaTag(
     Effect.gen(function* () {
       const masking = yield* MaskingPolicy;
       return yield* masking.applyMasking(ctx);
+    }).pipe(Effect.provide(EnterpriseLayer)),
+  );
+}
+
+/**
+ * Resolve the `ApprovalGate` Tag against `EnterpriseLayer`. Each sql.ts
+ * approval call site (live path + cache path) reads three methods on
+ * the gate (`checkApprovalRequired` → `hasApprovedRequest` →
+ * `createApprovalRequest`); resolving the shape once + reading methods
+ * keeps the existing try/catch fail-closed semantics intact and avoids
+ * paying for three separate `Effect.runPromise` round-trips (#2567).
+ */
+function loadApprovalGate(): Promise<ApprovalGateShape> {
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      return yield* ApprovalGate;
     }).pipe(Effect.provide(EnterpriseLayer)),
   );
 }
@@ -1144,13 +1165,14 @@ export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryO
         try: async (): Promise<UserQueryOutcome | null> => {
           let approvalMatch:
             | { required: boolean; matchedRules: { id: string; name: string }[]; identityMissing?: boolean };
+          let approvalGate: ApprovalGateShape;
           try {
-            const { checkApprovalRequired } = await import("@atlas/ee/governance/approval");
+            approvalGate = await loadApprovalGate();
             const checkReqCtx = getRequestContext();
             const checkOrgId = checkReqCtx?.user?.activeOrganizationId;
             const checkUserId = checkReqCtx?.user?.id;
             const checkSurface = checkReqCtx?.approvalSurface;
-            approvalMatch = await Effect.runPromise(checkApprovalRequired(
+            approvalMatch = await Effect.runPromise(approvalGate.checkApprovalRequired(
               checkOrgId, classification.tablesAccessed, classification.columnsAccessed,
               {
                 ...(checkUserId ? { requesterId: checkUserId } : {}),
@@ -1169,7 +1191,6 @@ export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryO
           }
 
           if (approvalMatch?.required) {
-            const { createApprovalRequest, hasApprovedRequest } = await import("@atlas/ee/governance/approval");
             const reqCtxForApproval = getRequestContext();
             const approvalOrgId = reqCtxForApproval?.user?.activeOrganizationId;
             const userId = reqCtxForApproval?.user?.id;
@@ -1186,10 +1207,10 @@ export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryO
               };
             }
 
-            const alreadyApproved = await Effect.runPromise(hasApprovedRequest(approvalOrgId, userId, normalizedSql, connId));
+            const alreadyApproved = await Effect.runPromise(approvalGate.hasApprovedRequest(approvalOrgId, userId, normalizedSql, connId));
             if (!alreadyApproved) {
               const firstRule = approvalMatch.matchedRules[0];
-              const approvalReq = await Effect.runPromise(createApprovalRequest({
+              const approvalReq = await Effect.runPromise(approvalGate.createApprovalRequest({
                 orgId: approvalOrgId,
                 ruleId: firstRule.id,
                 ruleName: firstRule.name,
@@ -1460,8 +1481,9 @@ async function executeSqlForConnection({
           try: async () => {
             let approvalMatch:
               | { required: boolean; matchedRules: { id: string; name: string }[]; identityMissing?: boolean };
+            let approvalGate: ApprovalGateShape;
             try {
-              const { checkApprovalRequired } = await import("@atlas/ee/governance/approval");
+              approvalGate = await loadApprovalGate();
               const checkReqCtx = getRequestContext();
               const checkOrgId = checkReqCtx?.user?.activeOrganizationId;
               const checkUserId = checkReqCtx?.user?.id;
@@ -1477,7 +1499,7 @@ async function executeSqlForConnection({
               // distinguishes "scheduler/Slack/MCP forgot to bind anything"
               // (fail-closed) from "demo / single-user mode bound a user
               // but no org" (pass-through, no rule can match anyway).
-              approvalMatch = await Effect.runPromise(checkApprovalRequired(
+              approvalMatch = await Effect.runPromise(approvalGate.checkApprovalRequired(
                 checkOrgId, classification.tablesAccessed, classification.columnsAccessed,
                 {
                   ...(checkUserId ? { requesterId: checkUserId } : {}),
@@ -1498,7 +1520,6 @@ async function executeSqlForConnection({
 
             // Phase 2: create request (hard fail — governance bypass is worse than a failed query)
             if (approvalMatch?.required) {
-              const { createApprovalRequest, hasApprovedRequest } = await import("@atlas/ee/governance/approval");
               const reqCtxForApproval = getRequestContext();
               const approvalOrgId = reqCtxForApproval?.user?.activeOrganizationId;
               const userId = reqCtxForApproval?.user?.id;
@@ -1516,10 +1537,10 @@ async function executeSqlForConnection({
                 };
               }
 
-              const alreadyApproved = await Effect.runPromise(hasApprovedRequest(approvalOrgId, userId, normalizedSql, connId));
+              const alreadyApproved = await Effect.runPromise(approvalGate.hasApprovedRequest(approvalOrgId, userId, normalizedSql, connId));
               if (!alreadyApproved) {
                 const firstRule = approvalMatch.matchedRules[0];
-                const approvalReq = await Effect.runPromise(createApprovalRequest({
+                const approvalReq = await Effect.runPromise(approvalGate.createApprovalRequest({
                   orgId: approvalOrgId,
                   ruleId: firstRule.id,
                   ruleName: firstRule.name,

@@ -150,10 +150,77 @@ const mockCreateApprovalRequest = mock<
 >(() => Effect.succeed({ id: "req-test", status: "pending" }));
 const mockHasApprovedRequest = mock(() => Effect.succeed(false));
 
+// Force enterprise on so `ConditionalEELayer` lazy-imports `@atlas/ee/layers`
+// — without this, the no-op `ApprovalGate` fires and every test sees
+// `required: false` instead of the mock behaviour.
+process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+
+// Core ApprovalError stub so the route's `instanceof ApprovalError` /
+// `domainError` mapping sees the same class the test layer constructs.
+mock.module("@atlas/api/lib/governance/errors", () => ({
+  ApprovalError: class ApprovalError extends Error {
+    public readonly _tag = "ApprovalError" as const;
+    public readonly code: string;
+    constructor(args: { message: string; code: string }) {
+      super(args.message);
+      this.code = args.code;
+    }
+  },
+}));
+
+// Core residency / compliance / model-routing error stubs — the
+// EnterpriseLayer's no-op defaults lazy-require these even when only
+// ApprovalGate is exercised. Without the stubs the test fails on a
+// require() of an unmocked module.
+mock.module("@atlas/api/lib/residency/errors", () => ({
+  ResidencyError: class extends Error { public readonly _tag = "ResidencyError" as const; },
+}));
+mock.module("@atlas/api/lib/compliance/errors", () => ({
+  ComplianceError: class extends Error { public readonly _tag = "ComplianceError" as const; },
+  ReportError: class extends Error { public readonly _tag = "ReportError" as const; },
+}));
+mock.module("@atlas/api/lib/model-routing/errors", () => ({
+  ModelConfigError: class extends Error { public readonly _tag = "ModelConfigError" as const; },
+  ModelConfigDecryptError: class extends Error { public readonly _tag = "ModelConfigDecryptError" as const; },
+}));
+
+mock.module("@atlas/ee/layers", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Layer, Effect: E } = require("effect") as typeof import("effect");
+  return {
+    EELayer: Layer.unwrapEffect(
+      E.sync(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+        return Layer.succeed(services.ApprovalGate, {
+          available: true,
+          checkApprovalRequired: mockCheckApprovalRequired,
+          createApprovalRequest: mockCreateApprovalRequest,
+          hasApprovedRequest: mockHasApprovedRequest,
+          // Unused-by-sql.ts methods; stub with `Effect.die` so a future
+          // regression that reaches them is loud.
+          listApprovalRules: () => E.die("not stubbed"),
+          createApprovalRule: () => E.die("not stubbed"),
+          updateApprovalRule: () => E.die("not stubbed"),
+          deleteApprovalRule: () => E.die("not stubbed"),
+          listApprovalRequests: () => E.die("not stubbed"),
+          getApprovalRequest: () => E.die("not stubbed"),
+          reviewApprovalRequest: () => E.die("not stubbed"),
+          expireStaleRequests: () => E.die("not stubbed"),
+          getPendingCount: () => E.die("not stubbed"),
+        } as never);
+      }),
+    ),
+  };
+});
+
+// Legacy module-mock as a no-op stub for any transitive EE re-export
+// chain that still resolves the old path.
 mock.module("@atlas/ee/governance/approval", () => ({
   checkApprovalRequired: mockCheckApprovalRequired,
   createApprovalRequest: mockCreateApprovalRequest,
   hasApprovedRequest: mockHasApprovedRequest,
+  ApprovalError: class extends Error { public readonly _tag = "ApprovalError" as const; },
 }));
 
 const { executeSQL } = await import("@atlas/api/lib/tools/sql");

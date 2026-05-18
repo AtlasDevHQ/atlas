@@ -63,17 +63,59 @@ const mockExpireStaleRequests: Mock<(orgId: string) => Effect.Effect<unknown, un
   () => Effect.succeed(0),
 );
 
+// Force enterprise on so `ConditionalEELayer` lazy-imports the mocked
+// `@atlas/ee/layers` aggregator below.
+process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+
+// Core error stubs — the EnterpriseLayer's no-op defaults lazy-require
+// every governance/compliance/residency/model-routing errors module
+// during construction. Without these the test fails on a missing require.
+mock.module("@atlas/api/lib/governance/errors", () => ({
+  ApprovalError: MockApprovalError,
+}));
+mock.module("@atlas/api/lib/residency/errors", () => ({
+  ResidencyError: class extends Error { public readonly _tag = "ResidencyError" as const; },
+}));
+mock.module("@atlas/api/lib/compliance/errors", () => ({
+  ComplianceError: class extends Error { public readonly _tag = "ComplianceError" as const; },
+  ReportError: class extends Error { public readonly _tag = "ReportError" as const; },
+}));
+mock.module("@atlas/api/lib/model-routing/errors", () => ({
+  ModelConfigError: class extends Error { public readonly _tag = "ModelConfigError" as const; },
+  ModelConfigDecryptError: class extends Error { public readonly _tag = "ModelConfigDecryptError" as const; },
+}));
+
+mock.module("@atlas/ee/layers", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Layer, Effect: E } = require("effect") as typeof import("effect");
+  return {
+    EELayer: Layer.unwrapEffect(
+      E.sync(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+        return Layer.succeed(services.ApprovalGate, {
+          available: true,
+          checkApprovalRequired: () => Effect.succeed({ required: false, matchedRules: [] }),
+          hasApprovedRequest: () => Effect.succeed(false),
+          createApprovalRequest: () => Effect.succeed({} as never),
+          listApprovalRules: () => Effect.succeed([]),
+          createApprovalRule: mockCreateApprovalRule as never,
+          updateApprovalRule: mockUpdateApprovalRule as never,
+          deleteApprovalRule: mockDeleteApprovalRule as never,
+          listApprovalRequests: () => Effect.succeed([]),
+          getApprovalRequest: () => Effect.succeed(null),
+          reviewApprovalRequest: () => Effect.succeed({} as never),
+          expireStaleRequests: mockExpireStaleRequests as never,
+          getPendingCount: () => Effect.succeed(0),
+        } as never);
+      }),
+    ),
+  };
+});
+
+// Legacy module-mock stub for any transitive resolver chain.
 mock.module("@atlas/ee/governance/approval", () => ({
   ApprovalError: MockApprovalError,
-  listApprovalRules: () => Effect.succeed([]),
-  createApprovalRule: mockCreateApprovalRule,
-  updateApprovalRule: mockUpdateApprovalRule,
-  deleteApprovalRule: mockDeleteApprovalRule,
-  listApprovalRequests: () => Effect.succeed([]),
-  getApprovalRequest: () => Effect.succeed(null),
-  reviewApprovalRequest: () => Effect.succeed({}),
-  expireStaleRequests: mockExpireStaleRequests,
-  getPendingCount: () => Effect.succeed(0),
 }));
 
 interface AuditEntry {

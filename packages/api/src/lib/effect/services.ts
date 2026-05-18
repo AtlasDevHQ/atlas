@@ -1145,29 +1145,153 @@ export const NoopComplianceReportsLayer: Layer.Layer<ComplianceReports> =
     } satisfies ComplianceReportsShape;
   });
 
-// ── ApprovalGate (#2568) ─────────────────────────────────────────────
+// ── ApprovalGate (#2567 — slice 5/11 of #2017) ───────────────────────
 //
-// Replaces `await import("@atlas/ee/governance/approval")` in
-// `lib/tools/sql.ts` + `api/routes/admin-approval.ts`. EE checks
-// whether a query needs approval and tracks request lifecycle; core's
-// no-op returns `{ required: false }` so all queries pass through.
+// Inverts every `@atlas/ee/governance/approval` reference in
+// `packages/api/src/`: the four dynamic imports in `lib/tools/sql.ts`
+// (checkApprovalRequired + createApprovalRequest + hasApprovedRequest,
+// fired twice — once on the live path, once on the cached path) and
+// the static admin-route imports in `api/routes/admin-approval.ts`.
+// EE overlays the real implementation; the no-op default returns
+// `{ required: false }` so self-hosted bypasses the gate, matching the
+// pre-#2567 behavior when the EE module wasn't installed.
+//
+// `ApprovalError` lives in `lib/governance/errors.ts` so the Tag's
+// failure channels stay typed without pulling in `@atlas/ee`.
+
+type ApprovalRule = import("@useatlas/types").ApprovalRule;
+type ApprovalRequest = import("@useatlas/types").ApprovalRequest;
+type ApprovalStatus = import("@useatlas/types").ApprovalStatus;
+type ApprovalRequestSurface = import("@useatlas/types").ApprovalRequestSurface;
+type CreateApprovalRuleRequest = import("@useatlas/types").CreateApprovalRuleRequest;
+type UpdateApprovalRuleRequest = import("@useatlas/types").UpdateApprovalRuleRequest;
+type ApprovalError = import("@atlas/api/lib/governance/errors").ApprovalError;
+type EnterpriseErrorForApproval = import("@atlas/api/lib/effect/errors").EnterpriseError;
+
+export interface ApprovalMatchResult {
+  readonly required: boolean;
+  readonly matchedRules: ApprovalRule[];
+  readonly identityMissing?: boolean;
+}
+
+export interface CreateApprovalRequestInput {
+  readonly orgId: string;
+  readonly ruleId: string;
+  readonly ruleName: string;
+  readonly requesterId: string;
+  readonly requesterEmail: string | null;
+  readonly querySql: string;
+  readonly explanation: string | null;
+  readonly connectionId: string | null;
+  readonly connectionGroupId?: string | null;
+  readonly tablesAccessed: string[];
+  readonly columnsAccessed: string[];
+  readonly surface?: ApprovalRequestSurface | null;
+}
 
 export interface ApprovalGateShape {
-  readonly checkApprovalRequired: (input: {
-    readonly sql: string;
-    readonly orgId?: string;
-    readonly connectionId: string;
-  }) => Promise<{ readonly required: boolean; readonly rules: ReadonlyArray<string> }>;
+  /** False when EE approval workflows aren't loaded — gate bypasses entirely. */
+  readonly available: boolean;
+  /** Decide whether a query needs approval. No-op returns `{ required: false, matchedRules: [] }`. */
+  readonly checkApprovalRequired: (
+    orgId: string | undefined,
+    tablesAccessed: string[],
+    columnsAccessed: string[],
+    options?: {
+      requesterId?: string | undefined;
+      surface?: ApprovalRequestSurface | undefined;
+    },
+  ) => Effect.Effect<ApprovalMatchResult, never>;
+  /** Has the requester already had an identical query approved? */
+  readonly hasApprovedRequest: (
+    orgId: string,
+    requesterId: string,
+    querySql: string,
+    connectionId?: string,
+  ) => Effect.Effect<boolean, never>;
+  /** Queue a new approval request. */
+  readonly createApprovalRequest: (
+    input: CreateApprovalRequestInput,
+  ) => Effect.Effect<ApprovalRequest, ApprovalError | EnterpriseErrorForApproval | Error>;
+  /** List rules; admin queue. */
+  readonly listApprovalRules: (
+    orgId: string,
+  ) => Effect.Effect<ApprovalRule[], EnterpriseErrorForApproval>;
+  readonly createApprovalRule: (
+    orgId: string,
+    input: CreateApprovalRuleRequest,
+  ) => Effect.Effect<ApprovalRule, ApprovalError | EnterpriseErrorForApproval | Error>;
+  readonly updateApprovalRule: (
+    orgId: string,
+    ruleId: string,
+    input: UpdateApprovalRuleRequest,
+  ) => Effect.Effect<ApprovalRule, ApprovalError | EnterpriseErrorForApproval | Error>;
+  readonly deleteApprovalRule: (
+    orgId: string,
+    ruleId: string,
+  ) => Effect.Effect<boolean, EnterpriseErrorForApproval>;
+  readonly listApprovalRequests: (
+    orgId: string,
+    status?: ApprovalStatus,
+    limit?: number,
+    offset?: number,
+  ) => Effect.Effect<ApprovalRequest[], EnterpriseErrorForApproval>;
+  readonly getApprovalRequest: (
+    orgId: string,
+    requestId: string,
+  ) => Effect.Effect<ApprovalRequest | null, ApprovalError | EnterpriseErrorForApproval>;
+  readonly reviewApprovalRequest: (
+    orgId: string,
+    requestId: string,
+    reviewerId: string,
+    reviewerEmail: string | null,
+    action: "approve" | "deny",
+    comment?: string,
+  ) => Effect.Effect<ApprovalRequest, ApprovalError | EnterpriseErrorForApproval | Error>;
+  readonly expireStaleRequests: (orgId: string) => Effect.Effect<number, Error>;
+  readonly getPendingCount: (orgId: string) => Effect.Effect<number, never>;
 }
 export class ApprovalGate extends Context.Tag("ApprovalGate")<
   ApprovalGate,
   ApprovalGateShape
 >() {}
-export const NoopApprovalGateLayer: Layer.Layer<ApprovalGate> = Layer.succeed(
+export const NoopApprovalGateLayer: Layer.Layer<ApprovalGate> = Layer.sync(
   ApprovalGate,
-  {
-    checkApprovalRequired: async () => ({ required: false, rules: [] }),
-  } satisfies ApprovalGateShape,
+  () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { ApprovalError: ApprovalErrorClass } = require("@atlas/api/lib/governance/errors") as {
+      ApprovalError: new (args: { message: string; code: "not_found" }) => ApprovalError;
+    };
+    const notFound = (id: string) =>
+      new ApprovalErrorClass({
+        message: `Approval request "${id}" not found.`,
+        code: "not_found",
+      });
+    return {
+      available: false,
+      checkApprovalRequired: () =>
+        Effect.succeed({ required: false, matchedRules: [] }),
+      hasApprovedRequest: () => Effect.succeed(false),
+      // `createApprovalRequest` is only reached when checkApprovalRequired
+      // returns `required: true`. With the no-op gate that's never the
+      // case, so this is a defensive impl — die so a regression that
+      // routes through here is loud rather than silent.
+      createApprovalRequest: () =>
+        Effect.die("createApprovalRequest called against no-op ApprovalGate"),
+      listApprovalRules: () => Effect.succeed([]),
+      createApprovalRule: (_orgId, _input) =>
+        Effect.fail(notFound("__no_op__")),
+      updateApprovalRule: (_orgId, ruleId) =>
+        Effect.fail(notFound(ruleId)),
+      deleteApprovalRule: () => Effect.succeed(false),
+      listApprovalRequests: () => Effect.succeed([]),
+      getApprovalRequest: () => Effect.succeed(null),
+      reviewApprovalRequest: (_orgId, requestId) =>
+        Effect.fail(notFound(requestId)),
+      expireStaleRequests: () => Effect.succeed(0),
+      getPendingCount: () => Effect.succeed(0),
+    } satisfies ApprovalGateShape;
+  },
 );
 
 // ── SlaMetrics (#2569) ───────────────────────────────────────────────

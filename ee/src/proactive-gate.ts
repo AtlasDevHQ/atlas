@@ -2,10 +2,8 @@
  * Proactive-chat enterprise gate — slice 10/11 of #2017 (#2572).
  *
  * Replaces the four `requireEnterpriseEffect("proactive-chat")` calls in
- * `packages/api/src/api/routes/admin-proactive*.ts`. EE always reports
- * `enabled: true` from the perspective of the gate (the route's caller
- * still has to be authorized to reach the admin router); the no-op
- * default in `lib/effect/services.ts:NoopProactiveGateLayer` fails with
+ * `packages/api/src/api/routes/admin-proactive*.ts`. The no-op default
+ * in `lib/effect/services.ts:NoopProactiveGateLayer` fails with
  * `EnterpriseError` so non-enterprise tenants see 403
  * `enterprise_required` and route through `EnterpriseUpsell` /
  * `<FeatureGate feature="Proactive Chat">`.
@@ -25,7 +23,6 @@ import {
 } from "@atlas/api/lib/effect/services";
 
 export const makeProactiveGateLive = (): ProactiveGateShape => ({
-  enabled: true,
   requireEnabled: () =>
     isEnterpriseEnabled()
       ? Effect.void

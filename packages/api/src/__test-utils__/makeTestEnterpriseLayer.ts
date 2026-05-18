@@ -61,7 +61,6 @@ import {
 // mask the test gap.
 
 const rolesDefaults: RolesPolicyShape = {
-  customRolesActive: true,
   checkPermission: () => Effect.succeed(null),
   listRoles: () => Effect.succeed([]),
   getRole: () => Effect.succeed(null),
@@ -84,7 +83,6 @@ const ipAllowlistDefaults: IpAllowlistPolicyShape = {
 };
 
 const ssoDefaults: SSOPolicyShape = {
-  available: false,
   // Mirror the production `extractEmailDomain` pure-helper exactly —
   // middleware compares the returned domain against the SSO provider
   // map, and a divergent stub silently misses the enforcement path.

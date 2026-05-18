@@ -503,7 +503,6 @@ export const seedBuiltinRoles = (orgId: string): Effect.Effect<void, Error> =>
 // self-hosted with fail-closed semantics.
 
 export const makeRolesPolicyLive = (): RolesPolicyShape => ({
-  customRolesActive: true,
   checkPermission: coreCheckPermission,
   listRoles,
   getRole,

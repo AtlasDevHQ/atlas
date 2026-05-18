@@ -46,7 +46,6 @@ mock.module("@atlas/ee/layers", () => {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
         return Layer.succeed(services.Branding, {
-          available: true,
           getWorkspaceBranding: () => Effect.succeed(null),
           getWorkspaceBrandingPublic: () => Effect.succeed(mockPublicBranding),
           setWorkspaceBranding: () => Effect.die("not stubbed"),

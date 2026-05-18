@@ -23,7 +23,8 @@ import { ADMIN_ACTIONS as REAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/action
 // Force enterprise on so `ConditionalEELayer` in
 // `lib/effect/enterprise-layer.ts` lazy-imports the mocked
 // `@atlas/ee/layers` aggregator below (otherwise the no-op default
-// fires and the masking + reports tests would see `available: false`).
+// fires and the masking + reports tests would hit the fail-closed
+// EnterpriseError path instead of the mocked Live impls).
 process.env.ATLAS_ENTERPRISE_ENABLED = "true";
 
 // ── Auth + DB stubs ────────────────────────────────────────────────
@@ -151,7 +152,6 @@ mock.module("@atlas/ee/layers", () => ({
       const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
       type MaskingContext = import("@atlas/api/lib/effect/services").MaskingContext;
       const maskingLayer = Layer.succeed(services.MaskingPolicy, {
-        available: true,
         // Preserve reference identity — see services.ts:NoopMaskingPolicyLayer.
         applyMasking: (ctx: MaskingContext) => Effect.succeed(ctx.rows),
         listPIIClassifications: () => Effect.succeed([]),
@@ -166,7 +166,6 @@ mock.module("@atlas/ee/layers", () => ({
         invalidateClassificationCache: mockInvalidate,
       } as never);
       const reportsLayer = Layer.succeed(services.ComplianceReports, {
-        available: true,
         generateDataAccessReport: () =>
           Effect.succeed({ rows: [], summary: { totalQueries: 0, uniqueUsers: 0, uniqueTables: 0, piiTablesAccessed: 0 }, filters: { startDate: "", endDate: "" }, generatedAt: "" } as never),
         generateUserActivityReport: () =>

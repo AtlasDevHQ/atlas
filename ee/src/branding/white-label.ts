@@ -13,7 +13,7 @@
  * All exported functions return Effect — callers use `yield*` in Effect.gen.
  */
 
-import { Data, Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import {
@@ -22,6 +22,14 @@ import {
   getInternalDB,
 } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import {
+  Branding,
+  type BrandingShape,
+} from "@atlas/api/lib/effect/services";
+import {
+  BrandingError,
+  type BrandingErrorCode,
+} from "@atlas/api/lib/branding/branding-errors";
 import type { WorkspaceBranding, SetWorkspaceBrandingInput } from "@useatlas/types";
 
 export type { WorkspaceBranding, SetWorkspaceBrandingInput } from "@useatlas/types";
@@ -30,12 +38,13 @@ const log = createLogger("ee:branding");
 
 // ── Typed errors ────────────────────────────────────────────────────
 
-export type BrandingErrorCode = "validation" | "not_found";
-
-export class BrandingError extends Data.TaggedError("BrandingError")<{
-  message: string;
-  code: BrandingErrorCode;
-}> {}
+/**
+ * `BrandingError` lives in `@atlas/api/lib/branding/branding-errors` post-#2572
+ * so the `Branding` Tag can type its failure channel without core
+ * importing from `@atlas/ee`. Re-exported here for back-compat — same
+ * `_tag` + payload + `instanceof` semantics.
+ */
+export { BrandingError, type BrandingErrorCode };
 
 // ── Internal row shape ──────────────────────────────────────────────
 
@@ -211,3 +220,24 @@ export const deleteWorkspaceBranding = (orgId: string): Effect.Effect<boolean, E
     }
     return deleted;
   });
+
+// ── Tag wiring (#2572 — slice 10/11 of #2017) ────────────────────────
+//
+// Bridges this module's functions into the `Branding` Tag so core call
+// sites (`api/routes/admin-branding.ts`, `public-branding.ts`) can
+// `yield* Branding` instead of static-importing this module.
+// Aggregated into `ee/src/layers.ts:EELayer`; the no-op default in
+// `lib/effect/services.ts:NoopBrandingLayer` covers self-hosted.
+
+export const makeBrandingLive = (): BrandingShape => ({
+  available: true,
+  getWorkspaceBranding,
+  getWorkspaceBrandingPublic,
+  setWorkspaceBranding,
+  deleteWorkspaceBranding,
+});
+
+export const BrandingLive: Layer.Layer<Branding> = Layer.sync(
+  Branding,
+  makeBrandingLive,
+);

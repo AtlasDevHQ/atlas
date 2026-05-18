@@ -5,33 +5,34 @@
  * `"saas" | "self-hosted"` value. The `"saas"` mode requires enterprise
  * to be enabled — without it, deploy mode always resolves to `"self-hosted"`.
  *
- * Computed once at import time and cached for the lifetime of the process.
+ * Slice 10/11 of #2017 (#2572) moved the resolver to core
+ * (`@atlas/api/lib/effect/deploy-mode`) so `lib/config.ts:applyDeployMode`
+ * could stop dynamic-importing from `@atlas/ee`. This file is now a thin
+ * re-export plus the EE-side `DeployModeResolver` Layer wiring — same
+ * behavior, no behavior change for either SaaS or self-hosted.
  */
 
-import { isEnterpriseEnabled } from "./index";
-import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import type { DeployMode, DeployModeSetting } from "@useatlas/types";
+import { Layer } from "effect";
+import { resolveDeployMode } from "@atlas/api/lib/effect/deploy-mode";
+import {
+  DeployModeResolver,
+  type DeployModeResolverShape,
+} from "@atlas/api/lib/effect/services";
 
-/**
- * Resolve the effective deploy mode from the raw setting value.
- *
- * Logic:
- * - `"saas"`: requires enterprise enabled, otherwise falls back to `"self-hosted"`
- * - `"self-hosted"`: always returns `"self-hosted"`
- * - `"auto"` (default): returns `"saas"` when both enterprise is enabled AND
- *   an internal database is configured, otherwise `"self-hosted"`
- */
-export function resolveDeployMode(raw?: DeployModeSetting): DeployMode {
-  const setting: DeployModeSetting = raw ?? (process.env.ATLAS_DEPLOY_MODE as DeployModeSetting) ?? "auto";
+export { resolveDeployMode };
 
-  if (setting === "self-hosted") {
-    return "self-hosted";
-  }
+// ── Tag wiring (#2572 — slice 10/11 of #2017) ────────────────────────
+//
+// Bridges `resolveDeployMode` into the `DeployModeResolver` Tag so core
+// can `yield* DeployModeResolver` instead of `await import("@atlas/ee/deploy-mode")`.
+// Aggregated into `ee/src/layers.ts:EELayer`; the no-op default in
+// `lib/effect/services.ts:NoopDeployModeResolverLayer` returns
+// `"self-hosted"` (the correct answer when EE is not loaded — `"saas"`
+// mode requires enterprise).
 
-  if (setting === "saas") {
-    return isEnterpriseEnabled() ? "saas" : "self-hosted";
-  }
+export const makeDeployModeResolverLive = (): DeployModeResolverShape => ({
+  resolve: () => resolveDeployMode(),
+});
 
-  // "auto" — detect from environment
-  return isEnterpriseEnabled() && hasInternalDB() ? "saas" : "self-hosted";
-}
+export const DeployModeResolverLive: Layer.Layer<DeployModeResolver> =
+  Layer.sync(DeployModeResolver, makeDeployModeResolverLive);

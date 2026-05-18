@@ -29,12 +29,33 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
 }));
 
 // --- EE branding mock ---
+//
+// Post-#2572 (slice 10/11) `public-branding.ts` yields the `Branding`
+// Tag. Stub `@atlas/ee/layers` directly with a Tag-bound test layer.
 
 let mockPublicBranding: Record<string, unknown> | null = null;
 
-mock.module("@atlas/ee/branding/white-label", () => ({
-  getWorkspaceBrandingPublic: () => Effect.succeed(mockPublicBranding),
-}));
+process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+
+mock.module("@atlas/ee/layers", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Layer, Effect: E } = require("effect") as typeof import("effect");
+  return {
+    EELayer: Layer.unwrapEffect(
+      E.sync(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+        return Layer.succeed(services.Branding, {
+          available: true,
+          getWorkspaceBranding: () => Effect.succeed(null),
+          getWorkspaceBrandingPublic: () => Effect.succeed(mockPublicBranding),
+          setWorkspaceBranding: () => Effect.die("not stubbed"),
+          deleteWorkspaceBranding: () => Effect.die("not stubbed"),
+        } as never);
+      }),
+    ),
+  };
+});
 
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),

@@ -9,14 +9,9 @@ import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
-import { AuthContext } from "@atlas/api/lib/effect/services";
+import { AuthContext, Branding } from "@atlas/api/lib/effect/services";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
-import {
-  getWorkspaceBranding,
-  setWorkspaceBranding,
-  deleteWorkspaceBranding,
-  BrandingError,
-} from "@atlas/ee/branding/white-label";
+import { BrandingError } from "@atlas/api/lib/branding/branding-errors";
 import { WorkspaceBrandingSchema as BrandingSchema } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
@@ -219,9 +214,10 @@ adminBranding.use(requirePermission("admin:settings"));
 adminBranding.openapi(getBrandingRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    const branding = yield* Branding;
 
-    const branding = yield* getWorkspaceBranding(orgId!);
-    return c.json({ branding }, 200);
+    const result = yield* branding.getWorkspaceBranding(orgId!);
+    return c.json({ branding: result }, 200);
   }), { label: "get workspace branding", domainErrors: [brandingDomainError] });
 });
 
@@ -232,8 +228,9 @@ adminBranding.openapi(setBrandingRoute, async (c) => {
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    const brandingSvc = yield* Branding;
 
-    const branding = yield* setWorkspaceBranding(orgId!, {
+    const branding = yield* brandingSvc.setWorkspaceBranding(orgId!, {
       logoUrl: body.logoUrl,
       logoText: body.logoText,
       primaryColor: body.primaryColor,
@@ -268,8 +265,9 @@ adminBranding.openapi(deleteBrandingRoute, async (c) => {
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    const brandingSvc = yield* Branding;
 
-    const deleted = yield* deleteWorkspaceBranding(orgId!);
+    const deleted = yield* brandingSvc.deleteWorkspaceBranding(orgId!);
     if (!deleted) {
       // No-op deletes don't audit — nothing was reset, so emitting a row
       // would pollute forensic queries that count actual branding changes.

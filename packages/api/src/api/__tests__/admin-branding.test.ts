@@ -51,30 +51,57 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 // --- EE branding mock ---
+//
+// Post-#2572 (slice 10/11) `admin-branding.ts` yields the `Branding` Tag.
+// The EE-side `Branding` Live binding lives in `ee/src/branding/white-label.ts`
+// and is composed into `EELayer` via `ee/src/layers.ts`. Tests stub
+// `@atlas/ee/layers` directly with a Tag-bound test layer (same pattern
+// slice 7 introduced for `AuditRetention`).
 
 let mockBranding: Record<string, unknown> | null = null;
 let mockSetResult: Record<string, unknown> | null = null;
 let mockDeleteResult = false;
 let mockEeError: Error | null = null;
 
-const { BrandingError: RealBrandingError } = await import("@atlas/ee/branding/white-label");
-const { EnterpriseError } = await import("@atlas/ee/index");
+process.env.ATLAS_ENTERPRISE_ENABLED = "true";
 
-mock.module("@atlas/ee/branding/white-label", () => ({
-  getWorkspaceBranding: () => {
-    if (mockEeError) return Effect.fail(mockEeError);
-    return Effect.succeed(mockBranding);
-  },
-  setWorkspaceBranding: () => {
-    if (mockEeError) return Effect.fail(mockEeError);
-    return Effect.succeed(mockSetResult);
-  },
-  deleteWorkspaceBranding: () => {
-    if (mockEeError) return Effect.fail(mockEeError);
-    return Effect.succeed(mockDeleteResult);
-  },
+const { BrandingError: RealBrandingError } = await import(
+  "@atlas/api/lib/branding/branding-errors"
+);
+const { EnterpriseError } = await import("@atlas/api/lib/effect/errors");
+
+mock.module("@atlas/api/lib/branding/branding-errors", () => ({
   BrandingError: RealBrandingError,
 }));
+
+mock.module("@atlas/ee/layers", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Layer, Effect: E } = require("effect") as typeof import("effect");
+  return {
+    EELayer: Layer.unwrapEffect(
+      E.sync(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+        return Layer.succeed(services.Branding, {
+          available: true,
+          getWorkspaceBranding: () => {
+            if (mockEeError) return Effect.fail(mockEeError);
+            return Effect.succeed(mockBranding);
+          },
+          getWorkspaceBrandingPublic: () => Effect.succeed(null),
+          setWorkspaceBranding: () => {
+            if (mockEeError) return Effect.fail(mockEeError);
+            return Effect.succeed(mockSetResult);
+          },
+          deleteWorkspaceBranding: () => {
+            if (mockEeError) return Effect.fail(mockEeError);
+            return Effect.succeed(mockDeleteResult);
+          },
+        } as never);
+      }),
+    ),
+  };
+});
 
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),

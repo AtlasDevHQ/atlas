@@ -79,26 +79,60 @@ mock.module("@atlas/api/lib/audit", () => ({
   causeToError: () => undefined,
 }));
 
-// --- EE domains mock: loadDomains returns null to simulate EE-off build ---
+// --- EE domains mock: `Domains` Tag returns `available: false` to simulate
+// EE-off build ---
 //
-// The admin-domains.ts router calls `loadDomains()` from shared-domains.ts,
-// which dynamic-imports "@atlas/ee/platform/domains" and catches
-// MODULE_NOT_FOUND to return null. Mocking shared-domains lets us control
-// that null branch directly without having to forge a MODULE_NOT_FOUND
-// from the EE import.
+// Post-#2572 (slice 10/11) `admin-domains.ts` yields the `Domains` Tag
+// instead of calling `loadDomains()`. Tests flip `available: false` to
+// reproduce the EE-disabled path; `available: true` with stubbed methods
+// drives the audit-emission tests. Same pattern slice 7 introduced for
+// `AuditRetention`.
 
-const mockLoadDomains: Mock<() => Promise<unknown>> = mock(() => Promise.resolve(null));
+process.env.ATLAS_ENTERPRISE_ENABLED = "true";
 
-// Preserve the real helper exports — customDomainError is consumed by
-// runEffect's error mapping. Re-export with the mocked loadDomains.
-const realShared = await import("../routes/shared-domains");
+type DomainsStub = {
+  available: boolean;
+  listDomains: (orgId: string) => unknown;
+  registerDomain: (orgId: string, domain: string) => unknown;
+  verifyDomain: (id: string) => unknown;
+  verifyDomainDnsTxt: (id: string) => unknown;
+  deleteDomain: (id: string) => unknown;
+  checkDomainAvailability: (domain: string, workspaceId: string) => unknown;
+  listAllDomains: () => unknown;
+  hasVerifiedCustomDomain: () => unknown;
+  resolveWorkspaceByHost: () => unknown;
+  redactDomain: (d: Record<string, unknown>) => Record<string, unknown>;
+};
 
-mock.module("../routes/shared-domains", () => ({
-  CustomDomainSchema: realShared.CustomDomainSchema,
-  DomainCheckResponseSchema: realShared.DomainCheckResponseSchema,
-  customDomainError: realShared.customDomainError,
-  loadDomains: mockLoadDomains,
-}));
+let domainsStub: DomainsStub = {
+  available: false,
+  listDomains: () => Effect.succeed([]),
+  registerDomain: () => Effect.die("not stubbed"),
+  verifyDomain: () => Effect.die("not stubbed"),
+  verifyDomainDnsTxt: () => Effect.die("not stubbed"),
+  deleteDomain: () => Effect.die("not stubbed"),
+  checkDomainAvailability: () => Effect.die("not stubbed"),
+  listAllDomains: () => Effect.die("not stubbed"),
+  hasVerifiedCustomDomain: () => Effect.die("not stubbed"),
+  resolveWorkspaceByHost: () => Effect.die("not stubbed"),
+  redactDomain: (d) => d,
+};
+
+mock.module("@atlas/ee/layers", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Layer, Effect: E } = require("effect") as typeof import("effect");
+  return {
+    EELayer: Layer.unwrapEffect(
+      E.sync(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+        return Layer.succeed(services.Domains, new Proxy(domainsStub, {
+          get: (_t, prop) => (domainsStub as unknown as Record<string, unknown>)[prop as string],
+        }) as never);
+      }),
+    ),
+  };
+});
 
 // --- Import sub-router AFTER mocks ---
 
@@ -107,7 +141,19 @@ const { adminDomains } = await import("../routes/admin-domains");
 // --- Helpers ---
 
 function resetMocks() {
-  mockLoadDomains.mockImplementation(() => Promise.resolve(null));
+  domainsStub = {
+    available: false,
+    listDomains: () => Effect.succeed([]),
+    registerDomain: () => Effect.die("not stubbed"),
+    verifyDomain: () => Effect.die("not stubbed"),
+    verifyDomainDnsTxt: () => Effect.die("not stubbed"),
+    deleteDomain: () => Effect.die("not stubbed"),
+    checkDomainAvailability: () => Effect.die("not stubbed"),
+    listAllDomains: () => Effect.die("not stubbed"),
+    hasVerifiedCustomDomain: () => Effect.die("not stubbed"),
+    resolveWorkspaceByHost: () => Effect.die("not stubbed"),
+    redactDomain: (d) => d,
+  };
   mockLogAdminAction.mockClear();
   mockAuthenticateRequest.mockImplementation(() =>
     Promise.resolve({
@@ -118,9 +164,10 @@ function resetMocks() {
   );
 }
 
-// --- EE domains stub: load a fake module so POST / DELETE / verify routes
-// reach the audit emission path. The stub returns Effect.succeed(...) for
-// every method so the Effect.gen handlers run to completion.
+// --- EE domains stub: flip `Domains.available = true` and stub the
+// methods exercised by the audit-emission tests. The Tag-backed stub
+// returns Effect.succeed(...) for every method so the Effect.gen
+// handlers run to completion.
 
 function makeDomainRecord(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -143,28 +190,30 @@ function enableEe(
     checkDomainAvailability?: Record<string, unknown>;
   } = {},
 ): void {
-  mockLoadDomains.mockImplementation(() =>
-    Promise.resolve({
-      listDomains: (_orgId: string) => Effect.succeed(opts.listDomains ?? []),
-      registerDomain: (_orgId: string, _domain: string) =>
-        opts.registerDomain instanceof Error
-          ? Effect.fail(opts.registerDomain)
-          : Effect.succeed(opts.registerDomain ?? makeDomainRecord()),
-      verifyDomain: (_id: string) =>
-        opts.verifyDomain instanceof Error
-          ? Effect.fail(opts.verifyDomain)
-          : Effect.succeed(opts.verifyDomain ?? makeDomainRecord({ status: "verified" })),
-      verifyDomainDnsTxt: (_id: string) =>
-        opts.verifyDomainDnsTxt instanceof Error
-          ? Effect.fail(opts.verifyDomainDnsTxt)
-          : Effect.succeed(opts.verifyDomainDnsTxt ?? makeDomainRecord({ status: "dns_verified" })),
-      deleteDomain: (_id: string) =>
-        opts.deleteDomain instanceof Error ? Effect.fail(opts.deleteDomain) : Effect.succeed(true),
-      checkDomainAvailability: (_domain: string, _orgId: string) =>
-        Effect.succeed(opts.checkDomainAvailability ?? { available: true }),
-      redactDomain: (d: Record<string, unknown>) => d,
-    }),
-  );
+  domainsStub = {
+    available: true,
+    listDomains: (_orgId: string) => Effect.succeed(opts.listDomains ?? []),
+    registerDomain: (_orgId: string, _domain: string) =>
+      opts.registerDomain instanceof Error
+        ? Effect.fail(opts.registerDomain)
+        : Effect.succeed(opts.registerDomain ?? makeDomainRecord()),
+    verifyDomain: (_id: string) =>
+      opts.verifyDomain instanceof Error
+        ? Effect.fail(opts.verifyDomain)
+        : Effect.succeed(opts.verifyDomain ?? makeDomainRecord({ status: "verified" })),
+    verifyDomainDnsTxt: (_id: string) =>
+      opts.verifyDomainDnsTxt instanceof Error
+        ? Effect.fail(opts.verifyDomainDnsTxt)
+        : Effect.succeed(opts.verifyDomainDnsTxt ?? makeDomainRecord({ status: "dns_verified" })),
+    deleteDomain: (_id: string) =>
+      opts.deleteDomain instanceof Error ? Effect.fail(opts.deleteDomain) : Effect.succeed(true),
+    checkDomainAvailability: (_domain: string, _orgId: string) =>
+      Effect.succeed(opts.checkDomainAvailability ?? { available: true }),
+    listAllDomains: () => Effect.succeed([]),
+    hasVerifiedCustomDomain: () => Effect.succeed(false),
+    resolveWorkspaceByHost: () => Effect.succeed(null),
+    redactDomain: (d: Record<string, unknown>) => d,
+  };
 }
 
 async function request(urlPath: string, method: string, body?: unknown) {

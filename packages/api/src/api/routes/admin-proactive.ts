@@ -34,11 +34,12 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+import { getConfig } from "@atlas/api/lib/config";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { runHandler } from "@atlas/api/lib/effect/hono";
+import { EnterpriseError } from "@atlas/api/lib/effect/errors";
 import { announceActivation } from "@atlas/api/lib/proactive/announcement-coordinator";
 import { getChatAnnouncer } from "@atlas/api/lib/proactive/announcer-registry";
-import { isEnterpriseEnabled, EnterpriseError } from "@atlas/ee/index";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
@@ -309,20 +310,35 @@ adminProactive.use(requirePermission("admin:settings"));
 /**
  * Enterprise gate. Sync throw inside the `runHandler` body so a
  * `runHandler` → `Effect.tryPromise` → defect-classification path lands
- * on `EnterpriseError` directly (its `name === "EnterpriseError"` survives
- * the `Error` re-wrap) and maps to 403 `enterprise_required` via
- * `classifyError`. The flag is re-read per call so a runtime flip
+ * on `EnterpriseError` directly (its `name === "EnterpriseError"`
+ * survives the `Error` re-wrap) and maps to 403 `enterprise_required`
+ * via `classifyError`. The flag is re-read per call so a runtime flip
  * propagates without restart.
  *
- * Inline `Effect.runPromise(requireEnterpriseEffect(...))` would reject
- * with a FiberFailure that loses the `name` identity, so `classifyError`
- * would treat it as an opaque 500 instead of the 403 the gate wants.
- * Pinning to the synchronous primitive avoids that lossy wrap.
+ * Post-#2572 (slice 10/11 of #2017) this reads the enterprise flag
+ * directly from `getConfig()` / `ATLAS_ENTERPRISE_ENABLED` rather than
+ * dynamic-importing `@atlas/ee/index`. The other three admin-proactive
+ * route files (analytics, pauses, public-dataset) yield the
+ * `ProactiveGate` Tag because they already use `runEffect` + Effect.gen;
+ * this file's `runHandler`-based handlers can't yield the Tag without a
+ * separate sync runtime (`ConditionalEELayer` is async due to the lazy
+ * EE-layer import), so we keep the equivalent sync check inline. The
+ * resulting `EnterpriseError` has identical `_tag` + payload to the
+ * one the Tag would produce.
  */
+function isEnterpriseEnabledSync(): boolean {
+  const config = getConfig();
+  if (config?.enterprise?.enabled !== undefined) {
+    return config.enterprise.enabled;
+  }
+  return process.env.ATLAS_ENTERPRISE_ENABLED === "true";
+}
+
 function gateEnterprise(): void {
-  if (!isEnterpriseEnabled()) {
+  if (!isEnterpriseEnabledSync()) {
     throw new EnterpriseError(
-      "Proactive chat requires enterprise features to be enabled.",
+      "Enterprise features (proactive-chat) are not enabled. " +
+        "Set ATLAS_ENTERPRISE_ENABLED=true or configure enterprise.enabled in atlas.config.ts.",
     );
   }
 }

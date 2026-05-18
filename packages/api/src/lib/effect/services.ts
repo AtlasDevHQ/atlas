@@ -1570,18 +1570,40 @@ export const NoopAuditRetentionLayer: Layer.Layer<AuditRetention> = Layer.sync(
       new EnterpriseErrorClass("Audit retention requires enterprise features to be enabled.");
     return {
       available: false,
+      // Pure reads — "no policy configured" is the honest answer on
+      // self-hosted (admin-audit-retention.ts renders `{ policy: null }`
+      // as the not-configured envelope, no harm done).
       getRetentionPolicy: () => Effect.succeed(null),
-      setRetentionPolicy: () => Effect.fail(notAvailable()),
-      purgeExpiredEntries: () => Effect.succeed([]),
-      hardDeleteExpired: () => Effect.succeed({ deletedCount: 0 }),
-      exportAuditLog: () => Effect.fail(notAvailable()),
       getAdminActionRetentionPolicy: () => Effect.succeed(null),
+      // Mutations + destructive ops MUST fail with EnterpriseError. The
+      // routes declare `domainErrors: [retentionDomainError]` so a
+      // RetentionError or EnterpriseError surfaces through `classifyError`
+      // as a 4xx envelope. Pre-#2587 these returned silent success which:
+      //   - For purgeExpiredEntries / hardDeleteExpired / purgeAdminAction:
+      //     reported "nothing to purge" without doing anything, masking
+      //     a misconfigured install from operator monitoring.
+      //   - For anonymizeUserAdminActions: returned `{ anonymizedRowCount:
+      //     0 }` so a GDPR erasure request appeared to complete while
+      //     leaving every row untouched. The audit emission contract in
+      //     `admin-action-retention.ts` says the library owns the success
+      //     emission, but no library means no row written either — so the
+      //     forensic trail was missing too.
+      //   - For previewAdminActionErasure: falsely told the admin "nothing
+      //     to erase" so they'd skip the confirm dialog and assume the
+      //     account had no admin-action footprint.
+      setRetentionPolicy: () => Effect.fail(notAvailable()),
+      purgeExpiredEntries: () => Effect.fail(notAvailable()),
+      hardDeleteExpired: () => Effect.fail(notAvailable()),
+      exportAuditLog: () => Effect.fail(notAvailable()),
       setAdminActionRetentionPolicy: () => Effect.fail(notAvailable()),
-      purgeAdminActionExpired: () => Effect.succeed([]),
-      anonymizeUserAdminActions: () =>
-        Effect.succeed({ anonymizedRowCount: 0 }),
-      previewAdminActionErasure: () =>
-        Effect.succeed({ anonymizableRowCount: 0 }),
+      purgeAdminActionExpired: () => Effect.fail(notAvailable()),
+      anonymizeUserAdminActions: () => Effect.fail(notAvailable()),
+      previewAdminActionErasure: () => Effect.fail(notAvailable()),
+      // Scheduler lifecycle stays as void no-ops — `makeSchedulerLive`
+      // calls these unconditionally at startup without a feature flag,
+      // and a no-op is the correct self-hosted behavior (no scheduler
+      // job to start, none to stop). Splitting AuditRetention into a
+      // separate AuditPurgeScheduler Tag is tracked as a follow-up.
       startAuditPurgeScheduler: () => {},
       stopAuditPurgeScheduler: () => {},
     } satisfies AuditRetentionShape;

@@ -36,59 +36,22 @@ import {
   type AuthEnv,
 } from "./middleware";
 import { mfaRequired } from "./admin-mfa-required";
-import type { Permission } from "@atlas/ee/auth/roles";
+import type { Permission } from "@atlas/api/lib/auth/permissions";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
+import { RolesPolicy } from "@atlas/api/lib/effect/services";
+import { EnterpriseLayer } from "@atlas/api/lib/effect/enterprise-layer";
 
 const log = createLogger("admin-router:permission");
 
 /**
- * Sentinel returned by `loadCheckPermission` when `@atlas/ee/auth/roles`
- * cannot be imported — surfaces as a distinct fail-closed branch in the
- * caller rather than collapsing into the generic "insufficient_permissions"
- * 403 response shape.
+ * Post-#2571 the lazy `loadCheckPermission` + `PERMISSION_LOAD_FAILED`
+ * sentinel pair that used to live here is gone. The route runs
+ * `roles.checkPermission(...)` via the `RolesPolicy` Tag; EE provides
+ * the real implementation through `EnterpriseLayer`, self-hosted falls
+ * through to the no-op default which still emits the legacy
+ * `permissions_unavailable` 503 envelope — preserving the F-53 fail-closed
+ * semantics without the module-load dance.
  */
-const PERMISSION_LOAD_FAILED = Symbol("permissionLoadFailed");
-type PermissionLoadFailed = typeof PERMISSION_LOAD_FAILED;
-
-type CheckPermissionFn = (
-  user: AtlasUser | undefined,
-  permission: Permission,
-  requestId: string,
-) => Effect.Effect<{ body: Record<string, unknown>; status: 403 } | null>;
-
-/**
- * Lazy-import `checkPermission` from `@atlas/ee/auth/roles`.
- *
- * The lazy pattern matches the IP-allowlist guard in `middleware.ts` — both
- * keep the EE module out of every test file that mocks `effect` with a
- * partial shim (those shims don't carry `Data.TaggedError`, which `roles.ts`
- * uses transitively).
- *
- * Failure handling differs from the IP-allowlist guard on purpose:
- * IP-allowlist treats "EE not installed" as feature-off and falls open. This
- * helper sits on the admin authorization chokepoint — if the module can't
- * load we cannot decide whether the caller's role carries the flag, so we
- * **fail closed**. Returning the sentinel lets the caller emit a typed 503
- * `service_unavailable` instead of a misleading 403 that would point a
- * frustrated admin at their role config when the actual fault is the EE
- * module being unavailable.
- */
-async function loadCheckPermission(): Promise<CheckPermissionFn | PermissionLoadFailed> {
-  try {
-    const mod = (await import("@atlas/ee/auth/roles")) as { checkPermission: CheckPermissionFn };
-    if (typeof mod.checkPermission !== "function") {
-      log.error("loadCheckPermission: @atlas/ee/auth/roles loaded but did not export checkPermission");
-      return PERMISSION_LOAD_FAILED;
-    }
-    return mod.checkPermission;
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err.message : String(err) },
-      "loadCheckPermission: failed to import @atlas/ee/auth/roles — failing closed",
-    );
-    return PERMISSION_LOAD_FAILED;
-  }
-}
 
 function permissionLoadFailedResponse(
   requestId: string,
@@ -239,16 +202,23 @@ export function requirePermission(permission: Permission) {
     // adminAuth has already 401'd unauthenticated requests and 403'd
     // non-admin roles. We're inside the admin perimeter — `authResult` is
     // always set when this middleware runs.
-    const checkPermission = await loadCheckPermission();
-    if (checkPermission === PERMISSION_LOAD_FAILED) {
-      const failed = permissionLoadFailedResponse(requestId);
-      return c.json(failed.body, failed.status);
-    }
-
-    let result: { body: Record<string, unknown>; status: 403 } | null;
+    //
+    // Run `checkPermission` via the `RolesPolicy` Tag (#2571).
+    // EE's `RolesPolicyLive` overrides the no-op default with the
+    // custom-role-table-backed resolver; self-hosted falls through to
+    // the no-op which returns the 503 `permissions_unavailable`
+    // envelope, preserving F-53 fail-closed semantics.
+    let result: { body: Record<string, unknown>; status: 403 | 503 } | null;
     try {
       result = await Effect.runPromise(
-        checkPermission(authResult.user as AtlasUser | undefined, permission, requestId),
+        Effect.gen(function* () {
+          const roles = yield* RolesPolicy;
+          return yield* roles.checkPermission(
+            authResult.user as AtlasUser | undefined,
+            permission,
+            requestId,
+          );
+        }).pipe(Effect.provide(EnterpriseLayer)),
       );
     } catch (err) {
       // Defect inside the Effect (e.g. unexpected throw) — fail closed with
@@ -290,12 +260,13 @@ export async function enforcePermission(
   permission: Permission,
   requestId: string,
 ): Promise<{ body: Record<string, unknown>; status: 403 | 503 } | null> {
-  const checkPermission = await loadCheckPermission();
-  if (checkPermission === PERMISSION_LOAD_FAILED) {
-    return permissionLoadFailedResponse(requestId);
-  }
   try {
-    return await Effect.runPromise(checkPermission(user, permission, requestId));
+    return await Effect.runPromise(
+      Effect.gen(function* () {
+        const roles = yield* RolesPolicy;
+        return yield* roles.checkPermission(user, permission, requestId);
+      }).pipe(Effect.provide(EnterpriseLayer)),
+    );
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err.message : String(err), permission, requestId },

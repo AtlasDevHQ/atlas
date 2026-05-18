@@ -35,7 +35,7 @@ import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, u
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { onVerificationCreated } from "@atlas/api/lib/auth/trusted-device-hook";
-import { isEnterpriseEnabled } from "@atlas/ee/index";
+import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
 import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from "@atlas/api/lib/auth/org-permissions";
 import { adminAccessControl, adminRole as adminUserRole, platformAdminRole } from "@atlas/api/lib/auth/admin-permissions";
 import { getStripePlans, resolvePlanTierFromPriceId, TRIAL_DAYS } from "@atlas/api/lib/billing/plans";

@@ -16,22 +16,12 @@ import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
-import { AuthContext } from "@atlas/api/lib/effect/services";
+import { AuthContext, RolesPolicy } from "@atlas/api/lib/effect/services";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage, causeToError } from "@atlas/api/lib/audit/error-scrub";
 import { internalQuery } from "@atlas/api/lib/db/internal";
-import {
-  listRoles,
-  createRole,
-  updateRole,
-  deleteRole,
-  getRole,
-  getRoleByName,
-  listRoleMembers,
-  assignRole,
-  RoleError,
-  PERMISSIONS,
-} from "@atlas/ee/auth/roles";
+import { RoleError } from "@atlas/api/lib/auth/roles-errors";
+import { PERMISSIONS } from "@atlas/api/lib/auth/permissions";
 import { ErrorSchema, AuthErrorSchema, isValidId, createIdParamSchema, createParamSchema, SCIMManagedResponse } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 import { evaluateSCIMGuard } from "@atlas/api/lib/auth/scim-provenance";
@@ -229,8 +219,9 @@ adminRoles.use(requirePermission("admin:roles"));
 adminRoles.openapi(listRolesRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    const rolesPolicy = yield* RolesPolicy;
 
-    const roles = yield* listRoles(orgId!);
+    const roles = yield* rolesPolicy.listRoles(orgId!);
     return c.json({ roles, permissions: [...PERMISSIONS], total: roles.length }, 200);
   }), { label: "list roles", domainErrors: [roleDomainError] });
 });
@@ -243,12 +234,13 @@ adminRoles.openapi(createRoleRoute, async (c) => {
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    const rolesPolicy = yield* RolesPolicy;
 
     if (!body.name || !body.permissions || !Array.isArray(body.permissions)) {
       return c.json({ error: "bad_request", message: "Missing required fields: name, permissions." }, 400);
     }
 
-    const role = yield* createRole(orgId!, body);
+    const role = yield* rolesPolicy.createRole(orgId!, body);
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.role.create,
@@ -304,6 +296,7 @@ adminRoles.openapi(updateRoleRoute, async (c) => {
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    const rolesPolicy = yield* RolesPolicy;
 
     if (!isValidId(roleId)) {
       return c.json({ error: "bad_request", message: "Invalid role ID." }, 400);
@@ -313,9 +306,9 @@ adminRoles.openapi(updateRoleRoute, async (c) => {
     // this a compromised admin could flip a role from `query` to
     // `query,admin:audit` and the audit trail would only show the new perms
     // — forensic reconstruction needs the delta.
-    const prior = yield* getRole(orgId!, roleId);
+    const prior = yield* rolesPolicy.getRole(orgId!, roleId);
 
-    const role = yield* updateRole(orgId!, roleId, body);
+    const role = yield* rolesPolicy.updateRole(orgId!, roleId, body);
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.role.update,
@@ -340,7 +333,8 @@ adminRoles.openapi(updateRoleRoute, async (c) => {
         // from this lookup so the audit emission isn't dropped when the
         // underlying DB is the failure itself.
         const { orgId } = yield* AuthContext;
-        const prior = yield* getRole(orgId!, roleId).pipe(
+        const rolesPolicy = yield* RolesPolicy;
+        const prior = yield* rolesPolicy.getRole(orgId!, roleId).pipe(
           Effect.catchAll(() => Effect.succeed(null)),
         );
         logAdminAction({
@@ -369,6 +363,7 @@ adminRoles.openapi(deleteRoleRoute, async (c) => {
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    const rolesPolicy = yield* RolesPolicy;
 
     if (!isValidId(roleId)) {
       return c.json({ error: "bad_request", message: "Invalid role ID." }, 400);
@@ -377,7 +372,7 @@ adminRoles.openapi(deleteRoleRoute, async (c) => {
     // Pre-fetch the row BEFORE calling deleteRole. Without this the audit
     // metadata can't record which permissions were revoked — the row is
     // gone by the time we'd emit.
-    const existing = yield* getRole(orgId!, roleId);
+    const existing = yield* rolesPolicy.getRole(orgId!, roleId);
 
     if (!existing) {
       // Admin attempted to delete a role that doesn't exist — a probe
@@ -394,7 +389,7 @@ adminRoles.openapi(deleteRoleRoute, async (c) => {
       return c.json({ error: "not_found", message: "Role not found." }, 404);
     }
 
-    const deleted = yield* deleteRole(orgId!, roleId);
+    const deleted = yield* rolesPolicy.deleteRole(orgId!, roleId);
 
     if (!deleted) {
       // Race between pre-fetch and delete — audit must not claim a
@@ -433,7 +428,8 @@ adminRoles.openapi(deleteRoleRoute, async (c) => {
         const err = causeToError(cause);
         if (err === undefined) return;
         const { orgId } = yield* AuthContext;
-        const prior = yield* getRole(orgId!, roleId).pipe(
+        const rolesPolicy = yield* RolesPolicy;
+        const prior = yield* rolesPolicy.getRole(orgId!, roleId).pipe(
           Effect.catchAll(() => Effect.succeed(null)),
         );
         logAdminAction({
@@ -458,13 +454,14 @@ adminRoles.openapi(deleteRoleRoute, async (c) => {
 adminRoles.openapi(listRoleMembersRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    const rolesPolicy = yield* RolesPolicy;
     const { id: roleId } = c.req.valid("param");
 
     if (!isValidId(roleId)) {
       return c.json({ error: "bad_request", message: "Invalid role ID." }, 400);
     }
 
-    const members = yield* listRoleMembers(orgId!, roleId);
+    const members = yield* rolesPolicy.listRoleMembers(orgId!, roleId);
     return c.json({ members, total: members.length }, 200);
   }), { label: "list role members", domainErrors: [roleDomainError] });
 });
@@ -478,6 +475,7 @@ adminRoles.openapi(assignRoleRoute, async (c) => {
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    const rolesPolicy = yield* RolesPolicy;
 
     if (!isValidId(userId)) {
       return c.json({ error: "bad_request", message: "Invalid user ID." }, 400);
@@ -496,7 +494,7 @@ adminRoles.openapi(assignRoleRoute, async (c) => {
     // and the user's existing member.role so the audit captures what was
     // replaced. Mirrors the `user.change_role` pattern in admin.ts —
     // compliance reconstruction needs the before-state, not just the after.
-    const targetRole = yield* getRoleByName(orgId!, roleName);
+    const targetRole = yield* rolesPolicy.getRoleByName(orgId!, roleName);
     const priorRows = yield* Effect.tryPromise({
       try: () => internalQuery<{ role: string }>(
         `SELECT role FROM member WHERE "organizationId" = $1 AND "userId" = $2 LIMIT 1`,
@@ -506,7 +504,7 @@ adminRoles.openapi(assignRoleRoute, async (c) => {
     }).pipe(Effect.catchAll(() => Effect.succeed([])));
     const previousRole = priorRows[0]?.role ?? null;
 
-    const result = yield* assignRole(orgId!, userId, roleName);
+    const result = yield* rolesPolicy.assignRole(orgId!, userId, roleName);
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.role.assign,
@@ -532,7 +530,8 @@ adminRoles.openapi(assignRoleRoute, async (c) => {
         // the same shape as the success row — compliance queries can then
         // union on metadata keys without special-casing the failure path.
         const { orgId } = yield* AuthContext;
-        const targetRole = yield* getRoleByName(orgId!, roleName).pipe(
+        const rolesPolicy = yield* RolesPolicy;
+        const targetRole = yield* rolesPolicy.getRoleByName(orgId!, roleName).pipe(
           Effect.catchAll(() => Effect.succeed(null)),
         );
         const priorRows = yield* Effect.tryPromise({

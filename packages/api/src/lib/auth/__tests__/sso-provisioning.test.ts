@@ -14,6 +14,13 @@ import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
 let mockEnterpriseEnabled = true;
 let mockHasInternalDB = true;
 
+// Post-#2571 (slice 9/11 of #2017) `lib/auth/server.ts` imports
+// `isEnterpriseEnabled` from `lib/effect/enterprise-config` to break
+// the static core → `@atlas/ee` edge.
+mock.module("@atlas/api/lib/effect/enterprise-config", () => ({
+  isEnterpriseEnabled: () => mockEnterpriseEnabled,
+}));
+
 mock.module("@atlas/ee/index", () => ({
   isEnterpriseEnabled: () => mockEnterpriseEnabled,
   getEnterpriseLicenseKey: () => undefined,

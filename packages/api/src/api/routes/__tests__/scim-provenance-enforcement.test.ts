@@ -143,6 +143,52 @@ const mockGetRoleByName = mock(() =>
   Effect.succeed({ id: "role_auditor", name: "auditor" }),
 );
 
+// Slice 9/11 of #2017: `assignRoleRoute` yields `RolesPolicy` from
+// `EnterpriseLayer`. Override the layer with a pre-bound Tag pointing
+// the CRUD methods at the local mocks above. The Layer also binds
+// every other enterprise Tag yielded through middleware
+// (IpAllowlistPolicy / SSOPolicy / SCIMProvenance from slice 8) so
+// `Effect.provide(EnterpriseLayer)` resolves the full chain.
+mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Layer } = require("effect") as typeof import("effect");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+  return {
+    EnterpriseLayer: Layer.mergeAll(
+      Layer.succeed(services.RolesPolicy, {
+        customRolesActive: true,
+        checkPermission: () => Effect.succeed(null),
+        listRoles: () => Effect.succeed([]),
+        getRole: () => Effect.succeed(null),
+        getRoleByName: mockGetRoleByName as never,
+        createRole: () => Effect.die(new Error("not configured")),
+        updateRole: () => Effect.die(new Error("not configured")),
+        deleteRole: () => Effect.succeed(true),
+        listRoleMembers: () => Effect.succeed([]),
+        assignRole: mockAssignRole as never,
+      } as never),
+      Layer.succeed(services.IpAllowlistPolicy, {
+        available: false,
+        checkIPAllowlist: () => Effect.succeed({ allowed: true }),
+      } as never),
+      Layer.succeed(services.SSOPolicy, {
+        available: false,
+        extractEmailDomain: (email: string) => {
+          const at = email.lastIndexOf("@");
+          return at > 0 ? email.slice(at + 1).toLowerCase() : null;
+        },
+        isSSOEnforcedForDomain: () => Effect.succeed({ enforced: false }),
+        isSSOEnforced: () => Effect.succeed({ enforced: false }),
+      } as never),
+      Layer.succeed(services.SCIMProvenance, {
+        available: false,
+        isSCIMProvisioned: () => Effect.succeed(false),
+      } as never),
+    ),
+  };
+});
+
 mock.module("@atlas/ee/auth/roles", () => ({
   PERMISSIONS: [
     "query",

@@ -328,7 +328,7 @@ export function registerRevokeRoutes(
   admin: OpenAPIHono<any>,
   adminAuthAndContext: (
     c: { req: { raw: Request }; get(key: string): unknown; set?: (key: string, value: unknown) => void },
-    permission?: import("@atlas/ee/auth/roles").Permission,
+    permission?: import("@atlas/api/lib/auth/permissions").Permission,
   ) => Promise<{ authResult: AuthenticatedResult; requestId: string }>,
   verifyOrgMembership: (authResult: AuthenticatedResult, targetUserId: string) => Promise<boolean>,
 ) {

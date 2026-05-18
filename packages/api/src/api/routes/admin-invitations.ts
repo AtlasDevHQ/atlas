@@ -111,7 +111,7 @@ export function registerInvitationRoutes(
   admin: OpenAPIHono<any>,
   adminAuthAndContext?: (
     c: { req: { raw: Request }; get(key: string): unknown },
-    permission?: import("@atlas/ee/auth/roles").Permission,
+    permission?: import("@atlas/api/lib/auth/permissions").Permission,
   ) => Promise<{ authResult: { authenticated: true; user?: { id?: string; role?: string; activeOrganizationId?: string } }; requestId: string }>,
 ) {
   // If no adminAuthAndContext provided, the handlers assume auth was already done by middleware

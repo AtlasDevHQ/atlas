@@ -532,7 +532,7 @@ export const postReconcileEntityRoute = createRoute({
 
 type AdminAuthFn = (
   c: { req: { raw: Request }; get(key: string): unknown },
-  permission?: import("@atlas/ee/auth/roles").Permission,
+  permission?: import("@atlas/api/lib/auth/permissions").Permission,
 ) => Promise<{
   authResult: AuthResult & { authenticated: true };
   requestId: string;

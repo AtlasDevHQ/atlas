@@ -10,7 +10,7 @@
  * fall back to legacy admin/member role mapping.
  */
 
-import { Data, Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import {
@@ -19,13 +19,25 @@ import {
   getInternalDB,
 } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
-import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { ATLAS_ROLES } from "@atlas/api/lib/auth/types";
 import {
   PERMISSIONS,
   isValidPermission,
   type Permission,
 } from "@atlas/api/lib/auth/permissions";
+import {
+  RolesPolicy,
+  type RolesPolicyShape,
+} from "@atlas/api/lib/effect/services";
+import {
+  RoleError,
+  type RoleErrorCode,
+} from "@atlas/api/lib/auth/roles-errors";
+import {
+  resolvePermissions as coreResolvePermissions,
+  hasPermission as coreHasPermission,
+  checkPermission as coreCheckPermission,
+} from "@atlas/api/lib/auth/permission-resolve";
 
 /**
  * Re-export the canonical definitions from core (#2563 slice 1/11 of #2017).
@@ -107,12 +119,13 @@ interface CustomRoleRow {
 
 // ── Typed errors ─────────────────────────────────────────────────
 
-export type RoleErrorCode = "not_found" | "conflict" | "validation" | "builtin_protected";
-
-export class RoleError extends Data.TaggedError("RoleError")<{
-  message: string;
-  code: RoleErrorCode;
-}> {}
+/**
+ * `RoleError` lives in `@atlas/api/lib/auth/roles-errors` post-#2571
+ * so the `RolesPolicy` Tag in core can type its failure channel
+ * without core importing from `@atlas/ee`. Re-exported here for
+ * back-compat — same `_tag` + payload + `instanceof` semantics.
+ */
+export { RoleError, type RoleErrorCode };
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -155,142 +168,16 @@ export function isValidRoleName(name: string): boolean {
 // ── Permission resolution ────────────────────────────────────────
 
 /**
- * Legacy role-to-permission mapping for non-enterprise deployments and the
- * fall-through path when no custom role row matches the user's `member.role`.
- *
- * **Load-bearing for admin-route access** — `requirePermission` /
- * `enforcePermission` consult this table whenever a user's role is not in
- * the `custom_roles` table. Removing or narrowing entries is a security
- * change: `platform_admin` and `admin` get full PERMISSIONS, `member` gets
- * the read-only pair, and any role not listed here falls through to the
- * `member` default below — which strips every admin:* flag. Adding a new
- * built-in role to `ATLAS_ROLES` requires a matching entry here.
- *
- * See F-53 in `.claude/research/security-audit-1-2-3.md` for the full
- * remediation context.
+ * `resolvePermissions` / `hasPermission` / `checkPermission` live in
+ * `@atlas/api/lib/auth/permission-resolve` post-#2571 so the
+ * `RolesPolicy` Tag's no-op default can answer permission checks
+ * without a hard `@atlas/ee` dep. Re-exported here for back-compat —
+ * the `LEGACY_ROLE_PERMISSIONS` table moved with them; both sides
+ * resolve identically.
  */
-const LEGACY_ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
-  owner: [...PERMISSIONS],
-  admin: [...PERMISSIONS],
-  platform_admin: [...PERMISSIONS],
-  member: ["query", "query:raw_data"],
-};
-
-/**
- * Resolve the effective permissions for a user session.
- *
- * Resolution strategy:
- * 1. If enterprise + internal DB + custom role assigned: use custom role permissions
- * 2. Otherwise, fall back to legacy role mapping (admin/owner = all, member = query)
- *
- * This function does NOT call requireEnterprise — it is used during request
- * handling where the check should be transparent.
- */
-export const resolvePermissions = (user: AtlasUser | undefined): Effect.Effect<Set<Permission>> =>
-  Effect.gen(function* () {
-    // No user → check auth mode. Only grant all permissions in no-auth mode (local dev).
-    if (!user) {
-      const { detectAuthMode } = yield* Effect.promise(() => import("@atlas/api/lib/auth/detect"));
-      const mode = detectAuthMode();
-      if (mode === "none") {
-        return new Set([...PERMISSIONS]);
-      }
-      log.warn("resolvePermissions called with undefined user in managed auth mode — denying all");
-      return new Set<Permission>();
-    }
-
-    const role = user.role ?? "member";
-
-    // Try enterprise custom roles if internal DB is available
-    if (hasInternalDB() && user.activeOrganizationId) {
-      const result = yield* Effect.tryPromise({
-        try: () => internalQuery<CustomRoleRow>(
-          `SELECT id, org_id, name, description, permissions, is_builtin, created_at, updated_at
-           FROM custom_roles
-           WHERE org_id = $1 AND name = $2
-           LIMIT 1`,
-          [user.activeOrganizationId, role],
-        ),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      }).pipe(
-        Effect.map((rows) => {
-          if (rows[0]) {
-            const customRole = rowToRole(rows[0]);
-            return new Set(customRole.permissions) as Set<Permission>;
-          }
-          return null;
-        }),
-        Effect.catchAll((err) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          if (msg.includes("does not exist")) {
-            // Table not yet created by migration — fall through to legacy
-            log.debug("custom_roles table not yet created — using legacy permissions");
-            return Effect.succeed(null);
-          }
-          // Defect on unexpected DB errors so the caller surfaces a distinct
-          // 503 `permissions_unavailable` response. Returning a stripped-down
-          // permission set here would be the load-bearing wrong choice F-53
-          // explicitly identifies: an admin hits transient DB trouble and
-          // gets "insufficient_permissions" pointing them at their role
-          // config, when the actual fault is the authorization layer being
-          // unable to resolve their role. `requirePermission` /
-          // `enforcePermission` in `admin-router.ts` catch the defect and
-          // return 503 with the `permissions_unavailable` error tag.
-          log.error({ err: msg }, "Failed to resolve custom role — surfacing as permissions_unavailable");
-          return Effect.die(err instanceof Error ? err : new Error(msg));
-        }),
-      );
-
-      if (result !== null) return result;
-    }
-
-    // Legacy fallback
-    const legacyPerms = LEGACY_ROLE_PERMISSIONS[role] ?? LEGACY_ROLE_PERMISSIONS.member;
-    return new Set(legacyPerms);
-  });
-
-/**
- * Check whether a user has a specific permission.
- * Falls back to legacy role checks if enterprise roles are not configured.
- */
-export const hasPermission = (
-  user: AtlasUser | undefined,
-  permission: Permission,
-): Effect.Effect<boolean> =>
-  Effect.gen(function* () {
-    const perms = yield* resolvePermissions(user);
-    return perms.has(permission);
-  });
-
-/**
- * Hono middleware factory that checks a specific permission.
- * Returns a function that takes `(req, requestId, user)` and returns
- * an error response object or null if authorized.
- */
-export const checkPermission = (
-  user: AtlasUser | undefined,
-  permission: Permission,
-  requestId: string,
-): Effect.Effect<{ body: Record<string, unknown>; status: 403 } | null> =>
-  Effect.gen(function* () {
-    const allowed = yield* hasPermission(user, permission);
-    if (!allowed) {
-      log.warn(
-        { userId: user?.id, permission, requestId },
-        "Permission check failed: user lacks %s",
-        permission,
-      );
-      return {
-        body: {
-          error: "insufficient_permissions",
-          message: `This action requires the "${permission}" permission.`,
-          requestId,
-        },
-        status: 403,
-      };
-    }
-    return null;
-  });
+export const resolvePermissions = coreResolvePermissions;
+export const hasPermission = coreHasPermission;
+export const checkPermission = coreCheckPermission;
 
 // ── CRUD ─────────────────────────────────────────────────────────
 
@@ -627,3 +514,32 @@ export const seedBuiltinRoles = (orgId: string): Effect.Effect<void, Error> =>
       });
     }
   });
+
+// ── Tag wiring (#2571 — slice 9/11 of #2017) ─────────────────────────
+//
+// Bridges this module's functions into the `RolesPolicy` Tag so core
+// call sites (`api/routes/admin-router.ts` for the F-53 permission
+// chokepoint, `api/routes/admin-roles.ts` for the custom-role CRUD,
+// `api/routes/admin.ts` for inline `enforcePermission` checks) can
+// `yield* RolesPolicy` instead of statically or dynamically importing
+// this module. Aggregated into `ee/src/layers.ts:EELayer`; the no-op
+// default in `lib/effect/services.ts:NoopRolesPolicyLayer` covers
+// self-hosted with fail-closed semantics.
+
+export const makeRolesPolicyLive = (): RolesPolicyShape => ({
+  customRolesActive: true,
+  checkPermission,
+  listRoles,
+  getRole,
+  getRoleByName,
+  createRole,
+  updateRole,
+  deleteRole,
+  listRoleMembers,
+  assignRole,
+});
+
+export const RolesPolicyLive: Layer.Layer<RolesPolicy> = Layer.sync(
+  RolesPolicy,
+  makeRolesPolicyLive,
+);

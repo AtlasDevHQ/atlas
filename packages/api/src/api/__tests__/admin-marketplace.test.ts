@@ -151,27 +151,26 @@ mock.module("@atlas/api/lib/effect/services", () => ({
   RequestContext: { [Symbol.iterator]: function* (): Generator<unknown, unknown> { return yield { requestId: "test-req-1", startTime: Date.now() }; } },
   makeRequestContextLayer: () => ({}),
   makeAuthContextLayer: () => ({}),
-  // Stub for enterprise-layer.ts import — the test shims `effect`, so the
-  // real Layer.* helpers aren't available. Returning an inert object is
-  // fine because runEffect (also shimmed below) doesn't consume layers.
+  // Slice 8/11 (#2570) + 9/11 (#2571) — `admin-router.ts` /
+  // `middleware.ts` / `lib/auth/middleware.ts` now yield these Tags
+  // through `EnterpriseLayer`. The marketplace test doesn't exercise
+  // any subsystem directly, so inert stubs are enough; the defensive
+  // try/catch in `routes/middleware.ts` covers the missing-Effect-
+  // runtime path, and the `RolesPolicy` Tag below yields `{}` so the
+  // route's `roles.checkPermission(...)` call resolves to undefined
+  // (allow under the shim's truthy-null check).
   NoopEnterpriseDefaultsLayer: { _tag: "MockLayer" },
-  // Slice 8/11 of #2017: routes/middleware.ts (IP allowlist gate) and
-  // lib/auth/middleware.ts (SSO enforcement gate) yield these Tags. The
-  // marketplace test doesn't exercise either subsystem, so inert stubs
-  // are enough — the defensive try/catch in routes/middleware.ts
-  // catches the missing-Effect-runtime path.
   IpAllowlistPolicy: { _tag: "MockTag" },
   SSOPolicy: { _tag: "MockTag" },
   SCIMProvenance: { _tag: "MockTag" },
+  RolesPolicy: { [Symbol.iterator]: function* (): Generator<unknown, unknown> { return yield {}; } },
 }));
 
 // Replace enterprise-layer's composition with an inert layer so the
-// route's `yield* SSOPolicy` doesn't try to resolve through it. Tests
-// that need SSOPolicy/IpAllowlistPolicy values mock the EE static
-// re-exports directly (see admin-residency / admin-ip-allowlist tests
-// for the inverse pattern when SSOPolicy IS yielded). Marketplace
-// route doesn't `yield* SSOPolicy`, only goes through middleware which
-// has a defensive try/catch.
+// route's `yield* SSOPolicy` / `yield* RolesPolicy` doesn't try to
+// resolve through it. The shimmed `runEffect` / `Effect.runPromise`
+// (post-#2571 the admin-router uses the latter) drive the route flow
+// directly; layer composition is a no-op in this test.
 mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   EnterpriseLayer: { _tag: "MockLayer" },
 }));

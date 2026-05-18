@@ -39,15 +39,34 @@ PATTERN='from "@atlas/ee|import\("@atlas/ee|require\("@atlas/ee'
 
 # Strip comments before pattern-matching so a historical reference like
 # `// Inverts await import("@atlas/ee/...")` in a docstring doesn't
-# false-positive. The sed program:
-#   /\/\*/,/\*\// d   — delete any line inside `/* … */` (single- or
-#                       multi-line block comments)
-#   s|//.*$||         — strip trailing `// …` from each remaining line
-# This is intentionally narrow: it does not try to handle string
-# literals containing `//` (none in core touch `@atlas/ee` in a
-# literal). If a regression introduces such a literal, the gate will
-# still flag the file — which is the conservative direction.
-STRIP_COMMENTS='sed -E "/\/\*/,/\*\// d; s|//.*\$||"'
+# false-positive. The sed program runs three substitutions in order:
+#
+#   1. s|/\*([^*]|\*+[^*/])*\*+/||g
+#        Strip same-line block comments (canonical C-comment regex —
+#        handles plain `/* x */` and JSDoc-style `/** x */` on a single
+#        line). MUST run before the range delete: pre-#2587 the range
+#        delete saw a same-line `/* … */ import { x } from "@atlas/ee/y"`
+#        and deleted the whole line including the real import, silently
+#        whitelisting a structural EE dependency — see #2587 / commit
+#        message for the adversarial fixtures that motivated this fix.
+#   2. /\/\*/,/\*\// d
+#        Delete lines participating in a true multi-line block comment
+#        (the canonical sed range delete; safe now that same-line block
+#        comments are already gone by step 1).
+#   3. s|//.*$||
+#        Strip trailing `// …` line comments.
+#
+# This is intentionally narrow: it does not try to parse string
+# literals containing `from "@atlas/ee` — those would still false-
+# positive. None exist in core today; the conservative direction is to
+# flag a literal rather than silently allow one, so a future
+# error-message string that needs the pattern should use concatenation
+# (e.g. `"from \"" + "@atlas/ee\""`) or, better, name the package
+# inline-via-a-constant.
+# `#` delimiter for the substitutions so the ERE alternation `|` inside
+# the block-comment regex doesn't collide with the substitution
+# delimiter (sed would otherwise see `|` as the end of the search half).
+STRIP_COMMENTS='sed -E "s#/\*([^*]|\*+[^*/])*\*+/##g; /\/\*/,/\*\// d; s#//.*\$##"'
 
 # Candidate files: any file whose raw text contains the pattern. We
 # still post-filter each via STRIP_COMMENTS to weed out comment-only

@@ -468,10 +468,26 @@ function loadGlossary(root: string): unknown[] {
   return glossaries;
 }
 
-function serveRawYaml(_c: Context, requestId: string, filePath: string): never {
+interface ServeRawYamlOptions {
+  requestId: string;
+  filePath: string;
+  orgId: string | undefined;
+  /**
+   * `undefined` → unscoped (unique-row-or-409 path in `getEntity`).
+   * `null` → explicitly the legacy null-group row.
+   * `string` → scope to that group.
+   * Only meaningful for `entities/*.yml` and `metrics/*.yml` — catalog and
+   * glossary are always global.
+   */
+  connectionGroupId: string | null | undefined;
+  mode: "developer" | "published";
+}
+
+async function serveRawYaml(opts: ServeRawYamlOptions): Promise<never> {
   // All paths throw HTTPException to bypass OpenAPI typed-return constraints.
   // The route definitions declare text/plain 200 and JSON error codes, but c.text()
   // returns a plain Response that doesn't satisfy the typed response contract.
+  const { requestId, filePath, orgId, connectionGroupId, mode } = opts;
 
   // Validate: no traversal, must be .yml
   if (filePath.includes("..") || filePath.includes("\0") || filePath.includes("\\") || !filePath.endsWith(".yml")) {
@@ -487,6 +503,73 @@ function serveRawYaml(_c: Context, requestId: string, filePath: string): never {
     });
   }
 
+  // DB is canonical for entity/metric/glossary when an org + internal DB
+  // exist (#2561 architecture). The disk path is the per-org cache the
+  // explore tool reads — for the same org's entities under
+  // `semantic/.orgs/<orgId>/entities/`, not the root `semantic/` directory
+  // the file-tree used to scan. Reading the root here would surface a
+  // stale or unrelated YAML; reading the per-org disk would diverge from
+  // the DB after any admin edit. The DB row's `yaml_content` is the only
+  // source the file-tree's "YAML" toggle can show without lying.
+  if (orgId && hasInternalDB()) {
+    const target = filePathToDbTarget(filePath);
+    if (target) {
+      try {
+        const { getEntity } = await import("@atlas/api/lib/semantic/entities");
+        // Catalog/glossary are unscoped — force `null` so the unscoped path
+        // doesn't trigger the multi-group ambiguity branch on a global row.
+        const groupForLookup = target.type === "catalog" || target.type === "glossary"
+          ? null
+          : connectionGroupId;
+        const row = await getEntity(orgId, target.type, target.name, groupForLookup, mode);
+        if (row) {
+          throw new HTTPException(200, {
+            res: new Response(row.yaml_content, {
+              status: 200,
+              headers: { "Content-Type": "text/plain; charset=utf-8" },
+            }),
+          });
+        }
+      } catch (err) {
+        if (err instanceof HTTPException) throw err;
+        if (err instanceof AmbiguousEntityError) {
+          throw new HTTPException(409, {
+            res: Response.json(
+              {
+                error: "entity_ambiguous" as const,
+                message: err.message,
+                groups: [...err.groups],
+                requestId,
+              },
+              { status: 409 },
+            ),
+          });
+        }
+        log.error(
+          { err: err instanceof Error ? err : new Error(String(err)), filePath, orgId, requestId },
+          "Raw YAML DB lookup failed",
+        );
+        throw new HTTPException(500, {
+          res: Response.json({ error: "internal_error", message: "Failed to load YAML.", requestId }, { status: 500 }),
+        });
+      }
+    }
+    // Fall through to disk only for paths that aren't DB-backed (catalog
+    // currently — no rows are imported for it). Entity/metric/glossary
+    // misses are real 404s in DB-backed deployments: showing a root-disk
+    // YAML for an entity the org doesn't own would leak content.
+    if (target && target.type !== "catalog") {
+      throw new HTTPException(404, {
+        res: Response.json(
+          { error: "not_found", message: `YAML for "${filePath}" not found.`, requestId },
+          { status: 404 },
+        ),
+      });
+    }
+  }
+
+  // No internal DB or no org context → pure-YAML self-hosted. Serve from
+  // the disk root (same behavior as pre-#2561).
   const root = getSemanticRoot();
   const resolved = path.resolve(root, filePath);
   if (!resolved.startsWith(path.resolve(root))) {
@@ -517,6 +600,24 @@ function serveRawYaml(_c: Context, requestId: string, filePath: string): never {
       res: Response.json({ error: "internal_error", message: "Failed to read file.", requestId }, { status: 500 }),
     });
   }
+}
+
+/**
+ * Map a validated `filePath` (already matched against the allow-list) to
+ * its `(type, name)` pair for the `semantic_entities` table. Returns
+ * `null` for paths that don't map to a DB row (none currently, but kept
+ * for shape symmetry with future formats).
+ */
+function filePathToDbTarget(filePath: string): { type: SemanticEntityType; name: string } | null {
+  if (filePath === "catalog.yml") return { type: "catalog", name: "catalog" };
+  if (filePath === "glossary.yml") return { type: "glossary", name: "glossary" };
+  if (filePath.startsWith("entities/")) {
+    return { type: "entity", name: filePath.slice("entities/".length, -".yml".length) };
+  }
+  if (filePath.startsWith("metrics/")) {
+    return { type: "metric", name: filePath.slice("metrics/".length, -".yml".length) };
+  }
+  return null;
 }
 
 const VALID_ENTITY_TYPES = new Set(["entity", "metric", "glossary", "catalog"]);
@@ -743,11 +844,21 @@ const getRawYamlDirFileRoute = createRoute({
   path: "/semantic/raw/{dir}/{file}",
   tags: ["Admin — Semantic"],
   summary: "Get raw YAML (subdirectory)",
-  description: "Serves raw YAML content for a file in a subdirectory (e.g. entities/users.yml).",
+  description:
+    "Serves raw YAML for an entity or metric (e.g. entities/users.yml). When an internal DB " +
+    "is configured and the caller has an active org, the DB row's `yaml_content` is canonical; " +
+    "the disk file under `semantic/` is a self-hosted fallback only. Pass `?connectionGroupId=<group>` " +
+    "to disambiguate when the same entity name exists in multiple environments.",
   request: {
     params: z.object({
       dir: z.string().min(1).openapi({ param: { name: "dir", in: "path" }, example: "entities" }),
       file: z.string().min(1).openapi({ param: { name: "file", in: "path" }, example: "users.yml" }),
+    }),
+    query: z.object({
+      connectionGroupId: z.string().optional().openapi({
+        param: { name: "connectionGroupId", in: "query" },
+        example: "g_prod_us",
+      }),
     }),
   },
   responses: {
@@ -756,6 +867,10 @@ const getRawYamlDirFileRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "File not found", content: { "application/json": { schema: ErrorSchema } } },
+    409: {
+      description: "Entity name exists in multiple groups — pass connectionGroupId to disambiguate",
+      content: { "application/json": { schema: AmbiguousEntityResponseSchema } },
+    },
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -766,7 +881,10 @@ const getRawYamlFileRoute = createRoute({
   path: "/semantic/raw/{file}",
   tags: ["Admin — Semantic"],
   summary: "Get raw YAML (top-level)",
-  description: "Serves raw YAML content for a top-level file (catalog.yml, glossary.yml).",
+  description:
+    "Serves raw YAML for a top-level file (catalog.yml, glossary.yml). When an internal DB is " +
+    "configured and the caller has an active org, the DB row's `yaml_content` is canonical for " +
+    "glossary; catalog falls through to disk because it isn't currently mirrored to the DB.",
   request: {
     params: z.object({
       file: z.string().min(1).openapi({ param: { name: "file", in: "path" }, example: "glossary.yml" }),
@@ -1626,17 +1744,32 @@ admin.openapi(getCatalogRoute, async (c) => {
 });
 
 admin.openapi(getRawYamlDirFileRoute, async (c) => {
-
   const { dir, file } = c.req.valid("param");
-  const { requestId } = await adminAuthAndContext(c, "admin:semantic");
-  serveRawYaml(c, requestId, `${dir}/${file}`);
+  const { authResult, requestId } = await adminAuthAndContext(c, "admin:semantic");
+  const orgId = authResult.user?.activeOrganizationId;
+  // Empty `?connectionGroupId=` maps to null (legacy / `__global__` row).
+  // Missing param falls through to getEntity's unique-or-409 default (#2412).
+  const rawGroup = c.req.query("connectionGroupId");
+  const connectionGroupId =
+    rawGroup === undefined ? undefined : rawGroup === "" ? null : rawGroup;
+  const atlasMode = getAtlasMode(c);
+  const mode = atlasMode === "developer" ? "developer" : "published";
+  // `serveRawYaml` is `Promise<never>` — every code path throws HTTPException
+  // (including the 200 success path, which exists to bypass OpenAPI's typed-
+  // return constraint on text/plain). Returning the call satisfies the
+  // openapi() handler's typed-response contract because `never` is assignable
+  // to any response shape.
+  return serveRawYaml({ requestId, filePath: `${dir}/${file}`, orgId, connectionGroupId, mode });
 });
 
 admin.openapi(getRawYamlFileRoute, async (c) => {
-
   const { file } = c.req.valid("param");
-  const { requestId } = await adminAuthAndContext(c, "admin:semantic");
-  serveRawYaml(c, requestId, file);
+  const { authResult, requestId } = await adminAuthAndContext(c, "admin:semantic");
+  const orgId = authResult.user?.activeOrganizationId;
+  const atlasMode = getAtlasMode(c);
+  const mode = atlasMode === "developer" ? "developer" : "published";
+  // Top-level catalog/glossary are unscoped — no connectionGroupId.
+  return serveRawYaml({ requestId, filePath: file, orgId, connectionGroupId: null, mode });
 });
 
 admin.openapi(getSemanticStatsRoute, async (c) => {

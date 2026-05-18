@@ -348,6 +348,17 @@ function selectionToRawPath(sel: SemanticSelection): string | null {
   }
 }
 
+/**
+ * Group-scope suffix for the raw YAML fetch. Only entity selections carry a
+ * `connectionGroupId`; catalog, glossary, and metrics are unscoped and get
+ * an empty string. Reuses `encodeGroupParam`'s trinary mapping so the
+ * backend's `parseConnectionGroupIdQuery` handling stays consistent.
+ */
+function selectionGroupSuffix(sel: SemanticSelection): string {
+  if (!sel || sel.type !== "entity") return "";
+  return encodeGroupParam(sel.connectionGroupId);
+}
+
 type ViewMode = "pretty" | "yaml" | "history";
 
 function ViewToggle({ mode, onChange, showHistory }: { mode: ViewMode; onChange: (m: ViewMode) => void; showHistory?: boolean }) {
@@ -669,7 +680,8 @@ export default function SemanticPage() {
 
     let cancelled = false;
     setRawYamlLoading(true);
-    fetch(`${apiUrl}/api/v1/admin/semantic/raw/${rawPath}`, fetchOpts)
+    const groupSuffix = selectionGroupSuffix(selection);
+    fetch(`${apiUrl}/api/v1/admin/semantic/raw/${rawPath}${groupSuffix}`, fetchOpts)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.text();

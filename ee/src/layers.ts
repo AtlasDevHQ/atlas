@@ -26,11 +26,17 @@
  * Slice 11/11 (#2573 closeout) follows next: CI grep gate + symlink-stub
  * job + back-compat shim cleanup. See the parent issue (#2017) for the
  * rationale.
+ *
+ * Follow-up #2587 — split `AuditRetention` Tag into CRUD-only +
+ * `AuditPurgeScheduler` lifecycle Tag (removes the `require()` circular
+ * workaround in `audit/retention.ts` and lifts the scheduler `start*` /
+ * `stop*` pair to Effect-returning so failures are observable in tests).
  */
 
 import { Layer } from "effect";
 import type {
   ApprovalGate,
+  AuditPurgeScheduler,
   AuditRetention,
   BackupsManager,
   Branding,
@@ -55,6 +61,7 @@ import { ApprovalGateLive } from "./governance/approval";
 import { SlaMetricsLive } from "./sla/index";
 import { BackupsManagerLive } from "./backups/index";
 import { AuditRetentionLive } from "./audit/retention";
+import { AuditPurgeSchedulerLive } from "./audit/purge-scheduler";
 import { IpAllowlistPolicyLive } from "./auth/ip-allowlist";
 import { SSOPolicyLive } from "./auth/sso";
 import { SCIMProvenanceLive } from "./auth/scim";
@@ -72,6 +79,7 @@ import { DeployModeResolverLive } from "./deploy-mode";
  */
 export const EELayer: Layer.Layer<
   | ApprovalGate
+  | AuditPurgeScheduler
   | AuditRetention
   | BackupsManager
   | Branding
@@ -96,6 +104,7 @@ export const EELayer: Layer.Layer<
   SlaMetricsLive,
   BackupsManagerLive,
   AuditRetentionLive,
+  AuditPurgeSchedulerLive,
   IpAllowlistPolicyLive,
   SSOPolicyLive,
   SCIMProvenanceLive,

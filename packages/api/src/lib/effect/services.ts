@@ -840,8 +840,8 @@ export function createAuthContextTestLayer(
 // IpAllowlistPolicy, SCIMProvenance, Domains.
 //
 // Every other Tag (MaskingPolicy, ComplianceReports, ApprovalGate,
-// AuditRetention, SSOPolicy, RolesPolicy, Branding, ProactiveGate)
-// omits the flag — its route handlers just call the methods and the
+// AuditRetention, AuditPurgeScheduler, SSOPolicy, RolesPolicy, Branding,
+// ProactiveGate) omits the flag — its route handlers just call the methods and the
 // Noop's typed-error failure (mapped to 403 by the Hono bridge via
 // `EnterpriseError`) is the "feature unavailable" signal.
 // `DeployModeResolver` is the lone sentinel-returning Tag
@@ -1490,7 +1490,7 @@ export const NoopBackupsManagerLayer: Layer.Layer<BackupsManager> = Layer.sync(
   },
 );
 
-// ── AuditRetention (#2569 — slice 7/11 of #2017) ─────────────────────
+// ── AuditRetention (#2569 — slice 7/11 of #2017; split in #2587) ─────
 //
 // Inverts every `@atlas/ee/audit/retention` reference in
 // `packages/api/src/`: the 10+ dynamic imports across
@@ -1502,6 +1502,14 @@ export const NoopBackupsManagerLayer: Layer.Layer<BackupsManager> = Layer.sync(
 //
 // `RetentionError` lives in `lib/audit/retention-errors.ts` so the
 // Tag's failure channel stays typed without pulling in `@atlas/ee`.
+//
+// #2587 — Split the original bundled Tag into CRUD vs scheduler
+// lifecycle. `AuditRetention` here covers the 10 CRUD methods (read +
+// write policies, export, soft/hard-purge, GDPR anonymize). The
+// scheduler `start*`/`stop*` pair lives in `AuditPurgeScheduler` below,
+// returns `Effect<void, Error>` so tests can observe failures, and
+// breaks the circular `require("./purge-scheduler")` workaround in
+// `ee/src/audit/retention.ts` (#2587 acceptance criteria).
 
 type AuditRetentionPolicy = import("@useatlas/types").AuditRetentionPolicy;
 type AnonymizeInitiatedBy = import("@useatlas/types").AnonymizeInitiatedBy;
@@ -1580,12 +1588,6 @@ export interface AuditRetentionShape {
   readonly previewAdminActionErasure: (
     userId: string,
   ) => Effect.Effect<{ anonymizableRowCount: number }, RetentionError | EnterpriseErrorForRetention | Error>;
-  // Purge scheduler lifecycle — replaces the
-  // `await import("@atlas/ee/audit/purge-scheduler")` site in
-  // `makeSchedulerLive` (#2569). No-op when EE isn't loaded; the
-  // scheduler layer calls both without a feature flag.
-  readonly startAuditPurgeScheduler: (intervalMs?: number) => void;
-  readonly stopAuditPurgeScheduler: () => void;
 }
 export class AuditRetention extends Context.Tag("AuditRetention")<
   AuditRetention,
@@ -1594,7 +1596,6 @@ export class AuditRetention extends Context.Tag("AuditRetention")<
 export const NoopAuditRetentionLayer: Layer.Layer<AuditRetention> = Layer.sync(
   AuditRetention,
   () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const notAvailable = makeNotAvailable("Audit retention requires enterprise features to be enabled.");
     return {
       // Pure reads — "no policy configured" is honest on self-hosted.
@@ -1611,16 +1612,58 @@ export const NoopAuditRetentionLayer: Layer.Layer<AuditRetention> = Layer.sync(
       purgeAdminActionExpired: () => Effect.fail(notAvailable()),
       anonymizeUserAdminActions: () => Effect.fail(notAvailable()),
       previewAdminActionErasure: () => Effect.fail(notAvailable()),
-      // Scheduler lifecycle stays as void no-ops — `makeSchedulerLive`
-      // calls these unconditionally at startup without a feature flag,
-      // and a no-op is the correct self-hosted behavior (no scheduler
-      // job to start, none to stop). Splitting AuditRetention into a
-      // separate AuditPurgeScheduler Tag is tracked as a follow-up.
-      startAuditPurgeScheduler: () => {},
-      stopAuditPurgeScheduler: () => {},
     } satisfies AuditRetentionShape;
   },
 );
+
+// ── AuditPurgeScheduler (#2587 — split out of AuditRetention) ────────
+//
+// Lifecycle-only Tag for the daily purge cron worker. Originally a pair
+// of `() => void` methods bolted onto `AuditRetention`, which forced
+// `ee/src/audit/retention.ts` to `require("./purge-scheduler")` from a
+// top-level const (with `eslint-disable` for the require) to dodge the
+// static cycle between the CRUD module and the scheduler module that
+// imports CRUD's purge helpers.
+//
+// Splitting into a separate Tag removes both smells:
+//   1. The two modules are independent Tags, so EE binds each at the
+//      `layers.ts` aggregator level — the runtime `require()` workaround
+//      goes away.
+//   2. `start*` / `stop*` now return `Effect<void, Error>`, so the
+//      scheduler boot path in `makeSchedulerLive` can `yield*` them and
+//      a future regression that throws (e.g. failed `setInterval` on a
+//      hostile runtime) is observable in tests instead of silently
+//      swallowed by `() => void`.
+//
+// The no-op default fails both methods with `EnterpriseError` —
+// `makeSchedulerLive` wraps the start call in `Effect.catchAll` so the
+// self-hosted boot path still completes cleanly (the catch turns the
+// fail-closed signal back into a log line + void), while preserving
+// the test observability the closeout audit asked for.
+
+export interface AuditPurgeSchedulerShape {
+  readonly startAuditPurgeScheduler: (
+    intervalMs?: number,
+  ) => Effect.Effect<void, EnterpriseErrorForRetention | Error>;
+  readonly stopAuditPurgeScheduler: () => Effect.Effect<
+    void,
+    EnterpriseErrorForRetention | Error
+  >;
+}
+export class AuditPurgeScheduler extends Context.Tag("AuditPurgeScheduler")<
+  AuditPurgeScheduler,
+  AuditPurgeSchedulerShape
+>() {}
+export const NoopAuditPurgeSchedulerLayer: Layer.Layer<AuditPurgeScheduler> =
+  Layer.sync(AuditPurgeScheduler, () => {
+    const notAvailable = makeNotAvailable(
+      "Audit purge scheduler requires enterprise features to be enabled.",
+    );
+    return {
+      startAuditPurgeScheduler: () => Effect.fail(notAvailable()),
+      stopAuditPurgeScheduler: () => Effect.fail(notAvailable()),
+    } satisfies AuditPurgeSchedulerShape;
+  });
 
 // ── IpAllowlistPolicy (#2570 — slice 8/11 of #2017) ──────────────────
 //
@@ -2329,6 +2372,7 @@ export const NoopEnterpriseDefaultsLayer: Layer.Layer<
   | SlaMetrics
   | BackupsManager
   | AuditRetention
+  | AuditPurgeScheduler
   | IpAllowlistPolicy
   | SSOPolicy
   | SCIMProvenance
@@ -2346,6 +2390,7 @@ export const NoopEnterpriseDefaultsLayer: Layer.Layer<
   NoopSlaMetricsLayer,
   NoopBackupsManagerLayer,
   NoopAuditRetentionLayer,
+  NoopAuditPurgeSchedulerLayer,
   NoopIpAllowlistPolicyLayer,
   NoopSSOPolicyLayer,
   NoopSCIMProvenanceLayer,

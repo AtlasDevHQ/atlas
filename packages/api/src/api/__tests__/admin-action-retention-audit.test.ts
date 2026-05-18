@@ -197,8 +197,7 @@ mock.module("@atlas/ee/layers", () => {
             if (mockAnonymizeError) return Effect.fail(mockAnonymizeError);
             return Effect.succeed(mockAnonymizeResult);
           },
-          startAuditPurgeScheduler: () => {},
-          stopAuditPurgeScheduler: () => {},
+          // Scheduler lifecycle moved to AuditPurgeScheduler Tag (#2587).
         } as never);
       }),
     ),

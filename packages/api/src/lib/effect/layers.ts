@@ -49,7 +49,7 @@ import {
 } from "./saas-guards";
 import { readSaasEnv } from "./saas-env";
 import { EnterpriseLayer, type EnterpriseSubsystem } from "./enterprise-layer";
-import { AuditRetention } from "./services";
+import { AuditPurgeScheduler } from "./services";
 
 const log = createLogger("effect:layers");
 
@@ -605,7 +605,7 @@ export class Scheduler extends Context.Tag("Scheduler")<
  */
 export function makeSchedulerLive(
   config: ResolvedConfig,
-): Layer.Layer<Scheduler, never, AuditRetention> {
+): Layer.Layer<Scheduler, never, AuditPurgeScheduler> {
   return Layer.scoped(
     Scheduler,
     Effect.gen(function* () {
@@ -727,16 +727,23 @@ export function makeSchedulerLive(
         log.debug("Semantic expert scheduler not started — feature disabled");
       }
 
-      // Start audit purge scheduler via the `AuditRetention` Tag (#2569).
-      // The no-op default is a no-op, so self-hosted installs without EE
-      // skip cleanly; EE wires `startAuditPurgeScheduler` to the cron
-      // worker in `ee/src/audit/purge-scheduler.ts`.
-      const auditRetention = yield* AuditRetention;
-      try {
-        auditRetention.startAuditPurgeScheduler();
-      } catch (err) {
-        log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Audit purge scheduler failed to start");
-      }
+      // Start audit purge scheduler via the `AuditPurgeScheduler` Tag
+      // (#2587 — split out of `AuditRetention` so the cron lifecycle is
+      // testable in isolation). Self-hosted: noop layer fails with
+      // `EnterpriseError`; we catch it so boot completes cleanly and
+      // logs the expected skip. EE: `AuditPurgeSchedulerLive` wires the
+      // cron worker in `ee/src/audit/purge-scheduler.ts`.
+      const auditPurgeScheduler = yield* AuditPurgeScheduler;
+      yield* auditPurgeScheduler.startAuditPurgeScheduler().pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            log.debug(
+              { err: err instanceof Error ? err.message : String(err) },
+              "Audit purge scheduler did not start — enterprise required or backend error",
+            );
+          }),
+        ),
+      );
 
       // Start BYOT catalog refresh scheduler (#2284) — daily refresh of
       // workspace_model_catalog rows whose `fetched_at` is older than TTL.
@@ -1184,9 +1191,10 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
   // Independent layers (no Effect-level deps)
   const semanticSyncLayer = SemanticSyncLive;
   const settingsLayer = SettingsLive;
-  // Scheduler depends on `AuditRetention` (#2569) so it can start the
-  // EE audit purge worker via the Tag — `EnterpriseLayer` provides
-  // both the no-op default and the real EE implementation.
+  // Scheduler depends on `AuditPurgeScheduler` (#2587 — split out of
+  // `AuditRetention` in #2569) so it can start the EE audit purge worker
+  // via the Tag — `EnterpriseLayer` provides both the no-op default and
+  // the real EE implementation.
   const schedulerLayer = makeSchedulerLive(config).pipe(
     Layer.provide(EnterpriseLayer),
   );

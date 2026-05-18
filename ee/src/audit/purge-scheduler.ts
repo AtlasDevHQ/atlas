@@ -8,12 +8,16 @@
  * enterprise features are enabled.
  */
 
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { isEnterpriseEnabled } from "../index";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+import {
+  AuditPurgeScheduler,
+  type AuditPurgeSchedulerShape,
+} from "@atlas/api/lib/effect/services";
 
 const log = createLogger("ee:audit-purge");
 
@@ -289,3 +293,30 @@ export function isPurgeSchedulerRunning(): boolean {
 export function _resetPurgeScheduler(): void {
   stopAuditPurgeScheduler();
 }
+
+// ── Tag wiring (#2587 — split out of AuditRetentionLive) ─────────────
+//
+// Bridges the imperative `start*`/`stop*` functions into the
+// `AuditPurgeScheduler` Tag so core's boot path
+// (`makeSchedulerLive` in `lib/effect/layers.ts`) can
+// `yield* AuditPurgeScheduler` instead of dynamic-importing this module
+// via the now-removed `require("./purge-scheduler")` shim in
+// `audit/retention.ts`. Aggregated into `ee/src/layers.ts:EELayer`;
+// `NoopAuditPurgeSchedulerLayer` covers self-hosted with a fail-loud
+// default the scheduler boot site catches and logs.
+
+export const makeAuditPurgeSchedulerLive = (): AuditPurgeSchedulerShape => ({
+  startAuditPurgeScheduler: (intervalMs?: number) =>
+    Effect.try({
+      try: () => startAuditPurgeScheduler(intervalMs),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }),
+  stopAuditPurgeScheduler: () =>
+    Effect.try({
+      try: () => stopAuditPurgeScheduler(),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }),
+});
+
+export const AuditPurgeSchedulerLive: Layer.Layer<AuditPurgeScheduler> =
+  Layer.sync(AuditPurgeScheduler, makeAuditPurgeSchedulerLive);

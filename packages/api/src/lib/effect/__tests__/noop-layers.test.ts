@@ -40,6 +40,7 @@ import { describe, it, expect } from "bun:test";
 import { Cause, Effect, Exit, Layer } from "effect";
 import {
   NoopApprovalGateLayer,
+  NoopAuditPurgeSchedulerLayer,
   NoopAuditRetentionLayer,
   NoopBackupsManagerLayer,
   NoopIpAllowlistPolicyLayer,
@@ -49,6 +50,7 @@ import {
   NoopSlaMetricsLayer,
   NoopSSOPolicyLayer,
   ApprovalGate,
+  AuditPurgeScheduler,
   AuditRetention,
   BackupsManager,
   IpAllowlistPolicy,
@@ -152,6 +154,34 @@ describe("NoopAuditRetentionLayer", () => {
     if (Exit.isSuccess(exit)) {
       expect(exit.value).toBeNull();
     }
+  });
+});
+
+// ── AuditPurgeScheduler — split out of AuditRetention (#2587) ────────
+//
+// Pre-#2587 these were `() => void` no-ops on the bundled
+// `AuditRetention` Tag — a failure in EE's scheduler boot was invisible
+// to tests. Post-split both methods return `Effect<void, Error>` so a
+// regression that drops the binding surfaces as a typed
+// `EnterpriseError`, observable via `runPromiseExit`.
+
+describe("NoopAuditPurgeSchedulerLayer", () => {
+  it("startAuditPurgeScheduler fails with EnterpriseError (NOT a silent void)", async () => {
+    const program = Effect.gen(function* () {
+      const s = yield* AuditPurgeScheduler;
+      return yield* s.startAuditPurgeScheduler();
+    });
+    const exit = await runWithLayer(program, NoopAuditPurgeSchedulerLayer);
+    expectTypedFailure(exit, "EnterpriseError");
+  });
+
+  it("stopAuditPurgeScheduler fails with EnterpriseError (NOT a silent void)", async () => {
+    const program = Effect.gen(function* () {
+      const s = yield* AuditPurgeScheduler;
+      return yield* s.stopAuditPurgeScheduler();
+    });
+    const exit = await runWithLayer(program, NoopAuditPurgeSchedulerLayer);
+    expectTypedFailure(exit, "EnterpriseError");
   });
 });
 

@@ -1018,7 +1018,7 @@ export const previewAdminActionErasure = (
     return { anonymizableRowCount: parsed };
   });
 
-// ── Tag wiring (#2569 — slice 7/11 of #2017) ─────────────────────────
+// ── Tag wiring (#2569 — slice 7/11 of #2017; split in #2587) ─────────
 //
 // Bridges this module's functions into the `AuditRetention` Tag so
 // core call sites (`api/routes/admin-action-retention.ts`,
@@ -1026,15 +1026,12 @@ export const previewAdminActionErasure = (
 // instead of dynamic-importing this module. Aggregated into
 // `ee/src/layers.ts:EELayer`; the no-op default in
 // `lib/effect/services.ts:NoopAuditRetentionLayer` covers self-hosted.
-
-// Imported here (not at module top) to keep the static `@atlas/ee/...`
-// circle small — the scheduler module re-exports the same actor const
-// the rest of this file references via the direct import above.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { startAuditPurgeScheduler, stopAuditPurgeScheduler } = require("./purge-scheduler") as {
-  startAuditPurgeScheduler: (intervalMs?: number) => void;
-  stopAuditPurgeScheduler: () => void;
-};
+//
+// #2587 split the scheduler lifecycle into its own `AuditPurgeScheduler`
+// Tag (bound in `audit/purge-scheduler.ts:AuditPurgeSchedulerLive`),
+// which lets us drop the `require("./purge-scheduler")` workaround that
+// previously lived here to dodge the static cycle between the two
+// modules.
 
 export const makeAuditRetentionLive = (): AuditRetentionShape => ({
   getRetentionPolicy,
@@ -1047,8 +1044,6 @@ export const makeAuditRetentionLive = (): AuditRetentionShape => ({
   purgeAdminActionExpired,
   anonymizeUserAdminActions,
   previewAdminActionErasure,
-  startAuditPurgeScheduler,
-  stopAuditPurgeScheduler,
 });
 
 export const AuditRetentionLive: Layer.Layer<AuditRetention> = Layer.sync(

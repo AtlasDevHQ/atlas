@@ -119,3 +119,27 @@ gh issue list -R AtlasDevHQ/atlas --state open --search "<keywords>" --json numb
 ```
 
 If a matching issue exists, comment on it instead of duplicating.
+
+## Detaching unfinished issues at milestone closeout
+
+**Closed milestones reflect only what shipped.** An issue that was scoped into a milestone but didn't make the cut must be detached *before* the milestone is closed — otherwise `gh issue list -m <N>` (and the milestone page on github.com) misrepresent what the milestone delivered.
+
+The convention is to move detached work to the open **`Architecture Backlog`** milestone (#49) — long-running architecture work that doesn't fit a specific milestone. Pick from it when a slice naturally fits an active milestone.
+
+```bash
+# During /closeout, for any issue scoped to the milestone but still open:
+gh issue edit <number> -R AtlasDevHQ/atlas --milestone "Architecture Backlog"
+```
+
+**Don't** strip the milestone outright (`--remove-milestone`). Milestone-less issues become invisible to `/next` and lose the discoverability that the backlog milestone gives them. The `architecture` label complements but does not replace the backlog milestone.
+
+**Audit gate.** As part of closeout, run:
+
+```bash
+gh api repos/AtlasDevHQ/atlas/milestones --paginate \
+  --jq '.[] | select(.state=="closed" and .open_issues>0) | {number, title, open_issues}'
+```
+
+Output must be empty before the milestone closeout is complete. If it isn't, migrate the open issues to `Architecture Backlog` (or another active milestone if the work is being picked up immediately).
+
+**Carry-over watch.** An issue that gets detached during one closeout, then re-attached to a later milestone without being completed, then detached again, is a signal — the scope is genuinely long-running architecture rather than a single milestone slice. Examples from project history: #2123 (explore tool refactor) was detached from 1.4.1 closeout, pulled into 1.5.1 at kickoff as a candidate refactor, never picked up, and detached again at 1.5.1 closeout. These belong in `Architecture Backlog` semi-permanently — pull them into an active milestone only when there's a concrete plan and an owner.

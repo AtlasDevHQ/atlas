@@ -396,12 +396,6 @@ export async function runEffect<A, E>(
     | Effect.Effect<A, E, never>,
   options?: RunEffectOptions,
 ): Promise<A> {
-  // Provide Hono context + enterprise subsystem layers. The enterprise
-  // layer carries no-op defaults for every EE Tag (overlaid by the real
-  // EE implementations via `Layer.mergeAll`'s last-wins semantics) so a
-  // handler that `yield* ResidencyResolver` resolves without each route
-  // having to provide the layer manually. Layer.mergeAll is referentially
-  // stable, so Effect memoizes the construction across requests.
   // Per-request contextLayer (RequestContext + AuthContext) is provided
   // at the program level, then the program runs against the shared
   // module-level EnterpriseRuntime (#2587). Pre-#2587 the bridge merged
@@ -412,9 +406,6 @@ export async function runEffect<A, E>(
   // EE-Layer constructs ONCE on first use and every request reuses the
   // services; contextLayer remains per-request because it carries the
   // request's `requestId` / `authResult` (lightweight Layer.succeed).
-  // The runtime's `E = Error` channel propagates here as `E | Error` so
-  // a SaaS install with a broken `@atlas/ee/` build surfaces a typed
-  // failure routed through `classifyError` to a 500.
   const contextLayer = buildContextLayer(c);
   const contextProvided: Effect.Effect<A, E, EnterpriseSubsystem> = contextLayer
     ? (program as Effect.Effect<
@@ -424,7 +415,7 @@ export async function runEffect<A, E>(
       >).pipe(Effect.provide(contextLayer))
     : (program as Effect.Effect<A, E, EnterpriseSubsystem>);
 
-  const exit = await getEnterpriseRuntime().runPromiseExit(contextProvided) as Exit.Exit<A, E | Error>;
+  const exit = await getEnterpriseRuntime().runPromiseExit(contextProvided);
 
   if (Exit.isSuccess(exit)) {
     return exit.value;

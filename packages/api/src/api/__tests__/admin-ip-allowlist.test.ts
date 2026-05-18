@@ -73,6 +73,54 @@ class MockIPAllowlistError extends Error {
   }
 }
 
+// Core error stubs — `EnterpriseLayer`'s no-op defaults lazy-require
+// these during construction (#2570 unified the trio).
+mock.module("@atlas/api/lib/auth/auth-errors", () => ({
+  IPAllowlistError: MockIPAllowlistError,
+  SSOError: class extends Error { public readonly _tag = "SSOError" as const; },
+  SSOEnforcementError: class extends Error { public readonly _tag = "SSOEnforcementError" as const; },
+  SCIMError: class extends Error { public readonly _tag = "SCIMError" as const; },
+}));
+mock.module("@atlas/api/lib/residency/errors", () => ({
+  ResidencyError: class extends Error { public readonly _tag = "ResidencyError" as const; },
+}));
+mock.module("@atlas/api/lib/compliance/errors", () => ({
+  ComplianceError: class extends Error { public readonly _tag = "ComplianceError" as const; },
+  ReportError: class extends Error { public readonly _tag = "ReportError" as const; },
+}));
+mock.module("@atlas/api/lib/model-routing/errors", () => ({
+  ModelConfigError: class extends Error { public readonly _tag = "ModelConfigError" as const; },
+  ModelConfigDecryptError: class extends Error { public readonly _tag = "ModelConfigDecryptError" as const; },
+}));
+mock.module("@atlas/api/lib/governance/errors", () => ({
+  ApprovalError: class extends Error { public readonly _tag = "ApprovalError" as const; },
+}));
+mock.module("@atlas/api/lib/audit/retention-errors", () => ({
+  RetentionError: class extends Error { public readonly _tag = "RetentionError" as const; },
+}));
+
+mock.module("@atlas/ee/layers", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Layer, Effect: E } = require("effect") as typeof import("effect");
+  return {
+    EELayer: Layer.unwrapEffect(
+      E.sync(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+        return Layer.succeed(services.IpAllowlistPolicy, {
+          available: true,
+          checkIPAllowlist: () => Effect.succeed({ allowed: true }),
+          listIPAllowlistEntries: mockListEntries as never,
+          addIPAllowlistEntry: mockAddEntry as never,
+          removeIPAllowlistEntry: mockRemoveEntry as never,
+          invalidateCache: () => {},
+        } as never);
+      }),
+    ),
+  };
+});
+
+// Legacy module-mock stub for any transitive resolver chain.
 mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   checkIPAllowlist: mock(() => Effect.succeed({ allowed: true })),
   listIPAllowlistEntries: mockListEntries,

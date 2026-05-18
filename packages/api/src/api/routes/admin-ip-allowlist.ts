@@ -12,23 +12,21 @@ import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { createRoute, z } from "@hono/zod-openapi";
 import { runEffect } from "@atlas/api/lib/effect/hono";
-import { AuthContext } from "@atlas/api/lib/effect/services";
+import { AuthContext, IpAllowlistPolicy } from "@atlas/api/lib/effect/services";
 import { getClientIP } from "@atlas/api/lib/auth/middleware";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { ErrorSchema, AuthErrorSchema, isValidId, createIdParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
-// Lazy-load EE module to break circular @atlas/api ↔ @atlas/ee dependency
-async function loadEE() {
-  return import("@atlas/ee/auth/ip-allowlist");
-}
-
-// Lazy-load the enterprise gate for the same reason. Mirrors the pattern in
-// ee/src/auth/ip-allowlist.ts which dynamically imports `isEnterpriseEnabled`.
-async function loadEnterpriseGate() {
-  return import("@atlas/ee/index");
-}
+// Post-#2570: the lazy `loadEE`/`loadEnterpriseGate` pair that used to
+// live here (motivated by a circular `@atlas/api` ↔ `@atlas/ee` import
+// at module link time) is gone. The route now yields the
+// `IpAllowlistPolicy` Tag; EE provides the real impl via
+// `EnterpriseLayer`, self-hosted falls through to the no-op default
+// (`available: false`, always-allow). `effectivelyEnforced` reads
+// `available` for the same gate the prior `isEnterpriseEnabled() &&
+// hasInternalDB()` pair expressed.
 
 const log = createLogger("admin-ip-allowlist");
 
@@ -183,31 +181,29 @@ adminIPAllowlist.openapi(listEntriesRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const callerIP = getClientIP(c.req.raw);
 
-    const ee = yield* Effect.promise(loadEE);
-    const enterpriseGate = yield* Effect.promise(loadEnterpriseGate);
+    const ee = yield* IpAllowlistPolicy;
 
-    const entries = yield* Effect.tryPromise({
-      try: () => Effect.runPromise(ee.listIPAllowlistEntries(orgId!)),
-      catch: (err) => err instanceof Error ? err : new Error(String(err)),
-    }).pipe(Effect.catchAll((err) => {
-      const code = "code" in err ? (err as Record<string, unknown>).code : undefined;
-      const status = (typeof code === "string" && IP_ALLOWLIST_STATUS_MAP[code]) || 500;
-      return Effect.succeed(c.json(
-        { error: "ip_allowlist_error", message: err.message },
-        status as 400,
-      ));
-    }));
+    const entries = yield* ee.listIPAllowlistEntries(orgId!).pipe(
+      Effect.catchAll((err) => {
+        const code = "code" in err ? (err as unknown as Record<string, unknown>).code : undefined;
+        const status = (typeof code === "string" && IP_ALLOWLIST_STATUS_MAP[code]) || 500;
+        return Effect.succeed(c.json(
+          { error: "ip_allowlist_error", message: err.message },
+          status as 400,
+        ));
+      }),
+    );
 
     // If catchAll produced an early response, return it
     if (entries instanceof Response) return entries;
 
     // Mirror the preconditions in ee/src/auth/ip-allowlist.ts#checkIPAllowlist
     // exactly: the middleware short-circuits to `{ allowed: true }` when EE is
-    // disabled OR the internal DB is missing, regardless of row count. So
-    // "enforcing" has to include both gates, not just entries.length > 0.
+    // disabled OR the internal DB is missing, regardless of row count.
+    // `ee.available` post-#2570 encodes the "EE-loaded" half of that gate.
     const list = entries as unknown[];
     const effectivelyEnforced =
-      enterpriseGate.isEnterpriseEnabled() && hasInternalDB() && list.length > 0;
+      ee.available && hasInternalDB() && list.length > 0;
 
     return c.json(
       { entries, total: list.length, callerIP, effectivelyEnforced },
@@ -226,7 +222,7 @@ adminIPAllowlist.openapi(addEntryRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Missing required field: cidr." }, 400);
     }
 
-    const ee = yield* Effect.promise(loadEE);
+    const ee = yield* IpAllowlistPolicy;
     const ipAddress = c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
 
     const entry = yield* ee.addIPAllowlistEntry(
@@ -286,7 +282,7 @@ adminIPAllowlist.openapi(deleteEntryRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Invalid entry ID." }, 400);
     }
 
-    const ee = yield* Effect.promise(loadEE);
+    const ee = yield* IpAllowlistPolicy;
     const ipAddress = c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null;
 
     // Fetch the CIDR before deleting so the audit row records the actual

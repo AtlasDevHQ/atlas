@@ -31,6 +31,61 @@ mock.module("@atlas/ee/index", () => ({
   isEnterpriseEnabled: () => mockEnterpriseEnabled,
 }));
 
+// Post-#2570 the SCIM provenance helper resolves an `available: boolean`
+// from the `SCIMProvenance` Tag (which the `EnterpriseLayer`'s no-op
+// default reports as `false`). Mirror `mockEnterpriseEnabled` into the
+// Tag binding so per-test toggles still flip the gate.
+process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+
+mock.module("@atlas/ee/layers", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Layer, Effect: E } = require("effect") as typeof import("effect");
+  return {
+    EELayer: Layer.unwrapEffect(
+      E.sync(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+        return Layer.succeed(services.SCIMProvenance, {
+          get available() {
+            return mockEnterpriseEnabled;
+          },
+          listConnections: () => E.succeed([]),
+          deleteConnection: () => E.succeed(false),
+          getSyncStatus: () => E.succeed({ connections: 0, provisionedUsers: 0, lastSyncAt: null }),
+          listGroupMappings: () => E.succeed([]),
+          createGroupMapping: () => E.die("not stubbed"),
+          deleteGroupMapping: () => E.succeed(false),
+          resolveGroupToRole: () => E.succeed(null),
+        } as never);
+      }),
+    ),
+  };
+});
+
+mock.module("@atlas/api/lib/auth/auth-errors", () => ({
+  IPAllowlistError: class extends Error { public readonly _tag = "IPAllowlistError" as const; },
+  SSOError: class extends Error { public readonly _tag = "SSOError" as const; },
+  SSOEnforcementError: class extends Error { public readonly _tag = "SSOEnforcementError" as const; },
+  SCIMError: class extends Error { public readonly _tag = "SCIMError" as const; },
+}));
+mock.module("@atlas/api/lib/residency/errors", () => ({
+  ResidencyError: class extends Error { public readonly _tag = "ResidencyError" as const; },
+}));
+mock.module("@atlas/api/lib/compliance/errors", () => ({
+  ComplianceError: class extends Error { public readonly _tag = "ComplianceError" as const; },
+  ReportError: class extends Error { public readonly _tag = "ReportError" as const; },
+}));
+mock.module("@atlas/api/lib/model-routing/errors", () => ({
+  ModelConfigError: class extends Error { public readonly _tag = "ModelConfigError" as const; },
+  ModelConfigDecryptError: class extends Error { public readonly _tag = "ModelConfigDecryptError" as const; },
+}));
+mock.module("@atlas/api/lib/governance/errors", () => ({
+  ApprovalError: class extends Error { public readonly _tag = "ApprovalError" as const; },
+}));
+mock.module("@atlas/api/lib/audit/retention-errors", () => ({
+  RetentionError: class extends Error { public readonly _tag = "RetentionError" as const; },
+}));
+
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   internalQuery: mockInternalQuery,

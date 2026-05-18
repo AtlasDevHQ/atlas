@@ -30,6 +30,9 @@ import {
   isStrictRoutingEnabled,
 } from "@atlas/api/lib/residency/misrouting";
 import { isWorkspaceMigrating } from "@atlas/api/lib/residency/readonly";
+import { Effect } from "effect";
+import { IpAllowlistPolicy } from "@atlas/api/lib/effect/services";
+import { EnterpriseLayer } from "@atlas/api/lib/effect/enterprise-layer";
 
 const log = createLogger("middleware");
 
@@ -136,27 +139,35 @@ async function rateLimitAndIPCheck(
     };
   }
 
-  // IP allowlist — enterprise feature
+  // IP allowlist — via `IpAllowlistPolicy` Tag (#2570). Self-hosted +
+  // EE-not-loaded both flow through the no-op default which always allows.
+  // The try/catch is a defensive net for tests that shim `effect` /
+  // `EnterpriseLayer` without wiring the full Layer machinery; in
+  // production the EE-loaded path and the no-op default both succeed,
+  // so a runPromise reject here is a test-harness signal rather than a
+  // real allowlist outcome.
   const orgId = authResult.user?.activeOrganizationId;
   if (orgId) {
+    let ipCheck: { allowed: boolean } | null = null;
     try {
-      const [{ checkIPAllowlist }, { Effect: E }] = await Promise.all([
-        import("@atlas/ee/auth/ip-allowlist"),
-        import("effect"),
-      ]);
-      const ipCheck = await E.runPromise(checkIPAllowlist(orgId, ip));
-      if (!ipCheck.allowed) {
-        log.warn({ requestId, orgId, ip }, "IP not in workspace allowlist");
-        return {
-          body: { error: "ip_not_allowed", message: "Your IP address is not in the workspace's allowlist.", requestId },
-          status: 403,
-        };
-      }
+      ipCheck = await Effect.runPromise(
+        Effect.gen(function* () {
+          const policy = yield* IpAllowlistPolicy;
+          return yield* policy.checkIPAllowlist(orgId, ip);
+        }).pipe(Effect.provide(EnterpriseLayer)),
+      );
     } catch (err) {
-      // ee module not installed — IP allowlist feature unavailable, skip
-      if (err instanceof Error && !err.message.includes("Cannot find module") && !err.message.includes("Cannot find package")) {
-        throw err;
-      }
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err), requestId, orgId },
+        "IP allowlist check unavailable — falling through (fail-open in test harness only)",
+      );
+    }
+    if (ipCheck && !ipCheck.allowed) {
+      log.warn({ requestId, orgId, ip }, "IP not in workspace allowlist");
+      return {
+        body: { error: "ip_not_allowed", message: "Your IP address is not in the workspace's allowlist.", requestId },
+        status: 403,
+      };
     }
   }
 

@@ -151,6 +151,29 @@ mock.module("@atlas/api/lib/effect/services", () => ({
   RequestContext: { [Symbol.iterator]: function* (): Generator<unknown, unknown> { return yield { requestId: "test-req-1", startTime: Date.now() }; } },
   makeRequestContextLayer: () => ({}),
   makeAuthContextLayer: () => ({}),
+  // Stub for enterprise-layer.ts import — the test shims `effect`, so the
+  // real Layer.* helpers aren't available. Returning an inert object is
+  // fine because runEffect (also shimmed below) doesn't consume layers.
+  NoopEnterpriseDefaultsLayer: { _tag: "MockLayer" },
+  // Slice 8/11 of #2017: routes/middleware.ts (IP allowlist gate) and
+  // lib/auth/middleware.ts (SSO enforcement gate) yield these Tags. The
+  // marketplace test doesn't exercise either subsystem, so inert stubs
+  // are enough — the defensive try/catch in routes/middleware.ts
+  // catches the missing-Effect-runtime path.
+  IpAllowlistPolicy: { _tag: "MockTag" },
+  SSOPolicy: { _tag: "MockTag" },
+  SCIMProvenance: { _tag: "MockTag" },
+}));
+
+// Replace enterprise-layer's composition with an inert layer so the
+// route's `yield* SSOPolicy` doesn't try to resolve through it. Tests
+// that need SSOPolicy/IpAllowlistPolicy values mock the EE static
+// re-exports directly (see admin-residency / admin-ip-allowlist tests
+// for the inverse pattern when SSOPolicy IS yielded). Marketplace
+// route doesn't `yield* SSOPolicy`, only goes through middleware which
+// has a defensive try/catch.
+mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
+  EnterpriseLayer: { _tag: "MockLayer" },
 }));
 
 mock.module("@atlas/api/lib/effect/hono", () => ({

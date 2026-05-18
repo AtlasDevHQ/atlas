@@ -9,7 +9,7 @@
  * Validation helpers do not require a license.
  */
 
-import { Data, Effect } from "effect";
+import { Effect, Layer } from "effect";
 import ipaddr from "ipaddr.js";
 import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import { requireInternalDBEffect } from "../lib/db-guard";
@@ -19,6 +19,14 @@ import {
   getInternalDB,
 } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import {
+  IpAllowlistPolicy,
+  type IpAllowlistPolicyShape,
+} from "@atlas/api/lib/effect/services";
+import {
+  IPAllowlistError,
+  type IPAllowlistErrorCode,
+} from "@atlas/api/lib/auth/auth-errors";
 
 const log = createLogger("ee:ip-allowlist");
 
@@ -57,12 +65,13 @@ interface IPAllowlistRow {
 
 // ── Typed errors ─────────────────────────────────────────────────────
 
-export type IPAllowlistErrorCode = "validation" | "conflict" | "not_found";
-
-export class IPAllowlistError extends Data.TaggedError("IPAllowlistError")<{
-  message: string;
-  code: IPAllowlistErrorCode;
-}> {}
+/**
+ * `IPAllowlistError` lives in `@atlas/api/lib/auth/auth-errors` post-#2570
+ * so the `IpAllowlistPolicy` Tag can type its failure channel without
+ * core importing from `@atlas/ee`. Re-exported here for back-compat —
+ * same `_tag` + payload + `instanceof` semantics.
+ */
+export { IPAllowlistError, type IPAllowlistErrorCode };
 
 // ── In-memory cache ──────────────────────────────────────────────────
 
@@ -364,3 +373,19 @@ export const checkIPAllowlist = (
 
     return { allowed: isIPAllowed(clientIP, ranges) };
   });
+
+// ── Tag wiring (#2570 — slice 8/11 of #2017) ─────────────────────────
+
+export const makeIpAllowlistPolicyLive = (): IpAllowlistPolicyShape => ({
+  available: true,
+  checkIPAllowlist,
+  listIPAllowlistEntries,
+  addIPAllowlistEntry,
+  removeIPAllowlistEntry,
+  invalidateCache,
+});
+
+export const IpAllowlistPolicyLive: Layer.Layer<IpAllowlistPolicy> = Layer.sync(
+  IpAllowlistPolicy,
+  makeIpAllowlistPolicyLive,
+);

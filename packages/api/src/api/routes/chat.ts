@@ -8,7 +8,7 @@
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
-import { RequestContext } from "@atlas/api/lib/effect/services";
+import { RequestContext, IpAllowlistPolicy } from "@atlas/api/lib/effect/services";
 import { HTTPException } from "hono/http-exception";
 import { validationHook } from "./validation-hook";
 import { withRequestId, resolveMode, type AuthEnv } from "./middleware";
@@ -527,16 +527,14 @@ chat.openapi(chatRoute, async (c) => {
       );
     }
   
-    // IP allowlist check — enterprise feature, after auth so we have org context
-    const eeModule = yield* Effect.tryPromise({
-      try: () => import("@atlas/ee/auth/ip-allowlist"),
-      catch: (err) => err instanceof Error ? err : new Error(String(err)),
-    }).pipe(Effect.option);
-    // ee module not installed — IP allowlist feature unavailable, skip
-    if (eeModule._tag === "Some") {
+    // IP allowlist — via `IpAllowlistPolicy` Tag (#2570). Resolved
+    // through the runEffect-provided `EnterpriseLayer`; the no-op
+    // default always allows when EE isn't loaded.
+    {
       const orgId = authResult.user?.activeOrganizationId;
       if (orgId) {
-        const ipCheck = yield* eeModule.value.checkIPAllowlist(orgId, ip);
+        const policy = yield* IpAllowlistPolicy;
+        const ipCheck = yield* policy.checkIPAllowlist(orgId, ip);
         if (!ipCheck.allowed) {
           log.warn({ requestId, orgId, ip }, "IP not in workspace allowlist");
           return c.json(

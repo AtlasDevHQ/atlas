@@ -8,7 +8,7 @@
  * and domain-matching functions do not require a license.
  */
 
-import { Data, Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { generateVerificationToken, verifyDnsTxt } from "../lib/domain-verification";
 import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import { requireInternalDBEffect } from "../lib/db-guard";
@@ -21,6 +21,16 @@ import {
   type URLSecret,
 } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import {
+  SSOPolicy,
+  type SSOPolicyShape,
+} from "@atlas/api/lib/effect/services";
+import {
+  SSOError,
+  SSOEnforcementError,
+  type SSOErrorCode,
+  type SSOEnforcementErrorCode,
+} from "@atlas/api/lib/auth/auth-errors";
 import type {
   SSOProvider,
   SSOProviderType,
@@ -38,12 +48,12 @@ const log = createLogger("ee:sso");
 
 // ── Typed errors ────────────────────────────────────────────────────
 
-export type SSOErrorCode = "not_found" | "conflict" | "validation";
-
-export class SSOError extends Data.TaggedError("SSOError")<{
-  message: string;
-  code: SSOErrorCode;
-}> {}
+/**
+ * `SSOError` + `SSOEnforcementError` live in
+ * `@atlas/api/lib/auth/auth-errors` post-#2570. Re-exported here for
+ * back-compat — same `_tag` + payload + `instanceof` semantics.
+ */
+export { SSOError, type SSOErrorCode };
 
 // ── Internal row shape ──────────────────────────────────────────────
 
@@ -826,12 +836,8 @@ export function extractEmailDomain(email: string): string | null {
 
 // ── SSO enforcement ──────────────────────────────────────────────────
 
-export type SSOEnforcementErrorCode = "no_provider" | "not_enterprise";
-
-export class SSOEnforcementError extends Data.TaggedError("SSOEnforcementError")<{
-  message: string;
-  code: SSOEnforcementErrorCode;
-}> {}
+/** Re-export the SSOEnforcement error (lives in core post-#2570). */
+export { SSOEnforcementError, type SSOEnforcementErrorCode };
 
 /**
  * Check whether SSO is enforced for the given organization.
@@ -946,3 +952,29 @@ export const setSSOEnforcement = (orgId: string, enforced: boolean): Effect.Effe
     log.info({ orgId, enforced }, "SSO enforcement %s", enforced ? "enabled" : "disabled");
     return { enforced, orgId };
   });
+
+// ── Tag wiring (#2570 — slice 8/11 of #2017) ─────────────────────────
+
+export const makeSSOPolicyLive = (): SSOPolicyShape => ({
+  available: true,
+  extractEmailDomain,
+  isSSOEnforcedForDomain,
+  isSSOEnforced,
+  setSSOEnforcement,
+  listSSOProviders,
+  getSSOProvider,
+  createSSOProvider,
+  updateSSOProvider,
+  deleteSSOProvider,
+  verifyDomain,
+  checkDomainAvailability,
+  testSSOProvider,
+  findProviderByDomain,
+  redactProvider,
+  summarizeProvider,
+});
+
+export const SSOPolicyLive: Layer.Layer<SSOPolicy> = Layer.sync(
+  SSOPolicy,
+  makeSSOPolicyLive,
+);

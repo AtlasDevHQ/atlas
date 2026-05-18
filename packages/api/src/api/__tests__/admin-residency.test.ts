@@ -155,8 +155,43 @@ mock.module("effect", () => {
     }),
     runPromise: (value: unknown) => Promise.resolve(value),
   };
-  return { Effect, Cause: mockCause, Option: mockOption };
+  // Layer + Context stubs so post-#2570 modules (`enterprise-layer.ts`,
+  // `services.ts`) that statically reach for these symbols don't blow
+  // up the loader. The mocked Effect shim above is what executes the
+  // route flows; these Layer helpers are no-ops because the test never
+  // actually runs an Effect program against a real runtime.
+  const Layer = {
+    succeed: (_tag: unknown, _impl: unknown) => ({ _tag: "MockLayer" }),
+    sync: (_tag: unknown, _factory: () => unknown) => ({ _tag: "MockLayer" }),
+    scoped: (_tag: unknown, _impl: unknown) => ({ _tag: "MockLayer" }),
+    effect: (_tag: unknown, _impl: unknown) => ({ _tag: "MockLayer" }),
+    effectDiscard: (_impl: unknown) => ({ _tag: "MockLayer" }),
+    mergeAll: (..._layers: unknown[]) => ({ _tag: "MockLayer" }),
+    merge: (..._layers: unknown[]) => ({ _tag: "MockLayer" }),
+    provide: (_layer: unknown) => ({ _tag: "MockLayer" }),
+    unwrapEffect: (_eff: unknown) => ({ _tag: "MockLayer" }),
+    empty: { _tag: "MockLayer" },
+  };
+  const Context = {
+    Tag: (_id: string) => () => class {},
+  };
+  const Data = {
+    TaggedError: (_id: string) => class extends Error {},
+  };
+  const Schedule = { spaced: () => undefined };
+  const Duration = { millis: (n: number) => n, seconds: (n: number) => n, minutes: (n: number) => n };
+  const Fiber = { interrupt: () => undefined };
+  return { Effect, Cause: mockCause, Option: mockOption, Layer, Context, Data, Schedule, Duration, Fiber };
 });
+
+// Short-circuit `enterprise-layer.ts` — the production module uses real
+// `Effect.flatMap` / `Layer.unwrapEffect` which the local Effect shim
+// above doesn't implement. The route flow is driven by the shimmed
+// `runEffect` mock, so `EnterpriseLayer` is never actually evaluated
+// inside the test; an inert mock-layer keeps the loader happy.
+mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
+  EnterpriseLayer: { _tag: "MockLayer" },
+}));
 
 // --- Residency resolver mock (#2564) ---
 // Post-#2564 the route yields `ResidencyResolver` from the
@@ -233,12 +268,40 @@ const fakeResidencyResolver = {
   },
 };
 
+// Pre-#2570 this test fully mocked `@atlas/api/lib/effect/services` —
+// only `AuthContext`, `RequestContext`, `ResidencyResolver`. Post-#2570
+// the auth-route chain (`middleware.ts` / `admin-auth.ts`) reaches into
+// the same module for `IpAllowlistPolicy`, and `enterprise-layer.ts`
+// pulls `NoopEnterpriseDefaultsLayer` — a partial mock loses both. Add
+// the missing exports as stubs (the tag-as-iterable shape just yields
+// a no-op implementation so any `yield* IpAllowlistPolicy` in the route
+// chain still resolves).
+const stubTag = (impl: unknown) => ({
+  [Symbol.iterator]: function* (): Generator<unknown, unknown> { return yield impl; },
+});
+
 mock.module("@atlas/api/lib/effect/services", () => ({
   AuthContext: fakeAuthContext,
   RequestContext: { [Symbol.iterator]: function* (): Generator<unknown, unknown> { return yield { requestId: "test-req-1", startTime: Date.now() }; } },
   ResidencyResolver: fakeResidencyResolver,
   makeRequestContextLayer: () => ({}),
   makeAuthContextLayer: () => ({}),
+  // Stubs for everything the post-#2570 EnterpriseLayer pulls in.
+  // `Layer.succeed`-shaped no-ops are enough since the route under
+  // test doesn't exercise these Tags directly — they just need to
+  // not blow up the loader.
+  NoopEnterpriseDefaultsLayer: {},
+  IpAllowlistPolicy: stubTag({ available: false, checkIPAllowlist: () => ({ [Symbol.iterator]: function* (): Generator<unknown, unknown> { return yield { allowed: true }; } }) }),
+  SSOPolicy: stubTag({ available: false, extractEmailDomain: () => null }),
+  SCIMProvenance: stubTag({ available: false }),
+  ResidencyResolver_real: fakeResidencyResolver,
+  ModelRouter: stubTag({}),
+  MaskingPolicy: stubTag({}),
+  ComplianceReports: stubTag({}),
+  ApprovalGate: stubTag({}),
+  SlaMetrics: stubTag({}),
+  BackupsManager: stubTag({}),
+  AuditRetention: stubTag({}),
 }));
 
 // #1986 — Mirror the production tagged-error → HTTP mapping so route tests

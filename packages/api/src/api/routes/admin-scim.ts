@@ -13,18 +13,10 @@ import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
-import { AuthContext } from "@atlas/api/lib/effect/services";
+import { AuthContext, SCIMProvenance } from "@atlas/api/lib/effect/services";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage, causeToError } from "@atlas/api/lib/audit/error-scrub";
-import {
-  listConnections,
-  deleteConnection,
-  getSyncStatus,
-  listGroupMappings,
-  createGroupMapping,
-  deleteGroupMapping,
-  SCIMError,
-} from "@atlas/ee/auth/scim";
+import { SCIMError } from "@atlas/api/lib/auth/auth-errors";
 import { ErrorSchema, AuthErrorSchema, createIdParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
@@ -196,10 +188,11 @@ adminScim.use(requireOrgContext());
 adminScim.openapi(getStatusRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    const scim = yield* SCIMProvenance;
 
     const [scimConnections, syncStatus] = yield* Effect.all([
-      listConnections(orgId!),
-      getSyncStatus(orgId!),
+      scim.listConnections(orgId!),
+      scim.getSyncStatus(orgId!),
     ], { concurrency: "unbounded" });
     return c.json({ connections: scimConnections, syncStatus }, 200);
   }), { label: "get SCIM status", domainErrors: [scimDomainError] });
@@ -215,7 +208,7 @@ adminScim.openapi(deleteConnectionRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const deleted = yield* deleteConnection(orgId!, connectionId);
+    const deleted = yield* (yield* SCIMProvenance).deleteConnection(orgId!, connectionId);
     if (!deleted) {
       return c.json({ error: "not_found", message: "SCIM connection not found." }, 404);
     }
@@ -258,7 +251,7 @@ adminScim.openapi(listGroupMappingsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const mappings = yield* listGroupMappings(orgId!);
+    const mappings = yield* (yield* SCIMProvenance).listGroupMappings(orgId!);
     return c.json({ mappings, total: mappings.length }, 200);
   }), { label: "list SCIM group mappings", domainErrors: [scimDomainError] });
 });
@@ -272,7 +265,7 @@ adminScim.openapi(createGroupMappingRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const mapping = yield* createGroupMapping(orgId!, scimGroupName, roleName);
+    const mapping = yield* (yield* SCIMProvenance).createGroupMapping(orgId!, scimGroupName, roleName);
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.scim.groupMappingCreate,
@@ -323,7 +316,7 @@ adminScim.openapi(deleteGroupMappingRoute, async (c) => {
     // Fetch the mapping before delete so the audit row captures the
     // group→role grant that was revoked — without this, a deletion leaves
     // no forensic trace of which grant was removed.
-    const mappings = yield* listGroupMappings(orgId!);
+    const mappings = yield* (yield* SCIMProvenance).listGroupMappings(orgId!);
     const existing = mappings.find((m) => m.id === mappingId);
 
     if (!existing) {
@@ -337,7 +330,7 @@ adminScim.openapi(deleteGroupMappingRoute, async (c) => {
       return c.json({ error: "not_found", message: "SCIM group mapping not found." }, 404);
     }
 
-    const deleted = yield* deleteGroupMapping(orgId!, mappingId);
+    const deleted = yield* (yield* SCIMProvenance).deleteGroupMapping(orgId!, mappingId);
 
     if (!deleted) {
       // Race: another admin / SCIM sync deleted the row between the

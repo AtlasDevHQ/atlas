@@ -23,7 +23,8 @@
 import { Effect } from "effect";
 import type { z } from "@hono/zod-openapi";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { isEnterpriseEnabled } from "@atlas/ee/index";
+import { SCIMProvenance } from "@atlas/api/lib/effect/services";
+import { EnterpriseLayer } from "@atlas/api/lib/effect/enterprise-layer";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSettingAuto } from "@atlas/api/lib/settings";
 import { SCIMManagedSchema } from "@atlas/api/lib/auth/scim-managed-schema";
@@ -78,9 +79,17 @@ export function getSCIMOverridePolicy(orgId: string | undefined): SCIMOverridePo
 export const isSCIMProvisioned = (
   userId: string,
   orgId?: string,
-): Effect.Effect<boolean, Error> =>
-  Effect.gen(function* () {
-    if (!isEnterpriseEnabled()) return false;
+): Effect.Effect<boolean, Error> => {
+  // EE-gate via the `SCIMProvenance` Tag (#2570). The no-op default
+  // reports `available: false`, so self-hosted short-circuits to
+  // "treat as non-SCIM" — identical to the pre-#2570
+  // `isEnterpriseEnabled()` check. Provide the `EnterpriseLayer`
+  // internally so the public signature stays `Effect<boolean, Error>`
+  // and existing `Effect.runPromise(isSCIMProvisioned(...))` callers
+  // don't need to thread a layer.
+  return Effect.gen(function* () {
+    const provenance = yield* SCIMProvenance;
+    if (!provenance.available) return false;
     if (!hasInternalDB()) return false;
 
     const sql = orgId
@@ -129,7 +138,8 @@ export const isSCIMProvisioned = (
     );
 
     return rows.length > 0;
-  });
+  }).pipe(Effect.provide(EnterpriseLayer));
+};
 
 /**
  * TS-side block-body shape. Derived from the Zod schema (defined in the

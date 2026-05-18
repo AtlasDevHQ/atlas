@@ -167,7 +167,6 @@ mock.module("@atlas/ee/layers", () => {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
         return Layer.succeed(services.AuditRetention, {
-          available: true,
           getRetentionPolicy: () => Effect.succeed(null),
           setRetentionPolicy: () => Effect.die("not stubbed"),
           exportAuditLog: () => Effect.die("not stubbed"),

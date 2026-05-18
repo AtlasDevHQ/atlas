@@ -828,6 +828,31 @@ export function createAuthContextTestLayer(
 // when they move the first real call site; widening is a non-breaking
 // change for a no-op default that already returns the "feature disabled"
 // sentinel.
+//
+// ── `available` flag convention (#2589) ──────────────────────────────
+//
+// A Tag exposes `readonly available: boolean` ONLY when at least one
+// non-test consumer must branch on EE-loaded vs not — typically to
+// surface a 404 `not_available` envelope, a distinct success-shape
+// body, or to short-circuit a method that would otherwise hit the DB
+// to learn the same thing. Tags that meet that bar today:
+// ResidencyResolver, ModelRouter, SlaMetrics, BackupsManager,
+// IpAllowlistPolicy, SCIMProvenance, Domains.
+//
+// Every other Tag (MaskingPolicy, ComplianceReports, ApprovalGate,
+// AuditRetention, SSOPolicy, RolesPolicy, Branding, ProactiveGate)
+// omits the flag — its route handlers just call the methods and the
+// Noop's typed-error failure (mapped to 403 by the Hono bridge via
+// `EnterpriseError`) is the "feature unavailable" signal.
+// `DeployModeResolver` is the lone sentinel-returning Tag
+// (`"saas" | "self-hosted"` is the value, not a boolean flag).
+//
+// New Tags MUST default to omitting `available`. Add it only when a
+// concrete route needs the branch — and document the route in the
+// Tag's JSDoc so the next reviewer can confirm the flag is still
+// load-bearing. Domain-specific flags (`xyzActive: boolean`) are NOT
+// permitted — fold them into `available` or surface the distinction
+// through a method's return value.
 
 // ── ResidencyResolver (#2564 — slice 2/11 of #2017) ──────────────────
 //
@@ -1062,8 +1087,6 @@ export interface MaskingContext {
 }
 
 export interface MaskingPolicyShape {
-  /** False when EE compliance is not loaded — `applyMasking` becomes identity. */
-  readonly available: boolean;
   /** Apply PII masking. No-op returns `ctx.rows` unchanged (fail open). */
   readonly applyMasking: (
     ctx: MaskingContext,
@@ -1101,7 +1124,6 @@ export const NoopMaskingPolicyLayer: Layer.Layer<MaskingPolicy> = Layer.sync(
         code: "not_found",
       });
     return {
-      available: false,
       // MUST preserve reference identity — callers in `tools/sql.ts`
       // compute `maskingApplied = maskedRows !== result.rows`, and a
       // fresh-array no-op (`[...ctx.rows]`) misreports `true` on every
@@ -1131,7 +1153,6 @@ type ReportError = import("@atlas/api/lib/compliance/errors").ReportError;
 type EnterpriseErrorForReports = import("@atlas/api/lib/effect/errors").EnterpriseError;
 
 export interface ComplianceReportsShape {
-  readonly available: boolean;
   readonly generateDataAccessReport: (
     orgId: string,
     filters: ComplianceReportFilters,
@@ -1159,7 +1180,6 @@ export const NoopComplianceReportsLayer: Layer.Layer<ComplianceReports> =
         code: "not_available",
       });
     return {
-      available: false,
       generateDataAccessReport: () => Effect.fail(notAvailable()),
       generateUserActivityReport: () => Effect.fail(notAvailable()),
       // CSV converters are pure formatters — return empty CSV headers so a
@@ -1338,6 +1358,7 @@ type SLAAlertStatus = import("@useatlas/types").SLAAlertStatus;
 type SLAThresholds = import("@useatlas/types").SLAThresholds;
 
 export interface SlaMetricsShape {
+  /** False when EE SLA metrics aren't loaded — `platform-sla.ts` returns 404 `not_available` for both read and write routes. */
   readonly available: boolean;
   /** Fire-and-forget per-query metric write. No-op is a noop on the floor. */
   readonly recordQueryMetric: (
@@ -1420,6 +1441,7 @@ export type CreateBackupResult = {
 };
 
 export interface BackupsManagerShape {
+  /** False when EE backups aren't loaded — `platform-backups.ts` returns 404 `not_available` for config + history reads and run-now writes. */
   readonly available: boolean;
   readonly getBackupConfig: () => Effect.Effect<BackupConfigShape, Error>;
   readonly updateBackupConfig: (config: {
@@ -1521,7 +1543,6 @@ export type AuditExportResult =
   | { readonly format: "json"; readonly content: string; readonly rowCount: number; readonly truncated: boolean; readonly totalAvailable: number };
 
 export interface AuditRetentionShape {
-  readonly available: boolean;
   // Audit-log retention
   readonly getRetentionPolicy: (
     orgId: string,
@@ -1576,7 +1597,6 @@ export const NoopAuditRetentionLayer: Layer.Layer<AuditRetention> = Layer.sync(
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const notAvailable = makeNotAvailable("Audit retention requires enterprise features to be enabled.");
     return {
-      available: false,
       // Pure reads — "no policy configured" is honest on self-hosted.
       getRetentionPolicy: () => Effect.succeed(null),
       getAdminActionRetentionPolicy: () => Effect.succeed(null),
@@ -1700,7 +1720,6 @@ type CreateSSOProviderRequest = import("@useatlas/types").CreateSSOProviderReque
 type UpdateSSOProviderRequest = import("@useatlas/types").UpdateSSOProviderRequest;
 
 export interface SSOPolicyShape {
-  readonly available: boolean;
   readonly extractEmailDomain: (email: string) => string | null;
   /**
    * Mirror EE's wire shape: returns `null` on missing internal DB,
@@ -1785,7 +1804,6 @@ export const NoopSSOPolicyLayer: Layer.Layer<SSOPolicy> = Layer.sync(
       return email.slice(at + 1).toLowerCase();
     };
     return {
-      available: false,
       extractEmailDomain,
       isSSOEnforcedForDomain: () => Effect.succeed({ enforced: false }),
       isSSOEnforced: () => Effect.succeed({ enforced: false }),
@@ -1841,6 +1859,7 @@ type SCIMGroupMappingShape = {
 };
 
 export interface SCIMProvenanceShape {
+  /** False when EE SCIM is not loaded — `isSCIMProvisioned` short-circuits to "non-SCIM" without hitting the DB. */
   readonly available: boolean;
   readonly listConnections: (
     orgId: string,
@@ -1970,9 +1989,6 @@ export type PermissionCheckResult =
   | null;
 
 export interface RolesPolicyShape {
-  /** True when EE has wired the custom-role surface; false → legacy mapping + fail-closed CRUD. */
-  readonly customRolesActive: boolean;
-
   // ── Permission check (no enterprise gate — falls back to legacy mapping) ──
   /**
    * Returns `null` when the user holds `permission`, or a 403/503 body
@@ -2063,7 +2079,6 @@ export const NoopRolesPolicyLayer: Layer.Layer<RolesPolicy> = Layer.sync(
         `Custom roles (${feature}) require enterprise features to be enabled.`,
       );
     return {
-      customRolesActive: false,
       // `checkPermission` deliberately delegates to the legacy resolver
       // — every admin route depends on this surface, and the no-op MUST
       // continue to authorize admin/owner/platform_admin on self-hosted
@@ -2076,8 +2091,6 @@ export const NoopRolesPolicyLayer: Layer.Layer<RolesPolicy> = Layer.sync(
       // and the writes failed — UI dead-end (admin sees "no roles yet,
       // click create" → click → 403). Failing both sides surfaces a single
       // coherent gate the UI renders as the enterprise-upsell envelope.
-      // Admin tooling that needs to render different copy on self-hosted
-      // reads `customRolesActive: false` from the Tag's shape.
       listRoles: () => Effect.fail(notAvailable("listRoles")),
       getRole: () => Effect.fail(notAvailable("getRole")),
       getRoleByName: () => Effect.fail(notAvailable("getRoleByName")),
@@ -2112,7 +2125,6 @@ type EnterpriseErrorForBranding =
   import("@atlas/api/lib/effect/errors").EnterpriseError;
 
 export interface BrandingShape {
-  readonly available: boolean;
   /** Admin endpoint — enterprise-gated. */
   readonly getWorkspaceBranding: (
     orgId: string,
@@ -2142,7 +2154,6 @@ export const NoopBrandingLayer: Layer.Layer<Branding> = Layer.sync(
   () => {
     const notAvailable = makeNotAvailable("Workspace branding requires enterprise features to be enabled.",);
     return {
-      available: false,
       getWorkspaceBranding: () => Effect.fail(notAvailable()),
       getWorkspaceBrandingPublic: () => Effect.succeed(null),
       setWorkspaceBranding: () => Effect.fail(notAvailable()),
@@ -2170,6 +2181,7 @@ type EnterpriseErrorForDomains =
   import("@atlas/api/lib/effect/errors").EnterpriseError;
 
 export interface DomainsShape {
+  /** False when EE custom domains aren't loaded — `admin-domains.ts` + `platform-domains.ts` return 404 `not_available` for the management surface. */
   readonly available: boolean;
   readonly registerDomain: (
     workspaceId: string,
@@ -2253,7 +2265,6 @@ type EnterpriseErrorForProactive =
   import("@atlas/api/lib/effect/errors").EnterpriseError;
 
 export interface ProactiveGateShape {
-  readonly enabled: boolean;
   /** Effect-style guard. `Effect.void` when enterprise is enabled,
    * `Effect.fail(EnterpriseError)` otherwise. The route layer's
    * `classifyError` maps that to a 403 `enterprise_required` envelope.
@@ -2275,7 +2286,6 @@ export const NoopProactiveGateLayer: Layer.Layer<ProactiveGate> = Layer.sync(
   () => {
     const notAvailable = makeNotAvailable("Proactive chat requires enterprise features to be enabled.");
     return {
-      enabled: false,
       requireEnabled: () => Effect.fail(notAvailable()),
     } satisfies ProactiveGateShape;
   },

@@ -231,7 +231,6 @@ export const deleteWorkspaceBranding = (orgId: string): Effect.Effect<boolean, E
 // `lib/effect/services.ts:NoopBrandingLayer` covers self-hosted.
 
 export const makeBrandingLive = (): BrandingShape => ({
-  available: true,
   getWorkspaceBranding,
   getWorkspaceBrandingPublic,
   setWorkspaceBranding,

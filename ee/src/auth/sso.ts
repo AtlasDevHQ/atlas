@@ -957,7 +957,6 @@ export const setSSOEnforcement = (orgId: string, enforced: boolean): Effect.Effe
 // ── Tag wiring (#2570 — slice 8/11 of #2017) ─────────────────────────
 
 export const makeSSOPolicyLive = (): SSOPolicyShape => ({
-  available: true,
   extractEmailDomain,
   isSSOEnforcedForDomain,
   isSSOEnforced,

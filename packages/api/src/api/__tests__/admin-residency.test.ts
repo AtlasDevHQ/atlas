@@ -333,7 +333,7 @@ mock.module("@atlas/api/lib/effect/services", () => ({
   // need to not blow up the loader / shim's `yield* Tag`.
   NoopEnterpriseDefaultsLayer: { _tag: "MockLayer" },
   IpAllowlistPolicy: stubTag({ available: false, checkIPAllowlist: () => ({ [Symbol.iterator]: function* (): Generator<unknown, unknown> { return yield { allowed: true }; } }) }),
-  SSOPolicy: stubTag({ available: false, extractEmailDomain: () => null }),
+  SSOPolicy: stubTag({ extractEmailDomain: () => null }),
   SCIMProvenance: stubTag({ available: false }),
   ResidencyResolver_real: fakeResidencyResolver,
   ModelRouter: stubTag({}),
@@ -354,7 +354,6 @@ mock.module("@atlas/api/lib/effect/services", () => ({
       const iterableNull = { [Symbol.iterator]: function* (): Generator<unknown, unknown> { return yield null; } };
       const iterableTrue = { [Symbol.iterator]: function* (): Generator<unknown, unknown> { return yield true; } };
       return yield {
-        customRolesActive: true,
         checkPermission: () => iterableAllow,
         listRoles: () => iterableEmpty,
         getRole: () => iterableNull,

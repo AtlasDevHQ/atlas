@@ -96,6 +96,34 @@ describe("api", () => {
       }
     });
 
+    it("oauth.v2.access sends form-encoded body and no Bearer header", async () => {
+      mockFetch.mockResolvedValue(
+        new Response(
+          JSON.stringify({ ok: true, access_token: "xoxb-x", team: { id: "T1", name: "Acme" } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+
+      const result = await slackAPI("oauth.v2.access", "", {
+        client_id: "cid",
+        client_secret: "csec",
+        code: "the-code",
+      });
+      expect(result.ok).toBe(true);
+
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(url).toBe("https://slack.com/api/oauth.v2.access");
+      const headers = (init as RequestInit).headers as Record<string, string>;
+      expect(headers["Content-Type"]).toContain("application/x-www-form-urlencoded");
+      expect(headers.Authorization).toBeUndefined();
+
+      const body = (init as RequestInit).body as string;
+      const parsed = new URLSearchParams(body);
+      expect(parsed.get("client_id")).toBe("cid");
+      expect(parsed.get("client_secret")).toBe("csec");
+      expect(parsed.get("code")).toBe("the-code");
+    });
+
     it("Slack-level error (HTTP 200, ok: false) returns the error", async () => {
       mockFetch.mockResolvedValue(
         new Response(JSON.stringify({ ok: false, error: "channel_not_found" }), {

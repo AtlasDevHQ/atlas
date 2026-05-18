@@ -258,9 +258,12 @@ describe("SettingsLive", () => {
 // ── Scheduler ──────────────────────────────────────────────────────
 
 describe("makeSchedulerLive", () => {
-  // Post-#2569 the scheduler yields `AuditRetention` to start the EE
-  // purge worker via the Tag, so the test composes the no-op
-  // `NoopEnterpriseDefaultsLayer` as a dep before providing `Scheduler`.
+  // Post-#2569 the scheduler yields `AuditPurgeScheduler` (split out of
+  // `AuditRetention` in #2587) to start the EE purge worker via the Tag,
+  // so the test composes the no-op `NoopEnterpriseDefaultsLayer` as a dep
+  // before providing `Scheduler`. The noop fails with `EnterpriseError`;
+  // the boot site catches it and logs at debug so the boot Layer still
+  // builds cleanly.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { NoopEnterpriseDefaultsLayer } = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
 

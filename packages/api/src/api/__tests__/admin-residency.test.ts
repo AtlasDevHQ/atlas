@@ -343,6 +343,7 @@ mock.module("@atlas/api/lib/effect/services", () => ({
   SlaMetrics: stubTag({}),
   BackupsManager: stubTag({}),
   AuditRetention: stubTag({}),
+  AuditPurgeScheduler: stubTag({}),
   // Slice 9/11 (#2571) — `admin-router.ts:requirePermission` yields
   // `RolesPolicy` from `EnterpriseLayer`. Provide a default-allow
   // `checkPermission` (Effect-shaped iterable returning null = allow)

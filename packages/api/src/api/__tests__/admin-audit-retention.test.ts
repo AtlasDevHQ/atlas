@@ -197,8 +197,9 @@ mock.module("@atlas/ee/layers", () => {
           purgeAdminActionExpired: () => Effect.die("not stubbed"),
           anonymizeUserAdminActions: () => Effect.die("not stubbed"),
           previewAdminActionErasure: () => Effect.die("not stubbed"),
-          startAuditPurgeScheduler: () => {},
-          stopAuditPurgeScheduler: () => {},
+          // Scheduler lifecycle moved to AuditPurgeScheduler Tag (#2587)
+          // — the sub-router under test only yields AuditRetention so we
+          // don't need to bind AuditPurgeScheduler here.
         } as never);
       }),
     ),

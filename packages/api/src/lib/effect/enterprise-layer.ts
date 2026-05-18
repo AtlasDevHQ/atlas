@@ -26,6 +26,7 @@ import {
   type SlaMetrics,
   type BackupsManager,
   type AuditRetention,
+  type AuditPurgeScheduler,
   type IpAllowlistPolicy,
   type SSOPolicy,
   type SCIMProvenance,
@@ -90,7 +91,11 @@ function isEnterpriseEnabledLocal(): boolean {
  *     datasource — compliance break on EU workspaces)
  *   - AuditRetention pure-read methods return null (mutating + destructive
  *     methods now fail loudly post-#2594, but `getRetentionPolicy` would
- *     still report "no policy" instead of the real one stored in the DB)
+ *     still report "no policy" instead of the real one stored in the DB).
+ *     Post-#2587 the scheduler lifecycle moved to its own
+ *     `AuditPurgeScheduler` Tag whose noop fails both methods loudly —
+ *     the scheduler boot site catches that signal so self-hosted boot
+ *     stays clean.
  *
  * Hardening this is tracked in #2589 — consumer-side "available"
  * discriminator checks at each load-bearing call site. The change is
@@ -156,6 +161,7 @@ export type EnterpriseSubsystem =
   | SlaMetrics
   | BackupsManager
   | AuditRetention
+  | AuditPurgeScheduler
   | IpAllowlistPolicy
   | SSOPolicy
   | SCIMProvenance

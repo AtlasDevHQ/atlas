@@ -136,6 +136,21 @@ function isAtlasError(error: { readonly _tag: string }): error is AtlasError {
 }
 
 /**
+ * Compile-time exhaustiveness guard for inner switches.
+ *
+ * After every variant of an error's `code` union is handled, TS narrows
+ * `error` to `never` at the post-switch position; reading `.code` directly
+ * on `error` would surface as "property does not exist on type 'never'".
+ * Passing `error` through this helper keeps the assertion local while
+ * preserving the original failure mode — a new `*ErrorCode` variant added
+ * to a `Data.TaggedError` payload without a switch case fails this line
+ * at compile time.
+ */
+function assertNever(error: never): never {
+  throw new Error(`Unreachable: unhandled error variant ${JSON.stringify(error)}`);
+}
+
+/**
  * Map a known Atlas error to an HTTP status code, error code, and optional headers.
  *
  * Exhaustive over `AtlasError` — the compiler will error if a new variant
@@ -257,6 +272,138 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
         status: 500,
         code: "upstream_error",
         message: `No read filter registered for exotic table "${error.table}"`,
+      };
+
+    // ── EE-domain errors (safety net — see #2593) ──────────────────
+    // These tags also flow through per-route `domainErrors: [...]`
+    // (which wins on `classifyError` precedence via the `instanceof`
+    // check). The cases below catch the *unwired* path: a route that
+    // yields `RolesPolicy` / `ApprovalGate` / etc. without listing the
+    // corresponding `domainError` mapping would otherwise surface as a
+    // generic 500. With these cases in place, the failure channel
+    // already in the typed Effect surfaces as a proper 4xx envelope
+    // even when the per-route opt-in is missing.
+    //
+    // **Wire-code drift.** This safety-net path uses the `HttpErrorCode`
+    // vocabulary (e.g. `"conflict"` for `ApprovalError(expired)` →
+    // 410), whereas the per-route `domainError(...)` path uses the
+    // literal `error.code` (e.g. `"expired"`). Status codes match; wire
+    // codes differ. Acceptable because the safety net only runs for
+    // unwired routes — every current route is wired correctly, so the
+    // drift is a hypothetical that surfaces only on a future regression.
+    // A `4xx-with-different-wire-code` is strictly better than a 500.
+    //
+    // Status assignments mirror the canonical per-route maps in
+    // `shared-{retention,residency,domains}.ts` and the inline maps in
+    // `admin-{roles,approval,branding,compliance,model-config}.ts`.
+    case "RetentionError":
+      return {
+        status: error.code === "not_found" ? 404 : 400,
+        code: error.code === "not_found" ? "not_found" : "bad_request",
+        message: error.message,
+      };
+    case "RoleError":
+      switch (error.code) {
+        case "not_found":
+          return { status: 404, code: "not_found", message: error.message };
+        case "conflict":
+          return { status: 409, code: "conflict", message: error.message };
+        case "builtin_protected":
+          return { status: 403, code: "forbidden", message: error.message };
+        case "validation":
+          return { status: 400, code: "bad_request", message: error.message };
+      }
+      // Exhaustiveness guard — TS narrows error.code to `never` here
+      // once every variant above is handled. A new code added to
+      // `RoleErrorCode` will fail this line at compile time.
+      return assertNever(error);
+    case "ApprovalError":
+      switch (error.code) {
+        case "not_found":
+          return { status: 404, code: "not_found", message: error.message };
+        case "conflict":
+          return { status: 409, code: "conflict", message: error.message };
+        case "expired":
+          // 410 Gone is non-`HttpErrorCode`-vocabulary; reuse `conflict`
+          // for wire consistency with `shared-residency.ts:already_assigned`.
+          return { status: 410, code: "conflict", message: error.message };
+        case "validation":
+          return { status: 400, code: "bad_request", message: error.message };
+      }
+      return assertNever(error);
+    case "ResidencyError":
+      switch (error.code) {
+        case "not_configured":
+        case "workspace_not_found":
+          return { status: 404, code: "not_found", message: error.message };
+        case "invalid_region":
+          return { status: 400, code: "bad_request", message: error.message };
+        case "already_assigned":
+          return { status: 409, code: "conflict", message: error.message };
+        case "no_internal_db":
+          return { status: 503, code: "service_unavailable", message: error.message };
+      }
+      return assertNever(error);
+    case "BrandingError":
+      return {
+        status: error.code === "not_found" ? 404 : 400,
+        code: error.code === "not_found" ? "not_found" : "bad_request",
+        message: error.message,
+      };
+    case "DomainError":
+      switch (error.code) {
+        case "domain_not_found":
+          return { status: 404, code: "not_found", message: error.message };
+        case "invalid_domain":
+          return { status: 400, code: "bad_request", message: error.message };
+        case "duplicate_domain":
+          return { status: 409, code: "conflict", message: error.message };
+        case "railway_error":
+          return { status: 502, code: "upstream_error", message: error.message };
+        case "no_internal_db":
+        case "railway_not_configured":
+          return { status: 503, code: "service_unavailable", message: error.message };
+        case "data_integrity":
+          // 5xx — sanitize like `classifyError`'s domain-error path does
+          // for 5xx codes. The detail goes to the log via `requestId`.
+          return { status: 500, code: "upstream_error", message: error.message };
+      }
+      return assertNever(error);
+    case "ComplianceError":
+      switch (error.code) {
+        case "not_found":
+          return { status: 404, code: "not_found", message: error.message };
+        case "conflict":
+          return { status: 409, code: "conflict", message: error.message };
+        case "validation":
+          return { status: 400, code: "bad_request", message: error.message };
+      }
+      return assertNever(error);
+    case "ReportError":
+      return {
+        status: error.code === "not_available" ? 404 : 400,
+        code: error.code === "not_available" ? "not_found" : "bad_request",
+        message: error.message,
+      };
+    case "ModelConfigError":
+      switch (error.code) {
+        case "not_found":
+          return { status: 404, code: "not_found", message: error.message };
+        case "test_failed":
+          return { status: 422, code: "unprocessable_entity", message: error.message };
+        case "validation":
+          return { status: 400, code: "bad_request", message: error.message };
+      }
+      return assertNever(error);
+    case "ModelConfigDecryptError":
+      // No `code` field — single mapping. 422 mirrors the inline
+      // `Effect.catchTag("ModelConfigDecryptError", …)` handling in
+      // `admin-model-config.ts` (the "re-enter the key" envelope).
+      // Message stays generic — `configId` and `cause` are forensic-only.
+      return {
+        status: 422,
+        code: "unprocessable_entity",
+        message: "The stored API key could not be decrypted. Re-enter the key on the AI Provider page.",
       };
   }
 }

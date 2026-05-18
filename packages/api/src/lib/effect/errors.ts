@@ -34,6 +34,40 @@ export {
   UnknownTableError,
 } from "@atlas/api/lib/content-mode/port";
 
+// EE-domain errors (promoted to core in slices 4–11 of #2017) — folded
+// into `AtlasError` below so `classifyError` / `mapTaggedError` provide
+// a safety-net mapping when a route forgets to wire its per-route
+// `domainErrors: [...]` opt-in. Without this fallback (#2593), a new
+// admin route that yields a Tag whose error isn't listed surfaces as a
+// generic 500 in production instead of the expected 4xx envelope.
+// Per-route `domainErrors:` still wins on `classifyError` precedence
+// (instanceof check runs before the tagged-error fallback), so existing
+// routes keep their bespoke per-code status maps.
+import { RetentionError } from "@atlas/api/lib/audit/retention-errors";
+import { RoleError } from "@atlas/api/lib/auth/roles-errors";
+import { ApprovalError } from "@atlas/api/lib/governance/errors";
+import { ResidencyError } from "@atlas/api/lib/residency/errors";
+import { BrandingError } from "@atlas/api/lib/branding/branding-errors";
+import { DomainError } from "@atlas/api/lib/platform/domains-errors";
+import { ComplianceError, ReportError } from "@atlas/api/lib/compliance/errors";
+import {
+  ModelConfigError,
+  ModelConfigDecryptError,
+} from "@atlas/api/lib/model-routing/errors";
+
+export {
+  RetentionError,
+  RoleError,
+  ApprovalError,
+  ResidencyError,
+  BrandingError,
+  DomainError,
+  ComplianceError,
+  ReportError,
+  ModelConfigError,
+  ModelConfigDecryptError,
+};
+
 // ── Utilities ──────────────────────────────────────────────────────
 
 /** Normalize unknown caught values to Error. Used in Effect.tryPromise catch clauses. */
@@ -321,7 +355,18 @@ export type AtlasError =
   | DeliveryError
   | PublishPhaseError
   | UnknownTableError
-  | ExoticReadFilterUnavailableError;
+  | ExoticReadFilterUnavailableError
+  // ── EE-domain errors (safety net — see #2593) ───────────────────
+  | RetentionError
+  | RoleError
+  | ApprovalError
+  | ResidencyError
+  | BrandingError
+  | DomainError
+  | ComplianceError
+  | ReportError
+  | ModelConfigError
+  | ModelConfigDecryptError;
 
 /** Discriminant union of all known `_tag` values — derived from `AtlasError`. */
 export type AtlasErrorTag = AtlasError["_tag"];
@@ -361,6 +406,17 @@ export const ATLAS_ERROR_TAG_LIST = [
   "PublishPhaseError",
   "UnknownTableError",
   "ExoticReadFilterUnavailableError",
+  // ── EE-domain errors (safety net — see #2593) ───────────────────
+  "RetentionError",
+  "RoleError",
+  "ApprovalError",
+  "ResidencyError",
+  "BrandingError",
+  "DomainError",
+  "ComplianceError",
+  "ReportError",
+  "ModelConfigError",
+  "ModelConfigDecryptError",
 ] as const satisfies readonly AtlasErrorTag[];
 
 /** Compile-time check: every `AtlasErrorTag` must appear in the list. */

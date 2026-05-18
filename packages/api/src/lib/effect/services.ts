@@ -1023,7 +1023,11 @@ export const NoopModelRouterLayer: Layer.Layer<ModelRouter> = Layer.sync(
       getWorkspaceModelConfig: () => Effect.succeed(null),
       getWorkspaceModelConfigRaw: () => Effect.succeed(null),
       setWorkspaceModelConfig: () => Effect.fail(notAvailable()),
-      deleteWorkspaceModelConfig: () => Effect.succeed(false),
+      // Was `Effect.succeed(false)` pre-#2594 — surfaced as 404
+      // "Config not found" via admin route, falsely telling the admin
+      // their config was already gone. Fail loudly so 403 envelope
+      // makes the EE-not-installed state explicit.
+      deleteWorkspaceModelConfig: () => Effect.fail(notAvailable()),
       testModelConfig: () => Effect.fail(notAvailable()),
       reconcileModelDeprecation: () =>
         Effect.succeed({ status: "healthy" as const, suggestion: null }),
@@ -1304,7 +1308,9 @@ export const NoopApprovalGateLayer: Layer.Layer<ApprovalGate> = Layer.sync(
         Effect.fail(notFound("__no_op__")),
       updateApprovalRule: (_orgId, ruleId) =>
         Effect.fail(notFound(ruleId)),
-      deleteApprovalRule: () => Effect.succeed(false),
+      // Was `Effect.succeed(false)` pre-#2594 — silently lied that
+      // there was nothing to delete. Fail loudly via 403 envelope.
+      deleteApprovalRule: () => Effect.fail(notAvailable()),
       listApprovalRequests: () => Effect.succeed([]),
       getApprovalRequest: () => Effect.succeed(null),
       reviewApprovalRequest: (_orgId, requestId) =>
@@ -1375,7 +1381,9 @@ export const NoopSlaMetricsLayer: Layer.Layer<SlaMetrics> = Layer.sync(
       getThresholds: () => Effect.fail(notAvailable()),
       updateThresholds: () => Effect.fail(notAvailable()),
       getAlerts: () => Effect.succeed([]),
-      acknowledgeAlert: () => Effect.succeed(false),
+      // Was `Effect.succeed(false)` pre-#2594 — silently reported
+      // "alert not found" when EE was missing. Fail loudly.
+      acknowledgeAlert: () => Effect.fail(notAvailable()),
       evaluateAlerts: () => Effect.succeed([]),
     } satisfies SlaMetricsShape;
   },
@@ -1678,7 +1686,10 @@ export const NoopIpAllowlistPolicyLayer: Layer.Layer<IpAllowlistPolicy> = Layer.
       // unrecoverable 500 defect — matches the pattern across the other
       // Noop layers post-#2594.
       addIPAllowlistEntry: () => Effect.fail(notAvailable()),
-      removeIPAllowlistEntry: () => Effect.succeed(false),
+      // SECURITY: was `Effect.succeed(false)` pre-#2594 — route
+      // mapped to 404 "entry not found", falsely telling admin the
+      // IP was removed. Entry stayed in DB; IP retained access.
+      removeIPAllowlistEntry: () => Effect.fail(notAvailable()),
       invalidateCache: () => {},
     } satisfies IpAllowlistPolicyShape;
   },
@@ -1798,7 +1809,10 @@ export const NoopSSOPolicyLayer: Layer.Layer<SSOPolicy> = Layer.sync(
       getSSOProvider: () => Effect.succeed(null),
       createSSOProvider: () => Effect.fail(notAvailable()),
       updateSSOProvider: () => Effect.fail(notAvailable()),
-      deleteSSOProvider: () => Effect.succeed(false),
+      // SECURITY: was `Effect.succeed(false)` pre-#2594 — route
+      // returned 404, admin assumed provider gone. Provider stayed
+      // in DB, still routing SSO logins. Fail loudly.
+      deleteSSOProvider: () => Effect.fail(notAvailable()),
       verifyDomain: () => Effect.fail(notAvailable()),
       checkDomainAvailability: () => Effect.fail(notAvailable()),
       testSSOProvider: () => Effect.fail(notAvailable()) as never,
@@ -1882,7 +1896,10 @@ export const NoopSCIMProvenanceLayer: Layer.Layer<SCIMProvenance> = Layer.sync(
     return {
       available: false,
       listConnections: () => Effect.succeed([]),
-      deleteConnection: () => Effect.succeed(false),
+      // Was `Effect.succeed(false)` pre-#2594 — route returned 404
+      // so admin assumed the SCIM connection was deleted. Connection
+      // stayed in DB; SCIM kept provisioning. Fail loudly.
+      deleteConnection: () => Effect.fail(notAvailable()),
       getSyncStatus: () =>
         Effect.succeed({
           connections: 0,
@@ -1891,7 +1908,8 @@ export const NoopSCIMProvenanceLayer: Layer.Layer<SCIMProvenance> = Layer.sync(
         }),
       listGroupMappings: () => Effect.succeed([]),
       createGroupMapping: () => Effect.fail(notAvailable()),
-      deleteGroupMapping: () => Effect.succeed(false),
+      // Same destructive-noop pattern as deleteConnection — fail loudly.
+      deleteGroupMapping: () => Effect.fail(notAvailable()),
       resolveGroupToRole: () => Effect.succeed(null),
     } satisfies SCIMProvenanceShape;
   },

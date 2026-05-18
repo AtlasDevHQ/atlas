@@ -154,14 +154,16 @@ export type EnterpriseSubsystem =
 
 /**
  * Composed enterprise Layer — no-op defaults overlaid by the conditional
- * EE layer (last-wins via `Layer.mergeAll`). Provided per-request by
- * `runEffect`/`runHandler` so route programs can `yield* ResidencyResolver`
+ * EE layer (last-wins via `Layer.mergeAll`). Provided to programs via
+ * the module-level `enterpriseRuntime` (see `getEnterpriseRuntime` +
+ * `runEnterprise` below) so route programs can `yield* ResidencyResolver`
  * without threading the layer through every handler.
  *
- * Construction is cheap: the no-op defaults are constants, and the
- * conditional EE layer's lazy `await import("@atlas/ee/layers")` hits
- * Node's module cache after the first load. Effect's Layer memoization
- * elides repeat work within a single program run.
+ * Construction is paid ONCE per process: the runtime materialises the
+ * layer the first time it's used and reuses the constructed services
+ * across all subsequent runs. Pre-#2587 the bridge re-wrapped this Layer
+ * with `Effect.provide(...)` per request — building a fresh runtime
+ * Scope per call, defeating Effect's reference-keyed memoization.
  */
 // `E = Error` propagates from `ConditionalEELayer` so callers see a
 // loud Promise rejection / typed failure if `ATLAS_ENTERPRISE_ENABLED=true`

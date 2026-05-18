@@ -402,19 +402,19 @@ export async function runEffect<A, E>(
   // handler that `yield* ResidencyResolver` resolves without each route
   // having to provide the layer manually. Layer.mergeAll is referentially
   // stable, so Effect memoizes the construction across requests.
-  // Provide per-request contextLayer (RequestContext + AuthContext) at
-  // the program level, then run via the shared module-level
-  // EnterpriseRuntime (#2587). Pre-#2587 the bridge merged
-  // contextLayer + EnterpriseLayer per request and called
-  // `Effect.runPromiseExit`, which rebuilt the Layer's runtime per call
-  // — `Layer.mergeAll` is referentially stable but the merged result
-  // wasn't (new reference per request defeats Effect's reference-keyed
-  // memoization). The ManagedRuntime memoizes EnterpriseLayer's
-  // construction across requests (including the EE-Layer's lazy
-  // `await import("@atlas/ee/layers")`). The Layer's `E = Error`
-  // channel propagates here as `E | Error` so a SaaS install with a
-  // broken `@atlas/ee/` build surfaces a typed failure routed through
-  // `classifyError` to a 500.
+  // Per-request contextLayer (RequestContext + AuthContext) is provided
+  // at the program level, then the program runs against the shared
+  // module-level EnterpriseRuntime (#2587). Pre-#2587 the bridge merged
+  // contextLayer + EnterpriseLayer per request — Layer.merge produces a
+  // fresh reference each time so Effect's per-Scope memoization couldn't
+  // amortize the EE-Layer's lazy `await import("@atlas/ee/layers")` or
+  // any other Layer.sync construction. With the ManagedRuntime, the
+  // EE-Layer constructs ONCE on first use and every request reuses the
+  // services; contextLayer remains per-request because it carries the
+  // request's `requestId` / `authResult` (lightweight Layer.succeed).
+  // The runtime's `E = Error` channel propagates here as `E | Error` so
+  // a SaaS install with a broken `@atlas/ee/` build surfaces a typed
+  // failure routed through `classifyError` to a 500.
   const contextLayer = buildContextLayer(c);
   const contextProvided: Effect.Effect<A, E, EnterpriseSubsystem> = contextLayer
     ? (program as Effect.Effect<

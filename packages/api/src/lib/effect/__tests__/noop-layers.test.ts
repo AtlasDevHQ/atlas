@@ -93,7 +93,9 @@ describe("NoopMaskingPolicyLayer", () => {
     const rows = [{ id: 1, ssn: "111-22-3333" }];
     const program = Effect.gen(function* () {
       const masking = yield* MaskingPolicy;
-      return yield* masking.applyMasking({ rows, orgId: "o", tables: [], columns: [] });
+      return yield* masking.applyMasking({
+        rows, orgId: "o", tablesAccessed: [], columns: [], userRole: "admin",
+      });
     });
     const exit = await runWithLayer(program, NoopMaskingPolicyLayer);
     expect(Exit.isSuccess(exit)).toBe(true);
@@ -111,7 +113,7 @@ describe("NoopAuditRetentionLayer", () => {
   it("anonymizeUserAdminActions fails with EnterpriseError (NOT silently succeeds)", async () => {
     const program = Effect.gen(function* () {
       const r = yield* AuditRetention;
-      return yield* r.anonymizeUserAdminActions("user-1", "platform_admin");
+      return yield* r.anonymizeUserAdminActions("user-1", "dsr_request");
     });
     const exit = await runWithLayer(program, NoopAuditRetentionLayer);
     expectTypedFailure(exit, "EnterpriseError");

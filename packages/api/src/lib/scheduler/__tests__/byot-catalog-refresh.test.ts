@@ -157,6 +157,7 @@ mock.module("@atlas/ee/layers", () => ({
     Effect.sync(() => {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+      type ModelConfigProvider = import("@useatlas/types").ModelConfigProvider;
       return Layer.succeed(services.ModelRouter, {
         available: true,
         getWorkspaceModelConfig: () => Effect.die("not stubbed"),
@@ -167,30 +168,27 @@ mock.module("@atlas/ee/layers", () => ({
           }
           if (!cfg) return Effect.succeed(null);
           // Translate the flat fixture into the typed-credentials shape
-          // the new `RawWorkspaceModelConfig` exposes. The scheduler's
-          // adapter collapses it back to `{ apiKey }` for the per-row
-          // refresh path, so the rest of the test stays unchanged.
+          // the new `RawWorkspaceModelConfig` exposes. Cast the provider
+          // string up to `ModelConfigProvider`: the per-test fixtures
+          // only use canonical values ("bedrock" / "gateway" /
+          // "anthropic" / "openai"), so the cast is safe.
           const credentials =
             cfg.provider === "bedrock"
               ? {
                   provider: "bedrock" as const,
                   bundle:
                     cfg.apiKey && cfg.apiKey !== "BAD_BUNDLE"
-                      ? {
-                          accessKeyId: "AKIA-test",
-                          secretAccessKey: "secret-test",
-                          sessionToken: null,
-                        }
+                      ? { accessKeyId: "AKIA-test", secretAccessKey: "secret-test" }
                       : null,
                 }
               : cfg.provider === "gateway"
                 ? { provider: "gateway" as const, apiKey: cfg.apiKey }
                 : {
-                    provider: cfg.provider as "anthropic" | "openai" | "azure-openai" | "custom",
+                    provider: cfg.provider as Exclude<ModelConfigProvider, "bedrock" | "gateway">,
                     apiKey: cfg.apiKey ?? "",
                   };
           return Effect.succeed({
-            provider: cfg.provider,
+            provider: cfg.provider as ModelConfigProvider,
             model: cfg.model,
             baseUrl: cfg.baseUrl,
             bedrockRegion: cfg.bedrockRegion,
@@ -204,11 +202,7 @@ mock.module("@atlas/ee/layers", () => ({
           Effect.succeed({ status: "healthy" as const, suggestion: null }),
         parseBedrockCredentialBundle: (apiKey: string) => {
           if (apiKey === "BAD_BUNDLE") return null;
-          return {
-            accessKeyId: "AKIA-test",
-            secretAccessKey: "secret-test",
-            sessionToken: null,
-          };
+          return { accessKeyId: "AKIA-test", secretAccessKey: "secret-test" };
         },
       } satisfies import("@atlas/api/lib/effect/services").ModelRouterShape);
     }),

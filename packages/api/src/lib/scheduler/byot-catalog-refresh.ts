@@ -344,10 +344,16 @@ async function refreshOne(row: StaleRow, now: number): Promise<RefreshOutcome> {
   // (the `malformed_bedrock_bundle` skip); other providers carry the
   // raw apiKey string. The fetcher takes both via separate args — the
   // bedrock fetch ignores `apiKey`, the others ignore `bedrockBundle`.
+  //
+  // Narrow on `row.provider` (the discriminator the rest of the file
+  // walks) rather than `config.credentials.provider`: the earlier
+  // `config.provider !== row.provider` early-return guarantees they
+  // agree, and `row`-side narrowing lets TS resolve `row.bedrockRegion`
+  // on the bedrock arm.
   let apiKey = "";
   let bedrockBundle: unknown = null;
-  if (config.credentials.provider === "bedrock") {
-    if (!config.credentials.bundle) {
+  if (row.provider === "bedrock") {
+    if (config.credentials.provider !== "bedrock" || !config.credentials.bundle) {
       return { kind: "skipped", reason: "malformed_bedrock_bundle" };
     }
     bedrockBundle = config.credentials.bundle;
@@ -360,9 +366,14 @@ async function refreshOne(row: StaleRow, now: number): Promise<RefreshOutcome> {
       return { kind: "skipped", reason: "missing_byot_key" };
     }
     apiKey = config.credentials.apiKey;
-  } else {
+  } else if (config.credentials.provider !== "bedrock") {
     apiKey = config.credentials.apiKey;
     if (!apiKey) return { kind: "skipped", reason: "missing_byot_key" };
+  } else {
+    // Defensive: row.provider !== "bedrock" but credentials.provider === "bedrock"
+    // — should be unreachable since the earlier `config.provider !== row.provider`
+    // check fires first. Return a skip rather than a failed so the cycle moves on.
+    return { kind: "skipped", reason: "missing_byot_key" };
   }
 
   try {

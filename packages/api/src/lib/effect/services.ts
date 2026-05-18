@@ -931,6 +931,7 @@ type ModelConfigError = import("@atlas/api/lib/model-routing/errors").ModelConfi
 type ModelConfigDecryptError = import("@atlas/api/lib/model-routing/errors").ModelConfigDecryptError;
 type EnterpriseError = import("@atlas/api/lib/effect/errors").EnterpriseError;
 type BedrockCredentialBundle = import("@useatlas/types").BedrockCredentialBundle;
+type GatewayCatalogModel = import("@useatlas/types").GatewayCatalogModel;
 
 export interface ModelRouterShape {
   /** False when EE model-routing is not loaded — admin routes surface "not_available", agent loop falls back to platform default. */
@@ -970,7 +971,7 @@ export interface ModelRouterShape {
     orgId: string,
     savedModelId: string,
     savedProvider: string,
-    freshCatalog: ReadonlyArray<{ readonly id: string; readonly provider: string }>,
+    freshCatalog: GatewayCatalogModel[],
   ) => Effect.Effect<{ status: "healthy" | "deprecated"; suggestion: string | null }, Error>;
   /**
    * Parse a Bedrock cred JSON bundle. Used by the scheduler's per-row

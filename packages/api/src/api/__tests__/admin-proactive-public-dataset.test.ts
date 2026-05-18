@@ -52,26 +52,41 @@ mock.module("@atlas/api/lib/proactive/public-dataset", () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// Enterprise gate — default ON
+// Enterprise gate — post-#2572 (slice 10/11) the route yields the
+// `ProactiveGate` Tag from EELayer. Default-on; flip to drive the 403 path.
 // ---------------------------------------------------------------------------
 
 let enterpriseEnabled = true;
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const realEE = require("@atlas/ee/index") as typeof import("@atlas/ee/index");
+process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const effectMod = require("effect") as typeof import("effect");
 
-mock.module("@atlas/ee/index", () => ({
-  ...realEE,
-  isEnterpriseEnabled: () => enterpriseEnabled,
-  requireEnterpriseEffect: (feature?: string) => {
-    if (enterpriseEnabled) return effectMod.Effect.void;
-    return effectMod.Effect.fail(
-      new realEE.EnterpriseError(`feature ${feature ?? ""} not enabled`),
-    );
-  },
-}));
+mock.module("@atlas/ee/layers", () => {
+  const { Layer, Effect: E } = effectMod;
+  return {
+    EELayer: Layer.unwrapEffect(
+      E.sync(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { EnterpriseError } = require("@atlas/api/lib/effect/errors") as typeof import("@atlas/api/lib/effect/errors");
+        return Layer.succeed(services.ProactiveGate, {
+          enabled: true,
+          requireEnabled: () =>
+            enterpriseEnabled
+              ? effectMod.Effect.void
+              : effectMod.Effect.fail(
+                  new EnterpriseError(
+                    "Enterprise features (proactive-chat) are not enabled.",
+                  ),
+                ),
+        });
+      }),
+    ),
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Standard API mocks

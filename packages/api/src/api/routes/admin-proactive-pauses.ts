@@ -11,9 +11,11 @@
  *     the literal `unsubscribe`.
  *   - `admin-channel`: persisted by the channel-config surface (#2294).
  *
- * Enterprise-gated: every mutation requires
- * `requireEnterpriseEffect("proactive-chat")`. Self-hosted callers
- * without enterprise see 403 with a typed `EnterpriseError`.
+ * Enterprise-gated: every mutation yields `ProactiveGate` from
+ * `@atlas/api/lib/effect/services` and calls `.requireEnabled()`.
+ * Self-hosted callers without enterprise see 403 with a typed
+ * `EnterpriseError` (the no-op `ProactiveGate` default fails closed —
+ * EE overlays `Effect.void` when `ATLAS_ENTERPRISE_ENABLED=true`).
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
@@ -21,9 +23,13 @@ import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
-import { AuthContext, RequestContext } from "@atlas/api/lib/effect/services";
+import {
+  AuthContext,
+  ProactiveGate,
+  RequestContext,
+} from "@atlas/api/lib/effect/services";
+import { EnterpriseError } from "@atlas/api/lib/effect/errors";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { EnterpriseError, requireEnterpriseEffect } from "@atlas/ee/index";
 import {
   expirePauses,
   isPaused,
@@ -156,7 +162,8 @@ adminProactivePauses.openapi(getPauseStatusRoute, async (c) =>
       const { requestId } = yield* RequestContext;
       const { orgId } = yield* AuthContext;
 
-      yield* requireEnterpriseEffect("proactive-chat");
+      const proactive = yield* ProactiveGate;
+      yield* proactive.requireEnabled();
 
       if (!orgId) {
         return c.json(
@@ -206,7 +213,8 @@ adminProactivePauses.openapi(enableKillSwitchRoute, async (c) =>
       const { requestId } = yield* RequestContext;
       const { orgId, user } = yield* AuthContext;
 
-      yield* requireEnterpriseEffect("proactive-chat");
+      const proactive = yield* ProactiveGate;
+      yield* proactive.requireEnabled();
 
       if (!orgId) {
         return c.json(
@@ -275,7 +283,8 @@ adminProactivePauses.openapi(liftKillSwitchRoute, async (c) =>
       const { requestId } = yield* RequestContext;
       const { orgId, user } = yield* AuthContext;
 
-      yield* requireEnterpriseEffect("proactive-chat");
+      const proactive = yield* ProactiveGate;
+      yield* proactive.requireEnabled();
 
       if (!orgId) {
         return c.json(

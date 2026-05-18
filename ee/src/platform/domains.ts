@@ -18,7 +18,7 @@
  * - RAILWAY_WEB_SERVICE_ID — Railway service ID for the web service
  */
 
-import { Data, Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { generateVerificationToken, verifyDnsTxt } from "../lib/domain-verification";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import {
@@ -26,6 +26,14 @@ import {
   internalQuery,
 } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import {
+  Domains,
+  type DomainsShape,
+} from "@atlas/api/lib/effect/services";
+import {
+  DomainError,
+  type DomainErrorCode,
+} from "@atlas/api/lib/platform/domains-errors";
 import type { CustomDomain, CertificateStatus, DomainVerificationStatus } from "@useatlas/types";
 import { DOMAIN_STATUSES, CERTIFICATE_STATUSES, DOMAIN_VERIFICATION_STATUSES } from "@useatlas/types";
 
@@ -33,19 +41,13 @@ const log = createLogger("ee:domains");
 
 // ── Typed errors ────────────────────────────────────────────────────
 
-export type DomainErrorCode =
-  | "no_internal_db"
-  | "invalid_domain"
-  | "duplicate_domain"
-  | "domain_not_found"
-  | "railway_error"
-  | "railway_not_configured"
-  | "data_integrity";
-
-export class DomainError extends Data.TaggedError("DomainError")<{
-  message: string;
-  code: DomainErrorCode;
-}> {}
+/**
+ * `DomainError` lives in `@atlas/api/lib/platform/domains-errors`
+ * post-#2572 so the `Domains` Tag can type its failure channel without
+ * core importing from `@atlas/ee`. Re-exported here for back-compat —
+ * same `_tag` + payload + `instanceof` semantics.
+ */
+export { DomainError, type DomainErrorCode };
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -726,3 +728,31 @@ export const resolveWorkspaceByHost = (hostname: string): Effect.Effect<string |
 export function _resetHostCache(): void {
   hostCache.clear();
 }
+
+// ── Tag wiring (#2572 — slice 10/11 of #2017) ────────────────────────
+//
+// Bridges this module's functions into the `Domains` Tag so core call
+// sites (`api/routes/admin-domains.ts` via `shared-domains.ts`) can
+// `yield* Domains` instead of dynamic-importing this module.
+// Aggregated into `ee/src/layers.ts:EELayer`; the no-op default in
+// `lib/effect/services.ts:NoopDomainsLayer` covers self-hosted (reads
+// return empty / fail-closed, writes fail with EnterpriseError).
+
+export const makeDomainsLive = (): DomainsShape => ({
+  available: true,
+  registerDomain,
+  verifyDomain,
+  verifyDomainDnsTxt,
+  listDomains,
+  listAllDomains,
+  deleteDomain,
+  checkDomainAvailability,
+  hasVerifiedCustomDomain,
+  resolveWorkspaceByHost,
+  redactDomain,
+});
+
+export const DomainsLive: Layer.Layer<Domains> = Layer.sync(
+  Domains,
+  makeDomainsLive,
+);

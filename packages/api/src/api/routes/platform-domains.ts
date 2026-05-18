@@ -15,13 +15,12 @@ import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
-import { RequestContext } from "@atlas/api/lib/effect/services";
+import { Domains, RequestContext } from "@atlas/api/lib/effect/services";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
 import {
   CustomDomainSchema,
   customDomainError,
-  loadDomains,
 } from "./shared-domains";
 
 const log = createLogger("platform-domains");
@@ -144,9 +143,9 @@ const platformDomains = createPlatformRouter();
 platformDomains.openapi(listDomainsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
+    const mod = yield* Domains;
 
-    const mod = yield* Effect.promise(() => loadDomains());
-    if (!mod) {
+    if (!mod.available) {
       return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
     }
 
@@ -161,9 +160,9 @@ platformDomains.openapi(registerDomainRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const body = c.req.valid("json");
+    const mod = yield* Domains;
 
-    const mod = yield* Effect.promise(() => loadDomains());
-    if (!mod) {
+    if (!mod.available) {
       return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
     }
 
@@ -189,9 +188,9 @@ platformDomains.openapi(verifyDomainRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const domainId = c.req.param("id");
+    const mod = yield* Domains;
 
-    const mod = yield* Effect.promise(() => loadDomains());
-    if (!mod) {
+    if (!mod.available) {
       return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
     }
 
@@ -215,9 +214,9 @@ platformDomains.openapi(deleteDomainRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const domainId = c.req.param("id");
+    const mod = yield* Domains;
 
-    const mod = yield* Effect.promise(() => loadDomains());
-    if (!mod) {
+    if (!mod.available) {
       return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
     }
 

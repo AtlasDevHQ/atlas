@@ -1092,9 +1092,12 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
 /**
  * Resolve the deploy mode for a ResolvedConfig.
  *
- * Tries to load `resolveDeployMode` from the enterprise (`ee/`) package.
- * When the enterprise module is not available, falls back to `"self-hosted"`.
- * Mutates `resolved.deployMode` in place and logs the result.
+ * Calls `resolveDeployMode` from `@atlas/api/lib/effect/deploy-mode`
+ * (pure core helper — promoted from `@atlas/ee/deploy-mode` in #2572 to
+ * end the dynamic-import dance during config bootstrap). Mutates
+ * `resolved.deployMode` in place and logs the result. EE still
+ * re-exports `resolveDeployMode` for any external caller pinned to the
+ * old path.
  */
 async function applyDeployMode(
   resolved: ResolvedConfig,
@@ -1112,34 +1115,14 @@ async function applyDeployMode(
     );
   }
 
-  try {
-    const { resolveDeployMode } = await import("@atlas/ee/deploy-mode");
-    resolved.deployMode = resolveDeployMode(rawSetting);
-  } catch (err) {
-    // The expected case is "AGPL-only build, ee/ legitimately absent" —
-    // log at debug, default to self-hosted. Anything else (syntax error
-    // in a transitive ee/ import, version skew between @atlas/api and
-    // @atlas/ee, bundler/runtime resolution failure) is a real bug that
-    // would otherwise hide as a silent self-hosted downgrade. Surface
-    // the unexpected case at error level so production telemetry catches
-    // it. #1978 finding 3.
-    const code = (err as NodeJS.ErrnoException | undefined)?.code;
-    const isModuleNotFound =
-      code === "ERR_MODULE_NOT_FOUND" ||
-      code === "MODULE_NOT_FOUND" ||
-      // bun's dynamic-import error before it sets a code
-      (err instanceof Error && /Cannot find (module|package)/i.test(err.message));
-    const detail = err instanceof Error ? err.message : String(err);
-    if (isModuleNotFound) {
-      log.debug({ err: detail }, "ee/ module not installed — defaulting to self-hosted");
-    } else {
-      log.error(
-        { err: detail, code },
-        "ee/ module load FAILED unexpectedly (not a missing-module error) — defaulting to self-hosted. Check the @atlas/ee install / version skew",
-      );
-    }
-    resolved.deployMode = "self-hosted";
-  }
+  // Lazy require keeps `config.ts` at the bottom of the dep graph. The
+  // resolver itself is a sync pure function that lazy-requires `getConfig`
+  // and `hasInternalDB` — neither pulls in anything heavy.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { resolveDeployMode } = require("@atlas/api/lib/effect/deploy-mode") as {
+    resolveDeployMode: (raw?: typeof rawSetting) => "saas" | "self-hosted";
+  };
+  resolved.deployMode = resolveDeployMode(rawSetting);
   log.info({ deployMode: resolved.deployMode }, "Deploy mode resolved");
 
   // #1978 — when deployMode "saas" was requested but resolveDeployMode

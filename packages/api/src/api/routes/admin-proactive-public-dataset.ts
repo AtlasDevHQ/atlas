@@ -13,10 +13,9 @@
  *   - Discoverability: piggybacks on the answer meter via a new
  *     public_refused event type (see migration 0079).
  *
- * Every route gates via requireEnterpriseEffect("proactive-chat") so
+ * Every route yields `ProactiveGate.requireEnabled()` so
  * non-enterprise tenants see 403 enterprise_required rather than a
- * surface to twiddle. The route layer is the only place in this slice
- * that imports @atlas/ee; the lib/proactive/public-dataset.ts helpers
+ * surface to twiddle. The lib/proactive/public-dataset.ts helpers
  * stay enterprise-agnostic so tests can exercise the DB shape without
  * booting the gate.
  *
@@ -36,9 +35,12 @@ import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
-import { AuthContext, RequestContext } from "@atlas/api/lib/effect/services";
+import {
+  AuthContext,
+  ProactiveGate,
+  RequestContext,
+} from "@atlas/api/lib/effect/services";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { requireEnterpriseEffect } from "@atlas/ee/index";
 import {
   addEntry,
   getAllowlist,
@@ -244,7 +246,8 @@ adminProactivePublicDataset.openapi(listEntriesRoute, async (c) =>
       const { requestId } = yield* RequestContext;
       const { orgId } = yield* AuthContext;
 
-      yield* requireEnterpriseEffect("proactive-chat");
+      const proactive = yield* ProactiveGate;
+      yield* proactive.requireEnabled();
 
       if (!orgId) {
         return c.json(
@@ -273,7 +276,8 @@ adminProactivePublicDataset.openapi(upsertEntryRoute, async (c) =>
       const { requestId } = yield* RequestContext;
       const { orgId, user } = yield* AuthContext;
 
-      yield* requireEnterpriseEffect("proactive-chat");
+      const proactive = yield* ProactiveGate;
+      yield* proactive.requireEnabled();
 
       if (!orgId) {
         return c.json(
@@ -335,7 +339,8 @@ adminProactivePublicDataset.openapi(deleteEntryRoute, async (c) =>
       const { requestId } = yield* RequestContext;
       const { orgId, user } = yield* AuthContext;
 
-      yield* requireEnterpriseEffect("proactive-chat");
+      const proactive = yield* ProactiveGate;
+      yield* proactive.requireEnabled();
 
       if (!orgId) {
         return c.json(
@@ -391,7 +396,8 @@ adminProactivePublicDataset.openapi(refusedRollupRoute, async (c) =>
       const { requestId } = yield* RequestContext;
       const { orgId } = yield* AuthContext;
 
-      yield* requireEnterpriseEffect("proactive-chat");
+      const proactive = yield* ProactiveGate;
+      yield* proactive.requireEnabled();
 
       if (!orgId) {
         return c.json(

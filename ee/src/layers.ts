@@ -16,9 +16,13 @@
  * Slice 7/11 (#2569) — added `AuditRetentionLive`.
  * Slice 8/11 (#2570) — added `IpAllowlistPolicyLive` + `SSOPolicyLive`
  *   + `SCIMProvenanceLive` (auth subsystem trio).
+ * Slice 10/11 (#2572) — added `BrandingLive` + `DomainsLive` +
+ *                       `ProactiveGateLive` + `DeployModeResolverLive`
+ *                       (bundled to avoid four PRs of Tag scaffolding
+ *                       overhead for narrow-surface subsystems).
  *
- * Later slices (#2571–#2572) follow the same pattern: one Tag, one
- * Layer entry. See the parent issue (#2017) for the rationale.
+ * Slice 9/11 (#2571) follows the same pattern: one Tag, one Layer
+ * entry. See the parent issue (#2017) for the rationale.
  */
 
 import { Layer } from "effect";
@@ -26,10 +30,14 @@ import type {
   ApprovalGate,
   AuditRetention,
   BackupsManager,
+  Branding,
   ComplianceReports,
+  DeployModeResolver,
+  Domains,
   IpAllowlistPolicy,
   MaskingPolicy,
   ModelRouter,
+  ProactiveGate,
   ResidencyResolver,
   SCIMProvenance,
   SSOPolicy,
@@ -46,6 +54,10 @@ import { AuditRetentionLive } from "./audit/retention";
 import { IpAllowlistPolicyLive } from "./auth/ip-allowlist";
 import { SSOPolicyLive } from "./auth/sso";
 import { SCIMProvenanceLive } from "./auth/scim";
+import { BrandingLive } from "./branding/white-label";
+import { DomainsLive } from "./platform/domains";
+import { ProactiveGateLive } from "./proactive-gate";
+import { DeployModeResolverLive } from "./deploy-mode";
 
 /**
  * Aggregated EE Layer — typed by the union of every Tag this module
@@ -57,10 +69,14 @@ export const EELayer: Layer.Layer<
   | ApprovalGate
   | AuditRetention
   | BackupsManager
+  | Branding
   | ComplianceReports
+  | DeployModeResolver
+  | Domains
   | IpAllowlistPolicy
   | MaskingPolicy
   | ModelRouter
+  | ProactiveGate
   | ResidencyResolver
   | SCIMProvenance
   | SSOPolicy
@@ -77,4 +93,8 @@ export const EELayer: Layer.Layer<
   IpAllowlistPolicyLive,
   SSOPolicyLive,
   SCIMProvenanceLive,
+  BrandingLive,
+  DomainsLive,
+  ProactiveGateLive,
+  DeployModeResolverLive,
 );

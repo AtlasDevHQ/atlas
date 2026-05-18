@@ -12,7 +12,7 @@ import { validationHook } from "./validation-hook";
 import { createLogger } from "@atlas/api/lib/logger";
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
 import { Effect } from "effect";
-import { getWorkspaceBrandingPublic } from "@atlas/ee/branding/white-label";
+import { Branding } from "@atlas/api/lib/effect/services";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { withRequestId, type AuthEnv } from "./middleware";
 import { ErrorSchema } from "./shared-schemas";
@@ -94,7 +94,8 @@ publicBranding.openapi(getBrandingRoute, async (c) => {
       return c.json({ branding: null }, 200);
     }
 
-    const branding = yield* getWorkspaceBrandingPublic(orgId);
+    const brandingSvc = yield* Branding;
+    const branding = yield* brandingSvc.getWorkspaceBrandingPublic(orgId);
     if (!branding) {
       return c.json({ branding: null }, 200);
     }

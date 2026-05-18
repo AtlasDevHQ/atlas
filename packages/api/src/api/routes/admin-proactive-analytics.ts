@@ -16,8 +16,11 @@
 import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
-import { AuthContext, RequestContext } from "@atlas/api/lib/effect/services";
-import { requireEnterpriseEffect } from "@atlas/ee/index";
+import {
+  AuthContext,
+  ProactiveGate,
+  RequestContext,
+} from "@atlas/api/lib/effect/services";
 import { AnswerMeter, AnswerMeterLive } from "@atlas/api/lib/proactive/answer-meter";
 import { getWorkspaceQuotaStatus } from "@atlas/api/lib/proactive/quota";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
@@ -85,7 +88,8 @@ adminProactiveAnalytics.get("/", async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
-      yield* requireEnterpriseEffect("proactive-chat");
+      const proactive = yield* ProactiveGate;
+      yield* proactive.requireEnabled();
 
       const { orgId } = yield* AuthContext;
       const { requestId } = yield* RequestContext;

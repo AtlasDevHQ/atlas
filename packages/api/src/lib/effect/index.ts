@@ -49,6 +49,11 @@ export {
 
 export { runEffect, runHandler, mapTaggedError, domainError, type DomainErrorMapping, type RunEffectOptions } from "./hono";
 
+// Deploy-mode resolver (#2572 — slice 10/11 of #2017). Pure function;
+// lives in core so `lib/config.ts:applyDeployMode` can call it without
+// dynamic-importing `@atlas/ee/deploy-mode`. EE re-exports for back-compat.
+export { resolveDeployMode } from "./deploy-mode";
+
 // ── Effect Services (P4+) ───────────────────────────────────────────
 
 export {

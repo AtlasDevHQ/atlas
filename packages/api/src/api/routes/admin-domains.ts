@@ -21,16 +21,15 @@ import type { Context } from "hono";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
-import { AuthContext, RequestContext } from "@atlas/api/lib/effect/services";
+import { AuthContext, Domains, RequestContext } from "@atlas/api/lib/effect/services";
+import { EnterpriseError } from "@atlas/api/lib/effect/errors";
 import { hasInternalDB, getWorkspaceDetails } from "@atlas/api/lib/db/internal";
-import { EnterpriseError } from "@atlas/ee/index";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 import {
   CustomDomainSchema,
   DomainCheckResponseSchema,
   customDomainError,
-  loadDomains,
 } from "./shared-domains";
 
 function clientIP(c: Context): string | null {
@@ -274,13 +273,13 @@ adminDomains.openapi(getDomainRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
     const { requestId } = yield* RequestContext;
+    const mod = yield* Domains;
 
     if (!orgId) {
       return c.json({ error: "bad_request", message: "No active organization.", requestId }, 400);
     }
 
-    const mod = yield* Effect.promise(() => loadDomains());
-    if (!mod) {
+    if (!mod.available) {
       return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
     }
 
@@ -294,13 +293,13 @@ adminDomains.openapi(addDomainRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
     const { requestId } = yield* RequestContext;
+    const mod = yield* Domains;
 
     if (!orgId) {
       return c.json({ error: "bad_request", message: "No active organization.", requestId }, 400);
     }
 
-    const mod = yield* Effect.promise(() => loadDomains());
-    if (!mod) {
+    if (!mod.available) {
       return yield* Effect.fail(new EnterpriseError(EE_REQUIRED_MESSAGE));
     }
 
@@ -344,13 +343,13 @@ adminDomains.openapi(verifyDomainRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
     const { requestId } = yield* RequestContext;
+    const mod = yield* Domains;
 
     if (!orgId) {
       return c.json({ error: "bad_request", message: "No active organization.", requestId }, 400);
     }
 
-    const mod = yield* Effect.promise(() => loadDomains());
-    if (!mod) {
+    if (!mod.available) {
       return yield* Effect.fail(new EnterpriseError(EE_REQUIRED_MESSAGE));
     }
 
@@ -377,13 +376,13 @@ adminDomains.openapi(verifyDnsTxtRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
     const { requestId } = yield* RequestContext;
+    const mod = yield* Domains;
 
     if (!orgId) {
       return c.json({ error: "bad_request", message: "No active organization.", requestId }, 400);
     }
 
-    const mod = yield* Effect.promise(() => loadDomains());
-    if (!mod) {
+    if (!mod.available) {
       return yield* Effect.fail(new EnterpriseError(EE_REQUIRED_MESSAGE));
     }
 
@@ -409,13 +408,13 @@ adminDomains.openapi(domainCheckRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
     const { requestId } = yield* RequestContext;
+    const mod = yield* Domains;
 
     if (!orgId) {
       return c.json({ error: "bad_request", message: "No active organization.", requestId }, 400);
     }
 
-    const mod = yield* Effect.promise(() => loadDomains());
-    if (!mod) {
+    if (!mod.available) {
       return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
     }
 
@@ -434,13 +433,13 @@ adminDomains.openapi(removeDomainRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
     const { requestId } = yield* RequestContext;
+    const mod = yield* Domains;
 
     if (!orgId) {
       return c.json({ error: "bad_request", message: "No active organization.", requestId }, 400);
     }
 
-    const mod = yield* Effect.promise(() => loadDomains());
-    if (!mod) {
+    if (!mod.available) {
       return yield* Effect.fail(new EnterpriseError(EE_REQUIRED_MESSAGE));
     }
 

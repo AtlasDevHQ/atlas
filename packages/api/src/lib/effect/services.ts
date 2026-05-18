@@ -1873,69 +1873,231 @@ export const NoopRolesPolicyLayer: Layer.Layer<RolesPolicy> = Layer.succeed(
   } satisfies RolesPolicyShape,
 );
 
-// ── Branding (slice TBD) ─────────────────────────────────────────────
+// ── Branding (#2572 — slice 10/11 of #2017) ──────────────────────────
 //
-// Replaces `import { ... } from "@atlas/ee/branding/white-label"` in
-// `api/routes/admin-branding.ts` + `public-branding.ts`. EE serves
-// per-workspace white-label config; core's no-op returns `null` so
-// the public surface falls back to Atlas branding.
+// Inverts every `@atlas/ee/branding/white-label` reference in
+// `packages/api/src/`: the static imports in `api/routes/admin-branding.ts`
+// + `public-branding.ts`. EE serves per-workspace white-label config;
+// the no-op default returns `null` (read fallthrough — frontend renders
+// Atlas defaults) and fails writes with `EnterpriseError` so the routes'
+// existing `domainError(BrandingError)` + `EnterpriseError → 403`
+// mapping renders the upsell envelope.
+//
+// `BrandingError` lives in `lib/branding/branding-errors.ts` so the
+// Tag's failure channel stays typed without pulling in `@atlas/ee`.
+
+type WorkspaceBranding = import("@useatlas/types").WorkspaceBranding;
+type SetWorkspaceBrandingInput =
+  import("@useatlas/types").SetWorkspaceBrandingInput;
+type BrandingError =
+  import("@atlas/api/lib/branding/branding-errors").BrandingError;
+type EnterpriseErrorForBranding =
+  import("@atlas/api/lib/effect/errors").EnterpriseError;
 
 export interface BrandingShape {
+  readonly available: boolean;
+  /** Admin endpoint — enterprise-gated. */
+  readonly getWorkspaceBranding: (
+    orgId: string,
+  ) => Effect.Effect<WorkspaceBranding | null, EnterpriseErrorForBranding>;
+  /** Public endpoint — skips the enterprise gate so existing branding
+   * keeps rendering when a license lapses. */
   readonly getWorkspaceBrandingPublic: (
     orgId: string,
-  ) => Promise<unknown | null>;
+  ) => Effect.Effect<WorkspaceBranding | null>;
+  readonly setWorkspaceBranding: (
+    orgId: string,
+    input: SetWorkspaceBrandingInput,
+  ) => Effect.Effect<
+    WorkspaceBranding,
+    BrandingError | EnterpriseErrorForBranding | Error
+  >;
+  readonly deleteWorkspaceBranding: (
+    orgId: string,
+  ) => Effect.Effect<boolean, EnterpriseErrorForBranding | Error>;
 }
 export class Branding extends Context.Tag("Branding")<
   Branding,
   BrandingShape
 >() {}
-export const NoopBrandingLayer: Layer.Layer<Branding> = Layer.succeed(Branding, {
-  getWorkspaceBrandingPublic: async () => null,
-} satisfies BrandingShape);
+export const NoopBrandingLayer: Layer.Layer<Branding> = Layer.sync(
+  Branding,
+  () => {
+    const { EnterpriseError: EnterpriseErrorClass } =
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      require("@atlas/api/lib/effect/errors") as {
+        EnterpriseError: new (message?: string) => EnterpriseErrorForBranding;
+      };
+    const notAvailable = () =>
+      new EnterpriseErrorClass(
+        "Workspace branding requires enterprise features to be enabled.",
+      );
+    return {
+      available: false,
+      getWorkspaceBranding: () => Effect.fail(notAvailable()),
+      getWorkspaceBrandingPublic: () => Effect.succeed(null),
+      setWorkspaceBranding: () => Effect.fail(notAvailable()),
+      deleteWorkspaceBranding: () => Effect.fail(notAvailable()),
+    } satisfies BrandingShape;
+  },
+);
 
-// ── Domains (slice TBD) ──────────────────────────────────────────────
+// ── Domains (#2572 — slice 10/11 of #2017) ───────────────────────────
 //
-// Replaces `await import("@atlas/ee/platform/domains")` in
-// `api/routes/shared-domains.ts` + `admin-domains.ts`. EE manages
-// custom-domain mappings; core's no-op reports none configured.
+// Inverts every `@atlas/ee/platform/domains` reference in
+// `packages/api/src/`: the `loadDomains()` dynamic-import in
+// `api/routes/shared-domains.ts` (consumed by `admin-domains.ts`). EE
+// manages custom-domain mappings; the no-op default reports `available:
+// false` and fails writes with `EnterpriseError` so the admin page
+// continues to render its enterprise-upsell envelope.
+//
+// `DomainError` lives in `lib/platform/domains-errors.ts` so the Tag's
+// failure channel stays typed without pulling in `@atlas/ee`.
+
+type CustomDomain = import("@useatlas/types").CustomDomain;
+type DomainError =
+  import("@atlas/api/lib/platform/domains-errors").DomainError;
+type EnterpriseErrorForDomains =
+  import("@atlas/api/lib/effect/errors").EnterpriseError;
 
 export interface DomainsShape {
   readonly available: boolean;
+  readonly registerDomain: (
+    workspaceId: string,
+    domain: string,
+  ) => Effect.Effect<CustomDomain, DomainError | EnterpriseErrorForDomains | Error>;
+  readonly verifyDomain: (
+    domainId: string,
+  ) => Effect.Effect<CustomDomain, DomainError | EnterpriseErrorForDomains | Error>;
+  readonly verifyDomainDnsTxt: (
+    domainId: string,
+  ) => Effect.Effect<CustomDomain, DomainError | EnterpriseErrorForDomains | Error>;
+  readonly listDomains: (
+    workspaceId: string,
+  ) => Effect.Effect<CustomDomain[], DomainError | EnterpriseErrorForDomains | Error>;
+  readonly listAllDomains: () => Effect.Effect<
+    CustomDomain[],
+    DomainError | EnterpriseErrorForDomains | Error
+  >;
+  readonly deleteDomain: (
+    domainId: string,
+  ) => Effect.Effect<void, DomainError | EnterpriseErrorForDomains | Error>;
+  readonly checkDomainAvailability: (
+    domain: string,
+    workspaceId: string,
+  ) => Effect.Effect<
+    { available: boolean; reason?: string },
+    DomainError | EnterpriseErrorForDomains | Error
+  >;
+  readonly hasVerifiedCustomDomain: (
+    workspaceId: string,
+    domain: string,
+  ) => Effect.Effect<boolean, Error>;
+  readonly resolveWorkspaceByHost: (
+    hostname: string,
+  ) => Effect.Effect<string | null>;
+  /** Redact the verification token from a CustomDomain before returning
+   * to API consumers. Synchronous — no Effect wrapping. */
+  readonly redactDomain: (
+    domain: CustomDomain,
+    includeToken?: boolean,
+  ) => CustomDomain;
 }
 export class Domains extends Context.Tag("Domains")<
   Domains,
   DomainsShape
 >() {}
-export const NoopDomainsLayer: Layer.Layer<Domains> = Layer.succeed(Domains, {
-  available: false,
-} satisfies DomainsShape);
+export const NoopDomainsLayer: Layer.Layer<Domains> = Layer.sync(
+  Domains,
+  () => {
+    const { EnterpriseError: EnterpriseErrorClass } =
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      require("@atlas/api/lib/effect/errors") as {
+        EnterpriseError: new (message?: string) => EnterpriseErrorForDomains;
+      };
+    const notAvailable = () =>
+      new EnterpriseErrorClass(
+        "Custom domains require enterprise features to be enabled.",
+      );
+    return {
+      available: false,
+      registerDomain: () => Effect.fail(notAvailable()),
+      verifyDomain: () => Effect.fail(notAvailable()),
+      verifyDomainDnsTxt: () => Effect.fail(notAvailable()),
+      listDomains: () => Effect.succeed([]),
+      listAllDomains: () => Effect.succeed([]),
+      deleteDomain: () => Effect.fail(notAvailable()),
+      checkDomainAvailability: () =>
+        Effect.succeed({
+          available: false,
+          reason: "Custom domains are not available.",
+        }),
+      hasVerifiedCustomDomain: () => Effect.succeed(false),
+      resolveWorkspaceByHost: () => Effect.succeed(null),
+      redactDomain: (d) => d,
+    } satisfies DomainsShape;
+  },
+);
 
-// ── ProactiveGate (slice TBD) ────────────────────────────────────────
+// ── ProactiveGate (#2572 — slice 10/11 of #2017) ─────────────────────
 //
-// Replaces `requireEnterpriseEffect("proactive")` + the
-// `admin-proactive-*` route guards. EE gates the proactive chat
-// surface; core's no-op reports unavailable so the feature is hidden.
+// Replaces `requireEnterpriseEffect("proactive-chat")` in the four
+// `admin-proactive-*` routes. EE gates the proactive chat surface
+// (PRD #2291 — 1.5.0 paid tier); the no-op default fails with
+// `EnterpriseError` so non-enterprise tenants see 403
+// `enterprise_required` and the admin page routes through
+// `EnterpriseUpsell` / `<FeatureGate feature="Proactive Chat">`.
+
+type EnterpriseErrorForProactive =
+  import("@atlas/api/lib/effect/errors").EnterpriseError;
 
 export interface ProactiveGateShape {
   readonly enabled: boolean;
+  /** Effect-style guard. `Effect.void` when enterprise is enabled,
+   * `Effect.fail(EnterpriseError)` otherwise. The route layer's
+   * `classifyError` maps that to a 403 `enterprise_required` envelope.
+   *
+   * Re-reads the enterprise flag on every call (Effect wrapper closes
+   * over the EE-side `isEnterpriseEnabled()`) so a runtime flip
+   * propagates without restart. */
+  readonly requireEnabled: () => Effect.Effect<
+    void,
+    EnterpriseErrorForProactive
+  >;
 }
 export class ProactiveGate extends Context.Tag("ProactiveGate")<
   ProactiveGate,
   ProactiveGateShape
 >() {}
-export const NoopProactiveGateLayer: Layer.Layer<ProactiveGate> = Layer.succeed(
+export const NoopProactiveGateLayer: Layer.Layer<ProactiveGate> = Layer.sync(
   ProactiveGate,
-  {
-    enabled: false,
-  } satisfies ProactiveGateShape,
+  () => {
+    const { EnterpriseError: EnterpriseErrorClass } =
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      require("@atlas/api/lib/effect/errors") as {
+        EnterpriseError: new (message?: string) => EnterpriseErrorForProactive;
+      };
+    return {
+      enabled: false,
+      requireEnabled: () =>
+        Effect.fail(
+          new EnterpriseErrorClass(
+            "Proactive chat requires enterprise features to be enabled.",
+          ),
+        ),
+    } satisfies ProactiveGateShape;
+  },
 );
 
-// ── DeployModeResolver (slice TBD) ───────────────────────────────────
+// ── DeployModeResolver (#2572 — slice 10/11 of #2017) ────────────────
 //
 // Replaces `await import("@atlas/ee/deploy-mode")` in `lib/config.ts`.
-// EE resolves `"saas" | "self-hosted"` from env + internal-DB presence;
-// core's no-op always reports `"self-hosted"` (the correct answer when
-// EE is not loaded — `"saas"` mode requires enterprise).
+// Resolution logic moved to `lib/effect/deploy-mode.ts` in core
+// (`resolveDeployMode`); EE re-exports for back-compat. The Tag still
+// exists because some non-config callers (e.g. agent-loop telemetry,
+// SaaS guards) may eventually want to yield it. The no-op default
+// always reports `"self-hosted"` (the correct answer when EE is not
+// loaded — `"saas"` mode requires enterprise).
 
 export interface DeployModeResolverShape {
   readonly resolve: () => "saas" | "self-hosted";

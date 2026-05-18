@@ -424,7 +424,6 @@ function parseJsonbArray(val: unknown): string[] {
 // maps cleanly to a 404 envelope via `domainError`).
 
 export const makeComplianceReportsLive = (): ComplianceReportsShape => ({
-  available: true,
   generateDataAccessReport,
   generateUserActivityReport,
   dataAccessReportToCSV,

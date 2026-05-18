@@ -618,7 +618,6 @@ export function _resetComplianceState(): void {
 // installs (passes rows through unchanged — fail open).
 
 export const makeMaskingPolicyLive = (): MaskingPolicyShape => ({
-  available: true,
   applyMasking,
   listPIIClassifications,
   updatePIIClassification,

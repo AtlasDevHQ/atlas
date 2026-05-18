@@ -159,7 +159,6 @@ mock.module("@atlas/ee/layers", () => {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { EnterpriseError } = require("@atlas/api/lib/effect/errors") as typeof import("@atlas/api/lib/effect/errors");
         return Layer.succeed(services.ProactiveGate, {
-          enabled: true,
           requireEnabled: () =>
             enterpriseEnabled
               ? effectMod.Effect.void

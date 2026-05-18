@@ -1037,7 +1037,6 @@ const { startAuditPurgeScheduler, stopAuditPurgeScheduler } = require("./purge-s
 };
 
 export const makeAuditRetentionLive = (): AuditRetentionShape => ({
-  available: true,
   getRetentionPolicy,
   setRetentionPolicy,
   purgeExpiredEntries,

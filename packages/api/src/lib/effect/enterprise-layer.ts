@@ -88,6 +88,9 @@ function isEnterpriseEnabledLocal(): boolean {
  *   - ApprovalGate no-op never requires approval
  *   - ResidencyResolver no-op returns null (route falls back to default
  *     datasource — compliance break on EU workspaces)
+ *   - AuditRetention pure-read methods return null (mutating + destructive
+ *     methods now fail loudly post-#2594, but `getRetentionPolicy` would
+ *     still report "no policy" instead of the real one stored in the DB)
  *
  * Hardening this is tracked in #2589 — consumer-side "available"
  * discriminator checks at each load-bearing call site. The change is

@@ -24,7 +24,7 @@ import { Effect } from "effect";
 import type { z } from "@hono/zod-openapi";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { SCIMProvenance } from "@atlas/api/lib/effect/services";
-import { EnterpriseLayer } from "@atlas/api/lib/effect/enterprise-layer";
+import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSettingAuto } from "@atlas/api/lib/settings";
 import { SCIMManagedSchema } from "@atlas/api/lib/auth/scim-managed-schema";
@@ -79,14 +79,19 @@ export function getSCIMOverridePolicy(orgId: string | undefined): SCIMOverridePo
 export const isSCIMProvisioned = (
   userId: string,
   orgId?: string,
-): Effect.Effect<boolean, Error> => {
+): Effect.Effect<boolean, Error, SCIMProvenance> => {
   // EE-gate via the `SCIMProvenance` Tag (#2570). The no-op default
   // reports `available: false`, so self-hosted short-circuits to
   // "treat as non-SCIM" — identical to the pre-#2570
-  // `isEnterpriseEnabled()` check. Provide the `EnterpriseLayer`
-  // internally so the public signature stays `Effect<boolean, Error>`
-  // and existing `Effect.runPromise(isSCIMProvisioned(...))` callers
-  // don't need to thread a layer.
+  // `isEnterpriseEnabled()` check.
+  //
+  // The `SCIMProvenance` Tag is exposed in the `R` channel (#2591) so
+  // callers compose via the module-level `runEnterprise(...)` helper
+  // instead of paying for a fresh `Effect.provide(EnterpriseLayer)` per
+  // call. Re-wrapping `EnterpriseLayer` internally rebuilt the
+  // dynamic `@atlas/ee/layers` import wrapper per invocation and
+  // defeated Effect's reference-keyed Layer memoization — exactly the
+  // problem #2594 hoisted the rest of the call sites out of.
   return Effect.gen(function* () {
     const provenance = yield* SCIMProvenance;
     if (!provenance.available) return false;
@@ -138,7 +143,7 @@ export const isSCIMProvisioned = (
     );
 
     return rows.length > 0;
-  }).pipe(Effect.provide(EnterpriseLayer));
+  });
 };
 
 /**
@@ -169,12 +174,17 @@ export type SCIMGuardResult =
  * Effect-flavoured guard. Resolves SCIM provenance + policy into a single
  * decision the caller short-circuits on. Used directly from Effect-based
  * handlers (e.g. `assignRoleRoute` in admin-roles.ts).
+ *
+ * The `SCIMProvenance` Tag is required (#2591) — Effect-based handlers
+ * inherit it from the Hono bridge's `EnterpriseLayer` automatically.
+ * Non-Effect callers should go through `evaluateSCIMGuardAsync` below,
+ * which composes via the shared module-level runtime.
  */
 export const evaluateSCIMGuard = (opts: {
   userId: string;
   orgId?: string;
   requestId: string;
-}): Effect.Effect<SCIMGuardResult, Error> =>
+}): Effect.Effect<SCIMGuardResult, Error, SCIMProvenance> =>
   Effect.gen(function* () {
     const provisioned = yield* isSCIMProvisioned(opts.userId, opts.orgId);
     if (!provisioned) return { kind: "non_scim" } as const;
@@ -189,15 +199,18 @@ export const evaluateSCIMGuard = (opts: {
 
 /**
  * Promise wrapper for non-Effect handlers (every user mutation in admin.ts
- * lives in plain async/await today). The Effect runs to completion and any
- * unrecoverable failure propagates as a thrown Error — the caller's
- * `runHandler` / try-catch surfaces it as a 500 with the standard requestId
- * shape, which is the desired fail-closed behaviour for a security check.
+ * lives in plain async/await today). The Effect runs to completion through
+ * the shared module-level `EnterpriseLayer` runtime — the dynamic
+ * `@atlas/ee/layers` import is paid once per process rather than per call
+ * (#2591). Any unrecoverable failure propagates as a thrown Error so the
+ * caller's `runHandler` / try-catch surfaces it as a 500 with the standard
+ * requestId shape, which is the desired fail-closed behaviour for a
+ * security check.
  */
 export async function evaluateSCIMGuardAsync(opts: {
   userId: string;
   orgId?: string;
   requestId: string;
 }): Promise<SCIMGuardResult> {
-  return Effect.runPromise(evaluateSCIMGuard(opts));
+  return runEnterprise(evaluateSCIMGuard(opts));
 }

@@ -402,8 +402,15 @@ export async function runEffect<A, E>(
   // handler that `yield* ResidencyResolver` resolves without each route
   // having to provide the layer manually. Layer.mergeAll is referentially
   // stable, so Effect memoizes the construction across requests.
+  // `EnterpriseLayer` has `E = Error` post-#2587 — when EE is enabled
+  // but `@atlas/ee/layers` fails to load, the layer construction fails
+  // rather than silently downgrading to no-op defaults. The error
+  // surfaces here as an `Error` in the program's failure channel and is
+  // routed through `classifyError` below to a 500 (uncategorized — an
+  // operator-visible signal that the EE install is broken). Self-hosted
+  // never exercises this path.
   const contextLayer = buildContextLayer(c);
-  const provided: Effect.Effect<A, E, never> = contextLayer
+  const provided: Effect.Effect<A, E | Error, never> = contextLayer
     ? (program as Effect.Effect<
         A,
         E,

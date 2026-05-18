@@ -1271,16 +1271,23 @@ export const NoopApprovalGateLayer: Layer.Layer<ApprovalGate> = Layer.sync(
         message: `Approval request "${id}" not found.`,
         code: "not_found",
       });
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { EnterpriseError: EnterpriseErrorClass } = require("@atlas/api/lib/effect/errors") as {
+      EnterpriseError: new (message?: string) => import("@atlas/api/lib/effect/errors").EnterpriseError;
+    };
+    const notAvailable = () =>
+      new EnterpriseErrorClass("Approval workflows require enterprise features to be enabled.");
     return {
       checkApprovalRequired: () =>
         Effect.succeed({ required: false, matchedRules: [] }),
       hasApprovedRequest: () => Effect.succeed(false),
-      // `createApprovalRequest` is only reached when checkApprovalRequired
-      // returns `required: true`. With the no-op gate that's never the
-      // case, so this is a defensive impl — die so a regression that
-      // routes through here is loud rather than silent.
-      createApprovalRequest: () =>
-        Effect.die("createApprovalRequest called against no-op ApprovalGate"),
+      // `createApprovalRequest` is reached when checkApprovalRequired
+      // returned `required: true`. The no-op never returns `required:
+      // true`, so this is a defensive impl — fail with EnterpriseError
+      // (not Effect.die) so any regression that lands here surfaces
+      // through the typed error channel and route-layer catchAll (→ 403)
+      // instead of bypassing both as an unrecoverable defect (→ 500).
+      createApprovalRequest: () => Effect.fail(notAvailable()),
       listApprovalRules: () => Effect.succeed([]),
       createApprovalRule: (_orgId, _input) =>
         Effect.fail(notFound("__no_op__")),
@@ -1339,22 +1346,32 @@ export class SlaMetrics extends Context.Tag("SlaMetrics")<
   SlaMetrics,
   SlaMetricsShape
 >() {}
-export const NoopSlaMetricsLayer: Layer.Layer<SlaMetrics> = Layer.succeed(
+// `Effect.fail(new EnterpriseError(...))` rather than `Effect.die(...)` on
+// the methods that have no sensible self-hosted return — defects bypass
+// `Effect.catchAll` and the typed error channel, so a route that catches
+// would still see a 500 with no `requestId`-correlated log. The `Error`
+// channel in the shape already accommodates EnterpriseError.
+export const NoopSlaMetricsLayer: Layer.Layer<SlaMetrics> = Layer.sync(
   SlaMetrics,
-  {
-    available: false,
-    recordQueryMetric: () => Effect.void,
-    getAllWorkspaceSLA: () => Effect.succeed([]),
-    getWorkspaceSLADetail: () =>
-      Effect.die("SLA monitoring requires enterprise features to be enabled."),
-    getThresholds: () =>
-      Effect.die("SLA monitoring requires enterprise features to be enabled."),
-    updateThresholds: () =>
-      Effect.die("SLA monitoring requires enterprise features to be enabled."),
-    getAlerts: () => Effect.succeed([]),
-    acknowledgeAlert: () => Effect.succeed(false),
-    evaluateAlerts: () => Effect.succeed([]),
-  } satisfies SlaMetricsShape,
+  () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { EnterpriseError: EnterpriseErrorClass } = require("@atlas/api/lib/effect/errors") as {
+      EnterpriseError: new (message?: string) => import("@atlas/api/lib/effect/errors").EnterpriseError;
+    };
+    const notAvailable = () =>
+      new EnterpriseErrorClass("SLA monitoring requires enterprise features to be enabled.");
+    return {
+      available: false,
+      recordQueryMetric: () => Effect.void,
+      getAllWorkspaceSLA: () => Effect.succeed([]),
+      getWorkspaceSLADetail: () => Effect.fail(notAvailable()),
+      getThresholds: () => Effect.fail(notAvailable()),
+      updateThresholds: () => Effect.fail(notAvailable()),
+      getAlerts: () => Effect.succeed([]),
+      acknowledgeAlert: () => Effect.succeed(false),
+      evaluateAlerts: () => Effect.succeed([]),
+    } satisfies SlaMetricsShape;
+  },
 );
 
 // ── BackupsManager (#2568 — slice 6/11 of #2017) ─────────────────────
@@ -1416,20 +1433,28 @@ export class BackupsManager extends Context.Tag("BackupsManager")<
   BackupsManager,
   BackupsManagerShape
 >() {}
-export const NoopBackupsManagerLayer: Layer.Layer<BackupsManager> = Layer.succeed(
+export const NoopBackupsManagerLayer: Layer.Layer<BackupsManager> = Layer.sync(
   BackupsManager,
-  {
+  () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { EnterpriseError: EnterpriseErrorClass } = require("@atlas/api/lib/effect/errors") as {
+      EnterpriseError: new (message?: string) => import("@atlas/api/lib/effect/errors").EnterpriseError;
+    };
+    const notAvailable = () =>
+      new EnterpriseErrorClass("Automated backups require enterprise features to be enabled.");
+    return {
     available: false,
-    getBackupConfig: () => Effect.die("Backups not configured."),
-    updateBackupConfig: () => Effect.die("Backups not configured."),
-    createBackup: () => Effect.die("Backups not configured."),
+    getBackupConfig: () => Effect.fail(notAvailable()),
+    updateBackupConfig: () => Effect.fail(notAvailable()),
+    createBackup: () => Effect.fail(notAvailable()),
     listBackups: () => Effect.succeed([]),
     getBackupById: () => Effect.succeed(null),
     purgeExpiredBackups: () => Effect.succeed(0),
-    verifyBackup: () => Effect.die("Backups not configured."),
-    requestRestore: () => Effect.die("Backups not configured."),
-    executeRestore: () => Effect.die("Backups not configured."),
-  } satisfies BackupsManagerShape,
+    verifyBackup: () => Effect.fail(notAvailable()),
+    requestRestore: () => Effect.fail(notAvailable()),
+    executeRestore: () => Effect.fail(notAvailable()),
+    } satisfies BackupsManagerShape;
+  },
 );
 
 // ── AuditRetention (#2569 — slice 7/11 of #2017) ─────────────────────
@@ -1617,19 +1642,30 @@ export class IpAllowlistPolicy extends Context.Tag("IpAllowlistPolicy")<
   IpAllowlistPolicy,
   IpAllowlistPolicyShape
 >() {}
-export const NoopIpAllowlistPolicyLayer: Layer.Layer<IpAllowlistPolicy> =
-  Layer.succeed(IpAllowlistPolicy, {
-    available: false,
-    checkIPAllowlist: () => Effect.succeed({ allowed: true }),
-    listIPAllowlistEntries: () => Effect.succeed([]),
-    // Defensive: only reachable if the admin route bypasses the
-    // `available` check. Die so a regression that lands an entry on the
-    // no-op default is loud rather than a silent partial state.
-    addIPAllowlistEntry: () =>
-      Effect.die("IpAllowlistPolicy.addIPAllowlistEntry called against no-op default"),
-    removeIPAllowlistEntry: () => Effect.succeed(false),
-    invalidateCache: () => {},
-  } satisfies IpAllowlistPolicyShape);
+export const NoopIpAllowlistPolicyLayer: Layer.Layer<IpAllowlistPolicy> = Layer.sync(
+  IpAllowlistPolicy,
+  () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { EnterpriseError: EnterpriseErrorClass } = require("@atlas/api/lib/effect/errors") as {
+      EnterpriseError: new (message?: string) => import("@atlas/api/lib/effect/errors").EnterpriseError;
+    };
+    const notAvailable = () =>
+      new EnterpriseErrorClass("IP allowlist requires enterprise features to be enabled.");
+    return {
+      available: false,
+      checkIPAllowlist: () => Effect.succeed({ allowed: true }),
+      listIPAllowlistEntries: () => Effect.succeed([]),
+      // Defensive: only reachable if the admin route bypasses the
+      // `available` check. Fail with EnterpriseError (not Effect.die)
+      // so the route-layer catchAll surfaces a 403 instead of an
+      // unrecoverable 500 defect — matches the pattern across the other
+      // Noop layers post-#2587.
+      addIPAllowlistEntry: () => Effect.fail(notAvailable()),
+      removeIPAllowlistEntry: () => Effect.succeed(false),
+      invalidateCache: () => {},
+    } satisfies IpAllowlistPolicyShape;
+  },
+);
 
 // ── SSOPolicy (#2570 — slice 8/11 of #2017) ──────────────────────────
 //

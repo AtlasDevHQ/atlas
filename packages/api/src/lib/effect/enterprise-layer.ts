@@ -101,14 +101,14 @@ function isEnterpriseEnabledLocal(): boolean {
  * (`scripts/check-ee-imports.sh`); the allow-list covers this file
  * plus the conditional import below.
  */
-const ConditionalEELayer: Layer.Layer<never> = Layer.unwrapEffect(
+const ConditionalEELayer: Layer.Layer<never, Error> = Layer.unwrapEffect(
   Effect.sync(() => isEnterpriseEnabledLocal()).pipe(
     Effect.flatMap((enabled) => {
-      if (!enabled) return Effect.succeed(Layer.empty as Layer.Layer<never>);
+      if (!enabled) return Effect.succeed(Layer.empty as Layer.Layer<never, Error>);
       return Effect.tryPromise({
         try: async () => {
           const mod = (await import("@atlas/ee/layers")) as { EELayer: Layer.Layer<never> };
-          return mod.EELayer;
+          return mod.EELayer as Layer.Layer<never, Error>;
         },
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       }).pipe(
@@ -163,7 +163,11 @@ export type EnterpriseSubsystem =
  * Node's module cache after the first load. Effect's Layer memoization
  * elides repeat work within a single program run.
  */
-export const EnterpriseLayer: Layer.Layer<EnterpriseSubsystem> = Layer.mergeAll(
+// `E = Error` propagates from `ConditionalEELayer` so callers see a
+// loud Promise rejection / typed failure if `ATLAS_ENTERPRISE_ENABLED=true`
+// but `@atlas/ee/layers` fails to load (#2587). Self-hosted resolves
+// E=never since the short-circuit branch returns `Layer.empty`.
+export const EnterpriseLayer: Layer.Layer<EnterpriseSubsystem, Error> = Layer.mergeAll(
   NoopEnterpriseDefaultsLayer,
   ConditionalEELayer,
 );

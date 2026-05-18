@@ -215,10 +215,17 @@ mock.module("effect", () => {
 // above doesn't implement. The route flow is driven by the shimmed
 // `runEffect` mock, so `EnterpriseLayer` is never actually evaluated
 // inside the test; an inert mock-layer keeps the loader happy.
+//
+// **Opted out of `makeTestEnterpriseLayer` (#2588).** The helper builds
+// a real `ManagedRuntime` from a real Effect Layer composition; this
+// test also mocks the entire `effect` module above, so `Layer.succeed`
+// + `ManagedRuntime.make` are the local shims that don't actually
+// construct a runtime. Migrating off the shim is a separate, larger
+// refactor — until then this inert stub stands in.
 mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   EnterpriseLayer: { _tag: "MockLayer" },
-  // Post-#2594: these are never called because the shimmed `runEffect`
-  // above never reaches the real runtime, but the imports must resolve.
+  // Never called because the shimmed `runEffect` above doesn't reach
+  // the real runtime, but the imports must resolve.
   getEnterpriseRuntime: () => ({
     runPromise: () => Promise.resolve(undefined),
     runPromiseExit: () => Promise.resolve({ _tag: "Success", value: undefined } as never),
@@ -362,15 +369,16 @@ mock.module("@atlas/api/lib/effect/services", () => ({
   },
 }));
 
-// Short-circuit `enterprise-layer.ts` — its production composition
-// uses real `Layer.unwrapEffect` which the local Effect shim doesn't
-// implement. The route's `Effect.provide(EnterpriseLayer)` becomes a
-// no-op because `Effect.runPromise` in the shim just returns the
-// value.
+// Short-circuit `enterprise-layer.ts` — opted out of
+// `makeTestEnterpriseLayer` (#2588) for the same reason as the first
+// block above: the `effect` module mock at the top of this file
+// replaces `Layer.succeed` + `ManagedRuntime` with shims, so the
+// helper's real-runtime construction can't run. Migrating off the
+// shim is a separate, larger refactor.
 mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   EnterpriseLayer: { _tag: "MockLayer" },
-  // Post-#2594: these are never called because the shimmed `runEffect`
-  // above never reaches the real runtime, but the imports must resolve.
+  // Never called because the shimmed `runEffect` above doesn't reach
+  // the real runtime, but the imports must resolve.
   getEnterpriseRuntime: () => ({
     runPromise: () => Promise.resolve(undefined),
     runPromiseExit: () => Promise.resolve({ _tag: "Success", value: undefined } as never),

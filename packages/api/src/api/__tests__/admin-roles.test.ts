@@ -121,21 +121,20 @@ mock.module("@atlas/api/lib/auth/roles-errors", () => ({
   RoleError: MockRoleError,
 }));
 
-// We override `EnterpriseLayer` directly with a Layer that pre-binds
-// the mock CRUD functions. The Layer must aggregate every Tag the
-// middleware chain yields (post-#2570 added IP/SSO/SCIM via
-// `routes/middleware.ts` + `lib/auth/middleware.ts`), otherwise
-// `Effect.provide` resolves the missing Tags as defects and routes
-// return 500 instead of the expected 200/4xx.
+// Bind the test layer through the shared helper — covers every Tag the
+// middleware chain yields (post-#2570: RolesPolicy + IpAllowlistPolicy +
+// SSOPolicy + SCIMProvenance) so middleware never sees a missing-Tag
+// defect, with happy-path defaults overridden per-CRUD-method below.
+//
+// `require()` (not `await import()`) because `mock.module()`'s factory
+// must complete synchronously — bun's loader deadlocks on an inner
+// `await` mid-mock-resolution (feedback_bun_test_async_mock_module).
 mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { Layer, ManagedRuntime } = require("effect") as typeof import("effect");
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
-  const testLayer = Layer.mergeAll(
-    Layer.succeed(services.RolesPolicy, {
-      customRolesActive: true,
-      checkPermission: () => Effect.succeed(null),
+  const { makeTestEnterpriseLayer } =
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- `mock.module()` factory must be synchronous (feedback_bun_test_async_mock_module)
+    require("@atlas/api/__test-utils__/makeTestEnterpriseLayer") as typeof import("@atlas/api/__test-utils__/makeTestEnterpriseLayer");
+  return makeTestEnterpriseLayer({
+    RolesPolicy: {
       listRoles: mockListRoles as never,
       getRole: mockGetRole as never,
       getRoleByName: mockGetRoleByName as never,
@@ -144,34 +143,8 @@ mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
       deleteRole: mockDeleteRole as never,
       listRoleMembers: mockListRoleMembers as never,
       assignRole: mockAssignRole as never,
-    } as never),
-    Layer.succeed(services.IpAllowlistPolicy, {
-      available: false,
-      checkIPAllowlist: () => Effect.succeed({ allowed: true }),
-    } as never),
-    Layer.succeed(services.SSOPolicy, {
-      available: false,
-      extractEmailDomain: (email: string) => {
-        const at = email.lastIndexOf("@");
-        return at > 0 ? email.slice(at + 1).toLowerCase() : null;
-      },
-      isSSOEnforcedForDomain: () => Effect.succeed({ enforced: false }),
-      isSSOEnforced: () => Effect.succeed({ enforced: false }),
-    } as never),
-    Layer.succeed(services.SCIMProvenance, {
-      available: false,
-      isSCIMProvisioned: () => Effect.succeed(false),
-    } as never),
-  );
-  // Post-#2594: production code uses `runEnterprise` / `getEnterpriseRuntime`
-  // (module-level ManagedRuntime singleton). The test runtime is built
-  // against the test Layer so all the mocked Tag bindings flow through.
-  const testRuntime = ManagedRuntime.make(testLayer as never);
-  return {
-    EnterpriseLayer: testLayer,
-    getEnterpriseRuntime: () => testRuntime,
-    runEnterprise: (program: never) => testRuntime.runPromise(program),
-  };
+    },
+  });
 });
 
 // Legacy module-mock stub for any transitive resolver chain. Slice 11

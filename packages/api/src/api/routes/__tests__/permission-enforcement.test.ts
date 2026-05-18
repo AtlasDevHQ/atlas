@@ -84,56 +84,21 @@ mock.module("@atlas/api/lib/auth/roles-errors", () => ({
   RoleError: MockRoleError,
 }));
 
-// `EnterpriseLayer` aggregates every enterprise Tag — slice 8 (#2570)
-// added IpAllowlistPolicy/SSOPolicy/SCIMProvenance to the surface yielded
-// from `routes/middleware.ts` + `lib/auth/middleware.ts`, slice 9 (#2571)
-// added RolesPolicy. The test override must bind every Tag the
-// middleware chain yields, otherwise `Effect.provide` resolves the
-// missing ones as defects (→ 500). Default-allow stubs let unrelated
-// middleware pass through so the permission-enforcement assertions
-// focus on `mockCheckPermission`.
+// Bind the test layer through the shared helper — covers every Tag the
+// middleware chain yields (RolesPolicy + IpAllowlistPolicy + SSOPolicy +
+// SCIMProvenance) with happy-path defaults. The mocked `checkPermission`
+// is what the assertions focus on; everything else falls through to
+// helper defaults so unrelated middleware doesn't perturb the result.
 mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { Layer, ManagedRuntime } = require("effect") as typeof import("effect");
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
-  const testLayer = Layer.mergeAll(
-    Layer.succeed(services.RolesPolicy, {
-      customRolesActive: true,
+  const { makeTestEnterpriseLayer } =
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- `mock.module()` factory must be synchronous (feedback_bun_test_async_mock_module)
+    require("@atlas/api/__test-utils__/makeTestEnterpriseLayer") as typeof import("@atlas/api/__test-utils__/makeTestEnterpriseLayer");
+  return makeTestEnterpriseLayer({
+    RolesPolicy: {
       checkPermission: mockCheckPermission as never,
       listRoles: mockListRoles as never,
-      getRole: () => Effect.succeed(null),
-      getRoleByName: () => Effect.succeed(null),
-      createRole: () => Effect.die(new Error("not configured")),
-      updateRole: () => Effect.die(new Error("not configured")),
-      deleteRole: () => Effect.succeed(true),
-      listRoleMembers: () => Effect.succeed([]),
-      assignRole: () => Effect.die(new Error("not configured")),
-    } as never),
-    Layer.succeed(services.IpAllowlistPolicy, {
-      available: false,
-      checkIPAllowlist: () => Effect.succeed({ allowed: true }),
-    } as never),
-    Layer.succeed(services.SSOPolicy, {
-      available: false,
-      extractEmailDomain: (email: string) => {
-        const at = email.lastIndexOf("@");
-        return at > 0 ? email.slice(at + 1).toLowerCase() : null;
-      },
-      isSSOEnforcedForDomain: () => Effect.succeed({ enforced: false }),
-      isSSOEnforced: () => Effect.succeed({ enforced: false }),
-    } as never),
-    Layer.succeed(services.SCIMProvenance, {
-      available: false,
-      isSCIMProvisioned: () => Effect.succeed(false),
-    } as never),
-  );
-  const testRuntime = ManagedRuntime.make(testLayer as never);
-  return {
-    EnterpriseLayer: testLayer,
-    getEnterpriseRuntime: () => testRuntime,
-    runEnterprise: (program: never) => testRuntime.runPromise(program),
-  };
+    },
+  });
 });
 
 // Legacy module-mock stub — slice 11 closeout #2573 will drop entirely.

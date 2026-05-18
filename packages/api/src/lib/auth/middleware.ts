@@ -16,7 +16,8 @@ import { validateBYOT } from "@atlas/api/lib/auth/byot";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSetting } from "@atlas/api/lib/settings";
 import { Effect } from "effect";
-import { isSSOEnforcedForDomain, extractEmailDomain } from "@atlas/ee/auth/sso";
+import { SSOPolicy } from "@atlas/api/lib/effect/services";
+import { EnterpriseLayer } from "@atlas/api/lib/effect/enterprise-layer";
 import { logAdminActionAwait, type AdminActionEntry } from "@atlas/api/lib/audit";
 import type { AuthMode } from "@useatlas/types";
 
@@ -370,12 +371,17 @@ async function checkSSOEnforcement(
   authMode: SSOEnforceableMode,
 ): Promise<AuthResult | null> {
   try {
-    const domain = extractEmailDomain(userLabel);
+    const sso = await Effect.runPromise(
+      Effect.gen(function* () {
+        return yield* SSOPolicy;
+      }).pipe(Effect.provide(EnterpriseLayer)),
+    );
+    const domain = sso.extractEmailDomain(userLabel);
     if (!domain) return null;
 
     const enforcement = _ssoEnforcementOverride
       ? await _ssoEnforcementOverride(domain)
-      : await Effect.runPromise(isSSOEnforcedForDomain(domain));
+      : await Effect.runPromise(sso.isSSOEnforcedForDomain(domain));
     if (!enforcement || !enforcement.enforced) return null;
 
     log.warn(

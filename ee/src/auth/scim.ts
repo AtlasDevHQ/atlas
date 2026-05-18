@@ -13,7 +13,7 @@
  * skips the gate, returning null when no mapping exists.
  */
 
-import { Data, Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import {
@@ -22,17 +22,24 @@ import {
   getInternalDB,
 } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import {
+  SCIMProvenance,
+  type SCIMProvenanceShape,
+} from "@atlas/api/lib/effect/services";
+import {
+  SCIMError,
+  type SCIMErrorCode,
+} from "@atlas/api/lib/auth/auth-errors";
 
 const log = createLogger("ee:scim");
 
 // ── Typed errors ────────────────────────────────────────────────────
 
-export type SCIMErrorCode = "not_found" | "conflict" | "validation";
-
-export class SCIMError extends Data.TaggedError("SCIMError")<{
-  message: string;
-  code: SCIMErrorCode;
-}> {}
+/**
+ * `SCIMError` lives in `@atlas/api/lib/auth/auth-errors` post-#2570.
+ * Re-exported here for back-compat.
+ */
+export { SCIMError, type SCIMErrorCode };
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -347,3 +354,21 @@ export const resolveGroupToRole = (orgId: string, scimGroupName: string): Effect
       }),
     );
   });
+
+// ── Tag wiring (#2570 — slice 8/11 of #2017) ─────────────────────────
+
+export const makeSCIMProvenanceLive = (): SCIMProvenanceShape => ({
+  available: true,
+  listConnections,
+  deleteConnection,
+  getSyncStatus,
+  listGroupMappings,
+  createGroupMapping,
+  deleteGroupMapping,
+  resolveGroupToRole,
+});
+
+export const SCIMProvenanceLive: Layer.Layer<SCIMProvenance> = Layer.sync(
+  SCIMProvenance,
+  makeSCIMProvenanceLive,
+);

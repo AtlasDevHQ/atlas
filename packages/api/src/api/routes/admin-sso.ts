@@ -11,23 +11,9 @@ import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import {
   AuthContext,
+  SSOPolicy,
 } from "@atlas/api/lib/effect/services";
-import {
-  listSSOProviders,
-  getSSOProvider,
-  createSSOProvider,
-  updateSSOProvider,
-  deleteSSOProvider,
-  redactProvider,
-  summarizeProvider,
-  setSSOEnforcement,
-  isSSOEnforced,
-  verifyDomain,
-  checkDomainAvailability,
-  testSSOProvider,
-  SSOError,
-  SSOEnforcementError,
-} from "@atlas/ee/auth/sso";
+import { SSOError, SSOEnforcementError } from "@atlas/api/lib/auth/auth-errors";
 import type {
   CreateSSOProviderRequest,
   UpdateSSOProviderRequest,
@@ -637,9 +623,10 @@ adminSso.use(requireOrgContext());
 adminSso.openapi(listProvidersRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    const sso = yield* SSOPolicy;
 
-    const providers = yield* listSSOProviders(orgId!);
-    return c.json({ providers: providers.map(summarizeProvider), total: providers.length }, 200);
+    const providers = yield* sso.listSSOProviders(orgId!);
+    return c.json({ providers: providers.map(sso.summarizeProvider), total: providers.length }, 200);
   }), { label: "list SSO providers", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });
 
@@ -647,17 +634,18 @@ adminSso.openapi(listProvidersRoute, async (c) => {
 adminSso.openapi(getProviderRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    const sso = yield* SSOPolicy;
     const { id: providerId } = c.req.valid("param");
 
     if (!isValidId(providerId)) {
       return c.json({ error: "bad_request", message: "Invalid provider ID." }, 400);
     }
 
-    const provider = yield* getSSOProvider(orgId!, providerId);
+    const provider = yield* sso.getSSOProvider(orgId!, providerId);
     if (!provider) {
       return c.json({ error: "not_found", message: "SSO provider not found." }, 404);
     }
-    return c.json({ provider: redactProvider(provider) }, 200);
+    return c.json({ provider: sso.redactProvider(provider) }, 200);
   }), { label: "get SSO provider", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });
 
@@ -672,7 +660,8 @@ adminSso.openapi(createProviderRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Missing required fields: type, issuer, domain, config." }, 400);
     }
 
-    const provider = yield* createSSOProvider(orgId!, body as unknown as CreateSSOProviderRequest);
+    const sso = yield* SSOPolicy;
+    const provider = yield* sso.createSSOProvider(orgId!, body as unknown as CreateSSOProviderRequest);
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.sso.configure,
@@ -682,7 +671,7 @@ adminSso.openapi(createProviderRoute, async (c) => {
       metadata: { providerType: body.type },
     });
 
-    return c.json({ provider: redactProvider(provider) }, 201);
+    return c.json({ provider: sso.redactProvider(provider) }, 201);
   }), { label: "create SSO provider", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });
 
@@ -698,7 +687,8 @@ adminSso.openapi(updateProviderRoute, async (c) => {
 
     const body = c.req.valid("json") as UpdateSSOProviderRequest;
 
-    const provider = yield* updateSSOProvider(orgId!, providerId, body);
+    const sso = yield* SSOPolicy;
+    const provider = yield* sso.updateSSOProvider(orgId!, providerId, body);
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.sso.update,
@@ -708,7 +698,7 @@ adminSso.openapi(updateProviderRoute, async (c) => {
       metadata: { providerType: provider.type },
     });
 
-    return c.json({ provider: redactProvider(provider) }, 200);
+    return c.json({ provider: sso.redactProvider(provider) }, 200);
   }), { label: "update SSO provider", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });
 
@@ -722,7 +712,7 @@ adminSso.openapi(deleteProviderRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Invalid provider ID." }, 400);
     }
 
-    const deleted = yield* deleteSSOProvider(orgId!, providerId);
+    const deleted = yield* (yield* SSOPolicy).deleteSSOProvider(orgId!, providerId);
     if (!deleted) {
       return c.json({ error: "not_found", message: "SSO provider not found." }, 404);
     }
@@ -748,7 +738,7 @@ adminSso.openapi(testProviderRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Invalid provider ID." }, 400);
     }
 
-    const result = yield* testSSOProvider(orgId!, providerId);
+    const result = yield* (yield* SSOPolicy).testSSOProvider(orgId!, providerId);
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.sso.test,
@@ -767,7 +757,7 @@ adminSso.openapi(getEnforcementRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const result = yield* isSSOEnforced(orgId!);
+    const result = yield* (yield* SSOPolicy).isSSOEnforced(orgId!);
     return c.json({ enforced: result?.enforced ?? false, orgId: orgId! }, 200);
   }), { label: "get SSO enforcement status", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });
@@ -778,7 +768,7 @@ adminSso.openapi(setEnforcementRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const { enforced } = c.req.valid("json");
 
-    const result = yield* setSSOEnforcement(orgId!, enforced);
+    const result = yield* (yield* SSOPolicy).setSSOEnforcement(orgId!, enforced);
 
     // Toggling SSO enforcement blocks or unblocks password login for every
     // member of the org — availability-critical, must never be silent.
@@ -806,7 +796,7 @@ adminSso.openapi(verifyDomainRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Invalid provider ID." }, 400);
     }
 
-    const result = yield* verifyDomain(providerId, orgId!);
+    const result = yield* (yield* SSOPolicy).verifyDomain(providerId, orgId!);
 
     // DNS TXT lookup that flips a provider to `verified` — the gate that
     // separates an unverified SSO config from one that can be enabled.
@@ -839,7 +829,7 @@ adminSso.openapi(domainCheckRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Missing required query parameter: domain." }, 400);
     }
 
-    const result = yield* checkDomainAvailability(domain, orgId!);
+    const result = yield* (yield* SSOPolicy).checkDomainAvailability(domain, orgId!);
     return c.json(result, 200);
   }), { label: "check SSO domain availability", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });

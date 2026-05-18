@@ -120,6 +120,58 @@ mock.module("@atlas/ee/auth/scim", () => ({
   _resetTableEnsured: () => {},
 }));
 
+// Core error stubs — `EnterpriseLayer`'s no-op defaults lazy-require these.
+mock.module("@atlas/api/lib/auth/auth-errors", () => ({
+  IPAllowlistError: class extends Error { public readonly _tag = "IPAllowlistError" as const; },
+  SSOError: class extends Error { public readonly _tag = "SSOError" as const; },
+  SSOEnforcementError: class extends Error { public readonly _tag = "SSOEnforcementError" as const; },
+  SCIMError: MockSCIMError,
+}));
+mock.module("@atlas/api/lib/residency/errors", () => ({
+  ResidencyError: class extends Error { public readonly _tag = "ResidencyError" as const; },
+}));
+mock.module("@atlas/api/lib/compliance/errors", () => ({
+  ComplianceError: class extends Error { public readonly _tag = "ComplianceError" as const; },
+  ReportError: class extends Error { public readonly _tag = "ReportError" as const; },
+}));
+mock.module("@atlas/api/lib/model-routing/errors", () => ({
+  ModelConfigError: class extends Error { public readonly _tag = "ModelConfigError" as const; },
+  ModelConfigDecryptError: class extends Error { public readonly _tag = "ModelConfigDecryptError" as const; },
+}));
+mock.module("@atlas/api/lib/governance/errors", () => ({
+  ApprovalError: class extends Error { public readonly _tag = "ApprovalError" as const; },
+}));
+mock.module("@atlas/api/lib/audit/retention-errors", () => ({
+  RetentionError: class extends Error { public readonly _tag = "RetentionError" as const; },
+}));
+
+// Provide SCIMProvenance via EELayer Tag (slice 8/11 of #2017).
+mock.module("@atlas/ee/layers", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Layer, Effect: E } = require("effect") as typeof import("effect");
+  return {
+    EELayer: Layer.unwrapEffect(
+      E.sync(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+        return Layer.succeed(services.SCIMProvenance, {
+          available: true,
+          isSCIMProvisioned: () => Effect.succeed(false),
+          listConnections: mockListConnections as never,
+          deleteConnection: mockDeleteConnection as never,
+          getSyncStatus: mockGetSyncStatus as never,
+          listGroupMappings: mockListGroupMappings as never,
+          createGroupMapping: mockCreateGroupMapping as never,
+          deleteGroupMapping: mockDeleteGroupMapping as never,
+          resolveGroupToRole: () => Effect.succeed(null),
+        } as never);
+      }),
+    ),
+  };
+});
+
+process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+
 // --- Import app AFTER mocks ---
 
 const { app } = await import("../index");

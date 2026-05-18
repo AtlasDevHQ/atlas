@@ -94,6 +94,69 @@ mock.module("@atlas/ee/auth/sso", () => ({
   testSSOProvider: () => Effect.succeed({ type: "oidc", success: true, testedAt: "", details: {} }),
 }));
 
+// Core error stubs — `EnterpriseLayer`'s no-op defaults lazy-require these.
+mock.module("@atlas/api/lib/auth/auth-errors", () => ({
+  IPAllowlistError: class extends Error { public readonly _tag = "IPAllowlistError" as const; },
+  SSOError: MockSSOError,
+  SSOEnforcementError: MockSSOEnforcementError,
+  SCIMError: class extends Error { public readonly _tag = "SCIMError" as const; },
+}));
+mock.module("@atlas/api/lib/residency/errors", () => ({
+  ResidencyError: class extends Error { public readonly _tag = "ResidencyError" as const; },
+}));
+mock.module("@atlas/api/lib/compliance/errors", () => ({
+  ComplianceError: class extends Error { public readonly _tag = "ComplianceError" as const; },
+  ReportError: class extends Error { public readonly _tag = "ReportError" as const; },
+}));
+mock.module("@atlas/api/lib/model-routing/errors", () => ({
+  ModelConfigError: class extends Error { public readonly _tag = "ModelConfigError" as const; },
+  ModelConfigDecryptError: class extends Error { public readonly _tag = "ModelConfigDecryptError" as const; },
+}));
+mock.module("@atlas/api/lib/governance/errors", () => ({
+  ApprovalError: class extends Error { public readonly _tag = "ApprovalError" as const; },
+}));
+mock.module("@atlas/api/lib/audit/retention-errors", () => ({
+  RetentionError: class extends Error { public readonly _tag = "RetentionError" as const; },
+}));
+
+// Provide SSOPolicy through EELayer so route `yield* SSOPolicy` resolves.
+// Pattern parallel to admin-ip-allowlist.test.ts (slice 8/11).
+mock.module("@atlas/ee/layers", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Layer, Effect: E } = require("effect") as typeof import("effect");
+  return {
+    EELayer: Layer.unwrapEffect(
+      E.sync(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+        return Layer.succeed(services.SSOPolicy, {
+          available: true,
+          extractEmailDomain: (email: string) => {
+            const at = email.lastIndexOf("@");
+            return at > 0 ? email.slice(at + 1).toLowerCase() : null;
+          },
+          isSSOEnforcedForDomain: () => Effect.succeed({ enforced: false }),
+          isSSOEnforced: () => Effect.succeed({ enforced: false }),
+          setSSOEnforcement: mockSetSSOEnforcement as never,
+          listSSOProviders: () => Effect.succeed([]),
+          getSSOProvider: () => Effect.succeed(null),
+          createSSOProvider: () => Effect.succeed({ id: "prov-1" }) as never,
+          updateSSOProvider: () => Effect.succeed({ id: "prov-1" }) as never,
+          deleteSSOProvider: () => Effect.succeed(true),
+          verifyDomain: mockVerifyDomain as never,
+          checkDomainAvailability: () => Effect.succeed({ available: true }),
+          testSSOProvider: () => Effect.succeed({ type: "oidc", success: true, testedAt: "", details: {} }) as never,
+          findProviderByDomain: () => Effect.succeed(null),
+          redactProvider: (p) => p,
+          summarizeProvider: (p) => p,
+        } as never);
+      }),
+    ),
+  };
+});
+
+process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+
 const { app } = await import("../index");
 
 afterAll(() => mocks.cleanup());

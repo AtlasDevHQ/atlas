@@ -110,6 +110,72 @@ mock.module("@atlas/ee/auth/sso", () => ({
   SSO_PROVIDER_TYPES: ["saml", "oidc"],
 }));
 
+// Core error stubs — `EnterpriseLayer`'s no-op defaults lazy-require these.
+mock.module("@atlas/api/lib/auth/auth-errors", () => ({
+  IPAllowlistError: class extends Error { public readonly _tag = "IPAllowlistError" as const; },
+  SSOError: MockSSOError,
+  SSOEnforcementError: MockSSOEnforcementError,
+  SCIMError: class extends Error { public readonly _tag = "SCIMError" as const; },
+}));
+mock.module("@atlas/api/lib/residency/errors", () => ({
+  ResidencyError: class extends Error { public readonly _tag = "ResidencyError" as const; },
+}));
+mock.module("@atlas/api/lib/compliance/errors", () => ({
+  ComplianceError: class extends Error { public readonly _tag = "ComplianceError" as const; },
+  ReportError: class extends Error { public readonly _tag = "ReportError" as const; },
+}));
+mock.module("@atlas/api/lib/model-routing/errors", () => ({
+  ModelConfigError: class extends Error { public readonly _tag = "ModelConfigError" as const; },
+  ModelConfigDecryptError: class extends Error { public readonly _tag = "ModelConfigDecryptError" as const; },
+}));
+mock.module("@atlas/api/lib/governance/errors", () => ({
+  ApprovalError: class extends Error { public readonly _tag = "ApprovalError" as const; },
+}));
+mock.module("@atlas/api/lib/audit/retention-errors", () => ({
+  RetentionError: class extends Error { public readonly _tag = "RetentionError" as const; },
+}));
+
+// Provide SSOPolicy via EELayer Tag (slice 8/11 of #2017).
+mock.module("@atlas/ee/layers", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Layer, Effect: E } = require("effect") as typeof import("effect");
+  return {
+    EELayer: Layer.unwrapEffect(
+      E.sync(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+        return Layer.succeed(services.SSOPolicy, {
+          available: true,
+          extractEmailDomain: (email: string) => {
+            const at = email.lastIndexOf("@");
+            return at > 0 ? email.slice(at + 1).toLowerCase() : null;
+          },
+          isSSOEnforcedForDomain: () => Effect.succeed({ enforced: false }),
+          isSSOEnforced: () => Effect.succeed({ enforced: false }),
+          setSSOEnforcement: (() => Effect.succeed({ enforced: false, orgId: "org-1" })) as never,
+          listSSOProviders: () => Effect.succeed([]),
+          getSSOProvider: mockGetSSOProvider as never,
+          createSSOProvider: mockCreateSSOProvider as never,
+          updateSSOProvider: mockUpdateSSOProvider as never,
+          deleteSSOProvider: () => Effect.succeed(false),
+          verifyDomain: mockVerifyDomain as never,
+          checkDomainAvailability: mockCheckDomainAvailability as never,
+          testSSOProvider: mockTestSSOProvider as never,
+          findProviderByDomain: () => Effect.succeed(null),
+          redactProvider: (p) => p,
+          summarizeProvider: (p) => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- handle generic provider shape
+            const { config: _config, ...rest } = p as any;
+            return rest;
+          },
+        } as never);
+      }),
+    ),
+  };
+});
+
+process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+
 // --- Import app after mocks ---
 
 const { app } = await import("../index");

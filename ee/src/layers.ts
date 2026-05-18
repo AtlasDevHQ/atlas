@@ -14,8 +14,10 @@
  * Slice 5/11 (#2567) — added `ApprovalGateLive`.
  * Slice 6/11 (#2568) — added `SlaMetricsLive` + `BackupsManagerLive`.
  * Slice 7/11 (#2569) — added `AuditRetentionLive`.
+ * Slice 8/11 (#2570) — added `IpAllowlistPolicyLive` + `SSOPolicyLive`
+ *   + `SCIMProvenanceLive` (auth subsystem trio).
  *
- * Later slices (#2570–#2572) follow the same pattern: one Tag, one
+ * Later slices (#2571–#2572) follow the same pattern: one Tag, one
  * Layer entry. See the parent issue (#2017) for the rationale.
  */
 
@@ -25,9 +27,12 @@ import type {
   AuditRetention,
   BackupsManager,
   ComplianceReports,
+  IpAllowlistPolicy,
   MaskingPolicy,
   ModelRouter,
   ResidencyResolver,
+  SCIMProvenance,
+  SSOPolicy,
   SlaMetrics,
 } from "@atlas/api/lib/effect/services";
 import { ResidencyResolverLive } from "./platform/residency";
@@ -38,6 +43,9 @@ import { ApprovalGateLive } from "./governance/approval";
 import { SlaMetricsLive } from "./sla/index";
 import { BackupsManagerLive } from "./backups/index";
 import { AuditRetentionLive } from "./audit/retention";
+import { IpAllowlistPolicyLive } from "./auth/ip-allowlist";
+import { SSOPolicyLive } from "./auth/sso";
+import { SCIMProvenanceLive } from "./auth/scim";
 
 /**
  * Aggregated EE Layer — typed by the union of every Tag this module
@@ -50,9 +58,12 @@ export const EELayer: Layer.Layer<
   | AuditRetention
   | BackupsManager
   | ComplianceReports
+  | IpAllowlistPolicy
   | MaskingPolicy
   | ModelRouter
   | ResidencyResolver
+  | SCIMProvenance
+  | SSOPolicy
   | SlaMetrics
 > = Layer.mergeAll(
   ResidencyResolverLive,
@@ -63,4 +74,7 @@ export const EELayer: Layer.Layer<
   SlaMetricsLive,
   BackupsManagerLive,
   AuditRetentionLive,
+  IpAllowlistPolicyLive,
+  SSOPolicyLive,
+  SCIMProvenanceLive,
 );

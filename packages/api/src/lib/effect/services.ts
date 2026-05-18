@@ -1560,18 +1560,55 @@ export const NoopAuditRetentionLayer: Layer.Layer<AuditRetention> = Layer.sync(
   },
 );
 
-// ── IpAllowlistPolicy (#2572) ────────────────────────────────────────
+// ── IpAllowlistPolicy (#2570 — slice 8/11 of #2017) ──────────────────
 //
-// Replaces `await import("@atlas/ee/auth/ip-allowlist")` in
-// `api/routes/middleware.ts` + chat / auth-preamble / admin-auth /
-// admin-ip-allowlist. EE checks client IP against per-org allowlist;
-// core's no-op always allows.
+// Inverts every `@atlas/ee/auth/ip-allowlist` reference in
+// `packages/api/src/`: the dynamic-import lazy-loader in
+// `admin-ip-allowlist.ts` (whose explicit "circular-dep workaround"
+// comment is what motivated the Tag inversion in the first place), plus
+// the four dynamic-import call sites in `admin-auth`, `auth-preamble`,
+// `chat`, and `lib/auth/middleware.ts`. EE overlays the real impl; the
+// no-op default always allows (matches pre-#2570 behavior when EE
+// wasn't loaded).
+//
+// `IPAllowlistError` lives in `lib/auth/auth-errors.ts` so the Tag's
+// failure channel stays typed without pulling in `@atlas/ee`.
+
+type IPAllowlistError = import("@atlas/api/lib/auth/auth-errors").IPAllowlistError;
+type EnterpriseErrorForAuth = import("@atlas/api/lib/effect/errors").EnterpriseError;
+
+export interface IPAllowlistEntryShape {
+  readonly id: string;
+  readonly orgId: string;
+  readonly cidr: string;
+  readonly description: string | null;
+  readonly createdAt: string;
+  readonly createdBy: string | null;
+}
 
 export interface IpAllowlistPolicyShape {
-  readonly checkAllowed: (
-    ip: string,
+  /** False when EE isn't loaded — `checkIPAllowlist` falls through to allow. */
+  readonly available: boolean;
+  /** Always-allow when no-op. Mirrors EE's nullable-`clientIP` signature. */
+  readonly checkIPAllowlist: (
     orgId: string,
-  ) => Promise<{ readonly allowed: boolean; readonly reason?: string }>;
+    clientIP: string | null,
+  ) => Effect.Effect<{ allowed: boolean }, Error>;
+  readonly listIPAllowlistEntries: (
+    orgId: string,
+  ) => Effect.Effect<IPAllowlistEntryShape[], EnterpriseErrorForAuth>;
+  readonly addIPAllowlistEntry: (
+    orgId: string,
+    cidr: string,
+    description: string | null,
+    createdBy: string | null,
+  ) => Effect.Effect<IPAllowlistEntryShape, IPAllowlistError | EnterpriseErrorForAuth | Error>;
+  readonly removeIPAllowlistEntry: (
+    orgId: string,
+    entryId: string,
+  ) => Effect.Effect<boolean, EnterpriseErrorForAuth>;
+  /** Per-org cache buster — safe no-op when EE is missing. */
+  readonly invalidateCache: (orgId: string) => void;
 }
 export class IpAllowlistPolicy extends Context.Tag("IpAllowlistPolicy")<
   IpAllowlistPolicy,
@@ -1579,47 +1616,237 @@ export class IpAllowlistPolicy extends Context.Tag("IpAllowlistPolicy")<
 >() {}
 export const NoopIpAllowlistPolicyLayer: Layer.Layer<IpAllowlistPolicy> =
   Layer.succeed(IpAllowlistPolicy, {
-    checkAllowed: async () => ({ allowed: true }),
+    available: false,
+    checkIPAllowlist: () => Effect.succeed({ allowed: true }),
+    listIPAllowlistEntries: () => Effect.succeed([]),
+    // Defensive: only reachable if the admin route bypasses the
+    // `available` check. Die so a regression that lands an entry on the
+    // no-op default is loud rather than a silent partial state.
+    addIPAllowlistEntry: () =>
+      Effect.die("IpAllowlistPolicy.addIPAllowlistEntry called against no-op default"),
+    removeIPAllowlistEntry: () => Effect.succeed(false),
+    invalidateCache: () => {},
   } satisfies IpAllowlistPolicyShape);
 
-// ── SSOPolicy (slice TBD) ────────────────────────────────────────────
+// ── SSOPolicy (#2570 — slice 8/11 of #2017) ──────────────────────────
 //
-// Replaces `import { ... } from "@atlas/ee/auth/sso"` in
-// `api/routes/admin-sso.ts`. EE manages SSO providers; core's no-op
-// reports the feature unavailable.
+// Inverts `@atlas/ee/auth/sso` references in `packages/api/src/`: the
+// static helper imports (`isSSOEnforcedForDomain`, `extractEmailDomain`)
+// in `lib/auth/middleware.ts` and the full admin surface in
+// `api/routes/admin-sso.ts`. EE overlays the real impl; the no-op
+// reports `available: false` so the admin surface 404s and middleware
+// skips SSO enforcement.
+//
+// `extractEmailDomain` is a pure helper — kept inline on the Tag for
+// symmetry with `isSSOEnforcedForDomain` so middleware reaches both
+// through one yield.
+
+type SSOError = import("@atlas/api/lib/auth/auth-errors").SSOError;
+type SSOEnforcementError = import("@atlas/api/lib/auth/auth-errors").SSOEnforcementError;
+type SSOProvider = import("@useatlas/types").SSOProvider;
+type CreateSSOProviderRequest = import("@useatlas/types").CreateSSOProviderRequest;
+type UpdateSSOProviderRequest = import("@useatlas/types").UpdateSSOProviderRequest;
 
 export interface SSOPolicyShape {
   readonly available: boolean;
+  readonly extractEmailDomain: (email: string) => string | null;
+  /**
+   * Mirror EE's wire shape: returns `null` on missing internal DB,
+   * `{ enforced: false }` when no SSO provider matches the domain,
+   * and `{ enforced: true, provider, ssoRedirectUrl }` otherwise. The
+   * middleware's `ssoRedirectUrl` consumption depends on this exact
+   * shape — do not narrow the union further.
+   */
+  readonly isSSOEnforcedForDomain: (
+    emailDomain: string,
+  ) => Effect.Effect<
+    { enforced: boolean; provider?: SSOProvider; ssoRedirectUrl?: string } | null
+  >;
+  readonly isSSOEnforced: (
+    orgId: string,
+  ) => Effect.Effect<
+    { enforced: boolean; provider?: SSOProvider; ssoRedirectUrl?: string } | null,
+    SSOEnforcementError | EnterpriseErrorForAuth | Error
+  >;
+  readonly setSSOEnforcement: (
+    orgId: string,
+    enforced: boolean,
+  ) => Effect.Effect<{ enforced: boolean; orgId: string }, SSOEnforcementError | EnterpriseErrorForAuth | Error>;
+  readonly listSSOProviders: (orgId: string) => Effect.Effect<SSOProvider[], EnterpriseErrorForAuth>;
+  readonly getSSOProvider: (
+    orgId: string,
+    providerId: string,
+  ) => Effect.Effect<SSOProvider | null, EnterpriseErrorForAuth>;
+  readonly createSSOProvider: (
+    orgId: string,
+    request: CreateSSOProviderRequest,
+  ) => Effect.Effect<SSOProvider, SSOError | EnterpriseErrorForAuth | Error>;
+  readonly updateSSOProvider: (
+    orgId: string,
+    providerId: string,
+    request: UpdateSSOProviderRequest,
+  ) => Effect.Effect<SSOProvider, SSOError | EnterpriseErrorForAuth | Error>;
+  readonly deleteSSOProvider: (
+    orgId: string,
+    providerId: string,
+  ) => Effect.Effect<boolean, EnterpriseErrorForAuth>;
+  readonly verifyDomain: (
+    providerId: string,
+    orgId: string,
+  ) => Effect.Effect<{ status: string; message: string }, SSOError | EnterpriseErrorForAuth | Error>;
+  readonly checkDomainAvailability: (
+    domain: string,
+    orgId: string,
+  ) => Effect.Effect<{ available: boolean; reason?: string }, SSOError | EnterpriseErrorForAuth | Error>;
+  readonly testSSOProvider: (
+    orgId: string,
+    providerId: string,
+  ) => Effect.Effect<
+    import("@useatlas/types").SSOTestResult,
+    SSOError | EnterpriseErrorForAuth
+  >;
+  readonly findProviderByDomain: (
+    emailDomain: string,
+  ) => Effect.Effect<SSOProvider | null>;
+  /** Strip secrets from a provider (pure helper). */
+  readonly redactProvider: (provider: SSOProvider) => SSOProvider;
+  /** Summarize a provider for list endpoints (pure helper). */
+  readonly summarizeProvider: (provider: SSOProvider) => Omit<SSOProvider, "config">;
 }
 export class SSOPolicy extends Context.Tag("SSOPolicy")<
   SSOPolicy,
   SSOPolicyShape
 >() {}
-export const NoopSSOPolicyLayer: Layer.Layer<SSOPolicy> = Layer.succeed(
+export const NoopSSOPolicyLayer: Layer.Layer<SSOPolicy> = Layer.sync(
   SSOPolicy,
-  {
-    available: false,
-  } satisfies SSOPolicyShape,
+  () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { EnterpriseError: EnterpriseErrorClass } = require("@atlas/api/lib/effect/errors") as {
+      EnterpriseError: new (message?: string) => EnterpriseErrorForAuth;
+    };
+    const notAvailable = () =>
+      new EnterpriseErrorClass("SSO requires enterprise features to be enabled.");
+    // Pure-helper inline copy of EE's `extractEmailDomain`. Pre-#2570
+    // middleware called the EE static export; now it reaches it through
+    // the Tag. The no-op needs the same parse so a self-hosted middleware
+    // path can still classify emails without booting EE.
+    const extractEmailDomain = (email: string): string | null => {
+      if (typeof email !== "string") return null;
+      const at = email.lastIndexOf("@");
+      if (at <= 0 || at === email.length - 1) return null;
+      return email.slice(at + 1).toLowerCase();
+    };
+    return {
+      available: false,
+      extractEmailDomain,
+      isSSOEnforcedForDomain: () => Effect.succeed({ enforced: false }),
+      isSSOEnforced: () => Effect.succeed({ enforced: false }),
+      setSSOEnforcement: () => Effect.fail(notAvailable()),
+      listSSOProviders: () => Effect.succeed([]),
+      getSSOProvider: () => Effect.succeed(null),
+      createSSOProvider: () => Effect.fail(notAvailable()),
+      updateSSOProvider: () => Effect.fail(notAvailable()),
+      deleteSSOProvider: () => Effect.succeed(false),
+      verifyDomain: () => Effect.fail(notAvailable()),
+      checkDomainAvailability: () => Effect.fail(notAvailable()),
+      testSSOProvider: () => Effect.fail(notAvailable()) as never,
+      findProviderByDomain: () => Effect.succeed(null),
+      // Pure helpers — identity passthrough on the no-op since there's
+      // never a real provider in the self-hosted path.
+      redactProvider: (provider) => provider,
+      summarizeProvider: (provider) => {
+        const { config: _config, ...rest } = provider;
+        return rest;
+      },
+    } satisfies SSOPolicyShape;
+  },
 );
 
-// ── SCIMProvenance (slice TBD) ───────────────────────────────────────
+// ── SCIMProvenance (#2570 — slice 8/11 of #2017) ─────────────────────
 //
-// Replaces `import { ... } from "@atlas/ee/auth/scim"` in
-// `api/routes/admin-scim.ts`. EE tracks SCIM-managed user provenance;
-// core's no-op reports nothing is SCIM-managed.
+// Inverts `@atlas/ee/auth/scim` references in `packages/api/src/`: the
+// static `isEnterpriseEnabled` gate in `lib/auth/scim-provenance.ts`
+// (gate moves to Layer composition) and the full admin surface in
+// `api/routes/admin-scim.ts`. EE overlays the real impl; the no-op
+// reports `available: false` and returns empty lists.
+
+type SCIMError = import("@atlas/api/lib/auth/auth-errors").SCIMError;
+type SCIMConnectionShape = {
+  readonly id: string;
+  readonly providerId: string;
+  readonly organizationId: string | null;
+};
+type SCIMSyncStatusShape = {
+  readonly connections: number;
+  readonly provisionedUsers: number;
+  readonly lastSyncAt: string | null;
+};
+type SCIMGroupMappingShape = {
+  readonly id: string;
+  readonly orgId: string;
+  readonly scimGroupName: string;
+  readonly roleName: string;
+  readonly createdAt: string;
+};
 
 export interface SCIMProvenanceShape {
-  readonly isManaged: (userId: string) => Promise<boolean>;
+  readonly available: boolean;
+  readonly listConnections: (
+    orgId: string,
+  ) => Effect.Effect<SCIMConnectionShape[], EnterpriseErrorForAuth>;
+  readonly deleteConnection: (
+    orgId: string,
+    connectionId: string,
+  ) => Effect.Effect<boolean, EnterpriseErrorForAuth>;
+  readonly getSyncStatus: (
+    orgId: string,
+  ) => Effect.Effect<SCIMSyncStatusShape, EnterpriseErrorForAuth>;
+  readonly listGroupMappings: (
+    orgId: string,
+  ) => Effect.Effect<SCIMGroupMappingShape[], EnterpriseErrorForAuth>;
+  readonly createGroupMapping: (
+    orgId: string,
+    scimGroupName: string,
+    atlasRole: string,
+  ) => Effect.Effect<SCIMGroupMappingShape, SCIMError | EnterpriseErrorForAuth | Error>;
+  readonly deleteGroupMapping: (
+    orgId: string,
+    mappingId: string,
+  ) => Effect.Effect<boolean, EnterpriseErrorForAuth>;
+  readonly resolveGroupToRole: (
+    orgId: string,
+    scimGroupName: string,
+  ) => Effect.Effect<string | null, Error>;
 }
 export class SCIMProvenance extends Context.Tag("SCIMProvenance")<
   SCIMProvenance,
   SCIMProvenanceShape
 >() {}
-export const NoopSCIMProvenanceLayer: Layer.Layer<SCIMProvenance> = Layer.succeed(
+export const NoopSCIMProvenanceLayer: Layer.Layer<SCIMProvenance> = Layer.sync(
   SCIMProvenance,
-  {
-    isManaged: async () => false,
-  } satisfies SCIMProvenanceShape,
+  () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { EnterpriseError: EnterpriseErrorClass } = require("@atlas/api/lib/effect/errors") as {
+      EnterpriseError: new (message?: string) => EnterpriseErrorForAuth;
+    };
+    const notAvailable = () =>
+      new EnterpriseErrorClass("SCIM provisioning requires enterprise features to be enabled.");
+    return {
+      available: false,
+      listConnections: () => Effect.succeed([]),
+      deleteConnection: () => Effect.succeed(false),
+      getSyncStatus: () =>
+        Effect.succeed({
+          connections: 0,
+          provisionedUsers: 0,
+          lastSyncAt: null,
+        }),
+      listGroupMappings: () => Effect.succeed([]),
+      createGroupMapping: () => Effect.fail(notAvailable()),
+      deleteGroupMapping: () => Effect.succeed(false),
+      resolveGroupToRole: () => Effect.succeed(null),
+    } satisfies SCIMProvenanceShape;
+  },
 );
 
 // ── RolesPolicy (slice TBD) ──────────────────────────────────────────

@@ -206,6 +206,10 @@ function userQueryOutcomeToResponse(
       return { body: { error: "no_datasource", message: outcome.message, requestId }, status: 503 };
     case "pool_exhausted":
       return { body: { error: "pool_exhausted", message: outcome.message, requestId }, status: 503 };
+    case "enterprise_unavailable":
+      // #2593 — distinct from `connection_unavailable` so SaaS monitoring
+      // can correlate with `enterprise.load_failed` structured logs.
+      return { body: { error: "enterprise_load_failed", message: outcome.message, requestId }, status: 503 };
     default: {
       const _exhaustive: never = outcome;
       return {

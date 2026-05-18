@@ -55,7 +55,7 @@ function yieldAuditRetentionFailClosed(): Effect.Effect<
   AuditRetention
 > {
   return Effect.gen(function* () {
-    const retention = yield* yieldAuditRetentionFailClosed();
+    const retention = yield* AuditRetention;
     if (isEnterpriseEnabled() && !retention.available) {
       return yield* Effect.fail(
         new EnterpriseUnavailableError({

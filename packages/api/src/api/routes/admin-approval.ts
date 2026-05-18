@@ -22,19 +22,12 @@ import { APPROVAL_STATUSES, APPROVAL_RULE_SURFACES } from "@useatlas/types";
 import { ApprovalRuleSchema, ApprovalRequestSchema } from "@useatlas/schemas";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
-import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import {
-  listApprovalRules,
-  createApprovalRule,
-  updateApprovalRule,
-  deleteApprovalRule,
-  listApprovalRequests,
-  getApprovalRequest,
-  reviewApprovalRequest,
-  expireStaleRequests,
-  getPendingCount,
-  ApprovalError,
-} from "@atlas/ee/governance/approval";
+  RequestContext,
+  AuthContext,
+  ApprovalGate,
+} from "@atlas/api/lib/effect/services";
+import { ApprovalError } from "@atlas/api/lib/governance/errors";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
@@ -321,7 +314,7 @@ adminApproval.openapi(pendingCountRoute, async (c) => {
       return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
     }
 
-    const count = yield* getPendingCount(orgId);
+    const count = yield* (yield* ApprovalGate).getPendingCount(orgId);
     return c.json({ count }, 200);
   }), { label: "get pending approval count", domainErrors: [approvalDomainError] });
 });
@@ -335,7 +328,7 @@ adminApproval.use(requireOrgContext());
 adminApproval.openapi(expireRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
-    const expired = yield* expireStaleRequests(orgId!);
+    const expired = yield* (yield* ApprovalGate).expireStaleRequests(orgId!);
 
     // Manual sweep that flips pending requests to expired. An admin
     // invoking this post-hoc on a queue they're about to approve/deny
@@ -358,7 +351,7 @@ adminApproval.openapi(listRulesRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const rules = yield* listApprovalRules(orgId!);
+    const rules = yield* (yield* ApprovalGate).listApprovalRules(orgId!);
     return c.json({ rules }, 200);
   }), { label: "list approval rules", domainErrors: [approvalDomainError] });
 });
@@ -376,7 +369,7 @@ adminApproval.openapi(createRuleRoute, async (c) => {
       ? { ruleType: "cost" as const, name: body.name, threshold: body.threshold, enabled: body.enabled, surface: body.surface }
       : { ruleType: body.ruleType, name: body.name, pattern: body.pattern, enabled: body.enabled, surface: body.surface };
 
-    const rule = yield* createApprovalRule(orgId!, input);
+    const rule = yield* (yield* ApprovalGate).createApprovalRule(orgId!, input);
 
     // Rule CRUD is the mechanism behind every approval gate. Silent
     // rule changes let an admin disable the gate, run the action it
@@ -404,7 +397,7 @@ adminApproval.openapi(updateRuleRoute, async (c) => {
     const ruleId = c.req.param("id");
     const body = c.req.valid("json");
 
-    const rule = yield* updateApprovalRule(orgId!, ruleId, body);
+    const rule = yield* (yield* ApprovalGate).updateApprovalRule(orgId!, ruleId, body);
 
     // See `ruleCreate` above for the threat model. `keysChanged` is the
     // semantic-diff signal — records WHICH fields the admin touched
@@ -433,7 +426,7 @@ adminApproval.openapi(deleteRuleRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const ruleId = c.req.param("id");
 
-    const deleted = yield* deleteApprovalRule(orgId!, ruleId);
+    const deleted = yield* (yield* ApprovalGate).deleteApprovalRule(orgId!, ruleId);
     if (!deleted) {
       return c.json({ error: "not_found", message: "Approval rule not found." }, 404);
     }
@@ -458,7 +451,7 @@ adminApproval.openapi(listQueueRoute, async (c) => {
   const { status } = c.req.valid("query");
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
-    const requests = yield* listApprovalRequests(orgId!, status);
+    const requests = yield* (yield* ApprovalGate).listApprovalRequests(orgId!, status);
     return c.json({ requests }, 200);
   }), { label: "list approval requests", domainErrors: [approvalDomainError] });
 });
@@ -469,7 +462,7 @@ adminApproval.openapi(getQueueItemRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const itemId = c.req.param("id");
 
-    const item = yield* getApprovalRequest(orgId!, itemId);
+    const item = yield* (yield* ApprovalGate).getApprovalRequest(orgId!, itemId);
     if (!item) {
       return c.json({ error: "not_found", message: "Approval request not found." }, 404);
     }
@@ -491,7 +484,7 @@ adminApproval.openapi(reviewRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Reviewer user ID unavailable." }, 400);
     }
 
-    const result = yield* reviewApprovalRequest(
+    const result = yield* (yield* ApprovalGate).reviewApprovalRequest(
       orgId!,
       itemId,
       reviewerId,

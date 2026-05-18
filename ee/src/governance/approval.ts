@@ -17,7 +17,7 @@
  * a safe default (false, 0, or empty) while re-throwing unexpected errors.
  */
 
-import { Data, Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import {
@@ -42,17 +42,26 @@ import {
   APPROVAL_REQUEST_SURFACES,
   APPROVAL_STATUSES,
 } from "@useatlas/types";
+import {
+  ApprovalGate,
+  type ApprovalGateShape,
+} from "@atlas/api/lib/effect/services";
+import {
+  ApprovalError,
+  type ApprovalErrorCode,
+} from "@atlas/api/lib/governance/errors";
 
 const log = createLogger("ee:approval-workflows");
 
 // ── Typed errors ────────────────────────────────────────────────────
 
-export type ApprovalErrorCode = "validation" | "not_found" | "conflict" | "expired";
-
-export class ApprovalError extends Data.TaggedError("ApprovalError")<{
-  message: string;
-  code: ApprovalErrorCode;
-}> {}
+/**
+ * `ApprovalError` lives in `@atlas/api/lib/governance/errors` post-#2567
+ * so the `ApprovalGate` Tag can type its failure channels without core
+ * importing from `@atlas/ee`. Re-exported here for back-compat — same
+ * `_tag` + payload shape + `instanceof` semantics.
+ */
+export { ApprovalError, type ApprovalErrorCode };
 
 // ── Internal row shapes ─────────────────────────────────────────────
 
@@ -1129,3 +1138,33 @@ export const hasApprovedRequest = (
       },
     ),
   );
+
+// ── Tag wiring (#2567 — slice 5/11 of #2017) ─────────────────────────
+//
+// Bridges this module's functions into the `ApprovalGate` Tag so core
+// call sites (`lib/tools/sql.ts`, `api/routes/admin-approval.ts`) can
+// `yield* ApprovalGate` instead of dynamic-importing this module.
+// Aggregated into `ee/src/layers.ts:EELayer`; the no-op default in
+// `lib/effect/services.ts:NoopApprovalGateLayer` covers self-hosted
+// installs (returns `{ required: false }` so queries bypass the gate).
+
+export const makeApprovalGateLive = (): ApprovalGateShape => ({
+  available: true,
+  checkApprovalRequired,
+  hasApprovedRequest,
+  createApprovalRequest,
+  listApprovalRules,
+  createApprovalRule,
+  updateApprovalRule,
+  deleteApprovalRule,
+  listApprovalRequests,
+  getApprovalRequest,
+  reviewApprovalRequest,
+  expireStaleRequests,
+  getPendingCount,
+});
+
+export const ApprovalGateLive: Layer.Layer<ApprovalGate> = Layer.sync(
+  ApprovalGate,
+  makeApprovalGateLive,
+);

@@ -41,6 +41,24 @@ import type {
 
 const log = createLogger("effect:connection");
 
+// ── Shared Noop-layer helper (#2594) ────────────────────────────────
+//
+// Every enterprise Noop layer that fails self-hosted methods with
+// `EnterpriseError` previously open-coded the same 7-line block (lazy
+// `require()` of the error class + a `notAvailable` factory closure).
+// The lazy require is load-bearing — services.ts is reached early in
+// the dep graph and an eager static import of `lib/effect/errors` has
+// caused `mock.module()` ordering surprises (see
+// feedback_bun_test_async_mock_module). This helper preserves the
+// laziness, just dedups the boilerplate.
+function makeNotAvailable(message: string): () => import("@atlas/api/lib/effect/errors").EnterpriseError {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { EnterpriseError } = require("@atlas/api/lib/effect/errors") as {
+    EnterpriseError: new (message?: string) => import("@atlas/api/lib/effect/errors").EnterpriseError;
+  };
+  return () => new EnterpriseError(message);
+}
+
 // ── Service interface ────────────────────────────────────────────────
 
 /** Typed contract for the ConnectionRegistry Effect service. */
@@ -999,10 +1017,7 @@ export const NoopModelRouterLayer: Layer.Layer<ModelRouter> = Layer.sync(
   ModelRouter,
   () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { EnterpriseError: EnterpriseErrorClass } = require("@atlas/api/lib/effect/errors") as {
-      EnterpriseError: new (message?: string) => EnterpriseError;
-    };
-    const notAvailable = () => new EnterpriseErrorClass("Model routing requires enterprise features to be enabled.");
+    const notAvailable = makeNotAvailable("Model routing requires enterprise features to be enabled.");
     return {
       available: false,
       getWorkspaceModelConfig: () => Effect.succeed(null),
@@ -1272,11 +1287,7 @@ export const NoopApprovalGateLayer: Layer.Layer<ApprovalGate> = Layer.sync(
         code: "not_found",
       });
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { EnterpriseError: EnterpriseErrorClass } = require("@atlas/api/lib/effect/errors") as {
-      EnterpriseError: new (message?: string) => import("@atlas/api/lib/effect/errors").EnterpriseError;
-    };
-    const notAvailable = () =>
-      new EnterpriseErrorClass("Approval workflows require enterprise features to be enabled.");
+    const notAvailable = makeNotAvailable("Approval workflows require enterprise features to be enabled.");
     return {
       checkApprovalRequired: () =>
         Effect.succeed({ required: false, matchedRules: [] }),
@@ -1355,11 +1366,7 @@ export const NoopSlaMetricsLayer: Layer.Layer<SlaMetrics> = Layer.sync(
   SlaMetrics,
   () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { EnterpriseError: EnterpriseErrorClass } = require("@atlas/api/lib/effect/errors") as {
-      EnterpriseError: new (message?: string) => import("@atlas/api/lib/effect/errors").EnterpriseError;
-    };
-    const notAvailable = () =>
-      new EnterpriseErrorClass("SLA monitoring requires enterprise features to be enabled.");
+    const notAvailable = makeNotAvailable("SLA monitoring requires enterprise features to be enabled.");
     return {
       available: false,
       recordQueryMetric: () => Effect.void,
@@ -1437,11 +1444,7 @@ export const NoopBackupsManagerLayer: Layer.Layer<BackupsManager> = Layer.sync(
   BackupsManager,
   () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { EnterpriseError: EnterpriseErrorClass } = require("@atlas/api/lib/effect/errors") as {
-      EnterpriseError: new (message?: string) => import("@atlas/api/lib/effect/errors").EnterpriseError;
-    };
-    const notAvailable = () =>
-      new EnterpriseErrorClass("Automated backups require enterprise features to be enabled.");
+    const notAvailable = makeNotAvailable("Automated backups require enterprise features to be enabled.");
     return {
     available: false,
     getBackupConfig: () => Effect.fail(notAvailable()),
@@ -1563,11 +1566,7 @@ export const NoopAuditRetentionLayer: Layer.Layer<AuditRetention> = Layer.sync(
   AuditRetention,
   () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { EnterpriseError: EnterpriseErrorClass } = require("@atlas/api/lib/effect/errors") as {
-      EnterpriseError: new (message?: string) => EnterpriseErrorForRetention;
-    };
-    const notAvailable = () =>
-      new EnterpriseErrorClass("Audit retention requires enterprise features to be enabled.");
+    const notAvailable = makeNotAvailable("Audit retention requires enterprise features to be enabled.");
     return {
       available: false,
       // Pure reads — "no policy configured" is the honest answer on
@@ -1668,11 +1667,7 @@ export const NoopIpAllowlistPolicyLayer: Layer.Layer<IpAllowlistPolicy> = Layer.
   IpAllowlistPolicy,
   () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { EnterpriseError: EnterpriseErrorClass } = require("@atlas/api/lib/effect/errors") as {
-      EnterpriseError: new (message?: string) => import("@atlas/api/lib/effect/errors").EnterpriseError;
-    };
-    const notAvailable = () =>
-      new EnterpriseErrorClass("IP allowlist requires enterprise features to be enabled.");
+    const notAvailable = makeNotAvailable("IP allowlist requires enterprise features to be enabled.");
     return {
       available: false,
       checkIPAllowlist: () => Effect.succeed({ allowed: true }),
@@ -1782,11 +1777,7 @@ export const NoopSSOPolicyLayer: Layer.Layer<SSOPolicy> = Layer.sync(
   SSOPolicy,
   () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { EnterpriseError: EnterpriseErrorClass } = require("@atlas/api/lib/effect/errors") as {
-      EnterpriseError: new (message?: string) => EnterpriseErrorForAuth;
-    };
-    const notAvailable = () =>
-      new EnterpriseErrorClass("SSO requires enterprise features to be enabled.");
+    const notAvailable = makeNotAvailable("SSO requires enterprise features to be enabled.");
     // Pure-helper inline copy of EE's `extractEmailDomain`. Pre-#2570
     // middleware called the EE static export; now it reaches it through
     // the Tag. The no-op needs the same parse so a self-hosted middleware
@@ -1887,11 +1878,7 @@ export const NoopSCIMProvenanceLayer: Layer.Layer<SCIMProvenance> = Layer.sync(
   SCIMProvenance,
   () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { EnterpriseError: EnterpriseErrorClass } = require("@atlas/api/lib/effect/errors") as {
-      EnterpriseError: new (message?: string) => EnterpriseErrorForAuth;
-    };
-    const notAvailable = () =>
-      new EnterpriseErrorClass("SCIM provisioning requires enterprise features to be enabled.");
+    const notAvailable = makeNotAvailable("SCIM provisioning requires enterprise features to be enabled.");
     return {
       available: false,
       listConnections: () => Effect.succeed([]),
@@ -2150,15 +2137,7 @@ export class Branding extends Context.Tag("Branding")<
 export const NoopBrandingLayer: Layer.Layer<Branding> = Layer.sync(
   Branding,
   () => {
-    const { EnterpriseError: EnterpriseErrorClass } =
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      require("@atlas/api/lib/effect/errors") as {
-        EnterpriseError: new (message?: string) => EnterpriseErrorForBranding;
-      };
-    const notAvailable = () =>
-      new EnterpriseErrorClass(
-        "Workspace branding requires enterprise features to be enabled.",
-      );
+    const notAvailable = makeNotAvailable("Workspace branding requires enterprise features to be enabled.",);
     return {
       available: false,
       getWorkspaceBranding: () => Effect.fail(notAvailable()),
@@ -2237,15 +2216,7 @@ export class Domains extends Context.Tag("Domains")<
 export const NoopDomainsLayer: Layer.Layer<Domains> = Layer.sync(
   Domains,
   () => {
-    const { EnterpriseError: EnterpriseErrorClass } =
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      require("@atlas/api/lib/effect/errors") as {
-        EnterpriseError: new (message?: string) => EnterpriseErrorForDomains;
-      };
-    const notAvailable = () =>
-      new EnterpriseErrorClass(
-        "Custom domains require enterprise features to be enabled.",
-      );
+    const notAvailable = makeNotAvailable("Custom domains require enterprise features to be enabled.",);
     return {
       available: false,
       registerDomain: () => Effect.fail(notAvailable()),
@@ -2299,19 +2270,10 @@ export class ProactiveGate extends Context.Tag("ProactiveGate")<
 export const NoopProactiveGateLayer: Layer.Layer<ProactiveGate> = Layer.sync(
   ProactiveGate,
   () => {
-    const { EnterpriseError: EnterpriseErrorClass } =
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      require("@atlas/api/lib/effect/errors") as {
-        EnterpriseError: new (message?: string) => EnterpriseErrorForProactive;
-      };
+    const notAvailable = makeNotAvailable("Proactive chat requires enterprise features to be enabled.");
     return {
       enabled: false,
-      requireEnabled: () =>
-        Effect.fail(
-          new EnterpriseErrorClass(
-            "Proactive chat requires enterprise features to be enabled.",
-          ),
-        ),
+      requireEnabled: () => Effect.fail(notAvailable()),
     } satisfies ProactiveGateShape;
   },
 );

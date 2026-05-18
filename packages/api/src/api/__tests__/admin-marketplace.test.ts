@@ -169,12 +169,20 @@ mock.module("@atlas/api/lib/effect/services", () => ({
 // Replace enterprise-layer's composition with an inert layer so the
 // route's `yield* SSOPolicy` / `yield* RolesPolicy` doesn't try to
 // resolve through it. The shimmed `runEffect` / `Effect.runPromise`
-// (post-#2571 the admin-router uses the latter) drive the route flow
-// directly; layer composition is a no-op in this test.
+// drive the route flow directly; layer composition is a no-op in this
+// test.
+//
+// **Opted out of `makeTestEnterpriseLayer` (#2588).** The helper builds
+// a real `ManagedRuntime` from a real Effect Layer composition; this
+// test also stubs `@atlas/api/lib/effect/services` above with bogus
+// Tag objects, so the helper's `Layer.succeed(RolesPolicy, …)` would
+// receive a non-Tag and fail. Until this test stops stubbing the
+// services module, the inert stub below covers every export the
+// production module ships.
 mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   EnterpriseLayer: { _tag: "MockLayer" },
-  // Post-#2594: these are never called because the shimmed `runEffect`
-  // above doesn't reach the real runtime, but the imports must resolve.
+  // Never called because the shimmed `runEffect` above doesn't reach
+  // the real runtime, but the imports must resolve.
   getEnterpriseRuntime: () => ({
     runPromise: () => Promise.resolve(undefined),
     runPromiseExit: () => Promise.resolve({ _tag: "Success", value: undefined } as never),

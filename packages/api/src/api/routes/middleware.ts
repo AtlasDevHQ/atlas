@@ -142,7 +142,18 @@ async function rateLimitAndIPCheck(
   // IP allowlist — narrow `catch` for tests that omit `IpAllowlistPolicy`
   // from their EnterpriseLayer mock (Effect surfaces this as "Service
   // not found: IpAllowlistPolicy"). Everything else fails closed via 503.
-  // To be deleted once #2588 (`makeTestEnterpriseLayer`) lands.
+  //
+  // **Why the catch persists post-#2588.** The helper (#2588) covers the
+  // three Pattern 1 tests. The two Pattern 2 tests (admin-residency,
+  // admin-marketplace) mock the whole `effect` module with a synchronous
+  // shim — `Layer.succeed`/`ManagedRuntime` don't exist there, so the
+  // helper can't migrate them. Until those tests stop shimming `effect`
+  // (a separate refactor), this catch is what keeps their middleware
+  // path green. The narrow "Service not found: IpAllowlist" match is
+  // intentional: broader patterns (Cannot find module / @atlas/ee
+  // substring) would silently warn-log a real production EE-load
+  // failure that mentions @atlas/ee in its message, bypassing the
+  // allowlist.
   const orgId = authResult.user?.activeOrganizationId;
   if (orgId) {
     let ipCheck: { allowed: boolean } | null = null;

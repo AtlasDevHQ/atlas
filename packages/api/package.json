@@ -22,7 +22,8 @@
     "./lib/plugins": "./src/lib/plugins/index.ts",
     "./lib/plugins/*": "./src/lib/plugins/*.ts",
     "./api/routes/*": "./src/api/routes/*.ts",
-    "./testing/*": "./src/__mocks__/*.ts"
+    "./testing/*": "./src/__mocks__/*.ts",
+    "./__test-utils__/*": "./src/__test-utils__/*.ts"
   },
   "scripts": {
     "dev": "bun run --hot src/api/server.ts",

@@ -16,7 +16,6 @@ import {
   afterEach,
   mock,
 } from "bun:test";
-import { Effect } from "effect";
 
 // ── Mocks (must be installed before importing the helper) ───────────
 
@@ -107,6 +106,12 @@ const {
   SCIM_OVERRIDE_POLICY_SETTING_KEY,
 } = await import("../scim-provenance");
 
+// Post-#2591 `isSCIMProvisioned` / `evaluateSCIMGuard` expose
+// `SCIMProvenance` in the `R` channel — callers compose via the shared
+// module-level `EnterpriseLayer` runtime. Tests run programs through the
+// same helper so the dynamic `@atlas/ee/layers` mock above is honoured.
+const { runEnterprise } = await import("@atlas/api/lib/effect/enterprise-layer");
+
 beforeEach(() => {
   mockEnterpriseEnabled = true;
   mockHasInternalDB = true;
@@ -162,14 +167,14 @@ describe("getSCIMOverridePolicy", () => {
 describe("isSCIMProvisioned", () => {
   it("returns false when enterprise mode is disabled (no SCIM contract at all)", async () => {
     mockEnterpriseEnabled = false;
-    const result = await Effect.runPromise(isSCIMProvisioned("user-1", "org-1"));
+    const result = await runEnterprise(isSCIMProvisioned("user-1", "org-1"));
     expect(result).toBe(false);
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
 
   it("returns false when no internal DB is available", async () => {
     mockHasInternalDB = false;
-    const result = await Effect.runPromise(isSCIMProvisioned("user-1", "org-1"));
+    const result = await runEnterprise(isSCIMProvisioned("user-1", "org-1"));
     expect(result).toBe(false);
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
@@ -181,7 +186,7 @@ describe("isSCIMProvisioned", () => {
     mockInternalQuery.mockImplementationOnce(async () => {
       throw new Error('relation "scimProvider" does not exist');
     });
-    const result = await Effect.runPromise(isSCIMProvisioned("user-1", "org-1"));
+    const result = await runEnterprise(isSCIMProvisioned("user-1", "org-1"));
     expect(result).toBe(false);
   });
 
@@ -192,7 +197,7 @@ describe("isSCIMProvisioned", () => {
       });
       throw err;
     });
-    const result = await Effect.runPromise(isSCIMProvisioned("user-1", "org-1"));
+    const result = await runEnterprise(isSCIMProvisioned("user-1", "org-1"));
     expect(result).toBe(false);
   });
 
@@ -209,7 +214,7 @@ describe("isSCIMProvisioned", () => {
       });
       throw err;
     });
-    await expect(Effect.runPromise(isSCIMProvisioned("user-1", "org-1"))).rejects.toThrow(
+    await expect(runEnterprise(isSCIMProvisioned("user-1", "org-1"))).rejects.toThrow(
       /role "app_user" does not exist/,
     );
   });
@@ -221,26 +226,26 @@ describe("isSCIMProvisioned", () => {
       });
       throw err;
     });
-    await expect(Effect.runPromise(isSCIMProvisioned("user-1", "org-1"))).rejects.toThrow(
+    await expect(runEnterprise(isSCIMProvisioned("user-1", "org-1"))).rejects.toThrow(
       /schema "scim_v2" does not exist/,
     );
   });
 
   it("returns true when the join finds at least one row", async () => {
     mockInternalQuery.mockImplementationOnce(async () => [{ "?column?": 1 }]);
-    const result = await Effect.runPromise(isSCIMProvisioned("user-1", "org-1"));
+    const result = await runEnterprise(isSCIMProvisioned("user-1", "org-1"));
     expect(result).toBe(true);
   });
 
   it("returns false when the join finds no rows", async () => {
     mockInternalQuery.mockImplementationOnce(async () => []);
-    const result = await Effect.runPromise(isSCIMProvisioned("user-1", "org-1"));
+    const result = await runEnterprise(isSCIMProvisioned("user-1", "org-1"));
     expect(result).toBe(false);
   });
 
   it("scopes the query to orgId when provided", async () => {
     mockInternalQuery.mockImplementationOnce(async () => []);
-    await Effect.runPromise(isSCIMProvisioned("user-1", "org-1"));
+    await runEnterprise(isSCIMProvisioned("user-1", "org-1"));
     expect(mockInternalQuery).toHaveBeenCalledTimes(1);
     const [sql, params] = mockInternalQuery.mock.calls[0]!;
     expect(sql).toContain('"organizationId" = $2');
@@ -249,7 +254,7 @@ describe("isSCIMProvisioned", () => {
 
   it("omits the org filter when orgId is not provided (platform-admin path)", async () => {
     mockInternalQuery.mockImplementationOnce(async () => []);
-    await Effect.runPromise(isSCIMProvisioned("user-1"));
+    await runEnterprise(isSCIMProvisioned("user-1"));
     expect(mockInternalQuery).toHaveBeenCalledTimes(1);
     const [sql, params] = mockInternalQuery.mock.calls[0]!;
     expect(sql).not.toContain('"organizationId" =');
@@ -263,7 +268,7 @@ describe("isSCIMProvisioned", () => {
     mockInternalQuery.mockImplementationOnce(async () => {
       throw new Error("connection refused");
     });
-    await expect(Effect.runPromise(isSCIMProvisioned("user-1", "org-1"))).rejects.toThrow(
+    await expect(runEnterprise(isSCIMProvisioned("user-1", "org-1"))).rejects.toThrow(
       /connection refused/,
     );
   });
@@ -272,7 +277,7 @@ describe("isSCIMProvisioned", () => {
 describe("evaluateSCIMGuard", () => {
   it("returns { kind: 'non_scim' } when the user is not SCIM-provisioned", async () => {
     mockInternalQuery.mockImplementationOnce(async () => []);
-    const decision = await Effect.runPromise(
+    const decision = await runEnterprise(
       evaluateSCIMGuard({ userId: "user-1", orgId: "org-1", requestId: "req-1" }),
     );
     expect(decision.kind).toBe("non_scim");
@@ -281,7 +286,7 @@ describe("evaluateSCIMGuard", () => {
   it("returns { kind: 'override' } under override policy when the user is SCIM-provisioned", async () => {
     mockInternalQuery.mockImplementationOnce(async () => [{ "?column?": 1 }]);
     mockSettingValue = "override";
-    const decision = await Effect.runPromise(
+    const decision = await runEnterprise(
       evaluateSCIMGuard({ userId: "user-1", orgId: "org-1", requestId: "req-1" }),
     );
     expect(decision.kind).toBe("override");
@@ -290,7 +295,7 @@ describe("evaluateSCIMGuard", () => {
   it("returns { kind: 'block', status: 409, body: SCIM_MANAGED } under strict policy", async () => {
     mockInternalQuery.mockImplementationOnce(async () => [{ "?column?": 1 }]);
     mockSettingValue = "strict";
-    const decision = await Effect.runPromise(
+    const decision = await runEnterprise(
       evaluateSCIMGuard({ userId: "user-1", orgId: "org-1", requestId: "req-block" }),
     );
     expect(decision.kind).toBe("block");
@@ -304,7 +309,7 @@ describe("evaluateSCIMGuard", () => {
   it("defaults to strict when the policy setting is unset", async () => {
     mockInternalQuery.mockImplementationOnce(async () => [{ "?column?": 1 }]);
     mockSettingValue = undefined;
-    const decision = await Effect.runPromise(
+    const decision = await runEnterprise(
       evaluateSCIMGuard({ userId: "user-1", orgId: "org-1", requestId: "req" }),
     );
     expect(decision.kind).toBe("block");

@@ -1196,8 +1196,6 @@ export interface CreateApprovalRequestInput {
 }
 
 export interface ApprovalGateShape {
-  /** False when EE approval workflows aren't loaded — gate bypasses entirely. */
-  readonly available: boolean;
   /** Decide whether a query needs approval. No-op returns `{ required: false, matchedRules: [] }`. */
   readonly checkApprovalRequired: (
     orgId: string | undefined,
@@ -1274,7 +1272,6 @@ export const NoopApprovalGateLayer: Layer.Layer<ApprovalGate> = Layer.sync(
         code: "not_found",
       });
     return {
-      available: false,
       checkApprovalRequired: () =>
         Effect.succeed({ required: false, matchedRules: [] }),
       hasApprovedRequest: () => Effect.succeed(false),

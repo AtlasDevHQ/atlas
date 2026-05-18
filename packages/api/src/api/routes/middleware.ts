@@ -140,12 +140,19 @@ async function rateLimitAndIPCheck(
   }
 
   // IP allowlist — via `IpAllowlistPolicy` Tag (#2570). Self-hosted +
-  // EE-not-loaded both flow through the no-op default which always allows.
-  // The try/catch is a defensive net for tests that shim `effect` /
-  // `EnterpriseLayer` without wiring the full Layer machinery; in
-  // production the EE-loaded path and the no-op default both succeed,
-  // so a runPromise reject here is a test-harness signal rather than a
-  // real allowlist outcome.
+  // EE-disabled flow through the no-op default which always allows. The
+  // narrow `catch` is a defensive net for tests that shim `effect` /
+  // `EnterpriseLayer` without providing `IpAllowlistPolicy` (surfaces as
+  // an Effect "Service not found" defect); a fail-closed 503 covers any
+  // other error so a real production failure of the EE-loaded path or
+  // a backend DB outage surfaces loudly. Sibling call sites in
+  // `admin-auth.ts`, `auth-preamble.ts`, and `chat.ts` don't try/catch
+  // at all and 500 on the same failure mode — this file accepts the
+  // narrower fail-closed contract because middleware runs ahead of
+  // routes that may not have provided the Tag in their test layer (see
+  // #2587 — future follow-up extracts a shared `makeTestEnterpriseLayer`
+  // helper so every test provides the full Tag set and this defensive
+  // catch can be deleted).
   const orgId = authResult.user?.activeOrganizationId;
   if (orgId) {
     let ipCheck: { allowed: boolean } | null = null;
@@ -157,10 +164,30 @@ async function rateLimitAndIPCheck(
         }).pipe(Effect.provide(EnterpriseLayer)),
       );
     } catch (err) {
-      log.warn(
-        { err: err instanceof Error ? err.message : String(err), requestId, orgId },
-        "IP allowlist check unavailable — falling through (fail-open in test harness only)",
-      );
+      const msg = err instanceof Error ? err.message : String(err);
+      // Test-harness signal: the test omitted the IpAllowlistPolicy Tag.
+      // Effect surfaces this as "Service not found" in the defect chain.
+      // Everything else (DB outage, EE-load failure on SaaS, etc.) is a
+      // real production failure — fail closed.
+      if (msg.includes("Service not found") && msg.includes("IpAllowlistPolicy")) {
+        log.warn(
+          { err: msg, requestId, orgId },
+          "IpAllowlistPolicy Tag not provided — test-harness fall-through (no-op default missing)",
+        );
+      } else {
+        log.error(
+          { err: msg, requestId, orgId },
+          "IP allowlist check failed — failing closed (no allowlist evaluation)",
+        );
+        return {
+          body: {
+            error: "service_unavailable",
+            message: "IP allowlist check could not be evaluated. Try again in a moment.",
+            requestId,
+          },
+          status: 503,
+        };
+      }
     }
     if (ipCheck && !ipCheck.allowed) {
       log.warn({ requestId, orgId, ip }, "IP not in workspace allowlist");

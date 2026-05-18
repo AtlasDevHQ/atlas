@@ -1034,6 +1034,7 @@ export const previewAdminActionErasure = (
 // modules.
 
 export const makeAuditRetentionLive = (): AuditRetentionShape => ({
+  available: true,
   getRetentionPolicy,
   setRetentionPolicy,
   purgeExpiredEntries,

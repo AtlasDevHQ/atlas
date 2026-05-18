@@ -47,14 +47,25 @@ import {
   type MaskingContext,
 } from "@atlas/api/lib/effect/services";
 import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
+import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
+import { EnterpriseUnavailableError } from "@atlas/api/lib/effect/errors";
 
 /**
  * Run `MaskingPolicy.applyMasking` via `EnterpriseLayer`. Promise-shaped
  * wrapper so the two sql.ts call sites (live + cache path) can keep
  * their existing async/await structure without restructuring around
- * `Effect.gen` (#2566 — slice 4/11 of #2017). Fails open: any error in
- * the program is rethrown to the caller's existing try/catch, which
- * already logs `"PII masking failed — returning unmasked results"`.
+ * `Effect.gen` (#2566 — slice 4/11 of #2017).
+ *
+ * #2593 — consumer-side fail-closed: on SaaS (`ATLAS_ENTERPRISE_ENABLED=true`)
+ * if the MaskingPolicy Tag is still the no-op default (`available: false`),
+ * the EE layer didn't bind — returning unmasked rows on classified tables
+ * is a compliance break. Throw `EnterpriseUnavailableError` so the caller's
+ * existing try/catch short-circuits "PII masking failed" into a hard fail
+ * instead of the legacy fail-open behavior.
+ *
+ * Self-hosted (`ATLAS_ENTERPRISE_ENABLED !== true`) keeps the original
+ * fail-open behavior: the no-op pass-through is the expected self-hosted
+ * code path.
  */
 function applyMaskingViaTag(
   ctx: MaskingContext,
@@ -62,6 +73,15 @@ function applyMaskingViaTag(
   return runEnterprise(
     Effect.gen(function* () {
       const masking = yield* MaskingPolicy;
+      if (isEnterpriseEnabled() && !masking.available) {
+        return yield* Effect.fail(
+          new EnterpriseUnavailableError({
+            message:
+              "PII masking unavailable — query blocked to prevent unmasked-data exposure. Contact your administrator.",
+            tag: "MaskingPolicy",
+          }),
+        );
+      }
       return yield* masking.applyMasking(ctx);
     }),
   );
@@ -74,11 +94,27 @@ function applyMaskingViaTag(
  * `createApprovalRequest`); resolving the shape once + reading methods
  * keeps the existing try/catch fail-closed semantics intact and avoids
  * paying for three separate `Effect.runPromise` round-trips (#2567).
+ *
+ * #2593 — consumer-side fail-closed: on SaaS where EE didn't bind, the
+ * no-op's `checkApprovalRequired` reports `required: false` — bypassing
+ * approval-gated queries entirely. Throw `EnterpriseUnavailableError`
+ * so the caller surfaces the existing "approval system unavailable"
+ * 503 envelope. Self-hosted falls through (no-op = no rules to match).
  */
 function loadApprovalGate(): Promise<ApprovalGateShape> {
   return runEnterprise(
     Effect.gen(function* () {
-      return yield* ApprovalGate;
+      const gate = yield* ApprovalGate;
+      if (isEnterpriseEnabled() && !gate.available) {
+        return yield* Effect.fail(
+          new EnterpriseUnavailableError({
+            message:
+              "Approval gate unavailable — query blocked to prevent governance bypass. Contact your administrator.",
+            tag: "ApprovalGate",
+          }),
+        );
+      }
+      return gate;
     }),
   );
 }

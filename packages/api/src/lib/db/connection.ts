@@ -26,6 +26,8 @@ import { getConfig } from "@atlas/api/lib/config";
 import type { HealthStatus } from "@atlas/api/lib/connection-types";
 import { ResidencyResolver } from "@atlas/api/lib/effect/services";
 import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
+import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
+import { EnterpriseUnavailableError } from "@atlas/api/lib/effect/errors";
 
 export type { HealthStatus } from "@atlas/api/lib/connection-types";
 
@@ -1438,8 +1440,25 @@ export async function getRegionAwareConnection(
   // construction is referentially stable across calls; the dynamic
   // `await import("@atlas/ee/layers")` inside `ConditionalEELayer` hits
   // Node's module cache after the first load.
+  //
+  // #2593 — consumer-side fail-closed: on SaaS (`ATLAS_ENTERPRISE_ENABLED=true`)
+  // where the EE Layer was supposed to overlay the live ResidencyResolver
+  // but the dynamic import failed, the Tag still resolves to its no-op
+  // (`available: false`). Falling through to the default datasource on an
+  // EU workspace is a compliance break — surface a 503 with the
+  // operator-visible `enterprise_load_failed` code instead. Self-hosted
+  // (no enterprise flag) keeps the old fall-through-to-default behavior.
   const resolveRegion = Effect.gen(function* () {
     const residency = yield* ResidencyResolver;
+    if (isEnterpriseEnabled() && !residency.available) {
+      return yield* Effect.fail(
+        new EnterpriseUnavailableError({
+          message:
+            "Residency resolution unavailable — region routing cannot be evaluated. Contact your administrator.",
+          tag: "ResidencyResolver",
+        }),
+      );
+    }
     return yield* residency.resolveRegionDatabaseUrl(orgId);
   });
 
@@ -1447,6 +1466,16 @@ export async function getRegionAwareConnection(
   try {
     regionInfo = await runEnterprise(resolveRegion);
   } catch (err) {
+    if (err instanceof EnterpriseUnavailableError) {
+      // Operator-visible: this fired because EE was supposed to bind but
+      // didn't. The `enterprise.load_failed` log already fired from
+      // `ConditionalEELayer`; correlate via orgId + workspace.
+      log.error(
+        { err: errorMessage(err), orgId, event: "residency.fail_closed" },
+        "Residency Tag unavailable while ATLAS_ENTERPRISE_ENABLED=true — failing closed",
+      );
+      throw err;
+    }
     log.warn(
       { err: errorMessage(err), orgId },
       "Region resolution failed — falling back to default datasource",

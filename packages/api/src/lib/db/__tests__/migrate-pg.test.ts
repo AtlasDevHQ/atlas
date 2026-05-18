@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Pool } from "pg";
+import { z } from "zod";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
 import {
@@ -4057,6 +4058,23 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(statusErr?.code).toBe("23514");
   }, PG_TEST_TIMEOUT_MS);
 
+  // #2606 — every integration store renders `installed_at` via the same
+  // `to_char(... AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`
+  // formatter so the admin /admin/integrations response satisfies
+  // IntegrationStatusSchema's strict `z.string().datetime()`. The bug class
+  // (Postgres `::text` default render uses ' ' + '+00', which Zod rejects)
+  // was dormant until the first real install row landed in prod. Exercises
+  // the formatter against real Postgres; the source-level revert guard
+  // lives in the always-on describe block at the bottom of this file.
+  it("integration stores: to_char formatter emits strict ISO 8601 that passes z.string().datetime()", async () => {
+    const { rows } = await pool.query<{ installed_at: string }>(
+      `SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS installed_at`,
+    );
+    const value = rows[0]?.installed_at;
+    expect(typeof value).toBe("string");
+    expect(() => z.string().datetime().parse(value)).not.toThrow();
+  }, PG_TEST_TIMEOUT_MS);
+
   it("0080: ON DELETE CASCADE — dropping the parent dashboard drops every stage (#2365)", async () => {
     const stamp = Date.now();
     const orgId = `org-2365-cascade-${stamp}`;
@@ -4083,4 +4101,18 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
     expect(afterCount.rows[0]?.c).toBe(0);
   }, PG_TEST_TIMEOUT_MS);
+});
+
+// #2606 — source-level revert guard for the integration-store SQL formatter.
+// Lives outside `describeIfPg` so it runs in every shard, including dev
+// without TEST_DATABASE_URL — fails in milliseconds if any store reverts
+// to `installed_at::text` (the format Zod's strict .datetime() rejects).
+describe("integration stores: ISO timestamp SQL", () => {
+  it("no store reintroduces installed_at::text", () => {
+    const platforms = ["discord", "email", "gchat", "github", "linear", "slack", "teams", "telegram", "whatsapp"] as const;
+    for (const platform of platforms) {
+      const source = readFileSync(join(import.meta.dir, "..", "..", platform, "store.ts"), "utf8");
+      expect(source).not.toContain("installed_at::text");
+    }
+  });
 });

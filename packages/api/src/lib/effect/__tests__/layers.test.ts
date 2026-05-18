@@ -258,9 +258,15 @@ describe("SettingsLive", () => {
 // ── Scheduler ──────────────────────────────────────────────────────
 
 describe("makeSchedulerLive", () => {
+  // Post-#2569 the scheduler yields `AuditRetention` to start the EE
+  // purge worker via the Tag, so the test composes the no-op
+  // `NoopEnterpriseDefaultsLayer` as a dep before providing `Scheduler`.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { NoopEnterpriseDefaultsLayer } = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+
   test("returns 'none' backend when no scheduler configured", async () => {
     const config = {} as Parameters<typeof makeSchedulerLive>[0];
-    const layer = makeSchedulerLive(config);
+    const layer = makeSchedulerLive(config).pipe(Layer.provide(NoopEnterpriseDefaultsLayer));
 
     const result = await Effect.runPromise(
       Effect.gen(function* () {
@@ -276,7 +282,7 @@ describe("makeSchedulerLive", () => {
     const config = {
       scheduler: { backend: "vercel" },
     } as Parameters<typeof makeSchedulerLive>[0];
-    const layer = makeSchedulerLive(config);
+    const layer = makeSchedulerLive(config).pipe(Layer.provide(NoopEnterpriseDefaultsLayer));
 
     const result = await Effect.runPromise(
       Effect.gen(function* () {
@@ -290,7 +296,7 @@ describe("makeSchedulerLive", () => {
 
   test("finalizer runs on disposal", async () => {
     const config = {} as Parameters<typeof makeSchedulerLive>[0];
-    const layer = makeSchedulerLive(config);
+    const layer = makeSchedulerLive(config).pipe(Layer.provide(NoopEnterpriseDefaultsLayer));
 
     // Use ManagedRuntime to verify disposal works
     const rt = ManagedRuntime.make(layer);

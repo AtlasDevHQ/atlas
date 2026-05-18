@@ -1429,25 +1429,135 @@ export const NoopBackupsManagerLayer: Layer.Layer<BackupsManager> = Layer.succee
   } satisfies BackupsManagerShape,
 );
 
-// ── AuditRetention (#2571) ───────────────────────────────────────────
+// ── AuditRetention (#2569 — slice 7/11 of #2017) ─────────────────────
 //
-// Replaces `await import("@atlas/ee/audit/retention")` in
-// `api/routes/admin-audit-retention.ts` + `admin-action-retention.ts`.
-// EE manages retention policy, anonymization, and hard-delete; core's
-// no-op returns the "feature disabled" sentinel.
+// Inverts every `@atlas/ee/audit/retention` reference in
+// `packages/api/src/`: the 10+ dynamic imports across
+// `api/routes/admin-audit-retention.ts` + `admin-action-retention.ts`
+// plus the static `RetentionError` import. EE overlays the real
+// implementation; the no-op default returns `available: false` and
+// fails methods with `EnterpriseError` so the routes' existing
+// `domainError(RetentionError)` mapping renders the 4xx envelope.
+//
+// `RetentionError` lives in `lib/audit/retention-errors.ts` so the
+// Tag's failure channel stays typed without pulling in `@atlas/ee`.
+
+type AuditRetentionPolicy = import("@useatlas/types").AuditRetentionPolicy;
+type AnonymizeInitiatedBy = import("@useatlas/types").AnonymizeInitiatedBy;
+type RetentionError = import("@atlas/api/lib/audit/retention-errors").RetentionError;
+type EnterpriseErrorForRetention = import("@atlas/api/lib/effect/errors").EnterpriseError;
+
+export interface SetRetentionPolicyInput {
+  readonly retentionDays: number | null;
+  readonly hardDeleteDelayDays?: number;
+}
+
+export interface PurgeResult {
+  readonly orgId: string;
+  readonly softDeletedCount: number;
+}
+
+export interface HardDeleteResult {
+  readonly deletedCount: number;
+}
+
+export interface AdminActionPurgeResult {
+  readonly orgId: string;
+  readonly deletedCount: number;
+}
+
+export interface AnonymizeResult {
+  readonly anonymizedRowCount: number;
+}
+
+export interface AuditExportOptions {
+  readonly orgId: string;
+  readonly format: "csv" | "json";
+  readonly startDate?: string;
+  readonly endDate?: string;
+}
+
+export type AuditExportResult =
+  | { readonly format: "csv"; readonly content: string; readonly rowCount: number; readonly truncated: boolean; readonly totalAvailable: number }
+  | { readonly format: "json"; readonly content: string; readonly rowCount: number; readonly truncated: boolean; readonly totalAvailable: number };
 
 export interface AuditRetentionShape {
   readonly available: boolean;
+  // Audit-log retention
+  readonly getRetentionPolicy: (
+    orgId: string,
+  ) => Effect.Effect<AuditRetentionPolicy | null, EnterpriseErrorForRetention>;
+  readonly setRetentionPolicy: (
+    orgId: string,
+    input: SetRetentionPolicyInput,
+    updatedBy: string | null,
+  ) => Effect.Effect<AuditRetentionPolicy, RetentionError | EnterpriseErrorForRetention | Error>;
+  readonly purgeExpiredEntries: (
+    orgId?: string,
+  ) => Effect.Effect<PurgeResult[], EnterpriseErrorForRetention>;
+  readonly hardDeleteExpired: (
+    orgId?: string,
+  ) => Effect.Effect<HardDeleteResult, EnterpriseErrorForRetention>;
+  readonly exportAuditLog: (
+    options: AuditExportOptions,
+  ) => Effect.Effect<AuditExportResult, RetentionError | EnterpriseErrorForRetention | Error>;
+  // Admin-action retention
+  readonly getAdminActionRetentionPolicy: (
+    orgId: string,
+  ) => Effect.Effect<AuditRetentionPolicy | null, EnterpriseErrorForRetention | Error>;
+  readonly setAdminActionRetentionPolicy: (
+    orgId: string,
+    input: SetRetentionPolicyInput,
+    updatedBy: string | null,
+  ) => Effect.Effect<AuditRetentionPolicy, RetentionError | EnterpriseErrorForRetention | Error>;
+  readonly purgeAdminActionExpired: (
+    orgId?: string,
+  ) => Effect.Effect<AdminActionPurgeResult[], EnterpriseErrorForRetention | Error>;
+  readonly anonymizeUserAdminActions: (
+    userId: string,
+    initiatedBy: AnonymizeInitiatedBy,
+  ) => Effect.Effect<AnonymizeResult, RetentionError | EnterpriseErrorForRetention | Error>;
+  readonly previewAdminActionErasure: (
+    userId: string,
+  ) => Effect.Effect<{ anonymizableRowCount: number }, RetentionError | EnterpriseErrorForRetention | Error>;
+  // Purge scheduler lifecycle — replaces the
+  // `await import("@atlas/ee/audit/purge-scheduler")` site in
+  // `makeSchedulerLive` (#2569). No-op when EE isn't loaded; the
+  // scheduler layer calls both without a feature flag.
+  readonly startAuditPurgeScheduler: (intervalMs?: number) => void;
+  readonly stopAuditPurgeScheduler: () => void;
 }
 export class AuditRetention extends Context.Tag("AuditRetention")<
   AuditRetention,
   AuditRetentionShape
 >() {}
-export const NoopAuditRetentionLayer: Layer.Layer<AuditRetention> = Layer.succeed(
+export const NoopAuditRetentionLayer: Layer.Layer<AuditRetention> = Layer.sync(
   AuditRetention,
-  {
-    available: false,
-  } satisfies AuditRetentionShape,
+  () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { EnterpriseError: EnterpriseErrorClass } = require("@atlas/api/lib/effect/errors") as {
+      EnterpriseError: new (message?: string) => EnterpriseErrorForRetention;
+    };
+    const notAvailable = () =>
+      new EnterpriseErrorClass("Audit retention requires enterprise features to be enabled.");
+    return {
+      available: false,
+      getRetentionPolicy: () => Effect.succeed(null),
+      setRetentionPolicy: () => Effect.fail(notAvailable()),
+      purgeExpiredEntries: () => Effect.succeed([]),
+      hardDeleteExpired: () => Effect.succeed({ deletedCount: 0 }),
+      exportAuditLog: () => Effect.fail(notAvailable()),
+      getAdminActionRetentionPolicy: () => Effect.succeed(null),
+      setAdminActionRetentionPolicy: () => Effect.fail(notAvailable()),
+      purgeAdminActionExpired: () => Effect.succeed([]),
+      anonymizeUserAdminActions: () =>
+        Effect.succeed({ anonymizedRowCount: 0 }),
+      previewAdminActionErasure: () =>
+        Effect.succeed({ anonymizableRowCount: 0 }),
+      startAuditPurgeScheduler: () => {},
+      stopAuditPurgeScheduler: () => {},
+    } satisfies AuditRetentionShape;
+  },
 );
 
 // ── IpAllowlistPolicy (#2572) ────────────────────────────────────────

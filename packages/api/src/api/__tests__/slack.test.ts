@@ -305,7 +305,7 @@ describe("/api/v1/slack", () => {
   });
 
   describe("POST /api/v1/slack/commands", () => {
-    it("acks a slash command with 200 and in_channel response", async () => {
+    it("acks a slash command with 200 and an ephemeral response", async () => {
       const app = await getApp();
       const body = "token=xxx&team_id=T123&channel_id=C456&user_id=U789&text=how+many+users";
       const { signature, timestamp } = makeSignature(body);
@@ -322,7 +322,9 @@ describe("/api/v1/slack", () => {
 
       expect(resp.status).toBe(200);
       const json = (await resp.json()) as Record<string, unknown>;
-      expect(json.response_type).toBe("in_channel");
+      // Ephemeral so the ack doesn't double up with the bot's in-channel
+      // "Thinking..." message — see slack.ts comment for the rationale.
+      expect(json.response_type).toBe("ephemeral");
       expect(json.text).toContain("Processing");
     });
 

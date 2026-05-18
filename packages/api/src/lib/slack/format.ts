@@ -30,44 +30,71 @@ export type SlackBlock =
 
 /**
  * Format a query result as Slack Block Kit blocks.
+ *
+ * Compared to the web chat surface, Slack needs aggressive deduping and
+ * scalar collapsing — a cross-env query produces identical SQL + result
+ * rows across N regions, and dumping them verbatim turns into a wall of
+ * indistinguishable blocks. We also strip the `<suggestions>` XML tag
+ * the agent emits for the web chat (rendered as buttons there) and
+ * surface its items as a context-line footer instead.
  */
 export function formatQueryResponse(result: SlackQueryResult): SlackBlock[] {
   const blocks: SlackBlock[] = [];
 
-  // Answer section
-  const answer = truncate(result.answer || "No answer generated.", MAX_TEXT_LENGTH);
+  const { answer, suggestions } = extractSuggestions(result.answer || "No answer generated.");
   blocks.push({
     type: "section",
-    text: { type: "mrkdwn", text: answer },
+    text: { type: "mrkdwn", text: truncate(answer, MAX_TEXT_LENGTH) },
   });
 
-  // SQL section
-  if (result.sql.length > 0) {
-    const sqlText = result.sql.join("\n\n");
-    const formatted = truncate(`*SQL*\n\`\`\`${sqlText}\`\`\``, MAX_TEXT_LENGTH);
+  // SQL: dedupe identical strings (cross-env queries hit N regions with the
+  // same SQL). If the answer text already contains a fenced sql block, skip
+  // the dedicated SQL section entirely so we don't double up.
+  const uniqueSql = dedupeStrings(result.sql);
+  const answerHasSql = /```\s*sql/i.test(answer);
+  if (uniqueSql.length > 0 && !answerHasSql) {
+    const ranAcross = result.sql.length > uniqueSql.length
+      ? `  _(ran across ${result.sql.length} regions)_`
+      : "";
+    const header = uniqueSql.length === 1 ? "*SQL*" : `*SQL* _(${uniqueSql.length} queries)_`;
+    const sqlText = uniqueSql.join("\n\n");
+    const formatted = truncate(`${header}${ranAcross}\n\`\`\`${sqlText}\`\`\``, MAX_TEXT_LENGTH);
     blocks.push({
       type: "section",
       text: { type: "mrkdwn", text: formatted },
     });
   }
 
-  // Data section — column-aligned plain text
-  for (const dataset of result.data) {
-    if (!dataset.columns.length || !dataset.rows.length) continue;
+  // Data: dedupe identical datasets, scalarize single-row results.
+  const uniqueDatasets = dedupeDatasets(result.data);
+  for (const { columns, rows, duplicateCount } of uniqueDatasets) {
+    if (!columns.length || !rows.length) continue;
 
-    const table = formatDataTable(dataset.columns, dataset.rows);
-    if (table) {
+    const acrossNote = duplicateCount > 1 ? `  _(identical across ${duplicateCount} regions)_` : "";
+    const body = rows.length === 1
+      ? formatScalarRow(columns, rows[0]!) + acrossNote
+      : (formatDataTable(columns, rows) ?? "") + acrossNote;
+    if (body) {
       blocks.push({
         type: "section",
-        text: { type: "mrkdwn", text: table },
+        text: { type: "mrkdwn", text: body },
       });
     }
-
-    // Stay under the block limit
-    if (blocks.length >= MAX_BLOCKS - 1) break;
+    if (blocks.length >= MAX_BLOCKS - 2) break;
   }
 
-  // Context block with metadata
+  if (suggestions.length) {
+    blocks.push({
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `*Follow-ups:* ${suggestions.map((s) => `\`${s}\``).join("  ·  ")}`,
+        },
+      ],
+    });
+  }
+
   blocks.push({
     type: "context",
     elements: [
@@ -79,6 +106,67 @@ export function formatQueryResponse(result: SlackQueryResult): SlackBlock[] {
   });
 
   return blocks.slice(0, MAX_BLOCKS);
+}
+
+/**
+ * Extract the agent's `<suggestions>…</suggestions>` block (used by the web
+ * chat to render follow-up question buttons). Returns the cleaned answer
+ * text and the list of suggestions for separate rendering.
+ */
+function extractSuggestions(text: string): { answer: string; suggestions: string[] } {
+  const match = text.match(/<suggestions>([\s\S]*?)<\/suggestions>/i);
+  if (!match) return { answer: text, suggestions: [] };
+  const inner = match[1] ?? "";
+  const suggestions = inner
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^[-*•\s]+/, "").trim())
+    .filter(Boolean);
+  const answer = text.replace(match[0], "").trim();
+  return { answer, suggestions };
+}
+
+function dedupeStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const v of values) {
+    if (seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  return out;
+}
+
+interface DedupedDataset {
+  columns: string[];
+  rows: Record<string, unknown>[];
+  duplicateCount: number;
+}
+
+function dedupeDatasets(
+  datasets: { columns: string[]; rows: Record<string, unknown>[] }[],
+): DedupedDataset[] {
+  const buckets = new Map<string, DedupedDataset>();
+  for (const ds of datasets) {
+    const key = JSON.stringify({ columns: ds.columns, rows: ds.rows });
+    const existing = buckets.get(key);
+    if (existing) {
+      existing.duplicateCount += 1;
+    } else {
+      buckets.set(key, { columns: ds.columns, rows: ds.rows, duplicateCount: 1 });
+    }
+  }
+  return Array.from(buckets.values());
+}
+
+/**
+ * Format a single-row result as inline `*col*: value` pairs instead of a
+ * code-block table. Reads better in Slack for scalar answers (counts,
+ * single-record lookups).
+ */
+function formatScalarRow(columns: string[], row: Record<string, unknown>): string {
+  return columns
+    .map((col) => `*${col}:* ${String(row[col] ?? "")}`)
+    .join("    ");
 }
 
 /**

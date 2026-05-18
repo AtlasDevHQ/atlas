@@ -133,8 +133,6 @@ mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
     EnterpriseLayer: testLayer,
     getEnterpriseRuntime: () => testRuntime,
     runEnterprise: (program: never) => testRuntime.runPromise(program),
-    runEnterpriseExit: (program: never) => testRuntime.runPromiseExit(program),
-    __resetEnterpriseRuntimeForTesting: () => {},
   };
 });
 

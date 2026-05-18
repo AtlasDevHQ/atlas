@@ -225,8 +225,6 @@ mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
     dispose: () => Promise.resolve(),
   }),
   runEnterprise: () => Promise.resolve(undefined),
-  runEnterpriseExit: () => Promise.resolve({ _tag: "Success", value: undefined } as never),
-  __resetEnterpriseRuntimeForTesting: () => {},
 }));
 
 // --- Residency resolver mock (#2564) ---
@@ -379,8 +377,6 @@ mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
     dispose: () => Promise.resolve(),
   }),
   runEnterprise: () => Promise.resolve(undefined),
-  runEnterpriseExit: () => Promise.resolve({ _tag: "Success", value: undefined } as never),
-  __resetEnterpriseRuntimeForTesting: () => {},
 }));
 
 // #1986 — Mirror the production tagged-error → HTTP mapping so route tests

@@ -229,37 +229,15 @@ export function getEnterpriseRuntime(): ManagedRuntime.ManagedRuntime<Enterprise
  * any non-Hono call site (the Hono bridge uses `getEnterpriseRuntime()`
  * directly so it can layer in per-request contextLayer).
  *
- * Rejects on EE-load failure when `ATLAS_ENTERPRISE_ENABLED=true` —
- * caller should treat the rejection as an operator-visible deploy error
- * (matching the fail-closed contract from #2594), not a per-request
- * recoverable.
+ * Rejects on typed failures in the program's `E` channel. EE-load
+ * failure does NOT reject — `ConditionalEELayer` logs at ERROR with
+ * `event: "enterprise.load_failed"` and falls through to no-op
+ * defaults; consumer-side fail-closed checks are tracked in #2589.
+ * Callers that need to introspect the failure cause should use
+ * `getEnterpriseRuntime().runPromiseExit(...)` directly.
  */
 export function runEnterprise<A, E>(
   program: Effect.Effect<A, E, EnterpriseSubsystem>,
 ): Promise<A> {
   return getEnterpriseRuntime().runPromise(program);
-}
-
-/**
- * Exit-returning variant for call sites that need to inspect the failure
- * cause (defect vs typed failure vs interruption) without the
- * `runPromise` reject path.
- */
-export function runEnterpriseExit<A, E>(
-  program: Effect.Effect<A, E, EnterpriseSubsystem>,
-) {
-  return getEnterpriseRuntime().runPromiseExit(program);
-}
-
-/**
- * Test-only: clear the cached runtime so a `mock.module("@atlas/ee/layers")`
- * change between test files (or between test groups within a file) is
- * picked up on the next runtime build. Production code should never call
- * this; the runtime is process-lifetime.
- */
-export function __resetEnterpriseRuntimeForTesting(): void {
-  if (_runtime !== null) {
-    void _runtime.dispose();
-    _runtime = null;
-  }
 }

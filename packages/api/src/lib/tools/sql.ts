@@ -39,6 +39,27 @@ import { EXECUTE_SQL_TOOL_DESCRIPTION } from "./descriptions";
 import { resolveRoutingPlan, type RoutingMode, type RoutingReason } from "@atlas/api/lib/env-routing";
 import { loadGroupRoutingContext } from "@atlas/api/lib/env-routing/lookup";
 import { mergeMemberResults } from "@atlas/api/lib/multi-env-merger";
+import { MaskingPolicy, type MaskingContext } from "@atlas/api/lib/effect/services";
+import { EnterpriseLayer } from "@atlas/api/lib/effect/enterprise-layer";
+
+/**
+ * Run `MaskingPolicy.applyMasking` via `EnterpriseLayer`. Promise-shaped
+ * wrapper so the two sql.ts call sites (live + cache path) can keep
+ * their existing async/await structure without restructuring around
+ * `Effect.gen` (#2566 — slice 4/11 of #2017). Fails open: any error in
+ * the program is rethrown to the caller's existing try/catch, which
+ * already logs `"PII masking failed — returning unmasked results"`.
+ */
+function applyMaskingViaTag(
+  ctx: MaskingContext,
+): Promise<Record<string, unknown>[]> {
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const masking = yield* MaskingPolicy;
+      return yield* masking.applyMasking(ctx);
+    }).pipe(Effect.provide(EnterpriseLayer)),
+  );
+}
 
 const log = createLogger("sql");
 
@@ -965,20 +986,18 @@ function executeAndAuditEffect(opts: {
             sql: querySql, dialect: parserDatabase(dbType, connId), connectionId: connId,
           });
 
-          // PII masking (fails open)
+          // PII masking (fails open) — via `MaskingPolicy` Tag (#2566)
           let maskedRows = result.rows;
           let maskingApplied = false;
           if (classification?.tablesAccessed.length && orgId) {
             try {
-              const { applyMasking } = await import("@atlas/ee/compliance/masking");
               const maskCtx = getRequestContext();
-              const { Effect: E } = await import("effect");
-              maskedRows = await E.runPromise(applyMasking({
+              maskedRows = await applyMaskingViaTag({
                 columns: result.columns, rows: result.rows,
                 tablesAccessed: classification.tablesAccessed,
                 orgId, userRole: maskCtx?.user?.role,
                 connectionId: connId,
-              }));
+              });
               maskingApplied = maskedRows !== result.rows;
             } catch (err) {
               log.warn(
@@ -1569,14 +1588,12 @@ async function executeSqlForConnection({
                 let cachedMaskingApplied = false;
                 if (classification?.tablesAccessed.length && orgId) {
                   try {
-                    const { applyMasking } = await import("@atlas/ee/compliance/masking");
-                    const { Effect: E } = await import("effect");
-                    cachedRows = await E.runPromise(applyMasking({
+                    cachedRows = await applyMaskingViaTag({
                       columns: cached.columns, rows: cached.rows,
                       tablesAccessed: classification.tablesAccessed,
                       orgId, userRole: ctx?.user?.role,
                       connectionId: connId,
-                    }));
+                    });
                     cachedMaskingApplied = cachedRows !== cached.rows;
                   } catch (err) {
                     log.warn(

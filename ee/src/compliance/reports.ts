@@ -11,11 +11,19 @@
  * All exported functions return Effect — callers use `yield*` in Effect.gen.
  */
 
-import { Data, Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import {
+  ComplianceReports,
+  type ComplianceReportsShape,
+} from "@atlas/api/lib/effect/services";
+import {
+  ReportError,
+  type ReportErrorCode,
+} from "@atlas/api/lib/compliance/errors";
 import type {
   ComplianceReportFilters,
   DataAccessReport,
@@ -43,12 +51,14 @@ function validateFilters(filters: ComplianceReportFilters): Effect.Effect<void, 
 
 // ── Error type ──────────────────────────────────────────────────
 
-export type ReportErrorCode = "validation" | "not_available";
-
-export class ReportError extends Data.TaggedError("ReportError")<{
-  message: string;
-  code: ReportErrorCode;
-}> {}
+/**
+ * `ReportError` lives in `@atlas/api/lib/compliance/errors` post-#2566
+ * so the `ComplianceReports` Tag can type its failure channel without
+ * core importing from `@atlas/ee`. Re-exported here for back-compat —
+ * pre-#2566 EE consumers continue to find this symbol at the same path
+ * with the same `_tag` + payload + `instanceof` semantics.
+ */
+export { ReportError, type ReportErrorCode };
 
 // ── Data Access Report ──────────────────────────────────────────
 
@@ -401,3 +411,26 @@ function parseJsonbArray(val: unknown): string[] {
   }
   return [];
 }
+
+// ── Tag wiring (#2566 — slice 4/11 of #2017) ─────────────────────────
+//
+// Bridges this module's functions into the `ComplianceReports` Tag so
+// `api/routes/admin-compliance.ts` can `yield* ComplianceReports`
+// instead of static-importing this module. Aggregated into
+// `ee/src/layers.ts:EELayer`; the no-op default in
+// `lib/effect/services.ts:NoopComplianceReportsLayer` covers self-hosted
+// installs (returns a `ReportError("not_available")` so the admin route
+// maps cleanly to a 404 envelope via `domainError`).
+
+export const makeComplianceReportsLive = (): ComplianceReportsShape => ({
+  available: true,
+  generateDataAccessReport,
+  generateUserActivityReport,
+  dataAccessReportToCSV,
+  userActivityReportToCSV,
+});
+
+export const ComplianceReportsLive: Layer.Layer<ComplianceReports> = Layer.sync(
+  ComplianceReports,
+  makeComplianceReportsLive,
+);

@@ -1754,7 +1754,12 @@ admin.openapi(getRawYamlDirFileRoute, async (c) => {
     rawGroup === undefined ? undefined : rawGroup === "" ? null : rawGroup;
   const atlasMode = getAtlasMode(c);
   const mode = atlasMode === "developer" ? "developer" : "published";
-  await serveRawYaml({ requestId, filePath: `${dir}/${file}`, orgId, connectionGroupId, mode });
+  // `serveRawYaml` is `Promise<never>` — every code path throws HTTPException
+  // (including the 200 success path, which exists to bypass OpenAPI's typed-
+  // return constraint on text/plain). Returning the call satisfies the
+  // openapi() handler's typed-response contract because `never` is assignable
+  // to any response shape.
+  return serveRawYaml({ requestId, filePath: `${dir}/${file}`, orgId, connectionGroupId, mode });
 });
 
 admin.openapi(getRawYamlFileRoute, async (c) => {
@@ -1764,7 +1769,7 @@ admin.openapi(getRawYamlFileRoute, async (c) => {
   const atlasMode = getAtlasMode(c);
   const mode = atlasMode === "developer" ? "developer" : "published";
   // Top-level catalog/glossary are unscoped — no connectionGroupId.
-  await serveRawYaml({ requestId, filePath: file, orgId, connectionGroupId: null, mode });
+  return serveRawYaml({ requestId, filePath: file, orgId, connectionGroupId: null, mode });
 });
 
 admin.openapi(getSemanticStatsRoute, async (c) => {

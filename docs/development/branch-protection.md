@@ -6,7 +6,7 @@
 
 | Setting | Value |
 | --- | --- |
-| Required status checks (strict, must be green on the head SHA being merged) | `ci`, `api-tests (1/4)`, `api-tests (2/4)`, `api-tests (3/4)`, `api-tests (4/4)`, `Deploy Validation`, `Analyze (javascript-typescript)` |
+| Required status checks (strict, must be green on the head SHA being merged) | `ci`, `api-tests (1/4)`, `api-tests (2/4)`, `api-tests (3/4)`, `api-tests (4/4)`, `Deploy Validation`, `Analyze (javascript-typescript)`, `Symlink Stub Build` |
 | `strict` (branch must be up to date with `main` before merge) | `true` |
 | Required pull request reviews | none |
 | Enforce on admins | `false` |
@@ -33,6 +33,7 @@ The list is the minimum set of checks that demonstrably catches the failure mode
 - `api-tests (1/4)`–`(4/4)` — sharded `@atlas/api` test suite, including the real-Postgres migration smoke (`migrate-pg.test.ts`). Migration regressions like #2221 (the broken `keepers` CTE in 0054) only surface against a real database
 - `Deploy Validation` — umbrella over `scaffold-smoke` (`docker` + `vercel`), `standalone-build`, `config-validation`, `boot-build`, and `boot-smoke` (see "The `Deploy Validation` umbrella" above). Catches scaffold-template drift, standalone-build regressions, Docker/deploy-mode misconfigurations, Dockerfile-shape breakage on every PR (`boot-build`), and full container-boot regressions including SaaS env contract drift on runtime-relevant PRs (`boot-smoke`, gated)
 - `Analyze (javascript-typescript)` — CodeQL. Static security analysis we want enforced, not advisory
+- `Symlink Stub Build` — the `ee-stub-build` job in `.github/workflows/ci.yml`. Replaces `ee/` with the no-op stub at `scripts/ee-stub/` and re-runs `bun run type` + `bun run build` against core. Closes the 1.5.1 architecture-deepening arc (#2017 / milestone #48): the inversion that made every enterprise subsystem reachable from core via a `Context.Tag` is only meaningful if a regression that re-introduces a `core → ee` import beyond `lib/effect/enterprise-layer.ts` actually fails the merge gate. Without this required, a PR that breaks core-only compile can still ship
 
 ## Why required reviews are off
 
@@ -78,7 +79,8 @@ The protection was applied via `gh api PUT repos/AtlasDevHQ/atlas/branches/main/
       "api-tests (3/4)",
       "api-tests (4/4)",
       "Deploy Validation",
-      "Analyze (javascript-typescript)"
+      "Analyze (javascript-typescript)",
+      "Symlink Stub Build"
     ]
   },
   "enforce_admins": false,

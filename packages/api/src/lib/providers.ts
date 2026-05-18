@@ -19,7 +19,7 @@ import { gateway } from "ai";
 import type { LanguageModel } from "ai";
 import type { ModelConfigProvider } from "@useatlas/types";
 import { createLogger } from "./logger";
-import type { WorkspaceCredentials } from "@atlas/ee/platform/model-routing";
+import type { WorkspaceCredentials } from "@atlas/api/lib/auth/credentials";
 
 const log = createLogger("providers");
 

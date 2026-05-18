@@ -9,17 +9,13 @@ import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
-import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import {
-  getWorkspaceModelConfig,
-  getWorkspaceModelConfigRaw,
-  setWorkspaceModelConfig,
-  deleteWorkspaceModelConfig,
-  testModelConfig,
-  reconcileModelDeprecation,
-  ModelConfigError,
-  type RawWorkspaceModelConfig,
-} from "@atlas/ee/platform/model-routing";
+  RequestContext,
+  AuthContext,
+  ModelRouter,
+} from "@atlas/api/lib/effect/services";
+import { ModelConfigError } from "@atlas/api/lib/model-routing/errors";
+import type { RawWorkspaceModelConfig } from "@atlas/api/lib/auth/credentials";
 import { WorkspaceModelConfigSchema as ModelConfigSchema } from "@useatlas/schemas";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { getGatewayCatalog } from "@atlas/api/lib/gateway-catalog";
@@ -242,6 +238,7 @@ adminModelConfig.openapi(getConfigRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
+    const router = yield* ModelRouter;
 
     if (!hasInternalDB()) {
       return c.json({ error: "not_available", message: "No internal database configured.", requestId }, 404);
@@ -251,7 +248,7 @@ adminModelConfig.openapi(getConfigRoute, async (c) => {
       return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
     }
 
-    const config = yield* getWorkspaceModelConfig(orgId);
+    const config = yield* router.getWorkspaceModelConfig(orgId);
     return c.json({ config }, 200);
   }), { label: "get workspace model config", domainErrors: [modelConfigDomainError] });
 });
@@ -261,6 +258,7 @@ adminModelConfig.openapi(setConfigRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
+    const router = yield* ModelRouter;
 
     if (!hasInternalDB()) {
       return c.json({ error: "not_available", message: "No internal database configured.", requestId }, 404);
@@ -279,7 +277,7 @@ adminModelConfig.openapi(setConfigRoute, async (c) => {
     // the "existing key" for a BYOT-provider transition — there's no key
     // to preserve.
     if (!body.apiKey && body.provider !== "gateway") {
-      const existing = yield* getWorkspaceModelConfig(orgId);
+      const existing = yield* router.getWorkspaceModelConfig(orgId);
       if (!existing || existing.apiKeyStatus !== "masked") {
         return c.json(
           {
@@ -303,7 +301,7 @@ adminModelConfig.openapi(setConfigRoute, async (c) => {
       hasSecret: body.apiKey !== undefined,
       ...(body.bedrockRegion ? { bedrockRegion: body.bedrockRegion } : {}),
     };
-    const config = yield* setWorkspaceModelConfig(orgId, {
+    const config = yield* router.setWorkspaceModelConfig(orgId, {
       provider: body.provider,
       model: body.model,
       apiKey: body.apiKey,
@@ -342,6 +340,7 @@ adminModelConfig.openapi(deleteConfigRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
+    const router = yield* ModelRouter;
 
     if (!hasInternalDB()) {
       return c.json({ error: "not_available", message: "No internal database configured.", requestId }, 404);
@@ -351,7 +350,7 @@ adminModelConfig.openapi(deleteConfigRoute, async (c) => {
       return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
     }
 
-    const deleted = yield* deleteWorkspaceModelConfig(orgId).pipe(
+    const deleted = yield* router.deleteWorkspaceModelConfig(orgId).pipe(
       Effect.tapError((err) =>
         Effect.sync(() =>
           logAdminAction({
@@ -385,6 +384,7 @@ adminModelConfig.openapi(testConfigRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
+    const router = yield* ModelRouter;
 
     if (!orgId) {
       return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
@@ -401,7 +401,7 @@ adminModelConfig.openapi(testConfigRoute, async (c) => {
       model: body.model,
       ...(body.bedrockRegion ? { bedrockRegion: body.bedrockRegion } : {}),
     };
-    const result = yield* testModelConfig({
+    const result = yield* router.testModelConfig({
       provider: body.provider,
       model: body.model,
       apiKey: body.apiKey,
@@ -447,6 +447,7 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
+    const router = yield* ModelRouter;
     const { provider: requestedProvider, refresh: refreshRaw } = c.req.valid("query");
     const provider = requestedProvider ?? "gateway";
     const refresh = refreshRaw === "1" || refreshRaw === "true";
@@ -481,7 +482,7 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
     // Decrypt errors surface as 422 with a clear "re-enter the key" message
     // rather than as a generic 500. Shared across every BYOT direct-provider
     // path below.
-    const rawConfigOrDecryptError = yield* getWorkspaceModelConfigRaw(orgId).pipe(
+    const rawConfigOrDecryptError = yield* router.getWorkspaceModelConfigRaw(orgId).pipe(
       Effect.map((cfg) => ({ ok: true as const, cfg })),
       Effect.catchTag("ModelConfigDecryptError", (err) =>
         Effect.succeed({ ok: false as const, err }),
@@ -621,7 +622,7 @@ adminModelConfig.openapi(catalogRoute, async (c) => {
       // `model_status` stale until the next refresh. We log the failure
       // explicitly so prod dashboards can spot a degraded reconcile
       // pattern instead of silently divergent state.
-      yield* reconcileModelDeprecation(
+      yield* router.reconcileModelDeprecation(
         orgId,
         rawConfig.model,
         adapter.providerKey,

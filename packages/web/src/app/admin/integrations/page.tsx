@@ -30,6 +30,7 @@ import {
   useDisclosure,
 } from "@/ui/components/admin/compact";
 import { formatDateTime } from "@/lib/format";
+import { getApiUrl } from "@/lib/api-url";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -513,7 +514,7 @@ function SlackCard({
         action={
           canConnect ? (
             <Button size="sm" asChild>
-              <a href="/api/v1/slack/install">
+              <a href={`${getApiUrl()}/api/v1/slack/install`}>
                 <ExternalLink className="mr-1.5 size-3.5" />
                 Connect
               </a>
@@ -556,7 +557,7 @@ function SlackCard({
           )}
           {slack.connected && canConnect && (
             <Button variant="ghost" size="sm" asChild>
-              <a href="/api/v1/slack/install">
+              <a href={`${getApiUrl()}/api/v1/slack/install`}>
                 <ExternalLink className="mr-1.5 size-3.5" />
                 Reconnect
               </a>
@@ -651,7 +652,7 @@ function TeamsCard({
         action={
           canConnect ? (
             <Button size="sm" asChild>
-              <a href="/api/v1/teams/install">
+              <a href={`${getApiUrl()}/api/v1/teams/install`}>
                 <ExternalLink className="mr-1.5 size-3.5" />
                 Connect
               </a>
@@ -694,7 +695,7 @@ function TeamsCard({
           )}
           {teams.connected && canConnect && (
             <Button variant="ghost" size="sm" asChild>
-              <a href="/api/v1/teams/install">
+              <a href={`${getApiUrl()}/api/v1/teams/install`}>
                 <ExternalLink className="mr-1.5 size-3.5" />
                 Reconnect
               </a>
@@ -779,7 +780,7 @@ function DiscordCard({
         action={
           canConnect ? (
             <Button size="sm" asChild>
-              <a href="/api/v1/discord/install">
+              <a href={`${getApiUrl()}/api/v1/discord/install`}>
                 <ExternalLink className="mr-1.5 size-3.5" />
                 Connect
               </a>
@@ -822,7 +823,7 @@ function DiscordCard({
           )}
           {discord.connected && canConnect && (
             <Button variant="ghost" size="sm" asChild>
-              <a href="/api/v1/discord/install">
+              <a href={`${getApiUrl()}/api/v1/discord/install`}>
                 <ExternalLink className="mr-1.5 size-3.5" />
                 Reconnect
               </a>

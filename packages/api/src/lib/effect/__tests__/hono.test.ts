@@ -22,7 +22,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 const { runEffect, runHandler, mapTaggedError, domainError } = await import("../hono");
 const { AuthContext } = await import("../services");
-const { EnterpriseError } = await import("@atlas/ee/index");
+const { EnterpriseError } = await import("../errors");
 const {
   EmptyQueryError,
   ForbiddenPatternError,

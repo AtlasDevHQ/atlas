@@ -10,7 +10,8 @@
 
 import { Effect, Layer } from "effect";
 import { generateVerificationToken, verifyDnsTxt } from "../lib/domain-verification";
-import { requireEnterpriseEffect, EnterpriseError } from "../index";
+import { requireEnterpriseEffect } from "../index";
+import { EnterpriseError } from "@atlas/api/lib/effect/errors";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import {
   hasInternalDB,

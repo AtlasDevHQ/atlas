@@ -18,7 +18,8 @@
  */
 
 import { Effect, Layer } from "effect";
-import { requireEnterpriseEffect, EnterpriseError } from "../index";
+import { requireEnterpriseEffect } from "../index";
+import { EnterpriseError } from "@atlas/api/lib/effect/errors";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import {
   hasInternalDB,

@@ -11,7 +11,8 @@
  */
 
 import { Effect, Layer } from "effect";
-import { requireEnterpriseEffect, EnterpriseError } from "../index";
+import { requireEnterpriseEffect } from "../index";
+import { EnterpriseError } from "@atlas/api/lib/effect/errors";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import {
   hasInternalDB,
@@ -33,20 +34,7 @@ import {
   RoleError,
   type RoleErrorCode,
 } from "@atlas/api/lib/auth/roles-errors";
-import {
-  resolvePermissions as coreResolvePermissions,
-  hasPermission as coreHasPermission,
-  checkPermission as coreCheckPermission,
-} from "@atlas/api/lib/auth/permission-resolve";
-
-/**
- * Re-export the canonical definitions from core (#2563 slice 1/11 of #2017).
- * EE keeps the named exports so existing `import { Permission } from
- * "@atlas/ee/auth/roles"` call sites continue to work through slice 11;
- * new code should import from `@atlas/api/lib/auth/permissions` directly.
- */
-export { PERMISSIONS, isValidPermission };
-export type { Permission };
+import { checkPermission as coreCheckPermission } from "@atlas/api/lib/auth/permission-resolve";
 
 /**
  * Lower-cased set of every built-in Atlas role name. Kept in lockstep with
@@ -166,18 +154,6 @@ export function isValidRoleName(name: string): boolean {
 }
 
 // ── Permission resolution ────────────────────────────────────────
-
-/**
- * `resolvePermissions` / `hasPermission` / `checkPermission` live in
- * `@atlas/api/lib/auth/permission-resolve` post-#2571 so the
- * `RolesPolicy` Tag's no-op default can answer permission checks
- * without a hard `@atlas/ee` dep. Re-exported here for back-compat —
- * the `LEGACY_ROLE_PERMISSIONS` table moved with them; both sides
- * resolve identically.
- */
-export const resolvePermissions = coreResolvePermissions;
-export const hasPermission = coreHasPermission;
-export const checkPermission = coreCheckPermission;
 
 // ── CRUD ─────────────────────────────────────────────────────────
 
@@ -528,7 +504,7 @@ export const seedBuiltinRoles = (orgId: string): Effect.Effect<void, Error> =>
 
 export const makeRolesPolicyLive = (): RolesPolicyShape => ({
   customRolesActive: true,
-  checkPermission,
+  checkPermission: coreCheckPermission,
   listRoles,
   getRole,
   getRoleByName,

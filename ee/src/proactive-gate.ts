@@ -17,7 +17,8 @@
  */
 
 import { Effect, Layer } from "effect";
-import { isEnterpriseEnabled, EnterpriseError } from "./index";
+import { isEnterpriseEnabled } from "./index";
+import { EnterpriseError } from "@atlas/api/lib/effect/errors";
 import {
   ProactiveGate,
   type ProactiveGateShape,

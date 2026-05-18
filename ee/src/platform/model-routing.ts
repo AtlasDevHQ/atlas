@@ -10,7 +10,8 @@
  */
 
 import { Effect, Layer } from "effect";
-import { requireEnterpriseEffect, EnterpriseError } from "../index";
+import { requireEnterpriseEffect } from "../index";
+import { EnterpriseError } from "@atlas/api/lib/effect/errors";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import {
   hasInternalDB,
@@ -103,16 +104,6 @@ interface ModelConfigRow {
 // `BedrockCredentialBundle` lives in `@useatlas/types` (single canonical
 // definition); imported above. The legacy `BedrockDiscoveryCredentials`
 // alias in `@atlas/api/lib/bedrock-catalog` now resolves to the same type.
-
-/**
- * `WorkspaceCredentials` (the typed cred material a workspace row
- * carries after decrypt) lives in `@atlas/api/lib/auth/credentials`
- * post-#2565 so the `ModelRouter` Tag can type its method signatures
- * without importing from `@atlas/ee`. Re-exported here for back-compat —
- * `RawWorkspaceModelConfig` further down the file pulls from the same
- * core module for consistency.
- */
-export type { WorkspaceCredentials };
 
 /**
  * Parse a string-encoded Bedrock credential bundle. Exported so the

@@ -18,7 +18,7 @@ export type { DiscordInstallation, DiscordInstallationWithSecret } from "@atlas/
 
 const log = createLogger("discord-store");
 
-const SELECT_COLS = "guild_id, org_id, guild_name, bot_token_encrypted, application_id, public_key, installed_at::text";
+const SELECT_COLS = "guild_id, org_id, guild_name, bot_token_encrypted, application_id, public_key, to_char(installed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS installed_at";
 
 // ---------------------------------------------------------------------------
 // Shared row parser

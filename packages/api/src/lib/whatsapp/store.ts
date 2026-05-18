@@ -16,7 +16,7 @@ export type { WhatsAppInstallation, WhatsAppInstallationWithSecret } from "@atla
 
 const log = createLogger("whatsapp-store");
 
-const SELECT_COLS = "phone_number_id, access_token_encrypted, display_phone, org_id, installed_at::text";
+const SELECT_COLS = "phone_number_id, access_token_encrypted, display_phone, org_id, to_char(installed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS installed_at";
 
 // ---------------------------------------------------------------------------
 // Shared row parser

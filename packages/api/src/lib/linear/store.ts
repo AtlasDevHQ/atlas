@@ -15,7 +15,7 @@ export type { LinearInstallation, LinearInstallationWithSecret } from "@atlas/ap
 
 const log = createLogger("linear-store");
 
-const SELECT_COLS = "user_id, api_key_encrypted, user_name, user_email, org_id, installed_at::text";
+const SELECT_COLS = "user_id, api_key_encrypted, user_name, user_email, org_id, to_char(installed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS installed_at";
 
 // ---------------------------------------------------------------------------
 // Shared row parser

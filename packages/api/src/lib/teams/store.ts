@@ -17,7 +17,7 @@ export type { TeamsInstallation, TeamsInstallationWithSecret } from "@atlas/api/
 
 const log = createLogger("teams-store");
 
-const SELECT_COLS = "tenant_id, org_id, tenant_name, app_password_encrypted, installed_at::text";
+const SELECT_COLS = "tenant_id, org_id, tenant_name, app_password_encrypted, to_char(installed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS installed_at";
 
 // ---------------------------------------------------------------------------
 // Shared row parser

@@ -139,12 +139,13 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
 - [x] **1.4.5 — Cross-environment querying** (#47, 6 issues, closed 2026-05-17) — Agent-routed Auto/Pin/All-envs scope on `executeSQL`; `conversations.routing_mode`; `query_audit.parent_audit_id` rollup; `envContributions` wire type; `atlas.routing_mode` OTel attr. Deep modules `environment-routing` + `multi-env-result-merger` (arch-wins #61/#62). PRD #2515.
 - [x] **1.4.6 — Chat as dashboard editor** (#46, 9 issues, closed 2026-05-17) — Bound chat editor + per-user drafts + atomic three-way-merge Publish + stage tracker + `screenshotDashboard` vision tool + History tab. `ATLAS_DASHBOARD_DRAFTS_ENABLED` default-ON. Deep modules `dashboard-versioning` / `stage-tracker` / `boundChatContext` (arch-wins #63/#64 + stage-tracker + screenshot pipeline entries). PRD #2362.
 - [x] **1.5.0 — Proactive Chat** (#43, 11 issues, closed 2026-05-17) — `/ee`-gated, Slack-first. Reaction-first tracer → answer pull on tap; three-layer kill switch (`@atlas pause` / admin toggle / DM `unsubscribe`); meter + audit + monthly quota cap. Awaiting design-partner adoption to hit <5% misfire / ≥70% acceptance before promoting beyond Slack. Opens "1.5.x = Atlas Everywhere". PRD #2291.
+- [x] **1.5.1 — Architecture Deepening** (#48, 11 slices + 7-PR cleanup trail, closed 2026-05-18) — Inverted `core → ee` per #2017: every enterprise subsystem now sits behind a `Context.Tag` with a fail-closed no-op default; `lib/effect/enterprise-layer.ts` is the single allowed `@atlas/ee` import in core (locked by `check-ee-imports.sh` + `ee-stub-build` job). Detail in archive.
 
 ---
 
 ## Active
 
-- **1.5.1 — Architecture Deepening** ([milestone #48](https://github.com/AtlasDevHQ/atlas/milestones/48), 3 issues) — internal refactors, no user-facing feature; each shippable independently. Pattern matches 0.9.3 + 0.9.4. Scope: invert core→ee dependency ([#2017](https://github.com/AtlasDevHQ/atlas/issues/2017) — 23 files import from `@atlas/ee`, hot path included), agent-auth provider on OAuth 2.1 ([#2058](https://github.com/AtlasDevHQ/atlas/issues/2058)), explore tool refactor ([#2123](https://github.com/AtlasDevHQ/atlas/issues/2123), unblocked now that multi-source shipped). [#2109](https://github.com/AtlasDevHQ/atlas/issues/2109) (durable MCP session store) + [#2055](https://github.com/AtlasDevHQ/atlas/issues/2055) (Redis-shaped perf) stay out of this milestone — both are trigger-gated by traffic, not scheduled work.
+_None active. See `/next` for candidates._
 
 ## Planned
 

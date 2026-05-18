@@ -2288,3 +2288,35 @@ Closed 2026-05-17. Milestone [#43](https://github.com/AtlasDevHQ/atlas/milestone
 Full instrumentation in production; awaiting design-partner adoption to hit the <5% misfire / ≥70% acceptance bar before promoting beyond Slack (Teams/Discord/Google Chat adapters are wired but feature-flagged off).
 
 ---
+
+## 1.5.1 — Architecture Deepening — CLOSED
+
+Closed 2026-05-18. Milestone [#48](https://github.com/AtlasDevHQ/atlas/milestone/48), 11 slices + 7-PR cleanup trail. Inverted the `core → ee` dependency catalogued by [#2017](https://github.com/AtlasDevHQ/atlas/issues/2017) (23 dynamic `@atlas/ee` imports in `packages/api/src/`). Each enterprise subsystem now sits behind a `Context.Tag` in `lib/effect/services.ts` with a fail-closed no-op default; `ee/src/layers.ts:EELayer` binds the real `Layer.effect`. The single remaining `@atlas/ee` import in core is `lib/effect/enterprise-layer.ts:ConditionalEELayer` — enforced by `scripts/check-ee-imports.sh` (drift CI) and the `ee-stub-build` job that replaces `ee/` with `scripts/ee-stub/` and re-runs type + build. Coordination repeated the 1.4.6 parallel-worktree burst pattern; sister-slice rebases handled via auto-merge.
+
+### Slices
+
+- [x] Slice 1/11 — Layer scaffolding + `EnterpriseError` / `Permission` to core ([#2563](https://github.com/AtlasDevHQ/atlas/issues/2563), [PR #2574](https://github.com/AtlasDevHQ/atlas/pull/2574)).
+- [x] Slice 2/11 — Residency via `ResidencyResolver` Tag ([#2564](https://github.com/AtlasDevHQ/atlas/issues/2564), [PR #2576](https://github.com/AtlasDevHQ/atlas/pull/2576)).
+- [x] Slice 3/11 — Model routing via `ModelRouter` Tag ([#2565](https://github.com/AtlasDevHQ/atlas/issues/2565), [PR #2577](https://github.com/AtlasDevHQ/atlas/pull/2577)).
+- [x] Slice 4/11 — PII masking + compliance reports via Tags ([#2566](https://github.com/AtlasDevHQ/atlas/issues/2566), [PR #2579](https://github.com/AtlasDevHQ/atlas/pull/2579)).
+- [x] Slice 5/11 — Approval gate via `ApprovalGate` Tag ([#2567](https://github.com/AtlasDevHQ/atlas/issues/2567), [PR #2580](https://github.com/AtlasDevHQ/atlas/pull/2580)).
+- [x] Slice 6/11 — SLA metrics + backups via Tags ([#2568](https://github.com/AtlasDevHQ/atlas/issues/2568), [PR #2581](https://github.com/AtlasDevHQ/atlas/pull/2581)).
+- [x] Slice 7/11 — Audit retention via `AuditRetention` Tag ([#2569](https://github.com/AtlasDevHQ/atlas/issues/2569), [PR #2582](https://github.com/AtlasDevHQ/atlas/pull/2582)).
+- [x] Slice 8/11 — IP allowlist + SSO + SCIM via Tags ([#2570](https://github.com/AtlasDevHQ/atlas/issues/2570), [PR #2583](https://github.com/AtlasDevHQ/atlas/pull/2583)).
+- [x] Slice 9/11 — Auth: Roles + Permission via `RolesPolicy` Tag ([#2571](https://github.com/AtlasDevHQ/atlas/issues/2571), [PR #2585](https://github.com/AtlasDevHQ/atlas/pull/2585)).
+- [x] Slice 10/11 — Platform admin gates: Branding + Domains + Proactive + Deploy mode ([#2572](https://github.com/AtlasDevHQ/atlas/issues/2572), [PR #2584](https://github.com/AtlasDevHQ/atlas/pull/2584)).
+- [x] Slice 11/11 — Closeout: grep gate + symlink-stub CI + shim cleanup ([#2573](https://github.com/AtlasDevHQ/atlas/issues/2573), [PR #2586](https://github.com/AtlasDevHQ/atlas/pull/2586)).
+
+### Cleanup trail (orchestrator-subagent pattern, base [PR #2594](https://github.com/AtlasDevHQ/atlas/pull/2594))
+
+- [x] [PR #2595](https://github.com/AtlasDevHQ/atlas/pull/2595) — `makeTestEnterpriseLayer` helper + Pattern 1 test migration ([#2588](https://github.com/AtlasDevHQ/atlas/issues/2588)).
+- [x] [PR #2596](https://github.com/AtlasDevHQ/atlas/pull/2596) — `Symlink Stub Build` added to required checks ([#2590](https://github.com/AtlasDevHQ/atlas/issues/2590)).
+- [x] [PR #2597](https://github.com/AtlasDevHQ/atlas/pull/2597) — 4 leftover issues moved to Architecture Backlog milestone #49 + closeout-detach pattern doc ([#2592](https://github.com/AtlasDevHQ/atlas/issues/2592)).
+- [x] [PR #2598](https://github.com/AtlasDevHQ/atlas/pull/2598) — compile-time exhaustiveness gate for route `domainErrors`: 10 EE-domain errors added to `AtlasError` union + `ATLAS_ERROR_TAG_LIST` ([#2593](https://github.com/AtlasDevHQ/atlas/issues/2593), first half).
+- [x] [PR #2599](https://github.com/AtlasDevHQ/atlas/pull/2599) — normalize `Tag.available` semantics across the 16 enterprise Tags (7 keep / 5 drop / 2 domain-flag rejections) and codified the rule in CLAUDE.md ([#2589](https://github.com/AtlasDevHQ/atlas/issues/2589)).
+- [x] [PR #2600](https://github.com/AtlasDevHQ/atlas/pull/2600) — scim-provenance via module-level `runEnterprise` ([#2591](https://github.com/AtlasDevHQ/atlas/issues/2591)).
+- [x] [PR #2601](https://github.com/AtlasDevHQ/atlas/pull/2601) — split `AuditRetention` Tag into `AuditRetention` (10 CRUD) + `AuditPurgeScheduler` (2 lifecycle); removed `require()` workaround at `ee/src/audit/retention.ts:1034` ([#2587](https://github.com/AtlasDevHQ/atlas/issues/2587)).
+
+Carry-over from #2593: the "consumer-side fail-closed audit" half (5 load-bearing Tag sites gated via a new `EnterpriseUnavailableError` → 503) shipped separately as a follow-up PR after the cleanup trail closed. Deviation from the original #2017 plan: the allow-listed file is `enterprise-layer.ts`, not `layers.ts` (slice 2 kept `layers.ts` startup-DAG-free).
+
+---

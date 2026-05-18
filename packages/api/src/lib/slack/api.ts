@@ -2,8 +2,10 @@
  * Thin Slack Web API client using native fetch.
  *
  * No heavy dependencies — POST to slack.com/api endpoints with JSON body
- * and Bearer token auth. For oauth.v2.access, pass an empty token — Slack
- * uses client_id/client_secret from the body instead.
+ * and Bearer token auth. The `oauth.*` namespace is the exception: Slack
+ * rejects JSON bodies there and requires application/x-www-form-urlencoded
+ * with client_id/client_secret in the body (no Bearer token). Sending
+ * JSON makes Slack fail to parse `code` and return `invalid_code`.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -25,14 +27,27 @@ export async function slackAPI(
   token: string,
   body: Record<string, unknown>,
 ): Promise<SlackAPIResponse> {
+  const isOauth = method.startsWith("oauth.");
+  const headers: Record<string, string> = isOauth
+    ? { "Content-Type": "application/x-www-form-urlencoded; charset=utf-8" }
+    : {
+        "Content-Type": "application/json; charset=utf-8",
+        Authorization: `Bearer ${token}`,
+      };
+  const requestBody = isOauth
+    ? new URLSearchParams(
+        Object.entries(body).reduce<Record<string, string>>((acc, [k, v]) => {
+          if (v !== undefined && v !== null) acc[k] = String(v);
+          return acc;
+        }, {}),
+      ).toString()
+    : JSON.stringify(body);
+
   try {
     const resp = await fetch(`${SLACK_API_BASE}/${method}`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(body),
+      headers,
+      body: requestBody,
     });
 
     if (!resp.ok) {

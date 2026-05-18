@@ -1534,6 +1534,149 @@ describe("GET /api/v1/admin/semantic/catalog", () => {
   });
 });
 
+describe("GET /api/v1/admin/semantic/raw/*", () => {
+  // Same-origin success path — DB-backed deployments now serve `yaml_content`
+  // from the org's `semantic_entities` row when one exists, with the disk root
+  // as a fallback only for self-hosted (no internal DB or no active org).
+  // Pre-fix, the route always read from disk root and 404'd for org-scoped
+  // entities that lived under `semantic/.orgs/<orgId>/entities/`.
+  beforeEach(() => {
+    mockAuthenticateRequest.mockReset();
+    mockGetEntityAdmin.mockReset();
+    mockGetEntityAdmin.mockResolvedValue(null);
+  });
+
+  it("falls back to disk for self-hosted (no internal DB)", async () => {
+    mockHasInternalDB = false;
+    try {
+      setAdmin();
+      const res = await app.fetch(adminRequest("/api/v1/admin/semantic/raw/entities/companies.yml"));
+      expect(res.status).toBe(200);
+      expect(res.headers.get("Content-Type")).toContain("text/plain");
+      const body = await res.text();
+      expect(body).toContain("table: companies");
+    } finally {
+      mockHasInternalDB = true;
+    }
+  });
+
+  it("falls back to disk when authenticated user has no active org", async () => {
+    // Internal DB is configured but the caller lacks an org context → can't
+    // resolve a row anyway, so disk is the only honest source.
+    setAdmin(); // user has no activeOrganizationId
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/raw/glossary.yml"));
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("ARR");
+  });
+
+  it("serves yaml_content from DB when org + internal DB are present", async () => {
+    setOrgScopedAdmin();
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "1",
+      org_id: "org-test-1",
+      entity_type: "entity",
+      name: "companies",
+      yaml_content: "table: companies\n# from DB\n",
+      connection_group_id: null,
+      status: "published",
+      created_at: new Date(),
+      updated_at: new Date(),
+    });
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/raw/entities/companies.yml"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toContain("text/plain");
+    const body = await res.text();
+    expect(body).toBe("table: companies\n# from DB\n");
+    // Critical: must be the DB content, NOT the on-disk fixture body, so a
+    // disk/DB divergence after admin edits shows the canonical version.
+    expect(body).not.toContain("All company records");
+    // Route must forward orgId + type + connectionGroupId + mode unchanged.
+    expect(mockGetEntityAdmin).toHaveBeenCalledWith(
+      "org-test-1",
+      "entity",
+      "companies",
+      undefined,
+      "published",
+    );
+  });
+
+  it("returns 404 (not disk fallback) when DB-backed lookup misses for an entity", async () => {
+    // Architectural rule: when hasInternalDB() + orgId, DB is canonical for
+    // entity/metric/glossary. A disk fallthrough here would surface a stale
+    // demo YAML for an entity the org doesn't actually own.
+    setOrgScopedAdmin();
+    mockGetEntityAdmin.mockResolvedValue(null);
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/raw/entities/companies.yml"));
+    expect(res.status).toBe(404);
+    const body = await res.json() as { error: string; requestId: string };
+    expect(body.error).toBe("not_found");
+    expect(body.requestId).toBeTruthy();
+  });
+
+  it("translates AmbiguousEntityError into 409 with candidate groups (#2412)", async () => {
+    setOrgScopedAdmin();
+    mockGetEntityAdmin.mockImplementationOnce(async () => {
+      throw new RealAmbiguousEntityError({
+        message: 'Entity "users" exists in 2 environments. Pass connectionGroupId to disambiguate.',
+        entityName: "users",
+        entityType: "entity",
+        groups: ["g_prod_us", "g_prod_eu"],
+      });
+    });
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/raw/entities/users.yml"));
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; groups: string[] };
+    expect(body.error).toBe("entity_ambiguous");
+    expect(body.groups).toEqual(["g_prod_us", "g_prod_eu"]);
+  });
+
+  it("forwards ?connectionGroupId=<group> to the DB lookup", async () => {
+    setOrgScopedAdmin();
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "1",
+      org_id: "org-test-1",
+      entity_type: "entity",
+      name: "users",
+      yaml_content: "table: users\n",
+      connection_group_id: "g_prod_us",
+      status: "published",
+      created_at: new Date(),
+      updated_at: new Date(),
+    });
+
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/semantic/raw/entities/users.yml?connectionGroupId=g_prod_us"),
+    );
+    expect(res.status).toBe(200);
+    expect(mockGetEntityAdmin).toHaveBeenCalledWith(
+      "org-test-1",
+      "entity",
+      "users",
+      "g_prod_us",
+      "published",
+    );
+  });
+
+  it("falls back to disk for catalog.yml even when DB-backed (catalog isn't mirrored to DB)", async () => {
+    setOrgScopedAdmin();
+    mockGetEntityAdmin.mockResolvedValue(null);
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/raw/catalog.yml"));
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("Test Catalog");
+  });
+
+  it("rejects path traversal probes with 400", async () => {
+    setAdmin();
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/raw/entities/..%2Fpasswd.yml"));
+    expect([400, 404]).toContain(res.status);
+  });
+});
+
 describe("GET /api/v1/admin/semantic/stats", () => {
   beforeEach(() => {
     mockAuthenticateRequest.mockReset();

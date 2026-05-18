@@ -61117,7 +61117,7 @@
           "Admin — Semantic"
         ],
         "summary": "Get raw YAML (subdirectory)",
-        "description": "Serves raw YAML content for a file in a subdirectory (e.g. entities/users.yml).",
+        "description": "Serves raw YAML for an entity or metric (e.g. entities/users.yml). When an internal DB is configured and the caller has an active org, the DB row's `yaml_content` is canonical; the disk file under `semantic/` is a self-hosted fallback only. Pass `?connectionGroupId=<group>` to disambiguate when the same entity name exists in multiple environments.",
         "parameters": [
           {
             "schema": {
@@ -61138,6 +61138,15 @@
             "required": true,
             "name": "file",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "example": "g_prod_us"
+            },
+            "required": false,
+            "name": "connectionGroupId",
+            "in": "query"
           }
         ],
         "responses": {
@@ -61237,6 +61246,45 @@
               }
             }
           },
+          "409": {
+            "description": "Entity name exists in multiple groups — pass connectionGroupId to disambiguate",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "entity_ambiguous"
+                      ]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "groups": {
+                      "type": "array",
+                      "items": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message",
+                    "groups",
+                    "requestId"
+                  ]
+                }
+              }
+            }
+          },
           "429": {
             "description": "Rate limit exceeded",
             "content": {
@@ -61283,7 +61331,7 @@
           "Admin — Semantic"
         ],
         "summary": "Get raw YAML (top-level)",
-        "description": "Serves raw YAML content for a top-level file (catalog.yml, glossary.yml).",
+        "description": "Serves raw YAML for a top-level file (catalog.yml, glossary.yml). When an internal DB is configured and the caller has an active org, the DB row's `yaml_content` is canonical for glossary; catalog falls through to disk because it isn't currently mirrored to the DB.",
         "parameters": [
           {
             "schema": {

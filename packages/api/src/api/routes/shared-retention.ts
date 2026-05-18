@@ -4,7 +4,7 @@
  * `admin-action-retention.ts` (admin_action_log governance + GDPR
  * erasure).
  *
- * Pre-#2587 each route file declared its own
+ * Pre-#2594 each route file declared its own
  * `const retentionDomainError = domainError(RetentionError, ...)` with
  * identical statusMap. Promoting the constant prevents the two from
  * drifting (`domainError`'s `TCode` inference means a missing code is

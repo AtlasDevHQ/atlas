@@ -11,7 +11,7 @@
  * is enabled AND an internal database is configured.
  *
  * Reads the enterprise flag via the canonical `enterprise-config.ts`
- * helper (#2587 retired the local `isEnterpriseEnabledLocal` fork).
+ * helper (#2594 retired the local `isEnterpriseEnabledLocal` fork).
  * `hasInternalDBLocal` stays lazy-`require`'d to keep `lib/db/internal`
  * out of this file's eager dep graph.
  */

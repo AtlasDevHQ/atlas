@@ -398,7 +398,7 @@ export async function runEffect<A, E>(
 ): Promise<A> {
   // Per-request contextLayer (RequestContext + AuthContext) is provided
   // at the program level, then the program runs against the shared
-  // module-level EnterpriseRuntime (#2587). Pre-#2587 the bridge merged
+  // module-level EnterpriseRuntime (#2594). Pre-#2594 the bridge merged
   // contextLayer + EnterpriseLayer per request — Layer.merge produces a
   // fresh reference each time so Effect's per-Scope memoization couldn't
   // amortize the EE-Layer's lazy `await import("@atlas/ee/layers")` or

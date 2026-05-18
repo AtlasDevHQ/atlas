@@ -72,7 +72,7 @@ function isEnterpriseEnabledLocal(): boolean {
  *   construction time (not module load) so a missing `@atlas/ee/`
  *   build doesn't break core's module graph.
  *
- * **Load failure handling (#2587).** When enterprise is enabled but the
+ * **Load failure handling (#2594).** When enterprise is enabled but the
  * `@atlas/ee/layers` import fails, this logs at ERROR with a structured
  * `event: "enterprise.load_failed"` field (alertable by SaaS monitoring)
  * then falls through to `Layer.empty`. Every enterprise subsystem then
@@ -89,9 +89,9 @@ function isEnterpriseEnabledLocal(): boolean {
  *   - ResidencyResolver no-op returns null (route falls back to default
  *     datasource — compliance break on EU workspaces)
  *
- * Hardening this is tracked in #2593 — consumer-side "available"
+ * Hardening this is tracked in #2589 — consumer-side "available"
  * discriminator checks at each load-bearing call site. The change is
- * too invasive for #2587 because it touches every test's mock setup
+ * too invasive for #2594 because it touches every test's mock setup
  * (16 test files mock individual `@atlas/ee/*` modules without mocking
  * the `@atlas/ee/layers` aggregator; any change that hard-fails the
  * aggregator on partial-mock cascades through every consumer).
@@ -119,7 +119,7 @@ const ConditionalEELayer: Layer.Layer<never> = Layer.unwrapEffect(
           // through to `Layer.empty` so the request can still complete via
           // the no-op defaults. The downgrade is intentional but documented
           // as a known weak spot in the JSDoc above; consumer-side
-          // hardening tracked in #2593.
+          // hardening tracked in #2589.
           log.error(
             {
               err: err instanceof Error ? err.message : String(err),
@@ -171,7 +171,7 @@ export type EnterpriseSubsystem =
  *
  * Construction is paid ONCE per process: the runtime materialises the
  * layer the first time it's used and reuses the constructed services
- * across all subsequent runs. Pre-#2587 the bridge re-wrapped this Layer
+ * across all subsequent runs. Pre-#2594 the bridge re-wrapped this Layer
  * with `Effect.provide(...)` per request — building a fresh runtime
  * Scope per call, defeating Effect's reference-keyed memoization.
  */
@@ -180,9 +180,9 @@ export const EnterpriseLayer: Layer.Layer<EnterpriseSubsystem> = Layer.mergeAll(
   ConditionalEELayer,
 );
 
-// ── Module-level ManagedRuntime (#2587) ──────────────────────────────
+// ── Module-level ManagedRuntime (#2594) ──────────────────────────────
 //
-// Pre-#2587 every call site of `Effect.provide(EnterpriseLayer)` rebuilt
+// Pre-#2594 every call site of `Effect.provide(EnterpriseLayer)` rebuilt
 // the Layer's runtime per call. A single admin request handling a SQL
 // execution rebuilt 6-8 times (auth middleware → IP allowlist →
 // admin-router permission ×2 → SQL masking/SLA/approval ×3), and the
@@ -231,7 +231,7 @@ export function getEnterpriseRuntime(): ManagedRuntime.ManagedRuntime<Enterprise
  *
  * Rejects on EE-load failure when `ATLAS_ENTERPRISE_ENABLED=true` —
  * caller should treat the rejection as an operator-visible deploy error
- * (matching the fail-closed contract from #2587), not a per-request
+ * (matching the fail-closed contract from #2594), not a per-request
  * recoverable.
  */
 export function runEnterprise<A, E>(

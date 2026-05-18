@@ -150,7 +150,7 @@ async function rateLimitAndIPCheck(
   // at all and 500 on the same failure mode — this file accepts the
   // narrower fail-closed contract because middleware runs ahead of
   // routes that may not have provided the Tag in their test layer (see
-  // #2587 — future follow-up extracts a shared `makeTestEnterpriseLayer`
+  // #2588 — future follow-up extracts a shared `makeTestEnterpriseLayer`
   // helper so every test provides the full Tag set and this defensive
   // catch can be deleted).
   const orgId = authResult.user?.activeOrganizationId;

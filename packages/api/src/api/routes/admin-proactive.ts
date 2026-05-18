@@ -325,7 +325,7 @@ adminProactive.use(requirePermission("admin:settings"));
  * would produce.
  *
  * Uses the canonical `isEnterpriseEnabled` reader from
- * `lib/effect/enterprise-config.ts` — see #2587 for the consolidation
+ * `lib/effect/enterprise-config.ts` — see #2594 for the consolidation
  * that retired the local `isEnterpriseEnabledSync` fork.
  */
 function gateEnterprise(): void {

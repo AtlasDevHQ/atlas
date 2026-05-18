@@ -163,7 +163,7 @@ mock.module("@atlas/api/lib/effect/enterprise-layer", () => {
       isSCIMProvisioned: () => Effect.succeed(false),
     } as never),
   );
-  // Post-#2587: production code uses `runEnterprise` / `getEnterpriseRuntime`
+  // Post-#2594: production code uses `runEnterprise` / `getEnterpriseRuntime`
   // (module-level ManagedRuntime singleton). The test runtime is built
   // against the test Layer so all the mocked Tag bindings flow through.
   const testRuntime = ManagedRuntime.make(testLayer as never);

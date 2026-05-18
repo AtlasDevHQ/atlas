@@ -44,10 +44,10 @@ PATTERN='from "@atlas/ee|import\("@atlas/ee|require\("@atlas/ee'
 #   1. s|/\*([^*]|\*+[^*/])*\*+/||g
 #        Strip same-line block comments (canonical C-comment regex —
 #        handles plain `/* x */` and JSDoc-style `/** x */` on a single
-#        line). MUST run before the range delete: pre-#2587 the range
+#        line). MUST run before the range delete: pre-#2594 the range
 #        delete saw a same-line `/* … */ import { x } from "@atlas/ee/y"`
 #        and deleted the whole line including the real import, silently
-#        whitelisting a structural EE dependency — see #2587 / commit
+#        whitelisting a structural EE dependency — see #2594 / commit
 #        message for the adversarial fixtures that motivated this fix.
 #   2. /\/\*/,/\*\// d
 #        Delete lines participating in a true multi-line block comment

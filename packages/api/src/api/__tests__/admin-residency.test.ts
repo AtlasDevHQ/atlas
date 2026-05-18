@@ -217,7 +217,7 @@ mock.module("effect", () => {
 // inside the test; an inert mock-layer keeps the loader happy.
 mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   EnterpriseLayer: { _tag: "MockLayer" },
-  // Post-#2587: these are never called because the shimmed `runEffect`
+  // Post-#2594: these are never called because the shimmed `runEffect`
   // above never reaches the real runtime, but the imports must resolve.
   getEnterpriseRuntime: () => ({
     runPromise: () => Promise.resolve(undefined),
@@ -371,7 +371,7 @@ mock.module("@atlas/api/lib/effect/services", () => ({
 // value.
 mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   EnterpriseLayer: { _tag: "MockLayer" },
-  // Post-#2587: these are never called because the shimmed `runEffect`
+  // Post-#2594: these are never called because the shimmed `runEffect`
   // above never reaches the real runtime, but the imports must resolve.
   getEnterpriseRuntime: () => ({
     runPromise: () => Promise.resolve(undefined),

@@ -1578,7 +1578,7 @@ export const NoopAuditRetentionLayer: Layer.Layer<AuditRetention> = Layer.sync(
       // Mutations + destructive ops MUST fail with EnterpriseError. The
       // routes declare `domainErrors: [retentionDomainError]` so a
       // RetentionError or EnterpriseError surfaces through `classifyError`
-      // as a 4xx envelope. Pre-#2587 these returned silent success which:
+      // as a 4xx envelope. Pre-#2594 these returned silent success which:
       //   - For purgeExpiredEntries / hardDeleteExpired / purgeAdminAction:
       //     reported "nothing to purge" without doing anything, masking
       //     a misconfigured install from operator monitoring.
@@ -1681,7 +1681,7 @@ export const NoopIpAllowlistPolicyLayer: Layer.Layer<IpAllowlistPolicy> = Layer.
       // `available` check. Fail with EnterpriseError (not Effect.die)
       // so the route-layer catchAll surfaces a 403 instead of an
       // unrecoverable 500 defect — matches the pattern across the other
-      // Noop layers post-#2587.
+      // Noop layers post-#2594.
       addIPAllowlistEntry: () => Effect.fail(notAvailable()),
       removeIPAllowlistEntry: () => Effect.succeed(false),
       invalidateCache: () => {},
@@ -2082,7 +2082,7 @@ export const NoopRolesPolicyLayer: Layer.Layer<RolesPolicy> = Layer.sync(
       // resolution. (See `lib/auth/permission-resolve.ts`.)
       checkPermission: checkPermissionLegacy,
       // All custom-role CRUD methods consistently fail with EnterpriseError
-      // on self-hosted. Pre-#2587 the reads silently returned empty arrays
+      // on self-hosted. Pre-#2594 the reads silently returned empty arrays
       // and the writes failed — UI dead-end (admin sees "no roles yet,
       // click create" → click → 403). Failing both sides surfaces a single
       // coherent gate the UI renders as the enterprise-upsell envelope.

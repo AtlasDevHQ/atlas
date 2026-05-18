@@ -62,19 +62,44 @@ function isEnterpriseEnabledLocal(): boolean {
 }
 
 /**
- * Conditional EE Layer. When enterprise is enabled, lazy-imports
- * `@atlas/ee/layers` and exposes its `EELayer`. Otherwise falls back to
- * `Layer.empty`. Wrapped in `Layer.unwrapEffect` so the dynamic import
- * is deferred to Layer construction time (not module load), and a
- * missing/broken `@atlas/ee` install never fails core startup — the
- * catch arm logs and falls back to the empty Layer, leaving the no-op
- * defaults from `NoopEnterpriseDefaultsLayer` in effect.
+ * Conditional EE Layer.
+ *
+ * - When enterprise is DISABLED, returns `Layer.empty`. The no-op
+ *   defaults from `NoopEnterpriseDefaultsLayer` cover every Tag and
+ *   self-hosted runs unchanged.
+ * - When enterprise is ENABLED, lazy-imports `@atlas/ee/layers` and
+ *   exposes its `EELayer`. The dynamic import is deferred to Layer
+ *   construction time (not module load) so a missing `@atlas/ee/`
+ *   build doesn't break core's module graph.
+ *
+ * **Fail-closed on broken EE installs (#2587).** When enterprise is
+ * enabled but the `@atlas/ee/layers` import fails, we FAIL the Layer
+ * rather than silently falling back to `Layer.empty`. Pre-#2587 the
+ * catch arm logged-then-returned `Layer.empty`, which silently downgraded
+ * every enterprise subsystem to its fail-closed no-op:
+ *
+ *   - ResidencyResolver → `null` ⇒ EU workspace queries land on the
+ *     default US pool with zero log signal (compliance break, see
+ *     `lib/db/connection.ts:getRegionAwareConnection`).
+ *   - MaskingPolicy → passthrough ⇒ PII rules become advisory.
+ *   - IpAllowlistPolicy → `{ allowed: true }` ⇒ allowlist bypassed.
+ *   - ApprovalGate → `{ required: false }` ⇒ approval workflow disabled.
+ *   - AuditRetention → fake-success for purge/anonymize ⇒ GDPR erasure
+ *     reports success without doing anything.
+ *
+ * CLAUDE.md's rule "Prefer errors over silent fallbacks — catch
+ * { return false } on a security check is a bug" applies directly. On
+ * a SaaS install with `ATLAS_ENTERPRISE_ENABLED=true`, a broken `ee/`
+ * is a deploy-time configuration error operators MUST see — not a
+ * runtime degradation that quietly loosens security defaults across
+ * every subsystem. Self-hosted (`enabled === false`) is unaffected: it
+ * short-circuits to `Layer.empty` before the import is attempted.
  *
  * This is the **single permitted runtime reference** to `@atlas/ee`
  * from core. Adding any other `@atlas/ee` or `isEnterpriseEnabled`
- * reference to `packages/api/src/` will fail the CI grep slice #2573
- * installs (the closeout grep allow-list covers this file + the
- * conditional import below).
+ * reference to `packages/api/src/` will fail the CI grep gate
+ * (`scripts/check-ee-imports.sh`); the allow-list covers this file
+ * plus the conditional import below.
  */
 const ConditionalEELayer: Layer.Layer<never> = Layer.unwrapEffect(
   Effect.sync(() => isEnterpriseEnabledLocal()).pipe(
@@ -87,13 +112,16 @@ const ConditionalEELayer: Layer.Layer<never> = Layer.unwrapEffect(
         },
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       }).pipe(
-        Effect.catchAll((err) => {
-          log.error(
-            { err: err instanceof Error ? err.message : String(err) },
-            "Enterprise enabled but @atlas/ee/layers failed to load — falling back to no-op defaults",
-          );
-          return Effect.succeed(Layer.empty as Layer.Layer<never>);
-        }),
+        Effect.tapError((err) =>
+          Effect.sync(() =>
+            log.error(
+              { err: err instanceof Error ? err.message : String(err) },
+              "Enterprise enabled (ATLAS_ENTERPRISE_ENABLED=true) but @atlas/ee/layers " +
+                "failed to load — failing Layer construction to avoid silent downgrade " +
+                "to no-op defaults. Fix the @atlas/ee install or set ATLAS_ENTERPRISE_ENABLED=false.",
+            ),
+          ),
+        ),
       );
     }),
   ),

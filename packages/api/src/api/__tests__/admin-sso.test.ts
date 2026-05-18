@@ -162,8 +162,8 @@ mock.module("@atlas/ee/layers", () => {
           checkDomainAvailability: mockCheckDomainAvailability as never,
           testSSOProvider: mockTestSSOProvider as never,
           findProviderByDomain: () => Effect.succeed(null),
-          redactProvider: (p) => p,
-          summarizeProvider: (p) => {
+          redactProvider: (p: unknown) => p,
+          summarizeProvider: (p: unknown) => {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any -- handle generic provider shape
             const { config: _config, ...rest } = p as any;
             return rest;

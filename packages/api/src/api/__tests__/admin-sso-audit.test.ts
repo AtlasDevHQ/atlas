@@ -147,8 +147,8 @@ mock.module("@atlas/ee/layers", () => {
           checkDomainAvailability: () => Effect.succeed({ available: true }),
           testSSOProvider: () => Effect.succeed({ type: "oidc", success: true, testedAt: "", details: {} }) as never,
           findProviderByDomain: () => Effect.succeed(null),
-          redactProvider: (p) => p,
-          summarizeProvider: (p) => p,
+          redactProvider: (p: unknown) => p,
+          summarizeProvider: (p: unknown) => p,
         } as never);
       }),
     ),

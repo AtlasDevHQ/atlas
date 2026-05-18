@@ -291,7 +291,7 @@ mock.module("@atlas/api/lib/effect/services", () => ({
   // test doesn't exercise these Tags directly — they just need to
   // not blow up the loader.
   NoopEnterpriseDefaultsLayer: {},
-  IpAllowlistPolicy: stubTag({ available: false, checkIPAllowlist: () => ({ [Symbol.iterator]: function* () { return yield { allowed: true }; } }) }),
+  IpAllowlistPolicy: stubTag({ available: false, checkIPAllowlist: () => ({ [Symbol.iterator]: function* (): Generator<unknown, unknown> { return yield { allowed: true }; } }) }),
   SSOPolicy: stubTag({ available: false, extractEmailDomain: () => null }),
   SCIMProvenance: stubTag({ available: false }),
   ResidencyResolver_real: fakeResidencyResolver,

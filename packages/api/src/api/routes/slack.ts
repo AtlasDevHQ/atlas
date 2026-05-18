@@ -634,17 +634,17 @@ slack.openapi(eventsRoute, async (c) => {
       });
     }
 
-    // @atlas mention in a channel — kicks off a new conversation. Replies
-    // are threaded off the mention's `event.ts` (or, if the mention was
-    // posted inside an existing thread, off that thread's parent).
-    if (eventType === "app_mention" && text.trim()) {
+    // @atlas mention in a top-level channel message — opens a new thread off
+    // the mention's `event.ts`. In-thread mentions are intentionally skipped:
+    // Slack also delivers a `message` event for the same post, and the
+    // `message + threadTs` branch above already loads conversation history
+    // and replies in-thread. Handling both branches would double-fire the
+    // agent for the same user post.
+    if (eventType === "app_mention" && !threadTs && text.trim()) {
       const mentionTs = (event.ts as string) ?? "";
-      // Strip the leading bot mention(s) — e.g. `<@U0AQUSO5HBM> what's …`.
       const question = text.replace(/^(<@[A-Z0-9]+>\s*)+/, "").trim();
       const eventUserId = (event.user as string) ?? "";
-      // If the mention is inside an existing thread, reply there. Otherwise
-      // open a new thread off the mention message itself.
-      const replyThreadTs = threadTs || mentionTs;
+      const replyThreadTs = mentionTs;
 
       if (!question) {
         log.info({ channel, mentionTs }, "Ignoring app_mention with empty question");
@@ -685,8 +685,6 @@ slack.openapi(eventsRoute, async (c) => {
               })
             : undefined;
 
-          // Post a thinking message in-thread, then update it in place with
-          // the final answer. Same pattern as the slash command path.
           const thinkingResult = await postMessage(token, {
             channel,
             text: `:hourglass_flowing_sand: Thinking about: _${question.slice(0, 150)}_...`,

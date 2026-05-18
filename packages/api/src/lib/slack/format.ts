@@ -67,13 +67,17 @@ export function formatQueryResponse(result: SlackQueryResult): SlackBlock[] {
 
   // Data: dedupe identical datasets, scalarize single-row results.
   const uniqueDatasets = dedupeDatasets(result.data);
-  for (const { columns, rows, duplicateCount } of uniqueDatasets) {
+  for (const { columns, rows, occurrences } of uniqueDatasets) {
     if (!columns.length || !rows.length) continue;
 
-    const acrossNote = duplicateCount > 1 ? `  _(identical across ${duplicateCount} regions)_` : "";
-    const body = rows.length === 1
-      ? formatScalarRow(columns, rows[0]!) + acrossNote
-      : (formatDataTable(columns, rows) ?? "") + acrossNote;
+    const acrossNote = occurrences > 1 ? `  _(identical across ${occurrences} regions)_` : "";
+    const rendered = rows.length === 1
+      ? formatScalarRow(columns, rows[0]!)
+      : (formatDataTable(columns, rows) ?? "");
+    // formatDataTable self-truncates; formatScalarRow doesn't — wide single-row
+    // results (many columns × long text) can otherwise exceed Slack's 3000-char
+    // block limit and the API rejects the post with invalid_blocks.
+    const body = truncate(rendered + acrossNote, MAX_TEXT_LENGTH);
     if (body) {
       blocks.push({
         type: "section",
@@ -139,9 +143,13 @@ function dedupeStrings(values: string[]): string[] {
 interface DedupedDataset {
   columns: string[];
   rows: Record<string, unknown>[];
-  duplicateCount: number;
+  /** Number of source datasets that collapsed into this bucket. Always ≥1. */
+  occurrences: number;
 }
 
+// Dedupe key is order-sensitive on both columns and rows — two datasets with
+// the same content in different orders won't collapse. Cross-env queries
+// produce ordered, identical column/row vectors, so this matches the intent.
 function dedupeDatasets(
   datasets: { columns: string[]; rows: Record<string, unknown>[] }[],
 ): DedupedDataset[] {
@@ -150,9 +158,9 @@ function dedupeDatasets(
     const key = JSON.stringify({ columns: ds.columns, rows: ds.rows });
     const existing = buckets.get(key);
     if (existing) {
-      existing.duplicateCount += 1;
+      existing.occurrences += 1;
     } else {
-      buckets.set(key, { columns: ds.columns, rows: ds.rows, duplicateCount: 1 });
+      buckets.set(key, { columns: ds.columns, rows: ds.rows, occurrences: 1 });
     }
   }
   return Array.from(buckets.values());

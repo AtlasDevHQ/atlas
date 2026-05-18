@@ -52,6 +52,53 @@ mock.module("@atlas/api/lib/audit", async () => {
 const mockEvaluateAlerts: Mock<() => Effect.Effect<Array<Record<string, unknown>>, unknown, never>> =
   mock(() => Effect.succeed([]));
 
+// Force enterprise on so `ConditionalEELayer` lazy-imports the mocked
+// `@atlas/ee/layers` aggregator (post-#2568 the route resolves SLA via
+// `yield* SlaMetrics`).
+process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+
+// Core error stubs — `NoopEnterpriseDefaultsLayer` lazy-requires each
+// errors module during construction.
+mock.module("@atlas/api/lib/residency/errors", () => ({
+  ResidencyError: class extends Error { public readonly _tag = "ResidencyError" as const; },
+}));
+mock.module("@atlas/api/lib/compliance/errors", () => ({
+  ComplianceError: class extends Error { public readonly _tag = "ComplianceError" as const; },
+  ReportError: class extends Error { public readonly _tag = "ReportError" as const; },
+}));
+mock.module("@atlas/api/lib/model-routing/errors", () => ({
+  ModelConfigError: class extends Error { public readonly _tag = "ModelConfigError" as const; },
+  ModelConfigDecryptError: class extends Error { public readonly _tag = "ModelConfigDecryptError" as const; },
+}));
+mock.module("@atlas/api/lib/governance/errors", () => ({
+  ApprovalError: class extends Error { public readonly _tag = "ApprovalError" as const; },
+}));
+
+mock.module("@atlas/ee/layers", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Layer, Effect: E } = require("effect") as typeof import("effect");
+  return {
+    EELayer: Layer.unwrapEffect(
+      E.sync(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+        return Layer.succeed(services.SlaMetrics, {
+          available: true,
+          recordQueryMetric: () => Effect.void,
+          getAllWorkspaceSLA: () => Effect.succeed([]),
+          getWorkspaceSLADetail: () => Effect.succeed({} as never),
+          getAlerts: () => Effect.succeed([]),
+          getThresholds: () => Effect.succeed({ latencyP99Ms: 1000, errorRatePct: 0.01 } as never),
+          updateThresholds: () => Effect.succeed(undefined),
+          acknowledgeAlert: () => Effect.succeed(true),
+          evaluateAlerts: mockEvaluateAlerts as never,
+        } as never);
+      }),
+    ),
+  };
+});
+
+// Legacy module-mock stub for any transitive resolver chain.
 mock.module("@atlas/ee/sla/index", () => ({
   getAllWorkspaceSLA: () => Effect.succeed([]),
   getWorkspaceSLADetail: () => Effect.succeed({}),

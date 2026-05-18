@@ -21,6 +21,7 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
   AuthContext,
+  SlaMetrics,
 } from "@atlas/api/lib/effect/services";
 import { SLA_ALERT_STATUSES, asPercentage } from "@useatlas/types";
 import {
@@ -171,28 +172,9 @@ const evaluateAlertsRoute = createRoute({
   },
 });
 
-// ---------------------------------------------------------------------------
-// Lazy import — ee module may not be installed
-// ---------------------------------------------------------------------------
-
-type SLAModule = typeof import("@atlas/ee/sla/index");
-
-async function loadSLA(): Promise<SLAModule | null> {
-  try {
-    return await import("@atlas/ee/sla/index");
-  } catch (err) {
-    // MODULE_NOT_FOUND is expected when ee package is not installed
-    if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND") {
-      return null;
-    }
-    // Unexpected errors (syntax errors, init failures) should surface
-    log.error(
-      { err: err instanceof Error ? err : new Error(String(err)) },
-      "Failed to load SLA module — unexpected error",
-    );
-    throw err;
-  }
-}
+// Post-#2568: SLA module is resolved through the `SlaMetrics` Tag
+// (`yield* SlaMetrics`); routes branch on `available` to render the
+// 404 "not_available" envelope when EE is missing.
 
 // ---------------------------------------------------------------------------
 // Router
@@ -206,8 +188,8 @@ platformSLA.openapi(listSLARoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
 
-    const sla = yield* Effect.promise(() => loadSLA());
-    if (!sla) {
+    const sla = yield* SlaMetrics;
+    if (!sla.available) {
       return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
     }
 
@@ -224,8 +206,8 @@ platformSLA.openapi(getWorkspaceSLARoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
 
-    const sla = yield* Effect.promise(() => loadSLA());
-    if (!sla) {
+    const sla = yield* SlaMetrics;
+    if (!sla.available) {
       return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
     }
 
@@ -243,8 +225,8 @@ platformSLA.openapi(listAlertsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
 
-    const sla = yield* Effect.promise(() => loadSLA());
-    if (!sla) {
+    const sla = yield* SlaMetrics;
+    if (!sla.available) {
       return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
     }
 
@@ -264,8 +246,8 @@ platformSLA.openapi(getThresholdsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
 
-    const sla = yield* Effect.promise(() => loadSLA());
-    if (!sla) {
+    const sla = yield* SlaMetrics;
+    if (!sla.available) {
       return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
     }
 
@@ -280,8 +262,8 @@ platformSLA.openapi(updateThresholdsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
 
-    const sla = yield* Effect.promise(() => loadSLA());
-    if (!sla) {
+    const sla = yield* SlaMetrics;
+    if (!sla.available) {
       return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
     }
 
@@ -317,8 +299,8 @@ platformSLA.openapi(acknowledgeAlertRoute, async (c) => {
     const { requestId } = yield* RequestContext;
     const { user } = yield* AuthContext;
 
-    const sla = yield* Effect.promise(() => loadSLA());
-    if (!sla) {
+    const sla = yield* SlaMetrics;
+    if (!sla.available) {
       return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
     }
 
@@ -353,8 +335,8 @@ platformSLA.openapi(evaluateAlertsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
 
-    const sla = yield* Effect.promise(() => loadSLA());
-    if (!sla) {
+    const sla = yield* SlaMetrics;
+    if (!sla.available) {
       return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
     }
 

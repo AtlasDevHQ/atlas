@@ -16,7 +16,7 @@
  * All exported functions return Effect — callers use `yield*` in Effect.gen.
  */
 
-import { Data, Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { isEnterpriseEnabled } from "../index";
 import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import {
@@ -38,17 +38,28 @@ import type {
 } from "@useatlas/types";
 import { PII_CATEGORIES, MASKING_STRATEGIES } from "@useatlas/types";
 import { createHash } from "crypto";
+import {
+  MaskingPolicy,
+  type MaskingPolicyShape,
+} from "@atlas/api/lib/effect/services";
+import {
+  ComplianceError,
+  type ComplianceErrorCode,
+} from "@atlas/api/lib/compliance/errors";
 
 const log = createLogger("ee:compliance");
 
 // ── Typed errors ────────────────────────────────────────────────
 
-export type ComplianceErrorCode = "validation" | "not_found" | "conflict";
-
-export class ComplianceError extends Data.TaggedError("ComplianceError")<{
-  message: string;
-  code: ComplianceErrorCode;
-}> {}
+/**
+ * `ComplianceError` lives in `@atlas/api/lib/compliance/errors`
+ * post-#2566 so the `MaskingPolicy` Tag can type its failure channel
+ * without core importing from `@atlas/ee`. Re-exported here for
+ * back-compat — pre-#2566 EE consumers continue to find this symbol
+ * at the same path with the same `_tag` + payload + `instanceof`
+ * semantics.
+ */
+export { ComplianceError, type ComplianceErrorCode };
 
 // ── Table management ────────────────────────────────────────────
 
@@ -595,3 +606,26 @@ export function _resetComplianceState(): void {
   _classificationCache.clear();
   _tableReady = false;
 }
+
+// ── Tag wiring (#2566 — slice 4/11 of #2017) ─────────────────────────
+//
+// Bridges this module's functions into the `MaskingPolicy` Tag so core
+// call sites (`lib/tools/sql.ts`, `api/routes/admin-compliance.ts`)
+// can `yield* MaskingPolicy` instead of dynamic-importing this module.
+// Aggregated into `ee/src/layers.ts:EELayer`; the no-op default in
+// `lib/effect/services.ts:NoopMaskingPolicyLayer` covers self-hosted
+// installs (passes rows through unchanged — fail open).
+
+export const makeMaskingPolicyLive = (): MaskingPolicyShape => ({
+  available: true,
+  applyMasking,
+  listPIIClassifications,
+  updatePIIClassification,
+  deletePIIClassification,
+  invalidateClassificationCache,
+});
+
+export const MaskingPolicyLive: Layer.Layer<MaskingPolicy> = Layer.sync(
+  MaskingPolicy,
+  makeMaskingPolicyLive,
+);

@@ -17,22 +17,13 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
 import type { Context } from "hono";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
-import { AuthContext } from "@atlas/api/lib/effect/services";
+import {
+  AuthContext,
+  ComplianceReports,
+  MaskingPolicy,
+} from "@atlas/api/lib/effect/services";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
-import {
-  listPIIClassifications,
-  updatePIIClassification,
-  deletePIIClassification,
-  invalidateClassificationCache,
-  ComplianceError,
-} from "@atlas/ee/compliance/masking";
-import {
-  generateDataAccessReport,
-  generateUserActivityReport,
-  dataAccessReportToCSV,
-  userActivityReportToCSV,
-  ReportError,
-} from "@atlas/ee/compliance/reports";
+import { ComplianceError, ReportError } from "@atlas/api/lib/compliance/errors";
 import type { PIICategory, MaskingStrategy } from "@useatlas/types";
 import { PIIColumnClassificationSchema as PIIClassificationSchema } from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema, DeletedResponseSchema } from "./shared-schemas";
@@ -135,9 +126,10 @@ adminCompliance.use(requireOrgContext());
 adminCompliance.openapi(listRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    const masking = yield* MaskingPolicy;
     const { connectionGroupId } = c.req.valid("query");
 
-    const classifications = yield* listPIIClassifications(orgId!, connectionGroupId ?? undefined);
+    const classifications = yield* masking.listPIIClassifications(orgId!, connectionGroupId ?? undefined);
     return c.json({ classifications }, 200);
   }), { label: "list PII classifications", domainErrors: [complianceDomainError, reportDomainError] });
 });
@@ -150,14 +142,15 @@ adminCompliance.openapi(updateRoute, async (c) => {
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    const masking = yield* MaskingPolicy;
 
-    const updated = yield* updatePIIClassification(orgId!, id, {
+    const updated = yield* masking.updatePIIClassification(orgId!, id, {
       category: body.category as PIICategory | undefined,
       maskingStrategy: body.maskingStrategy as MaskingStrategy | undefined,
       dismissed: body.dismissed,
       reviewed: body.reviewed,
     });
-    invalidateClassificationCache(orgId!);
+    masking.invalidateClassificationCache(orgId!);
     // Metadata mirrors only the request-body fields that were actually set —
     // spreading the update result would echo post-state defaults and drown
     // the admin's *intent* (shrinking mask from `full` to `redact` is the
@@ -185,9 +178,10 @@ adminCompliance.openapi(deleteRoute, async (c) => {
 
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    const masking = yield* MaskingPolicy;
 
-    yield* deletePIIClassification(orgId!, id);
-    invalidateClassificationCache(orgId!);
+    yield* masking.deletePIIClassification(orgId!, id);
+    masking.invalidateClassificationCache(orgId!);
     logAdminAction({
       actionType: ADMIN_ACTIONS.compliance.piiConfigDelete,
       targetType: "compliance",
@@ -308,9 +302,10 @@ const userActivityReportRoute = createRoute({
 adminCompliance.openapi(dataAccessReportRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    const reports = yield* ComplianceReports;
     const query = c.req.valid("query");
 
-    const report = yield* generateDataAccessReport(orgId!, {
+    const report = yield* reports.generateDataAccessReport(orgId!, {
       startDate: query.startDate,
       endDate: query.endDate,
       userId: query.userId,
@@ -319,7 +314,7 @@ adminCompliance.openapi(dataAccessReportRoute, async (c) => {
     });
 
     if (query.format === "csv") {
-      const csv = dataAccessReportToCSV(report);
+      const csv = reports.dataAccessReportToCSV(report);
       const safeOrgId = orgId!.replace(/[^a-zA-Z0-9_-]/g, "");
       const filename = `data-access-report-${safeOrgId}-${new Date().toISOString().slice(0, 10)}.csv`;
       // CSV responses bypass OpenAPI typed returns via HTTPException + res
@@ -342,9 +337,10 @@ adminCompliance.openapi(dataAccessReportRoute, async (c) => {
 adminCompliance.openapi(userActivityReportRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    const reports = yield* ComplianceReports;
     const query = c.req.valid("query");
 
-    const report = yield* generateUserActivityReport(orgId!, {
+    const report = yield* reports.generateUserActivityReport(orgId!, {
       startDate: query.startDate,
       endDate: query.endDate,
       userId: query.userId,
@@ -353,7 +349,7 @@ adminCompliance.openapi(userActivityReportRoute, async (c) => {
     });
 
     if (query.format === "csv") {
-      const csv = userActivityReportToCSV(report);
+      const csv = reports.userActivityReportToCSV(report);
       const safeOrgId = orgId!.replace(/[^a-zA-Z0-9_-]/g, "");
       const filename = `user-activity-report-${safeOrgId}-${new Date().toISOString().slice(0, 10)}.csv`;
       // CSV responses bypass OpenAPI typed returns via HTTPException + res

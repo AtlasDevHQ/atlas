@@ -16,9 +16,15 @@
  */
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 
 import { ADMIN_ACTIONS as REAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
+
+// Force enterprise on so `ConditionalEELayer` in
+// `lib/effect/enterprise-layer.ts` lazy-imports the mocked
+// `@atlas/ee/layers` aggregator below (otherwise the no-op default
+// fires and the masking + reports tests would see `available: false`).
+process.env.ATLAS_ENTERPRISE_ENABLED = "true";
 
 // ── Auth + DB stubs ────────────────────────────────────────────────
 
@@ -97,13 +103,11 @@ mock.module("@atlas/api/lib/audit", () => ({
 }));
 
 // ── EE compliance mock — driven per test ──────────────────────────
+// Errors live in core post-#2566; both EE compliance modules re-export
+// for back-compat, so existing references resolve the same class.
 
-const { ComplianceError: RealComplianceError } = await import(
-  "@atlas/ee/compliance/masking"
-);
-const { ReportError: RealReportError } = await import(
-  "@atlas/ee/compliance/reports"
-);
+const { ComplianceError: RealComplianceError, ReportError: RealReportError } =
+  await import("@atlas/api/lib/compliance/errors");
 
 interface PIIClassification {
   id: string;
@@ -126,27 +130,62 @@ let mockUpdateError: Error | null = null;
 let mockDeleteError: Error | null = null;
 const mockInvalidate: Mock<(orgId: string) => void> = mock(() => {});
 
+// Mock the core errors module so route's `instanceof` (via domainError)
+// matches the test's `RealComplianceError` / `RealReportError`. Since
+// both are already real classes from `@atlas/api/lib/compliance/errors`,
+// re-exporting through the mock keeps semantics identical and gives a
+// single place to swap if the test wants to inject a fake class later.
+mock.module("@atlas/api/lib/compliance/errors", () => ({
+  ComplianceError: RealComplianceError,
+  ReportError: RealReportError,
+}));
+
+// Bind both Tags via the EE aggregator mock — post-#2566 the route
+// reaches the masking + report functions through `yield* MaskingPolicy`
+// / `yield* ComplianceReports`. `EnterpriseLayer` lazy-imports this
+// module, so the test's mocked aggregator wins over the no-op default.
+mock.module("@atlas/ee/layers", () => ({
+  EELayer: Layer.unwrapEffect(
+    Effect.sync(() => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+      const maskingLayer = Layer.succeed(services.MaskingPolicy, {
+        available: true,
+        applyMasking: (ctx) => Effect.succeed([...ctx.rows]),
+        listPIIClassifications: () => Effect.succeed([]),
+        updatePIIClassification: () => {
+          if (mockUpdateError) return Effect.fail(mockUpdateError);
+          return Effect.succeed(mockUpdateResult as never);
+        },
+        deletePIIClassification: () => {
+          if (mockDeleteError) return Effect.fail(mockDeleteError);
+          return Effect.succeed(undefined as never);
+        },
+        invalidateClassificationCache: mockInvalidate,
+      } as never);
+      const reportsLayer = Layer.succeed(services.ComplianceReports, {
+        available: true,
+        generateDataAccessReport: () =>
+          Effect.succeed({ rows: [], summary: { totalQueries: 0, uniqueUsers: 0, uniqueTables: 0, piiTablesAccessed: 0 }, filters: { startDate: "", endDate: "" }, generatedAt: "" } as never),
+        generateUserActivityReport: () =>
+          Effect.succeed({ rows: [], summary: { totalUsers: 0, activeUsers: 0, totalQueries: 0 }, filters: { startDate: "", endDate: "" }, generatedAt: "" } as never),
+        dataAccessReportToCSV: () => "",
+        userActivityReportToCSV: () => "",
+      } as never);
+      return Layer.merge(maskingLayer, reportsLayer);
+    }),
+  ),
+}));
+
+// Keep legacy `@atlas/ee/compliance/*` module mocks as no-op stubs for
+// any transitive EE re-export that still resolves them. Production code
+// no longer hits these paths post-#2566.
 mock.module("@atlas/ee/compliance/masking", () => ({
   ComplianceError: RealComplianceError,
-  listPIIClassifications: () => Effect.succeed([]),
-  getPIIClassification: () => Effect.succeed(mockGetClassification),
-  updatePIIClassification: () => {
-    if (mockUpdateError) return Effect.fail(mockUpdateError);
-    return Effect.succeed(mockUpdateResult);
-  },
-  deletePIIClassification: () => {
-    if (mockDeleteError) return Effect.fail(mockDeleteError);
-    return Effect.succeed(true);
-  },
-  invalidateClassificationCache: mockInvalidate,
 }));
 
 mock.module("@atlas/ee/compliance/reports", () => ({
   ReportError: RealReportError,
-  generateDataAccessReport: () => Effect.succeed({ rows: [], summary: { totalQueries: 0, uniqueUsers: 0, uniqueTables: 0, piiTablesAccessed: 0 }, filters: { startDate: "", endDate: "" }, generatedAt: "" }),
-  generateUserActivityReport: () => Effect.succeed({ rows: [], summary: { totalUsers: 0, activeUsers: 0, totalQueries: 0 }, filters: { startDate: "", endDate: "" }, generatedAt: "" }),
-  dataAccessReportToCSV: () => "",
-  userActivityReportToCSV: () => "",
 }));
 
 // ── Import sub-router AFTER mocks ─────────────────────────────────

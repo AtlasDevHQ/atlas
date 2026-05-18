@@ -1017,47 +1017,133 @@ export const NoopModelRouterLayer: Layer.Layer<ModelRouter> = Layer.sync(
   },
 );
 
-// ── MaskingPolicy (#2566) ────────────────────────────────────────────
+// ── MaskingPolicy (#2566 — slice 4/11 of #2017) ──────────────────────
 //
-// Replaces `await import("@atlas/ee/compliance/masking")` in
-// `lib/tools/sql.ts`. EE applies PII masking to result rows per org
-// policy; core's no-op passes rows through unchanged.
+// Inverts every `@atlas/ee/compliance/masking` reference in
+// `packages/api/src/`: the two `applyMasking` dynamic imports in
+// `lib/tools/sql.ts` and the PII-classification CRUD imports in
+// `api/routes/admin-compliance.ts`. EE overlays the real implementation;
+// the no-op default fails open (passes rows through unchanged), matching
+// the pre-#2566 behavior when the EE module wasn't installed.
+//
+// `ComplianceError` lives in `lib/compliance/errors.ts` so the Tag's
+// failure channels stay typed without pulling in `@atlas/ee`.
+
+type PIIColumnClassification = import("@useatlas/types").PIIColumnClassification;
+type UpdatePIIClassificationRequest = import("@useatlas/types").UpdatePIIClassificationRequest;
+type ComplianceError = import("@atlas/api/lib/compliance/errors").ComplianceError;
+
+export interface MaskingContext {
+  readonly columns: string[];
+  readonly rows: Record<string, unknown>[];
+  readonly tablesAccessed: string[];
+  readonly orgId: string;
+  readonly userRole: string | undefined;
+  readonly connectionId?: string | null;
+}
 
 export interface MaskingPolicyShape {
-  readonly applyMasking: <T extends Record<string, unknown>>(
-    rows: ReadonlyArray<T>,
-    orgId: string | undefined,
-  ) => Promise<ReadonlyArray<T>>;
+  /** False when EE compliance is not loaded — `applyMasking` becomes identity. */
+  readonly available: boolean;
+  /** Apply PII masking. No-op returns `ctx.rows` unchanged (fail open). */
+  readonly applyMasking: (
+    ctx: MaskingContext,
+  ) => Effect.Effect<Record<string, unknown>[]>;
+  readonly listPIIClassifications: (
+    orgId: string,
+    connectionGroupId?: string,
+  ) => Effect.Effect<PIIColumnClassification[], ComplianceError | Error>;
+  readonly updatePIIClassification: (
+    orgId: string,
+    classificationId: string,
+    updates: UpdatePIIClassificationRequest,
+  ) => Effect.Effect<PIIColumnClassification, ComplianceError | Error>;
+  readonly deletePIIClassification: (
+    orgId: string,
+    classificationId: string,
+  ) => Effect.Effect<void, ComplianceError | Error>;
+  /** Per-org cache buster; safe no-op when EE is missing. */
+  readonly invalidateClassificationCache: (orgId: string) => void;
 }
 export class MaskingPolicy extends Context.Tag("MaskingPolicy")<
   MaskingPolicy,
   MaskingPolicyShape
 >() {}
-export const NoopMaskingPolicyLayer: Layer.Layer<MaskingPolicy> = Layer.succeed(
+export const NoopMaskingPolicyLayer: Layer.Layer<MaskingPolicy> = Layer.sync(
   MaskingPolicy,
-  {
-    applyMasking: async (rows) => rows,
-  } satisfies MaskingPolicyShape,
+  () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { ComplianceError: ComplianceErrorClass } = require("@atlas/api/lib/compliance/errors") as {
+      ComplianceError: new (args: { message: string; code: "not_found" }) => ComplianceError;
+    };
+    const notFound = (id: string) =>
+      new ComplianceErrorClass({
+        message: `PII classification "${id}" not found.`,
+        code: "not_found",
+      });
+    return {
+      available: false,
+      applyMasking: (ctx) => Effect.succeed([...ctx.rows]),
+      listPIIClassifications: () => Effect.succeed([]),
+      updatePIIClassification: (_orgId, id) => Effect.fail(notFound(id)),
+      deletePIIClassification: (_orgId, id) => Effect.fail(notFound(id)),
+      invalidateClassificationCache: () => {},
+    } satisfies MaskingPolicyShape;
+  },
 );
 
-// ── ComplianceReports (#2567) ────────────────────────────────────────
+// ── ComplianceReports (#2566 — slice 4/11 of #2017) ──────────────────
 //
-// Replaces `import { ... } from "@atlas/ee/compliance/reports"` in
-// `api/routes/admin-compliance.ts`. EE generates SOC2/HIPAA reports;
-// core's no-op returns the "feature disabled" sentinel so the admin
-// surface can render the upsell instead of crashing.
+// Inverts the static `import { generateDataAccessReport, ... } from "@atlas/ee/compliance/reports"`
+// in `api/routes/admin-compliance.ts`. EE generates SOC2/HIPAA reports;
+// core's no-op fails with `ReportError("not_available")` so the admin
+// surface routes through `domainError` to a 404 envelope.
+
+type DataAccessReport = import("@useatlas/types").DataAccessReport;
+type UserActivityReport = import("@useatlas/types").UserActivityReport;
+type ComplianceReportFilters = import("@useatlas/types").ComplianceReportFilters;
+type ReportError = import("@atlas/api/lib/compliance/errors").ReportError;
+type EnterpriseErrorForReports = import("@atlas/api/lib/effect/errors").EnterpriseError;
 
 export interface ComplianceReportsShape {
   readonly available: boolean;
+  readonly generateDataAccessReport: (
+    orgId: string,
+    filters: ComplianceReportFilters,
+  ) => Effect.Effect<DataAccessReport, ReportError | EnterpriseErrorForReports | Error>;
+  readonly generateUserActivityReport: (
+    orgId: string,
+    filters: ComplianceReportFilters,
+  ) => Effect.Effect<UserActivityReport, ReportError | EnterpriseErrorForReports | Error>;
+  readonly dataAccessReportToCSV: (report: DataAccessReport) => string;
+  readonly userActivityReportToCSV: (report: UserActivityReport) => string;
 }
 export class ComplianceReports extends Context.Tag("ComplianceReports")<
   ComplianceReports,
   ComplianceReportsShape
 >() {}
 export const NoopComplianceReportsLayer: Layer.Layer<ComplianceReports> =
-  Layer.succeed(ComplianceReports, {
-    available: false,
-  } satisfies ComplianceReportsShape);
+  Layer.sync(ComplianceReports, () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { ReportError: ReportErrorClass } = require("@atlas/api/lib/compliance/errors") as {
+      ReportError: new (args: { message: string; code: "not_available" }) => ReportError;
+    };
+    const notAvailable = () =>
+      new ReportErrorClass({
+        message: "Compliance reports require enterprise features to be enabled.",
+        code: "not_available",
+      });
+    return {
+      available: false,
+      generateDataAccessReport: () => Effect.fail(notAvailable()),
+      generateUserActivityReport: () => Effect.fail(notAvailable()),
+      // CSV converters are pure formatters — return empty CSV headers so a
+      // caller that bypasses the `available` gate doesn't crash on the
+      // pure-function path.
+      dataAccessReportToCSV: () => "",
+      userActivityReportToCSV: () => "",
+    } satisfies ComplianceReportsShape;
+  });
 
 // ── ApprovalGate (#2568) ─────────────────────────────────────────────
 //

@@ -72142,7 +72142,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Installation successful (HTML response)",
+            "description": "Installation successful (HTML response, when no web origin is configured)",
             "content": {
               "text/html": {
                 "schema": {
@@ -72150,6 +72150,9 @@
                 }
               }
             }
+          },
+          "302": {
+            "description": "Installation successful (redirect to /admin/integrations on the web app)"
           },
           "400": {
             "description": "Invalid or expired state, or missing code",
@@ -72374,7 +72377,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Installation successful (HTML response)",
+            "description": "Installation successful (HTML response, when no web origin is configured)",
             "content": {
               "text/html": {
                 "schema": {
@@ -72382,6 +72385,9 @@
                 }
               }
             }
+          },
+          "302": {
+            "description": "Installation successful (redirect to /admin/integrations on the web app)"
           },
           "400": {
             "description": "Invalid or expired state, or consent not granted",
@@ -72606,7 +72612,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Installation successful (HTML response)",
+            "description": "Installation successful (HTML response, when no web origin is configured)",
             "content": {
               "text/html": {
                 "schema": {
@@ -72614,6 +72620,9 @@
                 }
               }
             }
+          },
+          "302": {
+            "description": "Installation successful (redirect to /admin/integrations on the web app)"
           },
           "400": {
             "description": "Invalid or expired state, or authorization denied",

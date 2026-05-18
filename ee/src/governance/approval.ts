@@ -1150,6 +1150,7 @@ export const hasApprovedRequest = (
 // installs (returns `{ required: false }` so queries bypass the gate).
 
 export const makeApprovalGateLive = (): ApprovalGateShape => ({
+  available: true,
   checkApprovalRequired,
   hasApprovedRequest,
   createApprovalRequest,

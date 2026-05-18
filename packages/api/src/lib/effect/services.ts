@@ -1087,6 +1087,18 @@ export interface MaskingContext {
 }
 
 export interface MaskingPolicyShape {
+  /**
+   * False when EE compliance is not loaded — `sql.ts:applyMaskingViaTag`
+   * (the consumer-side fail-closed check from #2593) reads this to
+   * surface 503 `enterprise_load_failed` instead of returning unmasked
+   * rows on a SaaS install where `ATLAS_ENTERPRISE_ENABLED=true` but the
+   * EE layer didn't bind. Self-hosted with `available: false` is the
+   * expected pass-through (no PII classifications configured, so the
+   * fail-open behaviour is harmless). Departs from the #2589 default of
+   * omitting `available` because the 503-vs-pass distinction is the
+   * different-response-shape branch the codified rule permits.
+   */
+  readonly available: boolean;
   /** Apply PII masking. No-op returns `ctx.rows` unchanged (fail open). */
   readonly applyMasking: (
     ctx: MaskingContext,
@@ -1124,6 +1136,7 @@ export const NoopMaskingPolicyLayer: Layer.Layer<MaskingPolicy> = Layer.sync(
         code: "not_found",
       });
     return {
+      available: false,
       // MUST preserve reference identity — callers in `tools/sql.ts`
       // compute `maskingApplied = maskedRows !== result.rows`, and a
       // fresh-array no-op (`[...ctx.rows]`) misreports `true` on every
@@ -1235,6 +1248,15 @@ export interface CreateApprovalRequestInput {
 }
 
 export interface ApprovalGateShape {
+  /**
+   * False when EE governance is not loaded — sql.ts's consumer-side
+   * fail-closed check (#2593) uses this to surface 503
+   * `enterprise_load_failed` instead of bypassing the gate on SaaS
+   * (`ATLAS_ENTERPRISE_ENABLED=true`) when the EE layer didn't bind.
+   * Self-hosted with `available: false` is the expected no-op path —
+   * no rules to match, queries pass through.
+   */
+  readonly available: boolean;
   /** Decide whether a query needs approval. No-op returns `{ required: false, matchedRules: [] }`. */
   readonly checkApprovalRequired: (
     orgId: string | undefined,
@@ -1313,6 +1335,7 @@ export const NoopApprovalGateLayer: Layer.Layer<ApprovalGate> = Layer.sync(
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const notAvailable = makeNotAvailable("Approval workflows require enterprise features to be enabled.");
     return {
+      available: false,
       checkApprovalRequired: () =>
         Effect.succeed({ required: false, matchedRules: [] }),
       hasApprovedRequest: () => Effect.succeed(false),
@@ -1551,6 +1574,21 @@ export type AuditExportResult =
   | { readonly format: "json"; readonly content: string; readonly rowCount: number; readonly truncated: boolean; readonly totalAvailable: number };
 
 export interface AuditRetentionShape {
+  /**
+   * False when EE retention isn't loaded — `admin-{audit,action}-retention.ts`
+   * (consumer-side fail-closed, #2593) wrap every method call in a guard
+   * that surfaces 503 `enterprise_load_failed` on SaaS
+   * (`ATLAS_ENTERPRISE_ENABLED=true`) when the EE layer didn't bind.
+   * Without the guard, pure-read methods like `getRetentionPolicy` would
+   * return `null` ("no policy configured"), masking the fact that a
+   * configured policy in the DB couldn't be read. Self-hosted with
+   * `available: false` keeps the existing pass-through — destructive ops
+   * still fail loudly via the noop's `EnterpriseError`, but the read
+   * path can short-circuit before the call. Departs from #2589's "drop"
+   * default because this is exactly the different-response-shape branch
+   * the codified rule permits (503 vs 403).
+   */
+  readonly available: boolean;
   // Audit-log retention
   readonly getRetentionPolicy: (
     orgId: string,
@@ -1598,6 +1636,7 @@ export const NoopAuditRetentionLayer: Layer.Layer<AuditRetention> = Layer.sync(
   () => {
     const notAvailable = makeNotAvailable("Audit retention requires enterprise features to be enabled.");
     return {
+      available: false,
       // Pure reads — "no policy configured" is honest on self-hosted.
       getRetentionPolicy: () => Effect.succeed(null),
       getAdminActionRetentionPolicy: () => Effect.succeed(null),

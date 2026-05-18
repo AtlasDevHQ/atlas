@@ -33,7 +33,7 @@ import { proposePatternIfNovel } from "@atlas/api/lib/learn/pattern-proposer";
 import {
   ConnectionNotFoundError, PoolExhaustedError, NoDatasourceError,
   QueryExecutionError, RateLimitExceededError, ConcurrencyLimitError,
-  RLSError, PluginRejectedError,
+  RLSError, PluginRejectedError, EnterpriseUnavailableError,
 } from "@atlas/api/lib/effect/errors";
 import { EXECUTE_SQL_TOOL_DESCRIPTION } from "./descriptions";
 import { resolveRoutingPlan, type RoutingMode, type RoutingReason } from "@atlas/api/lib/env-routing";
@@ -47,14 +47,24 @@ import {
   type MaskingContext,
 } from "@atlas/api/lib/effect/services";
 import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
+import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
 
 /**
  * Run `MaskingPolicy.applyMasking` via `EnterpriseLayer`. Promise-shaped
  * wrapper so the two sql.ts call sites (live + cache path) can keep
  * their existing async/await structure without restructuring around
- * `Effect.gen` (#2566 — slice 4/11 of #2017). Fails open: any error in
- * the program is rethrown to the caller's existing try/catch, which
- * already logs `"PII masking failed — returning unmasked results"`.
+ * `Effect.gen` (#2566 — slice 4/11 of #2017).
+ *
+ * #2593 — consumer-side fail-closed: on SaaS (`ATLAS_ENTERPRISE_ENABLED=true`)
+ * if the MaskingPolicy Tag is still the no-op default (`available: false`),
+ * the EE layer didn't bind — returning unmasked rows on classified tables
+ * is a compliance break. Throw `EnterpriseUnavailableError` so the caller's
+ * existing try/catch short-circuits "PII masking failed" into a hard fail
+ * instead of the legacy fail-open behavior.
+ *
+ * Self-hosted (`ATLAS_ENTERPRISE_ENABLED !== true`) keeps the original
+ * fail-open behavior: the no-op pass-through is the expected self-hosted
+ * code path.
  */
 function applyMaskingViaTag(
   ctx: MaskingContext,
@@ -62,6 +72,15 @@ function applyMaskingViaTag(
   return runEnterprise(
     Effect.gen(function* () {
       const masking = yield* MaskingPolicy;
+      if (isEnterpriseEnabled() && !masking.available) {
+        return yield* Effect.fail(
+          new EnterpriseUnavailableError({
+            message:
+              "PII masking unavailable — query blocked to prevent unmasked-data exposure. Contact your administrator.",
+            tag: "MaskingPolicy",
+          }),
+        );
+      }
       return yield* masking.applyMasking(ctx);
     }),
   );
@@ -74,11 +93,27 @@ function applyMaskingViaTag(
  * `createApprovalRequest`); resolving the shape once + reading methods
  * keeps the existing try/catch fail-closed semantics intact and avoids
  * paying for three separate `Effect.runPromise` round-trips (#2567).
+ *
+ * #2593 — consumer-side fail-closed: on SaaS where EE didn't bind, the
+ * no-op's `checkApprovalRequired` reports `required: false` — bypassing
+ * approval-gated queries entirely. Throw `EnterpriseUnavailableError`
+ * so the caller surfaces the existing "approval system unavailable"
+ * 503 envelope. Self-hosted falls through (no-op = no rules to match).
  */
 function loadApprovalGate(): Promise<ApprovalGateShape> {
   return runEnterprise(
     Effect.gen(function* () {
-      return yield* ApprovalGate;
+      const gate = yield* ApprovalGate;
+      if (isEnterpriseEnabled() && !gate.available) {
+        return yield* Effect.fail(
+          new EnterpriseUnavailableError({
+            message:
+              "Approval gate unavailable — query blocked to prevent governance bypass. Contact your administrator.",
+            tag: "ApprovalGate",
+          }),
+        );
+      }
+      return gate;
     }),
   );
 }
@@ -557,7 +592,8 @@ type PipelineError =
   | ConcurrencyLimitError
   | RLSError
   | PluginRejectedError
-  | QueryExecutionError;
+  | QueryExecutionError
+  | EnterpriseUnavailableError;
 
 /** Resolve the database connection. Fails with tagged connection errors. */
 function resolveConnectionEffect(
@@ -569,7 +605,7 @@ function resolveConnectionEffect(
   authOrgId: string | undefined,
 ): Effect.Effect<
   { db: DBConnection; dbType: DBType },
-  ConnectionNotFoundError | PoolExhaustedError | NoDatasourceError
+  ConnectionNotFoundError | PoolExhaustedError | NoDatasourceError | EnterpriseUnavailableError
 > {
   // Sentinel thrown by the mode-visibility gate so the catch arm can return an
   // error without leaking the full registered-connection list — in published
@@ -645,6 +681,15 @@ function resolveConnectionEffect(
           current: err.currentSlots,
           max: err.maxTotalConnections,
         });
+      }
+      // #2593 — preserve the `enterprise_load_failed` signal from
+      // `getRegionAwareConnection` instead of collapsing it into a generic
+      // `connection_unavailable` ConnectionNotFoundError. The residency Tag
+      // is unavailable while ATLAS_ENTERPRISE_ENABLED=true; SaaS monitoring
+      // needs the distinct 503 code to correlate with the
+      // `enterprise.load_failed` structured log.
+      if (err instanceof EnterpriseUnavailableError) {
+        return err;
       }
       const message = err instanceof Error ? err.message : String(err);
       log.error({ err, connectionId: connId }, "Unexpected error during connection lookup");
@@ -883,7 +928,7 @@ function executeAndAuditEffect(opts: {
   connectionGroupId?: string;
   /** Planner reason that picked this connection (for the OTel `atlas.routing_reason` attribute). */
   routingReason?: RoutingReason;
-}): Effect.Effect<Record<string, unknown>, QueryExecutionError> {
+}): Effect.Effect<Record<string, unknown>, QueryExecutionError | EnterpriseUnavailableError> {
   const {
     db, dbType, connId, orgId, targetHost, querySql, queryTimeout,
     rowLimit, explanation, classification, cacheKey, hookMetadata, dispatchHook,
@@ -1031,6 +1076,11 @@ function executeAndAuditEffect(opts: {
               });
               maskingApplied = maskedRows !== result.rows;
             } catch (err) {
+              // #2593 — fail-closed: when EE was supposed to bind but didn't
+              // (`ATLAS_ENTERPRISE_ENABLED=true` + `available: false`), rethrow
+              // so the outer catch surfaces it instead of returning unmasked
+              // rows on classified tables.
+              if (err instanceof EnterpriseUnavailableError) throw err;
               log.warn(
                 { err: err instanceof Error ? err.message : String(err), connectionId: connId },
                 "PII masking failed — returning unmasked results",
@@ -1053,6 +1103,9 @@ function executeAndAuditEffect(opts: {
           } as Record<string, unknown>;
         },
         catch: (err) => {
+          // #2593 — preserve the `enterprise_load_failed` signal end-to-end
+          // instead of wrapping as a generic post-processing failure.
+          if (err instanceof EnterpriseUnavailableError) return err;
           // Query succeeded but post-processing failed — return the error
           // rather than losing the completed query result as an unrecoverable defect.
           const message = err instanceof Error ? err.message : String(err);
@@ -1081,6 +1134,7 @@ function pipelineErrorToResponse(error: PipelineError): Record<string, unknown> 
     case "RLSError":
     case "PluginRejectedError":
     case "QueryExecutionError":
+    case "EnterpriseUnavailableError":
       return { success: false, error: error.message, executionMs: 0 };
     default: {
       const _exhaustive: never = error;
@@ -1128,7 +1182,8 @@ export type UserQueryOutcome =
   | { readonly kind: "pool_exhausted"; readonly message: string }
   | { readonly kind: "rls_failed"; readonly message: string }
   | { readonly kind: "plugin_rejected"; readonly message: string }
-  | { readonly kind: "query_failed"; readonly message: string };
+  | { readonly kind: "query_failed"; readonly message: string }
+  | { readonly kind: "enterprise_unavailable"; readonly message: string };
 
 export interface RunUserQueryOpts {
   readonly sql: string;
@@ -1379,6 +1434,10 @@ export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryO
             return Effect.succeed({ kind: "plugin_rejected", message: error.message });
           case "QueryExecutionError":
             return Effect.succeed({ kind: "query_failed", message: error.message });
+          case "EnterpriseUnavailableError":
+            // #2593 — surface the fail-closed signal end-to-end so the
+            // route handler can return 503 `enterprise_load_failed`.
+            return Effect.succeed({ kind: "enterprise_unavailable", message: error.message });
           default: {
             const _exhaustive: never = error;
             return Effect.succeed({
@@ -1627,6 +1686,8 @@ async function executeSqlForConnection({
                     });
                     cachedMaskingApplied = cachedRows !== cached.rows;
                   } catch (err) {
+                    // #2593 — fail-closed (same rationale as the live path).
+                    if (err instanceof EnterpriseUnavailableError) throw err;
                     log.warn(
                       { err: err instanceof Error ? err.message : String(err), connectionId: connId },
                       "PII masking failed on cached results — returning unmasked results",
@@ -1642,6 +1703,8 @@ async function executeSqlForConnection({
                 };
               },
               catch: (err) => {
+                // #2593 — preserve fail-closed signal through the cache path.
+                if (err instanceof EnterpriseUnavailableError) return err;
                 const message = err instanceof Error ? err.message : String(err);
                 log.error({ err, connectionId: connId }, "Cache response processing failed");
                 return new QueryExecutionError({ message: `Cache response processing failed: ${message}` });

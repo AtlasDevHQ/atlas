@@ -79,30 +79,40 @@ function isEnterpriseEnabledLocal(): boolean {
  * then falls through to `Layer.empty`. Every enterprise subsystem then
  * resolves to its no-op default for the request.
  *
- * **Known weak spot — not yet fail-closed at the consumer level.** The
- * no-op defaults across the 16 Tags vary in how "fail-closed" they
- * really are. Most are correct on self-hosted but inadequate on a SaaS
- * install where `ATLAS_ENTERPRISE_ENABLED=true` but `ee/` failed to load:
+ * **Consumer-side fail-closed audit complete at 4 high-impact call
+ * sites (#2593, second half).** Each site yields the Tag, then
+ * short-circuits with `EnterpriseUnavailableError` (→ 503
+ * `enterprise_load_failed`) when `isEnterpriseEnabled() === true` but
+ * `tag.available === false`. Self-hosted
+ * (`ATLAS_ENTERPRISE_ENABLED !== true`) keeps the no-op pass-through
+ * path; the 503 only fires on SaaS where the EE load actually failed.
  *
- *   - MaskingPolicy no-op passes rows through unmasked
- *   - IpAllowlistPolicy no-op always allows
- *   - ApprovalGate no-op never requires approval
- *   - ResidencyResolver no-op returns null (route falls back to default
- *     datasource — compliance break on EU workspaces)
- *   - AuditRetention pure-read methods return null (mutating + destructive
- *     methods now fail loudly post-#2594, but `getRetentionPolicy` would
- *     still report "no policy" instead of the real one stored in the DB).
- *     Post-#2587 the scheduler lifecycle moved to its own
- *     `AuditPurgeScheduler` Tag whose noop fails both methods loudly —
- *     the scheduler boot site catches that signal so self-hosted boot
- *     stays clean.
+ *   - MaskingPolicy → `lib/tools/sql.ts:applyMaskingViaTag`
+ *   - ApprovalGate → `lib/tools/sql.ts:loadApprovalGate`
+ *   - ResidencyResolver → `lib/db/connection.ts:getRegionAwareConnection`
+ *   - AuditRetention → `api/routes/admin-{audit,action}-retention.ts`
+ *     (via `yieldAuditRetentionFailClosed` helpers)
  *
- * Hardening this is tracked in #2589 — consumer-side "available"
- * discriminator checks at each load-bearing call site. The change is
- * too invasive for #2594 because it touches every test's mock setup
- * (16 test files mock individual `@atlas/ee/*` modules without mocking
- * the `@atlas/ee/layers` aggregator; any change that hard-fails the
- * aggregator on partial-mock cascades through every consumer).
+ * The IP allowlist middleware site is the obvious next candidate but
+ * was scoped out — partial-mock `@atlas/ee/layers` setups across ~17
+ * admin tests don't bind `IpAllowlistPolicy: { available: true }`, so
+ * adding the gate at `api/routes/middleware.ts:checkIpAllowlist`
+ * cascades through the suite. Tracked separately so the helper rollout
+ * + the gate land together.
+ *
+ * The `AuditPurgeScheduler` Tag (split out of `AuditRetention` in #2587)
+ * is not on this list either: its noop fails both methods loudly so the
+ * scheduler boot site catches that signal directly on self-hosted; no
+ * extra consumer-side guard is needed.
+ *
+ * The remaining Noop defaults across the 11 other Tags either (a) fail
+ * loudly via `EnterpriseError` (→ 403) on every method, which is the
+ * correct behaviour on both self-hosted and SaaS-EE-broken, or (b) have
+ * an `available: false` discriminator that the few existing consumers
+ * already check (`ResidencyResolver` admin routes, etc.). If a future
+ * consumer of those Tags lands without a discriminator check, the
+ * pattern is the same: yield the Tag, branch on `available` when
+ * `isEnterpriseEnabled()` is true.
  *
  * This is the **single permitted runtime reference** to `@atlas/ee`
  * from core. Adding any other `@atlas/ee` or `isEnterpriseEnabled`

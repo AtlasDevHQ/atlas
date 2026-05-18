@@ -88,6 +88,7 @@ type HttpErrorCode =
   | "conversation_budget_exceeded"
   | "upstream_error"
   | "service_unavailable"
+  | "enterprise_load_failed"
   | "timeout";
 
 interface HttpErrorMapping {
@@ -229,6 +230,16 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
     // ── 503 Service Unavailable ──────────────────────────────────
     case "NoDatasourceError":
       return { status: 503, code: "service_unavailable", message: error.message };
+    // #2593 — consumer-side fail-closed when EE-enabled but the Tag's
+    // no-op default is still bound. Distinct wire code so SaaS monitoring
+    // can correlate user-facing 503s with the `enterprise.load_failed`
+    // structured log from `ConditionalEELayer`.
+    case "EnterpriseUnavailableError":
+      return {
+        status: 503,
+        code: "enterprise_load_failed",
+        message: error.message,
+      };
 
     // ── 504 Gateway Timeout ──────────────────────────────────────
     case "QueryTimeoutError":

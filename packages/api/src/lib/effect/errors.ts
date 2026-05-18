@@ -173,6 +173,27 @@ export class EnterpriseGateError extends Data.TaggedError("EnterpriseGateError")
   readonly feature: string;
 }> {}
 
+/**
+ * Enterprise subsystem failed to bind despite `ATLAS_ENTERPRISE_ENABLED=true`.
+ *
+ * Raised at consumer call sites (#2593) when a load-bearing Tag still
+ * reports `available: false` after the EE Layer was supposed to overlay
+ * its real implementation. The most common cause is the @atlas/ee/layers
+ * dynamic import failing in `ConditionalEELayer` (which currently logs
+ * `event: "enterprise.load_failed"` and falls through to no-op defaults).
+ *
+ * Maps to HTTP 503 — operator-visible, retryable. Distinct from
+ * `EnterpriseError` (403: feature not enabled at all) and
+ * `EnterpriseGateError` (403: feature gated on a self-hosted install).
+ * Self-hosted (`ATLAS_ENTERPRISE_ENABLED !== true`) never raises this;
+ * the consumer treats `available: false` as "feature off, proceed without".
+ */
+export class EnterpriseUnavailableError extends Data.TaggedError("EnterpriseUnavailableError")<{
+  readonly message: string;
+  /** Tag whose no-op default is still resolving — operator can correlate with `enterprise.load_failed` logs. */
+  readonly tag: string;
+}> {}
+
 /** Query requires approval before execution. */
 export class ApprovalRequiredError extends Data.TaggedError("ApprovalRequiredError")<{
   readonly message: string;
@@ -343,6 +364,7 @@ export type AtlasError =
   | ConcurrencyLimitError
   | RLSError
   | EnterpriseGateError
+  | EnterpriseUnavailableError
   | ApprovalRequiredError
   | PluginRejectedError
   | CustomValidatorError
@@ -393,6 +415,7 @@ export const ATLAS_ERROR_TAG_LIST = [
   "ConcurrencyLimitError",
   "RLSError",
   "EnterpriseGateError",
+  "EnterpriseUnavailableError",
   "ApprovalRequiredError",
   "PluginRejectedError",
   "CustomValidatorError",

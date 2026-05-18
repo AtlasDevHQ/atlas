@@ -34,7 +34,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
-import { getConfig } from "@atlas/api/lib/config";
+import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
@@ -315,27 +315,21 @@ adminProactive.use(requirePermission("admin:settings"));
  * via `classifyError`. The flag is re-read per call so a runtime flip
  * propagates without restart.
  *
- * Post-#2572 (slice 10/11 of #2017) this reads the enterprise flag
- * directly from `getConfig()` / `ATLAS_ENTERPRISE_ENABLED` rather than
- * dynamic-importing `@atlas/ee/index`. The other three admin-proactive
- * route files (analytics, pauses, public-dataset) yield the
- * `ProactiveGate` Tag because they already use `runEffect` + Effect.gen;
- * this file's `runHandler`-based handlers can't yield the Tag without a
- * separate sync runtime (`ConditionalEELayer` is async due to the lazy
- * EE-layer import), so we keep the equivalent sync check inline. The
- * resulting `EnterpriseError` has identical `_tag` + payload to the
- * one the Tag would produce.
+ * The other three admin-proactive route files (analytics, pauses,
+ * public-dataset) yield the `ProactiveGate` Tag because they use
+ * `runEffect` + Effect.gen; this file's `runHandler`-based handlers
+ * can't yield the Tag without a separate sync runtime
+ * (`ConditionalEELayer` is async due to the lazy EE-layer import), so
+ * the equivalent sync check is inlined here. The resulting
+ * `EnterpriseError` has identical `_tag` + payload to the one the Tag
+ * would produce.
+ *
+ * Uses the canonical `isEnterpriseEnabled` reader from
+ * `lib/effect/enterprise-config.ts` — see #2587 for the consolidation
+ * that retired the local `isEnterpriseEnabledSync` fork.
  */
-function isEnterpriseEnabledSync(): boolean {
-  const config = getConfig();
-  if (config?.enterprise?.enabled !== undefined) {
-    return config.enterprise.enabled;
-  }
-  return process.env.ATLAS_ENTERPRISE_ENABLED === "true";
-}
-
 function gateEnterprise(): void {
-  if (!isEnterpriseEnabledSync()) {
+  if (!isEnterpriseEnabled()) {
     throw new EnterpriseError(
       "Enterprise features (proactive-chat) are not enabled. " +
         "Set ATLAS_ENTERPRISE_ENABLED=true or configure enterprise.enabled in atlas.config.ts.",

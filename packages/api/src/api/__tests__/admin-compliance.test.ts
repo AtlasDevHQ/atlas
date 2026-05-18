@@ -149,9 +149,10 @@ mock.module("@atlas/ee/layers", () => ({
     Effect.sync(() => {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+      type MaskingContext = import("@atlas/api/lib/effect/services").MaskingContext;
       const maskingLayer = Layer.succeed(services.MaskingPolicy, {
         available: true,
-        applyMasking: (ctx) => Effect.succeed([...ctx.rows]),
+        applyMasking: (ctx: MaskingContext) => Effect.succeed([...ctx.rows]),
         listPIIClassifications: () => Effect.succeed([]),
         updatePIIClassification: () => {
           if (mockUpdateError) return Effect.fail(mockUpdateError);

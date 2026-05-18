@@ -10,7 +10,8 @@
 import { createReadStream } from "fs";
 import { createGunzip } from "zlib";
 import { Effect } from "effect";
-import { requireEnterpriseEffect, EnterpriseError } from "../index";
+import { requireEnterpriseEffect } from "../index";
+import { EnterpriseError } from "@atlas/api/lib/effect/errors";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";

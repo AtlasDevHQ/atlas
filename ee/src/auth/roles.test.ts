@@ -33,13 +33,8 @@ mock.module("@atlas/api/lib/logger", () => ee.loggerMock);
 
 // Import after mocks
 const {
-  PERMISSIONS,
   BUILTIN_ROLES,
-  isValidPermission,
   isValidRoleName,
-  resolvePermissions,
-  hasPermission,
-  checkPermission,
   listRoles,
   getRole,
   createRole,
@@ -50,6 +45,8 @@ const {
   seedBuiltinRoles,
   RoleError,
 } = await import("./roles");
+const { PERMISSIONS, isValidPermission } = await import("@atlas/api/lib/auth/permissions");
+const { resolvePermissions, hasPermission, checkPermission } = await import("@atlas/api/lib/auth/permission-resolve");
 
 // ── Helpers ─────────────────────────────────────────────────────────
 

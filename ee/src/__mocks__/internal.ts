@@ -21,7 +21,7 @@
  */
 
 import { Effect } from "effect";
-import { EnterpriseError } from "../index";
+import { EnterpriseError } from "@atlas/api/lib/effect/errors";
 
 // Re-export so tests can import from the mock factory
 export { EnterpriseError };

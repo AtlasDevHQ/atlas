@@ -7,20 +7,11 @@
  *   getEnterpriseLicenseKey()   — returns the license key string, if set
  *   requireEnterprise()         — throws EnterpriseError if not enabled (sync guard)
  *   requireEnterpriseEffect()   — Effect.fail(EnterpriseError) if not enabled (Effect guard)
- *   EnterpriseError             — typed error for instanceof checks (re-exported from core)
  */
 
 import { Effect } from "effect";
 import { getConfig } from "@atlas/api/lib/config";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
-
-/**
- * Re-export the class from core (#2563 slice 1/11 of #2017). EE keeps the
- * named export so existing `import { EnterpriseError } from "@atlas/ee/..."`
- * call sites continue to work through slice 11; new code should import from
- * `@atlas/api/lib/effect/errors` directly.
- */
-export { EnterpriseError };
 
 /**
  * Check whether enterprise features are enabled via config or env var.
@@ -83,5 +74,3 @@ export const requireEnterpriseEffect = (feature?: string): Effect.Effect<void, E
       ));
 };
 
-// Re-export deploy mode resolution
-export { resolveDeployMode } from "./deploy-mode";

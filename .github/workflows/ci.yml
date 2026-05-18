@@ -83,6 +83,9 @@ jobs:
       - name: Check vendored @atlas/oauth-helper ↔ canonical drift
         run: bash scripts/check-oauth-helper-drift.sh
 
+      - name: Check core never imports from @atlas/ee
+        run: bash scripts/check-ee-imports.sh
+
   lint:
     name: lint
     runs-on: ubuntu-latest
@@ -333,3 +336,48 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+  ee-stub-build:
+    # Proof that core (packages/api/src/) has zero structural coupling
+    # to ee/. Replaces ee/ with a minimal stub exposing only
+    # @atlas/ee/layers#EELayer (Layer.empty) and runs type-check + build
+    # against the core. Closes the 1.5.1 architecture-deepening arc
+    # (#2017 / milestone #48); any regression that re-introduces a
+    # core → ee import beyond the one allowed boot-time composition
+    # file (lib/effect/enterprise-layer.ts) fails this job.
+    name: Symlink Stub Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache bun dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Replace ee/ with stub
+        run: |
+          set -euo pipefail
+          rm -rf ee
+          cp -R scripts/ee-stub ee
+          echo "Stub contents:"
+          find ee -type f | sort
+
+      - name: Install dependencies (refresh workspace symlinks)
+        # Intentionally NOT --frozen-lockfile: the stub package.json has a
+        # smaller dependency surface than the real ee/, so bun.lock changes
+        # are expected and ephemeral to this job.
+        run: bun install
+
+      - name: Type check (core compiles standalone)
+        run: bun run type
+
+      - name: Build (core bundles standalone)
+        run: bun run build
+

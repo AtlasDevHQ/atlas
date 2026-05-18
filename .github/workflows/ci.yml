@@ -86,6 +86,9 @@ jobs:
       - name: Check core never imports from @atlas/ee
         run: bash scripts/check-ee-imports.sh
 
+      - name: Adversarial fixtures for the EE-imports gate
+        run: bash scripts/__tests__/check-ee-imports.test.sh
+
   lint:
     name: lint
     runs-on: ubuntu-latest

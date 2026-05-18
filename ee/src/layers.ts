@@ -13,14 +13,16 @@
  * Slice 4/11 (#2566) — added `MaskingPolicyLive` + `ComplianceReportsLive`.
  * Slice 5/11 (#2567) — added `ApprovalGateLive`.
  * Slice 6/11 (#2568) — added `SlaMetricsLive` + `BackupsManagerLive`.
+ * Slice 7/11 (#2569) — added `AuditRetentionLive`.
  *
- * Later slices (#2569–#2572) follow the same pattern: one Tag, one
+ * Later slices (#2570–#2572) follow the same pattern: one Tag, one
  * Layer entry. See the parent issue (#2017) for the rationale.
  */
 
 import { Layer } from "effect";
 import type {
   ApprovalGate,
+  AuditRetention,
   BackupsManager,
   ComplianceReports,
   MaskingPolicy,
@@ -35,6 +37,7 @@ import { ComplianceReportsLive } from "./compliance/reports";
 import { ApprovalGateLive } from "./governance/approval";
 import { SlaMetricsLive } from "./sla/index";
 import { BackupsManagerLive } from "./backups/index";
+import { AuditRetentionLive } from "./audit/retention";
 
 /**
  * Aggregated EE Layer — typed by the union of every Tag this module
@@ -44,6 +47,7 @@ import { BackupsManagerLive } from "./backups/index";
  */
 export const EELayer: Layer.Layer<
   | ApprovalGate
+  | AuditRetention
   | BackupsManager
   | ComplianceReports
   | MaskingPolicy
@@ -58,4 +62,5 @@ export const EELayer: Layer.Layer<
   ApprovalGateLive,
   SlaMetricsLive,
   BackupsManagerLive,
+  AuditRetentionLive,
 );

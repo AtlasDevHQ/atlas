@@ -33,7 +33,9 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { RetentionError, type AnonymizeInitiatedBy } from "@atlas/ee/audit/retention";
+import { RetentionError } from "@atlas/api/lib/audit/retention-errors";
+import type { AnonymizeInitiatedBy } from "@useatlas/types";
+import { AuditRetention } from "@atlas/api/lib/effect/services";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import { logAdminActionAwait, ADMIN_ACTIONS, type AdminActionEntry } from "@atlas/api/lib/audit";
@@ -318,10 +320,8 @@ adminActionRetention.use(requirePermission("admin:audit"));
 adminActionRetention.openapi(getRetentionRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
-    const { getAdminActionRetentionPolicy } = yield* Effect.promise(
-      () => import("@atlas/ee/audit/retention"),
-    );
-    const policy = yield* getAdminActionRetentionPolicy(orgId!);
+    const retention = yield* AuditRetention;
+    const policy = yield* retention.getAdminActionRetentionPolicy(orgId!);
     return c.json({ policy }, 200);
   }), { label: "get admin-action retention policy", domainErrors: [retentionDomainError] });
 });
@@ -333,8 +333,8 @@ adminActionRetention.openapi(updateRetentionRoute, async (c) => {
     const { orgId, user } = yield* AuthContext;
     const body = c.req.valid("json");
 
-    const { setAdminActionRetentionPolicy, getAdminActionRetentionPolicy } =
-      yield* Effect.promise(() => import("@atlas/ee/audit/retention"));
+    const retention = yield* AuditRetention;
+    const { setAdminActionRetentionPolicy, getAdminActionRetentionPolicy } = retention;
 
     const requestedMeta = {
       retentionDays: body.retentionDays,
@@ -404,8 +404,8 @@ adminActionRetention.openapi(purgeRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const { purgeAdminActionExpired, getAdminActionRetentionPolicy } =
-      yield* Effect.promise(() => import("@atlas/ee/audit/retention"));
+    const retention = yield* AuditRetention;
+    const { purgeAdminActionExpired, getAdminActionRetentionPolicy } = retention;
 
     const policy = yield* getAdminActionRetentionPolicy(orgId!).pipe(
       Effect.tapError((err) =>
@@ -456,10 +456,8 @@ adminEraseUser.use(requirePermission("admin:audit"));
 adminEraseUser.openapi(erasePreviewRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const query = c.req.valid("query");
-    const { previewAdminActionErasure } = yield* Effect.promise(
-      () => import("@atlas/ee/audit/retention"),
-    );
-    const result = yield* previewAdminActionErasure(query.userId);
+    const retention = yield* AuditRetention;
+    const result = yield* retention.previewAdminActionErasure(query.userId);
     return c.json(result, 200);
   }), { label: "preview admin-action erasure", domainErrors: [retentionDomainError] });
 });
@@ -470,11 +468,9 @@ adminEraseUser.openapi(eraseUserRoute, async (c) => {
   const ipAddress = clientIpFrom(c.req);
   return runEffect(c, Effect.gen(function* () {
     const body = c.req.valid("json");
-    const { anonymizeUserAdminActions } = yield* Effect.promise(
-      () => import("@atlas/ee/audit/retention"),
-    );
+    const retention = yield* AuditRetention;
 
-    return yield* anonymizeUserAdminActions(body.userId, body.initiatedBy).pipe(
+    return yield* retention.anonymizeUserAdminActions(body.userId, body.initiatedBy).pipe(
       Effect.tapError((err) =>
         emitAuditBestEffort({
           actionType: ADMIN_ACTIONS.user.erase,

@@ -15,8 +15,12 @@
  *      deleted_at is older than the hard-delete delay
  */
 
-import { Data, Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { requireEnterpriseEffect, EnterpriseError } from "../index";
+import {
+  AuditRetention,
+  type AuditRetentionShape,
+} from "@atlas/api/lib/effect/services";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import {
   hasInternalDB,
@@ -159,12 +163,17 @@ const MAX_EXPORT_ROWS = 50_000;
 
 // ── Typed errors ─────────────────────────────────────────────────────
 
-export type RetentionErrorCode = "validation" | "not_found";
-
-export class RetentionError extends Data.TaggedError("RetentionError")<{
-  message: string;
-  code: RetentionErrorCode;
-}> {}
+/**
+ * `RetentionError` lives in `@atlas/api/lib/audit/retention-errors`
+ * post-#2569 so the `AuditRetention` Tag can type its failure channels
+ * without core importing from `@atlas/ee`. Re-exported here for
+ * back-compat — same `_tag` + payload + `instanceof` semantics.
+ */
+export {
+  RetentionError,
+  type RetentionErrorCode,
+} from "@atlas/api/lib/audit/retention-errors";
+import { RetentionError } from "@atlas/api/lib/audit/retention-errors";
 
 // ── Row mapping ──────────────────────────────────────────────────────
 
@@ -1007,3 +1016,42 @@ export const previewAdminActionErasure = (
     }
     return { anonymizableRowCount: parsed };
   });
+
+// ── Tag wiring (#2569 — slice 7/11 of #2017) ─────────────────────────
+//
+// Bridges this module's functions into the `AuditRetention` Tag so
+// core call sites (`api/routes/admin-action-retention.ts`,
+// `api/routes/admin-audit-retention.ts`) can `yield* AuditRetention`
+// instead of dynamic-importing this module. Aggregated into
+// `ee/src/layers.ts:EELayer`; the no-op default in
+// `lib/effect/services.ts:NoopAuditRetentionLayer` covers self-hosted.
+
+// Imported here (not at module top) to keep the static `@atlas/ee/...`
+// circle small — the scheduler module re-exports the same actor const
+// the rest of this file references via the direct import above.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { startAuditPurgeScheduler, stopAuditPurgeScheduler } = require("./purge-scheduler") as {
+  startAuditPurgeScheduler: (intervalMs?: number) => void;
+  stopAuditPurgeScheduler: () => void;
+};
+
+export const makeAuditRetentionLive = (): AuditRetentionShape => ({
+  available: true,
+  getRetentionPolicy,
+  setRetentionPolicy,
+  purgeExpiredEntries,
+  hardDeleteExpired,
+  exportAuditLog,
+  getAdminActionRetentionPolicy,
+  setAdminActionRetentionPolicy,
+  purgeAdminActionExpired,
+  anonymizeUserAdminActions,
+  previewAdminActionErasure,
+  startAuditPurgeScheduler,
+  stopAuditPurgeScheduler,
+});
+
+export const AuditRetentionLive: Layer.Layer<AuditRetention> = Layer.sync(
+  AuditRetention,
+  makeAuditRetentionLive,
+);

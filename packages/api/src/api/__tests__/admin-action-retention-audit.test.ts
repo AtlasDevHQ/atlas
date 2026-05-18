@@ -134,37 +134,80 @@ let mockAnonymizeResult: { anonymizedRowCount: number } = { anonymizedRowCount: 
 let mockAnonymizeError: Error | null = null;
 const mockEeCallOrder: string[] = [];
 
+process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+
 const { RetentionError: RealRetentionError } = await import(
-  "@atlas/ee/audit/retention"
+  "@atlas/api/lib/audit/retention-errors"
 );
+
+mock.module("@atlas/api/lib/audit/retention-errors", () => ({
+  RetentionError: RealRetentionError,
+}));
+mock.module("@atlas/api/lib/residency/errors", () => ({
+  ResidencyError: class extends Error { public readonly _tag = "ResidencyError" as const; },
+}));
+mock.module("@atlas/api/lib/compliance/errors", () => ({
+  ComplianceError: class extends Error { public readonly _tag = "ComplianceError" as const; },
+  ReportError: class extends Error { public readonly _tag = "ReportError" as const; },
+}));
+mock.module("@atlas/api/lib/model-routing/errors", () => ({
+  ModelConfigError: class extends Error { public readonly _tag = "ModelConfigError" as const; },
+  ModelConfigDecryptError: class extends Error { public readonly _tag = "ModelConfigDecryptError" as const; },
+}));
+mock.module("@atlas/api/lib/governance/errors", () => ({
+  ApprovalError: class extends Error { public readonly _tag = "ApprovalError" as const; },
+}));
+
+mock.module("@atlas/ee/layers", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Layer, Effect: E } = require("effect") as typeof import("effect");
+  return {
+    EELayer: Layer.unwrapEffect(
+      E.sync(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+        return Layer.succeed(services.AuditRetention, {
+          available: true,
+          getRetentionPolicy: () => Effect.succeed(null),
+          setRetentionPolicy: () => Effect.die("not stubbed"),
+          exportAuditLog: () => Effect.die("not stubbed"),
+          purgeExpiredEntries: () => Effect.succeed([]),
+          hardDeleteExpired: () => Effect.succeed({ deletedCount: 0 }),
+          getAdminActionRetentionPolicy: () => {
+            mockEeCallOrder.push("getAdminActionRetentionPolicy");
+            if (mockGetPolicyError) return Effect.fail(mockGetPolicyError);
+            return Effect.succeed(mockGetPolicyResult);
+          },
+          setAdminActionRetentionPolicy: () => {
+            mockEeCallOrder.push("setAdminActionRetentionPolicy");
+            if (mockSetPolicyError) return Effect.fail(mockSetPolicyError);
+            return Effect.succeed(mockSetPolicyResult as never);
+          },
+          purgeAdminActionExpired: () => {
+            mockEeCallOrder.push("purgeAdminActionExpired");
+            if (mockPurgeError) return Effect.fail(mockPurgeError);
+            return Effect.succeed(mockPurgeResult);
+          },
+          previewAdminActionErasure: () => {
+            mockEeCallOrder.push("previewAdminActionErasure");
+            if (mockPreviewError) return Effect.fail(mockPreviewError);
+            return Effect.succeed(mockPreviewResult);
+          },
+          anonymizeUserAdminActions: () => {
+            mockEeCallOrder.push("anonymizeUserAdminActions");
+            if (mockAnonymizeError) return Effect.fail(mockAnonymizeError);
+            return Effect.succeed(mockAnonymizeResult);
+          },
+          startAuditPurgeScheduler: () => {},
+          stopAuditPurgeScheduler: () => {},
+        } as never);
+      }),
+    ),
+  };
+});
 
 mock.module("@atlas/ee/audit/retention", () => ({
   RetentionError: RealRetentionError,
-  getAdminActionRetentionPolicy: () => {
-    mockEeCallOrder.push("getAdminActionRetentionPolicy");
-    if (mockGetPolicyError) return Effect.fail(mockGetPolicyError);
-    return Effect.succeed(mockGetPolicyResult);
-  },
-  setAdminActionRetentionPolicy: () => {
-    mockEeCallOrder.push("setAdminActionRetentionPolicy");
-    if (mockSetPolicyError) return Effect.fail(mockSetPolicyError);
-    return Effect.succeed(mockSetPolicyResult);
-  },
-  purgeAdminActionExpired: () => {
-    mockEeCallOrder.push("purgeAdminActionExpired");
-    if (mockPurgeError) return Effect.fail(mockPurgeError);
-    return Effect.succeed(mockPurgeResult);
-  },
-  previewAdminActionErasure: () => {
-    mockEeCallOrder.push("previewAdminActionErasure");
-    if (mockPreviewError) return Effect.fail(mockPreviewError);
-    return Effect.succeed(mockPreviewResult);
-  },
-  anonymizeUserAdminActions: () => {
-    mockEeCallOrder.push("anonymizeUserAdminActions");
-    if (mockAnonymizeError) return Effect.fail(mockAnonymizeError);
-    return Effect.succeed(mockAnonymizeResult);
-  },
 }));
 
 // ── Import sub-routers AFTER mocks ────────────────────────────────────

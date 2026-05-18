@@ -133,34 +133,82 @@ let mockHardDeleteResult: { deletedCount: number } = { deletedCount: 0 };
 let mockHardDeleteError: Error | null = null;
 const mockEeCallOrder: string[] = [];
 
+// Force enterprise on so `ConditionalEELayer` lazy-imports the mocked
+// `@atlas/ee/layers` aggregator below.
+process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+
 const { RetentionError: RealRetentionError } = await import(
-  "@atlas/ee/audit/retention"
+  "@atlas/api/lib/audit/retention-errors"
 );
 
+// Stub the core error modules so `EnterpriseLayer`'s no-op defaults'
+// lazy-requires resolve.
+mock.module("@atlas/api/lib/audit/retention-errors", () => ({
+  RetentionError: RealRetentionError,
+}));
+mock.module("@atlas/api/lib/residency/errors", () => ({
+  ResidencyError: class extends Error { public readonly _tag = "ResidencyError" as const; },
+}));
+mock.module("@atlas/api/lib/compliance/errors", () => ({
+  ComplianceError: class extends Error { public readonly _tag = "ComplianceError" as const; },
+  ReportError: class extends Error { public readonly _tag = "ReportError" as const; },
+}));
+mock.module("@atlas/api/lib/model-routing/errors", () => ({
+  ModelConfigError: class extends Error { public readonly _tag = "ModelConfigError" as const; },
+  ModelConfigDecryptError: class extends Error { public readonly _tag = "ModelConfigDecryptError" as const; },
+}));
+mock.module("@atlas/api/lib/governance/errors", () => ({
+  ApprovalError: class extends Error { public readonly _tag = "ApprovalError" as const; },
+}));
+
+mock.module("@atlas/ee/layers", () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Layer, Effect: E } = require("effect") as typeof import("effect");
+  return {
+    EELayer: Layer.unwrapEffect(
+      E.sync(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const services = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
+        return Layer.succeed(services.AuditRetention, {
+          available: true,
+          getRetentionPolicy: () => {
+            mockEeCallOrder.push("getRetentionPolicy");
+            if (mockGetPolicyError) return Effect.fail(mockGetPolicyError);
+            return Effect.succeed(mockGetPolicyResult);
+          },
+          setRetentionPolicy: () => {
+            mockEeCallOrder.push("setRetentionPolicy");
+            if (mockSetPolicyError) return Effect.fail(mockSetPolicyError);
+            return Effect.succeed(mockSetPolicyResult as never);
+          },
+          exportAuditLog: () => {
+            if (mockExportError) return Effect.fail(mockExportError);
+            return Effect.succeed(mockExportResult as never);
+          },
+          purgeExpiredEntries: () => {
+            if (mockPurgeError) return Effect.fail(mockPurgeError);
+            return Effect.succeed(mockPurgeResult);
+          },
+          hardDeleteExpired: () => {
+            if (mockHardDeleteError) return Effect.fail(mockHardDeleteError);
+            return Effect.succeed(mockHardDeleteResult);
+          },
+          getAdminActionRetentionPolicy: () => Effect.die("not stubbed"),
+          setAdminActionRetentionPolicy: () => Effect.die("not stubbed"),
+          purgeAdminActionExpired: () => Effect.die("not stubbed"),
+          anonymizeUserAdminActions: () => Effect.die("not stubbed"),
+          previewAdminActionErasure: () => Effect.die("not stubbed"),
+          startAuditPurgeScheduler: () => {},
+          stopAuditPurgeScheduler: () => {},
+        } as never);
+      }),
+    ),
+  };
+});
+
+// Legacy module-mock stub for any transitive resolver chain.
 mock.module("@atlas/ee/audit/retention", () => ({
   RetentionError: RealRetentionError,
-  getRetentionPolicy: () => {
-    mockEeCallOrder.push("getRetentionPolicy");
-    if (mockGetPolicyError) return Effect.fail(mockGetPolicyError);
-    return Effect.succeed(mockGetPolicyResult);
-  },
-  setRetentionPolicy: () => {
-    mockEeCallOrder.push("setRetentionPolicy");
-    if (mockSetPolicyError) return Effect.fail(mockSetPolicyError);
-    return Effect.succeed(mockSetPolicyResult);
-  },
-  exportAuditLog: () => {
-    if (mockExportError) return Effect.fail(mockExportError);
-    return Effect.succeed(mockExportResult);
-  },
-  purgeExpiredEntries: () => {
-    if (mockPurgeError) return Effect.fail(mockPurgeError);
-    return Effect.succeed(mockPurgeResult);
-  },
-  hardDeleteExpired: () => {
-    if (mockHardDeleteError) return Effect.fail(mockHardDeleteError);
-    return Effect.succeed(mockHardDeleteResult);
-  },
 }));
 
 // ── Import sub-router AFTER mocks ─────────────────────────────────────

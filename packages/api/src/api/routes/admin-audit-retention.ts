@@ -14,7 +14,8 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { RetentionError } from "@atlas/ee/audit/retention";
+import { RetentionError } from "@atlas/api/lib/audit/retention-errors";
+import { AuditRetention } from "@atlas/api/lib/effect/services";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import { logAdminActionAwait, ADMIN_ACTIONS, type AdminActionEntry } from "@atlas/api/lib/audit";
@@ -372,8 +373,8 @@ adminAuditRetention.openapi(getRetentionRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const { getRetentionPolicy } = yield* Effect.promise(() => import("@atlas/ee/audit/retention"));
-    const policy = yield* getRetentionPolicy(orgId!);
+    const retention = yield* AuditRetention;
+    const policy = yield* retention.getRetentionPolicy(orgId!);
     return c.json({ policy }, 200);
   }), { label: "get retention policy", domainErrors: [retentionDomainError] });
 });
@@ -386,9 +387,8 @@ adminAuditRetention.openapi(updateRetentionRoute, async (c) => {
 
     const body = c.req.valid("json");
 
-    const { setRetentionPolicy, getRetentionPolicy } = yield* Effect.promise(
-      () => import("@atlas/ee/audit/retention"),
-    );
+    const retention = yield* AuditRetention;
+    const { setRetentionPolicy, getRetentionPolicy } = retention;
 
     // The prior policy must be read *before* the write so the audit row
     // captures the delta (a shrink from 365 → 7 days is the threat). If
@@ -473,9 +473,9 @@ adminAuditRetention.openapi(exportRoute, async (c) => {
       endDate: body.endDate ?? null,
     };
 
-    const { exportAuditLog } = yield* Effect.promise(() => import("@atlas/ee/audit/retention"));
+    const retention = yield* AuditRetention;
 
-    return yield* exportAuditLog({
+    return yield* retention.exportAuditLog({
       orgId: orgId!,
       format: body.format,
       startDate: body.startDate,
@@ -537,9 +537,8 @@ adminAuditRetention.openapi(purgeRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const { purgeExpiredEntries, getRetentionPolicy } = yield* Effect.promise(
-      () => import("@atlas/ee/audit/retention"),
-    );
+    const retention = yield* AuditRetention;
+    const { purgeExpiredEntries, getRetentionPolicy } = retention;
 
     // Snapshot retentionDays for the audit row — purge results don't
     // expose the window. Read failures emit a stage:policy_read failure
@@ -594,9 +593,9 @@ adminAuditRetention.openapi(hardDeleteRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const { hardDeleteExpired } = yield* Effect.promise(() => import("@atlas/ee/audit/retention"));
+    const retention = yield* AuditRetention;
 
-    return yield* hardDeleteExpired(orgId!).pipe(
+    return yield* retention.hardDeleteExpired(orgId!).pipe(
       Effect.tap((result) =>
         emitAudit({
           actionType: ADMIN_ACTIONS.audit_retention.manualHardDelete,

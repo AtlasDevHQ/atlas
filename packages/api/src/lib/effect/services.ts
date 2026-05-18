@@ -2074,20 +2074,27 @@ export const NoopRolesPolicyLayer: Layer.Layer<RolesPolicy> = Layer.sync(
       );
     return {
       customRolesActive: false,
-      // Skip the `custom_roles` DB read — self-hosted shouldn't have
-      // those rows seeded (the `seedBuiltinRoles` path is gated on
-      // `requireEnterprise`), and the read on every admin request
-      // would be wasted IO. EE's `RolesPolicyLive` re-binds to the
-      // full `checkPermission` so workspaces with seeded roles get
-      // the granular resolution.
+      // `checkPermission` deliberately delegates to the legacy resolver
+      // — every admin route depends on this surface, and the no-op MUST
+      // continue to authorize admin/owner/platform_admin on self-hosted
+      // installs. EE's `RolesPolicyLive` re-binds to the full
+      // `checkPermission` so workspaces with seeded roles get granular
+      // resolution. (See `lib/auth/permission-resolve.ts`.)
       checkPermission: checkPermissionLegacy,
-      listRoles: () => Effect.succeed([]),
-      getRole: () => Effect.succeed(null),
-      getRoleByName: () => Effect.succeed(null),
+      // All custom-role CRUD methods consistently fail with EnterpriseError
+      // on self-hosted. Pre-#2587 the reads silently returned empty arrays
+      // and the writes failed — UI dead-end (admin sees "no roles yet,
+      // click create" → click → 403). Failing both sides surfaces a single
+      // coherent gate the UI renders as the enterprise-upsell envelope.
+      // Admin tooling that needs to render different copy on self-hosted
+      // reads `customRolesActive: false` from the Tag's shape.
+      listRoles: () => Effect.fail(notAvailable("listRoles")),
+      getRole: () => Effect.fail(notAvailable("getRole")),
+      getRoleByName: () => Effect.fail(notAvailable("getRoleByName")),
       createRole: () => Effect.fail(notAvailable("createRole")),
       updateRole: () => Effect.fail(notAvailable("updateRole")),
       deleteRole: () => Effect.fail(notAvailable("deleteRole")),
-      listRoleMembers: () => Effect.succeed([]),
+      listRoleMembers: () => Effect.fail(notAvailable("listRoleMembers")),
       assignRole: () => Effect.fail(notAvailable("assignRole")),
     } satisfies RolesPolicyShape;
   },

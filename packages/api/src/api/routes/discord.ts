@@ -20,6 +20,7 @@ import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { validationHook } from "./validation-hook";
 import { adminAuthPreamble } from "./admin-auth";
 import { getConfig } from "@atlas/api/lib/config";
+import { getWebOrigin } from "@atlas/api/lib/web-origin";
 
 const log = createLogger("discord");
 
@@ -84,8 +85,11 @@ const callbackRoute = createRoute({
   },
   responses: {
     200: {
-      description: "Installation successful (HTML response)",
+      description: "Installation successful (HTML response, when no web origin is configured)",
       content: { "text/html": { schema: z.string() } },
+    },
+    302: {
+      description: "Installation successful (redirect to /admin/integrations on the web app)",
     },
     400: {
       description: "Invalid or expired state, or authorization denied",
@@ -296,6 +300,10 @@ discord.openapi(callbackRoute, async (c) => {
     );
   }
 
+  const webOrigin = getWebOrigin();
+  if (webOrigin) {
+    return c.redirect(`${webOrigin}/admin/integrations?installed=discord`);
+  }
   return c.html(
     "<html><body><h1>Atlas installed!</h1><p>You can now use Atlas in your Discord server.</p></body></html>",
   );

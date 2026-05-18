@@ -305,7 +305,7 @@ describe("/api/v1/slack", () => {
   });
 
   describe("POST /api/v1/slack/commands", () => {
-    it("acks a slash command with 200 and in_channel response", async () => {
+    it("acks a slash command with 200 and an ephemeral response", async () => {
       const app = await getApp();
       const body = "token=xxx&team_id=T123&channel_id=C456&user_id=U789&text=how+many+users";
       const { signature, timestamp } = makeSignature(body);
@@ -322,7 +322,9 @@ describe("/api/v1/slack", () => {
 
       expect(resp.status).toBe(200);
       const json = (await resp.json()) as Record<string, unknown>;
-      expect(json.response_type).toBe("in_channel");
+      // Ephemeral so the ack doesn't double up with the bot's in-channel
+      // "Thinking..." message — see slack.ts comment for the rationale.
+      expect(json.response_type).toBe("ephemeral");
       expect(json.text).toContain("Processing");
     });
 
@@ -498,6 +500,112 @@ describe("/api/v1/slack", () => {
       await new Promise((r) => setTimeout(r, 100));
 
       expect(mockRunAgent).toHaveBeenCalled();
+    });
+
+    it("processes a top-level app_mention and runs the agent in a new thread", async () => {
+      const app = await getApp();
+      const payload = JSON.stringify({
+        type: "event_callback",
+        team_id: "T123",
+        event: {
+          type: "app_mention",
+          text: "<@U999BOT> how many customers do we have?",
+          channel: "C456",
+          user: "U789",
+          ts: "1234567890.000002",
+        },
+      });
+      const { signature, timestamp } = makeSignature(payload);
+
+      const resp = await app.request("/api/v1/slack/events", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-slack-signature": signature,
+          "x-slack-request-timestamp": timestamp,
+        },
+        body: payload,
+      });
+
+      expect(resp.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(mockPostMessage).toHaveBeenCalled();
+      expect(mockRunAgent).toHaveBeenCalled();
+      expect(mockUpdateMessage).toHaveBeenCalled();
+      // The thinking message and follow-ups must thread off the mention's ts.
+      const thinkingCall = mockPostMessage.mock.calls[0]?.[1] as
+        | { thread_ts?: string }
+        | undefined;
+      expect(thinkingCall?.thread_ts).toBe("1234567890.000002");
+    });
+
+    it("skips app_mention when posted inside an existing thread (message branch owns it)", async () => {
+      const app = await getApp();
+      // Slack delivers BOTH app_mention and message for an in-thread mention.
+      // The app_mention branch must early-return so the message handler can
+      // own conversation-history loading and reply once.
+      const payload = JSON.stringify({
+        type: "event_callback",
+        team_id: "T123",
+        event: {
+          type: "app_mention",
+          text: "<@U999BOT> follow-up question",
+          channel: "C456",
+          user: "U789",
+          ts: "1234567890.000003",
+          thread_ts: "1234567890.000001",
+        },
+      });
+      const { signature, timestamp } = makeSignature(payload);
+
+      const resp = await app.request("/api/v1/slack/events", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-slack-signature": signature,
+          "x-slack-request-timestamp": timestamp,
+        },
+        body: payload,
+      });
+
+      expect(resp.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(mockRunAgent).not.toHaveBeenCalled();
+      expect(mockPostMessage).not.toHaveBeenCalled();
+    });
+
+    it("ignores app_mention with only the bot prefix and no question", async () => {
+      const app = await getApp();
+      const payload = JSON.stringify({
+        type: "event_callback",
+        team_id: "T123",
+        event: {
+          type: "app_mention",
+          text: "<@U999BOT>   ",
+          channel: "C456",
+          user: "U789",
+          ts: "1234567890.000004",
+        },
+      });
+      const { signature, timestamp } = makeSignature(payload);
+
+      const resp = await app.request("/api/v1/slack/events", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-slack-signature": signature,
+          "x-slack-request-timestamp": timestamp,
+        },
+        body: payload,
+      });
+
+      expect(resp.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(mockRunAgent).not.toHaveBeenCalled();
+      expect(mockPostMessage).not.toHaveBeenCalled();
     });
   });
 
@@ -914,6 +1022,40 @@ describe("/api/v1/slack", () => {
       const html = await resp.text();
       expect(html).toContain("Atlas installed!");
       expect(mockSaveInstallation).toHaveBeenCalledWith("T999", "xoxb-new-token", { orgId: undefined, workspaceName: undefined });
+    });
+
+    it("redirects to /admin/integrations on the web app when ATLAS_CORS_ORIGIN is set", async () => {
+      process.env.SLACK_CLIENT_ID = "test_client_id";
+      process.env.SLACK_CLIENT_SECRET = "test_client_secret";
+      const savedCors = process.env.ATLAS_CORS_ORIGIN;
+      process.env.ATLAS_CORS_ORIGIN = "https://app.example.com";
+      try {
+        mockSlackAPI.mockResolvedValueOnce({
+          ok: true,
+          team: { id: "T999" },
+          access_token: "xoxb-new-token",
+        });
+        const app = await getApp();
+
+        const installResp = await app.request("/api/v1/slack/install", {
+          method: "GET",
+          redirect: "manual",
+        });
+        const location = installResp.headers.get("location") ?? "";
+        const stateParam = new URL(location).searchParams.get("state");
+
+        const resp = await app.request(
+          `/api/v1/slack/callback?code=test_code&state=${stateParam}`,
+          { method: "GET", redirect: "manual" },
+        );
+        expect(resp.status).toBe(302);
+        expect(resp.headers.get("location")).toBe(
+          "https://app.example.com/admin/integrations?installed=slack",
+        );
+      } finally {
+        if (savedCors !== undefined) process.env.ATLAS_CORS_ORIGIN = savedCors;
+        else delete process.env.ATLAS_CORS_ORIGIN;
+      }
     });
 
     it("returns error HTML when OAuth response is missing team data", async () => {

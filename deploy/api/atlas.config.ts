@@ -13,6 +13,7 @@
  */
 
 import { defineConfig } from "./packages/api/src/lib/config";
+import { chatPlugin } from "@useatlas/chat";
 
 export default defineConfig({
   // ── Datasource ──────────────────────────────────────────────────
@@ -26,6 +27,50 @@ export default defineConfig({
 
   // ── Tools ───────────────────────────────────────────────────────
   tools: ["explore", "executeSQL"],
+
+  // ── Plugins ─────────────────────────────────────────────────────
+  // Slice 1 of #2607 — structural wiring only. Loads @useatlas/chat
+  // with a PgStateAdapter so chat_* tables are created on boot. The
+  // plugin's webhook routes mount at /api/plugins/chat-interaction/*
+  // alongside the existing /api/v1/slack/* routes; both surfaces
+  // coexist after this slice. NO `proactive:` block is supplied here —
+  // bridge.ts only registers the proactive listener when
+  // `config.proactive` is truthy. Slice 2 (#2607) will add it.
+  //
+  // SaaS is multi-tenant: real Slack bot tokens live in the internal
+  // DB (slack_integrations / slack_workspaces) keyed by team_id, and
+  // packages/api/src/api/routes/slack.ts continues to handle every
+  // production webhook today. The static `botToken` below is required
+  // by Zod (min(1)) but is never used for outbound calls in SaaS —
+  // executeQuery throws a clear stub error to prevent accidental
+  // routing through this plugin until slice 3 migrates handlers.
+  plugins: [
+    chatPlugin({
+      adapters: {
+        slack: {
+          botToken: process.env.SLACK_BOT_TOKEN ?? "saas-multi-tenant-unused",
+          signingSecret:
+            process.env.SLACK_SIGNING_SECRET ?? "saas-multi-tenant-unused",
+          ...(process.env.SLACK_CLIENT_ID
+            ? { clientId: process.env.SLACK_CLIENT_ID }
+            : {}),
+          ...(process.env.SLACK_CLIENT_SECRET
+            ? { clientSecret: process.env.SLACK_CLIENT_SECRET }
+            : {}),
+        },
+      },
+      state: { backend: "pg" },
+      executeQuery: async () => {
+        // Stub: until slice 3 retires slack.ts's app_mention handler, this
+        // plugin's bridge is mounted but unused — Slack still routes to
+        // /api/v1/slack/events. Returning a clear stub error prevents
+        // accidental routing during slice 1/2.
+        throw new Error(
+          "Chat plugin executeQuery not yet wired — slice 3 will migrate handlers from slack.ts",
+        );
+      },
+    }),
+  ],
 
   // ── Auth ────────────────────────────────────────────────────────
   auth: "managed",

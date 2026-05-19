@@ -95,8 +95,9 @@ describe("runMigrations", () => {
     // + 0080 (proactive_public_dataset + public_refused meter, #2297)
     // + 0081 (workspace_proactive_config.announcement_posted_at, #2300)
     // + 0082 (audit_log.parent_audit_id FK → DEFERRABLE)
-    // + 0083 (dashboard_stage_changes, #2365) = 84.
-    expect(count).toBe(84);
+    // + 0083 (dashboard_stage_changes, #2365)
+    // + 0084 (proactive_classification_review, #2622) = 85.
+    expect(count).toBe(85);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -209,6 +210,7 @@ describe("runMigrations", () => {
         "0081_workspace_proactive_announcement_posted_at.sql",
         "0082_audit_log_parent_audit_id_deferrable.sql",
         "0083_dashboard_stage_changes.sql",
+        "0084_proactive_classification_review.sql",
       ],
     });
 

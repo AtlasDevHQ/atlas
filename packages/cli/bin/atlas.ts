@@ -360,6 +360,23 @@ async function main() {
     return handlePlugin(args);
   }
 
+  if (command === "proactive") {
+    const { handleProactive } = await import(
+      "../src/commands/proactive"
+    );
+    return handleProactive(args);
+  }
+
+  if (command === "seed") {
+    const { handleSeed } = await import("../src/commands/seed");
+    return handleSeed(args);
+  }
+
+  if (command === "ops") {
+    const { handleOps } = await import("../src/commands/ops");
+    return handleOps(args);
+  }
+
   if (command !== "init") {
     console.error(`Unknown command: ${command}\n`);
     printOverviewHelp();

@@ -136,6 +136,24 @@ bun run atlas -- init    # Profile DB, generate semantic layer
 bun run atlas -- diff    # Compare DB schema vs semantic layer
 ```
 
+### Operator subcommands (destructive)
+
+The atlas-cli exposes a small operator surface for tenant-data ops. These were promoted from the gitignored `internal/` directory in #2635 so they're type-checked, unit-tested, and discoverable. All target the tenant DB at `ATLAS_TEAM_PG_URL` (falling back to `DATABASE_URL`).
+
+```bash
+bun run atlas -- proactive enable --workspace <id|slug> --channels <c1,c2>
+bun run atlas -- proactive disable --workspace <id|slug>
+bun run atlas -- seed prompts --workspace <id|slug> --library ./prompts/library.yml
+bun run atlas -- seed workspace --workspace <id|slug> --group prod \
+  --connections us-prod=US_DB_URL:postgres:primary,eu-prod=EU_DB_URL:postgres
+# DESTRUCTIVE — TRUNCATE every public table (excluding migration bookkeeping):
+ATLAS_WIPE_OK=1 bun run atlas -- ops wipe --confirm [--database-url <url>]
+```
+
+The `ops wipe` subcommand is the only destructive one. It requires **both** `ATLAS_WIPE_OK=1` in the env **and** `--confirm` on the command line — the double-confirm gate is intentional. No backup is taken; wrap with `pg_dump` yourself for any data you might want back. Operates on one DB per invocation, so wiping multiple regional clusters means running it once per cluster (intentional — keeps the SQL surface testable).
+
+One-shot migration backfills (already run on prod) live next to their migration in `packages/api/src/lib/db/migrations/scripts/` — see the README there.
+
 **Quick start:** `bun install` → `cp .env.example .env` → `bun run db:up` → `bun run atlas -- init` → `bun run dev`. Dev admin: **admin@useatlas.dev / atlas-dev**.
 
 ## Architecture

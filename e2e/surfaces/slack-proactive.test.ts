@@ -827,5 +827,13 @@ describe("E2E: chat-interaction webhook — kill switch (#2607 slice trail)", ()
     // classification — paying an LLM call for a mute message would
     // defeat the cost-of-silence contract the kill switch promises.
     expectNoProactiveActivity();
+    // The bridge ALSO registers `onDirectMessage` (to preserve the
+    // chat-with-bot DM path), so the SDK calls both handlers for the
+    // same DM. Without the bridge's `detectUnsubscribeDM` short-circuit
+    // the agent would silently run `executeQuery("unsubscribe")` and
+    // post a confused reply alongside the user-optout write. Pin
+    // both halves of the "silent unsubscribe" contract.
+    expect(executeQueryCalls).toHaveLength(0);
+    expect(stubWebClientPostCalls.filter((c) => c.method === "chat.postMessage")).toHaveLength(0);
   });
 });

@@ -48,6 +48,7 @@ import {
 import { createReactionLifecycle } from "./features/reactions";
 import type { IReactionLifecycle } from "./features/reactions";
 import { handleProactiveFeedbackSlash, registerProactiveListener } from "./proactive/listener";
+import { detectUnsubscribeDM } from "./proactive/pause";
 import type { RecentAnswers } from "./proactive/feedback";
 import { parseFeedbackSlashArgs } from "./proactive/feedback";
 
@@ -727,6 +728,18 @@ export function createChatBridge(
 
     if (!question) {
       log.debug({ threadId }, "Empty mention received, ignoring");
+      return;
+    }
+
+    // DM `unsubscribe` is owned by the proactive listener's
+    // `onDirectMessage` handler (writes `user-optout`). The SDK
+    // invokes every registered DM handler for the same event, so
+    // without this short-circuit `executeQuery` would also run on
+    // "unsubscribe" — producing a confused agent reply alongside the
+    // silent opt-out write. Skip silently; the proactive handler is
+    // the sole responder for this text.
+    if (thread.isDM === true && detectUnsubscribeDM(question)) {
+      log.debug({ threadId }, "DM unsubscribe — bridge defers to proactive listener");
       return;
     }
 

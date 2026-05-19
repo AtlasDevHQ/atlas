@@ -440,11 +440,23 @@ export async function registerProactiveListener(
       const text = message.text?.trim() ?? "";
       if (text.length === 0) return;
 
+      const isDM = thread.isDM === true;
+
+      // DM short-circuit. The proactive listener only cares about DMs
+      // that match the `unsubscribe` command; chat-with-bot DMs flow
+      // through the bridge's `onDirectMessage` registration. Skip
+      // every other DM cheaply (no `resolveWorkspaceId`, no
+      // `isEnabled`, no DB reads) — a chat-with-bot DM otherwise pays
+      // two host calls per message just to land at the `if (isDM)
+      // return;` below.
+      if (isDM && !detectUnsubscribeDM(text)) return;
+
       // ---------------------------------------------------------------
       // Per-event workspace resolution (#2620) — first DB / host call
       // we make. Runs before classify, meter, or kill-switch reads.
-      // (Bot/`isMe`/empty-text skips above run cheaper and earlier.)
-      // Unknown tenant → silent skip, no meter event, no DB reads.
+      // (Bot/`isMe`/empty-text and DM-not-unsubscribe skips above run
+      // cheaper and earlier.) Unknown tenant → silent skip, no meter
+      // event, no DB reads.
       // ---------------------------------------------------------------
       const workspaceId = await safeResolveWorkspace(
         thread.adapter,
@@ -457,7 +469,6 @@ export async function registerProactiveListener(
 
       const channelId = thread.channelId;
       const userId = message.author.userId;
-      const isDM = thread.isDM === true;
       // Workspace-scoped cooldown key — two tenants that share a channel
       // id (e.g. both have a "C-general") must not share cooldown state.
       const cooldownKey = `${workspaceId}:${channelId}`;
@@ -467,43 +478,36 @@ export async function registerProactiveListener(
       // a mute message never costs an LLM call.
       // ---------------------------------------------------------------
 
-      // DM `unsubscribe` → workspace-wide user-optout row.
-      if (
-        isDM &&
-        config.onPauseRequest &&
-        detectUnsubscribeDM(text)
-      ) {
-        try {
-          await config.onPauseRequest(
-            resolvePauseRequest("dm-unsubscribe", {
-              workspaceId,
-              channelId,
-              userId,
-            }),
-          );
-          log.info(
+      // DM `unsubscribe` → workspace-wide user-optout row. The early
+      // skip above guarantees we only reach this with an unsubscribe
+      // DM, so it's an unconditional handler for the DM path. The rest
+      // of the function is channel-only.
+      if (isDM) {
+        if (config.onPauseRequest) {
+          try {
+            await config.onPauseRequest(
+              resolvePauseRequest("dm-unsubscribe", {
+                workspaceId,
+                channelId,
+                userId,
+              }),
+            );
+            log.info(
+              { workspaceId, userId },
+              "Proactive: user opted out via DM unsubscribe",
+            );
+          } catch (err) {
+            log.warn(
+              { err: err instanceof Error ? err : new Error(String(err)) },
+              "Proactive: DM unsubscribe write failed — user still listed in proactive",
+            );
+          }
+        } else {
+          log.debug(
             { workspaceId, userId },
-            "Proactive: user opted out via DM unsubscribe",
-          );
-        } catch (err) {
-          log.warn(
-            { err: err instanceof Error ? err : new Error(String(err)) },
-            "Proactive: DM unsubscribe write failed — user still listed in proactive",
+            "Proactive: DM unsubscribe received but no onPauseRequest configured — discarding",
           );
         }
-        return;
-      }
-
-      // DMs short-circuit here. The unsubscribe branch above is the
-      // only proactive-listener action that applies to DMs; the rest
-      // of this handler is channel-only (classify / react / offer
-      // card). Debug-logged so a future bug that misclassifies channel
-      // events as DMs is visible in the rollup instead of silent.
-      if (isDM) {
-        log.debug(
-          { workspaceId, channelId, messageId: message.id },
-          "Proactive: DM short-circuit (bridge owns chat-with-bot path)",
-        );
         return;
       }
 

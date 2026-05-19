@@ -929,27 +929,36 @@ describe("registerProactiveListener — kill switch", () => {
     expect(classify).not.toHaveBeenCalled();
   });
 
-  it("non-unsubscribe DM short-circuits before classify (cost-control contract)", async () => {
-    // The DM handler must not invoke the LLM classifier — DMs are
-    // 1:1 with the bot and the bridge owns the answer path. Pre-#2638
-    // DMs never reached the proactive handler at all; the new
-    // registration plus the `if (isDM) return;` short-circuit preserve
-    // the zero-LLM-cost contract. A regression that moves the isDM
-    // return below classify would silently burn tokens on every DM.
+  it("non-unsubscribe DM short-circuits before resolveWorkspaceId (cost-control contract)", async () => {
+    // The DM handler skips chat-with-bot DMs cheaply — no
+    // `resolveWorkspaceId` call, no `isEnabled` read, no classifier.
+    // Pre-#2638 DMs never reached the proactive handler at all; the
+    // new registration plus the early `isDM && !detectUnsubscribeDM`
+    // short-circuit preserve the zero-DB / zero-LLM-cost contract for
+    // every chat-with-bot DM. A regression that moves the skip below
+    // workspace resolution would silently add two host calls per DM.
     const classify = mock(yesLLM);
     const onPauseRequest = mock(async () => {});
+    const resolveWorkspaceId = mock(async () => "ws_1");
+    const isEnabled = mock(async () => true);
     const { chat, invokeDM } = makeChat();
     await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], makeLogger(), {
-      isEnabled: () => true,
+      isEnabled,
       classify,
-      resolveWorkspaceId: defaultResolver,
+      resolveWorkspaceId,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
       isPaused: mock(async () => ({ paused: false })),
       onPauseRequest,
     });
     const thread = makeThread("D-direct", { isDM: true });
+    // Reset after registration — the listener probes `isEnabled("")`
+    // at boot to gate registration, which would otherwise count
+    // against the "not called per event" assertion below.
+    isEnabled.mockClear();
     await invokeDM(thread, makeMessage({ text: "what was MRR last month?" }));
+    expect(resolveWorkspaceId).not.toHaveBeenCalled();
+    expect(isEnabled).not.toHaveBeenCalled();
     expect(classify).not.toHaveBeenCalled();
     expect(onPauseRequest).not.toHaveBeenCalled();
   });

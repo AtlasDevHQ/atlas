@@ -253,7 +253,7 @@ export async function runExecuteQuery(
       conversationId = crypto.randomUUID();
       try {
         await setConversationId(channelId, slackThreadTs, conversationId);
-        createConversation({
+        await createConversation({
           id: conversationId,
           title: generateTitle(question),
           surface: "slack",

@@ -521,7 +521,7 @@ describe("chatPlugin config validation", () => {
     expect(() =>
       chatPlugin({
         adapters: {
-          slack: { botToken: "xoxb-test", signingSecret: "test-secret" },
+          slack: { botToken: "xoxb-test", signingSecret: "abcdef0123456789abcdef0123456789" },
         },
         executeQuery: "not a function" as never,
       }),
@@ -534,7 +534,7 @@ describe("chatPlugin config validation", () => {
     expect(() =>
       chatPlugin({
         adapters: {
-          slack: { botToken: "", signingSecret: "test-secret" },
+          slack: { botToken: "", signingSecret: "abcdef0123456789abcdef0123456789" },
         },
         executeQuery: async () => ({
           answer: "",
@@ -552,7 +552,7 @@ describe("chatPlugin config validation", () => {
 
     const plugin = chatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       executeQuery: async () => ({
         answer: "test",
@@ -574,7 +574,7 @@ describe("chatPlugin config validation", () => {
 
     const plugin = chatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       executeQuery: async () => ({
         answer: "test",
@@ -598,7 +598,7 @@ describe("chatPlugin config validation", () => {
 
     const plugin = chatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       executeQuery: async () => ({
         answer: "test",
@@ -625,7 +625,7 @@ describe("chatPlugin config validation", () => {
       adapters: {
         slack: {
           botToken: "xoxb-test-token",
-          signingSecret: "test-signing-secret",
+          signingSecret: "abcdef0123456789abcdef0123456789",
           clientId: "test-client-id",
           clientSecret: "test-client-secret",
         },
@@ -648,7 +648,7 @@ describe("chatPlugin config validation", () => {
     expect(() =>
       chatPlugin({
         adapters: {
-          slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+          slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
         },
         executeQuery: async () => ({
           answer: "test",
@@ -668,7 +668,7 @@ describe("chatPlugin config validation", () => {
     expect(() =>
       chatPlugin({
         adapters: {
-          slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+          slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
         },
         executeQuery: async () => ({
           answer: "test",
@@ -694,7 +694,7 @@ describe("chatPlugin config validation", () => {
         adapters: {
           slack: {
             botToken: "xoxb-test-token",
-            signingSecret: "test-signing-secret",
+            signingSecret: "abcdef0123456789abcdef0123456789",
             clientId: "test-client-id",
             // missing clientSecret
           },
@@ -721,7 +721,7 @@ describe("chat plugin lifecycle", () => {
     const { buildChatPlugin } = require("./index");
     return buildChatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       executeQuery: async () => ({
         answer: "test answer",
@@ -844,7 +844,7 @@ describe("chatPlugin state config validation", () => {
 
     const plugin = chatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       state: { backend: "memory" },
       executeQuery: async () => ({
@@ -864,7 +864,7 @@ describe("chatPlugin state config validation", () => {
 
     const plugin = chatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       executeQuery: async () => ({
         answer: "test",
@@ -883,7 +883,7 @@ describe("chatPlugin state config validation", () => {
 
     const plugin = chatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       state: { backend: "pg", tablePrefix: "myapp_" },
       executeQuery: async () => ({
@@ -949,7 +949,7 @@ describe("chatPlugin Teams adapter config", () => {
 
     const plugin = chatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
         teams: { appId: "test-app-id", appPassword: "test-app-password" },
       },
       executeQuery: mockExecuteQuery,
@@ -1076,7 +1076,7 @@ describe("webhook route guards", () => {
 
     const plugin = buildChatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       executeQuery: async () => ({
         answer: "test",
@@ -1188,7 +1188,7 @@ describe("chat plugin multi-adapter lifecycle", () => {
     const { buildChatPlugin } = require("./index");
     return buildChatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
         teams: { appId: "test-app-id", appPassword: "test-app-password" },
       },
       executeQuery: async () => ({
@@ -1280,7 +1280,7 @@ describe("chatPlugin Discord adapter config", () => {
 
     const plugin = chatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
         teams: { appId: "test-app-id", appPassword: "test-app-password" },
         discord: {
           botToken: "test-bot-token",
@@ -1514,7 +1514,7 @@ describe("chat plugin three-adapter lifecycle", () => {
     const { buildChatPlugin } = require("./index");
     return buildChatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
         teams: { appId: "test-app-id", appPassword: "test-app-password" },
         discord: {
           botToken: "test-bot-token",
@@ -1744,7 +1744,7 @@ describe("chatPlugin Google Chat adapter config", () => {
 
     const plugin = chatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
         teams: { appId: "test-app-id", appPassword: "test-app-password" },
         discord: {
           botToken: "test-bot-token",
@@ -2103,7 +2103,7 @@ describe("chat plugin five-adapter lifecycle", () => {
     const { buildChatPlugin } = require("./index");
     return buildChatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
         teams: { appId: "test-app-id", appPassword: "test-app-password" },
         discord: {
           botToken: "test-bot-token",
@@ -2182,7 +2182,7 @@ describe("chatPlugin streaming config", () => {
 
     const plugin = chatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       executeQuery: mockExecuteQueryFn,
       streaming: { enabled: true, chunkIntervalMs: 500 },
@@ -2197,7 +2197,7 @@ describe("chatPlugin streaming config", () => {
 
     const plugin = chatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       executeQuery: mockExecuteQueryFn,
       streaming: { enabled: false },
@@ -2211,7 +2211,7 @@ describe("chatPlugin streaming config", () => {
 
     const plugin = chatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       executeQuery: mockExecuteQueryFn,
       executeQueryStream: mockExecuteQueryStreamFn,
@@ -2225,7 +2225,7 @@ describe("chatPlugin streaming config", () => {
 
     const plugin = chatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       executeQuery: mockExecuteQueryFn,
       streaming: { chunkIntervalMs: 2000 },
@@ -2240,7 +2240,7 @@ describe("chatPlugin streaming config", () => {
     expect(() =>
       chatPlugin({
         adapters: {
-          slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+          slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
         },
         executeQuery: mockExecuteQueryFn,
         streaming: { chunkIntervalMs: 50 },
@@ -2254,7 +2254,7 @@ describe("chatPlugin streaming config", () => {
     expect(() =>
       chatPlugin({
         adapters: {
-          slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+          slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
         },
         executeQuery: mockExecuteQueryFn,
         streaming: { chunkIntervalMs: 20000 },
@@ -2268,7 +2268,7 @@ describe("chatPlugin streaming config", () => {
     expect(() =>
       chatPlugin({
         adapters: {
-          slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+          slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
         },
         executeQuery: mockExecuteQueryFn,
         executeQueryStream: "not a function" as never,
@@ -2282,7 +2282,7 @@ describe("chatPlugin streaming config", () => {
     expect(() =>
       chatPlugin({
         adapters: {
-          slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+          slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
         },
         executeQuery: mockExecuteQueryFn,
         streaming: { enabled: true },
@@ -2296,7 +2296,7 @@ describe("chatPlugin streaming config", () => {
 
     const plugin = chatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       executeQuery: mockExecuteQueryFn,
       streaming: { enabled: true },
@@ -2316,7 +2316,7 @@ describe("chat plugin streaming lifecycle", () => {
     const { buildChatPlugin } = require("./index");
     return buildChatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       executeQuery: async () => ({
         answer: "test answer",
@@ -2382,7 +2382,7 @@ describe("chat plugin streaming lifecycle", () => {
     const { buildChatPlugin } = require("./index");
     const plugin = buildChatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       executeQuery: async () => ({
         answer: "test",
@@ -2411,7 +2411,7 @@ describe("chat plugin streaming lifecycle", () => {
     const { buildChatPlugin } = require("./index");
     const plugin = buildChatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       executeQuery: async () => ({
         answer: "test",
@@ -2454,7 +2454,7 @@ describe("chatPlugin slashCommandName config", () => {
 
     const plugin = chatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       slashCommandName: "/data-query",
       executeQuery: mockExecuteQuery,
@@ -2468,7 +2468,7 @@ describe("chatPlugin slashCommandName config", () => {
 
     const plugin = chatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       slashCommandName: "/query",
       executeQuery: mockExecuteQuery,
@@ -2483,7 +2483,7 @@ describe("chatPlugin slashCommandName config", () => {
     expect(() =>
       chatPlugin({
         adapters: {
-          slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+          slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
         },
         slashCommandName: "atlas",
         executeQuery: mockExecuteQuery,
@@ -2497,7 +2497,7 @@ describe("chatPlugin slashCommandName config", () => {
     expect(() =>
       chatPlugin({
         adapters: {
-          slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+          slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
         },
         slashCommandName: "/Atlas",
         executeQuery: mockExecuteQuery,
@@ -2511,7 +2511,7 @@ describe("chatPlugin slashCommandName config", () => {
     expect(() =>
       chatPlugin({
         adapters: {
-          slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+          slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
         },
         slashCommandName: "/my command",
         executeQuery: mockExecuteQuery,
@@ -2524,7 +2524,7 @@ describe("chatPlugin slashCommandName config", () => {
 
     const plugin = chatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       executeQuery: mockExecuteQuery,
     });
@@ -3183,7 +3183,7 @@ describe("ephemeral error delivery", () => {
     // Default config: errorsAsEphemeral should be undefined (defaults to true)
     const result = ChatConfigSchema.safeParse({
       adapters: {
-        slack: { botToken: "xoxb-test", signingSecret: "test-secret" },
+        slack: { botToken: "xoxb-test", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       executeQuery: () => Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
     });
@@ -3200,7 +3200,7 @@ describe("ephemeral error delivery", () => {
 
     const result = ChatConfigSchema.safeParse({
       adapters: {
-        slack: { botToken: "xoxb-test", signingSecret: "test-secret" },
+        slack: { botToken: "xoxb-test", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       executeQuery: () => Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
       ephemeral: { errorsAsEphemeral: false },
@@ -3241,7 +3241,7 @@ describe("ProactiveConfig schema", () => {
 
     const result = ChatConfigSchema.safeParse({
       adapters: {
-        slack: { botToken: "xoxb-test", signingSecret: "test-secret" },
+        slack: { botToken: "xoxb-test", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       executeQuery: () =>
         Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
@@ -3266,7 +3266,7 @@ describe("ProactiveConfig schema", () => {
 
     const result = ChatConfigSchema.safeParse({
       adapters: {
-        slack: { botToken: "xoxb-test", signingSecret: "test-secret" },
+        slack: { botToken: "xoxb-test", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       executeQuery: () =>
         Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
@@ -3291,7 +3291,7 @@ describe("ProactiveConfig schema", () => {
 
     const result = ChatConfigSchema.safeParse({
       adapters: {
-        slack: { botToken: "xoxb-test", signingSecret: "test-secret" },
+        slack: { botToken: "xoxb-test", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       executeQuery: () =>
         Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
@@ -3531,7 +3531,7 @@ describe("executeQuery context contract", () => {
     const calls: Array<{ adapterName: string; rawTeamId: unknown }> = [];
     const plugin = chatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
       },
       executeQuery: async (question, ctx) => {
         const raw = ctx.rawMessage as { team_id?: string } | undefined;

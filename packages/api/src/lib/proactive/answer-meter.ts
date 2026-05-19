@@ -28,6 +28,9 @@ import {
   internalQuery,
 } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import { logAdminAction } from "@atlas/api/lib/audit/admin";
+import { ADMIN_ACTIONS } from "@atlas/api/lib/audit/actions";
+import type { AdminActionType } from "@atlas/api/lib/audit/actions";
 import type {
   ProactiveMeterEventType as ProactiveEventType,
   ProactiveMeterOutcome as ProactiveOutcome,
@@ -225,11 +228,75 @@ ORDER BY created_at DESC`;
 // ---------------------------------------------------------------------------
 
 /**
+ * Map a meter event type to its sibling `ADMIN_ACTIONS.proactive.*`
+ * audit action. Only the lifecycle stages with a forensic counterpart
+ * (`classify` / `react` / `answer` / `feedback`) emit an audit row;
+ * `offer` and `public_refused` aggregate into the meter only because
+ * they don't have a corresponding admin action constant.
+ *
+ * The `accept` event maps to `proactive.answer` — the user accepting
+ * the offer is the moment an answer was actually delivered, which is
+ * what the audit story describes (vs `offer` which is "we presented a
+ * tracer 🤖"). Matches the AC in #2610 / #2631.
+ */
+function adminActionForEvent(
+  eventType: ProactiveEventType,
+): AdminActionType | null {
+  switch (eventType) {
+    case "classify":
+      return ADMIN_ACTIONS.proactive.classify;
+    case "react":
+      return ADMIN_ACTIONS.proactive.react;
+    case "accept":
+      return ADMIN_ACTIONS.proactive.answer;
+    case "feedback":
+      return ADMIN_ACTIONS.proactive.feedback;
+    case "offer":
+    case "public_refused":
+      return null;
+  }
+}
+
+/**
  * Real implementation backing the AnswerMeter service. Exported so the
  * plugin host (which lives outside Effect) can wire the meter callback
  * to the database without booting a full Effect runtime.
+ *
+ * Dual-write: every meter row that has a sibling `proactive.*` admin
+ * action also emits a `logAdminAction` row so the forensic trail and
+ * the analytics rollup stay in lockstep. Closes #2631 (AC drift —
+ * meter rows were landing but `admin_action_log proactive.*` was
+ * empty, so `/admin/proactive-chat` analytics that join on the audit
+ * table came up empty).
  */
 export async function recordMeterEvent(event: ProactiveMeterEvent): Promise<void> {
+  // Audit emit is fire-and-forget (logAdminAction never throws) and
+  // intentionally fires BEFORE the meter insert. If the meter retry
+  // path drops the row we still want a forensic trace that the event
+  // happened — admin_action_log is the source of truth for "did this
+  // happen?" while proactive_meter_events is "what did it cost?".
+  const adminAction = adminActionForEvent(event.eventType);
+  if (adminAction) {
+    logAdminAction({
+      actionType: adminAction,
+      targetType: "proactive",
+      // Use channelId so admins filtering by channel see the row land
+      // on the channel they care about; message_id is too noisy.
+      targetId: event.channelId,
+      scope: "workspace",
+      systemActor: "system:proactive-meter",
+      metadata: {
+        workspaceId: event.workspaceId,
+        channelId: event.channelId,
+        ...(event.messageId ? { messageId: event.messageId } : {}),
+        ...(event.outcome ? { outcome: event.outcome } : {}),
+        ...(event.confidence != null ? { confidence: event.confidence } : {}),
+        ...(event.actorUserId ? { actorUserId: event.actorUserId } : {}),
+        ...(event.metadata ?? {}),
+      },
+    });
+  }
+
   if (!hasInternalDB()) {
     log.debug(
       { eventType: event.eventType, workspaceId: event.workspaceId },

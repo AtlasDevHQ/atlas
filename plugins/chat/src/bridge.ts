@@ -49,6 +49,7 @@ import { createReactionLifecycle } from "./features/reactions";
 import type { IReactionLifecycle } from "./features/reactions";
 import { handleProactiveFeedbackSlash, registerProactiveListener } from "./proactive/listener";
 import type { RecentAnswers } from "./proactive/feedback";
+import { parseFeedbackSlashArgs } from "./proactive/feedback";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -981,6 +982,16 @@ export function createChatBridge(
   chat.onSlashCommand(commandName, async (event) => {
     // Slice #2298: `/atlas feedback <text>` routes to the proactive
     // feedback collector before falling through to the question flow.
+    //
+    // Fail-closed on feedback subcommand: if the user explicitly typed
+    // `/atlas feedback <text>` we must NEVER fall through to the
+    // question flow when tenant resolution fails — that would treat
+    // "the chart was wrong" as a SQL question (#2623 item 3). The
+    // ambiguous-question path (no `feedback` prefix) still falls
+    // through because there is nothing else to do with the text.
+    const isFeedbackSubcommand =
+      config.proactive !== undefined &&
+      parseFeedbackSlashArgs(event.text).kind === "feedback";
     if (config.proactive && proactiveRecentAnswers) {
       try {
         // Post-#2620 multi-tenant: resolve the workspace for this slash
@@ -1015,9 +1026,38 @@ export function createChatBridge(
                   resolveErr instanceof Error
                     ? resolveErr
                     : new Error(String(resolveErr)),
+                isFeedbackSubcommand,
               },
-              "Proactive feedback slash: resolveWorkspaceId threw — falling back to standard question flow",
+              isFeedbackSubcommand
+                ? "Proactive feedback slash: resolveWorkspaceId threw — refusing (will NOT fall through to question flow)"
+                : "Proactive feedback slash: resolveWorkspaceId threw — falling back to standard question flow",
             );
+            // #2623 item 3 — refuse rather than run feedback text as
+            // a SQL question. The user gets an ephemeral hint; the
+            // question-flow path below is never reached.
+            if (isFeedbackSubcommand) {
+              try {
+                await event.channel.postEphemeral(
+                  event.user,
+                  {
+                    markdown:
+                      "Sorry — Atlas couldn't route your feedback right now. Please try again in a moment.",
+                  },
+                  { fallbackToDM: true },
+                );
+              } catch (ephErr) {
+                log.debug(
+                  {
+                    err:
+                      ephErr instanceof Error
+                        ? ephErr
+                        : new Error(String(ephErr)),
+                  },
+                  "Proactive feedback slash refusal-ephemeral failed",
+                );
+              }
+              return;
+            }
           }
         }
 

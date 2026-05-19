@@ -479,6 +479,9 @@ slack.openapi(commandsRoute, async (c) => {
 
 slack.openapi(eventsRoute, async (c) => {
   const { valid, body } = await verifyRequest(c);
+  if (!valid) {
+    return c.json({ error: "invalid_signature", message: "Invalid signature" }, 401);
+  }
 
   let payload: Record<string, unknown>;
   try {
@@ -486,10 +489,6 @@ slack.openapi(eventsRoute, async (c) => {
   } catch (err) {
     log.warn({ err: err instanceof Error ? err.message : String(err) }, "Slack events received non-JSON body");
     return c.json({ error: "invalid_json", message: "Invalid JSON" }, 400);
-  }
-
-  if (!valid) {
-    return c.json({ error: "invalid_signature", message: "Invalid signature" }, 401);
   }
 
   if (payload.type === "url_verification") {

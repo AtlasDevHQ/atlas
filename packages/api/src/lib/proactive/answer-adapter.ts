@@ -165,7 +165,7 @@ export function createProactiveAnswerAdapter(
     const askerId = describeAskerId(asker);
 
     // 1. Resolve identity + (unlinked) restricted tool registry ----------
-    let actor: AtlasUser | null;
+    let actor: AtlasUser;
     let toolRegistry: ToolRegistry | undefined;
     try {
       if (atlasUserId) {
@@ -269,11 +269,16 @@ export function createProactiveAnswerAdapter(
     }
 
     // 3. Run the agent inside a synthesized RequestContext --------------
+    // `withRequestContext` binds `requestId` into AsyncLocalStorage so
+    // every `log.X()` call inside `runAgent` (tool dispatch, SQL execution,
+    // token usage) automatically carries the same correlation id as the
+    // adapter's own logs. No need to thread `requestId` through `runAgent`
+    // explicitly.
     try {
       const stream = await withRequestContext(
         {
           requestId,
-          ...(actor ? { user: actor } : {}),
+          user: actor,
           approvalSurface: "slack",
         },
         () =>
@@ -333,35 +338,29 @@ async function resolveLinkedActor(
   atlasUserId: string,
   resolveOrgForUser: (id: string) => Promise<string | null>,
   resolveActor: (id: string, orgId: string | null) => Promise<AtlasUser | null>,
-): Promise<AtlasUser | null> {
-  let orgId: string | null = null;
-  try {
-    orgId = await resolveOrgForUser(atlasUserId);
-  } catch (err) {
-    // Treat as "no org" — `loadActorUser` will still return a usable
-    // actor (without orgId); the agent runs with reduced scope and the
-    // approval gate short-circuits per `botActorUser` semantics.
-    log.warn(
-      { atlasUserId, err: errorMessage(err) },
-      "resolveOrgForUser failed — proceeding with linked actor minus org context",
-    );
-  }
+): Promise<AtlasUser> {
+  // F-55 fail-closed: a thrown `resolveOrgForUser` is a DB/infra
+  // failure, not a business condition. "User has no org" returns null
+  // without throwing — that's a valid state we tolerate. A throw,
+  // however, means we don't actually know whether the user has an org;
+  // running the agent with `orgId = null` would short-circuit
+  // `checkApprovalRequired` and bypass rule-matching gates. Let the
+  // throw propagate to the adapter's outer catch (which logs
+  // `identity_failed` and surfaces the user-safe error). Matches the
+  // interactive path at executeQuery.ts:201–221.
+  const orgId = await resolveOrgForUser(atlasUserId);
 
   const actor = await resolveActor(atlasUserId, orgId);
   if (actor) return actor;
 
-  // User row missing (deleted account) — fall back to a null actor so
-  // the agent run gets no `user` on RequestContext and downstream
-  // RLS / org-scoped overlays neutralize. The unlinked-asker branch
-  // in the caller installs the public-dataset tool gate; this branch
-  // (a deleted LINKED account) is rare and the safer behavior is to
-  // refuse rather than silently degrade — but degrading-without-org
-  // is the legacy shape and tests pin it, so keep it for now.
-  log.warn(
-    { atlasUserId, orgId },
-    "Linked atlasUserId did not resolve to an actor — degrading to anonymous identity",
+  // Deleted account — refuse rather than silently running the agent
+  // with `actor: null`. The interactive path treats this as a hard
+  // refusal (executeQuery.ts:188); the proactive path matches for
+  // cross-layer consistency. The outer catch converts this into the
+  // user-safe message posted in-thread.
+  throw new Error(
+    `Linked atlasUserId ${atlasUserId} did not resolve to an actor (deleted account?)`,
   );
-  return null;
 }
 
 /**

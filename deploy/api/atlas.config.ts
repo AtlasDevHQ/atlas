@@ -84,11 +84,12 @@ export default defineConfig({
   // SaaS is multi-tenant: real Slack bot tokens live in the internal
   // DB (slack_installations) keyed by team_id and are backfilled into
   // the chat plugin's installation store (chat_cache:slack:installation:<teamId>).
-  // We intentionally OMIT `botToken` so `@chat-adapter/slack` operates in
-  // multi-workspace mode and resolves the per-event token via
-  // `resolveTokenForTeam()`. Passing a placeholder string would put the
-  // adapter in single-workspace mode and the placeholder would be sent as
-  // the Slack API bearer token (rejected with `invalid_auth`).
+  // We intentionally OMIT `botToken` here so `@chat-adapter/slack`
+  // operates in multi-workspace mode and resolves the per-event token
+  // via `resolveTokenForTeam()`. Passing a placeholder string puts the
+  // adapter in single-workspace mode and that string ends up as the
+  // Slack API bearer (rejected with `invalid_auth`). The schema now
+  // refuses any non-`xox*` botToken so misconfiguration fails fast in CI.
   plugins: [
     chatPlugin({
       adapters: {
@@ -96,8 +97,10 @@ export default defineConfig({
           ...(process.env.SLACK_BOT_TOKEN
             ? { botToken: process.env.SLACK_BOT_TOKEN }
             : {}),
-          signingSecret:
-            process.env.SLACK_SIGNING_SECRET ?? "saas-multi-tenant-unused",
+          // Single shared signing secret for the Atlas Slack app — Zod
+          // now rejects placeholder strings so an unset env var fails
+          // boot rather than silently passing webhook verification.
+          signingSecret: process.env.SLACK_SIGNING_SECRET ?? "",
           ...(process.env.SLACK_CLIENT_ID
             ? { clientId: process.env.SLACK_CLIENT_ID }
             : {}),

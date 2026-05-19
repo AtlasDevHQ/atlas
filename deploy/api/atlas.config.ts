@@ -21,10 +21,7 @@ import { defineConfig } from "./packages/api/src/lib/config";
 // The `defineConfig` import above uses the same relative-path pattern
 // for the same reason. Resolved at boot via bun's TS loader.
 import { chatPlugin } from "./plugins/chat/src/index";
-import {
-  AtlasAiModel,
-  AtlasAiModelLive,
-} from "./packages/api/src/lib/effect/ai";
+import { AtlasAiModelLive } from "./packages/api/src/lib/effect/ai";
 import { getEnterpriseRuntime } from "./packages/api/src/lib/effect/enterprise-layer";
 import { createSlackWorkspaceIdResolver } from "./packages/api/src/lib/proactive/workspace-id-resolver";
 import { createProactiveEnabledGate } from "./packages/api/src/lib/proactive/enabled-gate";
@@ -37,35 +34,18 @@ import { createProactiveAnswerAdapter } from "./packages/api/src/lib/proactive/a
 import { recordMeterEvent } from "./packages/api/src/lib/proactive/answer-meter";
 import {
   handlePluginPauseRequest,
-  isPaused as isPausedHelper,
+  isPaused,
 } from "./packages/api/src/lib/proactive/pause-registry";
 import { getWorkspaceQuotaStatus } from "./packages/api/src/lib/proactive/quota";
 import { getAllowlist } from "./packages/api/src/lib/proactive/public-dataset";
 
-// ── Lazy ManagedRuntime for AtlasAiModel ────────────────────────────
-//
-// The classifier + answer adapters need a ManagedRuntime that provides
-// AtlasAiModel (the configured Vercel AI SDK LanguageModel). The
-// server's own runtime in `packages/api/src/api/server.ts` is built
-// locally and isn't exported, so we materialise a small dedicated
-// runtime here. Lazy construction defers the `AtlasAiModelLive`
-// resolution (which reads ATLAS_PROVIDER / ATLAS_MODEL via the settings
-// + providers modules) until first call — by then settings are
-// populated and the env is stable. Process-lifetime cached: the layer's
-// 5s TTL inside SaaS mode handles admin-driven model swaps without a
-// restart, so we don't need to rebuild the runtime ourselves.
-let _aiRuntime:
-  | ManagedRuntime.ManagedRuntime<AtlasAiModel, never>
-  | null = null;
-function getProactiveAiRuntime(): ManagedRuntime.ManagedRuntime<
-  AtlasAiModel,
-  never
-> {
-  if (_aiRuntime === null) {
-    _aiRuntime = ManagedRuntime.make(AtlasAiModelLive);
-  }
-  return _aiRuntime;
-}
+// Dedicated runtime for the proactive classifier + answer adapters.
+// The server's own runtime in `packages/api/src/api/server.ts` isn't
+// exported, so we build a small one here. `ManagedRuntime.make` is
+// cheap — it defers `AtlasAiModelLive` resolution until the first
+// `runPromise()`, by which point settings are populated. The layer's
+// 5s settings TTL absorbs admin-driven model swaps without a restart.
+const proactiveAiRuntime = ManagedRuntime.make(AtlasAiModelLive);
 
 export default defineConfig({
   // ── Datasource ──────────────────────────────────────────────────
@@ -136,23 +116,15 @@ export default defineConfig({
           "This Slack integration is being upgraded. Please try again in a moment, or contact your Atlas admin if this persists.",
         );
       },
-      // ── Proactive listener wiring (slice 2 of #2607) ──────────────
-      // Wires every callback the proactive listener consumes to the
-      // host helpers under `packages/api/src/lib/proactive/`. After this
+      // ── Proactive listener wiring (#2607) ─────────────────────────
+      // Wires every callback the proactive listener consumes to host
+      // helpers under `packages/api/src/lib/proactive/`. After this
       // block lands, flipping `workspace_proactive_config.enabled = true`
       // on a workspace + adding a `channel_proactive_config` row makes
       // Atlas emit 🤖 reactions in real time. The reaction-back / answer
-      // flow runs through `executeQueryProactive`; with the user
-      // resolver stubbed to "unlinked" today (multi-tenant gap — see
-      // follow-up issue), unlinked askers refuse safely until the
-      // resolver is upgraded to carry workspace context.
-      //
-      // All adapters resolve their runtimes lazily so the proactive
-      // block can be declared at module load time without forcing the
-      // AI provider / Effect EE layer to materialise during config
-      // import. `getEnterpriseRuntime()` is module-cached; the
-      // AtlasAiModel runtime is closed over `getProactiveAiRuntime()`
-      // and built on first call.
+      // flow runs through `executeQueryProactive`; the user-resolver
+      // stub (multi-tenant gap — #2624) keeps every asker on the
+      // unlinked path, where the adapter refuses safely.
       proactive: {
         platform: "slack",
         // Per-event resolution: maps Slack `team_id` →
@@ -169,35 +141,33 @@ export default defineConfig({
         // Per-event config fetchers (post-#2620 multi-tenant).
         getWorkspaceConfig: getWorkspaceProactiveConfig,
         getChannelConfigs: getChannelProactiveConfigs,
-        // Classifier wraps Atlas's primary configured LLM via the
-        // module-level lazy AI runtime. `createProactiveClassifier`'s
-        // `RIn` type parameter widens to allow this `ManagedRuntime<
-        // AtlasAiModel, never>`.
-        classify: createProactiveClassifier(getProactiveAiRuntime()),
-        // Reaction-back answer flow. Unlinked askers (every asker today
-        // because `userResolver` stubs `atlasUserId: undefined`) get
-        // refused with the user-safe error since we omit the adapter's
-        // `getPublicDataset` option — refusing is the safe default
-        // until the multi-tenant user-resolver gap is closed.
-        executeQueryProactive: createProactiveAnswerAdapter(
-          getProactiveAiRuntime(),
-        ),
-        // TODO(#2624): The plugin's `ProactiveUserResolver` shape —
-        // `(asker) => Promise<ResolvedAsker>` — doesn't carry team_id /
-        // workspaceId. On SaaS the same Slack userId can exist across
-        // multiple tenants and would resolve to different Atlas users.
-        // Stub to always-unlinked for now (constrains the agent to
-        // refuse on the unlinked path, which is the safe fallback).
+        // Classifier wraps Atlas's primary configured LLM via
+        // `proactiveAiRuntime`. The factory's `RIn` type parameter
+        // widens to accept the runtime's full service set.
+        classify: createProactiveClassifier(proactiveAiRuntime),
+        // Reaction-back answer flow. The adapter's optional
+        // `getPublicDataset(asker)` callback — distinct from the
+        // plugin-level `getPublicDataset` wired below — is intentionally
+        // omitted: with the user resolver stubbed to unlinked, every
+        // asker hits the adapter's "refuse unlinked" path before
+        // touching the agent. The plugin-level `getPublicDataset` post-
+        // filter on the listener side is wired (line ~199) and becomes
+        // load-bearing once #2624 closes the user-resolver gap.
+        executeQueryProactive: createProactiveAnswerAdapter(proactiveAiRuntime),
+        // TODO(#2624): `ProactiveAsker` carries `{ platform, externalUserId, userName? }`
+        // — no `team_id` / `workspaceId`. On SaaS the same Slack userId
+        // can exist across multiple tenants and would resolve to
+        // different Atlas users without workspace context. Stubbed to
+        // always-unlinked; the unlinked path is the refuse-safe branch
+        // (adapter refuses; plugin-level public-dataset post-filter
+        // remains a defense-in-depth net for when #2624 lands).
         userResolver: async () => ({ atlasUserId: undefined }),
         linkUrl:
           process.env.ATLAS_PUBLIC_WEB_URL ?? "https://app.useatlas.dev",
-        // Three-layer kill switch + per-user opt-out. The plugin's
-        // `IsPausedFn` input shape (`{ workspaceId, channelId, userId? }`)
-        // is a structural subset of the host helper's input — pass the
-        // helper directly so admin-inspection options (`failOpenOnError`,
-        // `now`) stay on the helper while the listener uses the
-        // fail-CLOSED default.
-        isPaused: isPausedHelper,
+        // Three-layer kill switch + per-user opt-out. Plugin's
+        // `IsPausedFn` input shape is a structural subset of the host
+        // helper's — pass the helper directly.
+        isPaused,
         onPauseRequest: handlePluginPauseRequest,
         // Per-event meter callback. `recordMeterEvent` swallows DB
         // failures internally (logs at error) so the Chat SDK event
@@ -207,15 +177,15 @@ export default defineConfig({
         // `{ workspaceId }`; the host helper takes a bare `workspaceId`
         // (plus an optional `now` for tests), so adapt the shape here.
         getQuotaStatus: (input) => getWorkspaceQuotaStatus(input.workspaceId),
-        // Public-dataset allowlist reader for the unlinked-asker
-        // post-filter. Plugin's `GetPublicDatasetFn` takes
-        // `{ workspaceId }`; the host helper takes a bare workspaceId
-        // and returns the same `PublicDatasetEntry[]` shape.
+        // Plugin-level public-dataset allowlist (post-filter on the
+        // listener side, distinct from the adapter option omitted at
+        // `executeQueryProactive` above). Defense-in-depth: once #2624
+        // closes the user-resolver gap and linked askers reach the
+        // agent, this post-filter still gates unlinked-asker results.
         getPublicDataset: (input) => getAllowlist(input.workspaceId),
         // feedbackCollector intentionally omitted — adding it would
         // require a non-trivial host helper (write to meter +
-        // optionally to evals dataset). Per slice 2 scope: defer
-        // feedback wiring to a follow-up.
+        // optionally to evals dataset). Deferred to a follow-up.
       },
     }),
   ],

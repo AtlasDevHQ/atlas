@@ -511,7 +511,26 @@ function MonthlyCapField({
 // usage-bar against.
 // ---------------------------------------------------------------------------
 
-const AnalyticsResponseSchema = z.object({
+// Both `QuotaUsageIndicator` and `DecisionDrillDownPanel` read this same
+// endpoint. `useAdminFetch` keys the TanStack Query cache by
+// `[ADMIN_FETCH_QUERY_KEY, path, ...deps]` and only the first mount's
+// `queryFn` runs — every later mount with the same key reads back the
+// already-parsed value. Zod's `z.object` strips unrecognized keys, so two
+// callers with disjoint partial schemas would have the *second* consumer
+// read a value that's already missing its slice (#2637 regression — the
+// drill-down crashed on `aggregate.data.summary.classifyCount` when the
+// quota indicator's partial schema parsed first). Keep both slices in one
+// shared schema so the cached value satisfies either reader. The same rule
+// applies to any future consumer added on this path or any `deps` it
+// passes; an endpoint-level `defineAdminEndpoint(path, schema)` helper is a
+// follow-up if this bug class recurs a third time.
+//
+// Exported for `__tests__/analytics-schema.test.ts` regression coverage.
+export const AnalyticsResponseSchema = z.object({
+  summary: z.object({
+    classifyCount: z.number().int().nonnegative(),
+    reactCount: z.number().int().nonnegative(),
+  }),
   quota: z.object({
     classifyCountThisMonth: z.number().int().nonnegative(),
     monthlyClassifierCap: z.number().int().nonnegative().nullable(),
@@ -527,7 +546,16 @@ function QuotaUsageIndicator() {
     { schema: AnalyticsResponseSchema },
   );
 
-  if (loading || error || !data) return null;
+  if (loading) return null;
+  if (error) {
+    // Inline indicator under the cap input — surfacing a full ErrorBanner
+    // here would dwarf the input. Log so a 403 / 500 / `schema_mismatch`
+    // shows up in admin debug breadcrumbs instead of vanishing as a
+    // missing usage bar.
+    console.warn("QuotaUsageIndicator: analytics fetch failed", error);
+    return null;
+  }
+  if (!data) return null;
   const { classifyCountThisMonth, monthlyClassifierCap, capReached } = data.quota;
   if (monthlyClassifierCap === null) return null;
 
@@ -1094,29 +1122,31 @@ const EventsResponseSchema = z.object({
   }),
 });
 
-const AggregateForDrillSchema = z.object({
-  summary: z.object({
-    classifyCount: z.number().int().nonnegative(),
-    reactCount: z.number().int().nonnegative(),
-  }),
-});
-
 function DecisionDrillDownPanel() {
-  const aggregate = useAdminFetch<z.infer<typeof AggregateForDrillSchema>>(
+  const aggregate = useAdminFetch<AnalyticsResponse>(
     "/api/v1/admin/proactive/analytics",
-    { schema: AggregateForDrillSchema },
+    { schema: AnalyticsResponseSchema },
   );
   const events = useAdminFetch<z.infer<typeof EventsResponseSchema>>(
     "/api/v1/admin/proactive/events?since=30d&eventType=classify&limit=50",
     { schema: EventsResponseSchema },
   );
 
+  // Surface either fetch's failure through the wrapper. Without this, an
+  // analytics-endpoint outage rendered the drill-down tiles with "—" /
+  // `0 / 0 reacted` — identical to the legitimate "no calls in window"
+  // state, hiding a real backend failure as fake-zero data.
+  const refetchAll = () => {
+    events.refetch();
+    aggregate.refetch();
+  };
+
   return (
     <AdminContentWrapper
-      loading={events.loading}
-      error={events.error}
+      loading={events.loading || aggregate.loading}
+      error={events.error ?? aggregate.error}
       feature="Proactive Chat"
-      onRetry={events.refetch}
+      onRetry={refetchAll}
       loadingMessage="Loading classifier decisions..."
     >
       {events.data ? (
@@ -1126,13 +1156,7 @@ function DecisionDrillDownPanel() {
             aggregateReact={aggregate.data?.summary.reactCount ?? null}
             reviewSummary={events.data.reviewSummary}
           />
-          <EventsTable
-            initial={events.data}
-            refetchAll={() => {
-              events.refetch();
-              aggregate.refetch();
-            }}
-          />
+          <EventsTable initial={events.data} refetchAll={refetchAll} />
         </div>
       ) : null}
     </AdminContentWrapper>

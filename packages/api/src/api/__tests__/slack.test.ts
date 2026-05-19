@@ -469,6 +469,27 @@ describe("/api/v1/slack", () => {
       expect(json.error).toBe("invalid_signature");
     });
 
+    it("rejects invalid signature with 401 even when body is malformed JSON (verify before parse)", async () => {
+      // Pins the verify-before-parse ordering: an attacker sending
+      // garbage with a forged signature must hit `invalid_signature` /
+      // 401, not `invalid_json` / 400. A regression that swaps the
+      // order would leak "your signature was fine, your JSON wasn't".
+      const app = await getApp();
+      const resp = await app.request("/api/v1/slack/events", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-slack-signature": "v0=bad_signature",
+          "x-slack-request-timestamp": String(Math.floor(Date.now() / 1000)),
+        },
+        body: "not-json{",
+      });
+
+      expect(resp.status).toBe(401);
+      const json = (await resp.json()) as Record<string, unknown>;
+      expect(json.error).toBe("invalid_signature");
+    });
+
     // (deleted #2611) `processes thread follow-up events and calls the agent`
     // (deleted #2611) `processes a top-level app_mention and runs the agent in a new thread`
     // (deleted #2611) `skips app_mention when posted inside an existing thread (message branch owns it)` — coverage now in plugins/chat/src/bridge.test.ts (`acquireLock` dedup) and the bridge's onSubscribedMessage path

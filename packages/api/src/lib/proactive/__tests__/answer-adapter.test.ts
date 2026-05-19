@@ -231,12 +231,9 @@ describe("createProactiveAnswerAdapter — linked path", () => {
 
   it("refuses (does not invoke the agent) when the linked user no longer resolves to an actor", async () => {
     // Deleted-account scenario: resolveOrgForUser succeeds but
-    // resolveActor returns null. The interactive path
-    // (executeQuery.ts:188) treats this as a hard refusal; the
-    // proactive path must match for cross-layer consistency. Running
-    // the agent with `actor: null` would attach no `user` to
-    // RequestContext and any rule-matching gate downstream would
-    // short-circuit.
+    // resolveActor returns null. Running the agent with actor=null
+    // would attach no `user` to RequestContext and short-circuit any
+    // downstream rule-matching gate — refuse instead.
     const runtime = buildRuntime();
     const adapter = createProactiveAnswerAdapter(runtime, {
       resolveOrgForUser: async () => null,
@@ -257,11 +254,10 @@ describe("createProactiveAnswerAdapter — linked path", () => {
   });
 
   it("refuses (F-55 fail-closed) when resolveOrgForUser throws — never runs the agent with reduced scope", async () => {
-    // F-55 regression: a thrown `resolveOrgForUser` is a DB/infra
-    // failure, not "user has no org" (which returns null). Running
-    // with `orgId = null` would short-circuit `checkApprovalRequired`
-    // and bypass rule-matching gates. Match the interactive path
-    // (executeQuery.ts:201–221) by refusing.
+    // F-55 regression: a thrown `resolveOrgForUser` is infra failure,
+    // not "user has no org" (which returns null). Running with
+    // orgId=null would short-circuit checkApprovalRequired and bypass
+    // rule-matching gates — refuse instead.
     const runtime = buildRuntime();
     const dbError = new Error("connection terminated unexpectedly");
     const adapter = createProactiveAnswerAdapter(runtime, {

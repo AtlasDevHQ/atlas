@@ -229,15 +229,9 @@ ORDER BY created_at DESC`;
 
 /**
  * Map a meter event type to its sibling `ADMIN_ACTIONS.proactive.*`
- * audit action. Only the lifecycle stages with a forensic counterpart
- * (`classify` / `react` / `answer` / `feedback`) emit an audit row;
- * `offer` and `public_refused` aggregate into the meter only because
- * they don't have a corresponding admin action constant.
- *
- * The `accept` event maps to `proactive.answer` — the user accepting
- * the offer is the moment an answer was actually delivered, which is
- * what the audit story describes (vs `offer` which is "we presented a
- * tracer 🤖"). Matches the AC in #2610 / #2631.
+ * audit action. `accept` maps to `proactive.answer` (the moment the
+ * answer was delivered). `offer` / `public_refused` aggregate into
+ * the meter only — no audit emit.
  */
 function adminActionForEvent(
   eventType: ProactiveEventType,
@@ -254,7 +248,46 @@ function adminActionForEvent(
     case "offer":
     case "public_refused":
       return null;
+    default: {
+      // Compile-time exhaustiveness — a future event type added to
+      // ProactiveEventType breaks the build here instead of silently
+      // returning `undefined` from this function.
+      const _exhaustive: never = eventType;
+      return _exhaustive;
+    }
   }
+}
+
+/**
+ * Emit the forensic audit row for a meter event. Fire-and-forget
+ * (`logAdminAction` is documented as never-throws). Skips events that
+ * have no sibling admin action.
+ *
+ * Ordering invariant: emit BEFORE the meter insert. If the meter retry
+ * path drops the row, pino still captures the audit line — the table
+ * itself is best-effort but the log floor survives.
+ */
+function emitMeterAudit(event: ProactiveMeterEvent): void {
+  const adminAction = adminActionForEvent(event.eventType);
+  if (!adminAction) return;
+  logAdminAction({
+    actionType: adminAction,
+    targetType: "proactive",
+    // channelId so admins filtering by channel see the row on the
+    // channel they care about; message_id is too noisy.
+    targetId: event.channelId,
+    scope: "workspace",
+    systemActor: "system:proactive-meter",
+    metadata: {
+      workspaceId: event.workspaceId,
+      channelId: event.channelId,
+      ...(event.messageId ? { messageId: event.messageId } : {}),
+      ...(event.outcome ? { outcome: event.outcome } : {}),
+      ...(event.confidence != null ? { confidence: event.confidence } : {}),
+      ...(event.actorUserId ? { actorUserId: event.actorUserId } : {}),
+      ...(event.metadata ?? {}),
+    },
+  });
 }
 
 /**
@@ -262,40 +295,12 @@ function adminActionForEvent(
  * plugin host (which lives outside Effect) can wire the meter callback
  * to the database without booting a full Effect runtime.
  *
- * Dual-write: every meter row that has a sibling `proactive.*` admin
- * action also emits a `logAdminAction` row so the forensic trail and
- * the analytics rollup stay in lockstep. Closes #2631 (AC drift —
- * meter rows were landing but `admin_action_log proactive.*` was
- * empty, so `/admin/proactive-chat` analytics that join on the audit
- * table came up empty).
+ * Dual-write: every meter row whose event type has a sibling
+ * `proactive.*` admin action also emits a `logAdminAction` row so the
+ * forensic trail and the analytics rollup stay in lockstep.
  */
 export async function recordMeterEvent(event: ProactiveMeterEvent): Promise<void> {
-  // Audit emit is fire-and-forget (logAdminAction never throws) and
-  // intentionally fires BEFORE the meter insert. If the meter retry
-  // path drops the row we still want a forensic trace that the event
-  // happened — admin_action_log is the source of truth for "did this
-  // happen?" while proactive_meter_events is "what did it cost?".
-  const adminAction = adminActionForEvent(event.eventType);
-  if (adminAction) {
-    logAdminAction({
-      actionType: adminAction,
-      targetType: "proactive",
-      // Use channelId so admins filtering by channel see the row land
-      // on the channel they care about; message_id is too noisy.
-      targetId: event.channelId,
-      scope: "workspace",
-      systemActor: "system:proactive-meter",
-      metadata: {
-        workspaceId: event.workspaceId,
-        channelId: event.channelId,
-        ...(event.messageId ? { messageId: event.messageId } : {}),
-        ...(event.outcome ? { outcome: event.outcome } : {}),
-        ...(event.confidence != null ? { confidence: event.confidence } : {}),
-        ...(event.actorUserId ? { actorUserId: event.actorUserId } : {}),
-        ...(event.metadata ?? {}),
-      },
-    });
-  }
+  emitMeterAudit(event);
 
   if (!hasInternalDB()) {
     log.debug(

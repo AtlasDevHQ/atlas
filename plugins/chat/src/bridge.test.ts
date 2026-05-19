@@ -547,6 +547,70 @@ describe("chatPlugin config validation", () => {
     ).toThrow(/botToken/i);
   });
 
+  it("rejects slack adapter with the SaaS placeholder botToken (non-xox* prefix)", async () => {
+    // Pins the regex hardening: the production "saas-multi-tenant-unused"
+    // placeholder put the adapter in single-workspace mode and was sent
+    // as the literal Slack API bearer. Schema must refuse it at boot.
+    const { chatPlugin } = await import("./index");
+    const make = () =>
+      chatPlugin({
+        adapters: {
+          slack: {
+            botToken: "saas-multi-tenant-unused",
+            signingSecret: "abcdef0123456789abcdef0123456789",
+          },
+        },
+        executeQuery: async () => ({
+          answer: "",
+          sql: [],
+          data: [],
+          steps: 0,
+          usage: { totalTokens: 0 },
+        }),
+      });
+    expect(make).toThrow(/xox/);
+  });
+
+  it("rejects slack adapter with a non-hex signingSecret (catches missing-env-var placeholder)", async () => {
+    const { chatPlugin } = await import("./index");
+    const make = () =>
+      chatPlugin({
+        adapters: {
+          slack: {
+            botToken: "xoxb-real",
+            signingSecret: "saas-multi-tenant-unused",
+          },
+        },
+        executeQuery: async () => ({
+          answer: "",
+          sql: [],
+          data: [],
+          steps: 0,
+          usage: { totalTokens: 0 },
+        }),
+      });
+    expect(make).toThrow(/signingSecret/);
+  });
+
+  it("accepts slack adapter with no botToken (multi-workspace mode)", async () => {
+    // Multi-workspace deploys omit botToken so the adapter resolves
+    // per-event tokens from its installation store.
+    const { chatPlugin } = await import("./index");
+    const plugin = chatPlugin({
+      adapters: {
+        slack: { signingSecret: "abcdef0123456789abcdef0123456789" },
+      },
+      executeQuery: async () => ({
+        answer: "",
+        sql: [],
+        data: [],
+        steps: 0,
+        usage: { totalTokens: 0 },
+      }),
+    });
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
   it("accepts valid config with slack adapter", async () => {
     const { chatPlugin } = await import("./index");
 

@@ -1,21 +1,4 @@
-/**
- * Tests for the proactive meter → admin_action_log dual-write (#2631).
- *
- * The AC for #2610 required that every meter row also emit an
- * `ADMIN_ACTIONS.proactive.{classify,react,answer,feedback}` audit row
- * so `/admin/proactive-chat` analytics that join on `admin_action_log`
- * stay in lockstep with `proactive_meter_events`. Originally only the
- * meter row was being written.
- *
- * These tests pin the dual-write: `logAdminAction` is mock-modded and
- * asserts the audit row goes out for every supported event type, with
- * the meter event's `workspaceId`/`channelId`/`outcome` etc. flowing
- * through to the audit `metadata` blob. The `offer` and
- * `public_refused` event types do not have a sibling admin action and
- * MUST NOT emit (they are meter-only by design).
- *
- * Uses sync `mock.module()` factories per CLAUDE.md.
- */
+// Pins the meter → admin_action_log dual-write per event type.
 
 import { describe, it, expect, beforeEach, mock } from "bun:test";
 
@@ -29,16 +12,23 @@ interface ObservedAuditCall {
 }
 const observedAuditCalls: ObservedAuditCall[] = [];
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const realAuditAdmin = require("@atlas/api/lib/audit/admin");
 mock.module("@atlas/api/lib/audit/admin", () => ({
+  ...realAuditAdmin,
   logAdminAction: (entry: ObservedAuditCall) => {
     observedAuditCalls.push(entry);
   },
 }));
 
-// `hasInternalDB` returns false so we exercise the dual-write logic
-// without needing a real Postgres pool; the audit emit fires BEFORE
-// the DB-skip return so the test still observes the call.
+// `hasInternalDB` returns false so the dual-write logic runs without
+// a real Postgres pool; the audit emit fires BEFORE the DB-skip return.
+// Spread the real module so sibling tests that mock-module the same
+// path aren't corrupted by a partial-export factory.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const realDbInternal = require("@atlas/api/lib/db/internal");
 mock.module("@atlas/api/lib/db/internal", () => ({
+  ...realDbInternal,
   hasInternalDB: () => false,
   internalQuery: async () => [],
 }));

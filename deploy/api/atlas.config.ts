@@ -81,15 +81,10 @@ export default defineConfig({
   // routes in packages/api/src/api/routes/slack.ts stay put — they
   // handle slash commands, block actions, modals, and OAuth.
   //
-  // SaaS is multi-tenant: real Slack bot tokens live in the internal
-  // DB (slack_installations) keyed by team_id and are backfilled into
-  // the chat plugin's installation store (chat_cache:slack:installation:<teamId>).
-  // We intentionally OMIT `botToken` here so `@chat-adapter/slack`
-  // operates in multi-workspace mode and resolves the per-event token
-  // via `resolveTokenForTeam()`. Passing a placeholder string puts the
-  // adapter in single-workspace mode and that string ends up as the
-  // Slack API bearer (rejected with `invalid_auth`). The schema now
-  // refuses any non-`xox*` botToken so misconfiguration fails fast in CI.
+  // Multi-tenant SaaS: real bot tokens live in `slack_installations`
+  // and are resolved per-event by `@chat-adapter/slack` from its
+  // installation store (`chat_cache:slack:installation:<teamId>`).
+  // OMIT `botToken` so the adapter operates in multi-workspace mode.
   plugins: [
     chatPlugin({
       adapters: {

@@ -293,6 +293,27 @@ describe("chat-plugin executeQuery host helper", () => {
     expect(mockCreateConversation).toHaveBeenCalledTimes(1);
     // surface 'slack' so admin filters and audit show the right origin
     expect(mockCreateConversation.mock.calls[0]![0]).toMatchObject({ surface: "slack" });
+    // Orphan-row guard: createConversation must complete before
+    // setConversationId stamps the thread mapping, otherwise a failed
+    // create leaves the mapping pointing at a non-existent row.
+    const createOrder = mockCreateConversation.mock.invocationCallOrder[0]!;
+    const setOrder = mockSetConversationId.mock.invocationCallOrder[0]!;
+    expect(createOrder).toBeLessThan(setOrder);
+  });
+
+  it("does not stamp the thread mapping when createConversation rejects (no orphan row)", async () => {
+    mockCreateConversation.mockRejectedValueOnce(new Error("db down"));
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    // The catch logs at error and proceeds with in-memory only — the
+    // call should still complete, but no setConversationId stamp.
+    await runExecuteQuery("q", {
+      threadId: "slack:Corph-1.0",
+      adapter: { name: "slack" },
+      rawMessage: { team_id: "T0ABC", user: "U", channel: "Corph", ts: "1.0" },
+    });
+    expect(mockCreateConversation).toHaveBeenCalledTimes(1);
+    expect(mockSetConversationId).not.toHaveBeenCalled();
   });
 
   it("persists both user and assistant turns via addMessage", async () => {

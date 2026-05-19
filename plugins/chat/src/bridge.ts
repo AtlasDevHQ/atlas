@@ -979,36 +979,72 @@ export function createChatBridge(
 
   // --- onSlashCommand: /<configurable> <question> ---
   const commandName = config.slashCommandName ?? "/atlas";
+
+  /**
+   * Refuse a feedback subcommand with an ephemeral hint. Shared by every
+   * branch that can't deliver feedback — buffer unset, tenant unresolved,
+   * resolver throw — so the explicit `feedback` prefix can never silently
+   * fall through to the SQL question flow.
+   */
+  async function refuseFeedbackSubcommand(
+    event: Parameters<Parameters<typeof chat.onSlashCommand>[1]>[0],
+  ): Promise<void> {
+    try {
+      await event.channel.postEphemeral(
+        event.user,
+        {
+          markdown:
+            "Sorry — Atlas couldn't route your feedback right now. Please try again in a moment.",
+        },
+        { fallbackToDM: true },
+      );
+    } catch (ephErr) {
+      // This is the only path where the refuse-and-tell-user contract
+      // can silently fail. Log at error so on-call sees a feedback
+      // subcommand that never received any response.
+      log.error(
+        {
+          err: ephErr instanceof Error ? ephErr : new Error(String(ephErr)),
+          channelId: event.channel.id,
+          userId: event.user.userId,
+        },
+        "Proactive feedback slash refusal-ephemeral failed — user received no feedback",
+      );
+    }
+  }
+
   chat.onSlashCommand(commandName, async (event) => {
-    // Slice #2298: `/atlas feedback <text>` routes to the proactive
-    // feedback collector before falling through to the question flow.
-    //
-    // Fail-closed on feedback subcommand: if the user explicitly typed
-    // `/atlas feedback <text>` we must NEVER fall through to the
-    // question flow when tenant resolution fails — that would treat
-    // "the chart was wrong" as a SQL question (#2623 item 3). The
-    // ambiguous-question path (no `feedback` prefix) still falls
-    // through because there is nothing else to do with the text.
+    // The explicit `feedback` subcommand must NEVER fall through to the
+    // SQL question flow. Treating "the chart was wrong" as a query is
+    // strictly worse than refusing. Detect the prefix up front so every
+    // failure mode below (buffer unset, tenant unresolved, resolver
+    // throw) shares the same refuse-with-ephemeral exit.
     const isFeedbackSubcommand =
       config.proactive !== undefined &&
       parseFeedbackSlashArgs(event.text).kind === "feedback";
+
+    // Top-level guard: feedback subcommand without the recent-answers
+    // buffer can't be routed (handleProactiveFeedbackSlash requires it).
+    // Refuse rather than fall through.
+    if (isFeedbackSubcommand && !proactiveRecentAnswers) {
+      log.warn(
+        { channelId: event.channel.id },
+        "Proactive feedback slash: recent-answers buffer not initialized — refusing",
+      );
+      await refuseFeedbackSubcommand(event);
+      return;
+    }
+
     if (config.proactive && proactiveRecentAnswers) {
       try {
-        // Post-#2620 multi-tenant: resolve the workspace for this slash
-        // event before delegating. The slash event doesn't carry the
-        // same Message shape onNewMessage does — we synthesize a
-        // minimal shape from the adapter + raw payload, which is what
-        // the Slack-platform resolver uses anyway (`raw.team_id`).
+        // Synthesize a minimal Message shape from adapter + raw payload
+        // so the Slack-platform resolver can read `raw.team_id`.
         const resolveAdapter = event.adapter;
         let slashWorkspaceId: string | null = null;
         if (resolveAdapter) {
           try {
             slashWorkspaceId = await config.proactive.resolveWorkspaceId({
               adapter: resolveAdapter,
-              // Slash events have no thread; the resolver only reads
-              // `adapter.name` + `message.raw`, so a null-ish thread is
-              // fine. Cast for the same reason the action/modal handlers
-              // do — the resolver contract is platform-determined.
               thread: undefined as unknown as Parameters<
                 typeof config.proactive.resolveWorkspaceId
               >[0]["thread"],
@@ -1029,36 +1065,26 @@ export function createChatBridge(
                 isFeedbackSubcommand,
               },
               isFeedbackSubcommand
-                ? "Proactive feedback slash: resolveWorkspaceId threw — refusing (will NOT fall through to question flow)"
+                ? "Proactive feedback slash: resolveWorkspaceId threw — refusing"
                 : "Proactive feedback slash: resolveWorkspaceId threw — falling back to standard question flow",
             );
-            // #2623 item 3 — refuse rather than run feedback text as
-            // a SQL question. The user gets an ephemeral hint; the
-            // question-flow path below is never reached.
             if (isFeedbackSubcommand) {
-              try {
-                await event.channel.postEphemeral(
-                  event.user,
-                  {
-                    markdown:
-                      "Sorry — Atlas couldn't route your feedback right now. Please try again in a moment.",
-                  },
-                  { fallbackToDM: true },
-                );
-              } catch (ephErr) {
-                log.debug(
-                  {
-                    err:
-                      ephErr instanceof Error
-                        ? ephErr
-                        : new Error(String(ephErr)),
-                  },
-                  "Proactive feedback slash refusal-ephemeral failed",
-                );
-              }
+              await refuseFeedbackSubcommand(event);
               return;
             }
           }
+        }
+
+        // Tenant resolution returned null on a feedback subcommand —
+        // can't route the feedback to a workspace. Refuse instead of
+        // letting it leak into the question flow.
+        if (isFeedbackSubcommand && !slashWorkspaceId) {
+          log.warn(
+            { channelId: event.channel.id },
+            "Proactive feedback slash: workspace unresolved — refusing",
+          );
+          await refuseFeedbackSubcommand(event);
+          return;
         }
 
         if (slashWorkspaceId) {

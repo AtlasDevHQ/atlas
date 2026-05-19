@@ -112,13 +112,7 @@ export interface ChatQueryResult {
 
 /** Adapter-specific credential configuration. */
 export interface SlackAdapterConfig {
-  /**
-   * Single-workspace bot token (`xoxb-…` / `xoxe.xoxb-…`). Omit in
-   * multi-workspace deploys so `@chat-adapter/slack` resolves per-event
-   * tokens from its installation store; passing a placeholder string
-   * puts the adapter in single-workspace mode and that string ends up
-   * as the Slack API bearer (rejected with `invalid_auth`).
-   */
+  /** Single-workspace bot token (`xoxb-…`). Omit in multi-workspace deploys. */
   botToken?: string;
   signingSecret: string;
   /** Client ID for multi-workspace OAuth. */
@@ -634,24 +628,16 @@ export interface ProactiveConfig {
 // Zod schema
 // ---------------------------------------------------------------------------
 
-// Slack bot tokens always start with `xox<letter>-` (xoxb- bot, xoxp- user,
-// xoxe.xoxb- rotation-enabled). Reject placeholder strings at the schema
-// boundary so misconfiguration ("saas-multi-tenant-unused") fails fast in
-// CI instead of being sent as a Slack API bearer at runtime.
-const SLACK_TOKEN_REGEX = /^xox[a-z]/i;
-// Slack signing secrets are 32-char lowercase hex. The deploy placeholder
-// "saas-multi-tenant-unused" violates both the length and charset checks;
-// rejecting it here catches missing-env-var misconfig before boot.
-const SLACK_SIGNING_SECRET_REGEX = /^[0-9a-f]{32}$/i;
+// Slack tokens are lowercase `xox<letter>-` (xoxb- bot, xoxp- user, xoxe-
+// rotation-enabled). Case-sensitive so an uppercase-paste regression
+// fails at the schema boundary.
+const SLACK_TOKEN_REGEX = /^xox[a-z]/;
+// Slack signing secrets are 32-char lowercase hex (Slack's actual format).
+const SLACK_SIGNING_SECRET_REGEX = /^[0-9a-f]{32}$/;
 
 const SlackAdapterSchema = z.object({
-  // Optional + regex'd: single-workspace mode uses this bare token for
-  // every outbound call. Multi-workspace deploys MUST omit this field so
-  // `@chat-adapter/slack` resolves per-event tokens from its installation
-  // store (state-adapter `slack:installation:<teamId>`). Any non-`xox*`
-  // string here puts the adapter in single-workspace mode AND ends up as
-  // the bearer token → Slack rejects with `invalid_auth`. Catches the
-  // pre-#2630 SaaS placeholder pattern at boot.
+  // Regex'd so placeholder strings (multi-workspace deploys) fail at
+  // boot rather than at the first Slack API call.
   botToken: z.string().min(1, "slack botToken must not be empty").regex(
     SLACK_TOKEN_REGEX,
     "slack botToken must start with 'xox' (e.g. 'xoxb-…'). Multi-workspace deploys should omit this field instead of supplying a placeholder.",

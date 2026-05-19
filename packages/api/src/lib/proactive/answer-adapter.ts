@@ -269,11 +269,6 @@ export function createProactiveAnswerAdapter(
     }
 
     // 3. Run the agent inside a synthesized RequestContext --------------
-    // `withRequestContext` binds `requestId` into AsyncLocalStorage so
-    // every `log.X()` call inside `runAgent` (tool dispatch, SQL execution,
-    // token usage) automatically carries the same correlation id as the
-    // adapter's own logs. No need to thread `requestId` through `runAgent`
-    // explicitly.
     try {
       const stream = await withRequestContext(
         {
@@ -339,25 +334,16 @@ async function resolveLinkedActor(
   resolveOrgForUser: (id: string) => Promise<string | null>,
   resolveActor: (id: string, orgId: string | null) => Promise<AtlasUser | null>,
 ): Promise<AtlasUser> {
-  // F-55 fail-closed: a thrown `resolveOrgForUser` is a DB/infra
-  // failure, not a business condition. "User has no org" returns null
-  // without throwing — that's a valid state we tolerate. A throw,
-  // however, means we don't actually know whether the user has an org;
-  // running the agent with `orgId = null` would short-circuit
-  // `checkApprovalRequired` and bypass rule-matching gates. Let the
-  // throw propagate to the adapter's outer catch (which logs
-  // `identity_failed` and surfaces the user-safe error). Matches the
-  // interactive path at executeQuery.ts:201–221.
+  // Fail-closed F-55: a thrown `resolveOrgForUser` is infra failure,
+  // not "user has no org" (that returns null). Letting it propagate
+  // keeps the agent from running with orgId=null and short-circuiting
+  // the approval gate.
   const orgId = await resolveOrgForUser(atlasUserId);
 
   const actor = await resolveActor(atlasUserId, orgId);
   if (actor) return actor;
 
-  // Deleted account — refuse rather than silently running the agent
-  // with `actor: null`. The interactive path treats this as a hard
-  // refusal (executeQuery.ts:188); the proactive path matches for
-  // cross-layer consistency. The outer catch converts this into the
-  // user-safe message posted in-thread.
+  // Deleted account — refuse rather than run with no actor.
   throw new Error(
     `Linked atlasUserId ${atlasUserId} did not resolve to an actor (deleted account?)`,
   );

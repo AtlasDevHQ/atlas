@@ -167,9 +167,14 @@ export type ProactiveMeterOutcome =
  * Field shape is deliberately flat — discriminating per `eventType`
  * would force every emitter to switch on the type before constructing
  * the payload. Deferred to a follow-up; see module header.
+ *
+ * `workspaceId` is branded {@link WorkspaceId} (#2641) — the plugin
+ * always emits a branded value (the listener promotes via
+ * `assertWorkspaceId` at the boundary), so consumers on the API side
+ * statically know the id came through the chokepoint.
  */
 export interface ProactiveMeterEvent {
-  workspaceId: string;
+  workspaceId: WorkspaceId;
   channelId: string;
   messageId?: string | null;
   eventType: ProactiveMeterEventType;

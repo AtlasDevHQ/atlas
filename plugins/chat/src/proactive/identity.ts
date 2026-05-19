@@ -56,14 +56,28 @@ export class InvalidProactiveIdentityError extends Error {
 }
 
 /**
+ * True when `value` is a non-empty string with at least one
+ * non-whitespace character. Whitespace-only strings (`"   "`, `"\n"`,
+ * `"\t"`) are an "innocent-looking empty" upstream-trim-bug that would
+ * otherwise pass the `length === 0` check and propagate a useless id
+ * into the listener — same failure-mode class as the empty string.
+ * Rejection is non-mutating: callers receive the original value if it
+ * passes (DB rows may have been stored with leading/trailing space and
+ * the brand must match those rows verbatim).
+ */
+function isNonEmptyIdentifier(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+/**
  * Promote a bare string into a {@link WorkspaceId}. Throws
- * {@link InvalidProactiveIdentityError} on empty input. Use at every
- * boundary that accepts a workspace id from outside the plugin — the
- * per-event resolver result in the listener, the host adapter
- * constructors, and the SaaS config wiring.
+ * {@link InvalidProactiveIdentityError} on empty / whitespace-only
+ * input. Use at every boundary that accepts a workspace id from
+ * outside the plugin — the per-event resolver result in the listener,
+ * the host adapter constructors, and the SaaS config wiring.
  */
 export function assertWorkspaceId(value: string): WorkspaceId {
-  if (typeof value !== "string" || value.length === 0) {
+  if (!isNonEmptyIdentifier(value)) {
     throw new InvalidProactiveIdentityError("WorkspaceId");
   }
   return value as WorkspaceId;
@@ -71,12 +85,12 @@ export function assertWorkspaceId(value: string): WorkspaceId {
 
 /**
  * Promote a bare string into an {@link AtlasUserId}. Throws
- * {@link InvalidProactiveIdentityError} on empty input. Use when the
- * host's user-resolver returns a linked Atlas id and before
- * constructing `{ kind: "linked", atlasUserId }`.
+ * {@link InvalidProactiveIdentityError} on empty / whitespace-only
+ * input. Use when the host's user-resolver returns a linked Atlas id
+ * and before constructing `{ kind: "linked", atlasUserId }`.
  */
 export function assertAtlasUserId(value: string): AtlasUserId {
-  if (typeof value !== "string" || value.length === 0) {
+  if (!isNonEmptyIdentifier(value)) {
     throw new InvalidProactiveIdentityError("AtlasUserId");
   }
   return value as AtlasUserId;
@@ -84,13 +98,14 @@ export function assertAtlasUserId(value: string): AtlasUserId {
 
 /**
  * Promote a bare string into an {@link ExternalUserId}. Throws
- * {@link InvalidProactiveIdentityError} on empty input. Use when
- * building a {@link import("./answerer").ProactiveAsker} from a chat
- * SDK `Author`. Self-bot / placeholder events that pass through the
+ * {@link InvalidProactiveIdentityError} on empty / whitespace-only
+ * input. Use when building a
+ * {@link import("./answerer").ProactiveAsker} from a chat SDK
+ * `Author`. Self-bot / placeholder events that pass through the
  * listener never reach `ProactiveAsker` construction.
  */
 export function assertExternalUserId(value: string): ExternalUserId {
-  if (typeof value !== "string" || value.length === 0) {
+  if (!isNonEmptyIdentifier(value)) {
     throw new InvalidProactiveIdentityError("ExternalUserId");
   }
   return value as ExternalUserId;

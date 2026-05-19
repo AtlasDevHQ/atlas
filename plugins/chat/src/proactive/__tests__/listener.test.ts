@@ -2272,15 +2272,17 @@ describe("registerProactiveListener — #2641 brand-promotion boundaries", () =>
     // No classify event, no react, no pending — full silent skip.
     expect(onMeterEvent).not.toHaveBeenCalled();
     expect(thread._addReaction).not.toHaveBeenCalled();
-    // The warn-log fires so on-call sees the contract violation.
-    const warnCalls = (log.warn as unknown as {
+    // The error-log fires so on-call sees the contract violation —
+    // not warn, because a persistent empty-id host bug would otherwise
+    // hide behind hundreds of identical warns (#2628 history).
+    const errorCalls = (log.error as unknown as {
       mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> };
     }).mock.calls;
-    const matchingWarn = warnCalls.find((c) => {
+    const matchingError = errorCalls.find((c) => {
       const payload = c[0] as { rawWorkspaceId?: string };
       return payload?.rawWorkspaceId === "";
     });
-    expect(matchingWarn).toBeDefined();
+    expect(matchingError).toBeDefined();
   });
 
   it("channel-message handler: missing message.author.userId logs a warn and skips pending registration (orphan reaction)", async () => {

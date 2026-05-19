@@ -428,9 +428,15 @@ export async function registerProactiveListener(
       return assertWorkspaceId(raw);
     } catch (err) {
       if (err instanceof InvalidProactiveIdentityError) {
-        log.warn(
-          { rawWorkspaceId: raw },
-          "Proactive resolveWorkspaceId returned an empty/invalid id — treating as unknown tenant (skip)",
+        // Log at error, not warn — the host's `resolveWorkspaceId`
+        // contract is "return null OR a non-empty string". An empty /
+        // whitespace-only string is a host wiring bug that would
+        // persistently fire every event for the misconfigured tenant.
+        // Warn-level would hide the bug behind hundreds of identical
+        // lines (#2628 history); error escalates it to on-call.
+        log.error(
+          { rawWorkspaceId: raw, field: err.field },
+          "Proactive resolveWorkspaceId returned an empty/invalid id — contract violation, treating as unknown tenant (skip)",
         );
         return null;
       }

@@ -433,7 +433,7 @@ function normalizeChatPlatform(platform: string): ChatBotPlatform | null {
  * {@link ProactiveAnswerAdapterOptions.resolveOrgForUser}.
  *
  * Adequate for the proactive path because each Slack workspace is
- * single-org-bound at install time (`slack_installations.org_id`),
+ * single-org-bound at install time (`chat_cache.value.orgId`, post-#2634),
  * so a Slack-asker who is a member of multiple Atlas orgs only sees
  * proactive answers from one of them by definition. Note this is NOT
  * the same policy as the Better Auth sign-in hook in `auth/server.ts`,

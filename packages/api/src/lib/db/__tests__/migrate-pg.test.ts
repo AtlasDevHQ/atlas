@@ -4167,6 +4167,69 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       "unsure",
     ]);
   }, PG_TEST_TIMEOUT_MS);
+
+  // 0085 — consolidate Slack install storage onto `chat_cache` (#2634).
+  // Three things to lock down on a real Postgres:
+  //   (1) `slack_installations` is dropped — confirms the migration
+  //       actually executes the DROP TABLE.
+  //   (2) `chat_cache` exists with the expected shape.
+  //   (3) The partial expression index on `value->>'orgId'` (filtered
+  //       by the `slack:installation:` key prefix) is created — without
+  //       it `getInstallationByOrg` falls back to a full table scan
+  //       across every cache row (subscriptions, locks, KV).
+  it("0085: drops slack_installations and creates chat_cache + org_id index (#2634)", async () => {
+    const { rows: dropped } = await pool.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.tables
+         WHERE table_schema = 'public' AND table_name = 'slack_installations'
+       ) AS exists`,
+    );
+    expect(dropped[0]?.exists).toBe(false);
+
+    const { rows: cache } = await pool.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.tables
+         WHERE table_schema = 'public' AND table_name = 'chat_cache'
+       ) AS exists`,
+    );
+    expect(cache[0]?.exists).toBe(true);
+
+    const { rows: indexes } = await pool.query<{ indexname: string }>(
+      `SELECT indexname FROM pg_indexes
+        WHERE schemaname = 'public' AND tablename = 'chat_cache'
+        ORDER BY indexname`,
+    );
+    const indexNames = indexes.map((r) => r.indexname);
+    expect(indexNames).toContain("idx_chat_cache_slack_org_id");
+    expect(indexNames).toContain("idx_chat_cache_expires");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0085: chat_cache.value->>'orgId' returns the Atlas org id for a stored Slack install (#2634)", async () => {
+    // End-to-end shape check: a row written through the consolidated
+    // path resolves cleanly by org_id via the new partial index. Uses
+    // the chat-adapter's plaintext-bot-token branch (SLACK_ENCRYPTION_KEY
+    // unset in CI) so the assertion stays infra-free.
+    await pool.query(
+      `INSERT INTO chat_cache (key, value)
+       VALUES ($1, $2::jsonb)`,
+      [
+        "slack:installation:T-pg-test",
+        JSON.stringify({
+          botToken: "xoxb-pg-test",
+          orgId: "org-pg-test",
+          workspaceName: "PG Test Workspace",
+          installedAt: "2026-01-01T00:00:00.000Z",
+        }),
+      ],
+    );
+    const { rows } = await pool.query<{ value: { orgId: string } }>(
+      `SELECT value FROM chat_cache
+        WHERE key LIKE 'slack:installation:%' AND value->>'orgId' = $1`,
+      ["org-pg-test"],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.value.orgId).toBe("org-pg-test");
+  }, PG_TEST_TIMEOUT_MS);
 });
 
 // #2606 — source-level revert guard for the integration-store SQL formatter.

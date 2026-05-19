@@ -2071,7 +2071,12 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
 
     const auditLog = await del(`DELETE FROM audit_log WHERE org_id = $1`);
     const conversations = await del(`DELETE FROM conversations WHERE org_id = $1`);
-    const slackInstallations = await del(`DELETE FROM slack_installations WHERE org_id = $1`);
+    // Slack installs live in `chat_cache` post-#2634 (key prefix
+    // `slack:installation:`). The partial expression index on
+    // `value->>'orgId'` makes the org-scoped delete a cheap lookup.
+    const slackInstallations = await del(
+      `DELETE FROM chat_cache WHERE key LIKE 'slack:installation:%' AND value->>'orgId' = $1`,
+    );
     const actionLog = await del(`DELETE FROM action_log WHERE org_id = $1`);
     const scheduledTasks = await del(`DELETE FROM scheduled_tasks WHERE org_id = $1`);
     const connections = await del(`DELETE FROM connections WHERE org_id = $1`);

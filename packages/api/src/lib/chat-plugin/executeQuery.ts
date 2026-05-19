@@ -3,10 +3,11 @@
  *
  * Wires the chat plugin's `executeQuery` callback to Atlas's agent loop.
  * On SaaS the same Chat instance routes events from N tenants — this helper
- * resolves the inbound Slack `team_id` → `slack_installations.org_id` →
- * `botActorUser` before invoking {@link executeAgentQuery}. Without that
- * binding `checkApprovalRequired` short-circuits on a missing `orgId` and
- * the approval gate silently disables (F-55 regression).
+ * resolves the inbound Slack `team_id` → `chat_cache:slack:installation` →
+ * `org_id` → `botActorUser` before invoking {@link executeAgentQuery}.
+ * Without that binding `checkApprovalRequired` short-circuits on a
+ * missing `orgId` and the approval gate silently disables (F-55
+ * regression). The store consolidated onto `chat_cache` in #2634.
  *
  * Mirrors what `packages/api/src/api/routes/slack.ts` does today for the
  * `app_mention` and `message + threadTs` branches:
@@ -171,7 +172,7 @@ export async function runExecuteQuery(
   }
 
   // 4. F-55 actor — bind a workspace bot actor so approval rules apply.
-  //    `getInstallation(teamId)` reads `slack_installations.org_id`.
+  //    `getInstallation(teamId)` reads `chat_cache` (single store, #2634).
   //    Without an Atlas org id, `checkApprovalRequired` short-circuits
   //    and any rule-matching query runs ungated, so both failure modes
   //    (DB throw, unknown tenant) MUST fail-closed before the agent

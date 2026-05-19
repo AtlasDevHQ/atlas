@@ -28,16 +28,17 @@
  *     defensive try/catch, but a clean resolver still returns `null` on
  *     every error path.
  *
- * The lookup table is `slack_installations` (defined in
- * `0000_baseline.sql:74` — `team_id PRIMARY KEY, org_id TEXT`). The
- * issue body refers to "`slack_integrations`" but the actual table in
- * the migrations is `slack_installations`; we use the canonical table
- * name here.
+ * The lookup goes through `lib/slack/store.getInstallation` — backed
+ * by the consolidated `chat_cache` table (#2634). The partial
+ * expression index on `value->>'orgId'` keeps `getInstallationByOrg`
+ * fast; this resolver does the inverse (`team_id` → `orgId`) which is
+ * a primary-key lookup on `chat_cache.key`.
  *
  * @module
  */
 
-import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { getInstallation } from "@atlas/api/lib/slack/store";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("proactive:workspace-id-resolver");
@@ -60,8 +61,8 @@ interface ResolverEvent {
  * Build the Slack-platform workspace resolver.
  *
  * Maps the inbound Slack `team_id` (from the raw event payload) to the
- * Atlas workspace id by reading `slack_installations.org_id`. Behaves
- * defensively at every step:
+ * Atlas workspace id via `lib/slack/store.getInstallation` (backed by
+ * `chat_cache` post-#2634). Behaves defensively at every step:
  *
  *   - Non-Slack adapter → `null` (the caller may pass events from
  *     multiple platforms through the same listener).
@@ -102,15 +103,8 @@ export function createSlackWorkspaceIdResolver(): (
     }
 
     try {
-      const rows = await internalQuery<{ org_id: string | null }>(
-        `SELECT org_id
-           FROM slack_installations
-          WHERE team_id = $1
-          LIMIT 1`,
-        [teamId],
-      );
-      if (rows.length === 0) return null;
-      return rows[0]!.org_id ?? null;
+      const installation = await getInstallation(teamId);
+      return installation?.org_id ?? null;
     } catch (err) {
       // `pg`-shaped errors carry a `.code` (e.g. `57P01` admin shutdown,
       // `42P01` undefined-table); spread onto the warn payload so an
@@ -125,7 +119,7 @@ export function createSlackWorkspaceIdResolver(): (
           err: err instanceof Error ? err.message : String(err),
           ...code,
         },
-        "Proactive workspace resolver: slack_installations lookup failed — treating as unknown tenant",
+        "Proactive workspace resolver: chat_cache lookup failed — treating as unknown tenant",
       );
       return null;
     }

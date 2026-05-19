@@ -5,12 +5,14 @@
  * proactive-listener wiring trail (parent #2607). Slice 3 (PR #2626)
  * migrated Slack `app_mention` + thread-followup from
  * `packages/api/src/api/routes/slack.ts` to the `@useatlas/chat` plugin
- * webhook (`/api/plugins/chat-interaction/webhooks/slack`). Slack APIs
- * are stubbed via the same `mock-server.ts` + patched `fetch` pattern as
- * the legacy `slack.test.ts` surface; the host helper unit tests in
- * `packages/api/src/lib/chat-plugin/__tests__/execute-query.test.ts` pin
- * envelope shape in isolation — this surface drives the full chain end
- * to end:
+ * webhook (`/api/plugins/chat-interaction/webhooks/slack`). Slack API
+ * calls are stubbed at the `@slack/web-api` module boundary (see
+ * `StubWebClient` below) — the legacy `slack.test.ts` pattern of
+ * patching `globalThis.fetch` doesn't intercept the axios-backed SDK
+ * that `@chat-adapter/slack` constructs. The host helper unit tests in
+ * `packages/api/src/lib/chat-plugin/__tests__/execute-query.test.ts`
+ * pin envelope shape in isolation; this surface drives the full chain
+ * end to end:
  *
  *   Slack-signed request
  *     → chat-interaction webhook route
@@ -19,28 +21,35 @@
  *     → host `executeQuery` / proactive meter callback
  *     → Slack API stub (chat.postMessage / reactions.add)
  *
- * Three behaviors covered (one each per AC bullet in the issue):
+ * Behaviors covered:
  *
  *   1. `app_mention` envelope parity — answer text + `thread_ts` + the
- *      `:lock:` notice when the agent reports `pendingApproval` — matches
- *      the pre-#2626 envelope `slack.ts` produced.
+ *      `:lock:` notice when the agent reports `pendingApproval` —
+ *      matches the pre-#2626 envelope `slack.ts` produced.
  *
- *   2. Proactive happy path — a `message` event in a channel allowlisted
- *      via `channel_proactive_config` triggers a 🤖 react path. Verified
- *      via the `onMeterEvent` callback (a `react` row lands), which is
- *      the same surface the production host wires to
- *      `proactive_meter_events` writes — i.e. dogfood-equivalent.
+ *   2. Proactive happy path — a `message` event in a channel
+ *      allowlisted via `channel_proactive_config` emits a `react` meter
+ *      row, and crucially does *not* call `executeQuery` or
+ *      `chat.postMessage` (the consent gate the asker hasn't crossed
+ *      yet). This is the surface PR #2628 ("channelAllowed read from
+ *      the legacy env-var allowlist") would have failed.
  *
- *   3. Three-layer kill switch — workspace toggle off / `proactive_pauses`
- *      row / DM `unsubscribe` — each short-circuits before classification
- *      so no `react` meter row lands. The two PRs that escaped slice 3's
- *      unit + boot-smoke coverage (#2628, #2630) would have failed *this*
- *      surface — both bugs flipped a host-supplied gate (channel-allow,
- *      bot-token presence) into a mode where the proactive path silently
- *      misbehaved on a real Slack event.
+ *   3. Kill switch — workspace toggle off / `proactive_pauses` row each
+ *      short-circuit before classification. Tests pair a positive
+ *      "handler ran" assertion (`mockResolveWorkspaceId` was called)
+ *      with the meter-row-absence check — without the positive half,
+ *      the assertion is trivially satisfied if the handler never
+ *      registered or threw inside its outer `try` block (see #2638 for
+ *      the DM-routing variant where this would otherwise mask a bug).
  *
- * Plugin webhook only — the legacy `/api/v1/slack/*` slash + interaction
- * paths stay covered by `slack.test.ts`.
+ *   4. DM `unsubscribe` is *unreachable* via `onNewMessage` (chat SDK
+ *      routes DMs to mention handlers). Documented as such — the test
+ *      asserts `mockResolveWorkspaceId` was *not* called for the DM
+ *      event, pinning the production gap until #2638 lands an
+ *      `onDirectMessage` registration.
+ *
+ * Plugin webhook only — the legacy `/api/v1/slack/*` slash +
+ * interaction paths stay covered by `slack.test.ts`.
  */
 
 import {
@@ -78,13 +87,13 @@ class StubWebClient {
   // adapter actually reads). Anything missed here surfaces as a
   // `WebAPIPlatformError` at the adapter, which fails closed — surface
   // it in tests rather than silently hitting prod.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   chat = {
-    postMessage: async (args: { channel: string; thread_ts?: string }) =>
-      stubWebClientPostCalls.push({ method: "chat.postMessage", args }) &&
-      Promise.resolve({ ok: true, ts: "9999999999.000099", channel: args.channel }),
-    update: async () => Promise.resolve({ ok: true }),
-    postEphemeral: async () => Promise.resolve({ ok: true }),
+    postMessage: async (args: { channel: string; thread_ts?: string }) => {
+      stubWebClientPostCalls.push({ method: "chat.postMessage", args });
+      return { ok: true, ts: "9999999999.000099", channel: args.channel };
+    },
+    update: async () => ({ ok: true }),
+    postEphemeral: async () => ({ ok: true }),
   } as const;
   users = {
     info: async (args: { user: string }) =>
@@ -134,7 +143,7 @@ mock.module("@slack/web-api", () => ({
 // — when the host is `@atlas/api`, `app` is a real Hono instance. The e2e
 // surface lives at the repo root and never imports `@atlas/api`, so the
 // transitive `hono` install in `packages/api/node_modules/` isn't on the
-// resolver path. A 30-line in-test router avoids a workspace dependency
+// resolver path. A small in-test router avoids a workspace dependency
 // (which would tug at every Deploy Validation matrix job) and keeps the
 // surface focused on the plugin webhook contract.
 //
@@ -211,25 +220,29 @@ const PAUSED_WORKSPACE_ID = "ws-paused";
 
 interface ExecuteQueryCall {
   question: string;
-  adapterName?: string;
-  rawMessage?: Record<string, unknown>;
+  adapterName: string;
+  rawMessage: Record<string, unknown> | undefined;
   threadId: string;
 }
 const executeQueryCalls: ExecuteQueryCall[] = [];
 
-let executeQueryReturn: {
+type ExecuteQueryReturn = {
   answer: string;
   sql: string[];
   data: { columns: string[]; rows: Record<string, unknown>[] }[];
   steps: number;
   usage: { totalTokens: number };
-} = {
+};
+
+const DEFAULT_EXECUTE_QUERY_RETURN: ExecuteQueryReturn = {
   answer: "There are 42 active users.",
   sql: ["SELECT COUNT(*) FROM users"],
   data: [{ columns: ["count"], rows: [{ count: 42 }] }],
   steps: 1,
   usage: { totalTokens: 100 },
 };
+
+let executeQueryReturn: ExecuteQueryReturn = DEFAULT_EXECUTE_QUERY_RETURN;
 
 // The plugin's ChatExecuteQueryContext / ResolveWorkspaceIdFn / etc.
 // types are pulled from `chat` and `@useatlas/chat`. The host-supplied
@@ -250,7 +263,7 @@ const mockExecuteQuery = mock(
     executeQueryCalls.push({
       question,
       adapterName: ctx.adapter.name,
-      rawMessage: (ctx.rawMessage ?? undefined) as Record<string, unknown> | undefined,
+      rawMessage: ctx.rawMessage as Record<string, unknown> | undefined,
       threadId: ctx.threadId,
     });
     return executeQueryReturn;
@@ -427,20 +440,24 @@ beforeEach(() => {
   executeQueryCalls.length = 0;
   meterEvents.length = 0;
   pauseRequests.length = 0;
+  // Clear every mock — the `mockResolveWorkspaceId` / `mockIsEnabled`
+  // counters are load-bearing for the kill-switch assertions below, and
+  // a left-over call from a previous test would silently pass them.
+  // The boot-time `isEnabled("")` registration probe lands in `beforeAll`
+  // before this clear runs, so its counter starts fresh per test.
   mockExecuteQuery.mockClear();
   mockMeterEvent.mockClear();
   mockPauseRequest.mockClear();
   mockClassify.mockClear();
+  mockResolveWorkspaceId.mockClear();
+  mockIsEnabled.mockClear();
+  mockIsPaused.mockClear();
+  mockGetWorkspaceConfig.mockClear();
+  mockGetChannelConfigs.mockClear();
   // Reset the per-test workspace id so a kill-switch test from earlier
   // doesn't leak into the next.
   currentWorkspaceId = WORKSPACE_ID;
-  executeQueryReturn = {
-    answer: "There are 42 active users.",
-    sql: ["SELECT COUNT(*) FROM users"],
-    data: [{ columns: ["count"], rows: [{ count: 42 }] }],
-    steps: 1,
-    usage: { totalTokens: 100 },
-  };
+  executeQueryReturn = DEFAULT_EXECUTE_QUERY_RETURN;
 });
 
 // ---------------------------------------------------------------------------
@@ -479,14 +496,58 @@ async function waitFor(
 }
 
 /**
- * Pause long enough for the listener to *not* fire — used by the
- * kill-switch tests to assert meter-row absence. The proactive handler
- * runs synchronously after `chat.processMessage` is called, but the
- * chat SDK queues messages onto an async dispatcher; we wait one
- * scheduler tick plus a small safety margin.
+ * Wait until the proactive handler has demonstrably fired —
+ * `mockResolveWorkspaceId` is the first await in `onNewMessage`
+ * (`plugins/chat/src/proactive/listener.ts`, `safeResolveWorkspace`
+ * call), so a non-zero call count proves the handler started.
+ * Bounded-positive: a fixed sleep would let a slow CI worker mask the
+ * handler-never-fires failure mode the kill-switch tests exist to
+ * catch. After the call lands, yield one microtask tick for any
+ * post-gate work to settle before assertions run.
  */
-async function waitForQuietPath(ms = 200): Promise<void> {
-  await new Promise((r) => setTimeout(r, ms));
+async function waitForProactiveHandlerRan(): Promise<void> {
+  await waitFor(() => mockResolveWorkspaceId.mock.calls.length > 0);
+  await new Promise((r) => setTimeout(r, 10));
+}
+
+/**
+ * Build a Slack `event_callback` envelope. All tests in this surface
+ * use the same outer shell + `team_id`; only the inner `event` differs
+ * per-case.
+ */
+function makeEventPayload(event: {
+  type: "app_mention" | "message";
+  text: string;
+  ts: string;
+  channel: string;
+  channelType?: "channel" | "im";
+}): Record<string, unknown> {
+  return {
+    type: "event_callback",
+    team_id: TEAM_ID,
+    event: {
+      type: event.type,
+      team: TEAM_ID,
+      team_id: TEAM_ID,
+      user: USER_ID,
+      channel: event.channel,
+      text: event.text,
+      ts: event.ts,
+      ...(event.channelType ? { channel_type: event.channelType } : {}),
+    },
+  };
+}
+
+/**
+ * Assert that the proactive listener short-circuited before doing any
+ * billable work — no `react` or `classify` meter rows, classifier never
+ * invoked. Pair with `waitForProactiveHandlerRan()` so the absence
+ * reflects a gate firing, not a handler-never-ran silent skip.
+ */
+function expectNoProactiveActivity(): void {
+  expect(meterEvents.filter((e) => e.eventType === "react")).toHaveLength(0);
+  expect(meterEvents.filter((e) => e.eventType === "classify")).toHaveLength(0);
+  expect(mockClassify).not.toHaveBeenCalled();
 }
 
 // ---------------------------------------------------------------------------
@@ -496,19 +557,12 @@ async function waitForQuietPath(ms = 200): Promise<void> {
 describe("E2E: chat-interaction webhook — app_mention envelope parity (#2626 / #2607)", () => {
   it("posts a signed app_mention → executeQuery runs with adapter='slack' + raw event + reply text/thread_ts match pre-#2626 envelope", async () => {
     const eventTs = "1700000001.000100";
-    const payload = {
-      type: "event_callback",
-      team_id: TEAM_ID,
-      event: {
-        type: "app_mention",
-        team: TEAM_ID,
-        team_id: TEAM_ID,
-        user: USER_ID,
-        channel: CHANNEL_ID,
-        text: "<@U_BOT> how many active users?",
-        ts: eventTs,
-      },
-    };
+    const payload = makeEventPayload({
+      type: "app_mention",
+      text: "<@U_BOT> how many active users?",
+      ts: eventTs,
+      channel: CHANNEL_ID,
+    });
 
     const res = await app.fetch(makeSignedEventRequest(payload));
     expect(res.status).toBe(200);
@@ -560,20 +614,12 @@ describe("E2E: chat-interaction webhook — app_mention envelope parity (#2626 /
       usage: { totalTokens: 0 },
     };
 
-    const eventTs = "1700000002.000200";
-    const payload = {
-      type: "event_callback",
-      team_id: TEAM_ID,
-      event: {
-        type: "app_mention",
-        team: TEAM_ID,
-        team_id: TEAM_ID,
-        user: USER_ID,
-        channel: CHANNEL_ID,
-        text: "<@U_BOT> show me PII",
-        ts: eventTs,
-      },
-    };
+    const payload = makeEventPayload({
+      type: "app_mention",
+      text: "<@U_BOT> show me PII",
+      ts: "1700000002.000200",
+      channel: CHANNEL_ID,
+    });
 
     const res = await app.fetch(makeSignedEventRequest(payload));
     expect(res.status).toBe(200);
@@ -608,20 +654,13 @@ describe("E2E: chat-interaction webhook — proactive react meter (#2607 slice t
   it("message in a channel allowlisted via channel_proactive_config emits an onMeterEvent with eventType='react' (the bug #2628 would have surfaced)", async () => {
     // A non-mention message. The bridge's onNewMention will NOT fire;
     // the proactive listener's onNewMessage will.
-    const payload = {
-      type: "event_callback",
-      team_id: TEAM_ID,
-      event: {
-        type: "message",
-        team: TEAM_ID,
-        team_id: TEAM_ID,
-        user: USER_ID,
-        channel: CHANNEL_ID,
-        text: "what was MRR last month?",
-        ts: "1700000010.000300",
-        channel_type: "channel",
-      },
-    };
+    const payload = makeEventPayload({
+      type: "message",
+      text: "what was MRR last month?",
+      ts: "1700000010.000300",
+      channel: CHANNEL_ID,
+      channelType: "channel",
+    });
 
     const res = await app.fetch(makeSignedEventRequest(payload));
     expect(res.status).toBe(200);
@@ -637,6 +676,14 @@ describe("E2E: chat-interaction webhook — proactive react meter (#2607 slice t
     expect(react!.workspaceId).toBe(WORKSPACE_ID);
     expect(react!.channelId).toBe(CHANNEL_ID);
 
+    // The proactive path posts no channel message — only the 🤖
+    // reaction and an ephemeral offer card. If `chat.postMessage` ever
+    // lands here, the listener has started answering questions the
+    // asker hasn't consented to (the exact failure profile #2628
+    // touched: silent agent activity in a wrong-gate scenario).
+    expect(
+      stubWebClientPostCalls.filter((c) => c.method === "chat.postMessage"),
+    ).toHaveLength(0);
     // executeQuery (host helper for @mentions) MUST NOT fire on the
     // proactive path — it's reserved for the reaction-back / button-
     // click answer flow, which we don't simulate here. If this
@@ -646,123 +693,118 @@ describe("E2E: chat-interaction webhook — proactive react meter (#2607 slice t
   });
 });
 
-describe("E2E: chat-interaction webhook — three-layer kill switch (#2607 slice trail)", () => {
-  it("workspace toggle off (isEnabled=false) — no meter rows emitted (analytics gap, not silent answer)", async () => {
+describe("E2E: chat-interaction webhook — kill switch (#2607 slice trail)", () => {
+  it("workspace toggle off (isEnabled=false) — handler runs, gate fires, no meter rows", async () => {
     currentWorkspaceId = DISABLED_WORKSPACE_ID;
 
-    const payload = {
-      type: "event_callback",
-      team_id: TEAM_ID,
-      event: {
-        type: "message",
-        team: TEAM_ID,
-        team_id: TEAM_ID,
-        user: USER_ID,
-        channel: CHANNEL_ID,
-        text: "what was revenue last week?",
-        ts: "1700000020.000400",
-        channel_type: "channel",
-      },
-    };
+    const payload = makeEventPayload({
+      type: "message",
+      text: "what was revenue last week?",
+      ts: "1700000020.000400",
+      channel: CHANNEL_ID,
+      channelType: "channel",
+    });
 
     const res = await app.fetch(makeSignedEventRequest(payload));
     expect(res.status).toBe(200);
 
-    await waitForQuietPath();
-    expect(meterEvents.filter((e) => e.eventType === "react")).toHaveLength(0);
-    expect(meterEvents.filter((e) => e.eventType === "classify")).toHaveLength(
-      0,
-    );
-    // Classifier must not have run — the LLM call is the most expensive
-    // bit of the path and the workspace-disabled gate exists to skip it.
-    expect(mockClassify).not.toHaveBeenCalled();
+    // Positive proof the handler actually ran: `resolveWorkspaceId` is
+    // the first await in `onNewMessage`. Without this, the meter-row
+    // absence below would also pass if the listener never registered
+    // or threw inside its outer `try` block (`listener.ts` swallows
+    // handler crashes at `log.warn`-level by design — the failure mode
+    // this PR exists to catch).
+    await waitForProactiveHandlerRan();
+    expect(mockIsEnabled).toHaveBeenCalledWith(DISABLED_WORKSPACE_ID);
+    expectNoProactiveActivity();
+    // The workspace-disabled gate skips ALL DB reads after the
+    // `isEnabled` check — no quota lookup, no channel-config fetch,
+    // no pause registry hit. Pin the per-event ordering.
+    expect(mockIsPaused).not.toHaveBeenCalled();
+    expect(mockGetWorkspaceConfig).not.toHaveBeenCalled();
   });
 
-  it("proactive_pauses row (isPaused=true) — no react meter (handler returns before classify)", async () => {
+  it("proactive_pauses row (isPaused=true) — handler runs, pause registry consulted, no react meter", async () => {
     currentWorkspaceId = PAUSED_WORKSPACE_ID;
 
-    const payload = {
-      type: "event_callback",
-      team_id: TEAM_ID,
-      event: {
-        type: "message",
-        team: TEAM_ID,
-        team_id: TEAM_ID,
-        user: USER_ID,
-        channel: CHANNEL_ID,
-        text: "how many signups this week?",
-        ts: "1700000021.000500",
-        channel_type: "channel",
-      },
-    };
+    const payload = makeEventPayload({
+      type: "message",
+      text: "how many signups this week?",
+      ts: "1700000021.000500",
+      channel: CHANNEL_ID,
+      channelType: "channel",
+    });
 
     const res = await app.fetch(makeSignedEventRequest(payload));
     expect(res.status).toBe(200);
 
-    await waitForQuietPath();
-    expect(meterEvents.filter((e) => e.eventType === "react")).toHaveLength(0);
-    expect(meterEvents.filter((e) => e.eventType === "classify")).toHaveLength(
-      0,
-    );
-    expect(mockClassify).not.toHaveBeenCalled();
-  });
-
-  it("DM unsubscribe — short-circuits before classification (meter row absence)", async () => {
-    const payload = {
-      type: "event_callback",
-      team_id: TEAM_ID,
-      event: {
-        type: "message",
-        team: TEAM_ID,
-        team_id: TEAM_ID,
-        user: USER_ID,
-        channel: DM_CHANNEL_ID,
-        text: "unsubscribe",
-        ts: "1700000022.000600",
-        channel_type: "im",
-      },
-    };
-
-    const res = await app.fetch(makeSignedEventRequest(payload));
-    expect(res.status).toBe(200);
-
-    // The AC asks for meter-row absence on the DM unsubscribe path —
-    // confirmed by the proactive `react` / `classify` rows never landing.
-    // The legacy slack.ts DM path produced no proactive meter rows either,
-    // so this is parity.
-    await waitForQuietPath();
-    expect(meterEvents.filter((e) => e.eventType === "react")).toHaveLength(0);
-    expect(meterEvents.filter((e) => e.eventType === "classify")).toHaveLength(
-      0,
-    );
-    expect(mockClassify).not.toHaveBeenCalled();
+    await waitForProactiveHandlerRan();
+    expect(mockIsEnabled).toHaveBeenCalledWith(PAUSED_WORKSPACE_ID);
+    // The pause registry is the ONLY thing that should fire between
+    // `isEnabled` and the early return. If a regression bypassed
+    // `isPaused`, classify would land below — but if `isPaused` itself
+    // is unwired, the test would still pass on meter absence alone.
+    expect(mockIsPaused).toHaveBeenCalled();
+    expectNoProactiveActivity();
   });
 
   // ---------------------------------------------------------------------
-  // TODO(#2638): DM `unsubscribe` should also fire `onPauseRequest` with
-  // a `user-optout` row so the asker is removed from proactive workspace-
-  // wide. The proactive listener has that code path in its
-  // `chat.onNewMessage(/.+/)` handler (plugins/chat/src/proactive/
-  // listener.ts:454), but the chat SDK routes DMs to mention handlers
-  // (not onNewMessage) when no `chat.onDirectMessage` handler is
-  // registered — so the unsubscribe branch is unreachable in production.
-  // Surfaced by this e2e (#2633); follow-up tracked at #2638.
+  // DM `unsubscribe` is a documented production gap (#2638), not a
+  // working kill-switch layer. The proactive listener's
+  // `chat.onNewMessage(/.+/)` handler (see the `detectUnsubscribeDM`
+  // branch in `plugins/chat/src/proactive/listener.ts`) checks for DM
+  // unsubscribe — but the chat SDK routes DMs to mention handlers, not
+  // `onNewMessage`, when no `chat.onDirectMessage` handler is
+  // registered. So the listener's onNewMessage handler *never fires*
+  // for DMs in production.
+  //
+  // This test pins that gap explicitly: `mockResolveWorkspaceId` must
+  // NOT have been called for the DM event (proof the listener didn't
+  // run). A naive "no meter rows landed" assertion would silently pass
+  // whether the listener fired-and-gated or never fired at all — the
+  // earlier draft of this test had exactly that hole (#2633 review).
+  // ---------------------------------------------------------------------
+  it("DM unsubscribe — proactive listener does NOT fire for DMs (documents production gap #2638)", async () => {
+    const payload = makeEventPayload({
+      type: "message",
+      text: "unsubscribe",
+      ts: "1700000022.000600",
+      channel: DM_CHANNEL_ID,
+      channelType: "im",
+    });
+
+    const res = await app.fetch(makeSignedEventRequest(payload));
+    expect(res.status).toBe(200);
+
+    // Long enough that, if the listener WERE wired for DMs, its first
+    // await (`resolveWorkspaceId`) would have landed. The negative
+    // assertion below catches the day #2638 ships an `onDirectMessage`
+    // registration without updating this test — it will start failing
+    // (the gap is closed) and the `.todo` below can be promoted to a
+    // real assertion in the same PR.
+    await new Promise((r) => setTimeout(r, 200));
+    expect(mockResolveWorkspaceId).not.toHaveBeenCalled();
+    expectNoProactiveActivity();
+    expect(mockPauseRequest).not.toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------------
+  // TODO(#2638): DM `unsubscribe` should also fire `onPauseRequest`
+  // with a `user-optout` row so the asker is removed from proactive
+  // workspace-wide. When the listener adds a
+  // `chat.onDirectMessage(...)` registration that re-dispatches to its
+  // unsubscribe branch, drop the `.todo`, update the test above to
+  // assert `mockResolveWorkspaceId` *was* called, and remove this
+  // block (its assertion will move into a real test).
   // ---------------------------------------------------------------------
   it.todo("DM unsubscribe — fires user-optout onPauseRequest (blocked by #2638: listener missing onDirectMessage registration)", async () => {
-    const payload = {
-      type: "event_callback",
-      team_id: TEAM_ID,
-      event: {
-        type: "message",
-        team: TEAM_ID,
-        team_id: TEAM_ID,
-        user: USER_ID,
-        channel: DM_CHANNEL_ID,
-        text: "unsubscribe",
-        ts: "1700000023.000700",
-        channel_type: "im",
-      },
-    };
+    const payload = makeEventPayload({
+      type: "message",
+      text: "unsubscribe",
+      ts: "1700000023.000700",
+      channel: DM_CHANNEL_ID,
+      channelType: "im",
+    });
     const res = await app.fetch(makeSignedEventRequest(payload));
     expect(res.status).toBe(200);
     await waitFor(() => pauseRequests.length > 0);

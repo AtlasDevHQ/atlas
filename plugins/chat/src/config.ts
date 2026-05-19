@@ -919,6 +919,9 @@ const ProactiveConfigSchema = z
       "proactive.getQuotaStatus must be a function returning Promise<ProactiveQuotaStatus>",
     ).optional(),
   })
+  // Fail loud on stale config keys. Removed in #2629 — surface the rename
+  // at boot rather than silently no-op'ing in production.
+  .strict()
   .optional();
 
 export const ChatConfigSchema = z.object({

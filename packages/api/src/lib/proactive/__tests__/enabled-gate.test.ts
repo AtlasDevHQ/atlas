@@ -290,4 +290,92 @@ describe("createProactiveEnabledGate", () => {
     const params = mockInternalQuery.mock.calls.map((c) => c[1]);
     expect(params).toEqual([["ws-A"], ["ws-B"]]);
   });
+
+  it("transient runtime defect (non-EnterpriseError throw) does NOT cache — next call retries the Tag", async () => {
+    // Simulate a `ManagedRuntime` that throws a non-`EnterpriseError`
+    // out of `runPromise` (Layer construction failure, init race,
+    // etc.). The gate must fail the current call closed but leave the
+    // cache as `undefined` so the next call retries — otherwise a
+    // single boot-time blip closes the gate for the whole process
+    // lifetime.
+    let throwOnce = true;
+    const spy: Mock<RequireEnabledFn> = mock(() => {
+      if (throwOnce) {
+        throwOnce = false;
+        // Throw a non-`EnterpriseError` *defect* by wrapping in
+        // `Effect.sync` — this becomes an unhandled defect that
+        // surfaces as a thrown error out of `runtime.runPromise`,
+        // bypassing the inner `Effect.catchAll` (which handles the
+        // `E` channel only).
+        return Effect.sync(() => {
+          throw new Error("layer construction failed");
+        }) as ReturnType<RequireEnabledFn>;
+      }
+      // Second call: succeed.
+      return Effect.void as ReturnType<RequireEnabledFn>;
+    });
+    const runtime = buildRuntime(buildGateLayer({ enabled: true, spy }));
+    mockInternalQuery.mockImplementation(async () => [{ enabled: true }]);
+
+    const gate = createProactiveEnabledGate(runtime, "ws-1");
+
+    // First call: defect → fails closed, does NOT cache.
+    expect(await gate()).toBe(false);
+    expect(mockLogWarn).toHaveBeenCalledTimes(1);
+    const [payload, message] = mockLogWarn.mock.calls[0] as [
+      Record<string, unknown>,
+      string,
+    ];
+    expect(payload.workspaceId).toBe("ws-1");
+    expect(payload.retry).toBe(true);
+    expect(message).toContain("transient");
+    // No DB query — the workspace check is gated on a positive
+    // enterprise resolution.
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+
+    // Second call: retries the Tag, succeeds, hits the DB.
+    expect(await gate()).toBe(true);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(mockInternalQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it("__reset() clears the per-closure enterprise cache so the next call re-yields the Tag", async () => {
+    const spy: Mock<RequireEnabledFn> = mock(
+      () => Effect.void as ReturnType<RequireEnabledFn>,
+    );
+    const runtime = buildRuntime(buildGateLayer({ enabled: true, spy }));
+    mockInternalQuery.mockImplementation(async () => [{ enabled: true }]);
+
+    const gate = createProactiveEnabledGate(runtime, "ws-1");
+
+    // Prime the cache.
+    expect(await gate()).toBe(true);
+    expect(await gate()).toBe(true);
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    // Reset, then call again — Tag should be re-yielded.
+    gate.__reset();
+    expect(await gate()).toBe(true);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it("includes the pg error `code` on the workspace DB warn payload", async () => {
+    const runtime = buildRuntime(buildGateLayer({ enabled: true }));
+    // Construct a pg-shaped error: `Error` instance with a `.code`.
+    const err = Object.assign(new Error("admin shutdown"), {
+      code: "57P01",
+    });
+    mockInternalQuery.mockImplementation(async () => {
+      throw err;
+    });
+
+    const gate = createProactiveEnabledGate(runtime, "ws-1");
+    expect(await gate()).toBe(false);
+
+    expect(mockLogWarn).toHaveBeenCalledTimes(1);
+    const [payload] = mockLogWarn.mock.calls[0] as [Record<string, unknown>];
+    expect(payload.workspaceId).toBe("ws-1");
+    expect(payload.err).toBe("admin shutdown");
+    expect(payload.code).toBe("57P01");
+  });
 });

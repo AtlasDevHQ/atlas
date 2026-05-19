@@ -34,9 +34,17 @@
  *   - EE not loaded     → `requireEnabled` fails with `EnterpriseError`;
  *                          caches `enterpriseEnabled = false`. No DB query
  *                          made on this call or any future call.
- *   - DB query throws   → catches, logs at `warn` with `{ workspaceId, err }`,
- *                          returns `false`. Enterprise cache untouched so a
- *                          transient DB blip doesn't permanently degrade.
+ *   - Runtime defect    → `runtime.runPromise` rejects with a non-
+ *                          `EnterpriseError` throw (Layer construction
+ *                          failure, transient init race, etc.). Logs +
+ *                          fails the current call closed, but leaves
+ *                          `enterpriseEnabled` as `undefined` so the next
+ *                          call retries. Without this distinction a single
+ *                          boot-time blip would gate the process for life.
+ *   - DB query throws   → catches, logs at `warn` with `{ workspaceId, err, code }`
+ *                          (the `pg` error code helps operators tell a DB
+ *                          blip from a missing migration), returns `false`.
+ *                          Enterprise cache untouched.
  *   - Workspace row missing → SELECT returns 0 rows → treats as `enabled=false`.
  *
  * The factory captures a `ManagedRuntime` at boot (the host wiring slice
@@ -57,16 +65,31 @@ import { ProactiveGate } from "@atlas/api/lib/effect/services";
 const log = createLogger("proactive:enabled-gate");
 
 /**
- * Minimum runtime contract the factory needs. The host's
- * `getEnterpriseRuntime()` (from `lib/effect/enterprise-layer.ts`)
- * returns a `ManagedRuntime<EnterpriseSubsystem, never>` which satisfies
- * this — but we only require `ProactiveGate` in the requirements channel
- * so callers can pass a narrower test runtime that binds just the gate.
+ * Minimum runtime contract the factory needs. The production caller is
+ * `getEnterpriseRuntime()` from `lib/effect/enterprise-layer.ts`, which
+ * returns a `ManagedRuntime<EnterpriseSubsystem, never>` that satisfies
+ * this shape — but we only require `ProactiveGate` in the requirements
+ * channel so callers can pass a narrower test runtime that binds just
+ * the gate (see `__tests__/enabled-gate.test.ts:buildRuntime`).
  */
 export type ProactiveGateRuntime = ManagedRuntime.ManagedRuntime<
   ProactiveGate,
   never
 >;
+
+/**
+ * Per-workspace `isEnabled` callback returned by
+ * `createProactiveEnabledGate`. Satisfies the plugin-side
+ * `ProactiveGateFn` (`() => Promise<boolean>`); also carries a
+ * test-only `__reset()` hook that clears the per-closure enterprise
+ * cache. Per-process today — if the EE roadmap adds runtime license
+ * activation, hook `__reset` into the config-reload path so the gate
+ * doesn't stay closed against the new license state.
+ */
+export type ProactiveEnabledGate = (() => Promise<boolean>) & {
+  /** @internal Test-only: clears the per-closure enterprise cache. */
+  __reset: () => void;
+};
 
 /**
  * Build a per-workspace `isEnabled` callback for the proactive listener.
@@ -86,14 +109,14 @@ export type ProactiveGateRuntime = ManagedRuntime.ManagedRuntime<
 export function createProactiveEnabledGate(
   runtime: ProactiveGateRuntime,
   workspaceId: string,
-): () => Promise<boolean> {
+): ProactiveEnabledGate {
   // Cached enterprise result. `undefined` ⇒ not yet checked; `true` /
   // `false` ⇒ resolved (and never re-resolved for the lifetime of this
   // closure). Self-hosted's `NoopProactiveGateLayer` makes this a one-
   // shot `false`; SaaS-EE makes it a one-shot `true`.
   let enterpriseEnabled: boolean | undefined = undefined;
 
-  return async function isProactiveEnabled(): Promise<boolean> {
+  const isProactiveEnabled = async function (): Promise<boolean> {
     // ── 1. Enterprise check (cached) ─────────────────────────────
     if (enterpriseEnabled === undefined) {
       const program = Effect.gen(function* () {
@@ -124,17 +147,33 @@ export function createProactiveEnabledGate(
       try {
         enterpriseEnabled = await runtime.runPromise(program);
       } catch (err) {
-        // ManagedRuntime defect path (Layer construction failure, etc.)
-        // — log + cache `false`. The next call returns false without
-        // a runtime hop.
+        // ManagedRuntime defect path (Layer construction failure,
+        // transient init race, etc.). Distinguish:
+        //   - `EnterpriseError` thrown out the runtime (shouldn't
+        //     happen — `Effect.catchAll` above swallows it — but
+        //     belt-and-suspenders): legitimately permanent, cache `false`.
+        //   - Any other throw: transient by assumption. Leave
+        //     `enterpriseEnabled` as `undefined` so the next call retries.
+        //     Without this, a single boot-time blip would close the gate
+        //     for the whole process lifetime.
+        const isEnterpriseShape =
+          err instanceof Error && err.name === "EnterpriseError";
         log.warn(
           {
             workspaceId,
             err: err instanceof Error ? err.message : String(err),
+            retry: !isEnterpriseShape,
           },
-          "Proactive enabled-gate: enterprise runtime threw — treating as disabled",
+          isEnterpriseShape
+            ? "Proactive enabled-gate: enterprise runtime threw EnterpriseError — caching disabled"
+            : "Proactive enabled-gate: enterprise runtime threw (transient) — will retry on next call",
         );
-        enterpriseEnabled = false;
+        if (isEnterpriseShape) {
+          enterpriseEnabled = false;
+        }
+        // Transient: enterpriseEnabled stays `undefined`; fall through
+        // to the early-return below so this call still fails closed.
+        if (enterpriseEnabled === undefined) return false;
       }
     }
 
@@ -151,14 +190,33 @@ export function createProactiveEnabledGate(
       if (rows.length === 0) return false;
       return rows[0]!.enabled === true;
     } catch (err) {
+      // `pg` errors carry a `.code` (e.g. `57P01` admin shutdown,
+      // `53300` too-many-connections, `42P01` undefined-table) — the
+      // operator needs this to distinguish a DB blip from a missing
+      // migration. Spread it onto the warn payload when present.
+      const code =
+        err instanceof Error && "code" in err
+          ? { code: (err as { code: unknown }).code }
+          : {};
       log.warn(
         {
           workspaceId,
           err: err instanceof Error ? err.message : String(err),
+          ...code,
         },
         "Proactive enabled-gate: workspace_proactive_config read failed — treating as disabled",
       );
       return false;
     }
+  } as ProactiveEnabledGate;
+
+  // Per-process cache; if EE roadmap adds runtime license activation,
+  // hook this `__reset` into the config-reload path so a license that
+  // flips from disabled-at-boot to enabled-at-runtime doesn't stay
+  // gated off for the whole process lifetime.
+  isProactiveEnabled.__reset = () => {
+    enterpriseEnabled = undefined;
   };
+
+  return isProactiveEnabled;
 }

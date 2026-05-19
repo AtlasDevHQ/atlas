@@ -131,13 +131,21 @@ export interface ProactiveAnswerAdapterOptions {
    * call is rejected with the user-safe error. Linked calls
    * (`atlasUserId !== null`) never invoke this callback.
    *
-   * The default production wiring resolves the allowlist for the
-   * `asker.platform` workspace via
+   * Receives the per-event `workspaceId` (#2624) alongside the asker
+   * so multi-tenant hosts scope the allowlist lookup to the right
+   * tenant. Pre-#2624 the callback received only `asker`, which
+   * couldn't distinguish "same Slack user-id seen in tenant A vs
+   * tenant B" and so routed tenant B askers against tenant A's
+   * allowlist on the chat plugin's single-instance multi-tenant SaaS
+   * wiring.
+   *
+   * The default production wiring resolves the allowlist via
    * `getAllowlist(workspaceId)` in
    * `packages/api/src/lib/proactive/public-dataset.ts`.
    */
   getPublicDataset?: (
     asker: ProactiveAsker,
+    ctx: { workspaceId: string },
   ) => Promise<ReadonlyArray<PublicDatasetEntry>>;
 }
 
@@ -161,7 +169,7 @@ export function createProactiveAnswerAdapter(
 
   return async (question, context): Promise<ProactiveQueryResult> => {
     const requestId = crypto.randomUUID();
-    const { threadId, asker, atlasUserId } = context;
+    const { threadId, asker, atlasUserId, workspaceId } = context;
     const askerId = describeAskerId(asker);
 
     // 1. Resolve identity + (unlinked) restricted tool registry ----------
@@ -183,19 +191,20 @@ export function createProactiveAnswerAdapter(
         // warehouse before the listener's post-filter ever ran.
         if (!getPublicDataset) {
           log.error(
-            { threadId, askerId, event: "proactive.answer.public_dataset_missing" },
+            { threadId, askerId, workspaceId, event: "proactive.answer.public_dataset_missing" },
             "Unlinked asker reached the adapter but getPublicDataset is not wired — refusing",
           );
           throw new Error(PROACTIVE_USER_SAFE_ERROR_MESSAGE);
         }
         let allowlist: ReadonlyArray<PublicDatasetEntry>;
         try {
-          allowlist = await getPublicDataset(asker);
+          allowlist = await getPublicDataset(asker, { workspaceId });
         } catch (err) {
           log.error(
             {
               threadId,
               askerId,
+              workspaceId,
               errorMessage: errorMessage(err),
               event: "proactive.answer.public_dataset_failed",
             },
@@ -208,6 +217,7 @@ export function createProactiveAnswerAdapter(
             {
               threadId,
               askerId,
+              workspaceId,
               event: "proactive.answer.public_dataset_empty",
             },
             "Public dataset allowlist is empty — refusing unlinked-asker request",
@@ -235,6 +245,7 @@ export function createProactiveAnswerAdapter(
           threadId,
           askerId,
           atlasUserId,
+          workspaceId,
           errorMessage: errorMessage(err),
           event: "proactive.answer.identity_failed",
         },
@@ -260,6 +271,7 @@ export function createProactiveAnswerAdapter(
           threadId,
           askerId,
           atlasUserId,
+          workspaceId,
           errorMessage: errorMessage(err),
           event: "proactive.answer.model_resolution_failed",
         },
@@ -299,6 +311,7 @@ export function createProactiveAnswerAdapter(
           threadId,
           askerId,
           atlasUserId,
+          workspaceId,
           linked: atlasUserId !== null,
           sqlCount: collected.sql.length,
           dataCount: collected.data.length,
@@ -315,6 +328,7 @@ export function createProactiveAnswerAdapter(
           threadId,
           askerId,
           atlasUserId,
+          workspaceId,
           errorMessage: errorMessage(err),
           event: "proactive.answer.agent_failed",
         },
@@ -405,15 +419,18 @@ function normalizeChatPlatform(platform: string): ChatBotPlatform | null {
 }
 
 /**
- * Default resolver — pick the first org the user is a member of. Tests
- * inject a stub via {@link ProactiveAnswerAdapterOptions.resolveOrgForUser}.
+ * Default resolver — pick one org the user is a member of, ordered by
+ * `organizationId ASC` so multi-org members resolve deterministically.
+ * Tests inject a stub via
+ * {@link ProactiveAnswerAdapterOptions.resolveOrgForUser}.
  *
- * Single-row `LIMIT 1` matches the activation heuristic in
- * `auth/server.ts` (the Better Auth hook that auto-activates an org on
- * sign-in). If the user belongs to multiple orgs this picks one
- * deterministically (lexical `organizationId` order); for the proactive
- * path that's adequate because the Slack workspace itself is
- * single-org-bound at install time.
+ * Adequate for the proactive path because each Slack workspace is
+ * single-org-bound at install time (`slack_installations.org_id`),
+ * so a Slack-asker who is a member of multiple Atlas orgs only sees
+ * proactive answers from one of them by definition. Note this is NOT
+ * the same policy as the Better Auth sign-in hook in `auth/server.ts`,
+ * which only auto-activates when the user has exactly one org; on
+ * multi-org members the auth hook leaves activation untouched.
  */
 async function defaultResolveOrgForUser(
   atlasUserId: string,

@@ -38,9 +38,41 @@ export interface ResolvedAsker {
   atlasUserId?: string;
 }
 
-/** Resolver: chat-platform identity → Atlas identity. */
+/**
+ * Per-event context passed to the user resolver (#2624).
+ *
+ * Carries the per-event `workspaceId` resolved by the listener so a
+ * multi-tenant host can distinguish "the same Slack user-id seen in
+ * tenant A vs tenant B". Pre-#2624 the resolver received only the
+ * platform identity and could only do a global lookup — on SaaS that
+ * collapses two tenants' askers onto whichever workspace the user
+ * happens to be a member of first.
+ *
+ * Kept as a separate object (Option 2 from the issue body) rather than
+ * inlined into {@link ProactiveAsker} so the asker stays a pure
+ * chat-platform identity while the workspace stays per-event context.
+ */
+export interface ProactiveUserResolverContext {
+  /** Atlas workspace id (`org_id`) the event belongs to. */
+  workspaceId: string;
+}
+
+/**
+ * Resolver: chat-platform identity → Atlas identity.
+ *
+ * Receives both the asker (platform identity) and a per-event context
+ * carrying the workspaceId. Hosts MUST scope the lookup by workspaceId
+ * — otherwise multi-tenant collisions silently route an unlinked
+ * tenant B asker to a tenant A Atlas user.
+ *
+ * Implementations may throw on infra failure; the listener's
+ * `safeResolveUser` catches the throw and refuses with the apology
+ * copy (no downgrade to the public-dataset path — that would silently
+ * bypass per-user RLS for a linked Atlas user).
+ */
 export type ProactiveUserResolver = (
   asker: ProactiveAsker,
+  ctx: ProactiveUserResolverContext,
 ) => Promise<ResolvedAsker>;
 
 /** Result returned by `executeQueryProactive`. */
@@ -96,6 +128,14 @@ export type ProactiveExecuteQuery = (
      * agent to the workspace's public-dataset allowlist.
      */
     atlasUserId: string | null;
+    /**
+     * Atlas workspace id the event belongs to (#2624). Threaded through
+     * from the listener's per-event resolution so the host can scope
+     * tool registries, allowlist lookups, and tenant-specific config
+     * by the right tenant on multi-tenant SaaS. Static-tenant hosts
+     * can ignore it.
+     */
+    workspaceId: string;
   },
 ) => Promise<ProactiveQueryResult>;
 

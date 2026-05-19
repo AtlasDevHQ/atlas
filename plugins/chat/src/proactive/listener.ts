@@ -1091,7 +1091,7 @@ async function runAnswerFlow(
   recentAnswers: RecentAnswers,
 ): Promise<void> {
   const resolved: ResolveOutcome = config.userResolver
-    ? await safeResolveUser(config.userResolver, asker, log)
+    ? await safeResolveUser(config.userResolver, asker, workspaceId, log)
     : { kind: "unlinked" };
 
   // Resolver THREW → post the apology copy and return. Critical
@@ -1206,6 +1206,7 @@ async function runAnswerFlow(
         // allowlist. Nullable signature (vs an empty-string sentinel)
         // forces deliberate null handling on every host.
         atlasUserId: null,
+        workspaceId,
       });
     } catch (err) {
       log.error(
@@ -1265,6 +1266,7 @@ async function runAnswerFlow(
       threadId,
       asker,
       atlasUserId: resolved.atlasUserId,
+      workspaceId,
     });
   } catch (err) {
     log.error(
@@ -1558,10 +1560,11 @@ type ResolveOutcome =
 async function safeResolveUser(
   resolver: ProactiveUserResolver,
   asker: ProactiveAsker,
+  workspaceId: string,
   log: PluginLogger,
 ): Promise<ResolveOutcome> {
   try {
-    const resolved = await resolver(asker);
+    const resolved = await resolver(asker, { workspaceId });
     if (resolved.atlasUserId) {
       return { kind: "linked", atlasUserId: resolved.atlasUserId };
     }
@@ -1578,6 +1581,7 @@ async function safeResolveUser(
       {
         err: err instanceof Error ? err : new Error(String(err)),
         externalUserId: asker.externalUserId,
+        workspaceId,
       },
       "Proactive userResolver threw — refusing the answer (do NOT downgrade linked askers to public-dataset on resolver failure)",
     );

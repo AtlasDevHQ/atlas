@@ -142,6 +142,7 @@ export type {
   ProactiveGateFn,
   ProactiveQueryResult,
   ProactiveUserResolver,
+  ProactiveUserResolverContext,
   RecentAnswerEntry,
   ResolvedAsker,
   ResolveWorkspaceIdFn,

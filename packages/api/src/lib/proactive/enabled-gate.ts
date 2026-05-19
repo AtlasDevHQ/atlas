@@ -78,26 +78,35 @@ export type ProactiveGateRuntime = ManagedRuntime.ManagedRuntime<
 >;
 
 /**
- * Per-workspace `isEnabled` callback returned by
+ * Per-call `isEnabled` callback returned by
  * `createProactiveEnabledGate`. Satisfies the plugin-side
- * `ProactiveGateFn` (`() => Promise<boolean>`); also carries a
- * test-only `__reset()` hook that clears the per-closure enterprise
- * cache. Per-process today — if the EE roadmap adds runtime license
- * activation, hook `__reset` into the config-reload path so the gate
- * doesn't stay closed against the new license state.
+ * `ProactiveGateFn` (`(workspaceId: string) => Promise<boolean>`); also
+ * carries a test-only `__reset()` hook that clears the per-closure
+ * enterprise cache.
+ *
+ * Post-#2620 multi-tenant refactor: the closure is bound ONCE per
+ * process (was once per workspace pre-refactor) — the EE check is
+ * still per-process-cacheable because the license doesn't flip without
+ * a restart, but the workspace SELECT now reads the per-call
+ * `workspaceId` argument and re-runs every call.
+ *
+ * If the EE roadmap adds runtime license activation, hook `__reset`
+ * into the config-reload path so the gate doesn't stay closed against
+ * the new license state.
  */
-export type ProactiveEnabledGate = (() => Promise<boolean>) & {
+export type ProactiveEnabledGate = ((workspaceId: string) => Promise<boolean>) & {
   /** @internal Test-only: clears the per-closure enterprise cache. */
   __reset: () => void;
 };
 
 /**
- * Build a per-workspace `isEnabled` callback for the proactive listener.
+ * Build the proactive listener's `isEnabled` callback.
  *
  * The returned closure satisfies the plugin-side `ProactiveGateFn`
- * (`() => Promise<boolean>` — see
- * `plugins/chat/src/proactive/types.ts`). Bind one per workspace at
- * plugin boot; the closure carries its own enterprise-result cache.
+ * (`(workspaceId: string) => Promise<boolean>` — see
+ * `plugins/chat/src/proactive/types.ts`). Post-#2620 the factory takes
+ * no `workspaceId` argument — `workspaceId` is per-call, so one closure
+ * serves N tenants in the same process.
  *
  * Returns `true` iff BOTH:
  *   - Enterprise is loaded (Tag's `requireEnabled` doesn't fail with
@@ -105,10 +114,15 @@ export type ProactiveEnabledGate = (() => Promise<boolean>) & {
  *   - The workspace has `workspace_proactive_config.enabled = true`.
  *
  * Never throws. Every failure → `false` + structured `log.warn`.
+ *
+ * Pre-#2620 the factory took `workspaceId` so the SELECT closed over
+ * a constant; that's what made the listener single-tenant. The
+ * enterprise-result cache stays per-closure (still a process-lifetime
+ * constant — license flips require a restart); the workspace SELECT
+ * re-runs per call reading the arg, same semantics as before.
  */
 export function createProactiveEnabledGate(
   runtime: ProactiveGateRuntime,
-  workspaceId: string,
 ): ProactiveEnabledGate {
   // Cached enterprise result. `undefined` ⇒ not yet checked; `true` /
   // `false` ⇒ resolved (and never re-resolved for the lifetime of this
@@ -116,7 +130,9 @@ export function createProactiveEnabledGate(
   // shot `false`; SaaS-EE makes it a one-shot `true`.
   let enterpriseEnabled: boolean | undefined = undefined;
 
-  const isProactiveEnabled = async function (): Promise<boolean> {
+  const isProactiveEnabled = async function (
+    workspaceId: string,
+  ): Promise<boolean> {
     // ── 1. Enterprise check (cached) ─────────────────────────────
     if (enterpriseEnabled === undefined) {
       const program = Effect.gen(function* () {

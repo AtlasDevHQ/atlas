@@ -3246,17 +3246,16 @@ describe("ProactiveConfig schema", () => {
       executeQuery: () =>
         Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
       proactive: {
+        resolveWorkspaceId: async () => "ws-1",
         isEnabled: () => true,
         classify: async () => ({ isQuestion: true, confidence: 0.9 }),
-        workspace: {
+        getWorkspaceConfig: async () => ({
           enabled: true,
           sensitivity: "balanced",
           classifierMode: "regex-prefilter",
-        },
+        }),
+        getChannelConfigs: async () => [],
         channelAllowlist: ["C-allowed"],
-        channelConfigs: {
-          "C-allowed": { channelId: "C-allowed", allow: true },
-        },
       },
     });
 
@@ -3273,20 +3272,22 @@ describe("ProactiveConfig schema", () => {
       executeQuery: () =>
         Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
       proactive: {
+        resolveWorkspaceId: async () => "ws-1",
         isEnabled: "not-a-function",
         classify: async () => ({ isQuestion: false, confidence: 0 }),
-        workspace: {
+        getWorkspaceConfig: async () => ({
           enabled: true,
           sensitivity: "balanced",
           classifierMode: "regex-prefilter",
-        },
+        }),
+        getChannelConfigs: async () => [],
       },
     });
 
     expect(result.success).toBe(false);
   });
 
-  it("rejects invalid sensitivity preset", async () => {
+  it("rejects when proactive.resolveWorkspaceId is missing", async () => {
     const { ChatConfigSchema } = await import("./config");
 
     const result = ChatConfigSchema.safeParse({
@@ -3296,13 +3297,15 @@ describe("ProactiveConfig schema", () => {
       executeQuery: () =>
         Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
       proactive: {
+        // resolveWorkspaceId deliberately omitted
         isEnabled: () => true,
         classify: async () => ({ isQuestion: false, confidence: 0 }),
-        workspace: {
+        getWorkspaceConfig: async () => ({
           enabled: true,
-          sensitivity: "extreme",
+          sensitivity: "balanced",
           classifierMode: "regex-prefilter",
-        },
+        }),
+        getChannelConfigs: async () => [],
       },
     });
 

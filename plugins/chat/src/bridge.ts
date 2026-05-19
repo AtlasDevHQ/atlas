@@ -966,41 +966,83 @@ export function createChatBridge(
     // feedback collector before falling through to the question flow.
     if (config.proactive && proactiveRecentAnswers) {
       try {
-        const handled = await handleProactiveFeedbackSlash({
-          text: event.text,
-          channelId: event.channel.id,
-          asker: {
-            platform: event.adapter?.name ?? config.proactive.platform ?? "unknown",
-            externalUserId: event.user.userId,
-            userName: event.user.userName,
-          },
-          config: {
-            isEnabled: config.proactive.isEnabled,
-            classify: config.proactive.classify,
-            workspace: config.proactive.workspace,
-            channelAllowlist: config.proactive.channelAllowlist,
-            channelConfigs: config.proactive.channelConfigs,
-            userResolver: config.proactive.userResolver,
-            executeQueryProactive: config.proactive.executeQueryProactive,
-            linkUrl: config.proactive.linkUrl,
-            platform: config.proactive.platform,
-            feedbackCollector: config.proactive.feedbackCollector,
-            slashCommandName: config.slashCommandName,
-          },
-          log,
-          recentAnswers: proactiveRecentAnswers,
-        });
-        if (handled) {
+        // Post-#2620 multi-tenant: resolve the workspace for this slash
+        // event before delegating. The slash event doesn't carry the
+        // same Message shape onNewMessage does — we synthesize a
+        // minimal shape from the adapter + raw payload, which is what
+        // the Slack-platform resolver uses anyway (`raw.team_id`).
+        const resolveAdapter = event.adapter;
+        let slashWorkspaceId: string | null = null;
+        if (resolveAdapter) {
           try {
-            await event.channel.postEphemeral(
-              event.user,
-              { markdown: "Thanks for the feedback." },
-              { fallbackToDM: false },
+            slashWorkspaceId = await config.proactive.resolveWorkspaceId({
+              adapter: resolveAdapter,
+              // Slash events have no thread; the resolver only reads
+              // `adapter.name` + `message.raw`, so a null-ish thread is
+              // fine. Cast for the same reason the action/modal handlers
+              // do — the resolver contract is platform-determined.
+              thread: undefined as unknown as Parameters<
+                typeof config.proactive.resolveWorkspaceId
+              >[0]["thread"],
+              message: {
+                id: "",
+                raw: event.raw,
+              } as unknown as Parameters<
+                typeof config.proactive.resolveWorkspaceId
+              >[0]["message"],
+            });
+          } catch (resolveErr) {
+            log.warn(
+              {
+                err:
+                  resolveErr instanceof Error
+                    ? resolveErr
+                    : new Error(String(resolveErr)),
+              },
+              "Proactive feedback slash: resolveWorkspaceId threw — falling back to standard question flow",
             );
-          } catch {
-            // Ack is best-effort.
           }
-          return;
+        }
+
+        if (slashWorkspaceId) {
+          const handled = await handleProactiveFeedbackSlash({
+            text: event.text,
+            channelId: event.channel.id,
+            workspaceId: slashWorkspaceId,
+            asker: {
+              platform: event.adapter?.name ?? config.proactive.platform ?? "unknown",
+              externalUserId: event.user.userId,
+              userName: event.user.userName,
+            },
+            config: {
+              resolveWorkspaceId: config.proactive.resolveWorkspaceId,
+              isEnabled: config.proactive.isEnabled,
+              classify: config.proactive.classify,
+              getWorkspaceConfig: config.proactive.getWorkspaceConfig,
+              channelAllowlist: config.proactive.channelAllowlist,
+              getChannelConfigs: config.proactive.getChannelConfigs,
+              userResolver: config.proactive.userResolver,
+              executeQueryProactive: config.proactive.executeQueryProactive,
+              linkUrl: config.proactive.linkUrl,
+              platform: config.proactive.platform,
+              feedbackCollector: config.proactive.feedbackCollector,
+              slashCommandName: config.slashCommandName,
+            },
+            log,
+            recentAnswers: proactiveRecentAnswers,
+          });
+          if (handled) {
+            try {
+              await event.channel.postEphemeral(
+                event.user,
+                { markdown: "Thanks for the feedback." },
+                { fallbackToDM: false },
+              );
+            } catch {
+              // Ack is best-effort.
+            }
+            return;
+          }
         }
       } catch (err) {
         log.warn(
@@ -1571,29 +1613,35 @@ export function createChatBridge(
     );
   });
 
-  // --- Proactive listener (slices #2292, #2293, #2298) ---
+  // --- Proactive listener (slices #2292, #2293, #2298; multi-tenant #2620) ---
   // Only registers when proactive config is present AND the host-supplied
-  // gate (`isEnterpriseEnabled() && workspaceFlag`) returns true. Failures
-  // never block the rest of the bridge from coming up.
+  // gate (`isEnterpriseEnabled()`) returns true at boot. Failures never
+  // block the rest of the bridge from coming up.
+  //
+  // Post-#2620: `workspaceId` / `workspace` / `channelConfigs` are
+  // resolved per event via `resolveWorkspaceId` / `getWorkspaceConfig` /
+  // `getChannelConfigs` rather than baked statically — the same Chat
+  // instance can now serve N tenants without cross-pollination.
   let proactiveRecentAnswers: RecentAnswers | null = null;
   if (config.proactive) {
     const proactiveConfig = config.proactive;
     Promise.resolve()
       .then(async () => {
         const handle = await registerProactiveListener(chat, log, {
+          // Per-event tenant + config resolution (#2620).
+          resolveWorkspaceId: proactiveConfig.resolveWorkspaceId,
+          getWorkspaceConfig: proactiveConfig.getWorkspaceConfig,
+          getChannelConfigs: proactiveConfig.getChannelConfigs,
           isEnabled: proactiveConfig.isEnabled,
           classify: proactiveConfig.classify,
-          workspace: proactiveConfig.workspace,
           channelAllowlist: proactiveConfig.channelAllowlist,
-          channelConfigs: proactiveConfig.channelConfigs,
           userResolver: proactiveConfig.userResolver,
           executeQueryProactive: proactiveConfig.executeQueryProactive,
           linkUrl: proactiveConfig.linkUrl,
           platform: proactiveConfig.platform,
           feedbackCollector: proactiveConfig.feedbackCollector,
           slashCommandName: config.slashCommandName,
-          // Kill switch (#2295).
-          workspaceId: proactiveConfig.workspaceId,
+          // Kill switch (#2295). `workspaceId` is now per-event (#2620).
           isPaused: proactiveConfig.isPaused,
           onPauseRequest: proactiveConfig.onPauseRequest,
           // AnswerMeter (#2296) — shared callback also covers

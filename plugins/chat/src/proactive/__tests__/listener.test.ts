@@ -29,8 +29,10 @@ import {
   type FeedbackCollectorFn,
 } from "../feedback";
 import type {
+  ChannelProactiveConfig,
   LLMClassifierFn,
   ProactiveMeterEvent,
+  ResolveWorkspaceIdFn,
   WorkspaceProactiveConfig,
 } from "../types";
 import type {
@@ -104,6 +106,7 @@ function makeChat() {
 interface ThreadDouble {
   channelId: string;
   isDM: boolean;
+  adapter: { name: string };
   createSentMessageFromMessage: ReturnType<typeof mock>;
   postEphemeral: ReturnType<typeof mock>;
   post: ReturnType<typeof mock>;
@@ -111,11 +114,19 @@ interface ThreadDouble {
   _addReaction: ReturnType<typeof mock>;
 }
 
-function makeThread(channelId = "C-allowed", opts: { isDM?: boolean } = {}): ThreadDouble {
+function makeThread(
+  channelId = "C-allowed",
+  opts: { isDM?: boolean; adapterName?: string } = {},
+): ThreadDouble {
   const addReaction = mock(async () => {});
   return {
     channelId,
     isDM: opts.isDM ?? false,
+    // Post-#2620: the listener reads `thread.adapter` to pass to the
+    // host-supplied `resolveWorkspaceId`. Test threads supply a minimal
+    // adapter stub (name only — the default fixture resolver returns a
+    // constant workspaceId, so it doesn't actually inspect the adapter).
+    adapter: { name: opts.adapterName ?? "slack" },
     createSentMessageFromMessage: mock(() => ({ addReaction })),
     postEphemeral: mock(async () => ({ id: "E1", threadId: channelId, raw: {} })),
     post: mock(async () => ({ id: "P1" })),
@@ -161,6 +172,39 @@ const echoExecute: ProactiveExecuteQuery = async (question) => ({
 });
 
 // ---------------------------------------------------------------------------
+// #2620 — multi-tenant per-event resolution fixtures
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a per-event workspace resolver that returns `workspaceId` for
+ * every event. Tests that exercise the unknown-tenant skip pass
+ * `() => null` directly.
+ */
+function makeResolver(workspaceId: string | null): ResolveWorkspaceIdFn {
+  return async () => workspaceId;
+}
+
+/**
+ * Build the standard pair of `getWorkspaceConfig` / `getChannelConfigs`
+ * fetchers from a workspace config + optional per-channel overrides.
+ * Replaces the pre-#2620 static `workspace` + `channelConfigs` registration
+ * fields the tests used to stub directly.
+ */
+function makeWorkspaceFetchers(
+  workspace: WorkspaceProactiveConfig | null = baseWorkspace,
+  channelConfigs: ChannelProactiveConfig[] = [],
+) {
+  return {
+    getWorkspaceConfig: async () => workspace,
+    getChannelConfigs: async () => channelConfigs,
+  };
+}
+
+const defaultResolver = makeResolver("ws_1");
+const { getWorkspaceConfig: defaultGetWorkspace, getChannelConfigs: defaultGetChannels } =
+  makeWorkspaceFetchers();
+
+// ---------------------------------------------------------------------------
 // resolveChannelAllowlist
 // ---------------------------------------------------------------------------
 
@@ -195,7 +239,9 @@ describe("registerProactiveListener — gating", () => {
     await registerProactiveListener(chat as any, makeLogger(), {
       isEnabled: () => false,
       classify: yesLLM,
-      workspace: baseWorkspace,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
       channelAllowlist: ["C-allowed"],
     });
     expect(isRegistered()).toBe(false);
@@ -207,7 +253,9 @@ describe("registerProactiveListener — gating", () => {
     await registerProactiveListener(chat as any, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
-      workspace: baseWorkspace,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
       channelAllowlist: ["C-allowed"],
     });
     expect(isRegistered()).toBe(true);
@@ -230,7 +278,9 @@ describe("registerProactiveListener — channel-message handler", () => {
     await registerProactiveListener(chat as any, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
-      workspace: baseWorkspace,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
       channelAllowlist: ["C-allowed"],
     });
     const thread = makeThread("C-allowed");
@@ -245,7 +295,9 @@ describe("registerProactiveListener — channel-message handler", () => {
     await registerProactiveListener(chat as any, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
-      workspace: baseWorkspace,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
       channelAllowlist: ["C-allowed"],
     });
     const thread = makeThread("C-other");
@@ -259,7 +311,9 @@ describe("registerProactiveListener — channel-message handler", () => {
     await registerProactiveListener(chat as any, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
-      workspace: baseWorkspace,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
       channelAllowlist: ["C-allowed"],
     });
     const thread = makeThread("C-allowed");
@@ -273,7 +327,9 @@ describe("registerProactiveListener — channel-message handler", () => {
     await registerProactiveListener(chat as any, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
-      workspace: baseWorkspace,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
       channelAllowlist: ["C-allowed"],
     });
     const thread = makeThread("C-allowed");
@@ -286,7 +342,9 @@ describe("registerProactiveListener — channel-message handler", () => {
     await registerProactiveListener(chat as any, makeLogger(), {
       isEnabled: () => true,
       classify: noLLM,
-      workspace: baseWorkspace,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
       channelAllowlist: ["C-allowed"],
     });
     const thread = makeThread("C-allowed");
@@ -310,7 +368,9 @@ describe("registerProactiveListener — reaction-back handler", () => {
     await registerProactiveListener(chat as any, log, {
       isEnabled: () => true,
       classify: yesLLM,
-      workspace: baseWorkspace,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
       channelAllowlist: ["C-allowed"],
       userResolver: opts.userResolver,
       executeQueryProactive: opts.executeQueryProactive,
@@ -454,7 +514,9 @@ describe("registerProactiveListener — button handlers", () => {
     await registerProactiveListener(chat as any, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
-      workspace: baseWorkspace,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
       channelAllowlist: ["C-allowed"],
       userResolver: linkedResolver,
       executeQueryProactive,
@@ -481,7 +543,9 @@ describe("registerProactiveListener — button handlers", () => {
     await registerProactiveListener(chat as any, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
-      workspace: baseWorkspace,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
       channelAllowlist: ["C-allowed"],
       userResolver: linkedResolver,
       executeQueryProactive,
@@ -533,7 +597,9 @@ describe("registerProactiveListener — feedback buttons", () => {
     const handle = await registerProactiveListener(chat as any, log, {
       isEnabled: () => true,
       classify: yesLLM,
-      workspace: baseWorkspace,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
       channelAllowlist: ["C-allowed"],
       userResolver: linkedResolver,
       executeQueryProactive: echoExecute,
@@ -585,6 +651,11 @@ describe("registerProactiveListener — feedback buttons", () => {
       adapter: { name: "slack" },
       callbackId: PROACTIVE_FB_WRONG_DATA_MODAL_ID,
       privateMetadata: "answer-msg-1",
+      // Post-#2620 the modal-submit handler needs `relatedThread` to
+      // resolve the tenant (the modal is opened from the in-thread
+      // feedback button, so `relatedThread` is always present in
+      // production). Tests synthesise a minimal thread stub.
+      relatedThread: makeThread("C-allowed"),
       user: { isMe: false, isBot: false, userId: "U-asker", userName: "alice" },
       values: { [PROACTIVE_FB_WRONG_DATA_INPUT_ID]: "MRR figure is stale" },
       raw: {},
@@ -616,7 +687,9 @@ describe("registerProactiveListener — feedback buttons", () => {
     await registerProactiveListener(chat as any, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
-      workspace: baseWorkspace,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
       channelAllowlist: ["C-allowed"],
       // feedbackCollector deliberately omitted
     });
@@ -645,11 +718,14 @@ describe("handleProactiveFeedbackSlash", () => {
     const handled = await handleProactiveFeedbackSlash({
       text: "how many users last month",
       channelId: "C-allowed",
+      workspaceId: "ws_1",
       asker: { platform: "slack", externalUserId: "U-asker", userName: "alice" },
       config: {
         isEnabled: () => true,
         classify: yesLLM,
-        workspace: baseWorkspace,
+        resolveWorkspaceId: defaultResolver,
+        getWorkspaceConfig: defaultGetWorkspace,
+        getChannelConfigs: defaultGetChannels,
         feedbackCollector: async (ev) => {
           calls.push(ev);
         },
@@ -673,11 +749,14 @@ describe("handleProactiveFeedbackSlash", () => {
     const handled = await handleProactiveFeedbackSlash({
       text: "feedback figure looks stale",
       channelId: "C-allowed",
+      workspaceId: "ws_1",
       asker: { platform: "slack", externalUserId: "U-asker", userName: "alice" },
       config: {
         isEnabled: () => true,
         classify: yesLLM,
-        workspace: baseWorkspace,
+        resolveWorkspaceId: defaultResolver,
+        getWorkspaceConfig: defaultGetWorkspace,
+        getChannelConfigs: defaultGetChannels,
         feedbackCollector: async (ev) => {
           calls.push(ev);
         },
@@ -698,11 +777,14 @@ describe("handleProactiveFeedbackSlash", () => {
     const handled = await handleProactiveFeedbackSlash({
       text: "feedback some text",
       channelId: "C-allowed",
+      workspaceId: "ws_1",
       asker: { platform: "slack", externalUserId: "U-asker", userName: "alice" },
       config: {
         isEnabled: () => true,
         classify: yesLLM,
-        workspace: baseWorkspace,
+        resolveWorkspaceId: defaultResolver,
+        getWorkspaceConfig: defaultGetWorkspace,
+        getChannelConfigs: defaultGetChannels,
         // feedbackCollector deliberately omitted
       },
       log: makeLogger(),
@@ -724,9 +806,10 @@ describe("registerProactiveListener — kill switch", () => {
     await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], makeLogger(), {
       isEnabled: () => true,
       classify,
-      workspace: baseWorkspace,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
       channelAllowlist: ["C-allowed"],
-      workspaceId: "ws_1",
       isPaused,
       onPauseRequest: mock(async () => {}),
     });
@@ -743,9 +826,10 @@ describe("registerProactiveListener — kill switch", () => {
     await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
-      workspace: baseWorkspace,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
       channelAllowlist: ["C-allowed"],
-      workspaceId: "ws_1",
       isPaused,
       onPauseRequest: mock(async () => {}),
     });
@@ -772,9 +856,10 @@ describe("registerProactiveListener — kill switch", () => {
     await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], log, {
       isEnabled: () => true,
       classify,
-      workspace: baseWorkspace,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
       channelAllowlist: ["C-allowed"],
-      workspaceId: "ws_1",
       isPaused,
       onPauseRequest: mock(async () => {}),
       onMeterEvent,
@@ -800,9 +885,10 @@ describe("registerProactiveListener — kill switch", () => {
     await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], makeLogger(), {
       isEnabled: () => true,
       classify,
-      workspace: baseWorkspace,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
       channelAllowlist: ["C-allowed"],
-      workspaceId: "ws_1",
       isPaused: mock(async () => ({ paused: false })),
       onPauseRequest,
     });
@@ -810,7 +896,6 @@ describe("registerProactiveListener — kill switch", () => {
     await invoke(thread, makeMessage({ text: "@atlas pause" }));
     expect(onPauseRequest).toHaveBeenCalledTimes(1);
     expect((onPauseRequest.mock.calls[0] as unknown[])?.[0]).toMatchObject({
-      workspaceId: "ws_1",
       channelId: "C-allowed",
       layer: "channel-24h",
     });
@@ -825,9 +910,10 @@ describe("registerProactiveListener — kill switch", () => {
     await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], makeLogger(), {
       isEnabled: () => true,
       classify,
-      workspace: baseWorkspace,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
       channelAllowlist: ["C-allowed"],
-      workspaceId: "ws_1",
       isPaused: mock(async () => ({ paused: false })),
       onPauseRequest,
     });
@@ -835,7 +921,6 @@ describe("registerProactiveListener — kill switch", () => {
     await invoke(thread, makeMessage({ text: "unsubscribe" }));
     expect(onPauseRequest).toHaveBeenCalledTimes(1);
     expect((onPauseRequest.mock.calls[0] as unknown[])?.[0]).toMatchObject({
-      workspaceId: "ws_1",
       channelId: null,
       layer: "user-optout",
       durationMs: null,
@@ -849,9 +934,10 @@ describe("registerProactiveListener — kill switch", () => {
     await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
-      workspace: baseWorkspace,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
       channelAllowlist: ["C-allowed"],
-      workspaceId: "ws_1",
       isPaused: mock(async () => ({ paused: false })),
       onPauseRequest,
     });
@@ -869,9 +955,10 @@ describe("registerProactiveListener — kill switch", () => {
     await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], log, {
       isEnabled: () => true,
       classify: yesLLM,
-      workspace: baseWorkspace,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
       channelAllowlist: ["C-allowed"],
-      workspaceId: "ws_1",
       isPaused: mock(async () => ({ paused: false })),
       onPauseRequest,
     });
@@ -881,21 +968,28 @@ describe("registerProactiveListener — kill switch", () => {
     expect(log.warn).toHaveBeenCalled();
   });
 
-  it("is a no-op for kill-switch checks when workspaceId is omitted", async () => {
+  it("skips kill-switch check entirely when resolveWorkspaceId returns null (#2620 multi-tenant)", async () => {
+    // Pre-#2620 the listener had a static `workspaceId?` field — when
+    // omitted, the kill-switch check was bypassed. Post-#2620 the
+    // workspaceId is always resolved per event; null = unknown tenant
+    // = silent skip BEFORE any kill-switch / classify call.
     const isPaused = mock(async () => ({ paused: true, layer: "workspace-kill" as const }));
+    const classify = mock(yesLLM);
     const { chat, invokeMessage: invoke } = makeChat();
     await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], makeLogger(), {
       isEnabled: () => true,
-      classify: yesLLM,
-      workspace: baseWorkspace,
+      classify,
+      resolveWorkspaceId: makeResolver(null), // unknown tenant
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
       channelAllowlist: ["C-allowed"],
-      // No workspaceId — listener should NOT call isPaused.
       isPaused,
     });
     const thread = makeThread("C-allowed");
     await invoke(thread, makeMessage());
     expect(isPaused).not.toHaveBeenCalled();
-    expect(thread._addReaction).toHaveBeenCalledTimes(1);
+    expect(classify).not.toHaveBeenCalled();
+    expect(thread._addReaction).not.toHaveBeenCalled();
   });
 });
 
@@ -927,10 +1021,11 @@ describe("registerProactiveListener — monthly quota cap (#2301)", () => {
       {
         isEnabled: () => true,
         classify,
-        workspace: baseWorkspace,
+        resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
         channelAllowlist: ["C-allowed"],
-        workspaceId: "ws_1",
-        getQuotaStatus,
+          getQuotaStatus,
         onMeterEvent,
       },
     );
@@ -978,10 +1073,11 @@ describe("registerProactiveListener — monthly quota cap (#2301)", () => {
       {
         isEnabled: () => true,
         classify,
-        workspace: baseWorkspace,
+        resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
         channelAllowlist: ["C-allowed"],
-        workspaceId: "ws_1",
-        getQuotaStatus,
+          getQuotaStatus,
         onMeterEvent,
       },
     );
@@ -1018,10 +1114,11 @@ describe("registerProactiveListener — monthly quota cap (#2301)", () => {
       {
         isEnabled: () => true,
         classify,
-        workspace: baseWorkspace,
+        resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
         channelAllowlist: ["C-allowed"],
-        workspaceId: "ws_1",
-        getQuotaStatus,
+          getQuotaStatus,
         onMeterEvent,
       },
     );
@@ -1060,10 +1157,11 @@ describe("registerProactiveListener — monthly quota cap (#2301)", () => {
       {
         isEnabled: () => true,
         classify,
-        workspace: baseWorkspace,
+        resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
         channelAllowlist: ["C-allowed"],
-        workspaceId: "ws_1",
-        getQuotaStatus,
+          getQuotaStatus,
       },
     );
     const thread = makeThread("C-allowed");
@@ -1073,29 +1171,35 @@ describe("registerProactiveListener — monthly quota cap (#2301)", () => {
     expect(thread._addReaction).toHaveBeenCalledTimes(1);
   });
 
-  it("is a no-op for quota checks when workspaceId is omitted", async () => {
+  it("skips quota check entirely when resolveWorkspaceId returns null (#2620 multi-tenant)", async () => {
+    // Pre-#2620 the listener had a static `workspaceId?` field — when
+    // omitted, the quota check was bypassed. Post-#2620 the unknown-
+    // tenant skip happens BEFORE classification (and quota).
     const getQuotaStatus = mock(async () => ({
       monthlyClassifierCap: 50,
       classifyCountThisMonth: 50,
       capReached: true,
     }));
+    const classify = mock(yesLLM);
     const { chat, invokeMessage: invoke } = makeChat();
     await registerProactiveListener(
       chat as unknown as Parameters<typeof registerProactiveListener>[0],
       makeLogger(),
       {
         isEnabled: () => true,
-        classify: yesLLM,
-        workspace: baseWorkspace,
+        classify,
+        resolveWorkspaceId: makeResolver(null),
+        getWorkspaceConfig: defaultGetWorkspace,
+        getChannelConfigs: defaultGetChannels,
         channelAllowlist: ["C-allowed"],
-        // No workspaceId — listener should NOT call getQuotaStatus.
         getQuotaStatus,
       },
     );
     const thread = makeThread("C-allowed");
     await invoke(thread, makeMessage());
     expect(getQuotaStatus).not.toHaveBeenCalled();
-    expect(thread._addReaction).toHaveBeenCalledTimes(1);
+    expect(classify).not.toHaveBeenCalled();
+    expect(thread._addReaction).not.toHaveBeenCalled();
   });
 });
 
@@ -1119,9 +1223,10 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
     await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], log, {
       isEnabled: () => true,
       classify: yesLLM,
-      workspace: baseWorkspace,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: defaultGetChannels,
       channelAllowlist: ["C-allowed"],
-      workspaceId: "ws_1",
       userResolver: opts.userResolver,
       executeQueryProactive: opts.executeQueryProactive,
       getPublicDataset: opts.getPublicDataset,
@@ -1521,5 +1626,182 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       (c) => (c as unknown[])[0] as { eventType: string },
     );
     expect(meterCalls.some((c) => c.eventType === "public_refused")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2620 — multi-tenant per-event resolution
+// ---------------------------------------------------------------------------
+
+describe("registerProactiveListener — multi-tenant per-event resolution (#2620)", () => {
+  it("silently skips the event when resolveWorkspaceId returns null", async () => {
+    const classify = mock(yesLLM);
+    const onMeterEvent = mock(async () => {});
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(
+      chat as unknown as Parameters<typeof registerProactiveListener>[0],
+      makeLogger(),
+      {
+        isEnabled: () => true,
+        classify,
+        resolveWorkspaceId: makeResolver(null),
+        getWorkspaceConfig: defaultGetWorkspace,
+        getChannelConfigs: defaultGetChannels,
+        channelAllowlist: ["C-allowed"],
+        onMeterEvent,
+      },
+    );
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage());
+    // Unknown tenant = nothing runs: no classify, no reaction, no meter row.
+    expect(classify).not.toHaveBeenCalled();
+    expect(thread._addReaction).not.toHaveBeenCalled();
+    expect(onMeterEvent).not.toHaveBeenCalled();
+  });
+
+  it("silently skips when resolveWorkspaceId throws (fails as null)", async () => {
+    // Resolver contract is "never throw"; the safe-wrapper catches and
+    // degrades to null so a registry hiccup can't crash the SDK loop.
+    const classify = mock(yesLLM);
+    const onMeterEvent = mock(async () => {});
+    const { chat, invokeMessage } = makeChat();
+    const log = makeLogger();
+    await registerProactiveListener(
+      chat as unknown as Parameters<typeof registerProactiveListener>[0],
+      log,
+      {
+        isEnabled: () => true,
+        classify,
+        resolveWorkspaceId: async () => {
+          throw new Error("slack_installations table missing");
+        },
+        getWorkspaceConfig: defaultGetWorkspace,
+        getChannelConfigs: defaultGetChannels,
+        channelAllowlist: ["C-allowed"],
+        onMeterEvent,
+      },
+    );
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage());
+    expect(classify).not.toHaveBeenCalled();
+    expect(thread._addReaction).not.toHaveBeenCalled();
+    expect(onMeterEvent).not.toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalled();
+  });
+
+  it("skips when getWorkspaceConfig returns null (workspace not opted in)", async () => {
+    const classify = mock(yesLLM);
+    const onMeterEvent = mock(async () => {});
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(
+      chat as unknown as Parameters<typeof registerProactiveListener>[0],
+      makeLogger(),
+      {
+        isEnabled: () => true,
+        classify,
+        resolveWorkspaceId: defaultResolver,
+        getWorkspaceConfig: async () => null, // no config row
+        getChannelConfigs: defaultGetChannels,
+        channelAllowlist: ["C-allowed"],
+        onMeterEvent,
+      },
+    );
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage());
+    expect(classify).not.toHaveBeenCalled();
+    expect(thread._addReaction).not.toHaveBeenCalled();
+    expect(onMeterEvent).not.toHaveBeenCalled();
+  });
+
+  it("attributes meter rows to the correct workspace across two simulated tenants in the same process", async () => {
+    // The core multi-tenant correctness test: pre-#2620 every meter row
+    // would have stamped the same baked-in workspaceId regardless of
+    // which tenant the message came from. Post-#2620 the listener must
+    // read the workspace per event and stamp it onto the meter row.
+
+    // Map (channel id) → workspace id so the resolver can route two
+    // distinct tenants through the same Chat instance.
+    const channelToWorkspace = new Map<string, string>([
+      ["C-tenant-A", "ws-A"],
+      ["C-tenant-B", "ws-B"],
+    ]);
+    const resolveWorkspaceId: ResolveWorkspaceIdFn = async ({ thread }) => {
+      return channelToWorkspace.get(thread.channelId) ?? null;
+    };
+
+    const meterEvents: ProactiveMeterEvent[] = [];
+    const onMeterEvent = mock(async (event: ProactiveMeterEvent) => {
+      meterEvents.push(event);
+    });
+
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(
+      chat as unknown as Parameters<typeof registerProactiveListener>[0],
+      makeLogger(),
+      {
+        isEnabled: () => true,
+        classify: yesLLM,
+        resolveWorkspaceId,
+        getWorkspaceConfig: defaultGetWorkspace,
+        getChannelConfigs: defaultGetChannels,
+        channelAllowlist: ["C-tenant-A", "C-tenant-B"],
+        onMeterEvent,
+      },
+    );
+
+    const threadA = makeThread("C-tenant-A");
+    const threadB = makeThread("C-tenant-B");
+    await invokeMessage(threadA, makeMessage({ id: "M-A-1" }));
+    await invokeMessage(threadB, makeMessage({ id: "M-B-1" }));
+
+    // Both events should land classify + react meter rows.
+    const wsA = meterEvents.filter((e) => e.workspaceId === "ws-A");
+    const wsB = meterEvents.filter((e) => e.workspaceId === "ws-B");
+    expect(wsA.length).toBeGreaterThan(0);
+    expect(wsB.length).toBeGreaterThan(0);
+    // Pre-#2620 every row would have stamped the same workspaceId
+    // (the baked-in one). Post-#2620 they MUST attribute correctly.
+    expect(wsA.every((e) => e.workspaceId === "ws-A")).toBe(true);
+    expect(wsB.every((e) => e.workspaceId === "ws-B")).toBe(true);
+    // And the message ids must not bleed across tenants.
+    expect(wsA.some((e) => e.messageId === "M-B-1")).toBe(false);
+    expect(wsB.some((e) => e.messageId === "M-A-1")).toBe(false);
+  });
+
+  it("does not share rate-limit cooldown across tenants sharing the same channel id", async () => {
+    // Two tenants that both have a "C-general" channel must NOT share
+    // the in-memory cooldown row — otherwise tenant A reacting in
+    // C-general would silence tenant B's C-general for the cooldown
+    // window. Cooldown is keyed by `${workspaceId}:${channelId}`.
+    const channelToWorkspace = new Map<string, string>([
+      ["C-general-A", "ws-A"],
+      ["C-general-B", "ws-B"],
+    ]);
+    const resolveWorkspaceId: ResolveWorkspaceIdFn = async ({ thread }) => {
+      return channelToWorkspace.get(thread.channelId) ?? null;
+    };
+
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(
+      chat as unknown as Parameters<typeof registerProactiveListener>[0],
+      makeLogger(),
+      {
+        isEnabled: () => true,
+        classify: yesLLM,
+        resolveWorkspaceId,
+        getWorkspaceConfig: defaultGetWorkspace,
+        getChannelConfigs: defaultGetChannels,
+        channelAllowlist: ["C-general-A", "C-general-B"],
+      },
+    );
+
+    const threadA = makeThread("C-general-A");
+    const threadB = makeThread("C-general-B");
+    await invokeMessage(threadA, makeMessage({ id: "M-A-1" }));
+    await invokeMessage(threadB, makeMessage({ id: "M-B-1" }));
+
+    // Both tenants should react — the cooldown is per-tenant.
+    expect(threadA._addReaction).toHaveBeenCalledTimes(1);
+    expect(threadB._addReaction).toHaveBeenCalledTimes(1);
   });
 });

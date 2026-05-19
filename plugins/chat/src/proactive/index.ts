@@ -11,6 +11,8 @@ export type {
   ChannelPauseLayer,
   ChannelProactiveConfig,
   ClassificationResult,
+  GetChannelConfigsFn,
+  GetWorkspaceConfigFn,
   InterjectionAction,
   InterjectionDecision,
   LLMClassifierFn,
@@ -18,6 +20,7 @@ export type {
   PauseLayer,
   ProactiveGateFn,
   RecentActivity,
+  ResolveWorkspaceIdFn,
   SensitivityPreset,
   WorkspaceProactiveConfig,
 } from "./types";

@@ -16,7 +16,7 @@
  */
 
 import { emoji } from "chat";
-import type { Author, Chat, Message, ReactionEvent, Thread } from "chat";
+import type { Adapter, Author, Chat, Message, ReactionEvent, Thread } from "chat";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
 import { classifyMessage } from "./classifier";
 import {
@@ -35,8 +35,10 @@ import {
 } from "./answerer";
 import type {
   ChannelProactiveConfig,
+  GetChannelConfigsFn,
   GetPublicDatasetFn,
   GetQuotaStatusFn,
+  GetWorkspaceConfigFn,
   LLMClassifierFn,
   OnPauseRequestFn,
   ProactiveGateFn,
@@ -44,6 +46,7 @@ import type {
   ProactiveMeterEventFn,
   ProactivePublicDatasetEntry,
   RecentActivity,
+  ResolveWorkspaceIdFn,
   WorkspaceProactiveConfig,
 } from "./types";
 import { DEFAULT_PROACTIVE_REFUSAL_COPY } from "./types";
@@ -73,16 +76,36 @@ import {
 // ---------------------------------------------------------------------------
 
 export interface ProactiveListenerConfig {
-  /** Gate: true when proactive mode is allowed (enterprise + workspace flag). */
+  /**
+   * Per-event workspace resolution (#2620). The listener calls this
+   * at the top of every event handler to figure out which tenant the
+   * event belongs to. Returning `null` is a silent skip — no classify,
+   * no meter row, no kill-switch read. Implementations should never
+   * throw; failures should resolve as `null`.
+   */
+  resolveWorkspaceId: ResolveWorkspaceIdFn;
+  /**
+   * Gate: true when proactive mode is allowed for the given workspace
+   * (enterprise + workspace flag). Per-call workspaceId (post-#2620
+   * multi-tenant refactor).
+   */
   isEnabled: ProactiveGateFn;
   /** LLM classifier callback. */
   classify: LLMClassifierFn;
-  /** Workspace-level config. */
-  workspace: WorkspaceProactiveConfig;
+  /**
+   * Per-event workspace config fetcher (#2620). Called once per event
+   * after `resolveWorkspaceId` returns non-null. Returning `null`
+   * short-circuits the event (treat as not opted in).
+   */
+  getWorkspaceConfig: GetWorkspaceConfigFn;
   /** Explicit channel allowlist, else `ATLAS_PROACTIVE_CHANNELS`. */
   channelAllowlist?: string[];
-  /** Per-channel overrides keyed by channel ID. */
-  channelConfigs?: Record<string, ChannelProactiveConfig>;
+  /**
+   * Per-event channel-config fetcher (#2620). Returns the workspace's
+   * per-channel overrides as a flat array; the listener scans linearly
+   * (arrays are short in practice). Empty array = no overrides.
+   */
+  getChannelConfigs: GetChannelConfigsFn;
 
   // ---- Slice #2293 additions ----
 
@@ -171,14 +194,12 @@ export interface ProactiveListenerConfig {
   allowAnswerWhenEntitiesUnknown?: boolean;
 
   // ---- Slice #2295 additions (kill switch + per-user opt-out) ----
+  //
+  // workspaceId is resolved per event via `resolveWorkspaceId` (#2620)
+  // and threaded into these callbacks at the call site. Pre-#2620 this
+  // interface carried a static `workspaceId?: string`; multi-tenant
+  // SaaS (one Chat instance, N tenants) made that incorrect.
 
-  /**
-   * Workspace id threaded into the kill-switch callbacks. Required
-   * when `isPaused` or `onPauseRequest` is set. In single-tenant
-   * deployments this can be a constant; multi-tenant hosts pass the
-   * org id.
-   */
-  workspaceId?: string;
   /**
    * Pause-registry read API. Consulted BEFORE classification so the
    * kill switch pays only a DB read, never an LLM call. When omitted
@@ -264,7 +285,13 @@ export async function registerProactiveListener(
   log: PluginLogger,
   config: ProactiveListenerConfig,
 ): Promise<ProactiveListenerHandle> {
-  const enabledAtRegistration = await config.isEnabled();
+  // Registration-time gate. Pre-#2620 the gate was zero-arg with
+  // `workspaceId` baked in; post-#2620 the gate takes workspaceId per
+  // call. At registration we don't know any tenant yet, so probe with
+  // an empty string — the host's implementation is expected to short-
+  // circuit on falsy / unknown ids (no enterprise license at boot means
+  // no listener registers anywhere, regardless of which workspace).
+  const enabledAtRegistration = await config.isEnabled("");
   if (!enabledAtRegistration) {
     log.debug("Proactive listener not registered — gate is closed");
     return { recentAnswers: null };
@@ -281,7 +308,7 @@ export async function registerProactiveListener(
   );
   if (config.allowAnswerWhenEntitiesUnknown) {
     log.warn(
-      { workspaceId: config.workspaceId },
+      {},
       "Proactive: allowAnswerWhenEntitiesUnknown=true — unlinked-asker results without entitiesReferenced will be allowed through. Public-dataset allowlist is NOT enforced for these results; the host must provide a compensating control.",
     );
   }
@@ -290,6 +317,10 @@ export async function registerProactiveListener(
   // is fine for slices #2292–#2293 — #2296 layered in a durable meter
   // row but kept the cooldown gate cheap and local; cross-host cooldown
   // could ride the same `proactive_meter_events` table in a later slice.
+  //
+  // Post-#2620: keyed by `${workspaceId}:${channelId}` so two tenants
+  // that share a channel id (different Slack workspaces both have a
+  // "C-general") don't share a cooldown row.
   const recent = new Map<string, RecentActivity>();
   // Pending answers awaiting a reaction-back or button-click.
   const pending = new PendingAnswers();
@@ -299,15 +330,17 @@ export async function registerProactiveListener(
 
   // Local helper: route an event through the host meter callback,
   // swallowing failures so a meter outage never propagates into the
-  // SDK event loop. Stamps `workspaceId` from the registration config
-  // so callers don't have to repeat it at every call site.
+  // SDK event loop. Post-#2620 `workspaceId` is per event — caller
+  // supplies it as the first arg, the helper threads it onto the
+  // wire-format `ProactiveMeterEvent`.
   const emitMeter = async (
+    workspaceId: string,
     partial: Omit<ProactiveMeterEvent, "workspaceId">,
   ): Promise<void> => {
     if (!config.onMeterEvent) return;
     try {
       await config.onMeterEvent({
-        workspaceId: config.workspaceId ?? "",
+        workspaceId,
         ...partial,
       });
     } catch (err) {
@@ -321,19 +354,101 @@ export async function registerProactiveListener(
     }
   };
 
+  // Per-event workspace resolution helper. Wraps `config.resolveWorkspaceId`
+  // with a defensive try/catch so a host implementation that throws (the
+  // contract is "never throw, resolve as null") still degrades to a
+  // silent skip instead of crashing the SDK loop.
+  //
+  // `thread` is typed loosely (`Thread<unknown, unknown>`) because the
+  // listener takes events from `onNewMessage`, `onReaction`, `onAction`,
+  // and `onModalSubmit` — each surfaces a thread with a different
+  // generic parameter. The resolver only reads `thread.channelId` /
+  // `adapter` / `message.raw`, so a loose generic is correct here.
+  const safeResolveWorkspace = async (
+    adapter: Adapter,
+    thread: Thread<unknown, unknown>,
+    message: Message,
+  ): Promise<string | null> => {
+    try {
+      return await config.resolveWorkspaceId({
+        adapter,
+        thread: thread as Thread,
+        message,
+      });
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err : new Error(String(err)) },
+        "Proactive resolveWorkspaceId threw — treating as unknown tenant (skip)",
+      );
+      return null;
+    }
+  };
+
+  // Safe wrappers for the per-event workspace/channel config loaders.
+  // Failures resolve to null/empty (the listener falls back to "not
+  // opted in" / "no overrides" without crashing the SDK loop).
+  const safeGetWorkspaceConfig = async (
+    workspaceId: string,
+  ): Promise<WorkspaceProactiveConfig | null> => {
+    try {
+      return await config.getWorkspaceConfig(workspaceId);
+    } catch (err) {
+      log.warn(
+        {
+          err: err instanceof Error ? err : new Error(String(err)),
+          workspaceId,
+        },
+        "Proactive getWorkspaceConfig threw — treating as not opted in",
+      );
+      return null;
+    }
+  };
+
+  const safeGetChannelConfigs = async (
+    workspaceId: string,
+  ): Promise<ReadonlyArray<ChannelProactiveConfig>> => {
+    try {
+      return await config.getChannelConfigs(workspaceId);
+    } catch (err) {
+      log.warn(
+        {
+          err: err instanceof Error ? err : new Error(String(err)),
+          workspaceId,
+        },
+        "Proactive getChannelConfigs threw — treating as no overrides",
+      );
+      return [];
+    }
+  };
+
   // -------------------------------------------------------------------------
   // Channel-message hook: classify + react + record asker for later answer
   // -------------------------------------------------------------------------
   chat.onNewMessage(/.+/, async (thread: Thread, message: Message) => {
     try {
-      if (!(await config.isEnabled())) return;
       if (message.author.isBot === true || message.author.isMe) return;
       const text = message.text?.trim() ?? "";
       if (text.length === 0) return;
 
+      // ---------------------------------------------------------------
+      // Per-event workspace resolution (#2620) — FIRST thing we do.
+      // Unknown tenant → silent skip, no meter event, no DB reads.
+      // ---------------------------------------------------------------
+      const workspaceId = await safeResolveWorkspace(
+        thread.adapter,
+        thread,
+        message,
+      );
+      if (!workspaceId) return;
+
+      if (!(await config.isEnabled(workspaceId))) return;
+
       const channelId = thread.channelId;
       const userId = message.author.userId;
       const isDM = thread.isDM === true;
+      // Workspace-scoped cooldown key — two tenants that share a channel
+      // id (e.g. both have a "C-general") must not share cooldown state.
+      const cooldownKey = `${workspaceId}:${channelId}`;
 
       // ---------------------------------------------------------------
       // Pause-command intake (#2295) — runs BEFORE classification so
@@ -343,20 +458,19 @@ export async function registerProactiveListener(
       // DM `unsubscribe` → workspace-wide user-optout row.
       if (
         isDM &&
-        config.workspaceId &&
         config.onPauseRequest &&
         detectUnsubscribeDM(text)
       ) {
         try {
           await config.onPauseRequest(
             resolvePauseRequest("dm-unsubscribe", {
-              workspaceId: config.workspaceId,
+              workspaceId,
               channelId,
               userId,
             }),
           );
           log.info(
-            { workspaceId: config.workspaceId, userId },
+            { workspaceId, userId },
             "Proactive: user opted out via DM unsubscribe",
           );
         } catch (err) {
@@ -371,20 +485,19 @@ export async function registerProactiveListener(
       // In-channel `@atlas pause` → 24h channel-scoped pause.
       if (
         !isDM &&
-        config.workspaceId &&
         config.onPauseRequest &&
         detectPauseCommand(text)
       ) {
         try {
           await config.onPauseRequest(
             resolvePauseRequest("channel-pause-command", {
-              workspaceId: config.workspaceId,
+              workspaceId,
               channelId,
               userId,
             }),
           );
           log.info(
-            { workspaceId: config.workspaceId, channelId, userId },
+            { workspaceId, channelId, userId },
             "Proactive: channel paused for 24h via @atlas pause",
           );
         } catch (err) {
@@ -409,11 +522,11 @@ export async function registerProactiveListener(
       // failure, so the listener's posture matches the registry's
       // regardless of host wiring.
       // ---------------------------------------------------------------
-      if (config.isPaused && config.workspaceId) {
+      if (config.isPaused) {
         let pause: Awaited<ReturnType<IsPausedFn>>;
         try {
           pause = await config.isPaused({
-            workspaceId: config.workspaceId,
+            workspaceId,
             channelId,
             userId,
           });
@@ -427,7 +540,7 @@ export async function registerProactiveListener(
         if (pause.paused) {
           log.debug(
             {
-              workspaceId: config.workspaceId,
+              workspaceId,
               channelId,
               userId,
               layer: pause.layer,
@@ -439,8 +552,32 @@ export async function registerProactiveListener(
         }
       }
 
+      // ---------------------------------------------------------------
+      // Per-event workspace/channel config (#2620). Loaded after the
+      // pause check passes so a paused workspace pays zero config-read
+      // cost. Both calls are independent; run them in parallel.
+      // ---------------------------------------------------------------
+      const [workspaceConfig, channelConfigs] = await Promise.all([
+        safeGetWorkspaceConfig(workspaceId),
+        safeGetChannelConfigs(workspaceId),
+      ]);
+      if (!workspaceConfig) {
+        // No config row → workspace hasn't opted in. Silent skip; the
+        // `isEnabled` gate already returned true (e.g. enterprise on),
+        // but the per-workspace toggle isn't set. Pre-#2620 this state
+        // never happened because the config was baked at registration;
+        // multi-tenant resolution means we discover it per event.
+        log.debug(
+          { workspaceId },
+          "Proactive: workspace has no config — skipping",
+        );
+        return;
+      }
+
       const channelAllowed = allowlist.has(channelId);
-      const channelConfig = config.channelConfigs?.[channelId];
+      const channelConfig = channelConfigs.find(
+        (cfg) => cfg.channelId === channelId,
+      );
 
       // ---------------------------------------------------------------
       // Monthly quota cap (#2301) — short-circuit BEFORE the classifier
@@ -457,11 +594,11 @@ export async function registerProactiveListener(
       // without distinguishing skip-tagged ones), defeating the very
       // cost-ceiling contract the bypass tag was meant to surface.
       let quotaReadFailed = false;
-      if (config.getQuotaStatus && config.workspaceId) {
+      if (config.getQuotaStatus) {
         let quota: Awaited<ReturnType<GetQuotaStatusFn>> | null = null;
         try {
           quota = await config.getQuotaStatus({
-            workspaceId: config.workspaceId,
+            workspaceId,
           });
         } catch (err) {
           // Fail open on quota — cost ceiling, not a security control.
@@ -483,14 +620,14 @@ export async function registerProactiveListener(
         } else if (quota?.capReached) {
           log.debug(
             {
-              workspaceId: config.workspaceId,
+              workspaceId,
               channelId,
               classifyCountThisMonth: quota.classifyCountThisMonth,
               monthlyClassifierCap: quota.monthlyClassifierCap,
             },
             "Proactive: skipped — monthly classifier cap reached",
           );
-          await emitMeter({
+          await emitMeter(workspaceId, {
             channelId,
             messageId: message.id,
             eventType: "classify",
@@ -509,21 +646,22 @@ export async function registerProactiveListener(
 
       const classification = await classifyMessage({
         text,
-        mode: config.workspace.classifierMode,
+        mode: workspaceConfig.classifierMode,
         llm: config.classify,
         log,
       });
 
       const decision = decideInterjection({
         classification,
-        workspace: config.workspace,
+        workspace: workspaceConfig,
         channel: channelConfig,
         channelAllowed,
-        recentActivity: recent.get(channelId),
+        recentActivity: recent.get(cooldownKey),
       });
 
       log.debug(
         {
+          workspaceId,
           channelId,
           messageId: message.id,
           isQuestion: classification.isQuestion,
@@ -540,7 +678,7 @@ export async function registerProactiveListener(
       // LLM-invoked calls without re-scanning metadata. `quotaReadFailed`
       // surfaces the per-message bypass without double-counting the
       // classify event.
-      await emitMeter({
+      await emitMeter(workspaceId, {
         channelId,
         messageId: message.id,
         eventType: "classify",
@@ -569,17 +707,17 @@ export async function registerProactiveListener(
 
       const sent = thread.createSentMessageFromMessage(message);
       await sent.addReaction(PROACTIVE_REACTION);
-      recent.set(channelId, { lastInterjectionAt: Date.now() });
+      recent.set(cooldownKey, { lastInterjectionAt: Date.now() });
 
-      const platform = adapterPlatform(undefined, config.platform);
+      const platform = adapterPlatform(thread.adapter, config.platform);
       const asker = askerFromAuthor(message.author, platform);
-      pending.record(thread.channelId, message.id, { text, asker });
+      pending.record(thread.channelId, message.id, { text, asker, workspaceId });
 
       // Meter: reaction landed — emit a `react` row so the admin
       // analytics panel and the eventual billing aggregator have a
       // clean "how often did the policy actually fire?" count without
       // scanning every classify row.
-      await emitMeter({
+      await emitMeter(workspaceId, {
         channelId,
         messageId: message.id,
         eventType: "react",
@@ -609,7 +747,12 @@ export async function registerProactiveListener(
   // -------------------------------------------------------------------------
   chat.onReaction([PROACTIVE_REACTION], async (event: ReactionEvent) => {
     try {
-      if (!(await config.isEnabled())) return;
+      // The pending entry carries `workspaceId` from the original
+      // channel-message handler. If there's no pending entry the
+      // reaction is on an unknown message — short-circuit before any
+      // gate or DB read. If there IS a pending entry, the workspace was
+      // already known-good at react-time; we just re-check the gate
+      // (license / kill-switch flip while the asker paused).
       const lookup = pending.peek(event.threadId, event.messageId);
       const decision = shouldAnswerOnReaction({
         added: event.added,
@@ -627,9 +770,20 @@ export async function registerProactiveListener(
         );
         return;
       }
+      const workspaceId = decision.pending.workspaceId;
+      if (!(await config.isEnabled(workspaceId))) return;
       // Consume now so a second reactor doesn't double-fire.
       pending.consume(event.threadId, event.messageId);
-      await runAnswerFlow(event.thread, event.threadId, decision.pending.text, decision.pending.asker, config, log, recentAnswers);
+      await runAnswerFlow(
+        event.thread,
+        event.threadId,
+        decision.pending.text,
+        decision.pending.asker,
+        workspaceId,
+        config,
+        log,
+        recentAnswers,
+      );
     } catch (err) {
       log.warn(
         {
@@ -646,7 +800,6 @@ export async function registerProactiveListener(
   // -------------------------------------------------------------------------
   chat.onAction(PROACTIVE_ANSWER_ACTION_ID, async (event) => {
     try {
-      if (!(await config.isEnabled())) return;
       // Thread is null for view-based actions (e.g. home-tab buttons),
       // which the proactive offer card never reaches.
       if (!event.thread) return;
@@ -664,7 +817,18 @@ export async function registerProactiveListener(
         );
         return;
       }
-      await runAnswerFlow(event.thread, event.threadId, lookup.text, lookup.asker, config, log, recentAnswers);
+      const workspaceId = lookup.workspaceId;
+      if (!(await config.isEnabled(workspaceId))) return;
+      await runAnswerFlow(
+        event.thread,
+        event.threadId,
+        lookup.text,
+        lookup.asker,
+        workspaceId,
+        config,
+        log,
+        recentAnswers,
+      );
     } catch (err) {
       log.warn(
         {
@@ -703,9 +867,26 @@ export async function registerProactiveListener(
     ],
     async (event) => {
       try {
-        if (!(await config.isEnabled())) return;
         const outcome = outcomeForActionId(event.actionId);
         if (!outcome) return;
+
+        // Resolve the tenant from the event's thread (the feedback
+        // button is clicked on the answer card, which lives in the
+        // same thread as the original question). Unknown tenant →
+        // silent skip.
+        if (!event.thread) return;
+        const workspaceId = await safeResolveWorkspace(
+          event.adapter,
+          event.thread,
+          // The action event doesn't carry the full Message that
+          // triggered the answer; pass a synthetic shape with the
+          // adapter-supplied messageId. The host's resolver is
+          // expected to derive workspaceId from `adapter` + raw, both
+          // of which are present.
+          { id: event.messageId, raw: event.raw } as unknown as Message,
+        );
+        if (!workspaceId) return;
+        if (!(await config.isEnabled(workspaceId))) return;
 
         const platform = adapterPlatform(event.adapter, config.platform);
         const asker = askerFromAuthor(event.user, platform);
@@ -756,7 +937,31 @@ export async function registerProactiveListener(
   // -------------------------------------------------------------------------
   chat.onModalSubmit(PROACTIVE_FB_WRONG_DATA_MODAL_ID, async (event) => {
     try {
-      if (!(await config.isEnabled())) return { action: "close" as const };
+      // Multi-tenant (#2620): resolve workspace from `relatedThread`
+      // when present (the modal was opened from the answer-card action
+      // button, which carries the thread context). When not present we
+      // can't safely attribute the feedback row — close the modal
+      // silently rather than write to the wrong tenant.
+      const relatedThread = event.relatedThread;
+      if (!relatedThread) {
+        log.debug(
+          {},
+          "Proactive wrong-data modal submit: no related thread — cannot resolve tenant, dropping",
+        );
+        return { action: "close" as const };
+      }
+      const workspaceId = await safeResolveWorkspace(
+        event.adapter,
+        relatedThread,
+        // Modal events don't surface the original message; pass a
+        // synthetic shape — the host resolver's contract is to derive
+        // workspaceId from `adapter` + raw context.
+        { id: "", raw: event.raw } as unknown as Message,
+      );
+      if (!workspaceId) return { action: "close" as const };
+      if (!(await config.isEnabled(workspaceId))) {
+        return { action: "close" as const };
+      }
 
       const platform = adapterPlatform(event.adapter, config.platform);
       const asker = askerFromAuthor(event.user, platform);
@@ -809,21 +1014,29 @@ export async function registerProactiveListener(
  * keep it as a free function (rather than a closure captured during
  * `registerProactiveListener`) so the bridge can call it directly
  * with the shared `RecentAnswers` registry.
+ *
+ * Post-#2620 multi-tenant: the bridge resolves `workspaceId` from the
+ * slash-command event (slack `team_id`) and threads it in. The slash
+ * subcommand intentionally bypasses `config.resolveWorkspaceId` — the
+ * resolver is keyed on the Message shape, and slash commands fire
+ * without a Message in the same sense (no thread). The bridge has the
+ * raw event and can resolve it directly.
  */
 export async function handleProactiveFeedbackSlash(args: {
   text: string | undefined;
   channelId: string;
+  workspaceId: string;
   asker: ProactiveAsker;
   config: ProactiveListenerConfig;
   log: PluginLogger;
   recentAnswers: RecentAnswers;
 }): Promise<boolean> {
-  const { text, channelId, asker, config, log, recentAnswers } = args;
+  const { text, channelId, workspaceId, asker, config, log, recentAnswers } = args;
   if (!config.feedbackCollector) return false;
   const parsed = parseFeedbackSlashArgs(text);
   if (parsed.kind !== "feedback") return false;
 
-  if (!(await config.isEnabled())) return false;
+  if (!(await config.isEnabled(workspaceId))) return false;
 
   const recent = recentAnswers.lookup(channelId, asker.externalUserId);
 
@@ -868,6 +1081,7 @@ async function runAnswerFlow(
   threadId: string,
   text: string,
   asker: ProactiveAsker,
+  workspaceId: string,
   config: ProactiveListenerConfig,
   log: PluginLogger,
   recentAnswers: RecentAnswers,
@@ -902,14 +1116,16 @@ async function runAnswerFlow(
   // Helper: route a meter event through the host (slice #2297 / #2296).
   // Shared with the public-dataset refusal branch below and the linked-
   // asker happy path. Failures are swallowed because the meter is
-  // observability, not control flow.
+  // observability, not control flow. Closes over `workspaceId` from
+  // the caller (#2620 multi-tenant — was `config.workspaceId ?? ""`
+  // pre-refactor).
   const emitMeter = async (
     partial: Omit<ProactiveMeterEvent, "workspaceId">,
   ): Promise<void> => {
     if (!config.onMeterEvent) return;
     try {
       await config.onMeterEvent({
-        workspaceId: config.workspaceId ?? "",
+        workspaceId,
         ...partial,
       });
     } catch (err) {
@@ -963,7 +1179,7 @@ async function runAnswerFlow(
     let allowlist: ReadonlyArray<ProactivePublicDatasetEntry> = [];
     try {
       allowlist = await config.getPublicDataset({
-        workspaceId: config.workspaceId ?? "",
+        workspaceId,
       });
     } catch (err) {
       // Fail closed — a registry hiccup must NOT widen the refusal
@@ -972,7 +1188,7 @@ async function runAnswerFlow(
       log.warn(
         {
           err: err instanceof Error ? err : new Error(String(err)),
-          workspaceId: config.workspaceId,
+          workspaceId,
         },
         "Proactive public-dataset lookup threw — treating as empty allowlist",
       );

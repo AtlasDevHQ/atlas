@@ -202,6 +202,102 @@ export interface AnswerMeterShape {
    * the same lookback period yields a moving window.
    */
   summary(workspaceId: string, sinceMs: number): Promise<ProactiveMeterSummary>;
+  /**
+   * Paginated drill-down (#2622). Returns up to `limit` events from the
+   * lookback window joined with the review verdict (if any). Keyset
+   * cursor — pass `cursor` from the previous page's `nextCursor` to
+   * continue.
+   */
+  listEvents(
+    workspaceId: string,
+    options: ListEventsOptions,
+  ): Promise<ListEventsResult>;
+  /**
+   * Labelled-misfire summary (#2622) — classify-count vs reviewed-count
+   * vs verdict buckets over the same lookback window. Surfaced as a
+   * tile on the existing aggregate panel.
+   */
+  reviewSummary(
+    workspaceId: string,
+    sinceMs: number,
+  ): Promise<ProactiveReviewSummary>;
+}
+
+// ---------------------------------------------------------------------------
+// Drill-down event row + pagination
+// ---------------------------------------------------------------------------
+
+/** Verdict captured by an admin reviewer. */
+export type ProactiveReviewVerdict = "misfire" | "correct" | "unsure";
+
+/** One row returned by `listEvents` — meter row + optional verdict. */
+export interface ProactiveEventRow {
+  id: string;
+  workspaceId: string;
+  channelId: string;
+  messageId: string | null;
+  eventType: ProactiveEventType;
+  outcome: ProactiveOutcome | null;
+  tokens: number;
+  costMicroUsd: number;
+  /** Classifier confidence in `[0, 1]` to 2 d.p. Null for non-classify rows. */
+  confidence: number | null;
+  actorUserId: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  /** Verdict if one has been recorded for this `(workspaceId, messageId)`. */
+  review: ProactiveEventReview | null;
+}
+
+/** Embedded review payload — null when no verdict exists yet. */
+export interface ProactiveEventReview {
+  verdict: ProactiveReviewVerdict;
+  note: string | null;
+  reviewerUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Cursor handed back to the client for "fetch next page". */
+export interface EventCursor {
+  /** ISO timestamp of the cursor row. */
+  createdAt: string;
+  /** Row id — the keyset tie-breaker. */
+  id: string;
+}
+
+export interface ListEventsOptions {
+  /** Lookback window in ms. The same parser the analytics route uses applies upstream. */
+  sinceMs: number;
+  /** Filter to one meter event type. Default: include every type. */
+  eventType?: ProactiveEventType;
+  /** Maximum rows per page. Clamped to `[1, MAX_EVENT_PAGE_LIMIT]`. Default 50. */
+  limit?: number;
+  /** Opaque cursor from a previous page. */
+  cursor?: EventCursor | null;
+}
+
+export interface ListEventsResult {
+  events: ProactiveEventRow[];
+  /** Non-null when more rows exist past `events[events.length - 1]`. */
+  nextCursor: EventCursor | null;
+}
+
+/** Hard cap so a misbehaving client cannot paginate huge windows in one call. */
+export const MAX_EVENT_PAGE_LIMIT = 200;
+const DEFAULT_EVENT_PAGE_LIMIT = 50;
+
+export interface ProactiveReviewSummary {
+  /** Total classify rows in the window. */
+  classifyCount: number;
+  /** Classify rows that have a verdict in `proactive_classification_review`. */
+  reviewedCount: number;
+  /** Subset of `reviewedCount` labelled `misfire`. */
+  misfireCount: number;
+  /** Subset of `reviewedCount` labelled `correct`. */
+  correctCount: number;
+  /** Subset of `reviewedCount` labelled `unsure`. */
+  unsureCount: number;
 }
 
 export class AnswerMeter extends Context.Tag("AnswerMeter")<
@@ -222,6 +318,79 @@ FROM proactive_meter_events
 WHERE workspace_id = $1
   AND created_at >= $2
 ORDER BY created_at DESC`;
+
+/**
+ * Drill-down events query (#2622). LEFT JOIN onto
+ * `proactive_classification_review` so each meter row carries the
+ * verdict if one has been recorded — null otherwise. Keyset
+ * pagination on (created_at DESC, id DESC) so the page stays stable
+ * under inserts arriving during the admin's scroll.
+ *
+ * Parameters (`$1`..`$5`):
+ *   1. workspace_id
+ *   2. created_at lower bound (window)
+ *   3. event_type filter ('' = no filter)
+ *   4. cursor created_at (NULL = first page)
+ *   5. limit + 1 (the route slices the final row off to compute
+ *      hasMore without an extra COUNT(*))
+ *
+ * Note: `$4` participates in the keyset filter only when paired with
+ * `$5_id`. We thread the cursor id as `$6` so the row index is
+ * deterministic. Keeping the SQL inline (rather than building it with
+ * string concatenation) keeps the parameter count stable per call,
+ * which `node-postgres` prefers for prepared-statement reuse.
+ */
+const EVENTS_PAGE_SQL = `SELECT
+  e.id,
+  e.workspace_id,
+  e.channel_id,
+  e.message_id,
+  e.event_type,
+  e.outcome,
+  e.tokens,
+  e.cost_micro_usd,
+  e.confidence,
+  e.actor_user_id,
+  e.metadata,
+  e.created_at,
+  r.verdict     AS review_verdict,
+  r.note        AS review_note,
+  r.reviewer_user_id AS review_reviewer_user_id,
+  r.created_at  AS review_created_at,
+  r.updated_at  AS review_updated_at
+FROM proactive_meter_events e
+LEFT JOIN proactive_classification_review r
+  ON r.workspace_id = e.workspace_id
+ AND r.message_id   = e.message_id
+WHERE e.workspace_id = $1
+  AND e.created_at  >= $2
+  AND ($3 = '' OR e.event_type = $3)
+  AND (
+    $4::timestamptz IS NULL
+    OR (e.created_at, e.id) < ($4::timestamptz, $5::uuid)
+  )
+ORDER BY e.created_at DESC, e.id DESC
+LIMIT $6`;
+
+/**
+ * Labelled-misfire rollup (#2622). Counts every classify row in the
+ * window and the labelled subset across the three verdict buckets.
+ * Surface tile on the analytics panel; mirrors PRD #2291's <5% misfire
+ * bar. Independent of `summarizeMeterEvents` so the existing analytics
+ * response shape is unchanged.
+ */
+const REVIEW_SUMMARY_SQL = `SELECT
+  COUNT(*) FILTER (WHERE e.event_type = 'classify')                     AS classify_count,
+  COUNT(r.verdict) FILTER (WHERE e.event_type = 'classify')             AS reviewed_count,
+  COUNT(*) FILTER (WHERE e.event_type = 'classify' AND r.verdict = 'misfire') AS misfire_count,
+  COUNT(*) FILTER (WHERE e.event_type = 'classify' AND r.verdict = 'correct') AS correct_count,
+  COUNT(*) FILTER (WHERE e.event_type = 'classify' AND r.verdict = 'unsure')  AS unsure_count
+FROM proactive_meter_events e
+LEFT JOIN proactive_classification_review r
+  ON r.workspace_id = e.workspace_id
+ AND r.message_id   = e.message_id
+WHERE e.workspace_id = $1
+  AND e.created_at  >= $2`;
 
 // ---------------------------------------------------------------------------
 // Live implementation
@@ -400,6 +569,179 @@ export async function summarizeMeterEvents(
   return aggregateRows(normalized);
 }
 
+/**
+ * One row as returned by `EVENTS_PAGE_SQL`. Snake_case mirrors the SQL;
+ * `listEvents` normalises to camelCase before handing rows to callers.
+ */
+interface ProactiveEventDbRow {
+  id: string;
+  workspace_id: string;
+  channel_id: string;
+  message_id: string | null;
+  event_type: ProactiveEventType;
+  outcome: ProactiveOutcome | null;
+  tokens: number;
+  cost_micro_usd: number | string;
+  confidence: number | string | null;
+  actor_user_id: string | null;
+  metadata: Record<string, unknown> | string | null;
+  created_at: string | Date;
+  review_verdict: ProactiveReviewVerdict | null;
+  review_note: string | null;
+  review_reviewer_user_id: string | null;
+  review_created_at: string | Date | null;
+  review_updated_at: string | Date | null;
+  [key: string]: unknown;
+}
+
+function isoString(value: string | Date): string {
+  return value instanceof Date ? value.toISOString() : value;
+}
+
+function normaliseEventRow(row: ProactiveEventDbRow): ProactiveEventRow {
+  // metadata can come back as a parsed object (default `pg` types parser
+  // on `jsonb`) or as a string when the driver is configured without the
+  // automatic JSONB parser. Tolerate both rather than depending on a
+  // specific pg configuration.
+  const metadata: Record<string, unknown> =
+    typeof row.metadata === "string"
+      ? safeJsonParse(row.metadata)
+      : (row.metadata ?? {});
+
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    channelId: row.channel_id,
+    messageId: row.message_id ?? null,
+    eventType: row.event_type,
+    outcome: row.outcome ?? null,
+    tokens: typeof row.tokens === "string" ? Number(row.tokens) : row.tokens,
+    costMicroUsd:
+      typeof row.cost_micro_usd === "string"
+        ? Number(row.cost_micro_usd)
+        : row.cost_micro_usd,
+    confidence:
+      row.confidence === null
+        ? null
+        : typeof row.confidence === "string"
+          ? Number(row.confidence)
+          : row.confidence,
+    actorUserId: row.actor_user_id ?? null,
+    metadata,
+    createdAt: isoString(row.created_at),
+    review:
+      row.review_verdict === null
+        ? null
+        : {
+            verdict: row.review_verdict,
+            note: row.review_note,
+            reviewerUserId: row.review_reviewer_user_id,
+            createdAt: isoString(row.review_created_at!),
+            updatedAt: isoString(row.review_updated_at!),
+          },
+  };
+}
+
+function safeJsonParse(raw: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Paginated drill-down list. See `listEvents` on `AnswerMeterShape` for
+ * semantics. Returns an empty page when there's no internal DB (the
+ * admin route is enterprise-only — a missing internal DB on an EE
+ * deploy is misconfiguration; the surface degrades to "empty" rather
+ * than throwing so the admin panel renders the empty state).
+ */
+export async function listMeterEvents(
+  workspaceId: string,
+  options: ListEventsOptions,
+): Promise<ListEventsResult> {
+  if (!hasInternalDB()) {
+    return { events: [], nextCursor: null };
+  }
+  const limit = clampLimit(options.limit);
+  const cutoff = new Date(Date.now() - options.sinceMs).toISOString();
+  const eventTypeFilter = options.eventType ?? "";
+  const cursorCreatedAt = options.cursor?.createdAt ?? null;
+  const cursorId = options.cursor?.id ?? null;
+
+  // Fetch one extra row to detect "has more" without a separate COUNT.
+  const rows = await internalQuery<ProactiveEventDbRow>(EVENTS_PAGE_SQL, [
+    workspaceId,
+    cutoff,
+    eventTypeFilter,
+    cursorCreatedAt,
+    cursorId,
+    limit + 1,
+  ]);
+
+  const hasMore = rows.length > limit;
+  const page = hasMore ? rows.slice(0, limit) : rows;
+  const events = page.map(normaliseEventRow);
+
+  const lastRow = page[page.length - 1];
+  const nextCursor: EventCursor | null =
+    hasMore && lastRow
+      ? { createdAt: isoString(lastRow.created_at), id: lastRow.id }
+      : null;
+
+  return { events, nextCursor };
+}
+
+function clampLimit(raw: number | undefined): number {
+  const n = raw ?? DEFAULT_EVENT_PAGE_LIMIT;
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_EVENT_PAGE_LIMIT;
+  return Math.min(Math.floor(n), MAX_EVENT_PAGE_LIMIT);
+}
+
+/**
+ * Review-bucket rollup. The classify count overlaps with
+ * `summarizeMeterEvents().classifyCount` for the same window — we
+ * recompute it here so the misfire-rate tile pulls from one source
+ * (single query, single timestamp); doing it client-side would risk
+ * showing `2 misfires / 1 reviewed` if the two reads straddled a new
+ * classify insert.
+ */
+export async function summarizeReviewVerdicts(
+  workspaceId: string,
+  sinceMs: number,
+): Promise<ProactiveReviewSummary> {
+  if (!hasInternalDB()) {
+    return {
+      classifyCount: 0,
+      reviewedCount: 0,
+      misfireCount: 0,
+      correctCount: 0,
+      unsureCount: 0,
+    };
+  }
+  const cutoff = new Date(Date.now() - sinceMs).toISOString();
+  const rows = await internalQuery<{
+    classify_count: number | string;
+    reviewed_count: number | string;
+    misfire_count: number | string;
+    correct_count: number | string;
+    unsure_count: number | string;
+  }>(REVIEW_SUMMARY_SQL, [workspaceId, cutoff]);
+  const row = rows[0];
+  // `COUNT(*)` in pg returns bigint → JS string by default; coerce.
+  const toInt = (v: number | string | undefined): number =>
+    v === undefined ? 0 : typeof v === "string" ? Number(v) : v;
+  return {
+    classifyCount: toInt(row?.classify_count),
+    reviewedCount: toInt(row?.reviewed_count),
+    misfireCount: toInt(row?.misfire_count),
+    correctCount: toInt(row?.correct_count),
+    unsureCount: toInt(row?.unsure_count),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Layer factories
 // ---------------------------------------------------------------------------
@@ -415,6 +757,8 @@ export const AnswerMeterLive: Layer.Layer<AnswerMeter> = Layer.effect(
   Effect.succeed({
     record: recordMeterEvent,
     summary: summarizeMeterEvents,
+    listEvents: listMeterEvents,
+    reviewSummary: summarizeReviewVerdicts,
   } satisfies AnswerMeterShape),
 );
 
@@ -439,6 +783,20 @@ export function createAnswerMeterTestLayer(
       (async () => {
         throw new Error(
           "AnswerMeter test stub: summary() called but not provided in createAnswerMeterTestLayer()",
+        );
+      }),
+    listEvents:
+      partial.listEvents ??
+      (async () => {
+        throw new Error(
+          "AnswerMeter test stub: listEvents() called but not provided in createAnswerMeterTestLayer()",
+        );
+      }),
+    reviewSummary:
+      partial.reviewSummary ??
+      (async () => {
+        throw new Error(
+          "AnswerMeter test stub: reviewSummary() called but not provided in createAnswerMeterTestLayer()",
         );
       }),
   };

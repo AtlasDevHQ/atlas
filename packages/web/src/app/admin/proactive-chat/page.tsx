@@ -300,6 +300,14 @@ function ConfigForm({ initial, refetchWorkspace }: ConfigFormProps) {
         />
         <RefusedTopicsPanel />
       </section>
+
+      <section>
+        <SectionHeading
+          title="Decision drill-down"
+          description="Every classifier call from the last 30 days. Label individual decisions to track misfire rate against the PRD's <5% bar."
+        />
+        <DecisionDrillDownPanel />
+      </section>
     </div>
   );
 }
@@ -1035,6 +1043,343 @@ function RefusedRollupRow({
         }
       />
     </li>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Decision drill-down (#2622)
+// ---------------------------------------------------------------------------
+
+const REVIEW_VERDICTS = ["misfire", "correct", "unsure"] as const;
+type ReviewVerdict = (typeof REVIEW_VERDICTS)[number];
+
+const EventReviewSchema = z.object({
+  verdict: z.enum(REVIEW_VERDICTS),
+  note: z.string().nullable(),
+  reviewerUserId: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+const EventRowSchema = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  channelId: z.string(),
+  messageId: z.string().nullable(),
+  eventType: z.string(),
+  outcome: z.string().nullable(),
+  tokens: z.number().int().nonnegative(),
+  costMicroUsd: z.number().int().nonnegative(),
+  confidence: z.number().nullable(),
+  actorUserId: z.string().nullable(),
+  metadata: z.record(z.string(), z.unknown()),
+  createdAt: z.string(),
+  review: EventReviewSchema.nullable(),
+});
+
+type EventRowT = z.infer<typeof EventRowSchema>;
+
+const EventsResponseSchema = z.object({
+  workspaceId: z.string(),
+  sinceMs: z.number().int().positive(),
+  eventType: z.string().nullable(),
+  events: z.array(EventRowSchema),
+  nextCursor: z.string().nullable(),
+  reviewSummary: z.object({
+    classifyCount: z.number().int().nonnegative(),
+    reviewedCount: z.number().int().nonnegative(),
+    misfireCount: z.number().int().nonnegative(),
+    correctCount: z.number().int().nonnegative(),
+    unsureCount: z.number().int().nonnegative(),
+  }),
+});
+
+const AggregateForDrillSchema = z.object({
+  summary: z.object({
+    classifyCount: z.number().int().nonnegative(),
+    reactCount: z.number().int().nonnegative(),
+  }),
+});
+
+function DecisionDrillDownPanel() {
+  const aggregate = useAdminFetch<z.infer<typeof AggregateForDrillSchema>>(
+    "/api/v1/admin/proactive/analytics",
+    { schema: AggregateForDrillSchema },
+  );
+  const events = useAdminFetch<z.infer<typeof EventsResponseSchema>>(
+    "/api/v1/admin/proactive/events?since=30d&eventType=classify&limit=50",
+    { schema: EventsResponseSchema },
+  );
+
+  return (
+    <AdminContentWrapper
+      loading={events.loading}
+      error={events.error}
+      feature="Proactive Chat"
+      onRetry={events.refetch}
+      loadingMessage="Loading classifier decisions..."
+    >
+      {events.data ? (
+        <div className="space-y-5">
+          <DrillDownTiles
+            aggregateClassify={aggregate.data?.summary.classifyCount ?? null}
+            aggregateReact={aggregate.data?.summary.reactCount ?? null}
+            reviewSummary={events.data.reviewSummary}
+          />
+          <EventsTable
+            initial={events.data}
+            refetchAll={() => {
+              events.refetch();
+              aggregate.refetch();
+            }}
+          />
+        </div>
+      ) : null}
+    </AdminContentWrapper>
+  );
+}
+
+function DrillDownTiles({
+  aggregateClassify,
+  aggregateReact,
+  reviewSummary,
+}: {
+  aggregateClassify: number | null;
+  aggregateReact: number | null;
+  reviewSummary: z.infer<typeof EventsResponseSchema>["reviewSummary"];
+}) {
+  // Implicit misfire metric — react / classify, no labels required.
+  // Showing both numbers (and the ratio) so the admin can sanity-check
+  // a noisy-looking percent at a glance ("4/12 is small, 400/1200 is
+  // big — they read identically as 33%").
+  const reactPct =
+    aggregateClassify === null || aggregateClassify === 0
+      ? null
+      : Math.round(((aggregateReact ?? 0) / aggregateClassify) * 100);
+
+  // Labelled misfire rate — hidden until at least one review exists,
+  // per AC.
+  const misfirePct =
+    reviewSummary.reviewedCount === 0
+      ? null
+      : Math.round(
+          (reviewSummary.misfireCount / reviewSummary.reviewedCount) * 100,
+        );
+
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <DrillDownTile
+        label="Classifier calls (30d)"
+        primary={aggregateClassify ?? "—"}
+        secondary={
+          aggregateClassify === null
+            ? "loading"
+            : aggregateClassify === 0
+              ? "no calls in window"
+              : "30-day rolling"
+        }
+      />
+      <DrillDownTile
+        label="React rate"
+        primary={reactPct === null ? "—" : `${reactPct}%`}
+        secondary={
+          aggregateClassify === null
+            ? "loading"
+            : `${aggregateReact ?? 0} / ${aggregateClassify} reacted`
+        }
+      />
+      {misfirePct === null ? (
+        <DrillDownTile
+          label="Misfire rate (labelled)"
+          primary="—"
+          secondary="Label decisions below to populate"
+        />
+      ) : (
+        <DrillDownTile
+          label="Misfire rate (labelled)"
+          primary={`${misfirePct}%`}
+          secondary={`${reviewSummary.misfireCount} / ${reviewSummary.reviewedCount} reviewed`}
+          tone={misfirePct >= 5 ? "warn" : "ok"}
+        />
+      )}
+    </div>
+  );
+}
+
+function DrillDownTile({
+  label,
+  primary,
+  secondary,
+  tone = "neutral",
+}: {
+  label: string;
+  primary: string | number;
+  secondary: string;
+  tone?: "neutral" | "ok" | "warn";
+}) {
+  const toneClass =
+    tone === "warn"
+      ? "text-amber-700 dark:text-amber-500"
+      : tone === "ok"
+        ? "text-emerald-700 dark:text-emerald-500"
+        : "text-foreground";
+  return (
+    <div className="rounded-lg border bg-muted/30 px-4 py-3">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+        {label}
+      </p>
+      <p className={`mt-1 text-2xl font-semibold tabular-nums ${toneClass}`}>
+        {primary}
+      </p>
+      <p className="text-[11px] text-muted-foreground">{secondary}</p>
+    </div>
+  );
+}
+
+function EventsTable({
+  initial,
+  refetchAll,
+}: {
+  initial: z.infer<typeof EventsResponseSchema>;
+  refetchAll: () => void;
+}) {
+  if (initial.events.length === 0) {
+    return (
+      <p className="rounded-md border border-dashed bg-muted/20 p-6 text-center text-[12px] text-muted-foreground">
+        No classifier decisions in the last 30 days. Once dogfood traffic
+        starts flowing, every classify lands here.
+      </p>
+    );
+  }
+  return (
+    <div className="overflow-hidden rounded-lg border">
+      <table className="w-full text-[12px]">
+        <thead className="bg-muted/40 text-[11px] uppercase tracking-wide text-muted-foreground">
+          <tr>
+            <th className="px-3 py-2 text-left font-medium">When</th>
+            <th className="px-3 py-2 text-left font-medium">Channel</th>
+            <th className="px-3 py-2 text-left font-medium">Confidence</th>
+            <th className="px-3 py-2 text-left font-medium">Action</th>
+            <th className="px-3 py-2 text-left font-medium">Reason</th>
+            <th className="px-3 py-2 text-right font-medium">Verdict</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y">
+          {initial.events.map((row) => (
+            <EventTableRow key={row.id} row={row} refetchAll={refetchAll} />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// Slack message-ts heuristic — channel id starts with C/D/G (channel /
+// DM / group) and the message id is `<unix>.<seq>`. Falling back to
+// `slack.com/archives/...` (no workspace subdomain) lets the user
+// click through; Slack 302-redirects to the right workspace. Avoids a
+// per-row workspace metadata lookup just to render a link.
+function slackPermalink(channelId: string, messageId: string | null): string | null {
+  if (!messageId) return null;
+  if (!/^[CDG][A-Z0-9]{8,}$/.test(channelId)) return null;
+  if (!/^\d+\.\d+$/.test(messageId)) return null;
+  const tsCompact = messageId.replace(".", "");
+  return `https://slack.com/archives/${channelId}/p${tsCompact}`;
+}
+
+function formatRelative(iso: string): string {
+  const diffMs = Date.now() - Date.parse(iso);
+  if (Number.isNaN(diffMs)) return iso;
+  if (diffMs < 60_000) return "just now";
+  if (diffMs < 60 * 60_000) return `${Math.floor(diffMs / 60_000)}m ago`;
+  if (diffMs < 24 * 60 * 60_000) return `${Math.floor(diffMs / (60 * 60_000))}h ago`;
+  return `${Math.floor(diffMs / (24 * 60 * 60_000))}d ago`;
+}
+
+function EventTableRow({
+  row,
+  refetchAll,
+}: {
+  row: EventRowT;
+  refetchAll: () => void;
+}) {
+  const review = useAdminMutation({
+    path: `/api/v1/admin/proactive/events/${encodeURIComponent(row.messageId ?? "")}/review`,
+    method: "POST",
+    invalidates: refetchAll,
+  });
+  const permalink = slackPermalink(row.channelId, row.messageId);
+  const action = typeof row.metadata.action === "string" ? row.metadata.action : "—";
+  const reason = typeof row.metadata.reason === "string" ? row.metadata.reason : "";
+  const currentVerdict: ReviewVerdict | null = row.review?.verdict ?? null;
+
+  async function setVerdict(verdict: ReviewVerdict) {
+    if (!row.messageId) return;
+    await review.mutate({ body: { verdict } });
+  }
+
+  return (
+    <tr className="bg-background">
+      <td className="px-3 py-2 align-top text-[11px] text-muted-foreground tabular-nums">
+        {formatRelative(row.createdAt)}
+      </td>
+      <td className="px-3 py-2 align-top">
+        {permalink ? (
+          <a
+            href={permalink}
+            target="_blank"
+            rel="noreferrer"
+            className="font-mono text-[11px] underline-offset-2 hover:underline"
+          >
+            {row.channelId}
+          </a>
+        ) : (
+          <span className="font-mono text-[11px]">{row.channelId}</span>
+        )}
+      </td>
+      <td className="px-3 py-2 align-top text-[11px] tabular-nums">
+        {row.confidence === null ? "—" : row.confidence.toFixed(2)}
+      </td>
+      <td className="px-3 py-2 align-top text-[11px]">{action}</td>
+      <td className="px-3 py-2 align-top text-[11px] text-muted-foreground">
+        {reason ? <span title={reason}>{reason}</span> : "—"}
+      </td>
+      <td className="px-3 py-2 align-top">
+        <div className="flex flex-wrap justify-end gap-1">
+          {REVIEW_VERDICTS.map((verdict) => {
+            const active = currentVerdict === verdict;
+            return (
+              <Button
+                key={verdict}
+                type="button"
+                size="sm"
+                variant={active ? "default" : "outline"}
+                onClick={() => setVerdict(verdict)}
+                disabled={!row.messageId || review.saving}
+                className="h-6 px-2 text-[10px] capitalize"
+                title={
+                  !row.messageId
+                    ? "No message id — verdict cannot be recorded"
+                    : `Mark this decision ${verdict}`
+                }
+                aria-pressed={active}
+              >
+                {review.saving && active ? (
+                  <Loader2 className="size-3 animate-spin" />
+                ) : (
+                  verdict
+                )}
+              </Button>
+            );
+          })}
+        </div>
+        {review.error ? (
+          <p className="mt-1 text-right text-[10px] text-destructive">
+            Review failed.
+          </p>
+        ) : null}
+      </td>
+    </tr>
   );
 }
 

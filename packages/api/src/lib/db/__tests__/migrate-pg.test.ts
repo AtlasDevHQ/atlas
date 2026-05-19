@@ -4101,6 +4101,57 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     );
     expect(afterCount.rows[0]?.c).toBe(0);
   }, PG_TEST_TIMEOUT_MS);
+
+  // 0084 — proactive_classification_review (#2622). The CHECK constraint
+  // on `verdict` is the DB-side guard for the misfire-labelling loop;
+  // the route's zod schema enforces the same enum but a future direct
+  // INSERT (CLI, backfill, migration) bypasses the route. A silent
+  // CHECK-drop would let an out-of-enum verdict land here and skew
+  // every aggregate the misfire-rate tile computes.
+  it("0084: proactive_classification_review CHECK rejects out-of-enum verdict (#2622)", async () => {
+    await pool.query(
+      `INSERT INTO proactive_classification_review (workspace_id, message_id, verdict)
+       VALUES ('ws-1', 'M-1', 'misfire')`,
+    );
+    await expect(
+      pool.query(
+        `INSERT INTO proactive_classification_review (workspace_id, message_id, verdict)
+         VALUES ('ws-1', 'M-2', 'garbage')`,
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0084: proactive_classification_review composite PK rejects duplicate (workspace_id, message_id) (#2622)", async () => {
+    await pool.query(
+      `INSERT INTO proactive_classification_review (workspace_id, message_id, verdict)
+       VALUES ('ws-pk', 'M-pk', 'correct')`,
+    );
+    // 23505 = unique_violation; PK enforcement on composite key.
+    await expect(
+      pool.query(
+        `INSERT INTO proactive_classification_review (workspace_id, message_id, verdict)
+         VALUES ('ws-pk', 'M-pk', 'unsure')`,
+      ),
+    ).rejects.toMatchObject({ code: "23505" });
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0084: proactive_classification_review accepts each of the three verdict values (#2622)", async () => {
+    await pool.query(
+      `INSERT INTO proactive_classification_review (workspace_id, message_id, verdict)
+       VALUES ('ws-enum', 'M-misfire', 'misfire'),
+              ('ws-enum', 'M-correct', 'correct'),
+              ('ws-enum', 'M-unsure',  'unsure')`,
+    );
+    const { rows } = await pool.query<{ verdict: string }>(
+      `SELECT verdict FROM proactive_classification_review
+       WHERE workspace_id = 'ws-enum' ORDER BY message_id`,
+    );
+    expect(rows.map((r) => r.verdict)).toEqual([
+      "correct",
+      "misfire",
+      "unsure",
+    ]);
+  }, PG_TEST_TIMEOUT_MS);
 });
 
 // #2606 — source-level revert guard for the integration-store SQL formatter.

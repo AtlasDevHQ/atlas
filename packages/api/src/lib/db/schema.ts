@@ -1976,6 +1976,33 @@ export const proactiveMeterEvents = pgTable(
   ],
 );
 
+// Per-classify reviewer verdict (#2622). Migration 0084. Composite PK
+// on (workspace_id, message_id) — admin upserts a single verdict per
+// classified message per workspace.
+export const proactiveClassificationReview = pgTable(
+  "proactive_classification_review",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    messageId: text("message_id").notNull(),
+    verdict: text("verdict").notNull(),
+    reviewerUserId: text("reviewer_user_id"),
+    note: text("note"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.messageId] }),
+    check(
+      "chk_proactive_classification_review_verdict",
+      sql`verdict IN ('misfire', 'correct', 'unsure')`,
+    ),
+    index("idx_proactive_classification_review_workspace_created").on(
+      t.workspaceId,
+      t.createdAt.desc(),
+    ),
+  ],
+);
+
 // MCP bearer tokens (`mcp_tokens`) were added in PR A of #2024 and removed
 // in PR C when the hosted MCP path moved to OAuth 2.1 access tokens issued
 // by `@better-auth/oauth-provider`. The drizzle table definition lived

@@ -145,7 +145,7 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
 
 ## Active
 
-- **1.5.2 — Multi-Adapter SaaS Readiness** ([milestone #50](https://github.com/AtlasDevHQ/atlas/milestone/50), 13 issues + [PRD #2649](https://github.com/AtlasDevHQ/atlas/issues/2649)) — establish operator/customer seam for chat Platforms + integration plugins; customer admins self-serve install via OAuth against operator-owned App Registrations. Slice 1 (prereq): #2623 item 1 — discriminated unions on `ProactiveListenerConfig`. See [`docs/prd/multi-adapter-saas-readiness.md`](../../docs/prd/multi-adapter-saas-readiness.md) + ADRs 0001–0004.
+- **1.5.2 — Multi-Adapter SaaS Readiness** ([milestone #50](https://github.com/AtlasDevHQ/atlas/milestone/50), 13 issues + [PRD #2649](https://github.com/AtlasDevHQ/atlas/issues/2649)) — establish operator/customer seam for chat Platforms + integration plugins; customer admins self-serve install via OAuth against operator-owned App Registrations. Slice 1 shipped via #2663 (discriminated unions on `ProactiveListenerConfig`); next up is slice 2 (#2650 — catalog data model + CatalogSeeder + AdapterRegistry). See [`docs/prd/multi-adapter-saas-readiness.md`](../../docs/prd/multi-adapter-saas-readiness.md) + ADRs 0001–0004.
 
 ## Planned
 
@@ -165,7 +165,7 @@ _None queued. See `/next` for candidates._
 - [x] **Post-1.4.3 bug pass** (PRs #2388, #2390) — semantic-layer whitelist now accepts dialect-quoted reserved-keyword tables (`"user"`, `` `events` ``, `[Order]`); SaaS abuse-detector escalation ladder gated by per-step dwell time (`ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS`, default 60s) and short-circuited entirely on self-hosted (operator IS the user).
 - [x] **Post-1.4.4 multi-env tracer + page guard** (#2441, PR #2445) — real-API e2e against three local Postgres on 5433/5434/5435 with divergent seeds (10/100/1000 customers, prod-only `vip_tier`), shared `e2e/browser/lib/{totp,admin-auth}.ts` helpers, MFA-aware seed script, and an `Array.isArray()` defensive guard on `/admin/connections` for the prod render crash tracked at #2444 (root cause still open).
 - [x] **Post-1.5.0 marketing-pass + dogfood** (PRs #2553, #2560, #2561, #2562) — marketing-pass sweep bundled all 9 docs/landing issues into one PR (#2114, #2550–#2559). Dogfood caught two routing bugs: chat env picker defaulted to alphabetical-first instead of group primary (#2560), and admin semantic listed 46 entities (DB + disk dupes) instead of 23 (#2561 — boot reconciliation now GCs orphan YAMLs).
-- [x] **Post-1.5.0 proactive listener wiring** (parent #2607, 11 PRs + 10 follow-up PRs, closed 2026-05-19) — `@useatlas/chat` listener wired into SaaS deploy + Slack `@mention`/thread migrated off `slack.ts`; dogfood-verified in `#sandbox-atlas`. Same-day follow-ups: #2622/#2624/#2633/#2634/#2635/#2637/#2638/#2641 shipped + #2623 items 2/3/4/5/6 (arch-win #66 + #2634/#2641 candidates); item 1 carried into milestone 1.5.2 as slice 1.
+- [x] **Post-1.5.0 proactive listener wiring** (parent #2607, 11 PRs + 11 follow-up PRs, closed 2026-05-19) — `@useatlas/chat` listener wired into SaaS deploy + Slack `@mention`/thread migrated off `slack.ts`; dogfood-verified in `#sandbox-atlas`. Same-day follow-ups: #2622/#2624/#2633/#2634/#2635/#2637/#2638/#2641 shipped + #2623 all 6 items (item 1 became milestone 1.5.2 slice 1 via #2663); arch-win #66 banked + #2634/#2641/#2663 candidates open.
 
 ---
 

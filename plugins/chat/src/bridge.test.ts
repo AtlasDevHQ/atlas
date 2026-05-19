@@ -3255,7 +3255,6 @@ describe("ProactiveConfig schema", () => {
           classifierMode: "regex-prefilter",
         }),
         getChannelConfigs: async () => [],
-        channelAllowlist: ["C-allowed"],
       },
     });
 

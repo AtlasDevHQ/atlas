@@ -518,11 +518,6 @@ export interface ProactiveConfig {
    */
   getWorkspaceConfig: GetWorkspaceConfigFn;
   /**
-   * Optional explicit channel allowlist. If omitted, the listener reads
-   * `ATLAS_PROACTIVE_CHANNELS` (comma-separated channel IDs).
-   */
-  channelAllowlist?: string[];
-  /**
    * Per-event fetcher for per-channel overrides. Replaces the pre-#2620
    * static `channelConfigs` map — the listener calls this once per
    * event and scans the returned array linearly.
@@ -883,7 +878,6 @@ const ProactiveConfigSchema = z
     getWorkspaceConfig: zCallback<GetWorkspaceConfigFn>(
       "proactive.getWorkspaceConfig must be a function returning Promise<WorkspaceProactiveConfig | null>",
     ),
-    channelAllowlist: z.array(z.string().min(1)).optional(),
     getChannelConfigs: zCallback<GetChannelConfigsFn>(
       "proactive.getChannelConfigs must be a function returning Promise<ChannelProactiveConfig[]>",
     ),

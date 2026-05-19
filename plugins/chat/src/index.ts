@@ -178,7 +178,6 @@ export {
   parseFeedbackSlashArgs,
   regexPreFilter,
   registerProactiveListener,
-  resolveChannelAllowlist,
   resolvePauseRequest,
   shouldAnswerOnReaction,
 } from "./proactive";

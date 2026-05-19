@@ -888,42 +888,42 @@ const ReactionConfigSchema = z
 // without a matching `mode` is rejected at boot rather than silently
 // no-op'ing inside the listener.
 
+// Shared field schemas for AnswerFlow variants. Defined once so the
+// error messages stay consistent across the three non-off modes and
+// the per-variant shapes below stay declarative — each variant lists
+// only its discriminator plus the callbacks it carries.
+const zExecuteQueryProactive = zCallback<ProactiveExecuteQuery>(
+  "proactive.answerFlow.executeQueryProactive must be a function",
+);
+const zGetPublicDataset = zCallback<GetPublicDatasetFn>(
+  "proactive.answerFlow.getPublicDataset must be a function returning Promise<PublicDatasetEntry[]>",
+);
+const zUserResolver = zCallback<ProactiveUserResolver>(
+  "proactive.answerFlow.userResolver must be a function",
+);
+
 const AnswerFlowSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("off") }).strict(),
   z
     .object({
       mode: z.literal("public-only"),
-      getPublicDataset: zCallback<GetPublicDatasetFn>(
-        "proactive.answerFlow.getPublicDataset must be a function returning Promise<PublicDatasetEntry[]>",
-      ),
-      executeQueryProactive: zCallback<ProactiveExecuteQuery>(
-        "proactive.answerFlow.executeQueryProactive must be a function",
-      ),
+      getPublicDataset: zGetPublicDataset,
+      executeQueryProactive: zExecuteQueryProactive,
     })
     .strict(),
   z
     .object({
       mode: z.literal("linked-only"),
-      userResolver: zCallback<ProactiveUserResolver>(
-        "proactive.answerFlow.userResolver must be a function",
-      ),
-      executeQueryProactive: zCallback<ProactiveExecuteQuery>(
-        "proactive.answerFlow.executeQueryProactive must be a function",
-      ),
+      userResolver: zUserResolver,
+      executeQueryProactive: zExecuteQueryProactive,
     })
     .strict(),
   z
     .object({
       mode: z.literal("both"),
-      getPublicDataset: zCallback<GetPublicDatasetFn>(
-        "proactive.answerFlow.getPublicDataset must be a function returning Promise<PublicDatasetEntry[]>",
-      ),
-      userResolver: zCallback<ProactiveUserResolver>(
-        "proactive.answerFlow.userResolver must be a function",
-      ),
-      executeQueryProactive: zCallback<ProactiveExecuteQuery>(
-        "proactive.answerFlow.executeQueryProactive must be a function",
-      ),
+      getPublicDataset: zGetPublicDataset,
+      userResolver: zUserResolver,
+      executeQueryProactive: zExecuteQueryProactive,
     })
     .strict(),
 ]);

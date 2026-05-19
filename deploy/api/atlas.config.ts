@@ -168,7 +168,9 @@ export default defineConfig({
           mode: "both",
           // Adapter-side getPublicDataset (constrains the agent at tool
           // construction). Listener-side getPublicDataset is the same
-          // helper; the call site below wires it as the post-filter.
+          // helper, wired alongside as `answerFlow.getPublicDataset` a
+          // few lines down — that's the post-filter that gates the
+          // result after the agent runs.
           executeQueryProactive: createProactiveAnswerAdapter(
             proactiveAiRuntime,
             {

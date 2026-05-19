@@ -1392,8 +1392,12 @@ async function runAnswerFlow(
   // fallback is needed — the listener cannot resolve linked without a
   // wired answer call.
   if (flow.mode !== "linked-only" && flow.mode !== "both") {
-    // Unreachable: `safeResolveUser` only runs when the mode includes a
-    // resolver. Kept for the structural narrow.
+    // Unreachable at runtime — `safeResolveUser` only runs when the
+    // mode includes a resolver, so `resolved.kind === "linked"` cannot
+    // co-occur with `mode === "off" | "public-only"`. Kept as a
+    // structural narrow so `flow.executeQueryProactive` is non-optional
+    // on the line below; without it the discriminator narrow goes
+    // through the `resolverFn` extraction earlier and is lost.
     return;
   }
 

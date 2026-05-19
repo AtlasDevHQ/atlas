@@ -3387,6 +3387,69 @@ describe("ProactiveConfig schema", () => {
     expect(result.success).toBe(false);
   });
 
+  it("rejects a half-wired killSwitch at the schema layer (#2623 item 1)", async () => {
+    // Runtime parity with the compile-time half-wired check above. A
+    // `killSwitch: { enabled: true }` missing `onPauseRequest` is
+    // rejected at the discriminated-union boundary rather than booting
+    // with a kill-switch read path but no write path.
+    const { ChatConfigSchema } = await import("./config");
+    const result = ChatConfigSchema.safeParse({
+      adapters: {
+        slack: { botToken: "xoxb-test", signingSecret: "abcdef0123456789abcdef0123456789" },
+      },
+      executeQuery: () =>
+        Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
+      proactive: {
+        resolveWorkspaceId: async () => "ws-1",
+        isEnabled: () => true,
+        classify: async () => ({ isQuestion: false, confidence: 0 }),
+        getWorkspaceConfig: async () => ({
+          enabled: true,
+          sensitivity: "balanced",
+          classifierMode: "regex-prefilter",
+        }),
+        getChannelConfigs: async () => [],
+        answerFlow: { mode: "off" },
+        // Half-wired: `enabled: true` but no `onPauseRequest`.
+        killSwitch: {
+          enabled: true,
+          isPaused: async () => ({ paused: false }),
+        },
+        feedback: { enabled: false },
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a half-wired feedback at the schema layer (#2623 item 1)", async () => {
+    // Runtime parity: `feedback: { enabled: true }` missing
+    // `collector` is rejected at the discriminated-union boundary.
+    const { ChatConfigSchema } = await import("./config");
+    const result = ChatConfigSchema.safeParse({
+      adapters: {
+        slack: { botToken: "xoxb-test", signingSecret: "abcdef0123456789abcdef0123456789" },
+      },
+      executeQuery: () =>
+        Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
+      proactive: {
+        resolveWorkspaceId: async () => "ws-1",
+        isEnabled: () => true,
+        classify: async () => ({ isQuestion: false, confidence: 0 }),
+        getWorkspaceConfig: async () => ({
+          enabled: true,
+          sensitivity: "balanced",
+          classifierMode: "regex-prefilter",
+        }),
+        getChannelConfigs: async () => [],
+        answerFlow: { mode: "off" },
+        killSwitch: { enabled: false },
+        // Half-wired: `enabled: true` but no `collector`.
+        feedback: { enabled: true },
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
   it("rejects a half-wired answer-flow at the schema layer (#2623 item 1)", async () => {
     // Compile-time enforcement is pinned by the @ts-expect-error block
     // in `proactive/__tests__/listener.test.ts`. This test pins the

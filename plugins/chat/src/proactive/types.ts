@@ -366,7 +366,9 @@ export const DEFAULT_PROACTIVE_REFUSAL_COPY =
  *
  *   - `off`: no `executeQueryProactive` wired. Reaction-backs and
  *     "Yes, answer" clicks post the link-Atlas stub. Self-hosted free
- *     deployments default here (the answer paths are enterprise-gated).
+ *     deployments typically pick this branch — the answer paths are
+ *     enterprise-gated at the route layer, so `mode: "off"` is the
+ *     legal shape when the gate is closed.
  *   - `public-only`: unlinked askers get the workspace's curated
  *     public-dataset allowlist; linked-asker resolution doesn't run.
  *   - `linked-only`: OAuth-linked askers run the agent under their

@@ -593,6 +593,7 @@ describe("registerProactiveListener — reaction-back handler", () => {
     // which short-circuits the resolver and posts the link-Atlas stub.
     const { invokeMessage, invokeReaction } = await setup({
       // Both omitted → setup() builds `answerFlow: { mode: "off" }`.
+      linkUrl: "https://app.useatlas.dev/link",
     });
 
     const thread = makeThread("C-allowed");
@@ -609,7 +610,20 @@ describe("registerProactiveListener — reaction-back handler", () => {
       raw: {},
     });
 
+    // Exactly one post — the link-Atlas stub — not an answer card and
+    // not an empty card. We pin the *content* (the configured
+    // `linkUrl` appears in the post `fallbackText`) so a future
+    // regression that accidentally posts an answer card or routes to
+    // the agent fails here instead of silently passing on the call
+    // count alone.
     expect(thread.post).toHaveBeenCalledTimes(1);
+    const postArg = (thread.post as unknown as {
+      mock: { calls: unknown[][] };
+    }).mock.calls[0]?.[0] as { fallbackText?: string } | undefined;
+    expect(postArg?.fallbackText ?? "").toContain("https://app.useatlas.dev/link");
+    // `mode: "off"` must not subscribe the thread (that's the answer-
+    // delivered tail's responsibility, not the unlinked-stub path).
+    expect(thread.subscribe).not.toHaveBeenCalled();
   });
 });
 

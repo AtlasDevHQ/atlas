@@ -34,6 +34,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 const { recordMeterEvent } = await import("../answer-meter");
+const { assertWorkspaceId } = await import("@useatlas/chat");
 
 beforeEach(() => {
   observedAuditCalls.length = 0;
@@ -41,7 +42,7 @@ beforeEach(() => {
 
 describe("recordMeterEvent — admin_action_log dual-write (#2631)", () => {
   const baseEvent = {
-    workspaceId: "ws-1",
+    workspaceId: assertWorkspaceId("ws-1"),
     channelId: "C-1",
     messageId: "M-1",
   } as const;

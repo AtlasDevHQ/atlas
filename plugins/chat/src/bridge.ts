@@ -1173,12 +1173,11 @@ export function createChatBridge(
                 classify: config.proactive.classify,
                 getWorkspaceConfig: config.proactive.getWorkspaceConfig,
                 getChannelConfigs: config.proactive.getChannelConfigs,
-                userResolver: config.proactive.userResolver,
-                executeQueryProactive: config.proactive.executeQueryProactive,
+                answerFlow: config.proactive.answerFlow,
+                killSwitch: config.proactive.killSwitch,
+                feedback: config.proactive.feedback,
                 linkUrl: config.proactive.linkUrl,
                 platform: config.proactive.platform,
-                feedbackCollector: config.proactive.feedbackCollector,
-                slashCommandName: config.slashCommandName,
               },
               log,
               recentAnswers: proactiveRecentAnswers,
@@ -1810,22 +1809,19 @@ export function createChatBridge(
           getChannelConfigs: proactiveConfig.getChannelConfigs,
           isEnabled: proactiveConfig.isEnabled,
           classify: proactiveConfig.classify,
-          userResolver: proactiveConfig.userResolver,
-          executeQueryProactive: proactiveConfig.executeQueryProactive,
+          // Coupled feature groups (#2623 item 1) — three discriminated
+          // unions threaded straight through. Host already constructed
+          // them at the `chatPlugin({ proactive: { ... } })` boundary.
+          answerFlow: proactiveConfig.answerFlow,
+          killSwitch: proactiveConfig.killSwitch,
+          feedback: proactiveConfig.feedback,
           linkUrl: proactiveConfig.linkUrl,
           platform: proactiveConfig.platform,
-          feedbackCollector: proactiveConfig.feedbackCollector,
-          slashCommandName: config.slashCommandName,
-          // Kill switch (#2295). `workspaceId` is now per-event (#2620).
-          isPaused: proactiveConfig.isPaused,
-          onPauseRequest: proactiveConfig.onPauseRequest,
           // AnswerMeter (#2296) — shared callback also covers
           // public_refused emissions added in #2297.
           onMeterEvent: proactiveConfig.onMeterEvent,
           // Monthly quota cap (#2301).
           getQuotaStatus: proactiveConfig.getQuotaStatus,
-          // Public dataset (#2297).
-          getPublicDataset: proactiveConfig.getPublicDataset,
           refusalCopy: proactiveConfig.refusalCopy,
           allowAnswerWhenEntitiesUnknown:
             proactiveConfig.allowAnswerWhenEntitiesUnknown,

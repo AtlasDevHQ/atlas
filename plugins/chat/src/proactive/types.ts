@@ -38,6 +38,12 @@ import type {
   PauseLayer,
   ProactiveQuotaStatus,
 } from "@useatlas/types";
+import type {
+  ProactiveExecuteQuery,
+  ProactiveUserResolver,
+} from "./answerer";
+import type { IsPausedFn } from "./pause";
+import type { FeedbackCollectorFn } from "./feedback";
 
 /** Workspace-level proactive settings. */
 export interface WorkspaceProactiveConfig {
@@ -327,3 +333,108 @@ export type GetPublicDatasetFn = (input: {
  */
 export const DEFAULT_PROACTIVE_REFUSAL_COPY =
   "I can only answer a curated set of questions in public channels. Link your Atlas account in DM to see this answer — or ask your admin to make this kind of question public.";
+
+// ---------------------------------------------------------------------------
+// Discriminated unions for coupled listener config (#2623 item 1)
+// ---------------------------------------------------------------------------
+//
+// `ProactiveListenerConfig` used to expose 25+ optional fields with
+// documented-only couplings — a host wiring half a feature group
+// silently fell back to a stub. The three unions below encode the
+// couplings at the type level so illegal combinations are compile-
+// time impossible:
+//
+//   1. {@link AnswerFlowConfig}  — public-dataset + linked-asker
+//                                  answer paths (share `executeQueryProactive`)
+//   2. {@link KillSwitchConfig}  — `isPaused` + `onPauseRequest` pair
+//   3. {@link FeedbackConfig}    — `feedbackCollector` wire
+//
+// Pre-customer posture: required fields, no migration shim. Hosts that
+// don't want a feature group set the discriminator to the "off" branch
+// explicitly (`{ mode: "off" }` / `{ enabled: false }`).
+//
+// `slashCommandName` was dropped from `ProactiveListenerConfig` in the
+// same change: it was declared but unread by the listener (bridge owns
+// slash-command registration via the top-level `ChatPluginConfig`).
+
+/**
+ * Answer-flow wiring for question events that reach the answer stage
+ * (reaction-back or "Yes, answer" button).
+ *
+ * Four legal modes encode the {@link ProactiveExecuteQuery} sharing
+ * between the two answer paths:
+ *
+ *   - `off`: no `executeQueryProactive` wired. Reaction-backs and
+ *     "Yes, answer" clicks post the link-Atlas stub. Self-hosted free
+ *     deployments typically pick this branch — the answer paths are
+ *     enterprise-gated at the route layer, so `mode: "off"` is the
+ *     legal shape when the gate is closed.
+ *   - `public-only`: unlinked askers get the workspace's curated
+ *     public-dataset allowlist; linked-asker resolution doesn't run.
+ *   - `linked-only`: OAuth-linked askers run the agent under their
+ *     identity (RLS applies); unlinked askers see the link-Atlas stub.
+ *   - `both`: linked askers get their RLS path AND unlinked askers
+ *     get the public-dataset path.
+ *
+ * Encoding (a) from #2623 — single union, no cross-block invariant
+ * to maintain. The shared {@link ProactiveExecuteQuery} reads as a
+ * field on each non-`off` mode rather than a separate dependency.
+ */
+export type AnswerFlowConfig =
+  | { readonly mode: "off" }
+  | {
+      readonly mode: "public-only";
+      readonly getPublicDataset: GetPublicDatasetFn;
+      readonly executeQueryProactive: ProactiveExecuteQuery;
+    }
+  | {
+      readonly mode: "linked-only";
+      readonly userResolver: ProactiveUserResolver;
+      readonly executeQueryProactive: ProactiveExecuteQuery;
+    }
+  | {
+      readonly mode: "both";
+      readonly getPublicDataset: GetPublicDatasetFn;
+      readonly userResolver: ProactiveUserResolver;
+      readonly executeQueryProactive: ProactiveExecuteQuery;
+    };
+
+/**
+ * Kill-switch + per-user opt-out wiring (#2295).
+ *
+ *   - `enabled: false`: no pause check before classification, no DM
+ *     `unsubscribe` write, no in-channel `@atlas pause` write. Useful
+ *     for tests and dev deploys that don't have the pause registry
+ *     wired.
+ *   - `enabled: true`: both halves wired — `isPaused` consulted
+ *     BEFORE the classifier on every channel message; `onPauseRequest`
+ *     called on `@atlas pause` / DM `unsubscribe`. Paired in practice
+ *     because one queries the registry and the other writes to it.
+ */
+export type KillSwitchConfig =
+  | { readonly enabled: false }
+  | {
+      readonly enabled: true;
+      readonly isPaused: IsPausedFn;
+      readonly onPauseRequest: OnPauseRequestFn;
+    };
+
+/**
+ * Feedback collection wiring for the `Helpful` / `Not helpful` /
+ * `Wrong data` buttons, the wrong-data modal, and the bridge-routed
+ * `/atlas feedback <text>` slash subcommand (#2298).
+ *
+ *   - `enabled: false`: feedback events are silently dropped. The
+ *     buttons and modal still render (they're part of the answer
+ *     card) but no row is written.
+ *   - `enabled: true`: events routed to `collector`.
+ *
+ * `slashCommandName` lives on the top-level {@link ChatPluginConfig}
+ * (bridge-level) because the bridge owns slash-command registration —
+ * the listener's `handleProactiveFeedbackSlash` is a free function the
+ * bridge calls, not a chat.onSlashCommand handler the listener
+ * registers itself.
+ */
+export type FeedbackConfig =
+  | { readonly enabled: false }
+  | { readonly enabled: true; readonly collector: FeedbackCollectorFn };

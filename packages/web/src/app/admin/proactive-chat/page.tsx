@@ -511,7 +511,19 @@ function MonthlyCapField({
 // usage-bar against.
 // ---------------------------------------------------------------------------
 
+// Both `QuotaUsageIndicator` and `DecisionDrillDownPanel` read this same
+// endpoint. TanStack Query dedupes by path and Zod's `z.object` strips
+// unrecognized keys, so two parallel `useAdminFetch` calls with partial
+// schemas would have one consumer's slice silently dropped from the cached
+// parsed value (#2637 regression — the drill-down's `summary.classifyCount`
+// access crashed when the quota indicator's schema parsed first). Validate
+// both slices in a single schema so the cached value is shaped for either
+// reader.
 const AnalyticsResponseSchema = z.object({
+  summary: z.object({
+    classifyCount: z.number().int().nonnegative(),
+    reactCount: z.number().int().nonnegative(),
+  }),
   quota: z.object({
     classifyCountThisMonth: z.number().int().nonnegative(),
     monthlyClassifierCap: z.number().int().nonnegative().nullable(),
@@ -1094,17 +1106,12 @@ const EventsResponseSchema = z.object({
   }),
 });
 
-const AggregateForDrillSchema = z.object({
-  summary: z.object({
-    classifyCount: z.number().int().nonnegative(),
-    reactCount: z.number().int().nonnegative(),
-  }),
-});
-
 function DecisionDrillDownPanel() {
-  const aggregate = useAdminFetch<z.infer<typeof AggregateForDrillSchema>>(
+  // Share the same schema as `QuotaUsageIndicator` so TanStack Query's
+  // path-keyed dedupe returns a value that's shaped for both consumers.
+  const aggregate = useAdminFetch<AnalyticsResponse>(
     "/api/v1/admin/proactive/analytics",
-    { schema: AggregateForDrillSchema },
+    { schema: AnalyticsResponseSchema },
   );
   const events = useAdminFetch<z.infer<typeof EventsResponseSchema>>(
     "/api/v1/admin/proactive/events?since=30d&eventType=classify&limit=50",

@@ -12,10 +12,14 @@
 -- workspace_id row is structurally orphaned — no consumer of this table
 -- (admin/proactive routes, enabled-gate, AnswerMeter, AnnouncementCoordinator)
 -- ever queries with `workspace_id = ''`, so dropping the row reclaims nothing
--- that was being read. The `RAISE NOTICE` makes the drop visible in
--- migration logs so an operator who sees a non-zero count can investigate
--- whatever wrote the row (the gate flips to `""` only during the
--- registration probe, never during a real upsert path).
+-- that was being read. (The non-empty invariant on call-site `workspaceId`
+-- is enforced upstream: admin routes derive it from `AuthContext.orgId`
+-- which Better Auth never sets to `""`, and the listener path resolves it
+-- via the host's `resolveWorkspaceId` and short-circuits on null. Only
+-- `enabled-gate.ts` has an explicit `''` short-circuit because it's the
+-- one path that *intentionally* probes with the empty sentinel.) The
+-- `RAISE NOTICE` makes the drop visible in migration logs so an operator
+-- who sees a non-zero count can investigate whatever wrote the row.
 --
 -- Scope: just `workspace_proactive_config`. Other proactive tables
 -- (`channel_proactive_config`, `proactive_pauses`, `proactive_meter_events`,

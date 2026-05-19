@@ -61,19 +61,20 @@
  * **Transient-retry caveat — registration-only callers can wedge.** The
  * "leave `enterpriseEnabled` as `undefined` so the next call retries"
  * contract only helps callers that invoke the gate again. The proactive
- * listener (`plugins/chat/src/proactive/listener.ts:306`) calls
- * `isEnabled("")` once at registration and short-circuits to a no-op
- * handle (`recentAnswers: null`) if it returns falsy — no per-event
- * call ever fires, so a transient runtime defect at boot becomes
- * permanent for the process lifetime. The mitigation is at the call
- * site, not here: if the registration is load-bearing, wrap it in
- * exponential-backoff retry (e.g. 3 attempts at 1s / 5s / 30s) or call
- * `__reset()` on a periodic timer. The gate intentionally stays
- * single-attempt — adding retry here would couple the boot path to a
- * scheduler the gate doesn't own. Today the proactive listener is
- * best-effort (process keeps running, other bridge features unaffected)
- * so we accept the wedge; revisit if SaaS dogfood surfaces a
- * registration regression.
+ * listener's `registerProactiveListener` calls `isEnabled("")` once at
+ * boot and, if it returns falsy, short-circuits to a no-op handle
+ * (`recentAnswers: null`) without registering any per-event handlers.
+ * Per-message hooks are wired up only on the truthy branch — so a
+ * transient runtime defect at the boot probe becomes permanent for the
+ * process lifetime, because no later call exists to exercise the retry.
+ * The mitigation is at the call site, not here: if the registration is
+ * load-bearing, wrap it in exponential-backoff retry (e.g. 3 attempts
+ * at 1s / 5s / 30s) or call `__reset()` on a periodic timer. The gate
+ * intentionally stays single-attempt — adding retry here would couple
+ * the boot path to a scheduler the gate doesn't own. Today the
+ * proactive listener is best-effort (process keeps running, other
+ * bridge features unaffected) so we accept the wedge; revisit if SaaS
+ * dogfood surfaces a registration regression.
  *
  * The factory captures a `ManagedRuntime` at boot (the host wiring slice
  * passes `getEnterpriseRuntime()` from `lib/effect/enterprise-layer.ts`),

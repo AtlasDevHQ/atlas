@@ -23,6 +23,7 @@ import { chatPlugin } from "./plugins/chat/src/index";
 import { getProactiveAiRuntime } from "./packages/api/src/lib/effect/ai";
 import { getEnterpriseRuntime } from "./packages/api/src/lib/effect/enterprise-layer";
 import { createSlackWorkspaceIdResolver } from "./packages/api/src/lib/proactive/workspace-id-resolver";
+import { createSlackProactiveUserResolver } from "./packages/api/src/lib/proactive/user-resolver";
 import { createProactiveEnabledGate } from "./packages/api/src/lib/proactive/enabled-gate";
 import {
   getChannelProactiveConfigs,
@@ -139,23 +140,28 @@ export default defineConfig({
         // `proactiveAiRuntime`. The factory's `RIn` type parameter
         // widens to accept the runtime's full service set.
         classify: createProactiveClassifier(proactiveAiRuntime),
-        // Reaction-back answer flow. The adapter's optional
-        // `getPublicDataset(asker)` callback — distinct from the
-        // plugin-level `getPublicDataset` wired below — is intentionally
-        // omitted: with the user resolver stubbed to unlinked, every
-        // asker hits the adapter's "refuse unlinked" path before
-        // touching the agent. The plugin-level `getPublicDataset` post-
-        // filter on the listener side is wired (line ~199) and becomes
-        // load-bearing once #2624 closes the user-resolver gap.
-        executeQueryProactive: createProactiveAnswerAdapter(proactiveAiRuntime),
-        // TODO(#2624): `ProactiveAsker` carries `{ platform, externalUserId, userName? }`
-        // — no `team_id` / `workspaceId`. On SaaS the same Slack userId
-        // can exist across multiple tenants and would resolve to
-        // different Atlas users without workspace context. Stubbed to
-        // always-unlinked; the unlinked path is the refuse-safe branch
-        // (adapter refuses; plugin-level public-dataset post-filter
-        // remains a defense-in-depth net for when #2624 lands).
-        userResolver: async () => ({ atlasUserId: undefined }),
+        // Reaction-back answer flow. Wires the adapter-side
+        // `getPublicDataset(asker, { workspaceId })` so unlinked-asker
+        // answers run with the workspace's curated allowlist gating
+        // `executeSQL` + `explore` at the tool boundary (the plugin-
+        // level post-filter on the listener side is the second gate).
+        // The workspaceId is threaded from the listener per #2624;
+        // pre-#2624 wiring couldn't pass it through.
+        executeQueryProactive: createProactiveAnswerAdapter(
+          proactiveAiRuntime,
+          {
+            getPublicDataset: (_asker, { workspaceId }) =>
+              getAllowlist(workspaceId),
+          },
+        ),
+        // Slack user resolver (#2624). Validates the workspaceId and
+        // returns `{ atlasUserId: undefined }` for every asker today
+        // (no Slack-user link table in core yet — the function has a
+        // clear hook point for a future linking mechanism). The
+        // unlinked path is the safe branch: the listener routes
+        // unlinked askers through the public-dataset allowlist gate,
+        // which is now tenant-scoped via #2624.
+        userResolver: createSlackProactiveUserResolver(),
         linkUrl:
           process.env.ATLAS_PUBLIC_WEB_URL ?? "https://app.useatlas.dev",
         // Three-layer kill switch + per-user opt-out. Plugin's

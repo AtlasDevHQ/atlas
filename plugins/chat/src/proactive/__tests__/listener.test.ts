@@ -1296,7 +1296,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       { entityName: "marketing.users", denyMetrics: [] },
     ]);
     const executeQueryProactive = mock(
-      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null }) => ({
+      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null; workspaceId: string }) => ({
         answer: `Echo: ${q}`,
         entitiesReferenced: ["marketing.users"],
       }),
@@ -1329,7 +1329,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       { entityName: "marketing.users", denyMetrics: [] },
     ]);
     const executeQueryProactive = mock(
-      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null }) => ({
+      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null; workspaceId: string }) => ({
         answer: `Echo: ${q}`,
         entitiesReferenced: ["finance.revenue"],
       }),
@@ -1365,7 +1365,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       { entityName: "finance.revenue", denyMetrics: [] },
     ]);
     const executeQueryProactive = mock(
-      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null }) => ({
+      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null; workspaceId: string }) => ({
         answer: `Echo: ${q}`,
         entitiesReferenced: ["finance.revenue", "finance.customers"],
       }),
@@ -1396,7 +1396,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       { entityName: "marketing.users", denyMetrics: ["email"] },
     ]);
     const executeQueryProactive = mock(
-      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null }) => ({
+      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null; workspaceId: string }) => ({
         answer: `Echo: ${q}`,
         entitiesReferenced: ["marketing.users"],
         metricsReferenced: ["signup_date", "email"],
@@ -1434,7 +1434,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       { entityName: "marketing.users", denyMetrics: [] },
     ]);
     const executeQueryProactive = mock(
-      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null }) => ({
+      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null; workspaceId: string }) => ({
         answer: `Echo: ${q}`,
         // No entitiesReferenced field at all.
       }),
@@ -1469,7 +1469,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       { entityName: "marketing.users", denyMetrics: [] },
     ]);
     const executeQueryProactive = mock(
-      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null }) => ({
+      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null; workspaceId: string }) => ({
         answer: `Echo: ${q}`,
         entitiesReferenced: [], // empty array
       }),
@@ -1503,7 +1503,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       { entityName: "marketing.users", denyMetrics: [] },
     ]);
     const executeQueryProactive = mock(
-      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null }) => ({
+      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null; workspaceId: string }) => ({
         answer: `Echo: ${q}`,
         // No entitiesReferenced
       }),
@@ -1955,5 +1955,149 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
     const wsBCount = callArgs.filter((id) => id === "ws-B").length;
     expect(wsACount).toBe(2);
     expect(wsBCount).toBe(1);
+  });
+
+  it("userResolver receives the pending entry's workspaceId as the second arg (#2624)", async () => {
+    // The point of #2624: a multi-tenant host needs the workspaceId
+    // to scope the (platform, externalUserId) lookup. Pre-#2624 the
+    // resolver received only the asker — two tenants' askers with
+    // the same Slack user-id would collide. Now the listener threads
+    // the pending entry's workspaceId through as the second arg.
+    //
+    // We also pin the executeQueryProactive context: the same
+    // per-event workspaceId must appear on the proactive context
+    // (otherwise the host adapter's tool gates couldn't scope the
+    // allowlist correctly either).
+    const channelToWorkspace = new Map<string, string>([
+      ["C-tenant-A", "ws-A"],
+      ["C-tenant-B", "ws-B"],
+    ]);
+    const resolveWorkspaceId: ResolveWorkspaceIdFn = async ({ thread }) => {
+      return channelToWorkspace.get(thread.channelId) ?? null;
+    };
+
+    const userResolver = mock(
+      async (
+        _asker: { externalUserId: string },
+        _ctx: { workspaceId: string },
+      ) => ({ atlasUserId: "atlas-user-1" }),
+    );
+    const executeQueryProactive = mock(echoExecute);
+    const { chat, invokeMessage, invokeReaction } = makeChat();
+    await registerProactiveListener(
+      chat as unknown as Parameters<typeof registerProactiveListener>[0],
+      makeLogger(),
+      {
+        isEnabled: async () => true,
+        classify: yesLLM,
+        resolveWorkspaceId,
+        getWorkspaceConfig: defaultGetWorkspace,
+        getChannelConfigs: allowChannels("C-tenant-A", "C-tenant-B"),
+        userResolver,
+        executeQueryProactive,
+      },
+    );
+
+    const threadA = makeThread("C-tenant-A");
+    const threadB = makeThread("C-tenant-B");
+    await invokeMessage(threadA, makeMessage({ id: "M-A-1", userId: "U-shared" }));
+    await invokeMessage(threadB, makeMessage({ id: "M-B-1", userId: "U-shared" }));
+
+    // Reaction-back drives the answer flow (and therefore the resolver).
+    await invokeReaction({
+      added: true,
+      messageId: "M-A-1",
+      threadId: threadA.channelId,
+      thread: threadA,
+      user: { isMe: false, isBot: false, userId: "U-shared", userName: "bob" },
+      emoji: PROACTIVE_REACTION,
+      rawEmoji: "robot_face",
+      adapter: { name: "slack" },
+      raw: {},
+    });
+    await invokeReaction({
+      added: true,
+      messageId: "M-B-1",
+      threadId: threadB.channelId,
+      thread: threadB,
+      user: { isMe: false, isBot: false, userId: "U-shared", userName: "bob" },
+      emoji: PROACTIVE_REACTION,
+      rawEmoji: "robot_face",
+      adapter: { name: "slack" },
+      raw: {},
+    });
+
+    // Two resolver invocations, each carrying the originating tenant's
+    // workspaceId. Pre-#2624 the second arg didn't exist; assert both
+    // the shape and the value to pin the contract.
+    expect(userResolver).toHaveBeenCalledTimes(2);
+    expect(userResolver.mock.calls[0]![1]).toEqual({ workspaceId: "ws-A" });
+    expect(userResolver.mock.calls[1]![1]).toEqual({ workspaceId: "ws-B" });
+
+    // ExecuteQueryProactive context carries the same workspaceId so
+    // the host adapter can scope its tool gates.
+    expect(executeQueryProactive).toHaveBeenCalledTimes(2);
+    expect(
+      (executeQueryProactive.mock.calls[0]![1] as { workspaceId: string }).workspaceId,
+    ).toBe("ws-A");
+    expect(
+      (executeQueryProactive.mock.calls[1]![1] as { workspaceId: string }).workspaceId,
+    ).toBe("ws-B");
+  });
+
+  it("userResolver throw is per-tenant — logs workspaceId on the apology path", async () => {
+    // A resolver hiccup on tenant A must not silently route tenant A's
+    // asker through tenant B's workspace context. The listener logs at
+    // error with workspaceId so an operator triaging the apology
+    // posts can correlate to the right tenant.
+    const throwingResolver: ProactiveUserResolver = mock(async () => {
+      throw new Error("resolver-DB-down");
+    });
+    const log = makeLogger();
+    const { chat, invokeMessage, invokeReaction } = makeChat();
+    await registerProactiveListener(
+      chat as unknown as Parameters<typeof registerProactiveListener>[0],
+      log,
+      {
+        isEnabled: async () => true,
+        classify: yesLLM,
+        resolveWorkspaceId: makeResolver("ws-troubled"),
+        getWorkspaceConfig: defaultGetWorkspace,
+        getChannelConfigs: allowChannels("C-allowed"),
+        userResolver: throwingResolver,
+        executeQueryProactive: echoExecute,
+      },
+    );
+
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage({ id: "M1" }));
+    await invokeReaction({
+      added: true,
+      messageId: "M1",
+      threadId: thread.channelId,
+      thread,
+      user: { isMe: false, isBot: false, userId: "U-asker", userName: "asker" },
+      emoji: PROACTIVE_REACTION,
+      rawEmoji: "robot_face",
+      adapter: { name: "slack" },
+      raw: {},
+    });
+
+    // Apology posted, agent NEVER invoked.
+    expect(thread.post).toHaveBeenCalledTimes(1);
+    // Resolver received the per-event workspaceId, and the error log
+    // carries it (so triage can correlate).
+    expect(throwingResolver).toHaveBeenCalledWith(
+      expect.objectContaining({ externalUserId: "U-asker" }),
+      { workspaceId: "ws-troubled" },
+    );
+    const errorCalls = (log.error as unknown as {
+      mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> };
+    }).mock.calls;
+    const errorCall = errorCalls.find((c) => {
+      const payload = c[0] as { workspaceId?: string };
+      return payload?.workspaceId === "ws-troubled";
+    });
+    expect(errorCall).toBeDefined();
   });
 });

@@ -64,6 +64,7 @@ export {
   type ProactiveExecuteQuery,
   type ProactiveQueryResult,
   type ProactiveUserResolver,
+  type ProactiveUserResolverContext,
   type ReactionAnswerDecision,
   type ResolvedAsker,
   type ShouldAnswerOnReactionInput,

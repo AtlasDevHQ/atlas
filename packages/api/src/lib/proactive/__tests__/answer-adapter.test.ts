@@ -214,6 +214,7 @@ describe("createProactiveAnswerAdapter — linked path", () => {
       threadId: "T-1",
       asker: slackAsker,
       atlasUserId: "user-linked",
+      workspaceId: "org-linked",
     });
 
     expect(result.answer).toBe("Linked answer");
@@ -245,6 +246,7 @@ describe("createProactiveAnswerAdapter — linked path", () => {
         threadId: "T-orphan",
         asker: slackAsker,
         atlasUserId: "user-missing",
+        workspaceId: "org-orphan",
       }),
     ).rejects.toThrow(/Atlas couldn't answer this/);
 
@@ -275,6 +277,7 @@ describe("createProactiveAnswerAdapter — linked path", () => {
         threadId: "T-fail",
         asker: slackAsker,
         atlasUserId: "user-1",
+        workspaceId: "org-1",
       }),
     ).rejects.toThrow(/Atlas couldn't answer this/);
 
@@ -314,6 +317,7 @@ describe("createProactiveAnswerAdapter — unlinked path", () => {
       threadId: "T-unlinked",
       asker: slackAsker,
       atlasUserId: null,
+      workspaceId: "org-public",
     });
 
     expect(result.answer).toBe("Public-dataset answer");
@@ -341,6 +345,7 @@ describe("createProactiveAnswerAdapter — unlinked path", () => {
         threadId: "T-missing",
         asker: slackAsker,
         atlasUserId: null,
+        workspaceId: "org-missing",
       }),
     ).rejects.toThrow(/Atlas couldn't answer this/);
 
@@ -369,6 +374,7 @@ describe("createProactiveAnswerAdapter — unlinked path", () => {
         threadId: "T-empty",
         asker: slackAsker,
         atlasUserId: null,
+        workspaceId: "org-empty",
       }),
     ).rejects.toThrow(/Atlas couldn't answer this/);
     expect(observedRunAgentCalls).toHaveLength(0);
@@ -395,6 +401,7 @@ describe("createProactiveAnswerAdapter — unlinked path", () => {
         threadId: "T-fail",
         asker: slackAsker,
         atlasUserId: null,
+        workspaceId: "org-fail",
       }),
     ).rejects.toThrow(/Atlas couldn't answer this/);
     expect(observedRunAgentCalls).toHaveLength(0);
@@ -404,6 +411,48 @@ describe("createProactiveAnswerAdapter — unlinked path", () => {
     );
     expect(matchingError).toBeDefined();
     expect(matchingError?.payload.errorMessage).toContain("registry connection refused");
+    await runtime.dispose();
+  });
+
+  it("threads the per-event workspaceId through to getPublicDataset (#2624 multi-tenant)", async () => {
+    // The point: pre-#2624 the adapter called `getPublicDataset(asker)`
+    // with no workspaceId, so on multi-tenant SaaS the same Slack
+    // user-id seen from two tenants would resolve against whichever
+    // tenant's allowlist the host implementation happened to default
+    // to. The contract change passes the per-event workspaceId so the
+    // host scopes the lookup correctly.
+    nextRunAgentResult = {
+      text: Promise.resolve("scoped public answer"),
+      steps: Promise.resolve([]),
+      totalUsage: Promise.resolve({ inputTokens: 0, outputTokens: 0 }),
+    };
+    const observedPublicDatasetCalls: Array<{
+      askerExternalId: string | undefined;
+      workspaceId: string;
+    }> = [];
+    const runtime = buildRuntime();
+    const adapter = createProactiveAnswerAdapter(runtime, {
+      getPublicDataset: async (asker, ctx) => {
+        observedPublicDatasetCalls.push({
+          askerExternalId: asker.externalUserId,
+          workspaceId: ctx.workspaceId,
+        });
+        return [{ entityName: "tenant_scoped_entity", denyMetrics: [] }];
+      },
+    });
+
+    await adapter("scoped question", {
+      threadId: "T-scoped",
+      asker: slackAsker,
+      atlasUserId: null,
+      workspaceId: "tenant-B",
+    });
+
+    expect(observedPublicDatasetCalls).toHaveLength(1);
+    expect(observedPublicDatasetCalls[0]).toEqual({
+      askerExternalId: slackAsker.externalUserId,
+      workspaceId: "tenant-B",
+    });
     await runtime.dispose();
   });
 });
@@ -430,6 +479,7 @@ describe("createProactiveAnswerAdapter — error handling", () => {
         threadId: "T-err",
         asker: slackAsker,
         atlasUserId: "user-1",
+        workspaceId: "org-1",
       }),
     ).rejects.toThrow(/Atlas couldn't answer this/);
 
@@ -470,6 +520,7 @@ describe("createProactiveAnswerAdapter — error handling", () => {
         threadId: "T-model",
         asker: slackAsker,
         atlasUserId: "user-1",
+        workspaceId: "org-1",
       }),
     ).rejects.toThrow(/Atlas couldn't answer this/);
 
@@ -591,6 +642,7 @@ describe("collectProactiveResult", () => {
       threadId: "T-refs",
       asker: slackAsker,
       atlasUserId: "user-x",
+      workspaceId: "org-x",
     });
 
     expect(result.answer).toBe("Answer with refs");

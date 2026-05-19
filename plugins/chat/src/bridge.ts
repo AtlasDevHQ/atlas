@@ -28,6 +28,7 @@ import type { Adapter, StateAdapter, Lock, CardElement, FileUpload, StreamChunk 
 import { toModalElement } from "chat/jsx-runtime";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
 import type {
+  ChatAdapterName,
   ChatPluginConfig,
   ChatQueryResult,
   ChatMessage,
@@ -518,7 +519,7 @@ export function createChatBridge(
     const result = await config.executeQuery(question, {
       threadId,
       ...(priorMessages !== undefined ? { priorMessages } : {}),
-      adapter: { name: adapter.name },
+      adapter: { name: adapter.name as ChatAdapterName },
       rawMessage,
     });
 
@@ -611,7 +612,7 @@ export function createChatBridge(
     const streamResult = config.executeQueryStream(question, {
       threadId,
       ...(priorMessages !== undefined ? { priorMessages } : {}),
-      adapter: { name: adapter.name },
+      adapter: { name: adapter.name as ChatAdapterName },
       rawMessage,
     });
     if (!streamResult?.stream || !streamResult?.result) {
@@ -1423,7 +1424,7 @@ export function createChatBridge(
         const result = await config.executeQuery(question, {
           threadId,
           priorMessages,
-          adapter: { name: event.adapter.name },
+          adapter: { name: event.adapter.name as ChatAdapterName },
           rawMessage: event.raw,
         });
         const response = buildQueryResultCard(result);
@@ -1516,7 +1517,7 @@ export function createChatBridge(
       const result = await config.executeQuery(question, {
         threadId,
         priorMessages,
-        adapter: { name: event.adapter.name },
+        adapter: { name: event.adapter.name as ChatAdapterName },
         rawMessage: event.raw,
       });
       const csvFile = buildCSVFromQueryData(result.data);

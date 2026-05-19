@@ -34,6 +34,24 @@ import type { FeedbackCollectorFn } from "./proactive/feedback";
 /** A single message in a conversation thread. */
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 
+/** Canonical chat platform names supported by the bridge.
+ *
+ * The chat SDK's `Adapter` interface types `name` as a bare `string`
+ * because adapters are pluggable, but this plugin only loads the
+ * adapters enumerated under `ChatPluginConfig["adapters"]` — narrowing
+ * to the literal union here lets host `executeQuery` callbacks
+ * type-narrow via `if (adapter.name !== "slack")` and forces every
+ * `switch (adapter.name)` to be exhaustive at compile time. */
+export type ChatAdapterName =
+  | "slack"
+  | "teams"
+  | "discord"
+  | "gchat"
+  | "telegram"
+  | "github"
+  | "linear"
+  | "whatsapp";
+
 /** Minimal adapter shape passed through to host `executeQuery` callbacks.
  *
  * The chat SDK's full `Adapter` type carries platform-specific generics
@@ -41,10 +59,11 @@ export type ChatMessage = { role: "user" | "assistant"; content: string };
  * to thread through. The host only reads `name` to dispatch to the right
  * tenant resolver — keep this surface intentionally narrow. */
 export interface ChatExecuteQueryAdapter {
-  /** Platform identifier — `"slack"`, `"teams"`, `"discord"`, etc.
-   * The host uses this to dispatch to the platform-specific tenant
-   * resolver. Unknown platforms MUST be rejected by the host. */
-  name: string;
+  /** Platform identifier. The host uses this to dispatch to the
+   * platform-specific tenant resolver — typed as a literal union
+   * (see {@link ChatAdapterName}) so dispatch branches narrow at
+   * compile time and unknown platforms cannot reach here. */
+  name: ChatAdapterName;
 }
 
 /** Context passed to `executeQuery` / `executeQueryStream`.

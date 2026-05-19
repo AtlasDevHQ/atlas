@@ -18,7 +18,9 @@
  *   - `getConversationId` / `setConversationId` for thread → conversation mapping
  *   - `createConversation` / `addMessage` for multi-turn persistence
  *   - `checkRateLimit("slack:${teamId}")` for per-tenant rate limiting
- *   - `scrubError` for user-safe error surfacing
+ *   - Error scrubbing: the bridge's `scrubErrorMessage` is the single
+ *     point of redaction. This helper re-throws the original message so
+ *     the bridge owns the user-safe transformation.
  *
  * Pending actions (`PendingAction[]`) are returned to the chat plugin bridge
  * so it can post per-action ephemeral approval prompts via Chat SDK's
@@ -52,25 +54,8 @@ import {
   getConversation,
   generateTitle,
 } from "@atlas/api/lib/conversations";
-import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
 
 const log = createLogger("chat-plugin:executeQuery");
-
-/** User-safe scrubbed message returned in place of a real error.
- *
- * Mirrors `slack.ts:scrubError` — connection strings, stack traces, file
- * paths, and tokens all flatten to a generic "internal error" message
- * before they leave the process. The chat plugin bridge will additionally
- * route this through `config.scrubError` if wired (no double-redaction —
- * `SENSITIVE_PATTERNS` is idempotent), but we scrub here too so the
- * thrown error's `.message` is safe in tracking dashboards.
- */
-function scrubError(message: string): string {
-  if (SENSITIVE_PATTERNS.test(message) || message.length > 200) {
-    return "An internal error occurred. Check server logs for details.";
-  }
-  return message;
-}
 
 /**
  * Minimum shape we read from the Slack raw event payload. The chat SDK
@@ -86,17 +71,7 @@ interface SlackRawEvent {
   channel?: string;
   thread_ts?: string;
   ts?: string;
-  text?: string;
 }
-
-/** Empty result skeleton the chat plugin expects when we can't answer. */
-const EMPTY_RESULT: ChatQueryResult = {
-  answer: "",
-  sql: [],
-  data: [],
-  steps: 0,
-  usage: { totalTokens: 0 },
-};
 
 /**
  * Build the chat plugin's `executeQuery` callback.
@@ -111,9 +86,7 @@ const EMPTY_RESULT: ChatQueryResult = {
  * dependency. `executeAgentQuery` resolves its own context internally.
  */
 export function createChatPluginExecuteQuery(): ChatPluginConfig["executeQuery"] {
-  return async (question, ctx) => {
-    return runExecuteQuery(question, ctx);
-  };
+  return runExecuteQuery;
 }
 
 /** Internal — exported only for tests. */
@@ -163,38 +136,67 @@ export async function runExecuteQuery(
   // 4. F-55 actor — bind a workspace bot actor so approval rules apply.
   //    `getInstallation(teamId)` reads `slack_installations.org_id`.
   //    Without an Atlas org id, `checkApprovalRequired` short-circuits
-  //    and any rule-matching query runs ungated.
-  let orgId: string | null = null;
+  //    and any rule-matching query runs ungated, so both failure modes
+  //    (DB throw, unknown tenant) MUST fail-closed before the agent
+  //    runs — matches the module docstring's stated invariant.
+  let orgId: string;
   try {
     const installation = await getInstallation(teamId);
-    orgId = installation?.org_id ?? null;
+    if (!installation) {
+      log.warn(
+        { teamId, threadId, requestId },
+        "Unknown Slack team_id — refusing",
+      );
+      throw new Error(
+        "This Slack workspace is not registered with Atlas. Reinstall the app or contact your admin.",
+      );
+    }
+    if (!installation.org_id) {
+      log.warn(
+        { teamId, threadId, requestId },
+        "Slack installation has no org_id — refusing",
+      );
+      throw new Error(
+        "This Slack workspace is not registered with Atlas. Reinstall the app or contact your admin.",
+      );
+    }
+    orgId = installation.org_id;
   } catch (err) {
-    log.warn(
-      {
-        teamId,
-        threadId,
-        requestId,
-        err: err instanceof Error ? err.message : String(err),
-      },
-      "Failed to load Slack installation — proceeding without actor",
+    // Re-throw user-safe errors we just constructed (above) unchanged so
+    // the bridge surfaces the actionable message. A genuine DB outage
+    // during tenant resolution is NOT a "proceed anyway" condition —
+    // log with full context (Sentry needs the unscrubbed error) and
+    // surface a user-safe message.
+    if (
+      err instanceof Error &&
+      err.message.startsWith("This Slack workspace is not registered")
+    ) {
+      throw err;
+    }
+    log.error(
+      { teamId, threadId, requestId, err },
+      "Failed to load Slack installation — refusing query",
+    );
+    throw new Error(
+      "Atlas could not resolve the Slack workspace right now. Please try again in a moment.",
+      { cause: err },
     );
   }
+
   const externalUserId = raw.user;
-  const actor = orgId
-    ? botActorUser({
-        platform: "slack",
-        externalId: teamId,
-        orgId,
-        ...(externalUserId ? { externalUserId } : {}),
-      })
-    : undefined;
+  const actor = botActorUser({
+    platform: "slack",
+    externalId: teamId,
+    orgId,
+    ...(externalUserId ? { externalUserId } : {}),
+  });
 
   // 5. Multi-turn conversation persistence. The chat plugin's bridge
-  //    already keeps its own thread-history cache (`MessageHistoryCache`),
-  //    but Atlas's internal `conversations` table is the source of truth
-  //    for cross-surface history (admin console + web chat + Slack thread
-  //    reads). Mirror what slack.ts does: look up by (channel, thread_ts)
-  //    and persist the user/assistant turns.
+  //    already maintains the bridge's StateAdapter-backed conversation
+  //    list, but Atlas's internal `conversations` table is the source of
+  //    truth for cross-surface history (admin console + web chat + Slack
+  //    thread reads). Mirror what slack.ts does: look up by
+  //    (channel, thread_ts) and persist the user/assistant turns.
   const channelId = raw.channel ?? "";
   const slackThreadTs = raw.thread_ts ?? raw.ts ?? "";
   let conversationId: string | null = null;
@@ -235,10 +237,11 @@ export async function runExecuteQuery(
     }
   }
 
-  // 6. If the bridge supplied `priorMessages`, prefer them (they're the
-  //    chat SDK's MessageHistoryCache, which is closer to the live thread
-  //    state than a stale DB row). Otherwise rehydrate from the Atlas
-  //    `conversations` table — matches slack.ts's thread-followup branch.
+  // 6. If the bridge supplied `priorMessages`, prefer them (they come
+  //    from the bridge's StateAdapter-backed conversation list, which is
+  //    closer to the live thread state than a stale DB row). Otherwise
+  //    rehydrate from the Atlas `conversations` table — matches
+  //    slack.ts's thread-followup branch.
   let history = priorMessages;
   if (!history && conversationId) {
     try {
@@ -275,22 +278,22 @@ export async function runExecuteQuery(
   try {
     queryResult = await executeAgentQuery(question, requestId, {
       ...(history ? { priorMessages: history } : {}),
-      ...(actor ? { actor } : {}),
+      actor,
       approvalSurface: "slack",
       ...(conversationId ? { conversationId } : {}),
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    // Log the original `err` (with stack trace) so Sentry sees the
+    // unscrubbed version. The re-thrown message stays unscrubbed too —
+    // the bridge's `scrubErrorMessage` is the single source of truth
+    // for what leaves the process (avoids double-redaction with a
+    // different scrubber).
     log.error(
-      {
-        err: err instanceof Error ? err : new Error(message),
-        teamId,
-        threadId,
-        requestId,
-      },
+      { err, teamId, threadId, requestId },
       "Chat plugin executeQuery agent run failed",
     );
-    throw new Error(scrubError(message), { cause: err });
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(message, { cause: err });
   }
 
   // 8. Persist messages so future follow-ups can load history. Best-effort.
@@ -330,11 +333,14 @@ export async function runExecuteQuery(
       "Chat plugin executeQuery held for approval",
     );
     return {
-      ...EMPTY_RESULT,
       answer:
         `:lock: This query requires approval before it can run. ` +
         `Rule: *${queryResult.pendingApproval.ruleName}*. ` +
         `Approve via the Atlas admin console.`,
+      sql: [],
+      data: [],
+      steps: 0,
+      usage: { totalTokens: 0 },
     };
   }
 

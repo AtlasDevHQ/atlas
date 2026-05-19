@@ -95,6 +95,7 @@ export type {
   ChatPluginConfig,
   ChatQueryResult,
   ChatMessage,
+  ChatAdapterName,
   ChatExecuteQueryAdapter,
   ChatExecuteQueryContext,
   StateConfig,

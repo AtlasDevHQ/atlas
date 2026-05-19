@@ -85,13 +85,17 @@ mock.module("@atlas/api/lib/agent-query", () => ({
 }));
 
 const mockGetInstallation: Mock<(teamId: string) => Promise<{ org_id: string | null } | null>> =
-  mock((teamId) =>
-    Promise.resolve(
-      teamId === "T999"
-        ? null
-        : { team_id: teamId, org_id: "org-xyz", bot_token: "xoxb-test", workspace_name: "Test", installed_at: new Date().toISOString() },
-    ),
-  );
+  mock((teamId) => {
+    if (teamId === "T999") return Promise.resolve(null);
+    if (teamId === "T_THROW") return Promise.reject(new Error("ECONNREFUSED postgres://internal-db:5432"));
+    return Promise.resolve({
+      team_id: teamId,
+      org_id: "org-xyz",
+      bot_token: "xoxb-test",
+      workspace_name: "Test",
+      installed_at: new Date().toISOString(),
+    });
+  });
 
 mock.module("@atlas/api/lib/slack/store", () => ({
   getInstallation: mockGetInstallation,
@@ -158,7 +162,7 @@ describe("chat-plugin executeQuery host helper", () => {
     });
   });
 
-  it("binds botActorUser with slack platform, team_id externalId, and resolved orgId", async () => {
+  it("binds botActorUser with slack platform, team_id externalId, and resolved orgId — and maps the full agent result", async () => {
     const { runExecuteQuery } = await import("../executeQuery");
 
     const result = await runExecuteQuery("how many active users?", {
@@ -175,6 +179,11 @@ describe("chat-plugin executeQuery host helper", () => {
     });
 
     expect(result.answer).toBe("42 active users");
+    // Full AgentQueryResult → ChatQueryResult mapping (not just `answer`).
+    expect(result.sql).toEqual(["SELECT COUNT(*) FROM users"]);
+    expect(result.data).toEqual([{ columns: ["count"], rows: [{ count: 42 }] }]);
+    expect(result.steps).toBe(1);
+    expect(result.usage).toEqual({ totalTokens: 100 });
     expect(capturedAgentCalls).toHaveLength(1);
 
     const actor = capturedAgentCalls[0]!.options?.actor;
@@ -307,6 +316,9 @@ describe("chat-plugin executeQuery host helper", () => {
 
     expect(result.answer).toContain(":lock:");
     expect(result.answer).toContain("PII-Read");
+    // Parity with legacy slack.ts test — both anchor phrases assert on
+    // the canonical notice the user sees.
+    expect(result.answer).toContain("Atlas admin console");
     expect(result.answer).not.toContain("free-form text");
   });
 
@@ -363,22 +375,21 @@ describe("chat-plugin executeQuery host helper", () => {
     expect(capturedAgentCalls).toHaveLength(0);
   });
 
-  it("proceeds with no actor when the workspace has no installation row (self-hosted / unknown team)", async () => {
+  it("fail-closes on an unknown Slack team_id (no installation row) — never invokes the agent", async () => {
     const { runExecuteQuery } = await import("../executeQuery");
 
-    // T999 → getInstallation returns null per the mock
-    await runExecuteQuery("q", {
-      threadId: "slack:C1-1.2",
-      adapter: { name: "slack" },
-      rawMessage: { team_id: "T999", user: "U", channel: "C1", ts: "1.2" },
-    });
-
-    expect(capturedAgentCalls).toHaveLength(1);
-    expect(capturedAgentCalls[0]!.options?.actor).toBeUndefined();
-    // approvalSurface still stamped — the rule engine fail-closes when no
-    // actor binds an org, which is the correct behaviour for an unknown
-    // tenant (matches slack.ts pre-#2611).
-    expect(capturedAgentCalls[0]!.options?.approvalSurface).toBe("slack");
+    // T999 → getInstallation returns null per the mock. The agent loop
+    // MUST NOT run with `actor=undefined` — that silently bypasses the
+    // F-55 approval gate. The helper now refuses with a user-safe error
+    // (PR review P0-1).
+    await expect(
+      runExecuteQuery("q", {
+        threadId: "slack:C1-1.2",
+        adapter: { name: "slack" },
+        rawMessage: { team_id: "T999", user: "U", channel: "C1", ts: "1.2" },
+      }),
+    ).rejects.toThrow(/not registered with Atlas/);
+    expect(capturedAgentCalls).toHaveLength(0);
   });
 
   it("prefers bridge-supplied priorMessages over a stale DB rehydrate", async () => {
@@ -398,5 +409,122 @@ describe("chat-plugin executeQuery host helper", () => {
     // getConversation should NOT be called when priorMessages was supplied.
     expect(mockGetConversation).not.toHaveBeenCalled();
     expect(capturedAgentCalls[0]!.options?.priorMessages).toEqual(priorMessages);
+  });
+
+  it("logs the original error (with stack) on agent failure and re-throws unscrubbed — bridge owns scrubbing", async () => {
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    const sensitiveErr = new Error(
+      "ENOENT: postgresql://user:secret@host:5432/db at /app/src/foo.ts:42",
+    );
+    mockExecuteAgentQuery.mockRejectedValueOnce(sensitiveErr);
+
+    let thrown: unknown;
+    try {
+      await runExecuteQuery("q", {
+        threadId: "slack:C1-1.2",
+        adapter: { name: "slack" },
+        rawMessage: { team_id: "T0ABC", user: "U", channel: "C1", ts: "1.2" },
+      });
+    } catch (e) {
+      thrown = e;
+    }
+
+    // The re-throw carries the ORIGINAL message — the bridge's
+    // `scrubErrorMessage` is the single point of redaction.
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toContain("postgresql://user:secret@");
+    expect((thrown as Error).message).toContain("/app/src/foo.ts:42");
+    // The original error is chained via `cause` so Sentry sees the full
+    // stack trace.
+    expect((thrown as Error).cause).toBe(sensitiveErr);
+  });
+
+  it("rehydrates conversation history from DB, filtering to user/assistant roles only", async () => {
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    // Pre-seed an existing conversation id so the helper rehydrates
+    // history instead of creating a new one.
+    mockGetConversationId.mockResolvedValueOnce("conv-existing");
+    mockGetConversation.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        messages: [
+          { role: "user", content: "earlier question" },
+          { role: "assistant", content: "earlier answer" },
+          // Non-user/assistant roles MUST be filtered out so the agent
+          // never sees tool / system / data messages as conversational
+          // history.
+          { role: "tool", content: "tool call result" },
+          { role: "system", content: "system prompt" },
+          { role: "data", content: "{}" },
+        ],
+      },
+    });
+
+    await runExecuteQuery("follow up", {
+      threadId: "slack:C9-9.9",
+      adapter: { name: "slack" },
+      rawMessage: { team_id: "T0ABC", user: "U", channel: "C9", thread_ts: "9.9" },
+    });
+
+    const prior = capturedAgentCalls[0]!.options?.priorMessages;
+    expect(prior).toEqual([
+      { role: "user", content: "earlier question" },
+      { role: "assistant", content: "earlier answer" },
+    ]);
+  });
+
+  it("fail-closes on getInstallation throw (DB outage) with a user-safe error and full Sentry context", async () => {
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    // T_THROW → mockGetInstallation rejects with a sensitive-looking
+    // error string (ECONNREFUSED + connection URL). The helper MUST
+    // refuse rather than proceeding with `actor=undefined` (the F-55
+    // gate would silently disable). Bridge owns user-safe wording —
+    // here we just confirm the re-throw and that the agent never ran.
+    await expect(
+      runExecuteQuery("q", {
+        threadId: "slack:C1-1.2",
+        adapter: { name: "slack" },
+        rawMessage: { team_id: "T_THROW", user: "U", channel: "C1", ts: "1.2" },
+      }),
+    ).rejects.toThrow();
+    expect(capturedAgentCalls).toHaveLength(0);
+  });
+
+  it("accepts the legacy `team` alias when `team_id` is absent — keeps rate-limit key shape", async () => {
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await runExecuteQuery("q", {
+      threadId: "slack:C1-1.2",
+      adapter: { name: "slack" },
+      // No team_id — only the legacy `team` alias. Some Slack webhook
+      // shapes (older event_callback envelopes) deliver `team` instead
+      // of `team_id`; both must resolve to the same tenant key.
+      rawMessage: { team: "T0LEGACY", user: "U", channel: "C", ts: "1.2" },
+    });
+
+    expect(observedRateLimitKeys).toEqual(["slack:T0LEGACY"]);
+  });
+
+  it("F-55: omits the trailing colon when externalUserId is missing — actor id is `slack-bot:<teamId>` exactly", async () => {
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    // Valid team_id + valid installation but no `user` field on the
+    // raw event (e.g. message_changed payloads). The
+    // `externalUserId ? { externalUserId } : {}` guard MUST produce
+    // `slack-bot:T0ABC` with NO trailing colon — otherwise the actor id
+    // round-trip breaks downstream parsers.
+    await runExecuteQuery("q", {
+      threadId: "slack:C1-1.2",
+      adapter: { name: "slack" },
+      rawMessage: { team_id: "T0ABC", channel: "C1", ts: "1.2" },
+    });
+
+    const actor = capturedAgentCalls[0]!.options?.actor;
+    expect(actor).toBeDefined();
+    expect(actor!.id).toBe("slack-bot:T0ABC");
+    expect(actor!.id.endsWith(":")).toBe(false);
   });
 });

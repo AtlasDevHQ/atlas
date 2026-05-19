@@ -471,81 +471,15 @@ describe("/api/v1/slack", () => {
 
     // (deleted #2611) `processes thread follow-up events and calls the agent`
     // (deleted #2611) `processes a top-level app_mention and runs the agent in a new thread`
+    // (deleted #2611) `skips app_mention when posted inside an existing thread (message branch owns it)` — coverage now in plugins/chat/src/bridge.test.ts (`acquireLock` dedup) and the bridge's onSubscribedMessage path
+    // (deleted #2611) `ignores app_mention with only the bot prefix and no question` — coverage now in plugins/chat/src/bridge.test.ts (the bridge's onNewMention text-extraction skip path)
     //
-    // Both were assertions over the migrated handler (now owned by the
-    // chat plugin). Equivalent coverage lives in
-    // `packages/api/src/lib/chat-plugin/__tests__/execute-query.test.ts`,
-    // which feeds the same synthetic Slack payload shape through the
-    // host helper and asserts F-55 actor binding, approvalSurface stamp,
-    // and conversation persistence.
-
-    it("skips app_mention when posted inside an existing thread (message branch owns it)", async () => {
-      const app = await getApp();
-      // Slack delivers BOTH app_mention and message for an in-thread mention.
-      // The app_mention branch must early-return so the message handler can
-      // own conversation-history loading and reply once.
-      const payload = JSON.stringify({
-        type: "event_callback",
-        team_id: "T123",
-        event: {
-          type: "app_mention",
-          text: "<@U999BOT> follow-up question",
-          channel: "C456",
-          user: "U789",
-          ts: "1234567890.000003",
-          thread_ts: "1234567890.000001",
-        },
-      });
-      const { signature, timestamp } = makeSignature(payload);
-
-      const resp = await app.request("/api/v1/slack/events", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-slack-signature": signature,
-          "x-slack-request-timestamp": timestamp,
-        },
-        body: payload,
-      });
-
-      expect(resp.status).toBe(200);
-      await new Promise((r) => setTimeout(r, 100));
-
-      expect(mockRunAgent).not.toHaveBeenCalled();
-      expect(mockPostMessage).not.toHaveBeenCalled();
-    });
-
-    it("ignores app_mention with only the bot prefix and no question", async () => {
-      const app = await getApp();
-      const payload = JSON.stringify({
-        type: "event_callback",
-        team_id: "T123",
-        event: {
-          type: "app_mention",
-          text: "<@U999BOT>   ",
-          channel: "C456",
-          user: "U789",
-          ts: "1234567890.000004",
-        },
-      });
-      const { signature, timestamp } = makeSignature(payload);
-
-      const resp = await app.request("/api/v1/slack/events", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-slack-signature": signature,
-          "x-slack-request-timestamp": timestamp,
-        },
-        body: payload,
-      });
-
-      expect(resp.status).toBe(200);
-      await new Promise((r) => setTimeout(r, 100));
-
-      expect(mockRunAgent).not.toHaveBeenCalled();
-      expect(mockPostMessage).not.toHaveBeenCalled();
-    });
+    // All four were assertions over the migrated handler (now owned by
+    // the chat plugin). Equivalent coverage lives in
+    // `packages/api/src/lib/chat-plugin/__tests__/execute-query.test.ts`
+    // (F-55 actor binding, approvalSurface stamp, conversation
+    // persistence) and `plugins/chat/src/bridge.test.ts` (dedup +
+    // text-extraction skip).
   });
 
   describe("async processing", () => {

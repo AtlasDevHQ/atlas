@@ -14,12 +14,16 @@
  * Channel-message events (`app_mention`, `message + thread_ts`) used to
  * live on this route. As of slice 3 of #2607 they are owned by the
  * `@useatlas/chat` plugin's webhook at
- * `/api/plugins/chat-interaction/webhooks/slack`. The Slack app manifest
- * must POST events to that URL (operational step done as part of slice 4
- * / #2612 — the HITL dogfood). The `events` route here is retained for
- * backwards-compat during the manifest flip: it still validates signature
- * + responds to `url_verification` challenges, but ignores all
- * `event_callback` types (the chat plugin handles them).
+ * `/api/plugins/chat-interaction/webhooks/slack`.
+ *
+ * TODO(#2612 / slice 4 — HITL dogfood): the Slack app manifest MUST be
+ * flipped from `/api/v1/slack/events` to
+ * `/api/plugins/chat-interaction/webhooks/slack` during the slice-4
+ * dogfood. Until that flip happens, this route silently drops all
+ * `event_callback` types (it logs at warn — see `eventsRoute` handler
+ * below — but @mentions and thread replies are not processed). The
+ * `url_verification` branch is retained so re-verifying the URL after
+ * the flip succeeds against either endpoint.
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
@@ -463,13 +467,15 @@ slack.openapi(commandsRoute, async (c) => {
 //   - `url_verification` challenges still return `{ challenge }` so
 //     re-verifying the URL after the flip succeeds against either
 //     endpoint.
-//   - `event_callback` types are acked 200 + ignored. Routing them here
-//     would double-fire the agent once the manifest points at the chat
-//     plugin webhook.
+//   - `event_callback` types are acked 200 + ignored (logged at warn so
+//     ops sees them in dashboards). Routing them here would double-fire
+//     the agent once the manifest points at the chat plugin webhook.
 //
-// Operational step (done as part of slice 4 / #2612): in the Slack app
-// admin console, update the Events API request URL from
-// `/api/v1/slack/events` to `/api/plugins/chat-interaction/webhooks/slack`.
+// TODO(#2612 / slice 4 — HITL dogfood): in the Slack app admin console,
+// update the Events API request URL from `/api/v1/slack/events` to
+// `/api/plugins/chat-interaction/webhooks/slack`. Until this flip
+// happens, the warn-level log below is the ONLY signal that @mentions
+// are silently dropping — monitor it during the rollout.
 
 slack.openapi(eventsRoute, async (c) => {
   const { valid, body } = await verifyRequest(c);
@@ -491,9 +497,14 @@ slack.openapi(eventsRoute, async (c) => {
   }
 
   if (payload.type === "event_callback") {
-    log.debug(
-      { eventType: (payload.event as Record<string, unknown> | undefined)?.type },
-      "Slack event_callback received on legacy route — ignored (chat plugin owns this path)",
+    const event = payload.event as Record<string, unknown> | undefined;
+    log.warn(
+      {
+        teamId: payload.team_id,
+        eventType: event?.type,
+        eventTs: event?.ts,
+      },
+      "Slack event_callback received on legacy route — ignored (chat plugin owns this path; flip the Slack manifest URL during #2612)",
     );
     return c.json({ ok: true }, 200);
   }

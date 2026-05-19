@@ -56,6 +56,7 @@ import {
   assertExternalUserId,
   assertWorkspaceId,
 } from "./proactive/identity";
+import type { ExternalUserId, WorkspaceId } from "@useatlas/types/proactive";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1125,68 +1126,82 @@ export function createChatBridge(
 
         if (slashWorkspaceId) {
           // Brand promotion at the boundary (#2641). Empty / malformed
-          // ids fall through to the standard question flow via the
-          // feedback-subcommand refusal path above; the assert helpers
-          // throw on empty, so wrap in a try/catch to keep the slash
-          // handler crash-safe.
-          let brandedWorkspaceId;
-          let brandedExternalUserId;
+          // ids on a *feedback* subcommand → refuse + return (can't
+          // attribute the feedback row). On a *non-feedback* slash the
+          // proactive block doesn't own the response — let it fall
+          // through to the standard question flow at line ~1169 so the
+          // user still gets answered.
+          let brandedWorkspaceId: WorkspaceId | null = null;
+          let brandedExternalUserId: ExternalUserId | null = null;
           try {
             brandedWorkspaceId = assertWorkspaceId(slashWorkspaceId);
             brandedExternalUserId = assertExternalUserId(event.user.userId);
           } catch (err) {
             if (err instanceof InvalidProactiveIdentityError) {
               log.warn(
-                { field: err.field, channelId: event.channel.id },
-                "Proactive feedback slash: identifier promotion failed — refusing",
+                {
+                  field: err.field,
+                  channelId: event.channel.id,
+                  isFeedbackSubcommand,
+                },
+                isFeedbackSubcommand
+                  ? "Proactive feedback slash: identifier promotion failed — refusing"
+                  : "Proactive slash: identifier promotion failed — falling back to standard question flow",
               );
               if (isFeedbackSubcommand) {
                 await refuseFeedbackSubcommand(event);
+                return;
+              }
+              // Non-feedback slash: skip the proactive routing block
+              // and fall through to the standard question flow below.
+              brandedWorkspaceId = null;
+              brandedExternalUserId = null;
+            } else {
+              throw err;
+            }
+          }
+
+          if (brandedWorkspaceId !== null && brandedExternalUserId !== null) {
+            const handled = await handleProactiveFeedbackSlash({
+              text: event.text,
+              channelId: event.channel.id,
+              workspaceId: brandedWorkspaceId,
+              asker: {
+                platform: event.adapter?.name ?? config.proactive.platform ?? "unknown",
+                externalUserId: brandedExternalUserId,
+                userName: event.user.userName,
+              },
+              config: {
+                resolveWorkspaceId: config.proactive.resolveWorkspaceId,
+                isEnabled: config.proactive.isEnabled,
+                classify: config.proactive.classify,
+                getWorkspaceConfig: config.proactive.getWorkspaceConfig,
+                getChannelConfigs: config.proactive.getChannelConfigs,
+                userResolver: config.proactive.userResolver,
+                executeQueryProactive: config.proactive.executeQueryProactive,
+                linkUrl: config.proactive.linkUrl,
+                platform: config.proactive.platform,
+                feedbackCollector: config.proactive.feedbackCollector,
+                slashCommandName: config.slashCommandName,
+              },
+              log,
+              recentAnswers: proactiveRecentAnswers,
+            });
+            if (handled) {
+              try {
+                await event.channel.postEphemeral(
+                  event.user,
+                  { markdown: "Thanks for the feedback." },
+                  { fallbackToDM: false },
+                );
+              } catch (ackErr) {
+                log.debug(
+                  { err: ackErr instanceof Error ? ackErr : new Error(String(ackErr)) },
+                  "Proactive feedback slash ack postEphemeral failed — feedback already recorded",
+                );
               }
               return;
             }
-            throw err;
-          }
-
-          const handled = await handleProactiveFeedbackSlash({
-            text: event.text,
-            channelId: event.channel.id,
-            workspaceId: brandedWorkspaceId,
-            asker: {
-              platform: event.adapter?.name ?? config.proactive.platform ?? "unknown",
-              externalUserId: brandedExternalUserId,
-              userName: event.user.userName,
-            },
-            config: {
-              resolveWorkspaceId: config.proactive.resolveWorkspaceId,
-              isEnabled: config.proactive.isEnabled,
-              classify: config.proactive.classify,
-              getWorkspaceConfig: config.proactive.getWorkspaceConfig,
-              getChannelConfigs: config.proactive.getChannelConfigs,
-              userResolver: config.proactive.userResolver,
-              executeQueryProactive: config.proactive.executeQueryProactive,
-              linkUrl: config.proactive.linkUrl,
-              platform: config.proactive.platform,
-              feedbackCollector: config.proactive.feedbackCollector,
-              slashCommandName: config.slashCommandName,
-            },
-            log,
-            recentAnswers: proactiveRecentAnswers,
-          });
-          if (handled) {
-            try {
-              await event.channel.postEphemeral(
-                event.user,
-                { markdown: "Thanks for the feedback." },
-                { fallbackToDM: false },
-              );
-            } catch (ackErr) {
-              log.debug(
-                { err: ackErr instanceof Error ? ackErr : new Error(String(ackErr)) },
-                "Proactive feedback slash ack postEphemeral failed — feedback already recorded",
-              );
-            }
-            return;
           }
         }
       } catch (err) {

@@ -124,6 +124,7 @@ export {
   assertExternalUserId,
   assertWorkspaceId,
 } from "./proactive";
+export type { ProactiveIdentityField } from "./proactive";
 export type {
   AtlasUserId,
   ChannelPauseLayer,

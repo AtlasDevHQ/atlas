@@ -2236,3 +2236,159 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
     expect(errorCall).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2641 — brand promotion at the listener's boundaries
+// ---------------------------------------------------------------------------
+
+describe("registerProactiveListener — #2641 brand-promotion boundaries", () => {
+  it("treats an empty-string workspaceId from resolveWorkspaceId as unknown tenant (silent skip)", async () => {
+    // Pinned behaviour: `safeResolveWorkspace` runs `assertWorkspaceId`
+    // on the host's `string | null` return; an empty string throws
+    // `InvalidProactiveIdentityError` and falls through to the same
+    // silent-skip path as `null`. Pre-#2641 an empty string was
+    // accepted and propagated, collapsing every event onto a single
+    // global tenant.
+    const onMeterEvent = mock(async () => {});
+    const log = makeLogger();
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(
+      chat as unknown as Parameters<typeof registerProactiveListener>[0],
+      log,
+      {
+        isEnabled: async () => true,
+        classify: yesLLM,
+        // Host-side bug: returns "" instead of null on unknown tenant.
+        // The listener must NOT treat this as the global path.
+        resolveWorkspaceId: makeResolver(""),
+        getWorkspaceConfig: defaultGetWorkspace,
+        getChannelConfigs: defaultGetChannels,
+        onMeterEvent,
+      },
+    );
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage());
+
+    // No classify event, no react, no pending — full silent skip.
+    expect(onMeterEvent).not.toHaveBeenCalled();
+    expect(thread._addReaction).not.toHaveBeenCalled();
+    // The warn-log fires so on-call sees the contract violation.
+    const warnCalls = (log.warn as unknown as {
+      mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> };
+    }).mock.calls;
+    const matchingWarn = warnCalls.find((c) => {
+      const payload = c[0] as { rawWorkspaceId?: string };
+      return payload?.rawWorkspaceId === "";
+    });
+    expect(matchingWarn).toBeDefined();
+  });
+
+  it("channel-message handler: missing message.author.userId logs a warn and skips pending registration (orphan reaction)", async () => {
+    // `askerFromAuthor` returns `null` when `author.userId` is empty
+    // (assert helper throws, caller catches). The channel-message
+    // handler must NOT register a pending answer in that state — a
+    // pending entry with an empty `externalUserId` would propagate the
+    // emptiness into audit/meter/feedback on a later reaction-back.
+    // The reaction itself was already posted (cost paid); the asker
+    // can never tap-back.
+    const log = makeLogger();
+    const { chat, invokeMessage, invokeReaction } = makeChat();
+    await registerProactiveListener(
+      chat as unknown as Parameters<typeof registerProactiveListener>[0],
+      log,
+      {
+        isEnabled: async () => true,
+        classify: yesLLM,
+        resolveWorkspaceId: makeResolver("ws-1"),
+        getWorkspaceConfig: defaultGetWorkspace,
+        getChannelConfigs: allowChannels("C-orphan"),
+        userResolver: linkedResolver,
+        executeQueryProactive: echoExecute,
+      },
+    );
+    const thread = makeThread("C-orphan");
+    await invokeMessage(thread, makeMessage({ id: "M-orphan", userId: "" }));
+
+    // Reaction posted (the cost of classification + react had already
+    // been paid by the time `askerFromAuthor` was called).
+    expect(thread._addReaction).toHaveBeenCalledTimes(1);
+    // Warn logged — on-call must see the orphan state.
+    const warnCalls = (log.warn as unknown as {
+      mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> };
+    }).mock.calls;
+    const matchingWarn = warnCalls.find((c) => {
+      const payload = c[0] as { messageId?: string };
+      return payload?.messageId === "M-orphan";
+    });
+    expect(matchingWarn).toBeDefined();
+    // Reaction-back on the same message-id finds nothing pending.
+    await invokeReaction({
+      added: true,
+      messageId: "M-orphan",
+      threadId: thread.channelId,
+      thread,
+      user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
+      emoji: PROACTIVE_REACTION,
+      rawEmoji: "robot_face",
+      adapter: { name: "slack" },
+      raw: {},
+    });
+    expect(thread.post).not.toHaveBeenCalled();
+  });
+
+  it("safeResolveUser rejects an empty atlasUserId on the linked branch (plain-JS host RLS-bypass guard)", async () => {
+    // Belt-and-braces: the discriminated union forces a `kind: "linked"`
+    // construction at the type level, but a plain-JS host (or a TS
+    // host that casts `"" as AtlasUserId`) can still propagate an
+    // empty id. The listener's `safeResolveUser` calls
+    // `assertAtlasUserId` on the resolved id; an empty value throws
+    // `InvalidProactiveIdentityError` and routes the asker through the
+    // `errored` apology path — NOT the linked path with an empty id
+    // that would silently bypass per-user RLS in `executeQueryProactive`.
+    const executeQueryProactive = mock(echoExecute);
+    const log = makeLogger();
+    const { chat, invokeMessage, invokeReaction } = makeChat();
+    await registerProactiveListener(
+      chat as unknown as Parameters<typeof registerProactiveListener>[0],
+      log,
+      {
+        isEnabled: async () => true,
+        classify: yesLLM,
+        resolveWorkspaceId: makeResolver("ws-rls"),
+        getWorkspaceConfig: defaultGetWorkspace,
+        getChannelConfigs: allowChannels("C-rls"),
+        // Malformed linked result: kind is correct but atlasUserId is
+        // empty. The `as ...` cast mirrors the plain-JS / TS-cast bypass.
+        userResolver: (async () => ({
+          kind: "linked",
+          atlasUserId: "" as never,
+        })) as unknown as ProactiveUserResolver,
+        executeQueryProactive,
+      },
+    );
+    const thread = makeThread("C-rls");
+    await invokeMessage(thread, makeMessage({ id: "M-rls" }));
+    await invokeReaction({
+      added: true,
+      messageId: "M-rls",
+      threadId: thread.channelId,
+      thread,
+      user: { isMe: false, isBot: false, userId: "U-asker", userName: "asker" },
+      emoji: PROACTIVE_REACTION,
+      rawEmoji: "robot_face",
+      adapter: { name: "slack" },
+      raw: {},
+    });
+
+    // CRITICAL invariant: executeQueryProactive was NOT invoked. The
+    // linked branch with empty atlasUserId would have bypassed per-user
+    // RLS inside the host adapter.
+    expect(executeQueryProactive).not.toHaveBeenCalled();
+    // Apology copy posted (errored ladder, not unlinked path).
+    expect(thread.post).toHaveBeenCalledTimes(1);
+    const firstPostArg = (thread.post as unknown as {
+      mock: { calls: unknown[][] };
+    }).mock.calls[0]?.[0];
+    expect(String(firstPostArg ?? "")).toMatch(/Sorry — I hit an error/);
+  });
+});

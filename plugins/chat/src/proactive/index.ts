@@ -79,6 +79,7 @@ export {
   assertAtlasUserId,
   assertExternalUserId,
   assertWorkspaceId,
+  type ProactiveIdentityField,
 } from "./identity";
 export type {
   AtlasUserId,

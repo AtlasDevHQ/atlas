@@ -40,6 +40,7 @@ import {
 } from "./answerer";
 import {
   InvalidProactiveIdentityError,
+  assertAtlasUserId,
   assertExternalUserId,
   assertWorkspaceId,
 } from "./identity";
@@ -807,9 +808,14 @@ export async function registerProactiveListener(
       const platform = adapterPlatform(thread.adapter, config.platform);
       const asker = askerFromAuthor(message.author, platform);
       if (!asker) {
-        log.debug(
+        // Orphan state: reaction already posted (line above), but no
+        // pending entry registered — the asker can never tap-back to
+        // request the answer. Warn so on-call sees the asymmetry; a
+        // missing `message.author.userId` is a chat-adapter contract
+        // violation, not a routine event.
+        log.warn(
           { workspaceId, channelId, messageId: message.id },
-          "Proactive: message.author.userId missing — cannot attribute proactive answer, skipping pending registration",
+          "Proactive: message.author.userId missing — reaction posted but cannot attribute pending answer (orphan reaction)",
         );
         return;
       }
@@ -1001,9 +1007,13 @@ export async function registerProactiveListener(
         const platform = adapterPlatform(event.adapter, config.platform);
         const asker = askerFromAuthor(event.user, platform);
         if (!asker) {
-          log.debug(
+          // User clicked Helpful / Not-helpful / Wrong-data but the
+          // event carries no `event.user.userId` — feedback row is
+          // dropped silently. Warn (not debug) so on-call notices a
+          // chat-adapter contract violation that's eating feedback.
+          log.warn(
             { workspaceId, actionId: event.actionId },
-            "Proactive feedback button: event.user.userId missing — cannot attribute feedback, dropping",
+            "Proactive feedback button: event.user.userId missing — feedback dropped (cannot attribute row)",
           );
           return;
         }
@@ -1695,9 +1705,19 @@ async function safeResolveUser(
     // id. Pre-#2641 the contract was `{ atlasUserId?: string }` and we
     // had to defensively check for an empty/undefined `atlasUserId` to
     // decide which branch to take.
+    //
+    // Belt-and-braces against a plain-JS host (or a TS host that
+    // bypasses the brand via `as AtlasUserId`) returning `kind:
+    // "linked"` with an empty `atlasUserId`: re-run `assertAtlasUserId`
+    // at this boundary. An empty linked id would propagate into
+    // `executeQueryProactive({ atlasUserId: "" })` and silently bypass
+    // per-user RLS — the exact failure mode the brand was meant to
+    // close. The runtime guard catches the case the brand can't (since
+    // brand purity is by code-review, not by the type system).
     const resolved = await resolver(asker, { workspaceId });
     if (resolved.kind === "linked") {
-      return { kind: "linked", atlasUserId: resolved.atlasUserId };
+      const branded = assertAtlasUserId(resolved.atlasUserId);
+      return { kind: "linked", atlasUserId: branded };
     }
     return { kind: "unlinked" };
   } catch (err) {

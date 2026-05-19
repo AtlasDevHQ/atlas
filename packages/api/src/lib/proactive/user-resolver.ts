@@ -1,9 +1,12 @@
 /**
  * Proactive `userResolver` — chat-platform identity → Atlas identity (#2624).
  *
- * The chat plugin's `ProactiveUserResolver` (post-#2624 shape) is:
+ * The chat plugin's `ProactiveUserResolver` (post-#2624 + #2641 shape) is:
  *
- *     (asker, { workspaceId }) => Promise<{ atlasUserId? }>
+ *     (asker, { workspaceId: WorkspaceId }) => Promise<ResolvedAsker>
+ *
+ *     ResolvedAsker = { kind: "linked"; atlasUserId: AtlasUserId }
+ *                   | { kind: "unlinked" }
  *
  * The `workspaceId` is the per-event tenant resolved by
  * `lib/proactive/workspace-id-resolver.ts:createSlackWorkspaceIdResolver`
@@ -17,7 +20,7 @@
  *      case, but if a future code path bypasses the per-event resolver
  *      we still refuse to attribute the asker to a stale tenant).
  *
- *   2. **Returns `{ atlasUserId: undefined }`** for every asker today.
+ *   2. **Returns `{ kind: "unlinked" }`** for every asker today.
  *      The mapping from `(workspaceId, slack_user_id)` to an Atlas
  *      `user.id` requires a link table (e.g. `slack_user_links` with
  *      `(workspace_id, slack_user_id, atlas_user_id)`) that does NOT
@@ -25,31 +28,32 @@
  *      safely link an asker — and we MUST NOT invent a heuristic
  *      match (e.g. "first member of the org") because that would
  *      silently bypass per-user RLS for an unlinked asker by binding
- *      their query to another user's identity.
- *
- *      The listener's unlinked-asker path (public-dataset gate +
- *      refusal copy) is the safe behaviour until the link table
- *      lands.
+ *      their query to another user's identity. The unlinked branch
+ *      is the safe fallback: the listener's public-dataset gate +
+ *      refusal copy gate that asker's access.
  *
  * **Hook point for future linking work.** A follow-up issue is
  * expected to add a Slack-user link mechanism (OAuth user grant, an
  * admin-managed link table, or email matching via the Slack profile
- * API). When that lands the resolver replaces step 2 with a real
- * lookup; the surrounding wiring (#2624 contract change) stays as-is.
+ * API). When that lands the resolver replaces step 2 with
+ * `{ kind: "linked", atlasUserId: assertAtlasUserId(row.atlas_user_id) }`
+ * for matching rows; the surrounding wiring (#2624 contract change +
+ * #2641 brand types) stays as-is.
  *
- * Failures resolve as `{ atlasUserId: undefined }` rather than
- * throwing — the listener's `safeResolveUser` catches throws but
- * treats them as the apology path (refuse, do not downgrade to
- * public-dataset). Returning an explicit unlinked result keeps the
- * three-state ladder ("linked" / "unlinked" / "errored") meaningful
- * for the failure mode that's actually "we don't know yet" (no link
- * table) rather than "the registry is broken" (errored).
+ * Failures resolve as `{ kind: "unlinked" }` rather than throwing —
+ * the listener's `safeResolveUser` catches throws and treats them as
+ * the apology path (refuse, do not downgrade to public-dataset).
+ * Returning an explicit unlinked result keeps the three-state ladder
+ * ("linked" / "unlinked" / "errored") meaningful for the failure
+ * mode that's actually "we don't know yet" (no link table) rather
+ * than "the registry is broken" (errored).
  *
  * Layer hygiene: lives under `lib/proactive/`. Does NOT import from
  * `@atlas/ee` or from `api/routes/`. Only the SaaS deploy wires this
  * up; self-hosted deployments can either reuse this factory (the
  * unlinked-only path is correct everywhere) or omit `userResolver`
- * entirely (the listener defaults to "unlinked" when undefined).
+ * entirely (the listener defaults to `{ kind: "unlinked" }` when
+ * undefined).
  *
  * @module
  */

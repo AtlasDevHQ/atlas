@@ -26,6 +26,18 @@ import type {
 } from "@useatlas/types/proactive";
 
 /**
+ * The branded identity field that failed promotion. Literal union (not
+ * `string`) so catch sites — `safeResolveWorkspace` in `listener.ts`,
+ * the slash handler in `bridge.ts` — can exhaustively narrow on
+ * `err.field` and a telemetry consumer grouping by `field` sees a
+ * stable, typo-proof set.
+ */
+export type ProactiveIdentityField =
+  | "WorkspaceId"
+  | "AtlasUserId"
+  | "ExternalUserId";
+
+/**
  * Thrown by the `assert*Id` helpers when a boundary input is empty.
  *
  * Empty is the failure mode that silently routes every asker to the
@@ -37,7 +49,7 @@ import type {
  * with a misattributed tenant.
  */
 export class InvalidProactiveIdentityError extends Error {
-  constructor(public readonly field: string) {
+  constructor(public readonly field: ProactiveIdentityField) {
     super(`Proactive identifier ${field} must be a non-empty string`);
     this.name = "InvalidProactiveIdentityError";
   }

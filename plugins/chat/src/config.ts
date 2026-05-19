@@ -545,7 +545,12 @@ export interface ProactiveConfig {
   // See `proactive/types.ts` for the JSDoc on each variant.
 
   /**
-   * Answer-flow wiring (slice #2293 + slice #2297 public dataset).
+   * Answer-flow wiring. Replaces the pre-1.5.2
+   * `userResolver?` + `executeQueryProactive?` + `getPublicDataset?`
+   * triple — the discriminated union absorbs all three (slice #2293
+   * linked-asker path, slice #2297 public-dataset path, and the
+   * shared `executeQueryProactive` they both invoke).
+   *
    * `{ mode: "off" }` keeps the reaction-first tracer working but
    * never runs the agent. Multi-tenant SaaS deploys typically wire
    * `mode: "both"` so linked askers run under RLS while unlinked

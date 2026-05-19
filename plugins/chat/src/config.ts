@@ -10,14 +10,15 @@ import { z } from "zod";
 import type { StreamChunk } from "chat";
 import type { ReactionConfig } from "./features/reactions";
 import type {
-  ChannelProactiveConfig,
+  GetChannelConfigsFn,
   GetPublicDatasetFn,
   GetQuotaStatusFn,
+  GetWorkspaceConfigFn,
   LLMClassifierFn,
   OnPauseRequestFn,
   ProactiveGateFn,
   ProactiveMeterEventFn,
-  WorkspaceProactiveConfig,
+  ResolveWorkspaceIdFn,
 } from "./proactive/types";
 import type { IsPausedFn } from "./proactive/pause";
 import type {
@@ -423,19 +424,41 @@ export interface ChatPluginConfig {
 
 /** Proactive chat configuration. */
 export interface ProactiveConfig {
-  /** Gate: returns true when proactive mode is allowed. */
+  /**
+   * Per-event workspace resolution (#2620). The bridge passes this to
+   * the listener so every event handler resolves which tenant the
+   * event belongs to before any classification / meter / quota work
+   * happens. Returning `null` is a silent skip.
+   *
+   * Host wiring (Slack-first): see
+   * `packages/api/src/lib/proactive/workspace-id-resolver.ts:createSlackWorkspaceIdResolver`.
+   */
+  resolveWorkspaceId: ResolveWorkspaceIdFn;
+  /**
+   * Gate: returns true when proactive mode is allowed for the given
+   * workspace. Per-call workspaceId (post-#2620 multi-tenant refactor).
+   */
   isEnabled: ProactiveGateFn;
   /** LLM classifier injected from the host. */
   classify: LLMClassifierFn;
-  /** Workspace-level settings (master toggle, sensitivity, classifier mode). */
-  workspace: WorkspaceProactiveConfig;
+  /**
+   * Per-event fetcher for workspace-level proactive settings (master
+   * toggle, sensitivity, classifier mode). Replaces the pre-#2620
+   * static `workspace` field — the listener calls this once per event
+   * after `resolveWorkspaceId` succeeds.
+   */
+  getWorkspaceConfig: GetWorkspaceConfigFn;
   /**
    * Optional explicit channel allowlist. If omitted, the listener reads
    * `ATLAS_PROACTIVE_CHANNELS` (comma-separated channel IDs).
    */
   channelAllowlist?: string[];
-  /** Per-channel overrides keyed by channel ID. */
-  channelConfigs?: Record<string, ChannelProactiveConfig>;
+  /**
+   * Per-event fetcher for per-channel overrides. Replaces the pre-#2620
+   * static `channelConfigs` map — the listener calls this once per
+   * event and scans the returned array linearly.
+   */
+  getChannelConfigs: GetChannelConfigsFn;
 
   // ---- Slice #2293 additions: reaction-to-answer flow ----
 
@@ -495,12 +518,11 @@ export interface ProactiveConfig {
   //  shared callback covers the public_refused events from #2297.)
 
   // ---- Slice #2295 additions: kill switch + per-user opt-out ----
+  //
+  // Post-#2620 multi-tenant: workspaceId is resolved per event via
+  // `resolveWorkspaceId` (above) and threaded into these callbacks at
+  // the call site. The static `workspaceId?` field was removed.
 
-  /**
-   * Workspace id threaded into the kill-switch callbacks. Required
-   * when `isPaused` or `onPauseRequest` is set.
-   */
-  workspaceId?: string;
   /**
    * Pause-registry read API. Host backs this with the API package's
    * `PauseRegistry` so the listener consults it BEFORE classification.
@@ -768,31 +790,34 @@ const ReactionConfigSchema = z
   })
   .optional();
 
-const SensitivityPresetSchema = z.enum(["cautious", "balanced", "eager"]);
-
-const ProactiveWorkspaceConfigSchema = z.object({
-  enabled: z.boolean(),
-  sensitivity: SensitivityPresetSchema,
-  classifierMode: z.enum(["regex-prefilter", "classify-all"]),
-});
-
-const ProactiveChannelConfigSchema = z.object({
-  channelId: z.string().min(1),
-  allow: z.boolean(),
-  sensitivity: SensitivityPresetSchema.optional(),
-});
+// Pre-#2620 these wrapped the static `workspace` / `channelConfigs`
+// fields on `ProactiveConfig`. They were dropped when those fields
+// migrated to per-event fetchers — the wire shapes still live in
+// `proactive/types.ts` (`WorkspaceProactiveConfig`,
+// `ChannelProactiveConfig`) and the host now validates them at the
+// /admin/proactive-chat route + DB-constraint layer rather than here.
+//   const SensitivityPresetSchema = z.enum(["cautious", "balanced", "eager"]);
 
 const ProactiveConfigSchema = z
   .object({
+    // Per-event workspace resolution (#2620). Required.
+    resolveWorkspaceId: zCallback<ResolveWorkspaceIdFn>(
+      "proactive.resolveWorkspaceId must be a function returning Promise<string | null>",
+    ),
     isEnabled: zCallback<ProactiveGateFn>(
-      "proactive.isEnabled must be a function returning boolean | Promise<boolean>",
+      "proactive.isEnabled must be a function (workspaceId) => boolean | Promise<boolean>",
     ),
     classify: zCallback<LLMClassifierFn>(
       "proactive.classify must be a function returning Promise<ClassificationResult>",
     ),
-    workspace: ProactiveWorkspaceConfigSchema,
+    // Per-event workspace + channel config fetchers (#2620). Required.
+    getWorkspaceConfig: zCallback<GetWorkspaceConfigFn>(
+      "proactive.getWorkspaceConfig must be a function returning Promise<WorkspaceProactiveConfig | null>",
+    ),
     channelAllowlist: z.array(z.string().min(1)).optional(),
-    channelConfigs: z.record(z.string(), ProactiveChannelConfigSchema).optional(),
+    getChannelConfigs: zCallback<GetChannelConfigsFn>(
+      "proactive.getChannelConfigs must be a function returning Promise<ChannelProactiveConfig[]>",
+    ),
     userResolver: zCallback<ProactiveUserResolver>(
       "proactive.userResolver must be a function",
     ).optional(),
@@ -812,9 +837,8 @@ const ProactiveConfigSchema = z
     ).optional(),
     refusalCopy: z.string().min(1).max(1024).optional(),
     allowAnswerWhenEntitiesUnknown: z.boolean().optional(),
-    // Kill-switch wiring (#2295). All three optional so the legacy
-    // env-var allowlist mode (used by tests + dev) keeps working.
-    workspaceId: z.string().min(1).optional(),
+    // Kill-switch wiring (#2295). Both optional so the legacy env-var
+    // allowlist mode (used by tests + dev) keeps working.
     isPaused: zCallback<IsPausedFn>(
       "proactive.isPaused must be a function returning Promise<PauseDecision>",
     ).optional(),

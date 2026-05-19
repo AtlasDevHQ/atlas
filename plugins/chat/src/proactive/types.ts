@@ -29,6 +29,7 @@ export type {
   AnnouncementOutcome,
 } from "@useatlas/types";
 
+import type { Adapter, Message, Thread } from "chat";
 import type {
   ClassificationResult,
   ProactiveMeterEvent,
@@ -88,11 +89,88 @@ export type LLMClassifierFn = (text: string) => Promise<ClassificationResult>;
 /**
  * Gate callback injected from the host.
  *
- * Returns true when proactive mode is allowed for this workspace. The
- * host wires this to `isEnterpriseEnabled() && workspaceFlag` so the
+ * Returns true when proactive mode is allowed for the given workspace.
+ * Takes `workspaceId` as a per-call argument (multi-tenant) — pre-#2620
+ * this was zero-arg with `workspaceId` baked at registration; after #2620
+ * the listener resolves workspace per event and threads the id through.
+ *
+ * The host wires this to `isEnterpriseEnabled() && workspaceFlag` so the
  * plugin itself does not import `@atlas/ee`.
  */
-export type ProactiveGateFn = () => boolean | Promise<boolean>;
+export type ProactiveGateFn = (
+  workspaceId: string,
+) => boolean | Promise<boolean>;
+
+// ---------------------------------------------------------------------------
+// Per-event workspace resolution (#2620)
+// ---------------------------------------------------------------------------
+//
+// Pre-#2620 the listener carried a single `workspaceId` baked at
+// registration. SaaS routes Slack events from N tenants through one Chat
+// instance, so a static workspaceId stamps the wrong tenant on every meter
+// row / pause check / quota lookup. The fix is per-event resolution.
+//
+// The host implements `ResolveWorkspaceIdFn` by reading the platform-
+// specific tenant identifier (Slack `team_id`, Teams `tenantId`, ...) out
+// of the raw message and looking up the corresponding Atlas workspace.
+// Returning `null` is a silent skip: unrecognized tenant, no classify, no
+// meter row.
+
+/**
+ * Per-event workspace resolution callback.
+ *
+ * Returns the Atlas workspace id (`org_id` in the internal DB) for the
+ * tenant that sent this event, or `null` when the event doesn't belong
+ * to any known tenant (unrecognized `team_id`, missing raw payload,
+ * etc.). On `null` the listener silently skips — no classification, no
+ * meter event, no kill-switch read.
+ *
+ * Implementations should never throw. Failures should resolve as `null`
+ * so the listener fails closed (skip) without crashing the SDK loop.
+ *
+ * Host wiring (Slack-first): see
+ * `packages/api/src/lib/proactive/workspace-id-resolver.ts` for the
+ * canonical implementation that maps Slack `team_id` →
+ * `slack_installations.org_id`.
+ */
+export type ResolveWorkspaceIdFn = (event: {
+  adapter: Adapter;
+  thread: Thread;
+  message: Message;
+}) => Promise<string | null>;
+
+/**
+ * Per-event workspace config fetcher.
+ *
+ * Replaces the pre-#2620 static `workspace: WorkspaceProactiveConfig`
+ * registration field. Called once per event after `resolveWorkspaceId`
+ * succeeds; the listener caches the result for the lifetime of the
+ * single event handler call so repeated lookups inside one handler stay
+ * cheap.
+ *
+ * Returns `null` when the workspace has no config row (treat as not
+ * opted in; the listener short-circuits without classification).
+ * Implementations should never throw — failures resolve as `null`.
+ */
+export type GetWorkspaceConfigFn = (
+  workspaceId: string,
+) => Promise<WorkspaceProactiveConfig | null>;
+
+/**
+ * Per-event channel-config fetcher.
+ *
+ * Replaces the pre-#2620 static `channelConfigs:
+ * Record<string, ChannelProactiveConfig>` registration field. Returns
+ * the workspace's per-channel overrides as a flat array; the listener
+ * scans it linearly per event (channel-config arrays are short in
+ * practice — a handful of allow/deny overrides per workspace).
+ *
+ * Implementations should never throw — failures should resolve as an
+ * empty array so the listener falls back to workspace-default behaviour.
+ */
+export type GetChannelConfigsFn = (
+  workspaceId: string,
+) => Promise<ReadonlyArray<ChannelProactiveConfig>>;
 
 // ---------------------------------------------------------------------------
 // Kill switch (#2295) — three-layer pause + per-user opt-out

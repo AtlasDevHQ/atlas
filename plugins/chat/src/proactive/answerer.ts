@@ -107,6 +107,14 @@ export type ProactiveExecuteQuery = (
 export interface PendingAnswerEntry {
   text: string;
   asker: ProactiveAsker;
+  /**
+   * Workspace id resolved when the channel-message handler reacted to
+   * this message (#2620 multi-tenant). The reaction-back / button-click
+   * handlers reuse this id rather than re-resolving from the reaction
+   * event so the answer routes to the same tenant that the original
+   * reaction was emitted for.
+   */
+  workspaceId: string;
   /** Epoch ms when this entry was recorded. */
   recordedAt: number;
 }

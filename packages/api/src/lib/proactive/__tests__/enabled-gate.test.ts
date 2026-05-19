@@ -141,8 +141,8 @@ describe("createProactiveEnabledGate", () => {
     const runtime = buildRuntime(buildGateLayer({ enabled: true }));
     mockInternalQuery.mockImplementation(async () => [{ enabled: true }]);
 
-    const gate = createProactiveEnabledGate(runtime, "ws-1");
-    expect(await gate()).toBe(true);
+    const gate = createProactiveEnabledGate(runtime);
+    expect(await gate("ws-1")).toBe(true);
 
     expect(mockInternalQuery).toHaveBeenCalledTimes(1);
     const [sql, params] = mockInternalQuery.mock.calls[0]!;
@@ -155,8 +155,8 @@ describe("createProactiveEnabledGate", () => {
     const runtime = buildRuntime(buildGateLayer({ enabled: true }));
     mockInternalQuery.mockImplementation(async () => [{ enabled: false }]);
 
-    const gate = createProactiveEnabledGate(runtime, "ws-1");
-    expect(await gate()).toBe(false);
+    const gate = createProactiveEnabledGate(runtime);
+    expect(await gate("ws-1")).toBe(false);
     expect(mockInternalQuery).toHaveBeenCalledTimes(1);
   });
 
@@ -164,8 +164,8 @@ describe("createProactiveEnabledGate", () => {
     const runtime = buildRuntime(buildGateLayer({ enabled: true }));
     mockInternalQuery.mockImplementation(async () => []);
 
-    const gate = createProactiveEnabledGate(runtime, "ws-1");
-    expect(await gate()).toBe(false);
+    const gate = createProactiveEnabledGate(runtime);
+    expect(await gate("ws-1")).toBe(false);
     expect(mockInternalQuery).toHaveBeenCalledTimes(1);
     // Row-missing is the expected "not opted in" path — no warning.
     expect(mockLogWarn).not.toHaveBeenCalled();
@@ -178,8 +178,8 @@ describe("createProactiveEnabledGate", () => {
     // workspace SELECT short-circuited.
     mockInternalQuery.mockImplementation(async () => [{ enabled: true }]);
 
-    const gate = createProactiveEnabledGate(runtime, "ws-1");
-    expect(await gate()).toBe(false);
+    const gate = createProactiveEnabledGate(runtime);
+    expect(await gate("ws-1")).toBe(false);
     expect(mockInternalQuery).not.toHaveBeenCalled();
     // EnterpriseError is the expected self-hosted path — no warn.
     expect(mockLogWarn).not.toHaveBeenCalled();
@@ -191,8 +191,8 @@ describe("createProactiveEnabledGate", () => {
       throw new Error("connection refused");
     });
 
-    const gate = createProactiveEnabledGate(runtime, "ws-1");
-    expect(await gate()).toBe(false);
+    const gate = createProactiveEnabledGate(runtime);
+    expect(await gate("ws-1")).toBe(false);
 
     expect(mockLogWarn).toHaveBeenCalledTimes(1);
     const [payload, message] = mockLogWarn.mock.calls[0] as [
@@ -212,8 +212,8 @@ describe("createProactiveEnabledGate", () => {
       throw "string-thrown";
     });
 
-    const gate = createProactiveEnabledGate(runtime, "ws-1");
-    expect(await gate()).toBe(false);
+    const gate = createProactiveEnabledGate(runtime);
+    expect(await gate("ws-1")).toBe(false);
 
     const [payload] = mockLogWarn.mock.calls[0] as [Record<string, unknown>];
     expect(payload.err).toBe("string-thrown");
@@ -226,11 +226,11 @@ describe("createProactiveEnabledGate", () => {
     const runtime = buildRuntime(buildGateLayer({ enabled: true, spy }));
     mockInternalQuery.mockImplementation(async () => [{ enabled: true }]);
 
-    const gate = createProactiveEnabledGate(runtime, "ws-1");
-    await gate();
-    await gate();
-    await gate();
-    await gate();
+    const gate = createProactiveEnabledGate(runtime);
+    await gate("ws-1");
+    await gate("ws-1");
+    await gate("ws-1");
+    await gate("ws-1");
 
     // The Tag's `requireEnabled` is invoked ONCE — subsequent calls
     // hit the per-closure cache. The workspace SELECT runs every time.
@@ -249,10 +249,10 @@ describe("createProactiveEnabledGate", () => {
     );
     const runtime = buildRuntime(buildGateLayer({ enabled: false, spy }));
 
-    const gate = createProactiveEnabledGate(runtime, "ws-1");
-    expect(await gate()).toBe(false);
-    expect(await gate()).toBe(false);
-    expect(await gate()).toBe(false);
+    const gate = createProactiveEnabledGate(runtime);
+    expect(await gate("ws-1")).toBe(false);
+    expect(await gate("ws-1")).toBe(false);
+    expect(await gate("ws-1")).toBe(false);
 
     expect(spy).toHaveBeenCalledTimes(1);
     expect(mockInternalQuery).not.toHaveBeenCalled();
@@ -266,29 +266,126 @@ describe("createProactiveEnabledGate", () => {
       { enabled: workspaceEnabled },
     ]);
 
-    const gate = createProactiveEnabledGate(runtime, "ws-1");
-    expect(await gate()).toBe(true);
+    const gate = createProactiveEnabledGate(runtime);
+    expect(await gate("ws-1")).toBe(true);
 
     workspaceEnabled = false;
-    expect(await gate()).toBe(false);
+    expect(await gate("ws-1")).toBe(false);
 
     workspaceEnabled = true;
-    expect(await gate()).toBe(true);
+    expect(await gate("ws-1")).toBe(true);
   });
 
   it("each createProactiveEnabledGate call returns an independent closure with its own enterprise cache", async () => {
-    const runtime = buildRuntime(buildGateLayer({ enabled: true }));
+    // Post-#2620 the factory is workspaceId-less; closures are bound
+    // once per process and serve N tenants. This test proves that two
+    // independent closures (e.g. built in two different bridges) keep
+    // their own enterprise caches without sharing state.
+    const spyA: Mock<RequireEnabledFn> = mock(
+      () => Effect.void as ReturnType<RequireEnabledFn>,
+    );
+    const spyB: Mock<RequireEnabledFn> = mock(
+      () => Effect.void as ReturnType<RequireEnabledFn>,
+    );
+    const runtimeA = buildRuntime(buildGateLayer({ enabled: true, spy: spyA }));
+    const runtimeB = buildRuntime(buildGateLayer({ enabled: true, spy: spyB }));
     mockInternalQuery.mockImplementation(async () => [{ enabled: true }]);
 
-    const gateA = createProactiveEnabledGate(runtime, "ws-A");
-    const gateB = createProactiveEnabledGate(runtime, "ws-B");
+    const gateA = createProactiveEnabledGate(runtimeA);
+    const gateB = createProactiveEnabledGate(runtimeB);
 
-    expect(await gateA()).toBe(true);
-    expect(await gateB()).toBe(true);
+    expect(await gateA("ws-A")).toBe(true);
+    expect(await gateB("ws-B")).toBe(true);
 
+    // Each closure yields its own Tag once (independent caches).
+    expect(spyA).toHaveBeenCalledTimes(1);
+    expect(spyB).toHaveBeenCalledTimes(1);
+    // Each closure ran the workspace SELECT once with its arg.
     expect(mockInternalQuery).toHaveBeenCalledTimes(2);
     const params = mockInternalQuery.mock.calls.map((c) => c[1]);
     expect(params).toEqual([["ws-A"], ["ws-B"]]);
+  });
+
+  it("returns true for empty workspaceId when enterprise is enabled — registration probe, no DB call", async () => {
+    // The chat plugin's `registerProactiveListener` calls
+    // `config.isEnabled("")` once at boot to answer "is the listener
+    // even possible in this process?" — there's no tenant yet. The
+    // gate must answer the enterprise question and skip the workspace
+    // SELECT; otherwise `$1 = ''` returns 0 rows and silently mis-gates
+    // the listener on SaaS where EE is enabled.
+    const runtime = buildRuntime(buildGateLayer({ enabled: true }));
+    mockInternalQuery.mockImplementation(async () => [{ enabled: true }]);
+
+    const gate = createProactiveEnabledGate(runtime);
+    expect(await gate("")).toBe(true);
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+
+  it("returns false for empty workspaceId when enterprise is disabled — registration probe, no DB call", async () => {
+    // EE-disabled path: the enterprise cache short-circuits first, so
+    // the registration probe correctly answers "no listener" without
+    // touching the DB.
+    const runtime = buildRuntime(buildGateLayer({ enabled: false }));
+    mockInternalQuery.mockImplementation(async () => [{ enabled: true }]);
+
+    const gate = createProactiveEnabledGate(runtime);
+    expect(await gate("")).toBe(false);
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+
+  it("caches a false enterprise result across many tenants — never yields Tag twice, never queries DB", async () => {
+    // Mirror of "one closure serves multiple tenants" for the
+    // EE-disabled scenario. A self-hosted deploy that never enables EE
+    // must not pay an Effect runtime hop AND must not hit the DB on
+    // every event — both would defeat the per-closure cache the
+    // enabled-gate exists to provide.
+    const spy: Mock<RequireEnabledFn> = mock(
+      () =>
+        Effect.fail(
+          new EnterpriseError(
+            "Enterprise features (proactive-chat) are not enabled.",
+          ),
+        ) as ReturnType<RequireEnabledFn>,
+    );
+    const runtime = buildRuntime(buildGateLayer({ enabled: false, spy }));
+
+    const gate = createProactiveEnabledGate(runtime);
+
+    expect(await gate("ws-A")).toBe(false);
+    expect(await gate("ws-B")).toBe(false);
+    expect(await gate("ws-C")).toBe(false);
+
+    // (a) Enterprise check yielded exactly ONCE across all three tenants.
+    expect(spy).toHaveBeenCalledTimes(1);
+    // (b) No DB calls at all — the workspace SELECT is gated behind
+    //     a positive enterprise resolution.
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+
+  it("one closure serves multiple tenants — single enterprise cache, per-call workspace SELECT", async () => {
+    // The core #2620 multi-tenant correctness assertion: a single
+    // closure built ONCE per process must serve N tenants. The
+    // enterprise check is cached (per-closure / process-lifetime
+    // constant) and the workspace SELECT re-runs every call with the
+    // caller-supplied workspaceId.
+    const spy: Mock<RequireEnabledFn> = mock(
+      () => Effect.void as ReturnType<RequireEnabledFn>,
+    );
+    const runtime = buildRuntime(buildGateLayer({ enabled: true, spy }));
+    mockInternalQuery.mockImplementation(async () => [{ enabled: true }]);
+
+    const gate = createProactiveEnabledGate(runtime);
+
+    expect(await gate("ws-A")).toBe(true);
+    expect(await gate("ws-B")).toBe(true);
+    expect(await gate("ws-C")).toBe(true);
+
+    // Tag yielded once — caches across all three calls.
+    expect(spy).toHaveBeenCalledTimes(1);
+    // Workspace SELECT ran per call with each workspaceId.
+    expect(mockInternalQuery).toHaveBeenCalledTimes(3);
+    const params = mockInternalQuery.mock.calls.map((c) => c[1]);
+    expect(params).toEqual([["ws-A"], ["ws-B"], ["ws-C"]]);
   });
 
   it("transient runtime defect (non-EnterpriseError throw) does NOT cache — next call retries the Tag", async () => {
@@ -317,10 +414,10 @@ describe("createProactiveEnabledGate", () => {
     const runtime = buildRuntime(buildGateLayer({ enabled: true, spy }));
     mockInternalQuery.mockImplementation(async () => [{ enabled: true }]);
 
-    const gate = createProactiveEnabledGate(runtime, "ws-1");
+    const gate = createProactiveEnabledGate(runtime);
 
     // First call: defect → fails closed, does NOT cache.
-    expect(await gate()).toBe(false);
+    expect(await gate("ws-1")).toBe(false);
     expect(mockLogWarn).toHaveBeenCalledTimes(1);
     const [payload, message] = mockLogWarn.mock.calls[0] as [
       Record<string, unknown>,
@@ -334,7 +431,7 @@ describe("createProactiveEnabledGate", () => {
     expect(mockInternalQuery).not.toHaveBeenCalled();
 
     // Second call: retries the Tag, succeeds, hits the DB.
-    expect(await gate()).toBe(true);
+    expect(await gate("ws-1")).toBe(true);
     expect(spy).toHaveBeenCalledTimes(2);
     expect(mockInternalQuery).toHaveBeenCalledTimes(1);
   });
@@ -346,16 +443,16 @@ describe("createProactiveEnabledGate", () => {
     const runtime = buildRuntime(buildGateLayer({ enabled: true, spy }));
     mockInternalQuery.mockImplementation(async () => [{ enabled: true }]);
 
-    const gate = createProactiveEnabledGate(runtime, "ws-1");
+    const gate = createProactiveEnabledGate(runtime);
 
     // Prime the cache.
-    expect(await gate()).toBe(true);
-    expect(await gate()).toBe(true);
+    expect(await gate("ws-1")).toBe(true);
+    expect(await gate("ws-1")).toBe(true);
     expect(spy).toHaveBeenCalledTimes(1);
 
     // Reset, then call again — Tag should be re-yielded.
     gate.__reset();
-    expect(await gate()).toBe(true);
+    expect(await gate("ws-1")).toBe(true);
     expect(spy).toHaveBeenCalledTimes(2);
   });
 
@@ -369,8 +466,8 @@ describe("createProactiveEnabledGate", () => {
       throw err;
     });
 
-    const gate = createProactiveEnabledGate(runtime, "ws-1");
-    expect(await gate()).toBe(false);
+    const gate = createProactiveEnabledGate(runtime);
+    expect(await gate("ws-1")).toBe(false);
 
     expect(mockLogWarn).toHaveBeenCalledTimes(1);
     const [payload] = mockLogWarn.mock.calls[0] as [Record<string, unknown>];

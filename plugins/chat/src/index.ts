@@ -123,6 +123,8 @@ export type {
   FeedbackOutcome,
   FeedbackSlashParse,
   FeedbackSource,
+  GetChannelConfigsFn,
+  GetWorkspaceConfigFn,
   InterjectionAction,
   InterjectionDecision,
   IsPausedFn,
@@ -139,6 +141,7 @@ export type {
   ProactiveUserResolver,
   RecentAnswerEntry,
   ResolvedAsker,
+  ResolveWorkspaceIdFn,
   SensitivityPreset,
   WorkspaceProactiveConfig,
 } from "./proactive";

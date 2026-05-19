@@ -42,11 +42,14 @@
  *      registered or threw inside its outer `try` block (see #2638 for
  *      the DM-routing variant where this would otherwise mask a bug).
  *
- *   4. DM `unsubscribe` is *unreachable* via `onNewMessage` (chat SDK
- *      routes DMs to mention handlers). Documented as such — the test
- *      asserts `mockResolveWorkspaceId` was *not* called for the DM
- *      event, pinning the production gap until #2638 lands an
- *      `onDirectMessage` registration.
+ *   4. DM `unsubscribe` lands as `user-optout` via `onDirectMessage`
+ *      (#2638). Pre-#2638 the proactive listener only registered
+ *      `chat.onNewMessage(/.+/)` — but the chat SDK routes DM events
+ *      to `directMessageHandlers` (then `mentionHandlers`), so the
+ *      `unsubscribe` branch was unreachable in production. #2638 added
+ *      an `onDirectMessage` registration; this test exercises the full
+ *      DM webhook → SDK dispatch → DM handler → `onPauseRequest` chain
+ *      end to end.
  *
  * Plugin webhook only — the legacy `/api/v1/slack/*` slash +
  * interaction paths stay covered by `slack.test.ts`.
@@ -749,22 +752,20 @@ describe("E2E: chat-interaction webhook — kill switch (#2607 slice trail)", ()
   });
 
   // ---------------------------------------------------------------------
-  // DM `unsubscribe` is a documented production gap (#2638), not a
-  // working kill-switch layer. The proactive listener's
-  // `chat.onNewMessage(/.+/)` handler (see the `detectUnsubscribeDM`
-  // branch in `plugins/chat/src/proactive/listener.ts`) checks for DM
-  // unsubscribe — but the chat SDK routes DMs to mention handlers, not
-  // `onNewMessage`, when no `chat.onDirectMessage` handler is
-  // registered. So the listener's onNewMessage handler *never fires*
-  // for DMs in production.
+  // #2638 — DM unsubscribe lands as `user-optout` via the listener's
+  // `onDirectMessage` registration.
   //
-  // This test pins that gap explicitly: `mockResolveWorkspaceId` must
-  // NOT have been called for the DM event (proof the listener didn't
-  // run). A naive "no meter rows landed" assertion would silently pass
-  // whether the listener fired-and-gated or never fired at all — the
-  // earlier draft of this test had exactly that hole (#2633 review).
+  // Pre-#2638 this was a documented production gap: the listener only
+  // registered `chat.onNewMessage(/.+/)`, but the chat SDK routes DM
+  // events to `directMessageHandlers` (then `mentionHandlers`), never
+  // to `onNewMessage` patterns. The unsubscribe branch sat inside the
+  // pattern handler and was unreachable for DMs in production. #2638
+  // added the second registration; this test drives the full chain
+  // end to end so a future regression that drops the `onDirectMessage`
+  // registration (or breaks DM webhook dispatch) fails here, not in
+  // a customer's #atlas-questions Slack workspace.
   // ---------------------------------------------------------------------
-  it("DM unsubscribe — proactive listener does NOT fire for DMs (documents production gap #2638)", async () => {
+  it("DM unsubscribe — fires user-optout onPauseRequest via onDirectMessage (#2638)", async () => {
     const payload = makeEventPayload({
       type: "message",
       text: "unsubscribe",
@@ -776,42 +777,22 @@ describe("E2E: chat-interaction webhook — kill switch (#2607 slice trail)", ()
     const res = await app.fetch(makeSignedEventRequest(payload));
     expect(res.status).toBe(200);
 
-    // Long enough that, if the listener WERE wired for DMs, its first
-    // await (`resolveWorkspaceId`) would have landed. The negative
-    // assertion below catches the day #2638 ships an `onDirectMessage`
-    // registration without updating this test — it will start failing
-    // (the gap is closed) and the `.todo` below can be promoted to a
-    // real assertion in the same PR.
-    await new Promise((r) => setTimeout(r, 200));
-    expect(mockResolveWorkspaceId).not.toHaveBeenCalled();
-    expectNoProactiveActivity();
-    expect(mockPauseRequest).not.toHaveBeenCalled();
-  });
-
-  // ---------------------------------------------------------------------
-  // TODO(#2638): DM `unsubscribe` should also fire `onPauseRequest`
-  // with a `user-optout` row so the asker is removed from proactive
-  // workspace-wide. When the listener adds a
-  // `chat.onDirectMessage(...)` registration that re-dispatches to its
-  // unsubscribe branch, drop the `.todo`, update the test above to
-  // assert `mockResolveWorkspaceId` *was* called, and remove this
-  // block (its assertion will move into a real test).
-  // ---------------------------------------------------------------------
-  it.todo("DM unsubscribe — fires user-optout onPauseRequest (blocked by #2638: listener missing onDirectMessage registration)", async () => {
-    const payload = makeEventPayload({
-      type: "message",
-      text: "unsubscribe",
-      ts: "1700000023.000700",
-      channel: DM_CHANNEL_ID,
-      channelType: "im",
-    });
-    const res = await app.fetch(makeSignedEventRequest(payload));
-    expect(res.status).toBe(200);
+    // Wait for the pause-registry write to land. The DM handler awaits
+    // `resolveWorkspaceId` → `isEnabled` → `onPauseRequest`; a green
+    // assertion proves all three ran. A naive "200 OK + sleep" check
+    // would silently pass if the handler never fired (the production
+    // gap pre-#2638), so we assert on the write side-effect directly.
     await waitFor(() => pauseRequests.length > 0);
+    expect(pauseRequests).toHaveLength(1);
     const req = pauseRequests[0]!;
     expect(req.layer).toBe("user-optout");
     expect(req.workspaceId).toBe(WORKSPACE_ID);
     expect(req.userId).toBe(USER_ID);
     expect(req.channelId).toBeNull();
+
+    // Belt + braces: the unsubscribe branch must short-circuit BEFORE
+    // classification — paying an LLM call for a mute message would
+    // defeat the cost-of-silence contract the kill switch promises.
+    expectNoProactiveActivity();
   });
 });

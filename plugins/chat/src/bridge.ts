@@ -705,8 +705,25 @@ export function createChatBridge(
     );
   }
 
-  // --- onNewMention: first interaction in a thread ---
-  chat.onNewMention(async (thread, message) => {
+  // --- onNewMention + onDirectMessage: first interaction in a thread ---
+  //
+  // Both handlers share the same body. Pre-#2638 the chat SDK
+  // (`chat@4.23.0`, `dispatchToHandlers`) marked any DM as a mention
+  // when no `onDirectMessage` handler was registered, so a single
+  // `onNewMention` registration caught both @-mentions in channels and
+  // 1:1 DMs to the bot. #2638 added `onDirectMessage` on the proactive
+  // listener (for DM `unsubscribe` detection), which makes the SDK
+  // route DMs to direct-message handlers and skip mention handlers.
+  // Without the explicit DM registration below, the chat-with-bot DM
+  // path would silently stop working — DM "what is MRR?" would no
+  // longer reach `executeQuery`. Both registrations run independently
+  // (the SDK loops every DM handler before returning); the proactive
+  // listener handles `unsubscribe` short-circuits, this handler
+  // handles every other DM the same way it always has.
+  const handleMentionOrDM = async (
+    thread: Parameters<Parameters<typeof chat.onNewMention>[0]>[0],
+    message: Parameters<Parameters<typeof chat.onNewMention>[0]>[1],
+  ): Promise<void> => {
     const threadId = `${thread.adapter.name}:${thread.id}`;
     const question = message.text?.trim();
 
@@ -839,7 +856,15 @@ export function createChatBridge(
         );
       });
     }
-  });
+  };
+
+  chat.onNewMention(handleMentionOrDM);
+  // Preserve the chat-with-bot DM path now that the proactive listener
+  // also registers `onDirectMessage` (#2638). The SDK routes DM events
+  // to all registered DM handlers before returning, so this fires
+  // alongside the proactive unsubscribe handler instead of being
+  // bypassed by mention-handler routing as it was pre-#2638.
+  chat.onDirectMessage(handleMentionOrDM);
 
   // --- onSubscribedMessage: follow-up in a subscribed thread ---
   chat.onSubscribedMessage(async (thread, message) => {

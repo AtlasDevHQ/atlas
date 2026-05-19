@@ -416,9 +416,28 @@ export async function registerProactiveListener(
   };
 
   // -------------------------------------------------------------------------
-  // Channel-message hook: classify + react + record asker for later answer
-  // -------------------------------------------------------------------------
-  chat.onNewMessage(/.+/, async (thread: Thread, message: Message) => {
+  // Channel-message + DM hook: classify + react + record asker for later
+  // answer.
+  //
+  // Registered against BOTH `chat.onNewMessage(/.+/, ...)` AND
+  // `chat.onDirectMessage(...)`. Without the second registration the chat
+  // SDK (`chat@4.23.0`, `dispatchToHandlers`) routes DM events to mention
+  // handlers — `onNewMessage` patterns only run for non-mention, non-DM,
+  // non-subscribed messages — so the DM `unsubscribe` branch below was
+  // unreachable in production (#2638).
+  //
+  // DM events short-circuit AFTER the unsubscribe check (returning
+  // before classify / react / offer card): the proactive interjection
+  // model is for channel chatter, not 1:1 bot chats — classifying every
+  // DM would cost an LLM call per message just to land at "skip:
+  // channel-not-allowed" inside `decideInterjection`. The bridge's
+  // `onDirectMessage` registration (see `bridge.ts`) handles the
+  // chat-with-bot path on a parallel rail; both handlers fire because
+  // the SDK loops every registered DM handler before returning.
+  const handleProactiveMessage = async (
+    thread: Thread,
+    message: Message,
+  ): Promise<void> => {
     try {
       if (message.author.isBot === true || message.author.isMe) return;
       const text = message.text?.trim() ?? "";
@@ -477,6 +496,16 @@ export async function registerProactiveListener(
         }
         return;
       }
+
+      // DMs short-circuit here. The unsubscribe branch above is the
+      // only proactive-listener action that applies to DMs; classify /
+      // react / offer-card are channel-only flows. The bridge's
+      // `onDirectMessage` handler (registered separately, runs in the
+      // same SDK loop) owns the chat-with-bot path. Without this
+      // return a DM that isn't `unsubscribe` would pay one LLM
+      // classify call per message just to land at "skip:
+      // channel-not-allowed" inside `decideInterjection`.
+      if (isDM) return;
 
       // In-channel `@atlas pause` → 24h channel-scoped pause.
       if (
@@ -744,6 +773,17 @@ export async function registerProactiveListener(
         "Proactive listener handler threw — suppressed",
       );
     }
+  };
+
+  chat.onNewMessage(/.+/, handleProactiveMessage);
+  // SDK routes DMs to `directMessageHandlers` first when registered
+  // (`chat/dist/index.js:dispatchToHandlers`); without this registration
+  // DMs fall through to `mentionHandlers` and the listener never sees
+  // them. The `channel` / `context` parameters from the DM-handler
+  // signature aren't needed — `handleProactiveMessage` reads everything
+  // it needs from `thread` + `message`.
+  chat.onDirectMessage(async (thread: Thread, message: Message) => {
+    await handleProactiveMessage(thread, message);
   });
 
   // -------------------------------------------------------------------------

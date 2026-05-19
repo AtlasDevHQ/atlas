@@ -61,8 +61,14 @@ COPY packages/cli/data/seeds/ecommerce/semantic semantic
 # Build workspace deps whose exports point to dist/ in dependency order:
 # types → sdk → react. packages/react imports fetchStarterPrompts from
 # @useatlas/sdk, so sdk must be built before react's bundler resolves it.
+# plugin-sdk's package.json exports also point to ./dist/index.js — it must
+# be built so @useatlas/chat's transitive `import "@useatlas/plugin-sdk"`
+# resolves at boot (atlas.config.ts loads ./plugins/chat/src/index, which
+# imports plugin-sdk). Added in #2608 / slice 1 of #2607 when the chat
+# plugin first started being loaded by the SaaS config.
 RUN cd packages/types && bun run build
 RUN cd packages/sdk && bun run build
+RUN cd packages/plugin-sdk && bun run build
 RUN cd packages/react && bun run build
 
 # --- nsjail build stage (parallel with builder) ---
@@ -98,6 +104,14 @@ COPY --from=nsjail-builder /nsjail-out/ /usr/local/bin/
 COPY --from=builder --chown=atlas:atlas /app/packages/types ./packages/types
 # Shared wire-format Zod schemas (imported by API route handlers)
 COPY --from=builder --chown=atlas:atlas /app/packages/schemas ./packages/schemas
+# Plugin SDK — workspace symlink target for any plugin's peerDep.
+# `plugins/chat/node_modules/@useatlas/plugin-sdk` resolves to this path
+# via the relative symlink `../../../../packages/plugin-sdk`. Without
+# this COPY, atlas.config.ts's `import "./plugins/chat/src/index"`
+# transitively loads the chat plugin's `@useatlas/plugin-sdk` import
+# and ENOENTs at boot, hard-failing the SaaS deploy. Added in #2608
+# (slice 1 of #2607) when atlas.config.ts started importing chatPlugin.
+COPY --from=builder --chown=atlas:atlas /app/packages/plugin-sdk ./packages/plugin-sdk
 # Widget bundle — built from @useatlas/react (referenced by widget route)
 COPY --from=builder --chown=atlas:atlas /app/packages/react/dist ./packages/react/dist
 # Hono API server source + dependencies
@@ -119,6 +133,18 @@ COPY --from=builder --chown=atlas:atlas /app/package.json ./package.json
 COPY --from=builder --chown=atlas:atlas /app/ee ./ee
 # Plugins (loaded at runtime by the plugin system)
 COPY --from=builder --chown=atlas:atlas /app/plugins ./plugins
+# Defensive symlink rebuild: bun ci in the deps stage creates
+# `plugins/chat/node_modules/@useatlas/{plugin-sdk,types}` as relative
+# workspace symlinks, but the multi-stage COPY chain isn't reliably
+# preserving them for every Docker driver. Recreate explicitly so
+# atlas.config.ts's transitive load of `./plugins/chat/src/index`
+# (added in #2608 / slice 1 of #2607) can resolve the chat plugin's
+# `@useatlas/plugin-sdk` peerDep at boot regardless of upstream
+# COPY-symlink behavior. The `-f` flag overwrites any pre-existing
+# (possibly dangling) symlink that survived the COPY.
+RUN mkdir -p /app/plugins/chat/node_modules/@useatlas && \
+    ln -sfn /app/packages/plugin-sdk /app/plugins/chat/node_modules/@useatlas/plugin-sdk && \
+    ln -sfn /app/packages/types /app/plugins/chat/node_modules/@useatlas/types
 # Demo seeding (ATLAS_SEED_DEMO=true) — single canonical seed since 1.4.0 (#2021)
 COPY --from=builder --chown=atlas:atlas /app/packages/cli/data/seeds/ecommerce/seed.sql ./data/demo.sql
 COPY --chown=atlas:atlas examples/docker/scripts/seed-demo.ts ./scripts/seed-demo.ts

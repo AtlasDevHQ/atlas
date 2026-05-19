@@ -13,6 +13,13 @@
  */
 
 import { defineConfig } from "./packages/api/src/lib/config";
+// Relative import: atlas.config.ts lives at /app/ in the SaaS container,
+// outside any workspace's node_modules resolution tree. The workspace
+// symlink for @useatlas/chat is at /app/packages/api/node_modules/,
+// which is not reachable via Node's upward node_modules walk from /app/.
+// The `defineConfig` import above uses the same relative-path pattern
+// for the same reason. Resolved at boot via bun's TS loader.
+import { chatPlugin } from "./plugins/chat/src/index";
 
 export default defineConfig({
   // ── Datasource ──────────────────────────────────────────────────
@@ -26,6 +33,65 @@ export default defineConfig({
 
   // ── Tools ───────────────────────────────────────────────────────
   tools: ["explore", "executeSQL"],
+
+  // ── Plugins ─────────────────────────────────────────────────────
+  // Slice 1 of #2607 — structural wiring only. Loads @useatlas/chat
+  // with a PgStateAdapter so chat_* tables are created on boot. The
+  // plugin's webhook routes mount at /api/plugins/chat-interaction/*
+  // alongside the existing /api/v1/slack/* routes; both surfaces
+  // coexist after this slice. NO `proactive:` block is supplied here —
+  // bridge.ts only registers the proactive listener when
+  // `config.proactive` is truthy. Slice 2 of #2607 will add it.
+  //
+  // SaaS is multi-tenant: real Slack bot tokens live in the internal
+  // DB (slack_integrations / slack_workspaces) keyed by team_id, and
+  // packages/api/src/api/routes/slack.ts continues to handle every
+  // production webhook today. The static `botToken` below is required
+  // by Zod (min(1)) but is never used for outbound calls in SaaS —
+  // executeQuery throws a stub before any outbound call, and the
+  // Slack app manifest only POSTs to /api/v1/slack/events, not to the
+  // plugin's webhook route. Slice 3 of #2607 retires this stub.
+  plugins: [
+    chatPlugin({
+      adapters: {
+        slack: {
+          botToken: process.env.SLACK_BOT_TOKEN ?? "saas-multi-tenant-unused",
+          signingSecret:
+            process.env.SLACK_SIGNING_SECRET ?? "saas-multi-tenant-unused",
+          ...(process.env.SLACK_CLIENT_ID
+            ? { clientId: process.env.SLACK_CLIENT_ID }
+            : {}),
+          ...(process.env.SLACK_CLIENT_SECRET
+            ? { clientSecret: process.env.SLACK_CLIENT_SECRET }
+            : {}),
+        },
+      },
+      state: { backend: "pg" },
+      executeQuery: async (question, ctx) => {
+        // Defensive stub for slice 1/2 — the chat plugin's bridge is
+        // wired but unreachable from the Slack app manifest today (only
+        // /api/v1/slack/events is registered). Slice 3 of #2607 retires
+        // this stub by migrating the @mention/thread handlers off
+        // slack.ts. If a request DOES reach this stub (e.g., manual
+        // webhook re-registration during dogfood), the bridge logs the
+        // throw via log.error and posts an error card to the user, so
+        // the surfaced message must be user-safe — not a dev string.
+        // Log the dev detail with structured context for operators.
+        console.error(
+          JSON.stringify({
+            event: "chat-plugin.executeQuery.stub-hit",
+            threadId: ctx.threadId,
+            questionPreview: question.slice(0, 80),
+            note:
+              "Chat plugin reached pre-slice-3 stub. Check Slack app manifest — only /api/v1/slack/events should be registered.",
+          }),
+        );
+        throw new Error(
+          "This Slack integration is being upgraded. Please try again in a moment, or contact your Atlas admin if this persists.",
+        );
+      },
+    }),
+  ],
 
   // ── Auth ────────────────────────────────────────────────────────
   auth: "managed",

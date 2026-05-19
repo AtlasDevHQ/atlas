@@ -41,6 +41,24 @@ A Workspace Connection (per above) is established differently depending on the P
 
 The handlers share the workspace-install shape (a `workspace_plugins` row gets created in all three cases) but differ in what gets persisted as credentials. `StaticBotInstallHandler` is essentially a degenerate form-install where the "credentials" are routing identifiers, not secrets.
 
+### Multi-mode Platforms
+
+Some Platforms support multiple install models. Linear has both OAuth-app and API-key modes; GitHub has App-multi-tenant, App-single-tenant, and PAT modes. Treat each `(Platform, install_mode)` pair as a **separate catalog row** rather than one row with a mode toggle. The catalog query stays simple (`SELECT … WHERE install_model = 'oauth'` for handler dispatch); the admin UI renders distinct cards ("Linear (OAuth)" and "Linear (API Key)") so the customer admin sees the real trade-off. Naming convention: catalog slug is `<platform>-<mode>` for non-default modes (e.g. `linear` for OAuth as default, `linear-apikey` for the API-key alternative).
+
+### SaaS-vs-self-host eligibility
+
+A few install models are unsafe on SaaS even though they work on self-host. GitHub PAT mode is the canonical example — a Personal Access Token is scoped to one GitHub user, so the integration breaks when that user leaves the customer's company. The catalog row carries a `saas_eligible: boolean` flag (or equivalent gate) that hides the entry from SaaS admin UI while leaving it available for self-host operators wiring their own deploy. Decisions: `min_plan` is for plan-tier gating (Free vs Team vs Enterprise); `saas_eligible` is for deploy-mode gating (SaaS vs self-host).
+
+### Credential rotation
+
+Rotation semantics differ per `install_model`:
+
+- **OAuth** — refresh tokens managed by Atlas (auto-refresh on expiry; re-prompt customer admin if refresh fails)
+- **Form** — manual customer-admin rotation; expired credentials surface as actionable errors
+- **Static-bot** — operator rotates env vars; Atlas restart picks up new credentials; no per-Workspace impact
+
+Each install handler's interface docstring should call out its rotation semantics so consumers write the right error-handling shape.
+
 ## Deployment posture (as of 2026-05-19)
 
 Atlas SaaS is deployed to two real Workspaces only: the maintainer's internal team and an internal demo team. **No external customers.** This is the "pre-customer clean-break" window — schema migrations can hard-drop, API contracts can change without versioning, no deprecation shims needed. The precedent is the #2620 / #2626 / #2634 / #2641 sequence, all clean breaks.

@@ -3798,6 +3798,21 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows[0].monthly_classifier_cap).toBeNull();
   }, PG_TEST_TIMEOUT_MS);
 
+  it("workspace_proactive_config: CHECK rejects empty workspace_id (#2623 item 5, migration 0085)", async () => {
+    let err: Error | null = null;
+    try {
+      await pool.query(
+        `INSERT INTO workspace_proactive_config (workspace_id) VALUES ('')`,
+      );
+    } catch (e) {
+      err = e instanceof Error ? e : new Error(String(e));
+    }
+    expect(err).not.toBeNull();
+    expect(err?.message).toMatch(
+      /chk_workspace_proactive_workspace_id_nonempty|23514|check constraint/i,
+    );
+  }, PG_TEST_TIMEOUT_MS);
+
   // ---------------------------------------------------------------------------
   // AnswerMeter end-to-end round-trip (#2296). recordMeterEvent ↔
   // summarizeMeterEvents has only been tested via the pure aggregator

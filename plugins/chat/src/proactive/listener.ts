@@ -303,6 +303,15 @@ export async function registerProactiveListener(
   // `false` on a row-missing lookup with `$1 = ''`). If EE isn't loaded,
   // registration short-circuits at line 295-297. Real per-event calls
   // pass actual workspaceIds.
+  //
+  // Single-attempt by design. The host gate's transient-retry contract
+  // (`enabled-gate.ts` — "leave `enterpriseEnabled` undefined so the next
+  // call retries") only fires when a per-event call follows. We never
+  // make one — a falsy result here returns a no-op handle and that's
+  // the end of it, so a boot-time runtime defect wedges proactive for
+  // the process lifetime. Accepted because proactive is best-effort
+  // (the rest of the bridge stays up). If SaaS dogfood surfaces a
+  // registration regression, wrap this in exponential-backoff retry.
   const enabledAtRegistration = await config.isEnabled("");
   if (!enabledAtRegistration) {
     log.debug("Proactive listener not registered — gate is closed");

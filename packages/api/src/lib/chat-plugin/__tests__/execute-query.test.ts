@@ -209,16 +209,74 @@ describe("chat-plugin executeQuery host helper", () => {
     expect(capturedAgentCalls[0]!.options?.approvalSurface).toBe("slack");
   });
 
-  it("uses rate-limit key 'slack:<teamId>' so legacy buckets keep their state", async () => {
+  it("rate-limit key for thread follow-up is team-wide `slack:<teamId>` — matches slack.ts:491", async () => {
     const { runExecuteQuery } = await import("../executeQuery");
 
     await runExecuteQuery("q", {
       threadId: "slack:C1-1.2",
       adapter: { name: "slack" },
-      rawMessage: { team_id: "T0ABC", user: "U0XYZ", channel: "C1", ts: "1.2" },
+      // No `type: "app_mention"` — this is a thread follow-up.
+      rawMessage: { team_id: "T0ABC", user: "U0XYZ", channel: "C1", ts: "1.2", thread_ts: "1.0" },
     });
 
     expect(observedRateLimitKeys).toEqual(["slack:T0ABC"]);
+  });
+
+  it("rate-limit key for top-level @mention is per-user `slack:<teamId>:<userId>` — matches slack.ts:667", async () => {
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await runExecuteQuery("q", {
+      threadId: "slack:C1-1.2",
+      adapter: { name: "slack" },
+      rawMessage: {
+        type: "app_mention",
+        team_id: "T0ABC",
+        user: "U0XYZ",
+        channel: "C1",
+        ts: "1.2",
+      },
+    });
+
+    expect(observedRateLimitKeys).toEqual(["slack:T0ABC:U0XYZ"]);
+  });
+
+  it("rate-limit key for top-level @mention without user falls back to ts — matches slack.ts:667 `eventUserId || mentionTs`", async () => {
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await runExecuteQuery("q", {
+      threadId: "slack:C1-1.2",
+      adapter: { name: "slack" },
+      // app_mention with no `user` (e.g. mentions from automations)
+      rawMessage: { type: "app_mention", team_id: "T0ABC", channel: "C1", ts: "1.2" },
+    });
+
+    expect(observedRateLimitKeys).toEqual(["slack:T0ABC:1.2"]);
+  });
+
+  it("extracts team_id from interactive `block_actions` payload where `team` is `{id, domain}` — not the object literal", async () => {
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    // `atlas_run_again` / `atlas_export_csv` button clicks route through
+    // executeQuery with a Slack `block_actions` payload, where `team` is
+    // an object (not a string) and `team_id` is absent. The helper MUST
+    // pull `team.id` so the rate-limit key + installation lookup get a
+    // real tenant key (not `[object Object]`).
+    await runExecuteQuery("q", {
+      threadId: "slack:C1-1.2",
+      adapter: { name: "slack" },
+      rawMessage: {
+        type: "block_actions",
+        team: { id: "T0ABC", domain: "acme" },
+        user: { id: "U0XYZ" },
+        channel: { id: "C1" },
+      },
+    });
+
+    // Non-`app_mention` event → team-wide key, but with the resolved id.
+    expect(observedRateLimitKeys).toEqual(["slack:T0ABC"]);
+    // user.id + channel.id resolve too (block_actions payloads nest both).
+    expect(capturedAgentCalls).toHaveLength(1);
+    expect(capturedAgentCalls[0]!.options?.actor?.id).toBe("slack-bot:T0ABC:U0XYZ");
   });
 
   it("creates a conversation mapping when none exists for the thread", async () => {

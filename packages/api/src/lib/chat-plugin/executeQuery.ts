@@ -59,18 +59,44 @@ const log = createLogger("chat-plugin:executeQuery");
 
 /**
  * Minimum shape we read from the Slack raw event payload. The chat SDK
- * types this as `SlackEvent` (with `team_id`, `user`, `channel`,
- * `thread_ts`, `ts`, etc.) but the contract here is `unknown` — narrow
- * defensively. `team_id` is the primary tenant key; `team` is a legacy
- * alias seen on some webhook shapes. `user` is the asker's Slack user id.
+ * types `SlackEvent` for events_api callbacks but does NOT type
+ * `block_actions` / interactive payloads — those flow through here too
+ * (via `atlas_run_again` / `atlas_export_csv` button clicks). The
+ * contract is `unknown` — narrow defensively.
+ *
+ * Events API: `team_id` / `user` / `channel` are bare strings.
+ * block_actions: `team` / `user` / `channel` are `{ id, ... }` objects.
+ * `type` lets us key the rate-limit bucket per-user for top-level
+ * @mentions and team-wide for thread follow-ups (matches slack.ts).
  */
 interface SlackRawEvent {
+  type?: string;
   team_id?: string;
-  team?: string;
-  user?: string;
-  channel?: string;
+  team?: string | { id?: string };
+  user?: string | { id?: string };
+  channel?: string | { id?: string };
   thread_ts?: string;
   ts?: string;
+}
+
+/**
+ * Normalize a Slack id field that may arrive as a bare string (events_api)
+ * or as a `{ id, ... }` object (interactive `block_actions` payloads).
+ */
+function extractSlackId(
+  value: string | { id?: string } | undefined,
+): string | undefined {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object" && typeof value.id === "string") {
+    return value.id;
+  }
+  return undefined;
+}
+
+/** Extract `team_id` (events_api) or `team.id` (block_actions). */
+function extractTeamId(raw: SlackRawEvent): string | undefined {
+  if (typeof raw.team_id === "string") return raw.team_id;
+  return extractSlackId(raw.team);
 }
 
 /**
@@ -108,10 +134,11 @@ export async function runExecuteQuery(
     );
   }
 
-  // 2. Resolve tenant from `rawMessage.team_id`. Mirrors
-  //    `lib/proactive/workspace-id-resolver.ts:createSlackWorkspaceIdResolver`.
+  // 2. Resolve tenant from `rawMessage.team_id` (or `team.id` on
+  //    interactive `block_actions` payloads — see `extractTeamId`).
+  //    Mirrors `lib/proactive/workspace-id-resolver.ts:createSlackWorkspaceIdResolver`.
   const raw = (rawMessage ?? {}) as SlackRawEvent;
-  const teamId = raw.team_id ?? raw.team;
+  const teamId = extractTeamId(raw);
   if (!teamId) {
     log.warn(
       { threadId, requestId },
@@ -122,9 +149,19 @@ export async function runExecuteQuery(
     );
   }
 
-  // 3. Per-tenant rate limit. Key shape matches slack.ts so existing
-  //    buckets keep their state across the migration.
-  const rateCheck = checkRateLimit(`slack:${teamId}`);
+  // Normalize Slack id fields (events_api: string; block_actions: object).
+  const externalUserId = extractSlackId(raw.user);
+  const channelId = extractSlackId(raw.channel) ?? "";
+
+  // 3. Rate limit. Top-level @mentions are keyed per-user so one noisy
+  //    user can't throttle the whole workspace (matches slack.ts:667).
+  //    Thread follow-ups stay team-wide so a long-running conversation
+  //    doesn't pile under one user's bucket (matches slack.ts:491).
+  const rateLimitKey =
+    raw.type === "app_mention"
+      ? `slack:${teamId}:${externalUserId ?? raw.ts ?? "unknown"}`
+      : `slack:${teamId}`;
+  const rateCheck = checkRateLimit(rateLimitKey);
   if (!rateCheck.allowed) {
     log.info(
       { teamId, threadId, requestId },
@@ -183,7 +220,6 @@ export async function runExecuteQuery(
     );
   }
 
-  const externalUserId = raw.user;
   const actor = botActorUser({
     platform: "slack",
     externalId: teamId,
@@ -197,7 +233,6 @@ export async function runExecuteQuery(
   //    truth for cross-surface history (admin console + web chat + Slack
   //    thread reads). Mirror what slack.ts does: look up by
   //    (channel, thread_ts) and persist the user/assistant turns.
-  const channelId = raw.channel ?? "";
   const slackThreadTs = raw.thread_ts ?? raw.ts ?? "";
   let conversationId: string | null = null;
   if (channelId && slackThreadTs) {

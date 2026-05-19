@@ -397,10 +397,10 @@ export async function registerProactiveListener(
   // because the listener takes events from `onNewMessage`, `onReaction`,
   // `onAction`, and `onModalSubmit` — each surfaces a thread with a
   // different generic parameter (or none at all for the bridge's slash
-  // synthesis path). The Slack resolver reads only `adapter.name` +
-  // `message.raw`; the `thread` field is passed through for forward-
-  // compatibility with platforms that need it (Teams `channelData`,
-  // etc.) but no current resolver dereferences it.
+  // synthesis path). The `thread` field is part of the resolver
+  // contract so platforms that need it (Teams `channelData`, etc.) can
+  // opt in without a signature change. The Slack resolver — the only
+  // one wired today — does not read it.
   //
   // `message` is the narrowed {@link ResolverEventLite} shape (#2623
   // item 2) so action / modal call sites can pass `{ id, raw }`
@@ -415,6 +415,11 @@ export async function registerProactiveListener(
     try {
       raw = await config.resolveWorkspaceId({
         adapter,
+        // Generic widening: `safeResolveWorkspace`'s `thread` parameter
+        // is `Thread<unknown, unknown> | undefined` (callers erase the
+        // generics so one wrapper can serve every event surface).
+        // `ResolverEvent.thread` defaults the generics to `Record<string,
+        // unknown>` for `TState`, which is invariant — hence the cast.
         thread: thread as Thread | undefined,
         message,
       });

@@ -122,9 +122,9 @@ export type ProactiveGateFn = (
  * "only read `adapter.name` + `message.raw`", but pre-#2623 the
  * parameter was the full `Message` and synthesis sites (action /
  * modal / slash, which don't carry a real Message) smuggled a partial
- * shape via a structural `Message` cast. The cast silenced the type
- * error but a resolver author could legally read
- * `event.message.attachments`
+ * shape via an `as unknown as Message` double cast that bypassed
+ * structural checking entirely. The cast silenced the type error but
+ * a resolver author could legally read `event.message.attachments`
  * or `event.message.author` — fields synthetic events don't populate,
  * which would silently misroute the tenant lookup at runtime.
  *
@@ -136,8 +136,19 @@ export type ProactiveGateFn = (
  * Adding a field here means every host implementation can now read it;
  * removing means closing a hole. `raw` is the only load-bearing field
  * (Slack `team_id`, Teams `tenantId`, ...); `id` is included because
- * synthesis sites populate it for logging convenience but it carries
- * no semantic value on synthetic events.
+ * the channel-message and action-feedback paths can populate a real
+ * adapter message id (`listener.ts:1016`), while the modal-submit and
+ * bridge-slash synthesis paths pass `""` because there is no original
+ * message (`listener.ts:1102`, `bridge.ts:1089`). Resolvers must NOT
+ * branch on `id` — only use it for opportunistic logging — because
+ * the `""` sentinel cannot be distinguished from an unknown adapter
+ * that happens to produce empty ids.
+ *
+ * Pinned by the `@ts-expect-error` block in
+ * `plugins/chat/src/proactive/__tests__/listener.test.ts` (describe
+ * tagged `ResolveWorkspaceIdFn type narrowing (#2623 item 2)`) —
+ * widening this back to `Message` will make those directives unused
+ * and fail the type gate.
  */
 export type ResolverEventLite = Pick<Message, "id" | "raw">;
 
@@ -179,10 +190,13 @@ export type ResolveWorkspaceIdFn = (event: ResolverEvent) => Promise<string | nu
  * Per-event workspace config fetcher.
  *
  * Replaces the pre-#2620 static `workspace: WorkspaceProactiveConfig`
- * registration field. Called once per event after `resolveWorkspaceId`
- * succeeds; the listener caches the result for the lifetime of the
- * single event handler call so repeated lookups inside one handler stay
- * cheap.
+ * registration field. Called at most once per event handler invocation
+ * — the listener holds the result in a local `const` so repeated
+ * lookups inside one handler are not needed (there is no cache; the
+ * cost ceiling is "one DB read per channel-message event"). The
+ * per-event "called exactly once" contract is pinned by the sentinel
+ * describe block tagged `#2623 item 6` in
+ * `plugins/chat/src/proactive/__tests__/listener.test.ts`.
  *
  * Returns `null` when the workspace has no config row (treat as not
  * opted in; the listener short-circuits without classification).

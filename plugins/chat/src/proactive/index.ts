@@ -21,6 +21,8 @@ export type {
   ProactiveGateFn,
   RecentActivity,
   ResolveWorkspaceIdFn,
+  ResolverEvent,
+  ResolverEventLite,
   SensitivityPreset,
   WorkspaceProactiveConfig,
 } from "./types";

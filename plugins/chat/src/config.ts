@@ -10,10 +10,13 @@ import { z } from "zod";
 import type { StreamChunk } from "chat";
 import type { ReactionConfig } from "./features/reactions";
 import type {
+  AnswerFlowConfig,
+  FeedbackConfig,
   GetChannelConfigsFn,
   GetPublicDatasetFn,
   GetQuotaStatusFn,
   GetWorkspaceConfigFn,
+  KillSwitchConfig,
   LLMClassifierFn,
   OnPauseRequestFn,
   ProactiveGateFn,
@@ -535,49 +538,46 @@ export interface ProactiveConfig {
    */
   getChannelConfigs: GetChannelConfigsFn;
 
-  // ---- Slice #2293 additions: reaction-to-answer flow ----
+  // ---- Coupled feature groups (#2623 item 1) ------------------------------
+  //
+  // Three discriminated unions replace the 7 previously-optional
+  // callback fields whose legal combinations were documented only.
+  // See `proactive/types.ts` for the JSDoc on each variant.
 
   /**
-   * Resolves a chat-platform user to an Atlas user. Linked askers run
-   * `executeQueryProactive` with their identity (RLS applies). Unlinked
-   * askers receive the link-Atlas stub.
+   * Answer-flow wiring (slice #2293 + slice #2297 public dataset).
+   * `{ mode: "off" }` keeps the reaction-first tracer working but
+   * never runs the agent. Multi-tenant SaaS deploys typically wire
+   * `mode: "both"` so linked askers run under RLS while unlinked
+   * askers get the curated public dataset.
    */
-  userResolver?: ProactiveUserResolver;
+  answerFlow: AnswerFlowConfig;
+
   /**
-   * Runs the Atlas agent on behalf of a linked asker. Wired by the host
-   * to `runAgent` / `runAgentEffect` with the asker's `AuthContext`.
+   * Kill-switch + per-user opt-out wiring (slice #2295). Pre-1.5.2
+   * shape was `{ isPaused?, onPauseRequest? }`; the union ensures
+   * the pair stays in lockstep.
    */
-  executeQueryProactive?: ProactiveExecuteQuery;
+  killSwitch: KillSwitchConfig;
+
+  /**
+   * Feedback collection wiring (slice #2298). `{ enabled: false }`
+   * silently drops button / modal / slash feedback events.
+   */
+  feedback: FeedbackConfig;
+
+  // ---- Independent / informational optionals -----------------------------
+
   /** Deep link surfaced in the unlinked-asker prompt. */
   linkUrl?: string;
   /** Platform name (`"slack"` etc.) recorded in `ProactiveAsker`. */
   platform?: string;
-
-  // ---- Slice #2298: feedback collection ----
-
   /**
-   * Persists feedback from button clicks, the wrong-data modal, and
-   * the `/atlas feedback <text>` slash subcommand. Host typically
-   * writes to the meter / evals dataset.
-   */
-  feedbackCollector?: FeedbackCollectorFn;
-
-  // ---- Slice #2297 additions: public dataset for unlinked askers ----
-
-  /**
-   * Host-injected fetch for the workspace's curated allowlist of
-   * semantic entities a public-channel asker (not OAuth'd into Atlas)
-   * is allowed to ask questions about. When omitted, the listener
-   * keeps the unlinked-asker stub from #2293 — every unlinked-asker
-   * answer attempt routes to the "link your Atlas account" prompt.
-   */
-  getPublicDataset?: GetPublicDatasetFn;
-  /**
-   * Override the default refusal copy posted when an unlinked asker
-   * hits a question whose referenced entities aren't on the public
-   * dataset. Defaults to `DEFAULT_PROACTIVE_REFUSAL_COPY` in
-   * `proactive/types.ts`. Content-blind by design — never names the
-   * entity the asker probed for.
+   * Override the default refusal copy posted when an unlinked asker's
+   * question hits an entity outside the public-dataset allowlist
+   * (only consulted when `answerFlow.mode` includes the public path).
+   * Defaults to `DEFAULT_PROACTIVE_REFUSAL_COPY` in
+   * `proactive/types.ts`. Content-blind by design.
    */
   refusalCopy?: string;
   /**
@@ -589,28 +589,8 @@ export interface ProactiveConfig {
    * time). Logs at warn on startup so the bypass is visible.
    */
   allowAnswerWhenEntitiesUnknown?: boolean;
-  // (onMeterEvent declared below alongside the #2296 AnswerMeter wiring —
-  //  shared callback covers the public_refused events from #2297.)
 
-  // ---- Slice #2295 additions: kill switch + per-user opt-out ----
-  //
-  // Post-#2620 multi-tenant: workspaceId is resolved per event via
-  // `resolveWorkspaceId` (above) and threaded into these callbacks at
-  // the call site. The static `workspaceId?` field was removed.
-
-  /**
-   * Pause-registry read API. Host backs this with the API package's
-   * `PauseRegistry` so the listener consults it BEFORE classification.
-   */
-  isPaused?: IsPausedFn;
-  /**
-   * Pause-registry write API. Called for in-channel `@atlas pause`
-   * (24h channel scope) and DM `unsubscribe` (workspace-wide
-   * user opt-out).
-   */
-  onPauseRequest?: OnPauseRequestFn;
-
-  // ---- Slice #2296 additions: AnswerMeter ----
+  // ---- Slice #2296: AnswerMeter ------------------------------------------
 
   /**
    * Per-event meter callback. Receives one event per classify (always)
@@ -621,7 +601,7 @@ export interface ProactiveConfig {
    */
   onMeterEvent?: ProactiveMeterEventFn;
 
-  // ---- Slice #2301 additions: monthly quota cap ----
+  // ---- Slice #2301: monthly quota cap ------------------------------------
 
   /**
    * Quota-status reader. Consulted BEFORE the classifier on every
@@ -898,6 +878,83 @@ const ReactionConfigSchema = z
 // /admin/proactive-chat route + DB-constraint layer rather than here.
 //   const SensitivityPresetSchema = z.enum(["cautious", "balanced", "eager"]);
 
+// ---- Discriminated-union sub-schemas (#2623 item 1) ----------------------
+//
+// Three z.discriminatedUnion()s mirror the three runtime unions in
+// `proactive/types.ts`. The runtime check is shape-equivalent to the
+// pre-#2623 individual `.optional()` callbacks (zCallback enforces
+// `typeof === "function"`), but the discriminator forces the host to
+// declare its intent at the schema layer — a stray `executeQueryProactive`
+// without a matching `mode` is rejected at boot rather than silently
+// no-op'ing inside the listener.
+
+const AnswerFlowSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("off") }).strict(),
+  z
+    .object({
+      mode: z.literal("public-only"),
+      getPublicDataset: zCallback<GetPublicDatasetFn>(
+        "proactive.answerFlow.getPublicDataset must be a function returning Promise<PublicDatasetEntry[]>",
+      ),
+      executeQueryProactive: zCallback<ProactiveExecuteQuery>(
+        "proactive.answerFlow.executeQueryProactive must be a function",
+      ),
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("linked-only"),
+      userResolver: zCallback<ProactiveUserResolver>(
+        "proactive.answerFlow.userResolver must be a function",
+      ),
+      executeQueryProactive: zCallback<ProactiveExecuteQuery>(
+        "proactive.answerFlow.executeQueryProactive must be a function",
+      ),
+    })
+    .strict(),
+  z
+    .object({
+      mode: z.literal("both"),
+      getPublicDataset: zCallback<GetPublicDatasetFn>(
+        "proactive.answerFlow.getPublicDataset must be a function returning Promise<PublicDatasetEntry[]>",
+      ),
+      userResolver: zCallback<ProactiveUserResolver>(
+        "proactive.answerFlow.userResolver must be a function",
+      ),
+      executeQueryProactive: zCallback<ProactiveExecuteQuery>(
+        "proactive.answerFlow.executeQueryProactive must be a function",
+      ),
+    })
+    .strict(),
+]);
+
+const KillSwitchSchema = z.discriminatedUnion("enabled", [
+  z.object({ enabled: z.literal(false) }).strict(),
+  z
+    .object({
+      enabled: z.literal(true),
+      isPaused: zCallback<IsPausedFn>(
+        "proactive.killSwitch.isPaused must be a function returning Promise<PauseDecision>",
+      ),
+      onPauseRequest: zCallback<OnPauseRequestFn>(
+        "proactive.killSwitch.onPauseRequest must be a function returning Promise<void>",
+      ),
+    })
+    .strict(),
+]);
+
+const FeedbackSchema = z.discriminatedUnion("enabled", [
+  z.object({ enabled: z.literal(false) }).strict(),
+  z
+    .object({
+      enabled: z.literal(true),
+      collector: zCallback<FeedbackCollectorFn>(
+        "proactive.feedback.collector must be a function",
+      ),
+    })
+    .strict(),
+]);
+
 const ProactiveConfigSchema = z
   .object({
     // Per-event workspace resolution (#2620). Required.
@@ -917,33 +974,15 @@ const ProactiveConfigSchema = z
     getChannelConfigs: zCallback<GetChannelConfigsFn>(
       "proactive.getChannelConfigs must be a function returning Promise<ChannelProactiveConfig[]>",
     ),
-    userResolver: zCallback<ProactiveUserResolver>(
-      "proactive.userResolver must be a function",
-    ).optional(),
-    executeQueryProactive: zCallback<ProactiveExecuteQuery>(
-      "proactive.executeQueryProactive must be a function",
-    ).optional(),
+    // Coupled feature groups (#2623 item 1). All three required.
+    answerFlow: AnswerFlowSchema,
+    killSwitch: KillSwitchSchema,
+    feedback: FeedbackSchema,
+    // Independent / informational optionals.
     linkUrl: z.string().url("proactive.linkUrl must be a valid URL").optional(),
     platform: z.string().min(1).optional(),
-    feedbackCollector: zCallback<FeedbackCollectorFn>(
-      "proactive.feedbackCollector must be a function",
-    ).optional(),
-    // Public dataset wiring (#2297). All three optional — when
-    // `getPublicDataset` is omitted, the listener keeps the
-    // unlinked-asker stub from #2293 (link-Atlas prompt only).
-    getPublicDataset: zCallback<GetPublicDatasetFn>(
-      "proactive.getPublicDataset must be a function returning Promise<PublicDatasetEntry[]>",
-    ).optional(),
     refusalCopy: z.string().min(1).max(1024).optional(),
     allowAnswerWhenEntitiesUnknown: z.boolean().optional(),
-    // Kill-switch wiring (#2295). Both optional so the legacy env-var
-    // allowlist mode (used by tests + dev) keeps working.
-    isPaused: zCallback<IsPausedFn>(
-      "proactive.isPaused must be a function returning Promise<PauseDecision>",
-    ).optional(),
-    onPauseRequest: zCallback<OnPauseRequestFn>(
-      "proactive.onPauseRequest must be a function returning Promise<void>",
-    ).optional(),
     // AnswerMeter wiring (#2296). Optional — when omitted the listener
     // simply doesn't emit meter rows.
     onMeterEvent: zCallback<ProactiveMeterEventFn>(

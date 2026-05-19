@@ -385,16 +385,30 @@ beforeAll(async () => {
       classify: mockClassify as any,
       getWorkspaceConfig: mockGetWorkspaceConfig,
       getChannelConfigs: mockGetChannelConfigs,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      isPaused: mockIsPaused as any,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      onPauseRequest: mockPauseRequest as any,
+      // #2623 item 1 reshape: kill switch wired as the discriminated
+      // union pair so the e2e surface exercises the same shape the
+      // SaaS deploy uses.
+      killSwitch: {
+        enabled: true,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        isPaused: mockIsPaused as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        onPauseRequest: mockPauseRequest as any,
+      },
+      // Answer flow stays on `linked-only` with a user-resolver stub
+      // that keeps every asker on the safe "unlinked" branch — the
+      // reaction-back behaviour is out of scope here (covered by the
+      // answerer unit tests + #2624). We only need the react meter row
+      // to fire to validate the channel-allowlist path; the listener's
+      // dummy `executeQueryProactive` is never reached at runtime
+      // because no reaction-back fires in this test.
+      answerFlow: {
+        mode: "linked-only",
+        userResolver: async () => ({ kind: "unlinked" }),
+        executeQueryProactive: async () => ({ answer: "" }),
+      },
+      feedback: { enabled: false },
       onMeterEvent: mockMeterEvent,
-      // The user-resolver stub keeps every asker on the safe "unlinked"
-      // branch — reaction-back behaviour is out of scope here (covered
-      // by the answerer unit tests + #2624). We only need the react
-      // meter row to fire to validate the channel-allowlist path.
-      userResolver: async () => ({ kind: "unlinked" }),
     },
   });
 

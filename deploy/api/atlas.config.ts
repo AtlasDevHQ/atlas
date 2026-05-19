@@ -154,35 +154,51 @@ export default defineConfig({
         // `proactiveAiRuntime`. The factory's `RIn` type parameter
         // widens to accept the runtime's full service set.
         classify: createProactiveClassifier(proactiveAiRuntime),
-        // Reaction-back answer flow. Wires the adapter-side
-        // `getPublicDataset(asker, { workspaceId })` so unlinked-asker
-        // answers run with the workspace's curated allowlist gating
-        // `executeSQL` + `explore` at the tool boundary (the plugin-
-        // level post-filter on the listener side is the second gate).
-        // The workspaceId is threaded from the listener per #2624;
-        // pre-#2624 wiring couldn't pass it through.
-        executeQueryProactive: createProactiveAnswerAdapter(
-          proactiveAiRuntime,
-          {
-            getPublicDataset: (_asker, { workspaceId }) =>
-              getAllowlist(workspaceId),
-          },
-        ),
-        // Slack user resolver (#2624). Validates the workspaceId and
-        // returns `{ atlasUserId: undefined }` for every asker today
-        // (no Slack-user link table in core yet — the function has a
-        // clear hook point for a future linking mechanism). The
-        // unlinked path is the safe branch: the listener routes
-        // unlinked askers through the public-dataset allowlist gate,
-        // which is now tenant-scoped via #2624.
-        userResolver: createSlackProactiveUserResolver(),
-        linkUrl:
-          process.env.ATLAS_PUBLIC_WEB_URL ?? "https://app.useatlas.dev",
-        // Three-layer kill switch + per-user opt-out. Plugin's
+        // Answer-flow wiring (#2623 item 1). SaaS deploys both halves:
+        //   - public-dataset path for unlinked askers (curated allowlist
+        //     gates `executeSQL` + `explore` at the tool boundary; the
+        //     plugin-level post-filter is the second gate)
+        //   - linked-asker path via `createSlackProactiveUserResolver`
+        //     (#2624 validates the workspaceId; today every asker resolves
+        //     as `{ kind: "unlinked" }` because there's no Slack-user
+        //     link table in core yet — the unlinked branch is the safe
+        //     branch and routes through the public-dataset allowlist
+        //     gate, which is now tenant-scoped)
+        answerFlow: {
+          mode: "both",
+          // Adapter-side getPublicDataset (constrains the agent at tool
+          // construction). Listener-side getPublicDataset is the same
+          // helper; the call site below wires it as the post-filter.
+          executeQueryProactive: createProactiveAnswerAdapter(
+            proactiveAiRuntime,
+            {
+              getPublicDataset: (_asker, { workspaceId }) =>
+                getAllowlist(workspaceId),
+            },
+          ),
+          userResolver: createSlackProactiveUserResolver(),
+          // Plugin-level public-dataset allowlist (post-filter on the
+          // listener side, distinct from the adapter option above).
+          // Defense-in-depth: once #2624 closes the user-resolver gap
+          // and linked askers reach the agent, this post-filter still
+          // gates unlinked-asker results.
+          getPublicDataset: (input) => getAllowlist(input.workspaceId),
+        },
+        // Three-layer kill switch + per-user opt-out (#2295). Plugin's
         // `IsPausedFn` input shape is a structural subset of the host
         // helper's — pass the helper directly.
-        isPaused,
-        onPauseRequest: handlePluginPauseRequest,
+        killSwitch: {
+          enabled: true,
+          isPaused,
+          onPauseRequest: handlePluginPauseRequest,
+        },
+        // Feedback wiring (#2298) — collector intentionally omitted in
+        // SaaS today; adding it would require a non-trivial host helper
+        // (write to meter + optionally to evals dataset). Deferred to a
+        // follow-up.
+        feedback: { enabled: false },
+        linkUrl:
+          process.env.ATLAS_PUBLIC_WEB_URL ?? "https://app.useatlas.dev",
         // Per-event meter callback. `recordMeterEvent` swallows DB
         // failures internally (logs at error) so the Chat SDK event
         // loop never sees a rejection.
@@ -191,15 +207,6 @@ export default defineConfig({
         // `{ workspaceId }`; the host helper takes a bare `workspaceId`
         // (plus an optional `now` for tests), so adapt the shape here.
         getQuotaStatus: (input) => getWorkspaceQuotaStatus(input.workspaceId),
-        // Plugin-level public-dataset allowlist (post-filter on the
-        // listener side, distinct from the adapter option omitted at
-        // `executeQueryProactive` above). Defense-in-depth: once #2624
-        // closes the user-resolver gap and linked askers reach the
-        // agent, this post-filter still gates unlinked-asker results.
-        getPublicDataset: (input) => getAllowlist(input.workspaceId),
-        // feedbackCollector intentionally omitted — adding it would
-        // require a non-trivial host helper (write to meter +
-        // optionally to evals dataset). Deferred to a follow-up.
       },
     }),
   ],

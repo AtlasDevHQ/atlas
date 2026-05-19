@@ -3319,6 +3319,12 @@ describe("ProactiveConfig schema", () => {
           classifierMode: "regex-prefilter",
         }),
         getChannelConfigs: async () => [],
+        // #2623 item 1: discriminated-union shape with all three groups
+        // wired to the "off" branch keeps the test focused on the
+        // required-field set without changing what the schema accepts.
+        answerFlow: { mode: "off" },
+        killSwitch: { enabled: false },
+        feedback: { enabled: false },
       },
     });
 
@@ -3344,6 +3350,9 @@ describe("ProactiveConfig schema", () => {
           classifierMode: "regex-prefilter",
         }),
         getChannelConfigs: async () => [],
+        answerFlow: { mode: "off" },
+        killSwitch: { enabled: false },
+        feedback: { enabled: false },
       },
     });
 
@@ -3369,9 +3378,48 @@ describe("ProactiveConfig schema", () => {
           classifierMode: "regex-prefilter",
         }),
         getChannelConfigs: async () => [],
+        answerFlow: { mode: "off" },
+        killSwitch: { enabled: false },
+        feedback: { enabled: false },
       },
     });
 
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a half-wired answer-flow at the schema layer (#2623 item 1)", async () => {
+    // Compile-time enforcement is pinned by the @ts-expect-error block
+    // in `proactive/__tests__/listener.test.ts`. This test pins the
+    // runtime version: a `public-only` mode missing `executeQueryProactive`
+    // is rejected by the discriminated-union schema rather than silently
+    // falling back to the link-Atlas stub like the pre-1.5.2 optional
+    // shape did.
+    const { ChatConfigSchema } = await import("./config");
+    const result = ChatConfigSchema.safeParse({
+      adapters: {
+        slack: { botToken: "xoxb-test", signingSecret: "abcdef0123456789abcdef0123456789" },
+      },
+      executeQuery: () =>
+        Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
+      proactive: {
+        resolveWorkspaceId: async () => "ws-1",
+        isEnabled: () => true,
+        classify: async () => ({ isQuestion: false, confidence: 0 }),
+        getWorkspaceConfig: async () => ({
+          enabled: true,
+          sensitivity: "balanced",
+          classifierMode: "regex-prefilter",
+        }),
+        getChannelConfigs: async () => [],
+        // Half-wired: missing `executeQueryProactive`.
+        answerFlow: {
+          mode: "public-only",
+          getPublicDataset: async () => [],
+        },
+        killSwitch: { enabled: false },
+        feedback: { enabled: false },
+      },
+    });
     expect(result.success).toBe(false);
   });
 });

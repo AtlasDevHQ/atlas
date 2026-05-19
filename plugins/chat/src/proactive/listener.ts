@@ -28,14 +28,12 @@ import {
   detectPauseCommand,
   detectUnsubscribeDM,
   resolvePauseRequest,
-  type IsPausedFn,
 } from "./pause";
 import { decideInterjection } from "./policy";
 import {
   PendingAnswers,
   shouldAnswerOnReaction,
   type ProactiveAsker,
-  type ProactiveExecuteQuery,
   type ProactiveUserResolver,
 } from "./answerer";
 import {
@@ -45,13 +43,14 @@ import {
   assertWorkspaceId,
 } from "./identity";
 import type {
+  AnswerFlowConfig,
   ChannelProactiveConfig,
+  FeedbackConfig,
   GetChannelConfigsFn,
-  GetPublicDatasetFn,
   GetQuotaStatusFn,
   GetWorkspaceConfigFn,
+  KillSwitchConfig,
   LLMClassifierFn,
-  OnPauseRequestFn,
   ProactiveGateFn,
   ProactiveMeterEvent,
   ProactiveMeterEventFn,
@@ -79,9 +78,9 @@ import {
   PROACTIVE_FB_WRONG_DATA_INPUT_ID,
   PROACTIVE_FB_WRONG_DATA_MODAL_ID,
   RecentAnswers,
-  type FeedbackCollectorFn,
   type ProactiveFeedbackEvent,
 } from "./feedback";
+import type { IsPausedFn } from "./pause";
 
 // ---------------------------------------------------------------------------
 // Public config
@@ -117,112 +116,89 @@ export interface ProactiveListenerConfig {
    */
   getChannelConfigs: GetChannelConfigsFn;
 
-  // ---- Slice #2293 additions ----
+  // ---- Coupled feature groups (#2623 item 1) ------------------------------
+  //
+  // The three unions below replace 7 previously-optional fields whose
+  // legal combinations were documented but not type-enforced. Encoding
+  // them as discriminated unions makes the illegal half-wired states
+  // compile-time impossible. See the JSDoc on each type in `./types.ts`
+  // for the mode semantics.
 
   /**
-   * Resolves a chat-platform user to an Atlas user. Linked askers get
-   * the answer with their RLS; unlinked askers see the stub.
+   * Answer-flow wiring (#2623 item 1).
+   *
+   * Replaces the pre-1.5.2 optional `userResolver` + `getPublicDataset` +
+   * shared-`executeQueryProactive` triple. Set to `{ mode: "off" }` when
+   * the deploy doesn't run the agent on proactive events (reactions
+   * still land; tap-back posts the link-Atlas stub).
    */
-  userResolver?: ProactiveUserResolver;
+  answerFlow: AnswerFlowConfig;
+
   /**
-   * Runs the Atlas agent on behalf of a linked asker. Host wires this
-   * to `runAgent` / `runAgentEffect` with the asker's `AuthContext`.
+   * Kill-switch wiring (#2295 / #2623 item 1).
+   *
+   * Replaces the pre-1.5.2 optional `isPaused` + `onPauseRequest` pair.
+   * Set `{ enabled: false }` for tests / dev deploys without a pause
+   * registry.
    */
-  executeQueryProactive?: ProactiveExecuteQuery;
+  killSwitch: KillSwitchConfig;
+
+  /**
+   * Feedback wiring (#2298 / #2623 item 1).
+   *
+   * Replaces the pre-1.5.2 optional `feedbackCollector`. Set
+   * `{ enabled: false }` to silently drop button / modal / slash
+   * feedback. `slashCommandName` lived alongside this pair pre-1.5.2
+   * but was declared-and-unread by the listener — dropped entirely in
+   * favour of the bridge's top-level `slashCommandName`.
+   */
+  feedback: FeedbackConfig;
+
+  // ---- Informational + independent optionals -----------------------------
+
   /** URL the unlinked-asker prompt deep-links to. */
   linkUrl?: string;
   /** Platform name (`"slack"` etc.) used in `ProactiveAsker`. */
   platform?: string;
-
-  // ---- Slice #2296 additions ----
-
   /**
-   * Active workspace id. Stamped on every meter / audit event so rows
-   * pivot cleanly on the workspace, not the channel. Optional: when
    * Optional host-injected meter callback (#2296). Receives one event
    * per classify (always) and one per react (when the policy
    * interjects). Failures are swallowed inside the listener so a meter
    * outage never crashes the Chat SDK loop.
    */
   onMeterEvent?: ProactiveMeterEventFn;
-
-  // ---- Slice #2301 additions: monthly quota cap ----
-
   /**
-   * Optional host-injected quota reader. Consulted BEFORE classification
-   * so a workspace that has hit its monthly cap pays only a DB read
-   * (well-indexed) per message instead of an LLM call. When the cap is
-   * reached the listener emits a `classify` meter event with
-   * `metadata: { capReached: true, skipped: "monthly-quota" }` and
-   * skips both classification and reaction.
+   * Optional host-injected quota reader (#2301). Consulted BEFORE
+   * classification so a workspace that has hit its monthly cap pays
+   * only a DB read (well-indexed) per message instead of an LLM call.
+   * When the cap is reached the listener emits a `classify` meter
+   * event with `metadata: { capReached: true, skipped: "monthly-quota" }`
+   * and skips both classification and reaction.
    *
    * Failures are swallowed (no-op + warn) so a quota outage never
    * silences Atlas — the agent fails open just like the pause registry.
    */
   getQuotaStatus?: GetQuotaStatusFn;
-
-  // ---- Slice #2298 additions: feedback collection ----
-
-  /**
-   * Persistence callback for `[Helpful] [Not helpful] [Wrong data]`
-   * clicks, the wrong-data modal, and `/atlas feedback <text>`. The
-   * host typically writes to the meter / evals dataset.
-   */
-  feedbackCollector?: FeedbackCollectorFn;
-  /**
-   * Configured slash-command name (e.g. `/atlas`). Used to register a
-   * `feedback`-subcommand handler. Defaults to `/atlas` to match the
-   * bridge default; pass the same value you pass to `slashCommandName`.
-   */
-  slashCommandName?: string;
-
-  // ---- Slice #2297 additions: public dataset for unlinked askers ----
-
-  /**
-   * Host-injected fetch for the curated allowlist of semantic entities
-   * an unlinked asker may ask about. When omitted the listener keeps
-   * the #2293 unlinked-asker stub (link-Atlas prompt only).
-   */
-  getPublicDataset?: GetPublicDatasetFn;
   /**
    * Override the default refusal copy posted when an unlinked asker's
-   * question touches an entity that isn't on the public dataset.
-   * Defaults to `DEFAULT_PROACTIVE_REFUSAL_COPY`.
+   * question touches an entity that isn't on the public dataset
+   * (consulted only when `answerFlow.mode` includes the public-dataset
+   * path). Defaults to `DEFAULT_PROACTIVE_REFUSAL_COPY`.
    */
   refusalCopy?: string;
   /**
    * Opt-out for hosts whose `executeQueryProactive` cannot report
-   * `entitiesReferenced` on the result. When `false` (the safe
-   * default), a result without `entitiesReferenced` is treated as
-   * "unknown entities" and refused (`public_refused` emitted with
-   * `reason: "entitiesReferenced-missing"`). Setting `true` lets
-   * such a result through — only enable when the host has another
-   * compensating control (e.g. RLS, a wrapper that enforces the
-   * allowlist at SQL time). Logs at warn on startup so the bypass
+   * `entitiesReferenced` on the result (consulted only when
+   * `answerFlow.mode` includes the public-dataset path). When `false`
+   * (the safe default), a result without `entitiesReferenced` is
+   * treated as "unknown entities" and refused (`public_refused`
+   * emitted with `reason: "entitiesReferenced-missing"`). Setting
+   * `true` lets such a result through — only enable when the host has
+   * another compensating control (e.g. RLS, a wrapper that enforces
+   * the allowlist at SQL time). Logs at warn on startup so the bypass
    * is visible in boot logs.
    */
   allowAnswerWhenEntitiesUnknown?: boolean;
-
-  // ---- Slice #2295 additions (kill switch + per-user opt-out) ----
-  //
-  // workspaceId is resolved per event via `resolveWorkspaceId` (#2620)
-  // and threaded into these callbacks at the call site. Pre-#2620 this
-  // interface carried a static `workspaceId?: string`; multi-tenant
-  // SaaS (one Chat instance, N tenants) made that incorrect.
-
-  /**
-   * Pause-registry read API. Consulted BEFORE classification so the
-   * kill switch pays only a DB read, never an LLM call. When omitted
-   * no pause check happens — the legacy env-var allowlist path stays
-   * available for tests + dev.
-   */
-  isPaused?: IsPausedFn;
-  /**
-   * Pause-registry write API. Called when the listener detects an
-   * `@atlas pause` channel command or a DM `unsubscribe`. The plugin
-   * builds the request shape and hands it off to the host.
-   */
-  onPauseRequest?: OnPauseRequestFn;
 }
 
 /**
@@ -353,8 +329,9 @@ export async function registerProactiveListener(
 
   log.info(
     {
-      killSwitch: Boolean(config.isPaused),
-      unsubscribe: Boolean(config.onPauseRequest),
+      killSwitch: config.killSwitch.enabled,
+      answerFlow: config.answerFlow.mode,
+      feedback: config.feedback.enabled,
     },
     "Proactive listener registered",
   );
@@ -561,9 +538,9 @@ export async function registerProactiveListener(
       // DM, so it's an unconditional handler for the DM path. The rest
       // of the function is channel-only.
       if (isDM) {
-        if (config.onPauseRequest) {
+        if (config.killSwitch.enabled) {
           try {
-            await config.onPauseRequest(
+            await config.killSwitch.onPauseRequest(
               resolvePauseRequest("dm-unsubscribe", {
                 workspaceId,
                 channelId,
@@ -583,19 +560,16 @@ export async function registerProactiveListener(
         } else {
           log.debug(
             { workspaceId, userId },
-            "Proactive: DM unsubscribe received but no onPauseRequest configured — discarding",
+            "Proactive: DM unsubscribe received but kill switch disabled — discarding",
           );
         }
         return;
       }
 
       // In-channel `@atlas pause` → 24h channel-scoped pause.
-      if (
-        config.onPauseRequest &&
-        detectPauseCommand(text)
-      ) {
+      if (config.killSwitch.enabled && detectPauseCommand(text)) {
         try {
-          await config.onPauseRequest(
+          await config.killSwitch.onPauseRequest(
             resolvePauseRequest("channel-pause-command", {
               workspaceId,
               channelId,
@@ -628,10 +602,10 @@ export async function registerProactiveListener(
       // failure, so the listener's posture matches the registry's
       // regardless of host wiring.
       // ---------------------------------------------------------------
-      if (config.isPaused) {
+      if (config.killSwitch.enabled) {
         let pause: Awaited<ReturnType<IsPausedFn>>;
         try {
-          pause = await config.isPaused({
+          pause = await config.killSwitch.isPaused({
             workspaceId,
             channelId,
             userId,
@@ -1187,7 +1161,7 @@ export async function handleProactiveFeedbackSlash(args: {
   recentAnswers: RecentAnswers;
 }): Promise<boolean> {
   const { text, channelId, workspaceId, asker, config, log, recentAnswers } = args;
-  if (!config.feedbackCollector) return false;
+  if (!config.feedback.enabled) return false;
   const parsed = parseFeedbackSlashArgs(text);
   if (parsed.kind !== "feedback") return false;
 
@@ -1241,8 +1215,18 @@ async function runAnswerFlow(
   log: PluginLogger,
   recentAnswers: RecentAnswers,
 ): Promise<void> {
-  const resolved: ResolveOutcome = config.userResolver
-    ? await safeResolveUser(config.userResolver, asker, workspaceId, log)
+  const flow = config.answerFlow;
+
+  // `mode === "off"` and `mode === "public-only"` carry no `userResolver`,
+  // so the asker is treated as unlinked without ever calling the resolver.
+  // `linked-only` / `both` carry one — `safeResolveUser` produces the
+  // three-state `ResolveOutcome` ("linked" / "unlinked" / "errored").
+  const resolverFn =
+    flow.mode === "linked-only" || flow.mode === "both"
+      ? flow.userResolver
+      : undefined;
+  const resolved: ResolveOutcome = resolverFn
+    ? await safeResolveUser(resolverFn, asker, workspaceId, log)
     : { kind: "unlinked" };
 
   // Resolver THREW → post the apology copy and return. Critical
@@ -1282,20 +1266,21 @@ async function runAnswerFlow(
   // Slice #2297 — unlinked-asker public dataset gate
   // -----------------------------------------------------------------
   //
-  // Three branches, conservative defaults:
+  // Discriminator (#2623 item 1) makes the three branches explicit:
   //
-  //   - Unlinked asker, no `getPublicDataset` wired → fall through to
-  //     the #2293 link-Atlas stub. Self-hosted free deployments stay
-  //     on this path because the public dataset feature is enterprise-
-  //     gated at the route layer.
+  //   - `answerFlow.mode === "off"` or `"linked-only"` → no
+  //     `getPublicDataset` available → post the #2293 link-Atlas stub.
+  //     Self-hosted free deployments default here (the public dataset
+  //     feature is enterprise-gated at the route layer).
   //
-  //   - Unlinked asker, allowlist is empty → refuse with the configured
-  //     copy and emit `public_refused`. We intentionally refuse rather
-  //     than falling back to the link prompt; the admin has signalled
-  //     "no public data" by not curating anything yet, and the refusal
-  //     event is what drives the discoverability rollup.
+  //   - `"public-only"` / `"both"` with an empty allowlist → refuse
+  //     with the configured copy and emit `public_refused`. We
+  //     intentionally refuse rather than falling back to the link
+  //     prompt; the admin has signalled "no public data" by not
+  //     curating anything yet, and the refusal event drives the
+  //     discoverability rollup.
   //
-  //   - Unlinked asker, allowlist non-empty → call
+  //   - `"public-only"` / `"both"` with a non-empty allowlist → call
   //     `executeQueryProactive` with `atlasUserId: null` (explicit
   //     "no Atlas identity" — the type forces every host to handle
   //     the public-dataset branch deliberately). The host implementation
@@ -1305,7 +1290,7 @@ async function runAnswerFlow(
   //     through — belt-and-braces against an agent that ignores the
   //     constraint.
   if (resolved.kind === "unlinked") {
-    if (!config.getPublicDataset || !config.executeQueryProactive) {
+    if (flow.mode !== "public-only" && flow.mode !== "both") {
       const prompt = buildUnlinkedAskerPrompt(config.linkUrl);
       await thread.post(prompt);
       log.info(
@@ -1317,9 +1302,7 @@ async function runAnswerFlow(
 
     let allowlist: ReadonlyArray<ProactivePublicDatasetEntry> = [];
     try {
-      allowlist = await config.getPublicDataset({
-        workspaceId,
-      });
+      allowlist = await flow.getPublicDataset({ workspaceId });
     } catch (err) {
       // Fail closed — a registry hiccup must NOT widen the refusal
       // surface. Treat as empty allowlist; the user sees the refusal
@@ -1350,7 +1333,7 @@ async function runAnswerFlow(
 
     let publicResult: ProactiveQueryResultLike;
     try {
-      publicResult = await config.executeQueryProactive(text, {
+      publicResult = await flow.executeQueryProactive(text, {
         threadId,
         asker,
         // Explicit null: host implementations check for null to skip
@@ -1402,19 +1385,21 @@ async function runAnswerFlow(
     return;
   }
 
-  if (!config.executeQueryProactive) {
-    log.warn(
-      { threadId },
-      "Proactive answer: linked asker resolved but executeQueryProactive not wired — falling back to unlinked prompt",
-    );
-    const prompt = buildUnlinkedAskerPrompt(config.linkUrl);
-    await thread.post(prompt);
+  // Linked asker branch. `resolved.kind === "linked"` reaches here only
+  // when `flow.mode === "linked-only" || flow.mode === "both"` (the
+  // only modes that carry a `userResolver`). The discriminator narrows
+  // `executeQueryProactive` to non-optional, so no `!config.execute…`
+  // fallback is needed — the listener cannot resolve linked without a
+  // wired answer call.
+  if (flow.mode !== "linked-only" && flow.mode !== "both") {
+    // Unreachable: `safeResolveUser` only runs when the mode includes a
+    // resolver. Kept for the structural narrow.
     return;
   }
 
   let result: ProactiveQueryResultLike;
   try {
-    result = await config.executeQueryProactive(text, {
+    result = await flow.executeQueryProactive(text, {
       threadId,
       asker,
       atlasUserId: resolved.atlasUserId,
@@ -1636,7 +1621,7 @@ async function deliverFeedback(
   log: PluginLogger,
   thread: AnyThread | null,
 ): Promise<void> {
-  if (!config.feedbackCollector) {
+  if (!config.feedback.enabled) {
     log.debug(
       { outcome: event.outcome, source: event.source },
       "Proactive feedback: no collector configured — discarding event",
@@ -1644,7 +1629,7 @@ async function deliverFeedback(
     return;
   }
   try {
-    await config.feedbackCollector(event);
+    await config.feedback.collector(event);
   } catch (err) {
     log.warn(
       {

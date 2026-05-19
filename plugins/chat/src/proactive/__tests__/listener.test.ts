@@ -28,13 +28,19 @@ import {
   type FeedbackCollectorFn,
 } from "../feedback";
 import type {
+  AnswerFlowConfig,
   ChannelProactiveConfig,
+  FeedbackConfig,
+  GetPublicDatasetFn,
+  KillSwitchConfig,
   LLMClassifierFn,
+  OnPauseRequestFn,
   ProactiveMeterEvent,
   ResolverEventLite,
   ResolveWorkspaceIdFn,
   WorkspaceProactiveConfig,
 } from "../types";
+import type { IsPausedFn } from "../pause";
 import type {
   ProactiveExecuteQuery,
   ProactiveUserResolver,
@@ -234,6 +240,72 @@ const allowChannels = (...ids: string[]) =>
   ).getChannelConfigs;
 
 // ---------------------------------------------------------------------------
+// #2623 item 1 — discriminated-union config defaults
+// ---------------------------------------------------------------------------
+//
+// `ProactiveListenerConfig` now requires three coupled-feature-group
+// unions: `answerFlow`, `killSwitch`, `feedback`. The defaults below
+// keep each at the "off" branch so tests stay narrow — every test
+// spreads `...offUnions` and overrides only the union it exercises.
+
+const OFF_ANSWER_FLOW: AnswerFlowConfig = { mode: "off" };
+const OFF_KILL_SWITCH: KillSwitchConfig = { enabled: false };
+const OFF_FEEDBACK: FeedbackConfig = { enabled: false };
+
+const offUnions = {
+  answerFlow: OFF_ANSWER_FLOW,
+  killSwitch: OFF_KILL_SWITCH,
+  feedback: OFF_FEEDBACK,
+} as const;
+
+/** Build a `linked-only` answer flow from the standard linked resolver. */
+function linkedOnlyFlow(
+  executeQueryProactive: ProactiveExecuteQuery,
+  userResolver: ProactiveUserResolver = linkedResolver,
+): AnswerFlowConfig {
+  return { mode: "linked-only", userResolver, executeQueryProactive };
+}
+
+/** Build a `public-only` answer flow for unlinked-asker tests. */
+function publicOnlyFlow(
+  executeQueryProactive: ProactiveExecuteQuery,
+  getPublicDataset: GetPublicDatasetFn,
+): AnswerFlowConfig {
+  return { mode: "public-only", executeQueryProactive, getPublicDataset };
+}
+
+/**
+ * Build a `both` answer flow — the SaaS-default mode where the listener
+ * resolves linked askers AND post-filters unlinked-asker answers
+ * against the public allowlist.
+ */
+function bothFlow(args: {
+  executeQueryProactive: ProactiveExecuteQuery;
+  userResolver?: ProactiveUserResolver;
+  getPublicDataset: GetPublicDatasetFn;
+}): AnswerFlowConfig {
+  return {
+    mode: "both",
+    executeQueryProactive: args.executeQueryProactive,
+    userResolver: args.userResolver ?? linkedResolver,
+    getPublicDataset: args.getPublicDataset,
+  };
+}
+
+/** Build an enabled kill-switch union. */
+function enabledKillSwitch(
+  isPaused: IsPausedFn,
+  onPauseRequest: OnPauseRequestFn,
+): KillSwitchConfig {
+  return { enabled: true, isPaused, onPauseRequest };
+}
+
+/** Build an enabled feedback union. */
+function enabledFeedback(collector: FeedbackCollectorFn): FeedbackConfig {
+  return { enabled: true, collector };
+}
+
+// ---------------------------------------------------------------------------
 // Listener registration
 // ---------------------------------------------------------------------------
 
@@ -246,6 +318,7 @@ describe("registerProactiveListener — gating", () => {
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
+      ...offUnions,
     });
     expect(isRegistered()).toBe(false);
     expect(isDMRegistered()).toBe(false);
@@ -261,6 +334,7 @@ describe("registerProactiveListener — gating", () => {
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
+      ...offUnions,
     });
     expect(isRegistered()).toBe(true);
     expect(isDMRegistered()).toBe(true);
@@ -287,6 +361,7 @@ describe("registerProactiveListener — channel-message handler", () => {
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
+      ...offUnions,
     });
     const thread = makeThread("C-allowed");
     await invokeMessage(thread, makeMessage());
@@ -303,6 +378,7 @@ describe("registerProactiveListener — channel-message handler", () => {
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
+      ...offUnions,
     });
     const thread = makeThread("C-other");
     await invokeMessage(thread, makeMessage());
@@ -321,6 +397,7 @@ describe("registerProactiveListener — channel-message handler", () => {
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: makeWorkspaceFetchers(baseWorkspace, [{ channelId: "C-opted-out", allow: false }]).getChannelConfigs,
+      ...offUnions,
     });
     const thread = makeThread("C-opted-out");
     await invokeMessage(thread, makeMessage());
@@ -335,6 +412,7 @@ describe("registerProactiveListener — channel-message handler", () => {
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
+      ...offUnions,
     });
     const thread = makeThread("C-allowed");
     await invokeMessage(thread, makeMessage({ id: "M1" }));
@@ -350,6 +428,7 @@ describe("registerProactiveListener — channel-message handler", () => {
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
+      ...offUnions,
     });
     const thread = makeThread("C-allowed");
     await invokeMessage(thread, makeMessage({ isBot: true }));
@@ -364,6 +443,7 @@ describe("registerProactiveListener — channel-message handler", () => {
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
+      ...offUnions,
     });
     const thread = makeThread("C-allowed");
     await invokeMessage(thread, makeMessage());
@@ -383,14 +463,24 @@ describe("registerProactiveListener — reaction-back handler", () => {
   } = {}) {
     const { chat, invokeMessage, invokeReaction, invokeAction } = makeChat();
     const log = makeLogger();
+    // #2623 item 1 reshape: assemble the answer-flow union from opts.
+    // `mode: "off"` when the test omits the wiring (e.g. the
+    // "falls back to unlinked prompt" case below); `linked-only` when
+    // a userResolver+executeQueryProactive pair is wired. The legacy
+    // "userResolver wired but no executeQueryProactive" combination
+    // is no longer representable — the type forces both or neither.
+    const answerFlow: AnswerFlowConfig =
+      opts.userResolver && opts.executeQueryProactive
+        ? linkedOnlyFlow(opts.executeQueryProactive, opts.userResolver)
+        : OFF_ANSWER_FLOW;
     await registerProactiveListener(chat as any, log, {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
-      userResolver: opts.userResolver,
-      executeQueryProactive: opts.executeQueryProactive,
+      ...offUnions,
+      answerFlow,
       linkUrl: opts.linkUrl,
     });
     return { chat, log, invokeMessage, invokeReaction, invokeAction };
@@ -495,10 +585,14 @@ describe("registerProactiveListener — reaction-back handler", () => {
     expect(thread.post).not.toHaveBeenCalled();
   });
 
-  it("falls back to unlinked prompt when executeQueryProactive is not configured", async () => {
-    const { invokeMessage, invokeReaction, log } = await setup({
-      userResolver: linkedResolver,
-      // executeQueryProactive deliberately omitted
+  it("posts the unlinked-asker stub when answerFlow.mode is 'off'", async () => {
+    // #2623 item 1: the pre-1.5.2 half-wired state ("userResolver wired
+    // but no executeQueryProactive") is now compile-time impossible —
+    // the discriminated union forces both or neither. The legitimate
+    // shape that exercises the same runtime behaviour is `mode: "off"`,
+    // which short-circuits the resolver and posts the link-Atlas stub.
+    const { invokeMessage, invokeReaction } = await setup({
+      // Both omitted → setup() builds `answerFlow: { mode: "off" }`.
     });
 
     const thread = makeThread("C-allowed");
@@ -516,7 +610,6 @@ describe("registerProactiveListener — reaction-back handler", () => {
     });
 
     expect(thread.post).toHaveBeenCalledTimes(1);
-    expect(log.warn).toHaveBeenCalled();
   });
 });
 
@@ -534,8 +627,8 @@ describe("registerProactiveListener — button handlers", () => {
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
-      userResolver: linkedResolver,
-      executeQueryProactive,
+      ...offUnions,
+      answerFlow: linkedOnlyFlow(executeQueryProactive),
     });
     const thread = makeThread("C-allowed");
     await invokeMessage(thread, makeMessage({ id: "M1" }));
@@ -562,8 +655,8 @@ describe("registerProactiveListener — button handlers", () => {
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
-      userResolver: linkedResolver,
-      executeQueryProactive,
+      ...offUnions,
+      answerFlow: linkedOnlyFlow(executeQueryProactive),
     });
     const thread = makeThread("C-allowed");
     await invokeMessage(thread, makeMessage({ id: "M1" }));
@@ -615,9 +708,9 @@ describe("registerProactiveListener — feedback buttons", () => {
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
-      userResolver: linkedResolver,
-      executeQueryProactive: echoExecute,
-      feedbackCollector: wrapped,
+      ...offUnions,
+      answerFlow: linkedOnlyFlow(echoExecute),
+      feedback: enabledFeedback(wrapped),
     });
     return { chat, log, invokeAction, invokeModalSubmit, calls, handle };
   }
@@ -713,9 +806,9 @@ describe("registerProactiveListener — feedback buttons", () => {
         resolveWorkspaceId,
         getWorkspaceConfig: defaultGetWorkspace,
         getChannelConfigs: allowChannels("C-allowed"),
-        userResolver: linkedResolver,
-        executeQueryProactive: echoExecute,
-        feedbackCollector: async () => {},
+        ...offUnions,
+        answerFlow: linkedOnlyFlow(echoExecute),
+        feedback: enabledFeedback(async () => {}),
       },
     );
     const ev = {
@@ -766,7 +859,8 @@ describe("registerProactiveListener — feedback buttons", () => {
         resolveWorkspaceId,
         getWorkspaceConfig: defaultGetWorkspace,
         getChannelConfigs: allowChannels("C-allowed"),
-        feedbackCollector: async () => {},
+        ...offUnions,
+        feedback: enabledFeedback(async () => {}),
       },
     );
     await invokeModalSubmit(PROACTIVE_FB_WRONG_DATA_MODAL_ID, {
@@ -796,6 +890,7 @@ describe("registerProactiveListener — feedback buttons", () => {
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
+      ...offUnions,
       // feedbackCollector deliberately omitted
     });
     // Should not throw even though no collector is wired
@@ -831,9 +926,10 @@ describe("handleProactiveFeedbackSlash", () => {
         resolveWorkspaceId: defaultResolver,
         getWorkspaceConfig: defaultGetWorkspace,
         getChannelConfigs: defaultGetChannels,
-        feedbackCollector: async (ev) => {
+        ...offUnions,
+        feedback: enabledFeedback(async (ev) => {
           calls.push(ev);
-        },
+        }),
       },
       log: makeLogger(),
       recentAnswers: new RecentAnswers(),
@@ -862,9 +958,10 @@ describe("handleProactiveFeedbackSlash", () => {
         resolveWorkspaceId: defaultResolver,
         getWorkspaceConfig: defaultGetWorkspace,
         getChannelConfigs: defaultGetChannels,
-        feedbackCollector: async (ev) => {
+        ...offUnions,
+        feedback: enabledFeedback(async (ev) => {
           calls.push(ev);
-        },
+        }),
       },
       log: makeLogger(),
       recentAnswers: recent,
@@ -890,6 +987,7 @@ describe("handleProactiveFeedbackSlash", () => {
         resolveWorkspaceId: defaultResolver,
         getWorkspaceConfig: defaultGetWorkspace,
         getChannelConfigs: defaultGetChannels,
+        ...offUnions,
         // feedbackCollector deliberately omitted
       },
       log: makeLogger(),
@@ -914,8 +1012,8 @@ describe("registerProactiveListener — kill switch", () => {
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
-      isPaused,
-      onPauseRequest: mock(async () => {}),
+      ...offUnions,
+      killSwitch: enabledKillSwitch(isPaused, mock(async () => {})),
     });
     const thread = makeThread("C-allowed");
     await invoke(thread, makeMessage());
@@ -933,8 +1031,8 @@ describe("registerProactiveListener — kill switch", () => {
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
-      isPaused,
-      onPauseRequest: mock(async () => {}),
+      ...offUnions,
+      killSwitch: enabledKillSwitch(isPaused, mock(async () => {})),
     });
     const thread = makeThread("C-allowed");
     await invoke(thread, makeMessage());
@@ -962,8 +1060,8 @@ describe("registerProactiveListener — kill switch", () => {
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
-      isPaused,
-      onPauseRequest: mock(async () => {}),
+      ...offUnions,
+      killSwitch: enabledKillSwitch(isPaused, mock(async () => {})),
       onMeterEvent,
     });
     const thread = makeThread("C-allowed");
@@ -990,8 +1088,8 @@ describe("registerProactiveListener — kill switch", () => {
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
-      isPaused: mock(async () => ({ paused: false })),
-      onPauseRequest,
+      ...offUnions,
+      killSwitch: enabledKillSwitch(mock(async () => ({ paused: false })), onPauseRequest),
     });
     const thread = makeThread("C-allowed");
     await invoke(thread, makeMessage({ text: "@atlas pause" }));
@@ -1015,8 +1113,8 @@ describe("registerProactiveListener — kill switch", () => {
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
-      isPaused: mock(async () => ({ paused: false })),
-      onPauseRequest,
+      ...offUnions,
+      killSwitch: enabledKillSwitch(mock(async () => ({ paused: false })), onPauseRequest),
     });
     const thread = makeThread("D-direct", { isDM: true });
     await invokeDM(thread, makeMessage({ text: "unsubscribe" }));
@@ -1049,8 +1147,8 @@ describe("registerProactiveListener — kill switch", () => {
       resolveWorkspaceId,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
-      isPaused: mock(async () => ({ paused: false })),
-      onPauseRequest,
+      ...offUnions,
+      killSwitch: enabledKillSwitch(mock(async () => ({ paused: false })), onPauseRequest),
     });
     const thread = makeThread("D-direct", { isDM: true });
     // Reset after registration — the listener probes `isEnabled("")`
@@ -1073,8 +1171,8 @@ describe("registerProactiveListener — kill switch", () => {
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
-      isPaused: mock(async () => ({ paused: false })),
-      onPauseRequest,
+      ...offUnions,
+      killSwitch: enabledKillSwitch(mock(async () => ({ paused: false })), onPauseRequest),
     });
     const thread = makeThread("C-allowed");
     await invoke(thread, makeMessage({ text: "unsubscribe" }));
@@ -1093,8 +1191,8 @@ describe("registerProactiveListener — kill switch", () => {
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
-      isPaused: mock(async () => ({ paused: false })),
-      onPauseRequest,
+      ...offUnions,
+      killSwitch: enabledKillSwitch(mock(async () => ({ paused: false })), onPauseRequest),
     });
     const thread = makeThread("C-allowed");
     await invoke(thread, makeMessage({ text: "@atlas pause" }));
@@ -1116,7 +1214,8 @@ describe("registerProactiveListener — kill switch", () => {
       resolveWorkspaceId: makeResolver(null), // unknown tenant
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
-      isPaused,
+      ...offUnions,
+      killSwitch: enabledKillSwitch(isPaused, mock(async () => {})),
     });
     const thread = makeThread("C-allowed");
     await invoke(thread, makeMessage());
@@ -1157,6 +1256,7 @@ describe("registerProactiveListener — monthly quota cap (#2301)", () => {
         resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
         getChannelConfigs: allowChannels("C-allowed"),
+        ...offUnions,
           getQuotaStatus,
         onMeterEvent,
       },
@@ -1208,6 +1308,7 @@ describe("registerProactiveListener — monthly quota cap (#2301)", () => {
         resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
         getChannelConfigs: allowChannels("C-allowed"),
+        ...offUnions,
           getQuotaStatus,
         onMeterEvent,
       },
@@ -1248,6 +1349,7 @@ describe("registerProactiveListener — monthly quota cap (#2301)", () => {
         resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
         getChannelConfigs: allowChannels("C-allowed"),
+        ...offUnions,
           getQuotaStatus,
         onMeterEvent,
       },
@@ -1290,6 +1392,7 @@ describe("registerProactiveListener — monthly quota cap (#2301)", () => {
         resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
         getChannelConfigs: allowChannels("C-allowed"),
+        ...offUnions,
           getQuotaStatus,
       },
     );
@@ -1320,6 +1423,7 @@ describe("registerProactiveListener — monthly quota cap (#2301)", () => {
         resolveWorkspaceId: makeResolver(null),
         getWorkspaceConfig: defaultGetWorkspace,
           getChannelConfigs: allowChannels("C-allowed"),
+          ...offUnions,
         getQuotaStatus,
       },
     );
@@ -1339,24 +1443,41 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
   async function setup(opts: {
     userResolver?: ProactiveUserResolver;
     executeQueryProactive?: ProactiveExecuteQuery;
-    getPublicDataset?: (input: { workspaceId: string }) => Promise<
-      ReadonlyArray<{ entityName: string; denyMetrics: string[] }>
-    >;
+    getPublicDataset?: GetPublicDatasetFn;
     refusalCopy?: string;
     allowAnswerWhenEntitiesUnknown?: boolean;
     onMeterEvent?: (event: unknown) => Promise<void> | void;
   } = {}) {
     const { chat, invokeMessage, invokeReaction } = makeChat();
     const log = makeLogger();
+    // #2623 item 1 reshape: collapse the four flat optional fields into
+    // an `answerFlow` union. The four constructions correspond to the
+    // four legal modes; the half-wired states the old shape allowed
+    // (e.g. userResolver without executeQueryProactive) are now
+    // compile-impossible.
+    let answerFlow: AnswerFlowConfig = OFF_ANSWER_FLOW;
+    if (opts.executeQueryProactive) {
+      const exec = opts.executeQueryProactive;
+      if (opts.userResolver && opts.getPublicDataset) {
+        answerFlow = bothFlow({
+          executeQueryProactive: exec,
+          userResolver: opts.userResolver,
+          getPublicDataset: opts.getPublicDataset,
+        });
+      } else if (opts.userResolver) {
+        answerFlow = linkedOnlyFlow(exec, opts.userResolver);
+      } else if (opts.getPublicDataset) {
+        answerFlow = publicOnlyFlow(exec, opts.getPublicDataset);
+      }
+    }
     await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], log, {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: allowChannels("C-allowed"),
-      userResolver: opts.userResolver,
-      executeQueryProactive: opts.executeQueryProactive,
-      getPublicDataset: opts.getPublicDataset,
+      ...offUnions,
+      answerFlow,
       refusalCopy: opts.refusalCopy,
       allowAnswerWhenEntitiesUnknown: opts.allowAnswerWhenEntitiesUnknown,
       onMeterEvent: opts.onMeterEvent as Parameters<typeof registerProactiveListener>[2]["onMeterEvent"],
@@ -1774,6 +1895,7 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
         resolveWorkspaceId: makeResolver(null),
         getWorkspaceConfig: defaultGetWorkspace,
           getChannelConfigs: allowChannels("C-allowed"),
+          ...offUnions,
         onMeterEvent,
       },
     );
@@ -1803,6 +1925,7 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
         },
         getWorkspaceConfig: defaultGetWorkspace,
           getChannelConfigs: allowChannels("C-allowed"),
+          ...offUnions,
         onMeterEvent,
       },
     );
@@ -1827,6 +1950,7 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
         resolveWorkspaceId: defaultResolver,
         getWorkspaceConfig: async () => null, // no config row
           getChannelConfigs: allowChannels("C-allowed"),
+          ...offUnions,
         onMeterEvent,
       },
     );
@@ -1871,6 +1995,7 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
         resolveWorkspaceId,
         getWorkspaceConfig: defaultGetWorkspace,
         getChannelConfigs: allowChannels("C-tenant-A", "C-tenant-B"),
+        ...offUnions,
         onMeterEvent,
       },
     );
@@ -1920,6 +2045,7 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
         resolveWorkspaceId,
         getWorkspaceConfig: defaultGetWorkspace,
         getChannelConfigs: allowChannels("C-general-A", "C-general-B"),
+        ...offUnions,
       },
     );
 
@@ -1960,8 +2086,8 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
         resolveWorkspaceId,
         getWorkspaceConfig: defaultGetWorkspace,
         getChannelConfigs: allowChannels("C-tenant-A", "C-tenant-B"),
-        isPaused: mock(async () => ({ paused: false })),
-        onPauseRequest,
+        ...offUnions,
+        killSwitch: enabledKillSwitch(mock(async () => ({ paused: false })), onPauseRequest),
       },
     );
 
@@ -2014,8 +2140,8 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
         resolveWorkspaceId,
         getWorkspaceConfig: defaultGetWorkspace,
         getChannelConfigs: allowChannels("C-tenant-A", "C-tenant-B"),
-        userResolver: linkedResolver,
-        executeQueryProactive,
+        ...offUnions,
+        answerFlow: linkedOnlyFlow(executeQueryProactive),
       },
     );
 
@@ -2106,6 +2232,7 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
         resolveWorkspaceId,
         getWorkspaceConfig,
         getChannelConfigs: allowChannels("C-tenant-A", "C-tenant-B"),
+        ...offUnions,
       },
     );
 
@@ -2164,8 +2291,8 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
         resolveWorkspaceId,
         getWorkspaceConfig: defaultGetWorkspace,
         getChannelConfigs: allowChannels("C-tenant-A", "C-tenant-B"),
-        userResolver,
-        executeQueryProactive,
+        ...offUnions,
+        answerFlow: linkedOnlyFlow(executeQueryProactive, userResolver),
       },
     );
 
@@ -2251,8 +2378,11 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
         resolveWorkspaceId: makeResolver("ws-1"),
         getWorkspaceConfig: defaultGetWorkspace,
         getChannelConfigs: allowChannels("C-allowed"),
-        userResolver: legacyResolver as unknown as ProactiveUserResolver,
-        executeQueryProactive: echoExecute,
+        ...offUnions,
+        answerFlow: linkedOnlyFlow(
+          echoExecute,
+          legacyResolver as unknown as ProactiveUserResolver,
+        ),
       },
     );
 
@@ -2310,8 +2440,8 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
         resolveWorkspaceId: makeResolver("ws-troubled"),
         getWorkspaceConfig: defaultGetWorkspace,
         getChannelConfigs: allowChannels("C-allowed"),
-        userResolver: throwingResolver,
-        executeQueryProactive: echoExecute,
+        ...offUnions,
+        answerFlow: linkedOnlyFlow(echoExecute, throwingResolver),
       },
     );
 
@@ -2374,6 +2504,7 @@ describe("registerProactiveListener — #2641 brand-promotion boundaries", () =>
         resolveWorkspaceId: makeResolver(""),
         getWorkspaceConfig: defaultGetWorkspace,
         getChannelConfigs: defaultGetChannels,
+        ...offUnions,
         onMeterEvent,
       },
     );
@@ -2415,8 +2546,8 @@ describe("registerProactiveListener — #2641 brand-promotion boundaries", () =>
         resolveWorkspaceId: makeResolver("ws-1"),
         getWorkspaceConfig: defaultGetWorkspace,
         getChannelConfigs: allowChannels("C-orphan"),
-        userResolver: linkedResolver,
-        executeQueryProactive: echoExecute,
+        ...offUnions,
+        answerFlow: linkedOnlyFlow(echoExecute),
       },
     );
     const thread = makeThread("C-orphan");
@@ -2470,13 +2601,16 @@ describe("registerProactiveListener — #2641 brand-promotion boundaries", () =>
         resolveWorkspaceId: makeResolver("ws-rls"),
         getWorkspaceConfig: defaultGetWorkspace,
         getChannelConfigs: allowChannels("C-rls"),
+        ...offUnions,
         // Malformed linked result: kind is correct but atlasUserId is
         // empty. The `as ...` cast mirrors the plain-JS / TS-cast bypass.
-        userResolver: (async () => ({
-          kind: "linked",
-          atlasUserId: "" as never,
-        })) as unknown as ProactiveUserResolver,
-        executeQueryProactive,
+        answerFlow: linkedOnlyFlow(
+          executeQueryProactive,
+          (async () => ({
+            kind: "linked",
+            atlasUserId: "" as never,
+          })) as unknown as ProactiveUserResolver,
+        ),
       },
     );
     const thread = makeThread("C-rls");
@@ -2546,6 +2680,7 @@ describe("registerProactiveListener — per-event getWorkspaceConfig cache (#262
         resolveWorkspaceId: defaultResolver,
         getWorkspaceConfig,
         getChannelConfigs,
+        ...offUnions,
       },
     );
     await invokeMessage(makeThread("C-allowed"), makeMessage());
@@ -2578,8 +2713,8 @@ describe("registerProactiveListener — per-event getWorkspaceConfig cache (#262
         resolveWorkspaceId: defaultResolver,
         getWorkspaceConfig,
         getChannelConfigs,
-        userResolver: linkedResolver,
-        executeQueryProactive,
+        ...offUnions,
+        answerFlow: linkedOnlyFlow(executeQueryProactive),
       },
     );
     const thread = makeThread("C-allowed");
@@ -2670,5 +2805,83 @@ describe("ResolveWorkspaceIdFn type narrowing (#2623 item 2)", () => {
     // `ResolverEventLite` before calling the resolver.
     const lite: ResolverEventLite = { id: "M1", raw: { team_id: "T1" } };
     expect(lite.id).toBe("M1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Coupled-feature-group discriminated unions (#2623 item 1)
+// ---------------------------------------------------------------------------
+//
+// `ProactiveListenerConfig` carries three coupled-feature-group unions
+// instead of 7 individually optional fields. The contract is "half-
+// wired feature groups are compile-impossible" — these `@ts-expect-error`
+// directives pin that contract at the type layer. A regression that
+// re-introduces the old optional shape (e.g. adding `userResolver?:`
+// back onto the interface) silently relaxes the type and makes these
+// directives unused, which fails the strict-mode build.
+
+describe("ProactiveListenerConfig discriminated-union contract (#2623 item 1)", () => {
+  it("ts-only: half-wired answer flow is a type error (no executeQueryProactive)", () => {
+    // @ts-expect-error — `public-only` requires both getPublicDataset
+    // AND executeQueryProactive; the mode discriminator forces both
+    // or rejects the construction.
+    const _half: AnswerFlowConfig = {
+      mode: "public-only",
+      getPublicDataset: (async () => []) as GetPublicDatasetFn,
+    };
+    void _half;
+  });
+
+  it("ts-only: half-wired answer flow is a type error (no userResolver on linked-only)", () => {
+    // @ts-expect-error — `linked-only` requires both userResolver AND
+    // executeQueryProactive.
+    const _half: AnswerFlowConfig = {
+      mode: "linked-only",
+      executeQueryProactive: echoExecute,
+    };
+    void _half;
+  });
+
+  it("ts-only: half-wired kill switch is a type error (no onPauseRequest)", () => {
+    // @ts-expect-error — `enabled: true` requires both halves of the
+    // pair so a kill-switch read can never proceed without a write
+    // path and vice versa.
+    const _half: KillSwitchConfig = {
+      enabled: true,
+      isPaused: (async () => ({ paused: false })) as IsPausedFn,
+    };
+    void _half;
+  });
+
+  it("ts-only: half-wired feedback is a type error (no collector)", () => {
+    // @ts-expect-error — `enabled: true` requires a collector.
+    const _half: FeedbackConfig = {
+      enabled: true,
+    };
+    void _half;
+  });
+
+  it("ts-only: extra fields on 'off' modes are rejected (strict-shape contract)", () => {
+    // The `off` / `enabled: false` branches carry no callback fields at
+    // all. A regression that loosens those branches to accept stray
+    // callbacks would defeat the half-wired check above.
+    const _flow: AnswerFlowConfig = {
+      mode: "off",
+      // @ts-expect-error — `mode: "off"` carries no callback fields.
+      executeQueryProactive: echoExecute,
+    };
+    const _kill: KillSwitchConfig = {
+      enabled: false,
+      // @ts-expect-error — `enabled: false` carries no callback fields.
+      isPaused: async () => ({ paused: false }),
+    };
+    const _fb: FeedbackConfig = {
+      enabled: false,
+      // @ts-expect-error — `enabled: false` carries no collector.
+      collector: async () => {},
+    };
+    void _flow;
+    void _kill;
+    void _fb;
   });
 });

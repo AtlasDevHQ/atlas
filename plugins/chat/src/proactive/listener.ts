@@ -18,6 +18,11 @@
 import { emoji } from "chat";
 import type { Adapter, Author, Chat, Message, ReactionEvent, Thread } from "chat";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
+import type {
+  AtlasUserId,
+  ExternalUserId,
+  WorkspaceId,
+} from "@useatlas/types/proactive";
 import { classifyMessage } from "./classifier";
 import {
   detectPauseCommand,
@@ -33,6 +38,12 @@ import {
   type ProactiveExecuteQuery,
   type ProactiveUserResolver,
 } from "./answerer";
+import {
+  InvalidProactiveIdentityError,
+  assertAtlasUserId,
+  assertExternalUserId,
+  assertWorkspaceId,
+} from "./identity";
 import type {
   ChannelProactiveConfig,
   GetChannelConfigsFn,
@@ -229,13 +240,33 @@ function adapterPlatform(adapter: { name?: string } | undefined, fallback?: stri
   return adapter?.name ?? fallback ?? "unknown";
 }
 
-/** Build a ProactiveAsker from a message author. */
-function askerFromAuthor(author: Author, platform: string): ProactiveAsker {
-  return {
-    platform,
-    externalUserId: author.userId,
-    userName: author.userName,
-  };
+/**
+ * Build a ProactiveAsker from a message author. Brands the
+ * `externalUserId` at this boundary (#2641) — the asker object is the
+ * one runtime shape that flows from the chat SDK into every
+ * proactive entry point (resolver, executeQueryProactive, pause-request,
+ * feedback). Promoting once here means the downstream code can read
+ * `asker.externalUserId` as a typed {@link ExternalUserId} without
+ * each consumer re-validating.
+ *
+ * Returns `null` when the platform-side user id is missing — the
+ * caller treats that as "no asker, skip the proactive flow" because
+ * we can't attribute the reaction / answer to anyone. Pre-#2641 we
+ * would build an asker with an empty `externalUserId` and propagate
+ * it through audit + meter rows.
+ */
+function askerFromAuthor(author: Author, platform: string): ProactiveAsker | null {
+  try {
+    const externalUserId = assertExternalUserId(author.userId);
+    return {
+      platform,
+      externalUserId,
+      userName: author.userName,
+    };
+  } catch (err) {
+    if (err instanceof InvalidProactiveIdentityError) return null;
+    throw err;
+  }
 }
 
 /**
@@ -253,7 +284,7 @@ function askerFromAuthor(author: Author, platform: string): ProactiveAsker {
 async function emitProactiveMeter(
   config: ProactiveListenerConfig,
   log: PluginLogger,
-  workspaceId: string,
+  workspaceId: WorkspaceId,
   partial: Omit<ProactiveMeterEvent, "workspaceId">,
 ): Promise<void> {
   if (!config.onMeterEvent) return;
@@ -352,7 +383,7 @@ export async function registerProactiveListener(
   // pre-applies `config` + `log` so call sites stay terse and the
   // per-event `workspaceId` stays explicit.
   const emitMeter = (
-    workspaceId: string,
+    workspaceId: WorkspaceId,
     partial: Omit<ProactiveMeterEvent, "workspaceId">,
   ): Promise<void> => emitProactiveMeter(config, log, workspaceId, partial);
 
@@ -372,9 +403,10 @@ export async function registerProactiveListener(
     adapter: Adapter,
     thread: Thread<unknown, unknown>,
     message: Message,
-  ): Promise<string | null> => {
+  ): Promise<WorkspaceId | null> => {
+    let raw: string | null;
     try {
-      return await config.resolveWorkspaceId({
+      raw = await config.resolveWorkspaceId({
         adapter,
         thread: thread as Thread,
         message,
@@ -386,13 +418,37 @@ export async function registerProactiveListener(
       );
       return null;
     }
+    if (raw === null) return null;
+    // Brand promotion (#2641). The host's `resolveWorkspaceId`
+    // contract returns `string | null`; promote to `WorkspaceId` at
+    // the boundary so every downstream call site reads a typed brand.
+    // Empty string falls back to "unknown tenant" — would otherwise
+    // silently collapse every asker onto the global path.
+    try {
+      return assertWorkspaceId(raw);
+    } catch (err) {
+      if (err instanceof InvalidProactiveIdentityError) {
+        // Log at error, not warn — the host's `resolveWorkspaceId`
+        // contract is "return null OR a non-empty string". An empty /
+        // whitespace-only string is a host wiring bug that would
+        // persistently fire every event for the misconfigured tenant.
+        // Warn-level would hide the bug behind hundreds of identical
+        // lines (#2628 history); error escalates it to on-call.
+        log.error(
+          { rawWorkspaceId: raw, field: err.field },
+          "Proactive resolveWorkspaceId returned an empty/invalid id — contract violation, treating as unknown tenant (skip)",
+        );
+        return null;
+      }
+      throw err;
+    }
   };
 
   // Safe wrappers for the per-event workspace/channel config loaders.
   // Failures resolve to null/empty (the listener falls back to "not
   // opted in" / "no overrides" without crashing the SDK loop).
   const safeGetWorkspaceConfig = async (
-    workspaceId: string,
+    workspaceId: WorkspaceId,
   ): Promise<WorkspaceProactiveConfig | null> => {
     try {
       return await config.getWorkspaceConfig(workspaceId);
@@ -409,7 +465,7 @@ export async function registerProactiveListener(
   };
 
   const safeGetChannelConfigs = async (
-    workspaceId: string,
+    workspaceId: WorkspaceId,
   ): Promise<ReadonlyArray<ChannelProactiveConfig>> => {
     try {
       return await config.getChannelConfigs(workspaceId);
@@ -757,6 +813,18 @@ export async function registerProactiveListener(
 
       const platform = adapterPlatform(thread.adapter, config.platform);
       const asker = askerFromAuthor(message.author, platform);
+      if (!asker) {
+        // Orphan state: reaction already posted (line above), but no
+        // pending entry registered — the asker can never tap-back to
+        // request the answer. Warn so on-call sees the asymmetry; a
+        // missing `message.author.userId` is a chat-adapter contract
+        // violation, not a routine event.
+        log.warn(
+          { workspaceId, channelId, messageId: message.id },
+          "Proactive: message.author.userId missing — reaction posted but cannot attribute pending answer (orphan reaction)",
+        );
+        return;
+      }
       pending.record(thread.channelId, message.id, { text, asker, workspaceId });
 
       // Meter: reaction landed — emit a `react` row so the admin
@@ -944,6 +1012,17 @@ export async function registerProactiveListener(
 
         const platform = adapterPlatform(event.adapter, config.platform);
         const asker = askerFromAuthor(event.user, platform);
+        if (!asker) {
+          // User clicked Helpful / Not-helpful / Wrong-data but the
+          // event carries no `event.user.userId` — feedback row is
+          // dropped silently. Warn (not debug) so on-call notices a
+          // chat-adapter contract violation that's eating feedback.
+          log.warn(
+            { workspaceId, actionId: event.actionId },
+            "Proactive feedback button: event.user.userId missing — feedback dropped (cannot attribute row)",
+          );
+          return;
+        }
         const answerMessageId = event.messageId;
 
         if (outcome === "wrong-data") {
@@ -1019,6 +1098,13 @@ export async function registerProactiveListener(
 
       const platform = adapterPlatform(event.adapter, config.platform);
       const asker = askerFromAuthor(event.user, platform);
+      if (!asker) {
+        log.debug(
+          { workspaceId },
+          "Proactive wrong-data modal: event.user.userId missing — cannot attribute feedback, closing",
+        );
+        return { action: "close" as const };
+      }
       const answerMessageId =
         typeof event.privateMetadata === "string" ? event.privateMetadata : "";
       const rawText = event.values?.[PROACTIVE_FB_WRONG_DATA_INPUT_ID];
@@ -1079,7 +1165,7 @@ export async function registerProactiveListener(
 export async function handleProactiveFeedbackSlash(args: {
   text: string | undefined;
   channelId: string;
-  workspaceId: string;
+  workspaceId: WorkspaceId;
   asker: ProactiveAsker;
   config: ProactiveListenerConfig;
   log: PluginLogger;
@@ -1135,7 +1221,7 @@ async function runAnswerFlow(
   threadId: string,
   text: string,
   asker: ProactiveAsker,
-  workspaceId: string,
+  workspaceId: WorkspaceId,
   config: ProactiveListenerConfig,
   log: PluginLogger,
   recentAnswers: RecentAnswers,
@@ -1170,8 +1256,9 @@ async function runAnswerFlow(
   // Local alias for the module-scope `emitProactiveMeter` helper —
   // pre-applies `config` / `log` / `workspaceId` (the latter is the
   // per-flow tenant resolved at the caller; was `config.workspaceId ?? ""`
-  // pre-#2620). Shared by the public-dataset refusal branch and the
-  // linked-asker happy path below.
+  // pre-#2620, now a typed {@link WorkspaceId} brand per #2641). Shared
+  // by the public-dataset refusal branch and the linked-asker happy
+  // path below.
   const emitMeter = (
     partial: Omit<ProactiveMeterEvent, "workspaceId">,
   ): Promise<void> => emitProactiveMeter(config, log, workspaceId, partial);
@@ -1590,10 +1677,15 @@ async function deliverFeedback(
  * Returned by `safeResolveUser` so the caller can distinguish three
  * states the resolver may produce:
  *
- *   - `kind: "linked"`   — `atlasUserId` is the resolved Atlas id.
- *   - `kind: "unlinked"` — resolver explicitly returned `undefined`
- *                          atlasUserId (this asker is genuinely not
- *                          OAuth'd into a workspace user).
+ *   - `kind: "linked"`   — `atlasUserId` is the resolved branded
+ *                          {@link AtlasUserId}.
+ *   - `kind: "unlinked"` — resolver returned `{ kind: "unlinked" }`
+ *                          (this asker is genuinely not OAuth'd into
+ *                          a workspace user). Discriminated public
+ *                          contract per #2641 — pre-#2641 this branch
+ *                          was an absent `atlasUserId` field on a
+ *                          structural shape, indistinguishable from a
+ *                          host omission.
  *   - `kind: "errored"`  — resolver threw. The caller MUST NOT treat
  *                          this as `unlinked` — that would silently
  *                          downgrade a linked Atlas user (whose
@@ -1603,20 +1695,35 @@ async function deliverFeedback(
  *                          post an apology copy and return.
  */
 type ResolveOutcome =
-  | { kind: "linked"; atlasUserId: string }
+  | { kind: "linked"; atlasUserId: AtlasUserId }
   | { kind: "unlinked" }
   | { kind: "errored" };
 
 async function safeResolveUser(
   resolver: ProactiveUserResolver,
   asker: ProactiveAsker,
-  workspaceId: string,
+  workspaceId: WorkspaceId,
   log: PluginLogger,
 ): Promise<ResolveOutcome> {
   try {
+    // Discriminated `ResolvedAsker` (#2641) — `kind: "linked"` carries
+    // a non-empty branded `AtlasUserId`; `kind: "unlinked"` carries no
+    // id. Pre-#2641 the contract was `{ atlasUserId?: string }` and we
+    // had to defensively check for an empty/undefined `atlasUserId` to
+    // decide which branch to take.
+    //
+    // Belt-and-braces against a plain-JS host (or a TS host that
+    // bypasses the brand via `as AtlasUserId`) returning `kind:
+    // "linked"` with an empty `atlasUserId`: re-run `assertAtlasUserId`
+    // at this boundary. An empty linked id would propagate into
+    // `executeQueryProactive({ atlasUserId: "" })` and silently bypass
+    // per-user RLS — the exact failure mode the brand was meant to
+    // close. The runtime guard catches the case the brand can't (since
+    // brand purity is by code-review, not by the type system).
     const resolved = await resolver(asker, { workspaceId });
-    if (resolved.atlasUserId) {
-      return { kind: "linked", atlasUserId: resolved.atlasUserId };
+    if (resolved.kind === "linked") {
+      const branded = assertAtlasUserId(resolved.atlasUserId);
+      return { kind: "linked", atlasUserId: branded };
     }
     return { kind: "unlinked" };
   } catch (err) {

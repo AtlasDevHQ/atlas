@@ -1,9 +1,12 @@
 /**
  * Proactive `userResolver` — chat-platform identity → Atlas identity (#2624).
  *
- * The chat plugin's `ProactiveUserResolver` (post-#2624 shape) is:
+ * The chat plugin's `ProactiveUserResolver` (post-#2624 + #2641 shape) is:
  *
- *     (asker, { workspaceId }) => Promise<{ atlasUserId? }>
+ *     (asker, { workspaceId: WorkspaceId }) => Promise<ResolvedAsker>
+ *
+ *     ResolvedAsker = { kind: "linked"; atlasUserId: AtlasUserId }
+ *                   | { kind: "unlinked" }
  *
  * The `workspaceId` is the per-event tenant resolved by
  * `lib/proactive/workspace-id-resolver.ts:createSlackWorkspaceIdResolver`
@@ -17,7 +20,7 @@
  *      case, but if a future code path bypasses the per-event resolver
  *      we still refuse to attribute the asker to a stale tenant).
  *
- *   2. **Returns `{ atlasUserId: undefined }`** for every asker today.
+ *   2. **Returns `{ kind: "unlinked" }`** for every asker today.
  *      The mapping from `(workspaceId, slack_user_id)` to an Atlas
  *      `user.id` requires a link table (e.g. `slack_user_links` with
  *      `(workspace_id, slack_user_id, atlas_user_id)`) that does NOT
@@ -25,31 +28,32 @@
  *      safely link an asker — and we MUST NOT invent a heuristic
  *      match (e.g. "first member of the org") because that would
  *      silently bypass per-user RLS for an unlinked asker by binding
- *      their query to another user's identity.
- *
- *      The listener's unlinked-asker path (public-dataset gate +
- *      refusal copy) is the safe behaviour until the link table
- *      lands.
+ *      their query to another user's identity. The unlinked branch
+ *      is the safe fallback: the listener's public-dataset gate +
+ *      refusal copy gate that asker's access.
  *
  * **Hook point for future linking work.** A follow-up issue is
  * expected to add a Slack-user link mechanism (OAuth user grant, an
  * admin-managed link table, or email matching via the Slack profile
- * API). When that lands the resolver replaces step 2 with a real
- * lookup; the surrounding wiring (#2624 contract change) stays as-is.
+ * API). When that lands the resolver replaces step 2 with
+ * `{ kind: "linked", atlasUserId: assertAtlasUserId(row.atlas_user_id) }`
+ * for matching rows; the surrounding wiring (#2624 contract change +
+ * #2641 brand types) stays as-is.
  *
- * Failures resolve as `{ atlasUserId: undefined }` rather than
- * throwing — the listener's `safeResolveUser` catches throws but
- * treats them as the apology path (refuse, do not downgrade to
- * public-dataset). Returning an explicit unlinked result keeps the
- * three-state ladder ("linked" / "unlinked" / "errored") meaningful
- * for the failure mode that's actually "we don't know yet" (no link
- * table) rather than "the registry is broken" (errored).
+ * Failures resolve as `{ kind: "unlinked" }` rather than throwing —
+ * the listener's `safeResolveUser` catches throws and treats them as
+ * the apology path (refuse, do not downgrade to public-dataset).
+ * Returning an explicit unlinked result keeps the three-state ladder
+ * ("linked" / "unlinked" / "errored") meaningful for the failure
+ * mode that's actually "we don't know yet" (no link table) rather
+ * than "the registry is broken" (errored).
  *
  * Layer hygiene: lives under `lib/proactive/`. Does NOT import from
  * `@atlas/ee` or from `api/routes/`. Only the SaaS deploy wires this
  * up; self-hosted deployments can either reuse this factory (the
  * unlinked-only path is correct everywhere) or omit `userResolver`
- * entirely (the listener defaults to "unlinked" when undefined).
+ * entirely (the listener defaults to `{ kind: "unlinked" }` when
+ * undefined).
  *
  * @module
  */
@@ -59,6 +63,7 @@ import type {
   ProactiveUserResolver,
   ProactiveUserResolverContext,
   ResolvedAsker,
+  WorkspaceId,
 } from "@useatlas/chat";
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -84,8 +89,11 @@ export interface SlackProactiveUserResolverOptions {
    * resolver still refuses to attribute the asker. Cheap (indexed
    * lookup against `idx_slack_installations_org` on `org_id`) so the
    * extra read isn't material.
+   *
+   * Accepts a branded {@link WorkspaceId} (#2641) so a transposed-arg
+   * call (e.g. passing `asker.externalUserId` here) is a compile error.
    */
-  verifyWorkspace?: (workspaceId: string) => Promise<boolean>;
+  verifyWorkspace?: (workspaceId: WorkspaceId) => Promise<boolean>;
 }
 
 /**
@@ -121,19 +129,20 @@ export function createSlackProactiveUserResolver(
         { platform: asker.platform, workspaceId },
         "Proactive user resolver invoked for non-Slack platform — returning unlinked",
       );
-      return { atlasUserId: undefined };
+      return { kind: "unlinked" };
     }
 
-    if (!workspaceId) {
-      // Defensive: workspaceId should always be non-empty (the
-      // listener short-circuits on a null/empty resolver result),
-      // but an empty string here would skip the workspace check and
-      // collapse all tenants onto the global path. Refuse-safely.
+    // `workspaceId` is the branded {@link WorkspaceId} threaded from
+    // the listener (post-#2641); empty values never reach the resolver
+    // because `assertWorkspaceId` throws at the listener boundary. The
+    // length check below is belt-and-braces against a future caller
+    // that bypasses the listener.
+    if (workspaceId.length === 0) {
       log.warn(
         { externalUserId: asker.externalUserId },
         "Proactive user resolver invoked without workspaceId — returning unlinked",
       );
-      return { atlasUserId: undefined };
+      return { kind: "unlinked" };
     }
 
     try {
@@ -143,7 +152,7 @@ export function createSlackProactiveUserResolver(
           { workspaceId, externalUserId: asker.externalUserId },
           "Proactive user resolver: workspaceId not in slack_installations — returning unlinked",
         );
-        return { atlasUserId: undefined };
+        return { kind: "unlinked" };
       }
     } catch (err) {
       // DB outage → unlinked (NOT errored): the listener treats
@@ -161,17 +170,17 @@ export function createSlackProactiveUserResolver(
         },
         "Proactive user resolver: verifyWorkspace failed — returning unlinked",
       );
-      return { atlasUserId: undefined };
+      return { kind: "unlinked" };
     }
 
     // Hook point — when a Slack-user link table lands, replace the
     // line below with a lookup keyed on (workspaceId, asker.externalUserId)
-    // and return `{ atlasUserId }` for matches. Until then every
-    // asker takes the unlinked path: the listener's public-dataset
-    // gate is the answer-or-refuse branch, and that branch IS
-    // tenant-scoped now (#2624) via the workspaceId threaded through
-    // `getPublicDataset(asker, { workspaceId })`.
-    return { atlasUserId: undefined };
+    // and return `{ kind: "linked", atlasUserId: assertAtlasUserId(row.atlas_user_id) }`
+    // for matches. Until then every asker takes the unlinked path:
+    // the listener's public-dataset gate is the answer-or-refuse
+    // branch, and that branch IS tenant-scoped now (#2624) via the
+    // workspaceId threaded through `getPublicDataset(asker, { workspaceId })`.
+    return { kind: "unlinked" };
   };
 }
 
@@ -183,7 +192,9 @@ export function createSlackProactiveUserResolver(
  * collapses both onto the same unlinked outcome but logs them
  * separately (warn for missing, warn-with-error for outage).
  */
-async function defaultVerifyWorkspace(workspaceId: string): Promise<boolean> {
+async function defaultVerifyWorkspace(
+  workspaceId: WorkspaceId,
+): Promise<boolean> {
   if (!hasInternalDB()) return false;
   const rows = await internalQuery<{ org_id: string | null }>(
     `SELECT org_id

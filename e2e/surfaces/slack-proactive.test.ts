@@ -394,7 +394,7 @@ beforeAll(async () => {
       // branch — reaction-back behaviour is out of scope here (covered
       // by the answerer unit tests + #2624). We only need the react
       // meter row to fire to validate the channel-allowlist path.
-      userResolver: async () => ({ atlasUserId: undefined }),
+      userResolver: async () => ({ kind: "unlinked" }),
     },
   });
 

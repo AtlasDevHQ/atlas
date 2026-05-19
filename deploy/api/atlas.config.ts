@@ -13,7 +13,13 @@
  */
 
 import { defineConfig } from "./packages/api/src/lib/config";
-import { chatPlugin } from "@useatlas/chat";
+// Relative import: atlas.config.ts lives at /app/ in the SaaS container,
+// outside any workspace's node_modules resolution tree. The workspace
+// symlink for @useatlas/chat is at /app/packages/api/node_modules/,
+// which is not reachable via Node's upward node_modules walk from /app/.
+// The `defineConfig` import above uses the same relative-path pattern
+// for the same reason. Resolved at boot via bun's TS loader.
+import { chatPlugin } from "./plugins/chat/src/index";
 
 export default defineConfig({
   // ── Datasource ──────────────────────────────────────────────────

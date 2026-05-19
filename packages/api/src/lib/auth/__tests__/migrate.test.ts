@@ -330,6 +330,7 @@ describe("migrateAuthTables", () => {
             { name: "0082_audit_log_parent_audit_id_deferrable.sql" },
             { name: "0083_dashboard_stage_changes.sql" },
             { name: "0084_proactive_classification_review.sql" },
+            { name: "0085_workspace_proactive_config_workspace_id_nonempty.sql" },
           ],
         };
       }

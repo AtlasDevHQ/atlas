@@ -229,28 +229,56 @@ describe("createProactiveAnswerAdapter — linked path", () => {
     await runtime.dispose();
   });
 
-  it("degrades to anonymous identity when the linked user cannot be resolved", async () => {
-    nextRunAgentResult = {
-      text: Promise.resolve("Fallback answer"),
-      steps: Promise.resolve([]),
-      totalUsage: Promise.resolve({ inputTokens: 0, outputTokens: 0 }),
-    };
-
+  it("refuses (does not invoke the agent) when the linked user no longer resolves to an actor", async () => {
+    // Deleted-account scenario: resolveOrgForUser succeeds but
+    // resolveActor returns null. Running the agent with actor=null
+    // would attach no `user` to RequestContext and short-circuit any
+    // downstream rule-matching gate — refuse instead.
     const runtime = buildRuntime();
     const adapter = createProactiveAnswerAdapter(runtime, {
       resolveOrgForUser: async () => null,
-      // `resolveActor` returns null — user row deleted / not found.
       resolveActor: async () => null,
     });
 
-    const result = await adapter("orphan question", {
-      threadId: "T-orphan",
-      asker: slackAsker,
-      atlasUserId: "user-missing",
+    await expect(
+      adapter("orphan question", {
+        threadId: "T-orphan",
+        asker: slackAsker,
+        atlasUserId: "user-missing",
+      }),
+    ).rejects.toThrow(/Atlas couldn't answer this/);
+
+    // Critical: the agent must NOT have been invoked.
+    expect(observedRunAgentCalls).toHaveLength(0);
+    await runtime.dispose();
+  });
+
+  it("refuses (F-55 fail-closed) when resolveOrgForUser throws — never runs the agent with reduced scope", async () => {
+    // F-55 regression: a thrown `resolveOrgForUser` is infra failure,
+    // not "user has no org" (which returns null). Running with
+    // orgId=null would short-circuit checkApprovalRequired and bypass
+    // rule-matching gates — refuse instead.
+    const runtime = buildRuntime();
+    const dbError = new Error("connection terminated unexpectedly");
+    const adapter = createProactiveAnswerAdapter(runtime, {
+      resolveOrgForUser: async () => {
+        throw dbError;
+      },
+      // Should never be invoked once resolveOrgForUser throws.
+      resolveActor: async () => {
+        throw new Error("resolveActor must not be called after resolveOrgForUser throws");
+      },
     });
 
-    expect(result.answer).toBe("Fallback answer");
-    expect(observedRunAgentCalls[0].userId).toBeUndefined();
+    await expect(
+      adapter("how many customers?", {
+        threadId: "T-fail",
+        asker: slackAsker,
+        atlasUserId: "user-1",
+      }),
+    ).rejects.toThrow(/Atlas couldn't answer this/);
+
+    expect(observedRunAgentCalls).toHaveLength(0);
     await runtime.dispose();
   });
 });

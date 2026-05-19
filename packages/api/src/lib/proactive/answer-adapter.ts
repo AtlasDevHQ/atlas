@@ -165,7 +165,7 @@ export function createProactiveAnswerAdapter(
     const askerId = describeAskerId(asker);
 
     // 1. Resolve identity + (unlinked) restricted tool registry ----------
-    let actor: AtlasUser | null;
+    let actor: AtlasUser;
     let toolRegistry: ToolRegistry | undefined;
     try {
       if (atlasUserId) {
@@ -273,7 +273,7 @@ export function createProactiveAnswerAdapter(
       const stream = await withRequestContext(
         {
           requestId,
-          ...(actor ? { user: actor } : {}),
+          user: actor,
           approvalSurface: "slack",
         },
         () =>
@@ -333,35 +333,20 @@ async function resolveLinkedActor(
   atlasUserId: string,
   resolveOrgForUser: (id: string) => Promise<string | null>,
   resolveActor: (id: string, orgId: string | null) => Promise<AtlasUser | null>,
-): Promise<AtlasUser | null> {
-  let orgId: string | null = null;
-  try {
-    orgId = await resolveOrgForUser(atlasUserId);
-  } catch (err) {
-    // Treat as "no org" — `loadActorUser` will still return a usable
-    // actor (without orgId); the agent runs with reduced scope and the
-    // approval gate short-circuits per `botActorUser` semantics.
-    log.warn(
-      { atlasUserId, err: errorMessage(err) },
-      "resolveOrgForUser failed — proceeding with linked actor minus org context",
-    );
-  }
+): Promise<AtlasUser> {
+  // Fail-closed F-55: a thrown `resolveOrgForUser` is infra failure,
+  // not "user has no org" (that returns null). Letting it propagate
+  // keeps the agent from running with orgId=null and short-circuiting
+  // the approval gate.
+  const orgId = await resolveOrgForUser(atlasUserId);
 
   const actor = await resolveActor(atlasUserId, orgId);
   if (actor) return actor;
 
-  // User row missing (deleted account) — fall back to a null actor so
-  // the agent run gets no `user` on RequestContext and downstream
-  // RLS / org-scoped overlays neutralize. The unlinked-asker branch
-  // in the caller installs the public-dataset tool gate; this branch
-  // (a deleted LINKED account) is rare and the safer behavior is to
-  // refuse rather than silently degrade — but degrading-without-org
-  // is the legacy shape and tests pin it, so keep it for now.
-  log.warn(
-    { atlasUserId, orgId },
-    "Linked atlasUserId did not resolve to an actor — degrading to anonymous identity",
+  // Deleted account — refuse rather than run with no actor.
+  throw new Error(
+    `Linked atlasUserId ${atlasUserId} did not resolve to an actor (deleted account?)`,
   );
-  return null;
 }
 
 /**

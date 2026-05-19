@@ -252,14 +252,23 @@ export async function runExecuteQuery(
     if (!conversationId) {
       conversationId = crypto.randomUUID();
       try {
-        await setConversationId(channelId, slackThreadTs, conversationId);
-        createConversation({
+        // Create the conversation row BEFORE stamping the thread →
+        // conversationId mapping so a failure can't leave the mapping
+        // pointing at a non-existent row. If `setConversationId` then
+        // fails, the next event in the same thread allocates a fresh
+        // conversation — worse for context continuity, harmless for
+        // correctness.
+        await createConversation({
           id: conversationId,
           title: generateTitle(question),
           surface: "slack",
         });
+        await setConversationId(channelId, slackThreadTs, conversationId);
       } catch (err) {
-        log.warn(
+        // A DB write failure on the critical-path agent run is on-call
+        // signal — log at error so Sentry / alerts fire alongside the
+        // sibling tenant-resolution and agent-run failure paths.
+        log.error(
           {
             err: err instanceof Error ? err.message : String(err),
             channelId,

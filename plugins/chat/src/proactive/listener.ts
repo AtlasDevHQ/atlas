@@ -608,7 +608,11 @@ export async function registerProactiveListener(
           // bypass without double-counting the underlying `classify`
           // event.
           log.error(
-            { err: err instanceof Error ? err : new Error(String(err)) },
+            {
+              workspaceId,
+              channelId,
+              err: err instanceof Error ? err : new Error(String(err)),
+            },
             "Proactive: quota callback threw — treating as under cap (monthly cap NOT enforced this request)",
           );
           quotaReadFailed = true;

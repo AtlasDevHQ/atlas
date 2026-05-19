@@ -112,11 +112,7 @@ export interface ChatQueryResult {
 
 /** Adapter-specific credential configuration. */
 export interface SlackAdapterConfig {
-  /**
-   * Single-workspace bot token. Omit in multi-workspace deploys so
-   * `@chat-adapter/slack` resolves per-event tokens from its installation
-   * store. Required when `clientId`+`clientSecret` are not set.
-   */
+  /** Single-workspace bot token (`xoxb-…`). Omit in multi-workspace deploys. */
   botToken?: string;
   signingSecret: string;
   /** Client ID for multi-workspace OAuth. */
@@ -632,18 +628,27 @@ export interface ProactiveConfig {
 // Zod schema
 // ---------------------------------------------------------------------------
 
+// Slack tokens are lowercase `xox<letter>-` (xoxb- bot, xoxp- user, xoxe-
+// rotation-enabled). Case-sensitive so an uppercase-paste regression
+// fails at the schema boundary.
+const SLACK_TOKEN_REGEX = /^xox[a-z]/;
+// Slack signing secrets are 32-char lowercase hex (Slack's actual format).
+const SLACK_SIGNING_SECRET_REGEX = /^[0-9a-f]{32}$/;
+
 const SlackAdapterSchema = z.object({
-  // Optional: required for single-workspace mode (the adapter uses this
-  // bare token for every outbound call). MULTI-WORKSPACE deploys OMIT
-  // this field so `@chat-adapter/slack` resolves per-event tokens from
-  // its installation store (state-adapter `slack:installation:<teamId>`).
-  // A non-empty placeholder here puts the adapter in single-workspace
-  // mode and the placeholder ends up as the bearer token → Slack rejects.
-  botToken: z.string().min(1, "slack botToken must not be empty").optional(),
-  signingSecret: z.string().min(1, "slack signingSecret must not be empty"),
+  // Regex'd so placeholder strings (multi-workspace deploys) fail at
+  // boot rather than at the first Slack API call.
+  botToken: z.string().min(1, "slack botToken must not be empty").regex(
+    SLACK_TOKEN_REGEX,
+    "slack botToken must start with 'xox' (e.g. 'xoxb-…'). Multi-workspace deploys should omit this field instead of supplying a placeholder.",
+  ).optional(),
+  signingSecret: z.string().min(1, "slack signingSecret must not be empty").regex(
+    SLACK_SIGNING_SECRET_REGEX,
+    "slack signingSecret must be a 32-character lowercase hex string (from your Slack app's Basic Information page). Placeholder strings are rejected.",
+  ),
   clientId: z.string().min(1).optional(),
   clientSecret: z.string().min(1).optional(),
-}).refine(
+}).strict().refine(
   (s) => (s.clientId == null) === (s.clientSecret == null),
   "clientId and clientSecret must both be provided for OAuth",
 );
@@ -652,14 +657,14 @@ const TeamsAdapterSchema = z.object({
   appId: z.string().min(1, "teams appId must not be empty"),
   appPassword: z.string().min(1, "teams appPassword must not be empty"),
   tenantId: z.string().min(1).optional(),
-});
+}).strict();
 
 const DiscordAdapterSchema = z.object({
   botToken: z.string().min(1, "discord botToken must not be empty"),
   applicationId: z.string().min(1, "discord applicationId must not be empty"),
   publicKey: z.string().regex(/^[0-9a-f]{64}$/i, "discord publicKey must be a 64-character hex string (Ed25519 public key from Discord Developer Portal)"),
   mentionRoleIds: z.array(z.string().min(1)).optional(),
-});
+}).strict();
 
 const TelegramAdapterSchema = z.object({
   botToken: z.string().min(1, "telegram botToken must not be empty").regex(
@@ -667,7 +672,7 @@ const TelegramAdapterSchema = z.object({
     "telegram botToken must be in format '<bot-id>:<secret>' from BotFather",
   ),
   secretToken: z.string().min(1).optional(),
-});
+}).strict();
 
 const GitHubAdapterSchema = z.object({
   token: z.string().min(1, "github token must not be empty").optional(),
@@ -676,7 +681,7 @@ const GitHubAdapterSchema = z.object({
   installationId: z.number().int().positive("github installationId must be a positive integer").optional(),
   webhookSecret: z.string().min(1, "github webhookSecret must not be empty").optional(),
   userName: z.string().min(1, "github userName must not be empty").optional(),
-}).superRefine((c, ctx) => {
+}).strict().superRefine((c, ctx) => {
   if (c.token && c.appId) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -719,7 +724,7 @@ const LinearAdapterSchema = z.object({
   clientSecret: z.string().min(1, "linear clientSecret must not be empty").optional(),
   webhookSecret: z.string().min(1, "linear webhookSecret must not be empty").optional(),
   userName: z.string().min(1, "linear userName must not be empty").optional(),
-}).superRefine((c, ctx) => {
+}).strict().superRefine((c, ctx) => {
   const modes = [c.apiKey, c.accessToken, c.clientId].filter(Boolean).length;
   if (modes > 1) {
     ctx.addIssue({
@@ -759,7 +764,7 @@ const WhatsAppAdapterSchema = z.object({
     /^v\d+\.\d+$/,
     "whatsapp apiVersion must be in format 'vN.N' (e.g. 'v21.0')",
   ).optional(),
-});
+}).strict();
 
 const GoogleChatAdapterSchema = z.object({
   credentials: z.object({
@@ -774,7 +779,7 @@ const GoogleChatAdapterSchema = z.object({
     "gchat pubsubTopic must be in format 'projects/{project}/topics/{topic}'",
   ).optional(),
   impersonateUser: z.string().email("gchat impersonateUser must be a valid email").optional(),
-}).refine(
+}).strict().refine(
   (c) => !(c.credentials != null && c.useApplicationDefaultCredentials === true),
   "Provide either credentials or useApplicationDefaultCredentials, not both (or omit both for env-var auto-detection)",
 );
@@ -998,7 +1003,7 @@ export const ChatConfigSchema = z.object({
   executeQueryStream: zCallback<NonNullable<ChatPluginConfig["executeQueryStream"]>>(
     "executeQueryStream must be a function",
   ).optional(),
-}).refine(
+}).strict().refine(
   (c) => {
     // Warn if streaming.enabled is explicitly true but executeQueryStream is missing
     if (c.streaming?.enabled === true && typeof c.executeQueryStream !== "function") {

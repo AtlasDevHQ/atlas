@@ -315,7 +315,7 @@ describe("ChatConfigSchema reactions field", () => {
   const { ChatConfigSchema } = require("../config");
 
   const baseConfig = {
-    adapters: { slack: { botToken: "xoxb-test", signingSecret: "test-secret" } },
+    adapters: { slack: { botToken: "xoxb-test", signingSecret: "abcdef0123456789abcdef0123456789" } },
     executeQuery: () => Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
   };
 

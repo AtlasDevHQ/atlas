@@ -4177,11 +4177,11 @@ describeIfPg("migrate-pg (real Postgres)", () => {
   //       by the `slack:installation:` key prefix) is created — without
   //       it `getInstallationByOrg` falls back to a full table scan
   //       across every cache row (subscriptions, locks, KV).
-  it("0085: drops slack_installations and creates chat_cache + org_id index (#2634)", async () => {
+  it("0086: drops slack_installations and creates chat_cache + org_id index (#2634)", async () => {
     const { rows: dropped } = await pool.query<{ exists: boolean }>(
       `SELECT EXISTS (
          SELECT 1 FROM information_schema.tables
-         WHERE table_schema = 'public' AND table_name = 'slack_installations'
+         WHERE table_schema = current_schema() AND table_name = 'slack_installations'
        ) AS exists`,
     );
     expect(dropped[0]?.exists).toBe(false);
@@ -4189,14 +4189,14 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     const { rows: cache } = await pool.query<{ exists: boolean }>(
       `SELECT EXISTS (
          SELECT 1 FROM information_schema.tables
-         WHERE table_schema = 'public' AND table_name = 'chat_cache'
+         WHERE table_schema = current_schema() AND table_name = 'chat_cache'
        ) AS exists`,
     );
     expect(cache[0]?.exists).toBe(true);
 
     const { rows: indexes } = await pool.query<{ indexname: string }>(
       `SELECT indexname FROM pg_indexes
-        WHERE schemaname = 'public' AND tablename = 'chat_cache'
+        WHERE schemaname = current_schema() AND tablename = 'chat_cache'
         ORDER BY indexname`,
     );
     const indexNames = indexes.map((r) => r.indexname);
@@ -4204,7 +4204,7 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(indexNames).toContain("idx_chat_cache_expires");
   }, PG_TEST_TIMEOUT_MS);
 
-  it("0085: hijack protection — the upsert WHERE clause rejects a same-team different-org write (#2634)", async () => {
+  it("0086: hijack protection — the upsert WHERE clause rejects a same-team different-org write (#2634)", async () => {
     // Pre-#2634 the legacy `slack_installations` upsert used a
     // `WHERE org_id IS NULL OR org_id = $orgId` clause to refuse
     // rebinding a team to a different org in a single atomic
@@ -4250,7 +4250,7 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows[0]?.value.orgId).toBe("org-A");
   }, PG_TEST_TIMEOUT_MS);
 
-  it("0085: JSONB merge preserves adapter-extension fields on a re-save (#2634)", async () => {
+  it("0086: JSONB merge preserves adapter-extension fields on a re-save (#2634)", async () => {
     // The upsert's `value = chat_cache.value || EXCLUDED.value` merges
     // right-wins-shallow so a future chat-adapter write (e.g.
     // `botUserId` set after an `auth.test` round-trip) survives a
@@ -4302,7 +4302,7 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows[0]?.value.orgId).toBe("org-merge");
   }, PG_TEST_TIMEOUT_MS);
 
-  it("0085: chat_cache.value->>'orgId' returns the Atlas org id for a stored Slack install (#2634)", async () => {
+  it("0086: chat_cache.value->>'orgId' returns the Atlas org id for a stored Slack install (#2634)", async () => {
     // End-to-end shape check: a row written through the consolidated
     // path resolves cleanly by org_id via the new partial index. Uses
     // the chat-adapter's plaintext-bot-token branch (SLACK_ENCRYPTION_KEY

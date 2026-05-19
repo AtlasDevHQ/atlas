@@ -95,6 +95,8 @@ export type {
   ChatPluginConfig,
   ChatQueryResult,
   ChatMessage,
+  ChatExecuteQueryAdapter,
+  ChatExecuteQueryContext,
   StateConfig,
   PendingAction,
   ActionCallbacks,

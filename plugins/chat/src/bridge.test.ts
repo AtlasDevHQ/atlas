@@ -3492,3 +3492,72 @@ describe("sendDirectMessage contract", () => {
     expect(errorLogged).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// executeQuery context contract (#2611)
+// ---------------------------------------------------------------------------
+//
+// Slice 3 of #2607 extends executeQuery's signature with `adapter` +
+// `rawMessage`. Those fields carry the platform-specific tenant identity
+// (Slack `team_id`, Teams `tenantId`, ...) the host needs to resolve the
+// org / actor before invoking the agent loop. Mirrors #2620's
+// `resolveWorkspaceId({ adapter, thread, message })` shape.
+//
+// Type-level checks here pin the contract; runtime propagation is covered
+// indirectly by the chat-plugin host helper's tests
+// (`packages/api/src/lib/chat-plugin/__tests__/execute-query.test.ts`)
+// which feed a synthetic Slack `app_mention` payload through the same
+// executeQuery callback and assert it sees `rawMessage.team_id`.
+
+describe("executeQuery context contract", () => {
+  it("ChatExecuteQueryContext exposes the fields the host needs", () => {
+    // Compile-time assertion: a context object missing either `adapter`
+    // or `rawMessage` should fail TS. We exercise that by constructing
+    // a literal that matches the published shape.
+    type Ctx = import("./config").ChatExecuteQueryContext;
+    const ctx: Ctx = {
+      threadId: "slack:C123-1234.5678",
+      adapter: { name: "slack" },
+      rawMessage: { team_id: "T123", user: "U456", text: "hi" },
+    };
+    expect(ctx.adapter.name).toBe("slack");
+    expect((ctx.rawMessage as { team_id: string }).team_id).toBe("T123");
+  });
+
+  it("accepts an executeQuery callback whose signature matches the contract", async () => {
+    const { chatPlugin } = await import("./index");
+
+    // The callback receives the new `context` arg — type-narrow `adapter`
+    // + `rawMessage` to confirm they're typed as required (non-optional).
+    const calls: Array<{ adapterName: string; rawTeamId: unknown }> = [];
+    const plugin = chatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+      },
+      executeQuery: async (question, ctx) => {
+        const raw = ctx.rawMessage as { team_id?: string } | undefined;
+        calls.push({ adapterName: ctx.adapter.name, rawTeamId: raw?.team_id });
+        return {
+          answer: `echo: ${question}`,
+          sql: [],
+          data: [],
+          steps: 0,
+          usage: { totalTokens: 0 },
+        };
+      },
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+    expect(plugin.config).toBeDefined();
+
+    // Drive the callback directly with the contract shape to confirm
+    // narrowed access works at runtime. End-to-end propagation through
+    // the bridge is covered by the host helper's integration test.
+    await plugin.config!.executeQuery("hello", {
+      threadId: "slack:C1-1.2",
+      adapter: { name: "slack" },
+      rawMessage: { team_id: "T999" },
+    });
+    expect(calls).toEqual([{ adapterName: "slack", rawTeamId: "T999" }]);
+  });
+});

@@ -507,6 +507,8 @@ export function createChatBridge(
     question: string,
     postResponse: (response: { card: CardElement; fallbackText: string }) => Promise<unknown>,
     postApproval: ((action: PendingAction) => Promise<void>) | null,
+    adapter: { name: string },
+    rawMessage: unknown,
     priorMessages?: ChatMessage[],
     csvContext?: CSVContext,
     reactions?: IReactionLifecycle,
@@ -515,7 +517,9 @@ export function createChatBridge(
 
     const result = await config.executeQuery(question, {
       threadId,
-      priorMessages,
+      ...(priorMessages !== undefined ? { priorMessages } : {}),
+      adapter: { name: adapter.name },
+      rawMessage,
     });
 
     // Post the card response first — ensure the user gets the answer
@@ -588,6 +592,8 @@ export function createChatBridge(
     question: string,
     postStream: (stream: AsyncIterable<string | StreamChunk>) => Promise<unknown>,
     postApproval: ((action: PendingAction) => Promise<void>) | null,
+    adapter: { name: string },
+    rawMessage: unknown,
     priorMessages?: ChatMessage[],
     csvContext?: CSVContext,
     reactions?: IReactionLifecycle,
@@ -604,7 +610,9 @@ export function createChatBridge(
 
     const streamResult = config.executeQueryStream(question, {
       threadId,
-      priorMessages,
+      ...(priorMessages !== undefined ? { priorMessages } : {}),
+      adapter: { name: adapter.name },
+      rawMessage,
     });
     if (!streamResult?.stream || !streamResult?.result) {
       throw new Error(
@@ -783,6 +791,8 @@ export function createChatBridge(
           question,
           (stream) => thread.post(stream),
           approvalCallback,
+          thread.adapter,
+          message.raw,
           undefined,
           csvCtx,
           reactions,
@@ -793,6 +803,8 @@ export function createChatBridge(
           question,
           (response) => thread.post({ card: response.card, fallbackText: response.fallbackText }),
           approvalCallback,
+          thread.adapter,
+          message.raw,
           undefined,
           csvCtx,
           reactions,
@@ -915,6 +927,8 @@ export function createChatBridge(
           question,
           (stream) => thread.post(stream),
           approvalCallback,
+          thread.adapter,
+          message.raw,
           priorMessages,
           csvCtx,
           reactions,
@@ -925,6 +939,8 @@ export function createChatBridge(
           question,
           (response) => thread.post({ card: response.card, fallbackText: response.fallbackText }),
           approvalCallback,
+          thread.adapter,
+          message.raw,
           priorMessages,
           csvCtx,
           reactions,
@@ -1200,6 +1216,8 @@ export function createChatBridge(
           question,
           (stream) => thinkingMsg.edit(stream).then(() => {}),
           approvalCallback,
+          event.adapter,
+          event.raw,
           undefined,
           slashCsvCtx,
         );
@@ -1209,6 +1227,8 @@ export function createChatBridge(
           question,
           (response) => thinkingMsg.edit({ card: response.card, fallbackText: response.fallbackText }).then(() => {}),
           approvalCallback,
+          event.adapter,
+          event.raw,
           undefined,
           slashCsvCtx,
         );
@@ -1387,18 +1407,25 @@ export function createChatBridge(
           await handleStreamingQuery(
             threadId, question,
             (stream) => event.thread!.post(stream),
-            null, priorMessages,
+            null, event.adapter, event.raw, priorMessages,
           );
         } else {
           await handleQuery(
             threadId, question,
             (response) => event.thread!.post({ card: response.card, fallbackText: response.fallbackText }),
-            null, priorMessages,
+            null, event.adapter, event.raw, priorMessages,
           );
         }
       } else {
-        // Fallback: post via adapter when thread is not available
-        const result = await config.executeQuery(question, { threadId, priorMessages });
+        // Fallback: post via adapter when thread is not available.
+        // The action event carries `event.raw` (the original button click
+        // payload) — that's the closest thing to a "message" we have here.
+        const result = await config.executeQuery(question, {
+          threadId,
+          priorMessages,
+          adapter: { name: event.adapter.name },
+          rawMessage: event.raw,
+        });
         const response = buildQueryResultCard(result);
         await event.adapter.postMessage(threadId, { card: response.card, fallbackText: response.fallbackText });
       }
@@ -1486,7 +1513,12 @@ export function createChatBridge(
       const priorMessages = await retrieveHistory(stateAdapter, threadId, log);
       const question = `Re-run this SQL query and return all results: ${sqlPayload}`;
 
-      const result = await config.executeQuery(question, { threadId, priorMessages });
+      const result = await config.executeQuery(question, {
+        threadId,
+        priorMessages,
+        adapter: { name: event.adapter.name },
+        rawMessage: event.raw,
+      });
       const csvFile = buildCSVFromQueryData(result.data);
 
       if (csvFile) {
@@ -1572,6 +1604,8 @@ export function createChatBridge(
           response.trim(),
           (stream) => event.relatedThread!.post(stream),
           null,
+          event.adapter,
+          event.raw,
           priorMessages,
         );
       } else {
@@ -1583,6 +1617,8 @@ export function createChatBridge(
             fallbackText: cardResponse.fallbackText,
           }),
           null,
+          event.adapter,
+          event.raw,
           priorMessages,
         );
       }

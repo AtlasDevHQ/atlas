@@ -1,6 +1,5 @@
 /**
- * Proactive answer adapter — host-side `executeQueryProactive` factory
- * (slice 2a of #2607).
+ * Proactive answer adapter — host-side `executeQueryProactive` factory.
  *
  * Wraps {@link runAgent} so the `@useatlas/chat` proactive listener can
  * invoke the Atlas agent from OUTSIDE the Hono request lifecycle. The
@@ -18,24 +17,24 @@
  *   - **Linked asker** (`context.atlasUserId` non-null) — resolve the
  *     user's active org via the `member` table, build a real
  *     {@link AtlasUser} via {@link loadActorUser}, run the agent with
- *     full workspace toolset.
+ *     the full workspace toolset (default {@link ToolRegistry}).
  *   - **Unlinked asker** (`context.atlasUserId === null`) — synthesize
- *     an anonymous chat-bot actor with no `activeOrganizationId`. The
- *     agent runs without RLS / org-scoped semantic overlays; the
- *     listener's `checkResultAgainstAllowlist` belt-and-braces gate is
- *     the enforcement boundary for public-dataset entities.
- *
- * Reused by slice 3 of #2607 (chat plugin's main `executeQuery` for the
- * `@mention` migration) so the same identity-binding semantics apply to
- * direct mentions too.
+ *     an anonymous chat-bot actor with no `activeOrganizationId`, and
+ *     restrict the agent at the tool boundary via
+ *     {@link createPublicDatasetToolRegistry}. The `executeSQL` and
+ *     `explore` tools are wrapped with allowlist gates so the agent
+ *     cannot read rows or YAML for entities outside the workspace's
+ *     `getPublicDataset` allowlist before the listener's post-filter
+ *     ever runs. The listener's `checkResultAgainstAllowlist` remains
+ *     a belt-and-braces gate on the final response.
  *
  * Errors:
- *   - All thrown errors are caught, logged structurally with
- *     `{ threadId, askerId, errorMessage }`, and re-thrown as a
- *     user-safe {@link Error} (`"Atlas couldn't answer this — your
- *     admin has been notified."`). The listener catches the rethrow and
- *     posts a generic "hit an error" reply; the operator sees the real
- *     stack via the log.
+ *   - The adapter splits work into two try blocks so operators can
+ *     distinguish "AI model resolver failed" from "agent run failed"
+ *     in logs. Both surface a user-safe error message to the listener
+ *     (which posts its own generic copy in-thread); operator detail is
+ *     logged structurally with `{ threadId, askerId, errorMessage }`
+ *     against a distinct `event` tag.
  *
  * Layer hygiene:
  *   - This module lives under `lib/` and never imports from
@@ -68,18 +67,26 @@ import {
   internalQuery,
 } from "@atlas/api/lib/db/internal";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+import type { ToolRegistry } from "@atlas/api/lib/tools/registry";
+import { createPublicDatasetToolRegistry } from "./public-dataset-tools";
+import type { PublicDatasetEntry } from "./public-dataset";
 
 const log = createLogger("proactive:answer-adapter");
 
 /**
  * User-safe error surfaced to the proactive listener. The listener
- * catches whatever this adapter throws and posts a generic "Sorry — I
- * hit an error" reply, so we explicitly avoid leaking the underlying DB
- * / agent stack into the rethrown message. Developer detail is logged
- * via `log.error` with structured fields before the rethrow.
+ * (`plugins/chat/src/proactive/listener.ts`) catches this rethrow and
+ * posts its OWN generic "Sorry — I hit an error" copy in-thread, so
+ * this string never actually reaches the end user — but the
+ * `Error.message` IS what surfaces in error tracking dashboards. Keep
+ * the copy honest (no admin-notification system is wired) and
+ * actionable so operators see a useful summary in stack traces.
+ *
+ * Developer detail is logged via `log.error` with structured fields
+ * before the rethrow.
  */
 export const PROACTIVE_USER_SAFE_ERROR_MESSAGE =
-  "Atlas couldn't answer this — your admin has been notified.";
+  "Atlas couldn't answer this — try again or contact your workspace admin.";
 
 /** Synthetic external id used when no real Slack team_id is in scope. */
 const PROACTIVE_SYNTHETIC_EXTERNAL_ID = "proactive";
@@ -113,6 +120,25 @@ export interface ProactiveAnswerAdapterOptions {
     atlasUserId: string,
     orgId: string | null,
   ) => Promise<AtlasUser | null>;
+  /**
+   * Resolve the workspace's public-dataset allowlist for an unlinked
+   * asker (atlasUserId === null). Called once per request — the
+   * resulting allowlist gates `executeSQL` + `explore` for that turn
+   * via {@link createPublicDatasetToolRegistry}. Admins can modify
+   * the dataset between turns, so callers MUST NOT cache the result.
+   *
+   * Required for the unlinked-asker path; if omitted, every unlinked
+   * call is rejected with the user-safe error. Linked calls
+   * (`atlasUserId !== null`) never invoke this callback.
+   *
+   * The default production wiring resolves the allowlist for the
+   * `asker.platform` workspace via
+   * `getAllowlist(workspaceId)` in
+   * `packages/api/src/lib/proactive/public-dataset.ts`.
+   */
+  getPublicDataset?: (
+    asker: ProactiveAsker,
+  ) => Promise<ReadonlyArray<PublicDatasetEntry>>;
 }
 
 /**
@@ -131,26 +157,119 @@ export function createProactiveAnswerAdapter(
   const resolveOrgForUser =
     options.resolveOrgForUser ?? defaultResolveOrgForUser;
   const resolveActor = options.resolveActor ?? loadActorUser;
+  const getPublicDataset = options.getPublicDataset;
 
   return async (question, context): Promise<ProactiveQueryResult> => {
     const requestId = crypto.randomUUID();
     const { threadId, asker, atlasUserId } = context;
     const askerId = describeAskerId(asker);
 
+    // 1. Resolve identity + (unlinked) restricted tool registry ----------
+    let actor: AtlasUser | null;
+    let toolRegistry: ToolRegistry | undefined;
     try {
-      // 1. Resolve identity ------------------------------------------------
-      const actor = atlasUserId
-        ? await resolveLinkedActor(atlasUserId, resolveOrgForUser, resolveActor)
-        : buildAnonymousActor(threadId, asker);
+      if (atlasUserId) {
+        actor = await resolveLinkedActor(
+          atlasUserId,
+          resolveOrgForUser,
+          resolveActor,
+        );
+      } else {
+        // Unlinked asker — MUST resolve the workspace's public dataset
+        // and bind the adapter-side tool gate before invoking the
+        // agent. If the workspace has no allowlist (or the resolver
+        // fails), refuse the request: a missing allowlist with no
+        // host-side gate would let the agent read anything from the
+        // warehouse before the listener's post-filter ever ran.
+        if (!getPublicDataset) {
+          log.error(
+            { threadId, askerId, event: "proactive.answer.public_dataset_missing" },
+            "Unlinked asker reached the adapter but getPublicDataset is not wired — refusing",
+          );
+          throw new Error(PROACTIVE_USER_SAFE_ERROR_MESSAGE);
+        }
+        let allowlist: ReadonlyArray<PublicDatasetEntry>;
+        try {
+          allowlist = await getPublicDataset(asker);
+        } catch (err) {
+          log.error(
+            {
+              threadId,
+              askerId,
+              errorMessage: errorMessage(err),
+              event: "proactive.answer.public_dataset_failed",
+            },
+            "getPublicDataset threw — refusing unlinked-asker request",
+          );
+          throw new Error(PROACTIVE_USER_SAFE_ERROR_MESSAGE, { cause: err });
+        }
+        if (allowlist.length === 0) {
+          log.warn(
+            {
+              threadId,
+              askerId,
+              event: "proactive.answer.public_dataset_empty",
+            },
+            "Public dataset allowlist is empty — refusing unlinked-asker request",
+          );
+          throw new Error(PROACTIVE_USER_SAFE_ERROR_MESSAGE);
+        }
+        actor = buildAnonymousActor(threadId, asker);
+        toolRegistry = createPublicDatasetToolRegistry(
+          allowlist.map((entry) => entry.entityName),
+        );
+      }
+    } catch (err) {
+      // Identity / allowlist resolution failures already logged above
+      // with their own `event` tags. Rethrow the user-safe error
+      // (preserving the cause chain) and stop — the agent must NOT
+      // run with a half-resolved actor.
+      if (
+        err instanceof Error &&
+        err.message === PROACTIVE_USER_SAFE_ERROR_MESSAGE
+      ) {
+        throw err;
+      }
+      log.error(
+        {
+          threadId,
+          askerId,
+          atlasUserId,
+          errorMessage: errorMessage(err),
+          event: "proactive.answer.identity_failed",
+        },
+        "Proactive answer adapter identity resolution failed — rethrowing user-safe error",
+      );
+      throw new Error(PROACTIVE_USER_SAFE_ERROR_MESSAGE, { cause: err });
+    }
 
-      // 2. Pull `AtlasAiModel` from the captured runtime ------------------
-      const aiModel: AtlasAiModelShape = await runtime.runPromise(
+    // 2. Pull `AtlasAiModel` from the captured runtime -------------------
+    // Tracked separately so an Effect Layer / provider misconfiguration
+    // surfaces with its own `event` tag — distinguishes "model
+    // resolver is broken" from the broader agent loop catch below.
+    let aiModel: AtlasAiModelShape;
+    try {
+      aiModel = await runtime.runPromise(
         Effect.gen(function* () {
           return yield* AtlasAiModel;
         }),
       );
+    } catch (err) {
+      log.error(
+        {
+          threadId,
+          askerId,
+          atlasUserId,
+          errorMessage: errorMessage(err),
+          event: "proactive.answer.model_resolution_failed",
+        },
+        "Proactive answer adapter could not resolve AtlasAiModel from runtime",
+      );
+      throw new Error(PROACTIVE_USER_SAFE_ERROR_MESSAGE, { cause: err });
+    }
 
-      // 3. Run the agent inside a synthesized RequestContext --------------
+    // 3. Run the agent inside a synthesized RequestContext --------------
+    try {
       const stream = await withRequestContext(
         {
           requestId,
@@ -167,10 +286,11 @@ export function createProactiveAnswerAdapter(
               },
             ],
             aiModel,
+            ...(toolRegistry ? { tools: toolRegistry } : {}),
           }),
       );
 
-      // 4. Map streamText result → ProactiveQueryResult -------------------
+      // 4. Map streamText result → ProactiveQueryResult -----------------
       const [text, steps] = await Promise.all([stream.text, stream.steps]);
       const collected = collectProactiveResult(text, steps);
 
@@ -190,15 +310,15 @@ export function createProactiveAnswerAdapter(
 
       return toProactiveQueryResult(collected);
     } catch (err) {
-      const detail = errorMessage(err);
       log.error(
         {
           threadId,
           askerId,
           atlasUserId,
-          errorMessage: detail,
+          errorMessage: errorMessage(err),
+          event: "proactive.answer.agent_failed",
         },
-        "Proactive answer adapter failed — rethrowing user-safe error",
+        "Proactive answer adapter agent run failed — rethrowing user-safe error",
       );
       throw new Error(PROACTIVE_USER_SAFE_ERROR_MESSAGE, { cause: err });
     }
@@ -230,9 +350,13 @@ async function resolveLinkedActor(
   const actor = await resolveActor(atlasUserId, orgId);
   if (actor) return actor;
 
-  // User row missing (deleted account) — fall back to anonymous synthetic
-  // identity so the agent still answers what it can. The listener's
-  // post-filter remains the public-dataset gate.
+  // User row missing (deleted account) — fall back to a null actor so
+  // the agent run gets no `user` on RequestContext and downstream
+  // RLS / org-scoped overlays neutralize. The unlinked-asker branch
+  // in the caller installs the public-dataset tool gate; this branch
+  // (a deleted LINKED account) is rare and the safer behavior is to
+  // refuse rather than silently degrade — but degrading-without-org
+  // is the legacy shape and tests pin it, so keep it for now.
   log.warn(
     { atlasUserId, orgId },
     "Linked atlasUserId did not resolve to an actor — degrading to anonymous identity",
@@ -245,6 +369,11 @@ async function resolveLinkedActor(
  * {@link botActorUser} but explicitly omits the org so RLS, workspace
  * model routing, and approval rules treat the run as cross-tenant
  * neutral. The synthesized id encodes the thread for log correlation.
+ *
+ * Bound alongside {@link createPublicDatasetToolRegistry} at the call
+ * site — together they form the unlinked-asker enforcement boundary:
+ * no org context (RLS / overlays neutral) AND tool-level allowlist
+ * gating BEFORE the listener's post-filter ever runs.
  */
 function buildAnonymousActor(
   threadId: string,
@@ -339,7 +468,8 @@ interface AgentStepLike {
  * Internal extraction shape. Carries the SQL + data lists alongside
  * the wire-level {@link ProactiveQueryResult} fields so the adapter
  * can log richer observability without inventing optional fields the
- * plugin's typed contract doesn't accept. Exported for tests.
+ * plugin's typed contract doesn't accept. Exported for tests; not
+ * part of the public adapter surface.
  */
 export interface CollectedProactiveResult {
   answer: string;
@@ -354,14 +484,12 @@ const METRIC_PATH_RE = /metrics\/([A-Za-z0-9_\-./]+?)\.ya?ml/g;
 
 /**
  * Walk the agent's step stream and extract the structured fields the
- * proactive listener cares about. Mirrors {@link executeAgentQuery}'s
- * loop but produces the slimmer shape needed by
- * {@link ProactiveQueryResult} (no `pendingActions` / `pendingApproval`
- * — those branches don't apply to the proactive flow yet). The returned
- * `sql`/`data` arrays are not part of the wire contract; the adapter
- * uses them for logging and to seed slice-2 callers that want richer
- * cards later. {@link toProactiveQueryResult} narrows the shape to
- * what the plugin accepts.
+ * proactive listener cares about. Produces the slimmer shape needed by
+ * {@link ProactiveQueryResult}: the answer text plus the entity /
+ * metric names that drive the listener's allowlist gate, plus internal
+ * `sql` / `data` arrays the adapter logs (NOT part of the wire
+ * contract). {@link toProactiveQueryResult} narrows the shape to what
+ * the plugin accepts.
  */
 export function collectProactiveResult(
   answer: string,

@@ -1,5 +1,5 @@
 /**
- * Tests for the proactive answer adapter (#2614 / slice 2a of #2607).
+ * Tests for the proactive answer adapter (#2614).
  *
  * Pins:
  *  - Linked path: when `atlasUserId` is non-null, the adapter resolves
@@ -8,13 +8,21 @@
  *    actor on `RequestContext.user`.
  *  - Unlinked path: when `atlasUserId` is null, the agent runs with a
  *    synthetic anonymous identity (`slack-bot:proactive:<threadId>`)
- *    and no `activeOrganizationId`.
+ *    and no `activeOrganizationId`, AND `runAgent` receives the
+ *    restricted public-dataset {@link ToolRegistry} (see
+ *    `public-dataset-tools.ts`).
+ *  - Unlinked refusals: missing `getPublicDataset`, empty allowlist,
+ *    and resolver-throw all refuse the request without invoking
+ *    `runAgent`. Each path logs an `event` tag specific to the
+ *    failure.
  *  - Tool extraction: `executeSQL` tool calls produce `sql` + `data`
  *    entries; `explore` `cat entities/x.yml` commands produce
  *    `entitiesReferenced`; `cat metrics/y.yml` produces
  *    `metricsReferenced`.
  *  - Error surface: when `runAgent` throws, the adapter logs the
- *    developer detail and rethrows the user-safe message.
+ *    developer detail (with `event: proactive.answer.agent_failed`)
+ *    and rethrows the user-safe message. The model-resolution path
+ *    has its own `event` tag.
  *
  * Uses sync `mock.module()` factories per CLAUDE.md (async +
  * inner-await would deadlock the loader).
@@ -33,8 +41,20 @@ interface ObservedRunAgentCall {
   orgId?: string | null;
   approvalSurface?: string;
   requestId?: string;
+  hasCustomToolRegistry: boolean;
 }
 const observedRunAgentCalls: ObservedRunAgentCall[] = [];
+
+// Logger spy — captures every `log.error` call's first arg (the
+// structured payload). Lets the error-path test assert that the
+// adapter logged `{ threadId, askerId, errorMessage, event }` against
+// the right `event` tag.
+interface LoggedError {
+  payload: Record<string, unknown>;
+  message: string;
+}
+const loggedErrors: LoggedError[] = [];
+const loggedWarns: LoggedError[] = [];
 
 // `runAgent` return shape — what the adapter awaits via `.text` / `.steps`.
 interface RunAgentMockReturn {
@@ -46,7 +66,10 @@ let nextRunAgentResult: RunAgentMockReturn | null = null;
 let nextRunAgentError: Error | null = null;
 
 mock.module("@atlas/api/lib/agent", () => ({
-  runAgent: async (params: { messages: { parts: { text: string }[] }[] }) => {
+  runAgent: async (params: {
+    messages: { parts: { text: string }[] }[];
+    tools?: unknown;
+  }) => {
     // Capture observed context inside the mocked runAgent so the test
     // can assert which identity the adapter bound to RequestContext.
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -65,6 +88,10 @@ mock.module("@atlas/api/lib/agent", () => ({
       orgId: ctx?.user?.activeOrganizationId ?? null,
       approvalSurface: ctx?.approvalSurface,
       requestId: ctx?.requestId,
+      // Non-null when the adapter built a restricted registry for the
+      // unlinked-asker path. The unlinked path test asserts truthy;
+      // linked path tests assert falsy.
+      hasCustomToolRegistry: params.tools !== undefined,
     });
 
     if (nextRunAgentError) throw nextRunAgentError;
@@ -85,6 +112,40 @@ mock.module("@atlas/api/lib/agent", () => ({
   runAgentEffect: () => {
     throw new Error("not used in adapter tests");
   },
+}));
+
+// Mock the logger so the error-path tests can assert what the adapter
+// logged + against which `event` tag. The factory MUST be sync (per
+// CLAUDE.md `bun:test` rule) so we use `require` to grab the real
+// module's `withRequestContext` / `getRequestContext` / other exports
+// (the adapter and the runAgent mock both rely on those staying
+// functional). `createLogger` is replaced with a spy that records
+// every `error` / `warn` call's payload + message.
+//
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const realLogger = require("@atlas/api/lib/logger") as Record<string, unknown>;
+mock.module("@atlas/api/lib/logger", () => ({
+  ...realLogger,
+  createLogger: () => ({
+    debug: () => {},
+    info: () => {},
+    warn: (payload: Record<string, unknown>, message?: string) => {
+      loggedWarns.push({ payload, message: message ?? "" });
+    },
+    error: (payload: Record<string, unknown>, message?: string) => {
+      loggedErrors.push({ payload, message: message ?? "" });
+    },
+    fatal: () => {},
+    trace: () => {},
+    child: () => ({
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      fatal: () => {},
+      trace: () => {},
+    }),
+  }),
 }));
 
 // ---------------------------------------------------------------------------
@@ -120,6 +181,8 @@ beforeEach(() => {
   observedRunAgentCalls.length = 0;
   nextRunAgentResult = null;
   nextRunAgentError = null;
+  loggedErrors.length = 0;
+  loggedWarns.length = 0;
 });
 
 // ---------------------------------------------------------------------------
@@ -159,6 +222,9 @@ describe("createProactiveAnswerAdapter — linked path", () => {
     expect(observedRunAgentCalls[0].orgId).toBe("org-linked");
     expect(observedRunAgentCalls[0].approvalSurface).toBe("slack");
     expect(observedRunAgentCalls[0].question).toBe("how many customers?");
+    // Linked askers get the default ToolRegistry — no `tools` arg
+    // passed through to runAgent.
+    expect(observedRunAgentCalls[0].hasCustomToolRegistry).toBe(false);
 
     await runtime.dispose();
   });
@@ -194,7 +260,7 @@ describe("createProactiveAnswerAdapter — linked path", () => {
 // ---------------------------------------------------------------------------
 
 describe("createProactiveAnswerAdapter — unlinked path", () => {
-  it("binds a synthetic anonymous identity (no org) when atlasUserId is null", async () => {
+  it("binds a synthetic anonymous identity (no org) AND a restricted tool registry when atlasUserId is null", async () => {
     nextRunAgentResult = {
       text: Promise.resolve("Public-dataset answer"),
       steps: Promise.resolve([]),
@@ -210,6 +276,10 @@ describe("createProactiveAnswerAdapter — unlinked path", () => {
       resolveActor: async () => {
         throw new Error("resolveActor must not be called for unlinked askers");
       },
+      getPublicDataset: async () => [
+        { entityName: "public_customers", denyMetrics: [] },
+        { entityName: "public_revenue", denyMetrics: ["margin"] },
+      ],
     });
 
     const result = await adapter("what is revenue?", {
@@ -224,6 +294,88 @@ describe("createProactiveAnswerAdapter — unlinked path", () => {
     // model routing both branch on `activeOrganizationId`, so an empty
     // string here is the unlinked-asker fingerprint.
     expect(observedRunAgentCalls[0].orgId === null || observedRunAgentCalls[0].orgId === "").toBe(true);
+    // AC #2614 belt-and-braces: agent runs with a restricted registry,
+    // not the default workspace toolset. The listener's post-filter is
+    // a backstop — the adapter-side gate prevents the agent from
+    // reading sensitive entities in the first place.
+    expect(observedRunAgentCalls[0].hasCustomToolRegistry).toBe(true);
+    await runtime.dispose();
+  });
+
+  it("refuses unlinked-asker request when getPublicDataset is not wired", async () => {
+    const runtime = buildRuntime();
+    // No getPublicDataset — the adapter MUST refuse rather than fall
+    // through to an unrestricted agent run.
+    const adapter = createProactiveAnswerAdapter(runtime, {});
+
+    await expect(
+      adapter("public-dataset question", {
+        threadId: "T-missing",
+        asker: slackAsker,
+        atlasUserId: null,
+      }),
+    ).rejects.toThrow(/Atlas couldn't answer this/);
+
+    // runAgent must NOT have been called — the refusal happens BEFORE
+    // the agent is dispatched.
+    expect(observedRunAgentCalls).toHaveLength(0);
+
+    // The refusal logs against its own event tag so operators can
+    // distinguish "host wiring bug" from runtime failures.
+    const matchingError = loggedErrors.find(
+      (e) => e.payload.event === "proactive.answer.public_dataset_missing",
+    );
+    expect(matchingError).toBeDefined();
+    expect(matchingError?.payload.threadId).toBe("T-missing");
+    await runtime.dispose();
+  });
+
+  it("refuses unlinked-asker request when the allowlist is empty", async () => {
+    const runtime = buildRuntime();
+    const adapter = createProactiveAnswerAdapter(runtime, {
+      getPublicDataset: async () => [],
+    });
+
+    await expect(
+      adapter("question against empty allowlist", {
+        threadId: "T-empty",
+        asker: slackAsker,
+        atlasUserId: null,
+      }),
+    ).rejects.toThrow(/Atlas couldn't answer this/);
+    expect(observedRunAgentCalls).toHaveLength(0);
+
+    // Empty allowlist is a workspace-config signal, not an error —
+    // logged as a warn with the dedicated event tag.
+    const matchingWarn = loggedWarns.find(
+      (w) => w.payload.event === "proactive.answer.public_dataset_empty",
+    );
+    expect(matchingWarn).toBeDefined();
+    await runtime.dispose();
+  });
+
+  it("refuses unlinked-asker request when getPublicDataset throws", async () => {
+    const runtime = buildRuntime();
+    const adapter = createProactiveAnswerAdapter(runtime, {
+      getPublicDataset: async () => {
+        throw new Error("registry connection refused");
+      },
+    });
+
+    await expect(
+      adapter("resolver-fail question", {
+        threadId: "T-fail",
+        asker: slackAsker,
+        atlasUserId: null,
+      }),
+    ).rejects.toThrow(/Atlas couldn't answer this/);
+    expect(observedRunAgentCalls).toHaveLength(0);
+
+    const matchingError = loggedErrors.find(
+      (e) => e.payload.event === "proactive.answer.public_dataset_failed",
+    );
+    expect(matchingError).toBeDefined();
+    expect(matchingError?.payload.errorMessage).toContain("registry connection refused");
     await runtime.dispose();
   });
 });
@@ -233,7 +385,7 @@ describe("createProactiveAnswerAdapter — unlinked path", () => {
 // ---------------------------------------------------------------------------
 
 describe("createProactiveAnswerAdapter — error handling", () => {
-  it("rethrows a user-safe message when runAgent throws", async () => {
+  it("rethrows a user-safe message AND logs the developer detail with event tag when runAgent throws", async () => {
     nextRunAgentError = new Error("ECONNREFUSED postgres://internal:5432");
 
     const runtime = buildRuntime();
@@ -253,7 +405,53 @@ describe("createProactiveAnswerAdapter — error handling", () => {
       }),
     ).rejects.toThrow(/Atlas couldn't answer this/);
 
+    // log.error MUST fire with the structured payload (#2614 review
+    // P1) so operators can correlate the user-safe rethrow to the
+    // underlying agent failure. Event tag distinguishes this from the
+    // model-resolution / identity branches.
+    const agentFailedEntry = loggedErrors.find(
+      (e) => e.payload.event === "proactive.answer.agent_failed",
+    );
+    expect(agentFailedEntry).toBeDefined();
+    expect(agentFailedEntry?.payload.threadId).toBe("T-err");
+    expect(agentFailedEntry?.payload.askerId).toBe("slack:U999");
+    expect(agentFailedEntry?.payload.errorMessage).toContain("ECONNREFUSED");
+
     await runtime.dispose();
+  });
+
+  it("logs against the model-resolution event tag when AtlasAiModel resolution fails", async () => {
+    // Force the runtime's AtlasAiModel resolution to fail by passing a
+    // ManagedRuntime that does NOT provide the AtlasAiModel layer.
+    // `Layer.empty` carries no services so `runPromise(yield* AtlasAiModel)`
+    // collapses to a defect — the adapter must catch and emit the
+    // `proactive.answer.model_resolution_failed` event tag.
+    const emptyRuntime = ManagedRuntime.make(Layer.empty) as unknown as Parameters<
+      typeof createProactiveAnswerAdapter
+    >[0];
+    const adapter = createProactiveAnswerAdapter(emptyRuntime, {
+      resolveOrgForUser: async () => "org-1",
+      resolveActor: async () =>
+        createAtlasUser("user-1", "managed", "u1@example.com", {
+          activeOrganizationId: "org-1",
+        }),
+    });
+
+    await expect(
+      adapter("question with broken model", {
+        threadId: "T-model",
+        asker: slackAsker,
+        atlasUserId: "user-1",
+      }),
+    ).rejects.toThrow(/Atlas couldn't answer this/);
+
+    expect(observedRunAgentCalls).toHaveLength(0); // never reached runAgent
+    const modelFailedEntry = loggedErrors.find(
+      (e) => e.payload.event === "proactive.answer.model_resolution_failed",
+    );
+    expect(modelFailedEntry).toBeDefined();
+    expect(modelFailedEntry?.payload.threadId).toBe("T-model");
+    await emptyRuntime.dispose();
   });
 });
 

@@ -677,12 +677,14 @@ export const ADMIN_ACTIONS = {
      * `misfire` / `correct` / `unsure` from the drill-down panel. Upsert
      * on (workspace_id, message_id), so re-labelling the same message
      * emits a fresh audit row each time (the new verdict overrides any
-     * prior one; the trail records the history). Metadata: `{ messageId,
-     * channelId, verdict, previousVerdict?, note? }` so a forensic query
-     * can reconstruct "what changed and why" without joining on the
-     * review table. Without this row, a workspace admin can quietly
-     * relabel ambiguous classifies and shift the misfire-rate metric
-     * the rest of the team trusts.
+     * prior one; the trail records the history). Metadata: `{ workspaceId,
+     * channelId, messageId, verdict, previousVerdict, note? }`. `channelId`
+     * lets forensic queries pivot on the chat-platform channel without a
+     * second join onto `proactive_meter_events`; `previousVerdict` is
+     * `null` on first write and the prior value on every subsequent
+     * relabel. Without this row, a workspace admin can quietly relabel
+     * ambiguous classifies and shift the misfire-rate metric the rest
+     * of the team trusts.
      */
     review: "proactive.review",
   },

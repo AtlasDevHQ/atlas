@@ -26,7 +26,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 
 const {
   upsertClassificationReview,
-  classifyEventExists,
+  lookupClassifyChannel,
+  MAX_REVIEW_NOTE_LENGTH,
   PROACTIVE_REVIEW_VERDICTS,
 } = await import("../classification-review");
 
@@ -104,24 +105,59 @@ describe("upsertClassificationReview (#2622)", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("rejects a note longer than MAX_REVIEW_NOTE_LENGTH before touching the DB", async () => {
+    expect(MAX_REVIEW_NOTE_LENGTH).toBe(1024);
+    await expect(
+      upsertClassificationReview({
+        workspaceId: "ws-1",
+        messageId: "M-1",
+        verdict: "misfire",
+        reviewerUserId: null,
+        note: "x".repeat(MAX_REVIEW_NOTE_LENGTH + 1),
+      }),
+    ).rejects.toThrow(/exceeds 1024 chars/);
+    expect(calls).toHaveLength(0);
+  });
+
   it("exports the verdict tuple consumed by zod + the CHECK constraint", () => {
     expect(PROACTIVE_REVIEW_VERDICTS).toEqual(["misfire", "correct", "unsure"]);
   });
 });
 
-describe("classifyEventExists (#2622)", () => {
-  it("returns true when the classify row is present", async () => {
-    queryResponses.push([{ exists: true }]);
-    const exists = await classifyEventExists("ws-1", "M-1");
-    expect(exists).toBe(true);
+describe("lookupClassifyChannel (#2622)", () => {
+  it("returns the channelId when the classify row is present", async () => {
+    queryResponses.push([{ channel_id: "C-1" }]);
+    const channelId = await lookupClassifyChannel("ws-1", "M-1");
+    expect(channelId).toBe("C-1");
     expect(calls[0]!.sql).toMatch(/proactive_meter_events/i);
     expect(calls[0]!.sql).toMatch(/event_type = 'classify'/i);
     expect(calls[0]!.params).toEqual(["ws-1", "M-1"]);
   });
 
-  it("returns false when no classify row exists for the message", async () => {
+  it("returns null when no classify row exists for the message", async () => {
     queryResponses.push([]);
-    const exists = await classifyEventExists("ws-1", "M-1");
-    expect(exists).toBe(false);
+    const channelId = await lookupClassifyChannel("ws-1", "M-1");
+    expect(channelId).toBeNull();
+  });
+
+  it("throws when no internal DB is configured (vs silently returning null)", async () => {
+    mock.module("@atlas/api/lib/db/internal", () => ({
+      ...realInternal,
+      hasInternalDB: () => false,
+      internalQuery: async () => [],
+    }));
+    const refreshed = await import("../classification-review");
+    await expect(
+      refreshed.lookupClassifyChannel("ws-1", "M-1"),
+    ).rejects.toThrow(/internal DB is not configured/);
+    // Restore for sibling tests in the same file.
+    mock.module("@atlas/api/lib/db/internal", () => ({
+      ...realInternal,
+      hasInternalDB: () => true,
+      internalQuery: async (sql: string, params: unknown[]) => {
+        calls.push({ sql, params });
+        return queryResponses.shift() ?? [];
+      },
+    }));
   });
 });

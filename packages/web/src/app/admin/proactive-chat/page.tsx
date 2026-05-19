@@ -1166,18 +1166,21 @@ function DrillDownTiles({
           (reviewSummary.misfireCount / reviewSummary.reviewedCount) * 100,
         );
 
+  let classifySecondary: string;
+  if (aggregateClassify === null) {
+    classifySecondary = "loading";
+  } else if (aggregateClassify === 0) {
+    classifySecondary = "no calls in window";
+  } else {
+    classifySecondary = "30-day rolling";
+  }
+
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
       <DrillDownTile
         label="Classifier calls (30d)"
         primary={aggregateClassify ?? "—"}
-        secondary={
-          aggregateClassify === null
-            ? "loading"
-            : aggregateClassify === 0
-              ? "no calls in window"
-              : "30-day rolling"
-        }
+        secondary={classifySecondary}
       />
       <DrillDownTile
         label="React rate"
@@ -1217,12 +1220,17 @@ function DrillDownTile({
   secondary: string;
   tone?: "neutral" | "ok" | "warn";
 }) {
-  const toneClass =
-    tone === "warn"
-      ? "text-amber-700 dark:text-amber-500"
-      : tone === "ok"
-        ? "text-emerald-700 dark:text-emerald-500"
-        : "text-foreground";
+  let toneClass: string;
+  switch (tone) {
+    case "warn":
+      toneClass = "text-amber-700 dark:text-amber-500";
+      break;
+    case "ok":
+      toneClass = "text-emerald-700 dark:text-emerald-500";
+      break;
+    default:
+      toneClass = "text-foreground";
+  }
   return (
     <div className="rounded-lg border bg-muted/30 px-4 py-3">
       <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">

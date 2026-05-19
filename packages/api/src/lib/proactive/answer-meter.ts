@@ -326,19 +326,19 @@ ORDER BY created_at DESC`;
  * pagination on (created_at DESC, id DESC) so the page stays stable
  * under inserts arriving during the admin's scroll.
  *
- * Parameters (`$1`..`$5`):
+ * Parameters (`$1`..`$6`):
  *   1. workspace_id
  *   2. created_at lower bound (window)
  *   3. event_type filter ('' = no filter)
  *   4. cursor created_at (NULL = first page)
- *   5. limit + 1 (the route slices the final row off to compute
+ *   5. cursor id (the keyset tie-breaker; NULL = first page)
+ *   6. limit + 1 (the route slices the final row off to compute
  *      hasMore without an extra COUNT(*))
  *
- * Note: `$4` participates in the keyset filter only when paired with
- * `$5_id`. We thread the cursor id as `$6` so the row index is
- * deterministic. Keeping the SQL inline (rather than building it with
- * string concatenation) keeps the parameter count stable per call,
- * which `node-postgres` prefers for prepared-statement reuse.
+ * Note: `$4` and `$5` participate in the keyset filter only as a pair.
+ * Keeping the SQL inline (rather than building it with string
+ * concatenation) keeps the predicates greppable for SQL-injection
+ * audits and avoids accidental dynamic-predicate construction.
  */
 const EVENTS_PAGE_SQL = `SELECT
   e.id,
@@ -605,7 +605,7 @@ function normaliseEventRow(row: ProactiveEventDbRow): ProactiveEventRow {
   // specific pg configuration.
   const metadata: Record<string, unknown> =
     typeof row.metadata === "string"
-      ? safeJsonParse(row.metadata)
+      ? safeJsonParse(row.metadata, row.id)
       : (row.metadata ?? {});
 
   return {
@@ -642,11 +642,24 @@ function normaliseEventRow(row: ProactiveEventDbRow): ProactiveEventRow {
   };
 }
 
-function safeJsonParse(raw: string): Record<string, unknown> {
+function safeJsonParse(raw: string, rowId: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
+  } catch (err) {
+    // Surface the bad row at `warn` so a data corruption or pg-driver
+    // misconfiguration is detectable rather than rendered as a silently
+    // empty metadata column in the admin drill-down. Fall back to `{}`
+    // so the row still renders — the alternative (drop the row) would
+    // hide both the misfire signal AND the bad-row signal.
+    log.warn(
+      {
+        err: err instanceof Error ? err.message : String(err),
+        rowId,
+        rawPreview: raw.slice(0, 64),
+      },
+      "proactive_meter_events metadata JSON parse failed — falling back to empty object",
+    );
     return {};
   }
 }
@@ -704,9 +717,10 @@ function clampLimit(raw: number | undefined): number {
  * Review-bucket rollup. The classify count overlaps with
  * `summarizeMeterEvents().classifyCount` for the same window — we
  * recompute it here so the misfire-rate tile pulls from one source
- * (single query, single timestamp); doing it client-side would risk
- * showing `2 misfires / 1 reviewed` if the two reads straddled a new
- * classify insert.
+ * (single query, single timestamp). Computing the rate client-side
+ * across two reads would risk a denominator (classify count) that
+ * doesn't match the numerator if a new classify lands between the
+ * two queries — the per-row LEFT JOIN here keeps both sides in lockstep.
  */
 export async function summarizeReviewVerdicts(
   workspaceId: string,
@@ -731,8 +745,11 @@ export async function summarizeReviewVerdicts(
   }>(REVIEW_SUMMARY_SQL, [workspaceId, cutoff]);
   const row = rows[0];
   // `COUNT(*)` in pg returns bigint → JS string by default; coerce.
-  const toInt = (v: number | string | undefined): number =>
-    v === undefined ? 0 : typeof v === "string" ? Number(v) : v;
+  function toInt(v: number | string | undefined): number {
+    if (v === undefined) return 0;
+    if (typeof v === "string") return Number(v);
+    return v;
+  }
   return {
     classifyCount: toInt(row?.classify_count),
     reviewedCount: toInt(row?.reviewed_count),

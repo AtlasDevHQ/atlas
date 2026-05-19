@@ -22,10 +22,15 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { ProactiveReviewVerdict } from "@atlas/api/lib/proactive/answer-meter";
 
 const log = createLogger("proactive:classification-review");
 
-export type ProactiveReviewVerdict = "misfire" | "correct" | "unsure";
+// Re-export so existing consumers keep their import path. Canonical
+// definition lives in `answer-meter.ts` alongside the meter row + event
+// types — a single source of truth keeps the union from drifting
+// across two structurally-identical declarations.
+export type { ProactiveReviewVerdict };
 
 export const PROACTIVE_REVIEW_VERDICTS: readonly ProactiveReviewVerdict[] = [
   "misfire",
@@ -77,10 +82,13 @@ function toIso(value: string | Date): string {
  * answering "what did the admin change from?" needs two reads of this
  * table around the audit event.
  *
- * Throws when no internal DB is wired. The admin route checks
- * `hasInternalDB()` and returns 500 with a configuration message
- * before reaching this helper, so the throw is a paranoia rail.
+ * Throws when no internal DB is wired. The admin route's
+ * `requireOrgContext()` middleware 404s with `not_available` before
+ * reaching this helper, so the throw is a paranoia rail for non-route
+ * callers.
  */
+export const MAX_REVIEW_NOTE_LENGTH = 1024;
+
 export async function upsertClassificationReview(
   input: UpsertReviewInput,
 ): Promise<UpsertReviewResult> {
@@ -96,6 +104,16 @@ export async function upsertClassificationReview(
     // the DB into a 500 with a Postgres-side message.
     throw new Error(
       `upsertClassificationReview: invalid verdict ${JSON.stringify(input.verdict)}`,
+    );
+  }
+  if (input.note !== null && input.note.length > MAX_REVIEW_NOTE_LENGTH) {
+    // Same belt-and-braces stance for the note cap. The route's zod
+    // schema enforces 1024 chars too, but a future bulk-import script
+    // or admin CLI could call this helper directly — without the
+    // helper-side floor, the cap is route-layer-only and the privacy
+    // posture ("note is short, not a message-text dump") weakens.
+    throw new Error(
+      `upsertClassificationReview: note exceeds ${MAX_REVIEW_NOTE_LENGTH} chars`,
     );
   }
 
@@ -162,22 +180,38 @@ export async function upsertClassificationReview(
 }
 
 /**
- * Verify the classify meter row exists before recording a verdict.
- * The route layer calls this to keep the table free of orphan
- * verdicts — without it, a malicious admin could persist a verdict
- * for an arbitrary message_id and silently shift the misfire metric
- * upward.
+ * Look up the classify meter row backing a verdict write. Returns the
+ * row's `channelId` so the route layer can stamp it onto the audit
+ * payload without a second read; returns `null` when no classify row
+ * exists for `(workspaceId, messageId)`.
+ *
+ * The route layer calls this to keep `proactive_classification_review`
+ * free of orphan verdicts — without the guard, a malicious admin could
+ * persist a verdict for an arbitrary `messageId` and silently shift
+ * the misfire metric upward.
+ *
+ * Throws when no internal DB is wired — matches the
+ * `upsertClassificationReview` posture (route's
+ * `requireOrgContext()` middleware already 404s before this is
+ * reached). Returning `false` here would hide a misconfiguration as
+ * "no orphan row" and shape every reviewer call as a 404 with no
+ * signal — the throw makes the misconfiguration loud at the call
+ * site.
  */
-export async function classifyEventExists(
+export async function lookupClassifyChannel(
   workspaceId: string,
   messageId: string,
-): Promise<boolean> {
-  if (!hasInternalDB()) return false;
-  const rows = await internalQuery<{ exists: boolean }>(
-    `SELECT 1 AS exists FROM proactive_meter_events
+): Promise<string | null> {
+  if (!hasInternalDB()) {
+    throw new Error(
+      "lookupClassifyChannel: internal DB is not configured",
+    );
+  }
+  const rows = await internalQuery<{ channel_id: string }>(
+    `SELECT channel_id FROM proactive_meter_events
      WHERE workspace_id = $1 AND message_id = $2 AND event_type = 'classify'
      LIMIT 1`,
     [workspaceId, messageId],
   );
-  return rows.length > 0;
+  return rows[0]?.channel_id ?? null;
 }

@@ -40,11 +40,12 @@ import {
 } from "@atlas/api/lib/proactive/answer-meter";
 import type {
   EventCursor,
+  ProactiveEventType,
   ProactiveReviewVerdict,
 } from "@atlas/api/lib/proactive/answer-meter";
 import {
   PROACTIVE_REVIEW_VERDICTS,
-  classifyEventExists,
+  lookupClassifyChannel,
   upsertClassificationReview,
 } from "@atlas/api/lib/proactive/classification-review";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
@@ -64,21 +65,55 @@ const log = createLogger("admin-proactive-events");
 /**
  * Cursor is encoded as `<isoCreatedAt>|<uuid>` — opaque to the client.
  * Keeping it human-readable means a 500 carrying the cursor in pino is
- * inspectable without base64-decoding. Trailing-bit corruption falls
- * back to "first page" rather than 400, so a stale tab pasting a
- * truncated link doesn't return a hostile error.
+ * inspectable without base64-decoding. Cleanly malformed cursors
+ * (missing separator, empty halves, unparseable timestamp, non-UUID
+ * id) fall back to "first page" rather than 400 — but every rejection
+ * emits a `warn` with the rejection reason so a real pagination bug
+ * (off-by-one in the client, stale cursor format after a migration)
+ * doesn't silently loop back to page 1 without trace.
  */
-function decodeCursor(raw: string | undefined): EventCursor | null {
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function decodeCursor(
+  raw: string | undefined,
+  requestId: string,
+): EventCursor | null {
   if (!raw) return null;
   const idx = raw.indexOf("|");
-  if (idx <= 0 || idx === raw.length - 1) return null;
+  if (idx <= 0 || idx === raw.length - 1) {
+    log.warn(
+      { requestId, cursor: raw, reason: "missing-separator" },
+      "proactive events cursor rejected — falling back to first page",
+    );
+    return null;
+  }
   const createdAt = raw.slice(0, idx);
   const id = raw.slice(idx + 1);
-  // Cheap shape check — the SQL path casts to timestamptz/uuid and will
-  // reject garbage at the DB layer, but rejecting here avoids the
-  // round-trip + pg error log line on a corrupted client param.
-  if (!createdAt || !id) return null;
-  if (Number.isNaN(Date.parse(createdAt))) return null;
+  if (!createdAt || !id) {
+    log.warn(
+      { requestId, cursor: raw, reason: "empty-half" },
+      "proactive events cursor rejected — falling back to first page",
+    );
+    return null;
+  }
+  if (Number.isNaN(Date.parse(createdAt))) {
+    log.warn(
+      { requestId, cursor: raw, reason: "unparseable-timestamp" },
+      "proactive events cursor rejected — falling back to first page",
+    );
+    return null;
+  }
+  // UUID shape check ahead of the SQL `::uuid` cast so a corrupted
+  // cursor degrades to "first page" with a warn instead of bubbling
+  // up as a `pg` 22P02 invalid_text_representation error.
+  if (!UUID_REGEX.test(id)) {
+    log.warn(
+      { requestId, cursor: raw, reason: "non-uuid-id" },
+      "proactive events cursor rejected — falling back to first page",
+    );
+    return null;
+  }
   return { createdAt, id };
 }
 
@@ -142,21 +177,34 @@ adminProactiveEvents.get("/", async (c) =>
       const sinceMs = parseSinceMs(c.req.query("since"));
       const eventTypeRaw = c.req.query("eventType")?.trim() || undefined;
       const limitRaw = c.req.query("limit");
-      const cursor = decodeCursor(c.req.query("cursor"));
+      const cursor = decodeCursor(c.req.query("cursor"), requestId);
 
       // Validate eventType against the canonical union — accept only the
-      // five values the meter ever inserts. An unknown value is treated
-      // as "no filter" rather than 400 so a stale bookmark with a
-      // dropped filter degrades gracefully.
-      const eventType =
-        eventTypeRaw === "classify" ||
-        eventTypeRaw === "react" ||
-        eventTypeRaw === "offer" ||
-        eventTypeRaw === "accept" ||
-        eventTypeRaw === "feedback" ||
-        eventTypeRaw === "public_refused"
-          ? eventTypeRaw
-          : undefined;
+      // six values the meter ever inserts (the six in `chk_proactive_meter_event_type`).
+      // An unknown value is treated as "no filter" rather than 400 so a
+      // stale bookmark with a dropped filter degrades gracefully — but
+      // we log at `warn` so a client-side regression (typo, dropped
+      // event type after rename) doesn't silently widen the result set.
+      const VALID_EVENT_TYPES = new Set([
+        "classify",
+        "react",
+        "offer",
+        "accept",
+        "feedback",
+        "public_refused",
+      ]);
+      let eventType: ProactiveEventType | undefined;
+      if (eventTypeRaw === undefined) {
+        eventType = undefined;
+      } else if (VALID_EVENT_TYPES.has(eventTypeRaw)) {
+        eventType = eventTypeRaw as ProactiveEventType;
+      } else {
+        log.warn(
+          { requestId, orgId, eventTypeRaw },
+          "proactive events eventType filter rejected — falling back to no filter",
+        );
+        eventType = undefined;
+      }
 
       let limit: number | undefined;
       if (limitRaw !== undefined) {
@@ -258,12 +306,14 @@ adminProactiveEvents.post("/:messageId/review", async (c) =>
       }
 
       // Guard against orphan verdicts — the classify row must exist on
-      // this workspace before we let the admin label it.
-      const exists = yield* Effect.tryPromise({
-        try: () => classifyEventExists(orgId, messageId),
+      // this workspace before we let the admin label it. The lookup
+      // also returns the channelId so we can stamp it onto the audit
+      // row without a second read.
+      const channelId = yield* Effect.tryPromise({
+        try: () => lookupClassifyChannel(orgId, messageId),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
-      if (!exists) {
+      if (channelId === null) {
         return c.json(
           {
             error: "not_found",
@@ -299,6 +349,7 @@ adminProactiveEvents.post("/:messageId/review", async (c) =>
           null,
         metadata: {
           workspaceId: orgId,
+          channelId,
           messageId,
           verdict: result.verdict,
           previousVerdict: result.previousVerdict,

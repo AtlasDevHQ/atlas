@@ -98,6 +98,14 @@ COPY --from=nsjail-builder /nsjail-out/ /usr/local/bin/
 COPY --from=builder --chown=atlas:atlas /app/packages/types ./packages/types
 # Shared wire-format Zod schemas (imported by API route handlers)
 COPY --from=builder --chown=atlas:atlas /app/packages/schemas ./packages/schemas
+# Plugin SDK — workspace symlink target for any plugin's peerDep.
+# `plugins/chat/node_modules/@useatlas/plugin-sdk` resolves to this path
+# via the relative symlink `../../../../packages/plugin-sdk`. Without
+# this COPY, atlas.config.ts's `import "./plugins/chat/src/index"`
+# transitively loads the chat plugin's `@useatlas/plugin-sdk` import
+# and ENOENTs at boot, hard-failing the SaaS deploy. Added in #2608
+# (slice 1 of #2607) when atlas.config.ts started importing chatPlugin.
+COPY --from=builder --chown=atlas:atlas /app/packages/plugin-sdk ./packages/plugin-sdk
 # Widget bundle — built from @useatlas/react (referenced by widget route)
 COPY --from=builder --chown=atlas:atlas /app/packages/react/dist ./packages/react/dist
 # Hono API server source + dependencies

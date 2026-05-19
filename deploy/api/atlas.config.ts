@@ -12,7 +12,6 @@
  *   - ATLAS_REGION_APAC_DB_URL
  */
 
-import { ManagedRuntime } from "effect";
 import { defineConfig } from "./packages/api/src/lib/config";
 // Relative import: atlas.config.ts lives at /app/ in the SaaS container,
 // outside any workspace's node_modules resolution tree. The workspace
@@ -21,7 +20,7 @@ import { defineConfig } from "./packages/api/src/lib/config";
 // The `defineConfig` import above uses the same relative-path pattern
 // for the same reason. Resolved at boot via bun's TS loader.
 import { chatPlugin } from "./plugins/chat/src/index";
-import { AtlasAiModelLive } from "./packages/api/src/lib/effect/ai";
+import { getProactiveAiRuntime } from "./packages/api/src/lib/effect/ai";
 import { getEnterpriseRuntime } from "./packages/api/src/lib/effect/enterprise-layer";
 import { createSlackWorkspaceIdResolver } from "./packages/api/src/lib/proactive/workspace-id-resolver";
 import { createProactiveEnabledGate } from "./packages/api/src/lib/proactive/enabled-gate";
@@ -40,12 +39,12 @@ import { getWorkspaceQuotaStatus } from "./packages/api/src/lib/proactive/quota"
 import { getAllowlist } from "./packages/api/src/lib/proactive/public-dataset";
 
 // Dedicated runtime for the proactive classifier + answer adapters.
-// The server's own runtime in `packages/api/src/api/server.ts` isn't
-// exported, so we build a small one here. `ManagedRuntime.make` is
-// cheap — it defers `AtlasAiModelLive` resolution until the first
-// `runPromise()`, by which point settings are populated. The layer's
-// 5s settings TTL absorbs admin-driven model swaps without a restart.
-const proactiveAiRuntime = ManagedRuntime.make(AtlasAiModelLive);
+// Built inside the workspace by `getProactiveAiRuntime()` so this file
+// stays free of bare-package `effect` imports (which can't be resolved
+// from /app/ in the SaaS container — the workspace's `effect` lives
+// under packages/api/node_modules and isn't on the upward walk from
+// /app/atlas.config.ts). Process-lifetime cached on the helper side.
+const proactiveAiRuntime = getProactiveAiRuntime();
 
 export default defineConfig({
   // ── Datasource ──────────────────────────────────────────────────

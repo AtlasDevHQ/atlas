@@ -1038,8 +1038,11 @@ export function createChatBridge(
                 { markdown: "Thanks for the feedback." },
                 { fallbackToDM: false },
               );
-            } catch {
-              // Ack is best-effort.
+            } catch (ackErr) {
+              log.debug(
+                { err: ackErr instanceof Error ? ackErr : new Error(String(ackErr)) },
+                "Proactive feedback slash ack postEphemeral failed — feedback already recorded",
+              );
             }
             return;
           }

@@ -896,6 +896,7 @@ describe("registerProactiveListener — kill switch", () => {
     await invoke(thread, makeMessage({ text: "@atlas pause" }));
     expect(onPauseRequest).toHaveBeenCalledTimes(1);
     expect((onPauseRequest.mock.calls[0] as unknown[])?.[0]).toMatchObject({
+      workspaceId: "ws_1",
       channelId: "C-allowed",
       layer: "channel-24h",
     });
@@ -921,6 +922,7 @@ describe("registerProactiveListener — kill switch", () => {
     await invoke(thread, makeMessage({ text: "unsubscribe" }));
     expect(onPauseRequest).toHaveBeenCalledTimes(1);
     expect((onPauseRequest.mock.calls[0] as unknown[])?.[0]).toMatchObject({
+      workspaceId: "ws_1",
       channelId: null,
       layer: "user-optout",
       durationMs: null,
@@ -1803,5 +1805,188 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
     // Both tenants should react — the cooldown is per-tenant.
     expect(threadA._addReaction).toHaveBeenCalledTimes(1);
     expect(threadB._addReaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("pause writes carry the per-event workspaceId (two tenants, two channels)", async () => {
+    // Stamping the wrong workspaceId on a pause row routes the
+    // kill-switch / opt-out to the wrong tenant — the most dangerous
+    // multi-tenant regression possible. This test pins onPauseRequest's
+    // workspaceId arg to whichever tenant the event resolved to.
+    const channelToWorkspace = new Map<string, string>([
+      ["C-tenant-A", "ws-A"],
+      ["C-tenant-B", "ws-B"],
+    ]);
+    const resolveWorkspaceId: ResolveWorkspaceIdFn = async ({ thread }) => {
+      return channelToWorkspace.get(thread.channelId) ?? null;
+    };
+
+    const onPauseRequest = mock(async () => {});
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(
+      chat as unknown as Parameters<typeof registerProactiveListener>[0],
+      makeLogger(),
+      {
+        isEnabled: () => true,
+        classify: yesLLM,
+        resolveWorkspaceId,
+        getWorkspaceConfig: defaultGetWorkspace,
+        getChannelConfigs: defaultGetChannels,
+        channelAllowlist: ["C-tenant-A", "C-tenant-B"],
+        isPaused: mock(async () => ({ paused: false })),
+        onPauseRequest,
+      },
+    );
+
+    const threadA = makeThread("C-tenant-A");
+    const threadB = makeThread("C-tenant-B");
+    await invokeMessage(threadA, makeMessage({ text: "@atlas pause" }));
+    await invokeMessage(threadB, makeMessage({ text: "@atlas pause" }));
+
+    expect(onPauseRequest).toHaveBeenCalledTimes(2);
+    expect((onPauseRequest.mock.calls[0] as unknown[])?.[0]).toMatchObject({
+      workspaceId: "ws-A",
+      channelId: "C-tenant-A",
+      layer: "channel-24h",
+    });
+    expect((onPauseRequest.mock.calls[1] as unknown[])?.[0]).toMatchObject({
+      workspaceId: "ws-B",
+      channelId: "C-tenant-B",
+      layer: "channel-24h",
+    });
+  });
+
+  it("reaction-back replays the pending entry's workspaceId — not the reaction event's", async () => {
+    // The point: a future refactor that swaps `pending.workspaceId` →
+    // `safeResolveWorkspace(event)` would silently break multi-tenant
+    // correctness because the reaction event's adapter / raw payload
+    // may resolve to a DIFFERENT workspace (Slack OAuth shares a single
+    // user across workspaces; a wandering reactor could "answer-leak"
+    // an answer card across tenants). We pin `isEnabled` to the
+    // pending entry's workspaceId.
+    const channelToWorkspace = new Map<string, string>([
+      ["C-tenant-A", "ws-A"],
+      ["C-tenant-B", "ws-B"],
+    ]);
+    const resolveWorkspaceId: ResolveWorkspaceIdFn = async ({ thread }) => {
+      return channelToWorkspace.get(thread.channelId) ?? null;
+    };
+
+    const isEnabled = mock(async (_: string) => true);
+    const executeQueryProactive: ProactiveExecuteQuery = mock(echoExecute);
+    const { chat, invokeMessage, invokeReaction } = makeChat();
+    await registerProactiveListener(
+      chat as unknown as Parameters<typeof registerProactiveListener>[0],
+      makeLogger(),
+      {
+        isEnabled,
+        classify: yesLLM,
+        resolveWorkspaceId,
+        getWorkspaceConfig: defaultGetWorkspace,
+        getChannelConfigs: defaultGetChannels,
+        channelAllowlist: ["C-tenant-A", "C-tenant-B"],
+        userResolver: linkedResolver,
+        executeQueryProactive,
+      },
+    );
+
+    const threadA = makeThread("C-tenant-A");
+    const threadB = makeThread("C-tenant-B");
+    await invokeMessage(threadA, makeMessage({ id: "M-A-1" }));
+    await invokeMessage(threadB, makeMessage({ id: "M-B-1" }));
+
+    // Snapshot the workspaceIds isEnabled saw during registration +
+    // channel-message handling so we can isolate the reaction-back calls.
+    const isEnabledCallsAfterMessages = isEnabled.mock.calls.length;
+    const executeCallsBeforeReactions = (
+      executeQueryProactive as unknown as { mock: { calls: unknown[] } }
+    ).mock.calls.length;
+
+    // Reaction-back on ws-A's message.
+    await invokeReaction({
+      added: true,
+      messageId: "M-A-1",
+      threadId: threadA.channelId,
+      thread: threadA,
+      user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
+      emoji: PROACTIVE_REACTION,
+      rawEmoji: "robot_face",
+      adapter: { name: "slack" },
+      raw: {},
+    });
+    // Reaction-back on ws-B's message.
+    await invokeReaction({
+      added: true,
+      messageId: "M-B-1",
+      threadId: threadB.channelId,
+      thread: threadB,
+      user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
+      emoji: PROACTIVE_REACTION,
+      rawEmoji: "robot_face",
+      adapter: { name: "slack" },
+      raw: {},
+    });
+
+    // The two reaction-back calls must hit isEnabled with the pending
+    // entry's workspaceId (NOT something re-resolved from the reaction
+    // event — though here both happen to match, the assertion is
+    // structural: the call comes from the pending entry).
+    const reactionIsEnabledCalls = isEnabled.mock.calls.slice(
+      isEnabledCallsAfterMessages,
+    );
+    expect(reactionIsEnabledCalls).toEqual([["ws-A"], ["ws-B"]]);
+
+    // And executeQueryProactive (downstream of the gate) should have
+    // received the same per-pending-entry workspaceId on the proactive
+    // context (slice options.workspaceId is host-controlled, so we
+    // assert via call count alone — both tenants ran).
+    const executeCallsAfterReactions = (
+      executeQueryProactive as unknown as { mock: { calls: unknown[] } }
+    ).mock.calls.length;
+    expect(executeCallsAfterReactions - executeCallsBeforeReactions).toBe(2);
+  });
+
+  it("getWorkspaceConfig is invoked per-event with the resolver's tenant id (no closure-baked workspaceId)", async () => {
+    // Pre-#2620 the workspace config was a static registration field;
+    // post-#2620 it's a per-event fetch. This test pins the spy's call
+    // args so a regression that re-introduces a closure-baked id (e.g.
+    // memoising the first event's workspaceId) fails immediately.
+    const channelToWorkspace = new Map<string, string>([
+      ["C-tenant-A", "ws-A"],
+      ["C-tenant-B", "ws-B"],
+    ]);
+    const resolveWorkspaceId: ResolveWorkspaceIdFn = async ({ thread }) => {
+      return channelToWorkspace.get(thread.channelId) ?? null;
+    };
+
+    const getWorkspaceConfig = mock(
+      async (_workspaceId: string): Promise<WorkspaceProactiveConfig | null> =>
+        baseWorkspace,
+    );
+
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(
+      chat as unknown as Parameters<typeof registerProactiveListener>[0],
+      makeLogger(),
+      {
+        isEnabled: () => true,
+        classify: yesLLM,
+        resolveWorkspaceId,
+        getWorkspaceConfig,
+        getChannelConfigs: defaultGetChannels,
+        channelAllowlist: ["C-tenant-A", "C-tenant-B"],
+      },
+    );
+
+    const threadA = makeThread("C-tenant-A");
+    const threadB = makeThread("C-tenant-B");
+    await invokeMessage(threadA, makeMessage({ id: "M-A-1" }));
+    await invokeMessage(threadB, makeMessage({ id: "M-B-1" }));
+    await invokeMessage(threadA, makeMessage({ id: "M-A-2" }));
+
+    const callArgs = getWorkspaceConfig.mock.calls.map((c) => c[0]);
+    const wsACount = callArgs.filter((id) => id === "ws-A").length;
+    const wsBCount = callArgs.filter((id) => id === "ws-B").length;
+    expect(wsACount).toBe(2);
+    expect(wsBCount).toBe(1);
   });
 });

@@ -258,6 +258,38 @@ function askerFromAuthor(author: Author, platform: string): ProactiveAsker {
   };
 }
 
+/**
+ * Route a meter event through the host meter callback (slice #2296 /
+ * #2297). Failures are swallowed because the meter is observability,
+ * not control flow — a meter outage must never propagate into the SDK
+ * event loop.
+ *
+ * Single source of truth for proactive meter emission. Both the
+ * registration closure (`registerProactiveListener`) and the per-flow
+ * helper (`runAnswerFlow`) used to define identical inline closures
+ * over `config` / `log` / `workspaceId`; consolidating into one
+ * free function eliminates the drift risk.
+ */
+async function emitProactiveMeter(
+  config: ProactiveListenerConfig,
+  log: PluginLogger,
+  workspaceId: string,
+  partial: Omit<ProactiveMeterEvent, "workspaceId">,
+): Promise<void> {
+  if (!config.onMeterEvent) return;
+  try {
+    await config.onMeterEvent({ workspaceId, ...partial });
+  } catch (err) {
+    log.warn(
+      {
+        err: err instanceof Error ? err : new Error(String(err)),
+        eventType: partial.eventType,
+      },
+      "Proactive meter callback threw — suppressed",
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Listener registration
 // ---------------------------------------------------------------------------
@@ -285,12 +317,12 @@ export async function registerProactiveListener(
   log: PluginLogger,
   config: ProactiveListenerConfig,
 ): Promise<ProactiveListenerHandle> {
-  // Registration-time gate. Pre-#2620 the gate was zero-arg with
-  // `workspaceId` baked in; post-#2620 the gate takes workspaceId per
-  // call. At registration we don't know any tenant yet, so probe with
-  // an empty string — the host's implementation is expected to short-
-  // circuit on falsy / unknown ids (no enterprise license at boot means
-  // no listener registers anywhere, regardless of which workspace).
+  // Registration-time gate. Probe with empty string — the host's
+  // `isEnabled` short-circuits on `""` and answers only the enterprise
+  // check (skipping the workspace SELECT, which would otherwise resolve
+  // `false` on a row-missing lookup with `$1 = ''`). If EE isn't loaded,
+  // registration short-circuits at line 295-297. Real per-event calls
+  // pass actual workspaceIds.
   const enabledAtRegistration = await config.isEnabled("");
   if (!enabledAtRegistration) {
     log.debug("Proactive listener not registered — gate is closed");
@@ -328,31 +360,13 @@ export async function registerProactiveListener(
   // slice #2298 `/atlas feedback <text>` fallback path.
   const recentAnswers = new RecentAnswers();
 
-  // Local helper: route an event through the host meter callback,
-  // swallowing failures so a meter outage never propagates into the
-  // SDK event loop. Post-#2620 `workspaceId` is per event — caller
-  // supplies it as the first arg, the helper threads it onto the
-  // wire-format `ProactiveMeterEvent`.
-  const emitMeter = async (
+  // Local alias for the module-scope `emitProactiveMeter` helper —
+  // pre-applies `config` + `log` so call sites stay terse and the
+  // per-event `workspaceId` stays explicit.
+  const emitMeter = (
     workspaceId: string,
     partial: Omit<ProactiveMeterEvent, "workspaceId">,
-  ): Promise<void> => {
-    if (!config.onMeterEvent) return;
-    try {
-      await config.onMeterEvent({
-        workspaceId,
-        ...partial,
-      });
-    } catch (err) {
-      log.warn(
-        {
-          err: err instanceof Error ? err : new Error(String(err)),
-          eventType: partial.eventType,
-        },
-        "Proactive meter callback threw — suppressed",
-      );
-    }
-  };
+  ): Promise<void> => emitProactiveMeter(config, log, workspaceId, partial);
 
   // Per-event workspace resolution helper. Wraps `config.resolveWorkspaceId`
   // with a defensive try/catch so a host implementation that throws (the
@@ -362,8 +376,10 @@ export async function registerProactiveListener(
   // `thread` is typed loosely (`Thread<unknown, unknown>`) because the
   // listener takes events from `onNewMessage`, `onReaction`, `onAction`,
   // and `onModalSubmit` — each surfaces a thread with a different
-  // generic parameter. The resolver only reads `thread.channelId` /
-  // `adapter` / `message.raw`, so a loose generic is correct here.
+  // generic parameter. The Slack resolver reads only `adapter.name` +
+  // `message.raw`; the `thread` field is passed through for forward-
+  // compatibility with platforms that need it (Teams `channelData`,
+  // etc.) but no current resolver dereferences it.
   const safeResolveWorkspace = async (
     adapter: Adapter,
     thread: Thread<unknown, unknown>,
@@ -431,7 +447,9 @@ export async function registerProactiveListener(
       if (text.length === 0) return;
 
       // ---------------------------------------------------------------
-      // Per-event workspace resolution (#2620) — FIRST thing we do.
+      // Per-event workspace resolution (#2620) — first DB / host call
+      // we make. Runs before classify, meter, or kill-switch reads.
+      // (Bot/`isMe`/empty-text skips above run cheaper and earlier.)
       // Unknown tenant → silent skip, no meter event, no DB reads.
       // ---------------------------------------------------------------
       const workspaceId = await safeResolveWorkspace(
@@ -1015,12 +1033,12 @@ export async function registerProactiveListener(
  * `registerProactiveListener`) so the bridge can call it directly
  * with the shared `RecentAnswers` registry.
  *
- * Post-#2620 multi-tenant: the bridge resolves `workspaceId` from the
- * slash-command event (slack `team_id`) and threads it in. The slash
- * subcommand intentionally bypasses `config.resolveWorkspaceId` — the
- * resolver is keyed on the Message shape, and slash commands fire
- * without a Message in the same sense (no thread). The bridge has the
- * raw event and can resolve it directly.
+ * Post-#2620 multi-tenant: the bridge calls `config.resolveWorkspaceId`
+ * with a synthetic Message (id `""`, `raw` from the slash event) before
+ * invoking this helper, because slash events don't surface a Thread or
+ * Message the way `onNewMessage` does. The Slack resolver only reads
+ * `adapter.name` + `message.raw.team_id`, so the synthetic shape
+ * resolves correctly.
  */
 export async function handleProactiveFeedbackSlash(args: {
   text: string | undefined;
@@ -1113,31 +1131,14 @@ async function runAnswerFlow(
     return;
   }
 
-  // Helper: route a meter event through the host (slice #2297 / #2296).
-  // Shared with the public-dataset refusal branch below and the linked-
-  // asker happy path. Failures are swallowed because the meter is
-  // observability, not control flow. Closes over `workspaceId` from
-  // the caller (#2620 multi-tenant — was `config.workspaceId ?? ""`
-  // pre-refactor).
-  const emitMeter = async (
+  // Local alias for the module-scope `emitProactiveMeter` helper —
+  // pre-applies `config` / `log` / `workspaceId` (the latter is the
+  // per-flow tenant resolved at the caller; was `config.workspaceId ?? ""`
+  // pre-#2620). Shared by the public-dataset refusal branch and the
+  // linked-asker happy path below.
+  const emitMeter = (
     partial: Omit<ProactiveMeterEvent, "workspaceId">,
-  ): Promise<void> => {
-    if (!config.onMeterEvent) return;
-    try {
-      await config.onMeterEvent({
-        workspaceId,
-        ...partial,
-      });
-    } catch (err) {
-      log.warn(
-        {
-          err: err instanceof Error ? err : new Error(String(err)),
-          eventType: partial.eventType,
-        },
-        "Proactive meter callback threw — suppressed",
-      );
-    }
-  };
+  ): Promise<void> => emitProactiveMeter(config, log, workspaceId, partial);
 
   // -----------------------------------------------------------------
   // Slice #2297 — unlinked-asker public dataset gate

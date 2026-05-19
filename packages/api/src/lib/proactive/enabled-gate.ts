@@ -12,6 +12,16 @@
  * (`listener.ts:329`, `:612`, ...), so the gate is on the hot path —
  * potentially several calls per second on busy workspaces.
  *
+ * **Registration-probe contract (post-#2620).** The chat plugin's
+ * `registerProactiveListener` calls `config.isEnabled("")` once at boot
+ * to answer "is the listener even possible in this process?" — there's
+ * no tenant yet. An empty `workspaceId` argument is the agreed sentinel
+ * for that probe: this gate returns the enterprise-cached value and
+ * skips the workspace SELECT (which would otherwise resolve `false` on
+ * a row-missing lookup with `$1 = ''` and silently mis-gate the
+ * listener on SaaS where EE is enabled). Real per-event calls always
+ * pass an actual workspaceId, so they run the SELECT as usual.
+ *
  * Two-tier resolution:
  *   1. **Enterprise check, cached per-closure.** `ProactiveGate.requireEnabled`
  *      reads `process.env.ATLAS_ENTERPRISE_ENABLED` plus the optional
@@ -21,13 +31,14 @@
  *      ONCE per closure and cache the boolean — re-yielding on every
  *      message would pay an Effect runtime hop just to read a process-
  *      lifetime constant.
- *   2. **Workspace check, re-read every call.** Admins toggle
- *      `workspace_proactive_config.enabled` at runtime via
+ *   2. **Workspace check, re-read every call (real workspaceIds only).**
+ *      Admins toggle `workspace_proactive_config.enabled` at runtime via
  *      `/admin/proactive-chat`; the kill-switch contract is that the next
  *      classified message must respect the new value. Cache would defeat
  *      that, so the SELECT runs on every call. The query hits the
  *      `workspace_id` primary key and is index-only — costs a small ms
- *      regardless.
+ *      regardless. The registration probe (empty `workspaceId`) skips
+ *      this step.
  *
  * Failure modes — every failure path returns `false` (fail-closed) and
  * never throws into the SDK event loop:
@@ -194,6 +205,18 @@ export function createProactiveEnabledGate(
     }
 
     if (!enterpriseEnabled) return false;
+
+    // ── 1.5. Registration-probe short-circuit ────────────────────
+    // The chat plugin's `registerProactiveListener` calls this gate
+    // once at boot with `workspaceId = ""` to answer "is the listener
+    // even possible in this process?" — there's no tenant yet. Skip
+    // the workspace SELECT: with `$1 = ''` it returns 0 rows and
+    // resolves to `false`, which would silently mis-gate the listener
+    // on SaaS where EE is enabled. Real per-event calls always pass
+    // an actual id and fall through to the SELECT.
+    if (workspaceId === "") {
+      return true;
+    }
 
     // ── 2. Workspace check (re-read every call) ──────────────────
     try {

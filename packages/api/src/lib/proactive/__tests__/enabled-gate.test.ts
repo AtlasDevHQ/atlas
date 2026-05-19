@@ -306,6 +306,62 @@ describe("createProactiveEnabledGate", () => {
     expect(params).toEqual([["ws-A"], ["ws-B"]]);
   });
 
+  it("returns true for empty workspaceId when enterprise is enabled — registration probe, no DB call", async () => {
+    // The chat plugin's `registerProactiveListener` calls
+    // `config.isEnabled("")` once at boot to answer "is the listener
+    // even possible in this process?" — there's no tenant yet. The
+    // gate must answer the enterprise question and skip the workspace
+    // SELECT; otherwise `$1 = ''` returns 0 rows and silently mis-gates
+    // the listener on SaaS where EE is enabled.
+    const runtime = buildRuntime(buildGateLayer({ enabled: true }));
+    mockInternalQuery.mockImplementation(async () => [{ enabled: true }]);
+
+    const gate = createProactiveEnabledGate(runtime);
+    expect(await gate("")).toBe(true);
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+
+  it("returns false for empty workspaceId when enterprise is disabled — registration probe, no DB call", async () => {
+    // EE-disabled path: the enterprise cache short-circuits first, so
+    // the registration probe correctly answers "no listener" without
+    // touching the DB.
+    const runtime = buildRuntime(buildGateLayer({ enabled: false }));
+    mockInternalQuery.mockImplementation(async () => [{ enabled: true }]);
+
+    const gate = createProactiveEnabledGate(runtime);
+    expect(await gate("")).toBe(false);
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+
+  it("caches a false enterprise result across many tenants — never yields Tag twice, never queries DB", async () => {
+    // Mirror of "one closure serves multiple tenants" for the
+    // EE-disabled scenario. A self-hosted deploy that never enables EE
+    // must not pay an Effect runtime hop AND must not hit the DB on
+    // every event — both would defeat the per-closure cache the
+    // enabled-gate exists to provide.
+    const spy: Mock<RequireEnabledFn> = mock(
+      () =>
+        Effect.fail(
+          new EnterpriseError(
+            "Enterprise features (proactive-chat) are not enabled.",
+          ),
+        ) as ReturnType<RequireEnabledFn>,
+    );
+    const runtime = buildRuntime(buildGateLayer({ enabled: false, spy }));
+
+    const gate = createProactiveEnabledGate(runtime);
+
+    expect(await gate("ws-A")).toBe(false);
+    expect(await gate("ws-B")).toBe(false);
+    expect(await gate("ws-C")).toBe(false);
+
+    // (a) Enterprise check yielded exactly ONCE across all three tenants.
+    expect(spy).toHaveBeenCalledTimes(1);
+    // (b) No DB calls at all — the workspace SELECT is gated behind
+    //     a positive enterprise resolution.
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+
   it("one closure serves multiple tenants — single enterprise cache, per-call workspace SELECT", async () => {
     // The core #2620 multi-tenant correctness assertion: a single
     // closure built ONCE per process must serve N tenants. The

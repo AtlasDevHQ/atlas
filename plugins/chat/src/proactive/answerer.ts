@@ -17,6 +17,11 @@
  */
 
 import type { Author } from "chat";
+import type {
+  AtlasUserId,
+  ExternalUserId,
+  WorkspaceId,
+} from "@useatlas/types/proactive";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -26,17 +31,33 @@ import type { Author } from "chat";
 export interface ProactiveAsker {
   /** Platform name, e.g. "slack". */
   platform: string;
-  /** Platform-side user ID (Slack U…, etc.). */
-  externalUserId: string;
+  /**
+   * Platform-side user ID (Slack `U…`, etc.). Branded
+   * ({@link ExternalUserId}) — promote via `assertExternalUserId` at
+   * the boundary so a transposed-arg call (e.g. passing an
+   * `externalUserId` where an `AtlasUserId` was expected) is a compile
+   * error. See `plugins/chat/src/proactive/identity.ts`.
+   */
+  externalUserId: ExternalUserId;
   /** Optional display name for logs / fallback prompts. */
   userName?: string;
 }
 
-/** Returned by the host's user-resolver callback. */
-export interface ResolvedAsker {
-  /** Atlas user ID when the chat user is linked via OAuth. */
-  atlasUserId?: string;
-}
+/**
+ * Returned by the host's user-resolver callback. Discriminated union so
+ * the unlinked branch is explicit at the public API (mirrors the
+ * three-state `ResolveOutcome` used inside `listener.ts`).
+ *
+ * Pre-#2641 shape was `{ atlasUserId?: string }` — a host that
+ * returned `{ atlasUserId: undefined }` and a host that returned `{}`
+ * were structurally identical, and the listener had to defensively
+ * check `resolved.atlasUserId` before treating the result as
+ * "unlinked". The discriminator makes the unlinked branch a
+ * deliberate construction, not an accident-of-omission.
+ */
+export type ResolvedAsker =
+  | { kind: "linked"; atlasUserId: AtlasUserId }
+  | { kind: "unlinked" };
 
 /**
  * Per-event context passed to the user resolver (#2624).
@@ -51,11 +72,20 @@ export interface ResolvedAsker {
  * Kept as a separate object (Option 2 from the issue body) rather than
  * inlined into {@link ProactiveAsker} so the asker stays a pure
  * chat-platform identity while the workspace stays per-event context.
+ *
+ * `Readonly` (#2641): a host implementation must not mutate the
+ * workspaceId mid-call — the listener promoted exactly one branded id
+ * before invoking the resolver, and downstream code (meter rows,
+ * audit, public-dataset gate) relies on that identity staying stable.
  */
-export interface ProactiveUserResolverContext {
-  /** Atlas workspace id (`org_id`) the event belongs to. */
-  workspaceId: string;
-}
+export type ProactiveUserResolverContext = Readonly<{
+  /**
+   * Atlas workspace id (`org_id`) the event belongs to. Branded
+   * ({@link WorkspaceId}) — promote via `assertWorkspaceId` at the
+   * boundary.
+   */
+  workspaceId: WorkspaceId;
+}>;
 
 /**
  * Resolver: chat-platform identity → Atlas identity.
@@ -119,24 +149,27 @@ export interface ProactiveQueryResult {
  */
 export type ProactiveExecuteQuery = (
   question: string,
-  context: {
+  context: Readonly<{
     threadId: string;
     asker: ProactiveAsker;
     /**
      * Atlas user id when the asker is OAuth'd into a workspace user.
      * `null` means the asker is unlinked — host MUST constrain the
-     * agent to the workspace's public-dataset allowlist.
+     * agent to the workspace's public-dataset allowlist. Branded
+     * ({@link AtlasUserId}) so a transposed-arg call (e.g. passing
+     * `asker.externalUserId` here) is a compile error.
      */
-    atlasUserId: string | null;
+    atlasUserId: AtlasUserId | null;
     /**
      * Atlas workspace id the event belongs to (#2624). Threaded through
      * from the listener's per-event resolution so the host can scope
      * tool registries, allowlist lookups, and tenant-specific config
      * by the right tenant on multi-tenant SaaS. Static-tenant hosts
-     * can ignore it.
+     * can ignore it. Branded ({@link WorkspaceId}) — promoted via
+     * `assertWorkspaceId` at the listener's boundary.
      */
-    workspaceId: string;
-  },
+    workspaceId: WorkspaceId;
+  }>,
 ) => Promise<ProactiveQueryResult>;
 
 // ---------------------------------------------------------------------------
@@ -152,9 +185,9 @@ export interface PendingAnswerEntry {
    * this message (#2620 multi-tenant). The reaction-back / button-click
    * handlers reuse this id rather than re-resolving from the reaction
    * event so the answer routes to the same tenant that the original
-   * reaction was emitted for.
+   * reaction was emitted for. Branded ({@link WorkspaceId}).
    */
-  workspaceId: string;
+  workspaceId: WorkspaceId;
   /** Epoch ms when this entry was recorded. */
   recordedAt: number;
 }

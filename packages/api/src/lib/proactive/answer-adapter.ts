@@ -47,9 +47,11 @@
 import type { ManagedRuntime } from "effect";
 import { Effect } from "effect";
 import type {
+  AtlasUserId,
   ProactiveAsker,
   ProactiveExecuteQuery,
   ProactiveQueryResult,
+  WorkspaceId,
 } from "@useatlas/chat";
 
 import { runAgent } from "@atlas/api/lib/agent";
@@ -110,14 +112,17 @@ export interface ProactiveAnswerAdapterOptions {
    * Resolve an Atlas user's active org. Defaults to a single-row
    * `member` query (first row wins — matches `server.ts`'s
    * activate-first-org heuristic). Override in tests to stub the DB.
+   *
+   * Accepts a branded {@link AtlasUserId} (#2641) — a transposed-arg
+   * call passing `asker.externalUserId` here is a compile error.
    */
-  resolveOrgForUser?: (atlasUserId: string) => Promise<string | null>;
+  resolveOrgForUser?: (atlasUserId: AtlasUserId) => Promise<string | null>;
   /**
    * Resolve the actor identity for a linked user. Defaults to
    * {@link loadActorUser}.
    */
   resolveActor?: (
-    atlasUserId: string,
+    atlasUserId: AtlasUserId,
     orgId: string | null,
   ) => Promise<AtlasUser | null>;
   /**
@@ -131,13 +136,13 @@ export interface ProactiveAnswerAdapterOptions {
    * call is rejected with the user-safe error. Linked calls
    * (`atlasUserId !== null`) never invoke this callback.
    *
-   * Receives the per-event `workspaceId` (#2624) alongside the asker
-   * so multi-tenant hosts scope the allowlist lookup to the right
-   * tenant. Pre-#2624 the callback received only `asker`, which
-   * couldn't distinguish "same Slack user-id seen in tenant A vs
-   * tenant B" and so routed tenant B askers against tenant A's
-   * allowlist on the chat plugin's single-instance multi-tenant SaaS
-   * wiring.
+   * Receives the per-event branded {@link WorkspaceId} (#2624 + #2641
+   * brand) alongside the asker so multi-tenant hosts scope the
+   * allowlist lookup to the right tenant. Pre-#2624 the callback
+   * received only `asker`, which couldn't distinguish "same Slack
+   * user-id seen in tenant A vs tenant B" and so routed tenant B
+   * askers against tenant A's allowlist on the chat plugin's
+   * single-instance multi-tenant SaaS wiring.
    *
    * The default production wiring resolves the allowlist via
    * `getAllowlist(workspaceId)` in
@@ -145,7 +150,7 @@ export interface ProactiveAnswerAdapterOptions {
    */
   getPublicDataset?: (
     asker: ProactiveAsker,
-    ctx: { workspaceId: string },
+    ctx: { workspaceId: WorkspaceId },
   ) => Promise<ReadonlyArray<PublicDatasetEntry>>;
 }
 
@@ -344,9 +349,12 @@ export function createProactiveAnswerAdapter(
 // ---------------------------------------------------------------------------
 
 async function resolveLinkedActor(
-  atlasUserId: string,
-  resolveOrgForUser: (id: string) => Promise<string | null>,
-  resolveActor: (id: string, orgId: string | null) => Promise<AtlasUser | null>,
+  atlasUserId: AtlasUserId,
+  resolveOrgForUser: (id: AtlasUserId) => Promise<string | null>,
+  resolveActor: (
+    id: AtlasUserId,
+    orgId: string | null,
+  ) => Promise<AtlasUser | null>,
 ): Promise<AtlasUser> {
   // Fail-closed F-55: a thrown `resolveOrgForUser` is infra failure,
   // not "user has no org" (that returns null). Letting it propagate
@@ -433,7 +441,7 @@ function normalizeChatPlatform(platform: string): ChatBotPlatform | null {
  * multi-org members the auth hook leaves activation untouched.
  */
 async function defaultResolveOrgForUser(
-  atlasUserId: string,
+  atlasUserId: AtlasUserId,
 ): Promise<string | null> {
   if (!hasInternalDB()) return null;
   const rows = await internalQuery<{ organizationId: string }>(

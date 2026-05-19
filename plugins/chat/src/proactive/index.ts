@@ -70,6 +70,22 @@ export {
   type ShouldAnswerOnReactionInput,
 } from "./answerer";
 
+// Identity brands + runtime chokepoints (#2641). Types live in
+// `@useatlas/types/proactive`; the assert helpers + error class live in
+// `./identity` and are re-exported here so hosts can pull both from a
+// single `@useatlas/chat` import.
+export {
+  InvalidProactiveIdentityError,
+  assertAtlasUserId,
+  assertExternalUserId,
+  assertWorkspaceId,
+} from "./identity";
+export type {
+  AtlasUserId,
+  ExternalUserId,
+  WorkspaceId,
+} from "@useatlas/types/proactive";
+
 export {
   PROACTIVE_ANSWER_ACTION_ID,
   PROACTIVE_DISMISS_ACTION_ID,

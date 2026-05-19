@@ -51,6 +51,11 @@ import { handleProactiveFeedbackSlash, registerProactiveListener } from "./proac
 import { detectUnsubscribeDM } from "./proactive/pause";
 import type { RecentAnswers } from "./proactive/feedback";
 import { parseFeedbackSlashArgs } from "./proactive/feedback";
+import {
+  InvalidProactiveIdentityError,
+  assertExternalUserId,
+  assertWorkspaceId,
+} from "./proactive/identity";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1119,13 +1124,37 @@ export function createChatBridge(
         }
 
         if (slashWorkspaceId) {
+          // Brand promotion at the boundary (#2641). Empty / malformed
+          // ids fall through to the standard question flow via the
+          // feedback-subcommand refusal path above; the assert helpers
+          // throw on empty, so wrap in a try/catch to keep the slash
+          // handler crash-safe.
+          let brandedWorkspaceId;
+          let brandedExternalUserId;
+          try {
+            brandedWorkspaceId = assertWorkspaceId(slashWorkspaceId);
+            brandedExternalUserId = assertExternalUserId(event.user.userId);
+          } catch (err) {
+            if (err instanceof InvalidProactiveIdentityError) {
+              log.warn(
+                { field: err.field, channelId: event.channel.id },
+                "Proactive feedback slash: identifier promotion failed — refusing",
+              );
+              if (isFeedbackSubcommand) {
+                await refuseFeedbackSubcommand(event);
+              }
+              return;
+            }
+            throw err;
+          }
+
           const handled = await handleProactiveFeedbackSlash({
             text: event.text,
             channelId: event.channel.id,
-            workspaceId: slashWorkspaceId,
+            workspaceId: brandedWorkspaceId,
             asker: {
               platform: event.adapter?.name ?? config.proactive.platform ?? "unknown",
-              externalUserId: event.user.userId,
+              externalUserId: brandedExternalUserId,
               userName: event.user.userName,
             },
             config: {

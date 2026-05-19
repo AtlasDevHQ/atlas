@@ -118,10 +118,18 @@ export type {
 } from "./config";
 
 // Proactive chat layer (slices #2292 reaction-first tracer, #2293 reaction-to-answer, #2295 kill switch, #2298 feedback)
+export {
+  InvalidProactiveIdentityError,
+  assertAtlasUserId,
+  assertExternalUserId,
+  assertWorkspaceId,
+} from "./proactive";
 export type {
+  AtlasUserId,
   ChannelPauseLayer,
   ChannelProactiveConfig,
   ClassificationResult,
+  ExternalUserId,
   FeedbackCollectorFn,
   FeedbackOutcome,
   FeedbackSlashParse,
@@ -147,6 +155,7 @@ export type {
   ResolvedAsker,
   ResolveWorkspaceIdFn,
   SensitivityPreset,
+  WorkspaceId,
   WorkspaceProactiveConfig,
 } from "./proactive";
 export {

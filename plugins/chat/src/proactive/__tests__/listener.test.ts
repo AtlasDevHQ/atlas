@@ -38,6 +38,11 @@ import type {
   ProactiveExecuteQuery,
   ProactiveUserResolver,
 } from "../answerer";
+import {
+  assertAtlasUserId,
+  assertExternalUserId,
+  assertWorkspaceId,
+} from "../identity";
 
 // ---------------------------------------------------------------------------
 // Test doubles
@@ -174,8 +179,11 @@ const baseWorkspace: WorkspaceProactiveConfig = {
 const yesLLM: LLMClassifierFn = async () => ({ isQuestion: true, confidence: 0.9 });
 const noLLM: LLMClassifierFn = async () => ({ isQuestion: false, confidence: 0.1 });
 
-const linkedResolver: ProactiveUserResolver = async () => ({ atlasUserId: "atlas-user-1" });
-const unlinkedResolver: ProactiveUserResolver = async () => ({});
+const linkedResolver: ProactiveUserResolver = async () => ({
+  kind: "linked",
+  atlasUserId: assertAtlasUserId("atlas-user-1"),
+});
+const unlinkedResolver: ProactiveUserResolver = async () => ({ kind: "unlinked" });
 
 const echoExecute: ProactiveExecuteQuery = async (question) => ({
   answer: `Echo: ${question}`,
@@ -722,8 +730,8 @@ describe("handleProactiveFeedbackSlash", () => {
     const handled = await handleProactiveFeedbackSlash({
       text: "how many users last month",
       channelId: "C-allowed",
-      workspaceId: "ws_1",
-      asker: { platform: "slack", externalUserId: "U-asker", userName: "alice" },
+      workspaceId: assertWorkspaceId("ws_1"),
+      asker: { platform: "slack", externalUserId: assertExternalUserId("U-asker"), userName: "alice" },
       config: {
         isEnabled: () => true,
         classify: yesLLM,
@@ -753,8 +761,8 @@ describe("handleProactiveFeedbackSlash", () => {
     const handled = await handleProactiveFeedbackSlash({
       text: "feedback figure looks stale",
       channelId: "C-allowed",
-      workspaceId: "ws_1",
-      asker: { platform: "slack", externalUserId: "U-asker", userName: "alice" },
+      workspaceId: assertWorkspaceId("ws_1"),
+      asker: { platform: "slack", externalUserId: assertExternalUserId("U-asker"), userName: "alice" },
       config: {
         isEnabled: () => true,
         classify: yesLLM,
@@ -781,8 +789,8 @@ describe("handleProactiveFeedbackSlash", () => {
     const handled = await handleProactiveFeedbackSlash({
       text: "feedback some text",
       channelId: "C-allowed",
-      workspaceId: "ws_1",
-      asker: { platform: "slack", externalUserId: "U-asker", userName: "alice" },
+      workspaceId: assertWorkspaceId("ws_1"),
+      asker: { platform: "slack", externalUserId: assertExternalUserId("U-asker"), userName: "alice" },
       config: {
         isEnabled: () => true,
         classify: yesLLM,
@@ -896,7 +904,7 @@ describe("registerProactiveListener — kill switch", () => {
     await invoke(thread, makeMessage({ text: "@atlas pause" }));
     expect(onPauseRequest).toHaveBeenCalledTimes(1);
     expect((onPauseRequest.mock.calls[0] as unknown[])?.[0]).toMatchObject({
-      workspaceId: "ws_1",
+      workspaceId: assertWorkspaceId("ws_1"),
       channelId: "C-allowed",
       layer: "channel-24h",
     });
@@ -921,7 +929,7 @@ describe("registerProactiveListener — kill switch", () => {
     await invokeDM(thread, makeMessage({ text: "unsubscribe" }));
     expect(onPauseRequest).toHaveBeenCalledTimes(1);
     expect((onPauseRequest.mock.calls[0] as unknown[])?.[0]).toMatchObject({
-      workspaceId: "ws_1",
+      workspaceId: assertWorkspaceId("ws_1"),
       channelId: null,
       layer: "user-optout",
       durationMs: null,
@@ -1289,7 +1297,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
     await invokeMessage(thread, makeMessage({ id: "M1" }));
     await invokeReaction(triggerReaction(thread));
     expect(executeQueryProactive).toHaveBeenCalledTimes(1);
-    expect(executeQueryProactive.mock.calls[0]![1].atlasUserId).toBe(
+    expect(executeQueryProactive.mock.calls[0]![1].atlasUserId as string).toBe(
       "atlas-user-1",
     );
     // The allowlist lookup is for the unlinked path — linked asker
@@ -1345,7 +1353,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       { entityName: "marketing.users", denyMetrics: [] },
     ]);
     const executeQueryProactive = mock(
-      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null; workspaceId: string }) => ({
+      async (q: string, _ctx: Parameters<ProactiveExecuteQuery>[1]) => ({
         answer: `Echo: ${q}`,
         entitiesReferenced: ["marketing.users"],
       }),
@@ -1378,7 +1386,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       { entityName: "marketing.users", denyMetrics: [] },
     ]);
     const executeQueryProactive = mock(
-      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null; workspaceId: string }) => ({
+      async (q: string, _ctx: Parameters<ProactiveExecuteQuery>[1]) => ({
         answer: `Echo: ${q}`,
         entitiesReferenced: ["finance.revenue"],
       }),
@@ -1414,7 +1422,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       { entityName: "finance.revenue", denyMetrics: [] },
     ]);
     const executeQueryProactive = mock(
-      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null; workspaceId: string }) => ({
+      async (q: string, _ctx: Parameters<ProactiveExecuteQuery>[1]) => ({
         answer: `Echo: ${q}`,
         entitiesReferenced: ["finance.revenue", "finance.customers"],
       }),
@@ -1445,7 +1453,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       { entityName: "marketing.users", denyMetrics: ["email"] },
     ]);
     const executeQueryProactive = mock(
-      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null; workspaceId: string }) => ({
+      async (q: string, _ctx: Parameters<ProactiveExecuteQuery>[1]) => ({
         answer: `Echo: ${q}`,
         entitiesReferenced: ["marketing.users"],
         metricsReferenced: ["signup_date", "email"],
@@ -1483,7 +1491,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       { entityName: "marketing.users", denyMetrics: [] },
     ]);
     const executeQueryProactive = mock(
-      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null; workspaceId: string }) => ({
+      async (q: string, _ctx: Parameters<ProactiveExecuteQuery>[1]) => ({
         answer: `Echo: ${q}`,
         // No entitiesReferenced field at all.
       }),
@@ -1518,7 +1526,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       { entityName: "marketing.users", denyMetrics: [] },
     ]);
     const executeQueryProactive = mock(
-      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null; workspaceId: string }) => ({
+      async (q: string, _ctx: Parameters<ProactiveExecuteQuery>[1]) => ({
         answer: `Echo: ${q}`,
         entitiesReferenced: [], // empty array
       }),
@@ -1552,7 +1560,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       { entityName: "marketing.users", denyMetrics: [] },
     ]);
     const executeQueryProactive = mock(
-      async (q: string, _ctx: { threadId: string; asker: { externalUserId: string }; atlasUserId: string | null; workspaceId: string }) => ({
+      async (q: string, _ctx: Parameters<ProactiveExecuteQuery>[1]) => ({
         answer: `Echo: ${q}`,
         // No entitiesReferenced
       }),
@@ -2027,10 +2035,13 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
 
     const userResolver = mock(
       async (
-        _asker: { externalUserId: string },
-        _ctx: { workspaceId: string },
-      ) => ({ atlasUserId: "atlas-user-1" }),
-    );
+        _asker: Parameters<ProactiveUserResolver>[0],
+        _ctx: Parameters<ProactiveUserResolver>[1],
+      ) => ({
+        kind: "linked" as const,
+        atlasUserId: assertAtlasUserId("atlas-user-1"),
+      }),
+    ) satisfies ProactiveUserResolver;
     const executeQueryProactive = mock(echoExecute);
     const { chat, invokeMessage, invokeReaction } = makeChat();
     await registerProactiveListener(
@@ -2080,8 +2091,12 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
     // workspaceId. Pre-#2624 the second arg didn't exist; assert both
     // the shape and the value to pin the contract.
     expect(userResolver).toHaveBeenCalledTimes(2);
-    expect(userResolver.mock.calls[0]![1]).toEqual({ workspaceId: "ws-A" });
-    expect(userResolver.mock.calls[1]![1]).toEqual({ workspaceId: "ws-B" });
+    expect(userResolver.mock.calls[0]![1]).toEqual({
+      workspaceId: assertWorkspaceId("ws-A"),
+    });
+    expect(userResolver.mock.calls[1]![1]).toEqual({
+      workspaceId: assertWorkspaceId("ws-B"),
+    });
 
     // ExecuteQueryProactive context carries the same workspaceId so
     // the host adapter can scope its tool gates.
@@ -2094,20 +2109,24 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
     ).toBe("ws-B");
   });
 
-  it("legacy 1-arg userResolver still runs (TS contravariance) but receives the workspaceId at runtime", async () => {
-    // Pinned behaviour: a pre-#2624 host whose resolver was declared
-    // as `(asker) => Promise<...>` still type-checks against the new
-    // `(asker, ctx) => Promise<...>` shape (TypeScript parameter
-    // contravariance allows fewer params). At runtime the listener
-    // passes the second arg unconditionally; a 1-arg fn silently
-    // ignores it. This is the silent-collision path the contract
-    // change addresses: a self-hosted user who upgrades plugins
-    // without touching their resolver gets the old global-lookup
-    // behaviour with no compile or runtime warning.
+  it("pre-#2641 legacy resolver shape now degrades to unlinked at runtime (clean break, no shim)", async () => {
+    // Clean-break posture (#2641): the resolver contract is now a
+    // discriminated `ResolvedAsker` (`{ kind: "linked"; atlasUserId } |
+    // { kind: "unlinked" }`). A pre-#2641 host whose resolver returned
+    // the structural `{ atlasUserId: "..." }` shape still type-checks
+    // through the `as unknown as ProactiveUserResolver` cast (mirrors
+    // the runtime situation when a host upgrades plugins without
+    // touching their resolver), but `safeResolveUser`'s runtime
+    // discriminator check sees no `kind: "linked"` and routes the
+    // asker through the unlinked branch.
     //
-    // This test documents that posture deliberately. If a future
-    // change adds a runtime guard (e.g. resolver.length === 1 warn),
-    // update this test to assert the warn fires.
+    // This is deliberate per the #2641 issue body (pre-customer
+    // clean break — no deprecation shim — matches the precedent of
+    // #2620 and #2626). The previous incarnation of this test pinned
+    // the OPPOSITE — that the legacy shape silently linked the asker.
+    // After the discriminator that's a structural mismatch, and the
+    // listener fails CLOSED to the unlinked path (no link table is
+    // wired here, so the unlinked-asker stub posts).
     const legacyResolver = mock(async (_asker: { externalUserId: string }) => ({
       atlasUserId: "atlas-user-from-legacy",
     }));
@@ -2121,9 +2140,6 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
         resolveWorkspaceId: makeResolver("ws-1"),
         getWorkspaceConfig: defaultGetWorkspace,
         getChannelConfigs: allowChannels("C-allowed"),
-        // Cast: pre-#2624 hosts had this exact 1-arg shape, and
-        // TypeScript still accepts it via contravariance. The cast
-        // mirrors the runtime situation.
         userResolver: legacyResolver as unknown as ProactiveUserResolver,
         executeQueryProactive: echoExecute,
       },
@@ -2143,21 +2159,25 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
       raw: {},
     });
 
-    // Legacy resolver fired and returned its atlasUserId — listener
-    // accepted the link and routed through the linked path. The
-    // second arg was passed (it would silently be undefined inside
-    // the 1-arg function body) but didn't influence the outcome.
+    // Legacy resolver fired and the listener passed the per-event
+    // workspaceId as the 2nd arg (the runtime invariant survives the
+    // contract change). The discriminator check sees no `kind:
+    // "linked"` and routes the asker through the unlinked branch —
+    // the unlinked-asker stub posts in-thread (`thread.post` called),
+    // the linked-asker echo path is NOT taken.
     expect(legacyResolver).toHaveBeenCalledTimes(1);
     expect(legacyResolver.mock.calls[0]![0]).toMatchObject({
-      externalUserId: "U-asker",
+      externalUserId: assertExternalUserId("U-asker"),
     });
-    // The listener still passes the 2nd arg at the runtime call site;
-    // assert it's there even though TS contravariance lets the body
-    // ignore it. This pins the runtime invariant against an
-    // optimization that might drop the 2nd arg.
     const firstCall = legacyResolver.mock.calls[0] as unknown as unknown[];
     expect(firstCall.length).toBe(2);
-    expect(firstCall[1]).toEqual({ workspaceId: "ws-1" });
+    expect(firstCall[1]).toEqual({ workspaceId: assertWorkspaceId("ws-1") });
+    expect(thread.post).toHaveBeenCalledTimes(1);
+    // Echo path NEVER fires when the resolver is structurally invalid.
+    const firstPostArg = (thread.post as unknown as {
+      mock: { calls: unknown[][] };
+    }).mock.calls[0]?.[0];
+    expect(String(firstPostArg ?? "")).not.toContain("Echo:");
   });
 
   it("userResolver throw is per-tenant — logs workspaceId on the apology path", async () => {
@@ -2203,8 +2223,8 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
     // Resolver received the per-event workspaceId, and the error log
     // carries it (so triage can correlate).
     expect(throwingResolver).toHaveBeenCalledWith(
-      expect.objectContaining({ externalUserId: "U-asker" }),
-      { workspaceId: "ws-troubled" },
+      expect.objectContaining({ externalUserId: assertExternalUserId("U-asker") }),
+      { workspaceId: assertWorkspaceId("ws-troubled") },
     );
     const errorCalls = (log.error as unknown as {
       mock: { calls: ReadonlyArray<ReadonlyArray<unknown>> };

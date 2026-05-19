@@ -59,6 +59,7 @@ import type {
   ProactiveUserResolver,
   ProactiveUserResolverContext,
   ResolvedAsker,
+  WorkspaceId,
 } from "@useatlas/chat";
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -84,8 +85,11 @@ export interface SlackProactiveUserResolverOptions {
    * resolver still refuses to attribute the asker. Cheap (indexed
    * lookup against `idx_slack_installations_org` on `org_id`) so the
    * extra read isn't material.
+   *
+   * Accepts a branded {@link WorkspaceId} (#2641) so a transposed-arg
+   * call (e.g. passing `asker.externalUserId` here) is a compile error.
    */
-  verifyWorkspace?: (workspaceId: string) => Promise<boolean>;
+  verifyWorkspace?: (workspaceId: WorkspaceId) => Promise<boolean>;
 }
 
 /**
@@ -121,19 +125,20 @@ export function createSlackProactiveUserResolver(
         { platform: asker.platform, workspaceId },
         "Proactive user resolver invoked for non-Slack platform — returning unlinked",
       );
-      return { atlasUserId: undefined };
+      return { kind: "unlinked" };
     }
 
-    if (!workspaceId) {
-      // Defensive: workspaceId should always be non-empty (the
-      // listener short-circuits on a null/empty resolver result),
-      // but an empty string here would skip the workspace check and
-      // collapse all tenants onto the global path. Refuse-safely.
+    // `workspaceId` is the branded {@link WorkspaceId} threaded from
+    // the listener (post-#2641); empty values never reach the resolver
+    // because `assertWorkspaceId` throws at the listener boundary. The
+    // length check below is belt-and-braces against a future caller
+    // that bypasses the listener.
+    if (workspaceId.length === 0) {
       log.warn(
         { externalUserId: asker.externalUserId },
         "Proactive user resolver invoked without workspaceId — returning unlinked",
       );
-      return { atlasUserId: undefined };
+      return { kind: "unlinked" };
     }
 
     try {
@@ -143,7 +148,7 @@ export function createSlackProactiveUserResolver(
           { workspaceId, externalUserId: asker.externalUserId },
           "Proactive user resolver: workspaceId not in slack_installations — returning unlinked",
         );
-        return { atlasUserId: undefined };
+        return { kind: "unlinked" };
       }
     } catch (err) {
       // DB outage → unlinked (NOT errored): the listener treats
@@ -161,17 +166,17 @@ export function createSlackProactiveUserResolver(
         },
         "Proactive user resolver: verifyWorkspace failed — returning unlinked",
       );
-      return { atlasUserId: undefined };
+      return { kind: "unlinked" };
     }
 
     // Hook point — when a Slack-user link table lands, replace the
     // line below with a lookup keyed on (workspaceId, asker.externalUserId)
-    // and return `{ atlasUserId }` for matches. Until then every
-    // asker takes the unlinked path: the listener's public-dataset
-    // gate is the answer-or-refuse branch, and that branch IS
-    // tenant-scoped now (#2624) via the workspaceId threaded through
-    // `getPublicDataset(asker, { workspaceId })`.
-    return { atlasUserId: undefined };
+    // and return `{ kind: "linked", atlasUserId: assertAtlasUserId(row.atlas_user_id) }`
+    // for matches. Until then every asker takes the unlinked path:
+    // the listener's public-dataset gate is the answer-or-refuse
+    // branch, and that branch IS tenant-scoped now (#2624) via the
+    // workspaceId threaded through `getPublicDataset(asker, { workspaceId })`.
+    return { kind: "unlinked" };
   };
 }
 
@@ -183,7 +188,9 @@ export function createSlackProactiveUserResolver(
  * collapses both onto the same unlinked outcome but logs them
  * separately (warn for missing, warn-with-error for outage).
  */
-async function defaultVerifyWorkspace(workspaceId: string): Promise<boolean> {
+async function defaultVerifyWorkspace(
+  workspaceId: WorkspaceId,
+): Promise<boolean> {
   if (!hasInternalDB()) return false;
   const rows = await internalQuery<{ org_id: string | null }>(
     `SELECT org_id

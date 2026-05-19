@@ -31,11 +31,17 @@
 
 import { describe, it, expect, mock } from "bun:test";
 
+import {
+  assertExternalUserId,
+  assertWorkspaceId,
+  type ProactiveAsker,
+  type WorkspaceId,
+} from "@useatlas/chat";
 import { createSlackProactiveUserResolver } from "../user-resolver";
 
-const slackAsker = {
+const slackAsker: ProactiveAsker = {
   platform: "slack",
-  externalUserId: "U-asker",
+  externalUserId: assertExternalUserId("U-asker"),
   userName: "alice",
 };
 
@@ -44,12 +50,14 @@ describe("createSlackProactiveUserResolver", () => {
     const verifyWorkspace = mock(async () => true);
     const resolver = createSlackProactiveUserResolver({ verifyWorkspace });
 
-    const out = await resolver(
-      { platform: "teams", externalUserId: "T-1", userName: "bob" },
-      { workspaceId: "ws-1" },
-    );
+    const teamsAsker: ProactiveAsker = {
+      platform: "teams",
+      externalUserId: assertExternalUserId("T-1"),
+      userName: "bob",
+    };
+    const out = await resolver(teamsAsker, { workspaceId: assertWorkspaceId("ws-1") });
 
-    expect(out).toEqual({ atlasUserId: undefined });
+    expect(out).toEqual({ kind: "unlinked" });
     expect(verifyWorkspace).not.toHaveBeenCalled();
   });
 
@@ -57,22 +65,26 @@ describe("createSlackProactiveUserResolver", () => {
     const verifyWorkspace = mock(async () => true);
     const resolver = createSlackProactiveUserResolver({ verifyWorkspace });
 
-    const out = await resolver(slackAsker, { workspaceId: "" });
+    // The listener's `assertWorkspaceId` chokepoint normally prevents
+    // an empty id from reaching the resolver. Cast directly here to
+    // exercise the resolver's defensive short-circuit — a future code
+    // path that bypasses the listener must still refuse-safely instead
+    // of running a global `WHERE org_id = ''` lookup.
+    const out = await resolver(slackAsker, { workspaceId: "" as WorkspaceId });
 
-    expect(out).toEqual({ atlasUserId: undefined });
-    // The empty-workspaceId short-circuit MUST run before the DB
-    // lookup — a global lookup with empty `WHERE org_id = ''` would
-    // match nothing but still hit the DB unnecessarily.
+    expect(out).toEqual({ kind: "unlinked" });
     expect(verifyWorkspace).not.toHaveBeenCalled();
   });
 
   it("returns unlinked when verifyWorkspace returns false (unknown tenant)", async () => {
-    const verifyWorkspace = mock(async (_id: string) => false);
+    const verifyWorkspace = mock(async (_id: WorkspaceId) => false);
     const resolver = createSlackProactiveUserResolver({ verifyWorkspace });
 
-    const out = await resolver(slackAsker, { workspaceId: "ws-unknown" });
+    const out = await resolver(slackAsker, {
+      workspaceId: assertWorkspaceId("ws-unknown"),
+    });
 
-    expect(out).toEqual({ atlasUserId: undefined });
+    expect(out).toEqual({ kind: "unlinked" });
     expect(verifyWorkspace).toHaveBeenCalledWith("ws-unknown");
   });
 
@@ -81,12 +93,14 @@ describe("createSlackProactiveUserResolver", () => {
     // path because no `slack_user_links` table exists in core. The
     // hook point is documented in the resolver — when the link
     // table lands, replace the inner branch with a real lookup.
-    const verifyWorkspace = mock(async (_id: string) => true);
+    const verifyWorkspace = mock(async (_id: WorkspaceId) => true);
     const resolver = createSlackProactiveUserResolver({ verifyWorkspace });
 
-    const out = await resolver(slackAsker, { workspaceId: "ws-known" });
+    const out = await resolver(slackAsker, {
+      workspaceId: assertWorkspaceId("ws-known"),
+    });
 
-    expect(out).toEqual({ atlasUserId: undefined });
+    expect(out).toEqual({ kind: "unlinked" });
     expect(verifyWorkspace).toHaveBeenCalledWith("ws-known");
   });
 
@@ -102,9 +116,11 @@ describe("createSlackProactiveUserResolver", () => {
     });
     const resolver = createSlackProactiveUserResolver({ verifyWorkspace });
 
-    const out = await resolver(slackAsker, { workspaceId: "ws-troubled" });
+    const out = await resolver(slackAsker, {
+      workspaceId: assertWorkspaceId("ws-troubled"),
+    });
 
-    expect(out).toEqual({ atlasUserId: undefined });
+    expect(out).toEqual({ kind: "unlinked" });
     expect(verifyWorkspace).toHaveBeenCalled();
   });
 
@@ -112,13 +128,15 @@ describe("createSlackProactiveUserResolver", () => {
     // Multi-tenant correctness: a future code path that pre-normalizes
     // the workspaceId (case-fold, trim) MUST happen at the listener's
     // resolver, not silently inside this factory. Pin the pass-through.
-    const verifyWorkspace = mock(async (_id: string) => true);
+    const verifyWorkspace = mock(async (_id: WorkspaceId) => true);
     const resolver = createSlackProactiveUserResolver({ verifyWorkspace });
 
-    await resolver(slackAsker, { workspaceId: "WS-MixedCase-42" });
+    await resolver(slackAsker, {
+      workspaceId: assertWorkspaceId("WS-MixedCase-42"),
+    });
 
     expect(verifyWorkspace).toHaveBeenCalledTimes(1);
-    expect(verifyWorkspace.mock.calls[0]![0]).toBe("WS-MixedCase-42");
+    expect(verifyWorkspace.mock.calls[0]![0] as string).toBe("WS-MixedCase-42");
   });
 
   it("isolates two tenants seeing the same Slack externalUserId (#2624 collision case)", async () => {
@@ -129,27 +147,31 @@ describe("createSlackProactiveUserResolver", () => {
     // the collision scenario the issue body called out and pins that
     // both invocations hit the verifier separately.
     const observed: string[] = [];
-    const verifyWorkspace = mock(async (id: string) => {
+    const verifyWorkspace = mock(async (id: WorkspaceId) => {
       observed.push(id);
-      return id === "ws-A"; // pretend only ws-A is installed
+      return (id as string) === "ws-A"; // pretend only ws-A is installed
     });
     const resolver = createSlackProactiveUserResolver({ verifyWorkspace });
 
-    const sharedAsker = {
+    const sharedAsker: ProactiveAsker = {
       platform: "slack",
-      externalUserId: "U-shared",
+      externalUserId: assertExternalUserId("U-shared"),
       userName: "shared",
     };
 
-    const outA = await resolver(sharedAsker, { workspaceId: "ws-A" });
-    const outB = await resolver(sharedAsker, { workspaceId: "ws-B" });
+    const outA = await resolver(sharedAsker, {
+      workspaceId: assertWorkspaceId("ws-A"),
+    });
+    const outB = await resolver(sharedAsker, {
+      workspaceId: assertWorkspaceId("ws-B"),
+    });
 
     // Both tenants are evaluated independently — no collision, no
     // caching by asker identity. Until a link table lands both
     // return unlinked, but the verifier received both ids.
     expect(observed).toEqual(["ws-A", "ws-B"]);
-    expect(outA).toEqual({ atlasUserId: undefined });
-    expect(outB).toEqual({ atlasUserId: undefined });
+    expect(outA).toEqual({ kind: "unlinked" });
+    expect(outB).toEqual({ kind: "unlinked" });
   });
 
   it("default verifier returns false without an internal DB (self-hosted / no DATABASE_URL)", async () => {
@@ -159,7 +181,9 @@ describe("createSlackProactiveUserResolver", () => {
     // an internal DB (no DATABASE_URL set), so the verifier resolves
     // to false → unlinked. This pins the self-hosted/no-DB posture.
     const resolver = createSlackProactiveUserResolver();
-    const out = await resolver(slackAsker, { workspaceId: "ws-any" });
-    expect(out).toEqual({ atlasUserId: undefined });
+    const out = await resolver(slackAsker, {
+      workspaceId: assertWorkspaceId("ws-any"),
+    });
+    expect(out).toEqual({ kind: "unlinked" });
   });
 });

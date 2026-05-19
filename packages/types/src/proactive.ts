@@ -31,9 +31,50 @@
  *   - `PauseDecision` (boolean-blind `layer?: PauseLayer`)
  *   - `ClassificationResult.isQuestion` (boolean blindness)
  *   - `ProactiveMeterEvent` (eventType-conditional field shape)
- *   - Branded `WorkspaceId` / `ChannelId` / `UserId` / `Confidence` /
- *     `MicroUSD` / `Millis` / `EpochMs` (primitive obsession)
+ *   - Branded `ChannelId` / `MessageId` / `Confidence` / `MicroUSD` /
+ *     `Millis` / `EpochMs` (primitive obsession — see #2641 for the
+ *     identity-bearing brand types that have landed)
+ *
+ * Brand types added in #2641 (type-only — runtime promotion chokepoints
+ * live in `@useatlas/chat` because adding value exports here would
+ * break the scaffold-CI gotcha until the package is republished):
+ *   - `WorkspaceId` — Atlas org id (`organization.id` / `slack_installations.org_id`)
+ *   - `AtlasUserId` — Atlas user id (`user.id`)
+ *   - `ExternalUserId` — Slack/Teams/etc platform user id (Slack `U…`)
  */
+
+// ---------------------------------------------------------------------------
+// Identity brands (#2641) — type-level companion to #2624
+// ---------------------------------------------------------------------------
+
+/**
+ * Atlas workspace id (`organization.id`).
+ *
+ * Distinct nominal type from `AtlasUserId` and `ExternalUserId` even
+ * though all three are strings at runtime, so a transposed-arg call
+ * (`verifyWorkspace(asker.externalUserId)`) is a compile error. The
+ * single runtime chokepoint that promotes a bare string into a
+ * `WorkspaceId` is `assertWorkspaceId` from `@useatlas/chat` — every
+ * boundary (host adapter, SaaS config, default verifier) flows through
+ * it so an empty/malformed id fails fast instead of silently routing
+ * the asker to a "global" tenant.
+ */
+export type WorkspaceId = string & { readonly __brand: "WorkspaceId" };
+
+/**
+ * Atlas user id (`user.id`). Carried by the linked branch of
+ * `ResolvedAsker`. Promoted via `assertAtlasUserId` from `@useatlas/chat`.
+ */
+export type AtlasUserId = string & { readonly __brand: "AtlasUserId" };
+
+/**
+ * Platform-side user id from the chat adapter (Slack `U…`, Teams aad
+ * object id, etc.). Always paired with `platform` to disambiguate
+ * "U999 in Slack tenant A" vs "U999 in Slack tenant B"; tenant scoping
+ * itself is the `WorkspaceId` brand on the per-event resolver context.
+ * Promoted via `assertExternalUserId` from `@useatlas/chat`.
+ */
+export type ExternalUserId = string & { readonly __brand: "ExternalUserId" };
 
 // ---------------------------------------------------------------------------
 // Pause registry (#2295) — three-layer kill switch + per-user opt-out

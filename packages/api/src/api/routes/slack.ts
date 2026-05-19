@@ -30,6 +30,7 @@ import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { adminAuthPreamble } from "./admin-auth";
 import { getConfig } from "@atlas/api/lib/config";
+import { getWebOrigin } from "@atlas/api/lib/web-origin";
 
 const log = createLogger("slack");
 
@@ -199,8 +200,11 @@ const callbackRoute = createRoute({
   },
   responses: {
     200: {
-      description: "Installation successful (HTML response)",
+      description: "Installation successful (HTML response, when no web origin is configured)",
       content: { "text/html": { schema: z.string() } },
+    },
+    302: {
+      description: "Installation successful (redirect to /admin/integrations on the web app)",
     },
     400: {
       description: "Invalid or expired state, or missing code",
@@ -420,9 +424,11 @@ slack.openapi(commandsRoute, async (c) => {
     );
   });
 
-  // Immediate ack to Slack
+  // Immediate ack to Slack. Ephemeral so it only shows to the asker and
+  // doesn't double up with the bot's in-channel "Thinking..." message that
+  // gets updated in place with the final answer.
   return c.json({
-    response_type: "in_channel",
+    response_type: "ephemeral",
     text: `:hourglass_flowing_sand: Processing your question...`,
   }, 200);
 });
@@ -624,6 +630,174 @@ slack.openapi(eventsRoute, async (c) => {
         log.error(
           { err: err instanceof Error ? err : new Error(String(err)) },
           "Unhandled error in thread processing",
+        );
+      });
+    }
+
+    // @atlas mention in a top-level channel message — opens a new thread off
+    // the mention's `event.ts`. In-thread mentions are intentionally skipped:
+    // Slack also delivers a `message` event for the same post, and the
+    // `message + threadTs` branch above already loads conversation history
+    // and replies in-thread. Handling both branches would double-fire the
+    // agent for the same user post.
+    if (eventType === "app_mention" && !threadTs && text.trim()) {
+      const mentionTs = (event.ts as string) ?? "";
+      const question = text.replace(/^(<@[A-Z0-9]+>\s*)+/, "").trim();
+      const eventUserId = (event.user as string) ?? "";
+      const replyThreadTs = mentionTs;
+
+      if (!question) {
+        log.info({ channel, mentionTs }, "Ignoring app_mention with empty question");
+        return c.json({ ok: true }, 200);
+      }
+
+      log.info(
+        { channel, mentionTs, threadTs: replyThreadTs, question: question.slice(0, 100) },
+        "App mention received",
+      );
+
+      const processAsync = async () => {
+        try {
+          const token = await getBotToken(teamId);
+          if (!token) {
+            log.error({ teamId }, "No bot token for app mention");
+            return;
+          }
+
+          const rateCheck = checkRateLimit(`slack:${teamId}:${eventUserId || mentionTs}`);
+          if (!rateCheck.allowed) {
+            await postMessage(token, {
+              channel,
+              text: "Rate limit exceeded. Please wait before trying again.",
+              thread_ts: replyThreadTs,
+            });
+            return;
+          }
+
+          const installation = await getInstallation(teamId);
+          const orgId = installation?.org_id ?? null;
+          const actor = orgId
+            ? botActorUser({
+                platform: "slack",
+                externalId: teamId,
+                orgId,
+                ...(eventUserId ? { externalUserId: eventUserId } : {}),
+              })
+            : undefined;
+
+          const thinkingResult = await postMessage(token, {
+            channel,
+            text: `:hourglass_flowing_sand: Thinking about: _${question.slice(0, 150)}_...`,
+            thread_ts: replyThreadTs,
+          });
+          if (!thinkingResult.ok || !thinkingResult.ts) {
+            log.error({ error: thinkingResult.error }, "Failed to post thinking message for app mention");
+            return;
+          }
+          const messageTs = thinkingResult.ts;
+
+          // Map the thread parent to a conversation so follow-up replies
+          // in the same thread can load history via the existing handler.
+          const existingConversationId = await getConversationId(channel, replyThreadTs);
+          const conversationId = existingConversationId ?? crypto.randomUUID();
+          if (!existingConversationId) {
+            setConversationId(channel, replyThreadTs, conversationId);
+            createConversation({
+              id: conversationId,
+              title: generateTitle(question),
+              surface: "slack",
+            });
+          }
+
+          const queryResult = await executeAgentQuery(question, undefined, {
+            ...(actor ? { actor } : {}),
+            approvalSurface: "slack",
+          });
+
+          addMessage({ conversationId, role: "user", content: question });
+          addMessage({ conversationId, role: "assistant", content: queryResult.answer });
+
+          if (queryResult.pendingApproval) {
+            const approvalText =
+              `:lock: This query requires approval before it can run. ` +
+              `Rule: *${queryResult.pendingApproval.ruleName}*. ` +
+              `Approve via the Atlas admin console.`;
+            log.info(
+              { channel, teamId, mentionTs, approvalRequestId: queryResult.pendingApproval.requestId },
+              "Slack app mention held for approval",
+            );
+            await updateMessage(token, {
+              channel,
+              ts: messageTs,
+              text: approvalText,
+              blocks: formatErrorResponse(approvalText),
+            });
+            return;
+          }
+
+          const blocks = formatQueryResponse(queryResult);
+          const updateResult = await updateMessage(token, {
+            channel,
+            ts: messageTs,
+            text: queryResult.answer,
+            blocks,
+          });
+          if (!updateResult.ok) {
+            log.error(
+              { error: updateResult.error, channel, ts: messageTs },
+              "Failed to update Slack mention message with query result",
+            );
+          }
+
+          if (queryResult.pendingActions?.length && eventUserId) {
+            for (const action of queryResult.pendingActions) {
+              const approvalBlocks = formatActionApproval(action);
+              const ephResult = await postEphemeral(token, {
+                channel,
+                user: eventUserId,
+                text: `Action requires approval: ${action.summary}`,
+                blocks: approvalBlocks,
+                thread_ts: messageTs,
+              });
+              if (!ephResult.ok) {
+                log.error(
+                  { error: ephResult.error, channel, userId: eventUserId, actionId: action.id },
+                  "Failed to post ephemeral action approval prompt for mention",
+                );
+              }
+            }
+          }
+        } catch (err) {
+          log.error(
+            { err: err instanceof Error ? err : new Error(String(err)) },
+            "App mention processing failed",
+          );
+          try {
+            const token = await getBotToken(teamId);
+            if (token) {
+              const errorMessage = scrubError(
+                err instanceof Error ? err.message : "Unknown error",
+              );
+              await postMessage(token, {
+                channel,
+                text: errorMessage,
+                blocks: formatErrorResponse(errorMessage),
+                thread_ts: replyThreadTs,
+              });
+            }
+          } catch (innerErr) {
+            log.error(
+              { err: innerErr instanceof Error ? innerErr.message : String(innerErr) },
+              "Failed to send app mention error message",
+            );
+          }
+        }
+      };
+
+      processAsync().catch((err) => {
+        log.error(
+          { err: err instanceof Error ? err : new Error(String(err)) },
+          "Unhandled error in app mention processing",
         );
       });
     }
@@ -890,6 +1064,10 @@ slack.openapi(callbackRoute, async (c) => {
     return c.html("<html><body><h1>Installation Failed</h1><p>The OAuth response was incomplete. Please try again.</p></body></html>", 500);
   }
 
+  const webOrigin = getWebOrigin();
+  if (webOrigin) {
+    return c.redirect(`${webOrigin}/admin/integrations?installed=slack`);
+  }
   return c.html(
     "<html><body><h1>Atlas installed!</h1><p>You can now use /atlas in your Slack workspace.</p></body></html>",
   );

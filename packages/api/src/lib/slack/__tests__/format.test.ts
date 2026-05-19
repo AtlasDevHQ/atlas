@@ -120,6 +120,71 @@ describe("formatQueryResponse", () => {
     expect(blockText(blocks[0]).length).toBeLessThanOrEqual(3000);
     expect(blockText(blocks[0])).toEndWith("...");
   });
+
+  it("dedupes identical SQL across cross-env regions", () => {
+    const sql = "SELECT COUNT(*) FROM organization";
+    const blocks = formatQueryResponse(
+      makeResult({ sql: [sql, sql, sql] }),
+    );
+    const sqlBlocks = blocks.filter((b) => blockText(b).startsWith("*SQL*"));
+    expect(sqlBlocks.length).toBe(1);
+    // The fenced SQL body should appear exactly once.
+    const occurrences = blockText(sqlBlocks[0]).match(/SELECT COUNT/g) ?? [];
+    expect(occurrences.length).toBe(1);
+    expect(blockText(sqlBlocks[0])).toContain("ran across 3 regions");
+  });
+
+  it("dedupes identical datasets across regions and annotates the duplicate count", () => {
+    const dataset = {
+      columns: ["total"],
+      rows: [{ total: 1 }],
+    };
+    const blocks = formatQueryResponse(
+      makeResult({ data: [dataset, dataset, dataset] }),
+    );
+    const dataBlocks = blocks.filter((b) => blockText(b).includes("*total:*"));
+    expect(dataBlocks.length).toBe(1);
+    expect(blockText(dataBlocks[0])).toContain("identical across 3 regions");
+  });
+
+  it("renders single-row results as inline key:value text instead of a code block", () => {
+    const blocks = formatQueryResponse(
+      makeResult({
+        data: [{ columns: ["count"], rows: [{ count: 1234 }] }],
+      }),
+    );
+    const dataBlock = blocks.find((b) => blockText(b).includes("*count:*"));
+    expect(dataBlock).toBeDefined();
+    expect(blockText(dataBlock!)).not.toContain("```");
+    expect(blockText(dataBlock!)).toContain("1234");
+  });
+
+  it("skips the dedicated SQL block when the answer already contains a sql fence", () => {
+    const blocks = formatQueryResponse(
+      makeResult({
+        answer: "Here's the query:\n```sql\nSELECT 1\n```",
+      }),
+    );
+    const sqlBlocks = blocks.filter((b) => blockText(b).startsWith("*SQL*"));
+    expect(sqlBlocks.length).toBe(0);
+  });
+
+  it("extracts <suggestions> from the answer and renders them as a context footer", () => {
+    const blocks = formatQueryResponse(
+      makeResult({
+        answer:
+          "There are 1,234 users.\n\n<suggestions>\n- How many were new this month?\n- Top users by activity?\n</suggestions>",
+      }),
+    );
+    expect(blockText(blocks[0])).not.toContain("<suggestions>");
+    expect(blockText(blocks[0])).toContain("1,234 users");
+    const followups = blocks.find((b) =>
+      contextTexts(b).some((t) => t.includes("Follow-ups")),
+    );
+    expect(followups).toBeDefined();
+    expect(contextTexts(followups!)[0]).toContain("How many were new this month?");
+    expect(contextTexts(followups!)[0]).toContain("Top users by activity?");
+  });
 });
 
 describe("formatErrorResponse", () => {

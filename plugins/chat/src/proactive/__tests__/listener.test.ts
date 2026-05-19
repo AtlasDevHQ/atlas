@@ -1,11 +1,11 @@
 /**
  * Tests for the proactive listener wiring.
  *
- * We capture the functions passed to `chat.onNewMessage`, `chat.onReaction`,
- * and `chat.onAction` and invoke them directly with stand-in thread,
- * message, reaction-event, and action-event objects. That keeps the
- * test free of any real Chat SDK plumbing while still proving the
- * wiring is correct.
+ * We capture the functions passed to `chat.onNewMessage`,
+ * `chat.onDirectMessage`, `chat.onReaction`, and `chat.onAction` and
+ * invoke them directly with stand-in thread, message, reaction-event,
+ * and action-event objects. DM scenarios use `invokeDM` so the unit
+ * contract matches the SDK's `directMessageHandlers` dispatch path.
  */
 
 import { describe, expect, it, mock } from "bun:test";
@@ -56,6 +56,7 @@ function makeLogger() {
 
 function makeChat() {
   let messageHandler: AnyHandler | null = null;
+  let directMessageHandler: AnyHandler | null = null;
   let reactionHandler: AnyHandler | null = null;
   const actionHandlers = new Map<string, AnyHandler>();
   const modalSubmitHandlers = new Map<string, AnyHandler>();
@@ -63,6 +64,9 @@ function makeChat() {
   const chat = {
     onNewMessage: mock((_pattern: RegExp, handler: AnyHandler) => {
       messageHandler = handler;
+    }),
+    onDirectMessage: mock((handler: AnyHandler) => {
+      directMessageHandler = handler;
     }),
     onReaction: mock((_filter: unknown[], handler: AnyHandler) => {
       reactionHandler = handler;
@@ -82,6 +86,12 @@ function makeChat() {
       if (!messageHandler) throw new Error("listener never registered a message handler");
       await messageHandler(thread, message);
     },
+    invokeDM: async (thread: unknown, message: unknown) => {
+      if (!directMessageHandler) {
+        throw new Error("listener never registered a direct-message handler");
+      }
+      await directMessageHandler(thread, message);
+    },
     invokeReaction: async (event: unknown) => {
       if (!reactionHandler) throw new Error("listener never registered a reaction handler");
       await reactionHandler(event);
@@ -97,6 +107,7 @@ function makeChat() {
       return handler(event);
     },
     isRegistered: () => messageHandler !== null,
+    isDMRegistered: () => directMessageHandler !== null,
     handlerCount: () => actionHandlers.size,
     modalCount: () => modalSubmitHandlers.size,
   };
@@ -219,7 +230,7 @@ const allowChannels = (...ids: string[]) =>
 
 describe("registerProactiveListener — gating", () => {
   it("does not register when isEnabled() is false at boot", async () => {
-    const { chat, isRegistered } = makeChat();
+    const { chat, isRegistered, isDMRegistered } = makeChat();
     await registerProactiveListener(chat as any, makeLogger(), {
       isEnabled: () => false,
       classify: yesLLM,
@@ -228,11 +239,13 @@ describe("registerProactiveListener — gating", () => {
       getChannelConfigs: allowChannels("C-allowed"),
     });
     expect(isRegistered()).toBe(false);
+    expect(isDMRegistered()).toBe(false);
     expect(chat.onNewMessage).not.toHaveBeenCalled();
+    expect(chat.onDirectMessage).not.toHaveBeenCalled();
   });
 
   it("registers all expected handler types when enabled", async () => {
-    const { chat, isRegistered, handlerCount, modalCount } = makeChat();
+    const { chat, isRegistered, isDMRegistered, handlerCount, modalCount } = makeChat();
     await registerProactiveListener(chat as any, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
@@ -241,7 +254,9 @@ describe("registerProactiveListener — gating", () => {
       getChannelConfigs: allowChannels("C-allowed"),
     });
     expect(isRegistered()).toBe(true);
+    expect(isDMRegistered()).toBe(true);
     expect(chat.onNewMessage).toHaveBeenCalledTimes(1);
+    expect(chat.onDirectMessage).toHaveBeenCalledTimes(1);
     expect(chat.onReaction).toHaveBeenCalledTimes(1);
     // Offer card: Yes,answer + Not now. Feedback row: Helpful, Not helpful, Wrong data.
     expect(handlerCount()).toBe(5);
@@ -889,10 +904,10 @@ describe("registerProactiveListener — kill switch", () => {
     expect(thread._addReaction).not.toHaveBeenCalled();
   });
 
-  it("DM `unsubscribe` writes a user-optout row and skips classification", async () => {
+  it("DM `unsubscribe` (via onDirectMessage path) writes a user-optout row and skips classification", async () => {
     const onPauseRequest = mock(async () => {});
     const classify = mock(yesLLM);
-    const { chat, invokeMessage: invoke } = makeChat();
+    const { chat, invokeDM } = makeChat();
     await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], makeLogger(), {
       isEnabled: () => true,
       classify,
@@ -903,7 +918,7 @@ describe("registerProactiveListener — kill switch", () => {
       onPauseRequest,
     });
     const thread = makeThread("D-direct", { isDM: true });
-    await invoke(thread, makeMessage({ text: "unsubscribe" }));
+    await invokeDM(thread, makeMessage({ text: "unsubscribe" }));
     expect(onPauseRequest).toHaveBeenCalledTimes(1);
     expect((onPauseRequest.mock.calls[0] as unknown[])?.[0]).toMatchObject({
       workspaceId: "ws_1",
@@ -912,6 +927,40 @@ describe("registerProactiveListener — kill switch", () => {
       durationMs: null,
     });
     expect(classify).not.toHaveBeenCalled();
+  });
+
+  it("non-unsubscribe DM short-circuits before resolveWorkspaceId (cost-control contract)", async () => {
+    // The DM handler skips chat-with-bot DMs cheaply — no
+    // `resolveWorkspaceId` call, no `isEnabled` read, no classifier.
+    // Pre-#2638 DMs never reached the proactive handler at all; the
+    // new registration plus the early `isDM && !detectUnsubscribeDM`
+    // short-circuit preserve the zero-DB / zero-LLM-cost contract for
+    // every chat-with-bot DM. A regression that moves the skip below
+    // workspace resolution would silently add two host calls per DM.
+    const classify = mock(yesLLM);
+    const onPauseRequest = mock(async () => {});
+    const resolveWorkspaceId = mock(async () => "ws_1");
+    const isEnabled = mock(async () => true);
+    const { chat, invokeDM } = makeChat();
+    await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], makeLogger(), {
+      isEnabled,
+      classify,
+      resolveWorkspaceId,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: allowChannels("C-allowed"),
+      isPaused: mock(async () => ({ paused: false })),
+      onPauseRequest,
+    });
+    const thread = makeThread("D-direct", { isDM: true });
+    // Reset after registration — the listener probes `isEnabled("")`
+    // at boot to gate registration, which would otherwise count
+    // against the "not called per event" assertion below.
+    isEnabled.mockClear();
+    await invokeDM(thread, makeMessage({ text: "what was MRR last month?" }));
+    expect(resolveWorkspaceId).not.toHaveBeenCalled();
+    expect(isEnabled).not.toHaveBeenCalled();
+    expect(classify).not.toHaveBeenCalled();
+    expect(onPauseRequest).not.toHaveBeenCalled();
   });
 
   it("does not treat literal `unsubscribe` in a non-DM channel as a pause command", async () => {

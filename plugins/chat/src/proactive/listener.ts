@@ -426,19 +426,47 @@ export async function registerProactiveListener(
   };
 
   // -------------------------------------------------------------------------
-  // Channel-message hook: classify + react + record asker for later answer
-  // -------------------------------------------------------------------------
-  chat.onNewMessage(/.+/, async (thread: Thread, message: Message) => {
+  // Channel-message + DM hook: classify + react + record asker for later
+  // answer.
+  //
+  // Registered against BOTH `chat.onNewMessage(/.+/, ...)` AND
+  // `chat.onDirectMessage(...)`. The chat SDK's `dispatchToHandlers`
+  // sends DMs to `directMessageHandlers` and returns; mention handlers
+  // and `onNewMessage` patterns only run for non-DM events (or for
+  // DMs when no DM handler is registered, the pre-#2638 fallback that
+  // marked DMs as mentions). Without the DM registration the
+  // `unsubscribe` branch below was unreachable in production (#2638).
+  //
+  // DMs short-circuit after the unsubscribe check. The bridge owns
+  // the chat-with-bot DM path on a parallel `onDirectMessage`
+  // registration; the SDK iterates every DM handler before returning,
+  // so the two handlers run independently.
+  const handleProactiveMessage = async (
+    thread: Thread,
+    message: Message,
+  ): Promise<void> => {
     try {
       if (message.author.isBot === true || message.author.isMe) return;
       const text = message.text?.trim() ?? "";
       if (text.length === 0) return;
 
+      const isDM = thread.isDM === true;
+
+      // DM short-circuit. The proactive listener only cares about DMs
+      // that match the `unsubscribe` command; chat-with-bot DMs flow
+      // through the bridge's `onDirectMessage` registration. Skip
+      // every other DM cheaply (no `resolveWorkspaceId`, no
+      // `isEnabled`, no DB reads) — a chat-with-bot DM otherwise pays
+      // two host calls per message just to land at the `if (isDM)
+      // return;` below.
+      if (isDM && !detectUnsubscribeDM(text)) return;
+
       // ---------------------------------------------------------------
       // Per-event workspace resolution (#2620) — first DB / host call
       // we make. Runs before classify, meter, or kill-switch reads.
-      // (Bot/`isMe`/empty-text skips above run cheaper and earlier.)
-      // Unknown tenant → silent skip, no meter event, no DB reads.
+      // (Bot/`isMe`/empty-text and DM-not-unsubscribe skips above run
+      // cheaper and earlier.) Unknown tenant → silent skip, no meter
+      // event, no DB reads.
       // ---------------------------------------------------------------
       const workspaceId = await safeResolveWorkspace(
         thread.adapter,
@@ -451,7 +479,6 @@ export async function registerProactiveListener(
 
       const channelId = thread.channelId;
       const userId = message.author.userId;
-      const isDM = thread.isDM === true;
       // Workspace-scoped cooldown key — two tenants that share a channel
       // id (e.g. both have a "C-general") must not share cooldown state.
       const cooldownKey = `${workspaceId}:${channelId}`;
@@ -461,28 +488,34 @@ export async function registerProactiveListener(
       // a mute message never costs an LLM call.
       // ---------------------------------------------------------------
 
-      // DM `unsubscribe` → workspace-wide user-optout row.
-      if (
-        isDM &&
-        config.onPauseRequest &&
-        detectUnsubscribeDM(text)
-      ) {
-        try {
-          await config.onPauseRequest(
-            resolvePauseRequest("dm-unsubscribe", {
-              workspaceId,
-              channelId,
-              userId,
-            }),
-          );
-          log.info(
+      // DM `unsubscribe` → workspace-wide user-optout row. The early
+      // skip above guarantees we only reach this with an unsubscribe
+      // DM, so it's an unconditional handler for the DM path. The rest
+      // of the function is channel-only.
+      if (isDM) {
+        if (config.onPauseRequest) {
+          try {
+            await config.onPauseRequest(
+              resolvePauseRequest("dm-unsubscribe", {
+                workspaceId,
+                channelId,
+                userId,
+              }),
+            );
+            log.info(
+              { workspaceId, userId },
+              "Proactive: user opted out via DM unsubscribe",
+            );
+          } catch (err) {
+            log.warn(
+              { err: err instanceof Error ? err : new Error(String(err)) },
+              "Proactive: DM unsubscribe write failed — user still listed in proactive",
+            );
+          }
+        } else {
+          log.debug(
             { workspaceId, userId },
-            "Proactive: user opted out via DM unsubscribe",
-          );
-        } catch (err) {
-          log.warn(
-            { err: err instanceof Error ? err : new Error(String(err)) },
-            "Proactive: DM unsubscribe write failed — user still listed in proactive",
+            "Proactive: DM unsubscribe received but no onPauseRequest configured — discarding",
           );
         }
         return;
@@ -490,7 +523,6 @@ export async function registerProactiveListener(
 
       // In-channel `@atlas pause` → 24h channel-scoped pause.
       if (
-        !isDM &&
         config.onPauseRequest &&
         detectPauseCommand(text)
       ) {
@@ -754,6 +786,14 @@ export async function registerProactiveListener(
         "Proactive listener handler threw — suppressed",
       );
     }
+  };
+
+  chat.onNewMessage(/.+/, handleProactiveMessage);
+  // The DM-handler signature accepts a `channel` + `context` the
+  // listener doesn't read — wrapping rather than passing
+  // `handleProactiveMessage` directly keeps the contract narrow.
+  chat.onDirectMessage(async (thread: Thread, message: Message) => {
+    await handleProactiveMessage(thread, message);
   });
 
   // -------------------------------------------------------------------------

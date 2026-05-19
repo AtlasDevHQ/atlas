@@ -592,10 +592,19 @@ export async function registerProactiveListener(
         return;
       }
 
-      const channelAllowed = allowlist.has(channelId);
+      // Post-#2620: the per-event `getChannelConfigs` fetcher is the
+      // source of truth for which channels are opted in. The legacy
+      // env-var allowlist (`ATLAS_PROACTIVE_CHANNELS`, resolved at
+      // registration time) is kept as a fallback for self-hosted dev
+      // setups, but only kicks in when no DB row exists for the channel.
+      // A row with `allow: false` is an explicit opt-out and wins over
+      // the env-var allowlist.
       const channelConfig = channelConfigs.find(
         (cfg) => cfg.channelId === channelId,
       );
+      const channelAllowed = channelConfig
+        ? channelConfig.allow === true
+        : allowlist.has(channelId);
 
       // ---------------------------------------------------------------
       // Monthly quota cap (#2301) — short-circuit BEFORE the classifier

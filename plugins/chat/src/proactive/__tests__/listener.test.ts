@@ -306,6 +306,41 @@ describe("registerProactiveListener — channel-message handler", () => {
     expect(thread.postEphemeral).not.toHaveBeenCalled();
   });
 
+  it("reacts when a channel_proactive_config row has allow=true (DB opt-in)", async () => {
+    // Post-#2620 multi-tenant path: the per-event `getChannelConfigs`
+    // fetcher is the source of truth. A DB row with `allow: true` opts
+    // the channel in even when the legacy env-var allowlist is empty.
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(chat as any, makeLogger(), {
+      isEnabled: () => true,
+      classify: yesLLM,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: makeWorkspaceFetchers(baseWorkspace, [{ channelId: "C-db-opted-in", allow: true }]).getChannelConfigs,
+      // No channelAllowlist — DB row is the sole opt-in signal.
+    });
+    const thread = makeThread("C-db-opted-in");
+    await invokeMessage(thread, makeMessage());
+    expect(thread._addReaction).toHaveBeenCalledWith(PROACTIVE_REACTION);
+  });
+
+  it("skips when a channel_proactive_config row has allow=false (DB opt-out wins over env allowlist)", async () => {
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(chat as any, makeLogger(), {
+      isEnabled: () => true,
+      classify: yesLLM,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: makeWorkspaceFetchers(baseWorkspace, [{ channelId: "C-opted-out", allow: false }]).getChannelConfigs,
+      // Channel IS on the env allowlist — but the DB row explicitly opts out.
+      // DB wins over env so an admin's deny in the UI is honored.
+      channelAllowlist: ["C-opted-out"],
+    });
+    const thread = makeThread("C-opted-out");
+    await invokeMessage(thread, makeMessage());
+    expect(thread._addReaction).not.toHaveBeenCalled();
+  });
+
   it("rate-limits a chatty channel — only the first message reacts", async () => {
     const { chat, invokeMessage } = makeChat();
     await registerProactiveListener(chat as any, makeLogger(), {

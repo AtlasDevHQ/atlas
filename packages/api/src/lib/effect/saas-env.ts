@@ -71,6 +71,13 @@ export interface SaasEnv {
   // would silently land users on the API host instead of the web app.
   readonly BETTER_AUTH_URL: string | undefined;
   readonly BETTER_AUTH_TRUSTED_ORIGINS: string | undefined;
+
+  // Slack plugin signing secret — required by `chatPlugin`'s Slack
+  // adapter schema, which now enforces a 32-char lowercase hex format
+  // at boot. Production deploys provide a real Slack app secret; the
+  // boot-smoke fixture emits a syntactically-valid placeholder so the
+  // schema parses without crashing the boot guards.
+  readonly SLACK_SIGNING_SECRET: string | undefined;
 }
 
 /**
@@ -98,6 +105,7 @@ export const SAAS_ENV_KEYS = [
   "RESEND_API_KEY",
   "BETTER_AUTH_URL",
   "BETTER_AUTH_TRUSTED_ORIGINS",
+  "SLACK_SIGNING_SECRET",
 ] as const satisfies readonly (keyof SaasEnv)[];
 
 // Compile-time exhaustiveness: every key in SaasEnv must appear in
@@ -131,6 +139,7 @@ export function readSaasEnv(env: NodeJS.ProcessEnv = process.env): SaasEnv {
     RESEND_API_KEY: env.RESEND_API_KEY,
     BETTER_AUTH_URL: env.BETTER_AUTH_URL,
     BETTER_AUTH_TRUSTED_ORIGINS: env.BETTER_AUTH_TRUSTED_ORIGINS,
+    SLACK_SIGNING_SECRET: env.SLACK_SIGNING_SECRET,
   };
 }
 
@@ -197,6 +206,11 @@ export function makeBootSmokeFixture(
     RESEND_API_KEY: "ci-fixture-resend-key-not-a-secret",
     BETTER_AUTH_URL: "http://127.0.0.1:3001",
     BETTER_AUTH_TRUSTED_ORIGINS: "http://127.0.0.1:3000",
+    // 32-char lowercase hex placeholder. Satisfies the new strict
+    // `SLACK_SIGNING_SECRET_REGEX` in plugins/chat/src/config.ts so the
+    // SaaS deploy config parses cleanly under Boot Smoke without
+    // requiring a real Slack app credential.
+    SLACK_SIGNING_SECRET: "0123456789abcdef0123456789abcdef",
   };
   return { ...fixture, ...opts.overrides };
 }

@@ -54,6 +54,7 @@ describe("SAAS_ENV_KEYS", () => {
       RESEND_API_KEY: undefined,
       BETTER_AUTH_URL: undefined,
       BETTER_AUTH_TRUSTED_ORIGINS: undefined,
+      SLACK_SIGNING_SECRET: undefined,
     };
     const expectedKeys: readonly string[] = Object.keys(exhaustive).sort();
     const actualKeys: readonly string[] = [...SAAS_ENV_KEYS].sort();

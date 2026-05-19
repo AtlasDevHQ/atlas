@@ -98,8 +98,6 @@ export interface ProactiveListenerConfig {
    * short-circuits the event (treat as not opted in).
    */
   getWorkspaceConfig: GetWorkspaceConfigFn;
-  /** Explicit channel allowlist, else `ATLAS_PROACTIVE_CHANNELS`. */
-  channelAllowlist?: string[];
   /**
    * Per-event channel-config fetcher (#2620). Returns the workspace's
    * per-channel overrides as a flat array; the listener scans linearly
@@ -223,24 +221,6 @@ export interface ProactiveListenerConfig {
 export const PROACTIVE_REACTION = emoji.custom("robot_face");
 
 // ---------------------------------------------------------------------------
-// Channel allowlist resolution
-// ---------------------------------------------------------------------------
-
-export function resolveChannelAllowlist(
-  explicit: string[] | undefined,
-  env: NodeJS.ProcessEnv = process.env,
-): Set<string> {
-  if (explicit && explicit.length > 0) return new Set(explicit);
-  const raw = env.ATLAS_PROACTIVE_CHANNELS ?? "";
-  return new Set(
-    raw
-      .split(",")
-      .map((id) => id.trim())
-      .filter((id) => id.length > 0),
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
@@ -329,10 +309,8 @@ export async function registerProactiveListener(
     return { recentAnswers: null };
   }
 
-  const allowlist = resolveChannelAllowlist(config.channelAllowlist);
   log.info(
     {
-      allowlistSize: allowlist.size,
       killSwitch: Boolean(config.isPaused),
       unsubscribe: Boolean(config.onPauseRequest),
     },
@@ -593,18 +571,13 @@ export async function registerProactiveListener(
       }
 
       // Post-#2620: the per-event `getChannelConfigs` fetcher is the
-      // source of truth for which channels are opted in. The legacy
-      // env-var allowlist (`ATLAS_PROACTIVE_CHANNELS`, resolved at
-      // registration time) is kept as a fallback for self-hosted dev
-      // setups, but only kicks in when no DB row exists for the channel.
-      // A row with `allow: false` is an explicit opt-out and wins over
-      // the env-var allowlist.
+      // sole source of truth for which channels are opted in. No row =
+      // not opted in. A row with `allow: true` opts in; `allow: false`
+      // is an explicit deny.
       const channelConfig = channelConfigs.find(
         (cfg) => cfg.channelId === channelId,
       );
-      const channelAllowed = channelConfig
-        ? channelConfig.allow === true
-        : allowlist.has(channelId);
+      const channelAllowed = channelConfig?.allow === true;
 
       // ---------------------------------------------------------------
       // Monthly quota cap (#2301) — short-circuit BEFORE the classifier

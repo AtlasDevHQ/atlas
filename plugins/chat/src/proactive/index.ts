@@ -51,7 +51,6 @@ export {
 export {
   PROACTIVE_REACTION,
   registerProactiveListener,
-  resolveChannelAllowlist,
   type ProactiveListenerConfig,
 } from "./listener";
 

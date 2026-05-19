@@ -13,7 +13,6 @@ import {
   handleProactiveFeedbackSlash,
   PROACTIVE_REACTION,
   registerProactiveListener,
-  resolveChannelAllowlist,
 } from "../listener";
 import {
   PROACTIVE_ANSWER_ACTION_ID,
@@ -204,30 +203,15 @@ const defaultResolver = makeResolver("ws_1");
 const { getWorkspaceConfig: defaultGetWorkspace, getChannelConfigs: defaultGetChannels } =
   makeWorkspaceFetchers();
 
-// ---------------------------------------------------------------------------
-// resolveChannelAllowlist
-// ---------------------------------------------------------------------------
-
-describe("resolveChannelAllowlist", () => {
-  it("prefers explicit config over env var", () => {
-    const set = resolveChannelAllowlist(["C-a", "C-b"], {
-      ATLAS_PROACTIVE_CHANNELS: "C-x,C-y",
-    } as NodeJS.ProcessEnv);
-    expect(Array.from(set).sort()).toEqual(["C-a", "C-b"]);
-  });
-
-  it("parses ATLAS_PROACTIVE_CHANNELS comma-separated values", () => {
-    const set = resolveChannelAllowlist(undefined, {
-      ATLAS_PROACTIVE_CHANNELS: " C-a , C-b ,, C-c ",
-    } as NodeJS.ProcessEnv);
-    expect(Array.from(set).sort()).toEqual(["C-a", "C-b", "C-c"]);
-  });
-
-  it("returns an empty set when neither source is provided", () => {
-    const set = resolveChannelAllowlist(undefined, {} as NodeJS.ProcessEnv);
-    expect(set.size).toBe(0);
-  });
-});
+/**
+ * Test helper: build a `getChannelConfigs` fetcher that opts the given
+ * channel ids in via `allow: true` rows.
+ */
+const allowChannels = (...ids: string[]) =>
+  makeWorkspaceFetchers(
+    baseWorkspace,
+    ids.map((channelId) => ({ channelId, allow: true })),
+  ).getChannelConfigs;
 
 // ---------------------------------------------------------------------------
 // Listener registration
@@ -241,8 +225,7 @@ describe("registerProactiveListener — gating", () => {
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-      channelAllowlist: ["C-allowed"],
+      getChannelConfigs: allowChannels("C-allowed"),
     });
     expect(isRegistered()).toBe(false);
     expect(chat.onNewMessage).not.toHaveBeenCalled();
@@ -255,8 +238,7 @@ describe("registerProactiveListener — gating", () => {
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-      channelAllowlist: ["C-allowed"],
+      getChannelConfigs: allowChannels("C-allowed"),
     });
     expect(isRegistered()).toBe(true);
     expect(chat.onNewMessage).toHaveBeenCalledTimes(1);
@@ -280,8 +262,7 @@ describe("registerProactiveListener — channel-message handler", () => {
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-      channelAllowlist: ["C-allowed"],
+      getChannelConfigs: allowChannels("C-allowed"),
     });
     const thread = makeThread("C-allowed");
     await invokeMessage(thread, makeMessage());
@@ -290,15 +271,14 @@ describe("registerProactiveListener — channel-message handler", () => {
     expect(thread.postEphemeral).toHaveBeenCalledTimes(1);
   });
 
-  it("does not react in a non-allowlisted channel", async () => {
+  it("does not react when the channel has no channel_proactive_config row (not opted in)", async () => {
     const { chat, invokeMessage } = makeChat();
     await registerProactiveListener(chat as any, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-      channelAllowlist: ["C-allowed"],
+      getChannelConfigs: allowChannels("C-allowed"),
     });
     const thread = makeThread("C-other");
     await invokeMessage(thread, makeMessage());
@@ -306,25 +286,10 @@ describe("registerProactiveListener — channel-message handler", () => {
     expect(thread.postEphemeral).not.toHaveBeenCalled();
   });
 
-  it("reacts when a channel_proactive_config row has allow=true (DB opt-in)", async () => {
-    // Post-#2620 multi-tenant path: the per-event `getChannelConfigs`
-    // fetcher is the source of truth. A DB row with `allow: true` opts
-    // the channel in even when the legacy env-var allowlist is empty.
-    const { chat, invokeMessage } = makeChat();
-    await registerProactiveListener(chat as any, makeLogger(), {
-      isEnabled: () => true,
-      classify: yesLLM,
-      resolveWorkspaceId: defaultResolver,
-      getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: makeWorkspaceFetchers(baseWorkspace, [{ channelId: "C-db-opted-in", allow: true }]).getChannelConfigs,
-      // No channelAllowlist — DB row is the sole opt-in signal.
-    });
-    const thread = makeThread("C-db-opted-in");
-    await invokeMessage(thread, makeMessage());
-    expect(thread._addReaction).toHaveBeenCalledWith(PROACTIVE_REACTION);
-  });
-
-  it("skips when a channel_proactive_config row has allow=false (DB opt-out wins over env allowlist)", async () => {
+  it("skips when a channel_proactive_config row has allow=false (explicit deny)", async () => {
+    // Post-#2620 the DB row is the sole source of truth: `allow: false`
+    // is an explicit opt-out. No row at all also means "not opted in"
+    // (covered by the prior test).
     const { chat, invokeMessage } = makeChat();
     await registerProactiveListener(chat as any, makeLogger(), {
       isEnabled: () => true,
@@ -332,9 +297,6 @@ describe("registerProactiveListener — channel-message handler", () => {
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
       getChannelConfigs: makeWorkspaceFetchers(baseWorkspace, [{ channelId: "C-opted-out", allow: false }]).getChannelConfigs,
-      // Channel IS on the env allowlist — but the DB row explicitly opts out.
-      // DB wins over env so an admin's deny in the UI is honored.
-      channelAllowlist: ["C-opted-out"],
     });
     const thread = makeThread("C-opted-out");
     await invokeMessage(thread, makeMessage());
@@ -348,8 +310,7 @@ describe("registerProactiveListener — channel-message handler", () => {
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-      channelAllowlist: ["C-allowed"],
+      getChannelConfigs: allowChannels("C-allowed"),
     });
     const thread = makeThread("C-allowed");
     await invokeMessage(thread, makeMessage({ id: "M1" }));
@@ -364,8 +325,7 @@ describe("registerProactiveListener — channel-message handler", () => {
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-      channelAllowlist: ["C-allowed"],
+      getChannelConfigs: allowChannels("C-allowed"),
     });
     const thread = makeThread("C-allowed");
     await invokeMessage(thread, makeMessage({ isBot: true }));
@@ -379,8 +339,7 @@ describe("registerProactiveListener — channel-message handler", () => {
       classify: noLLM,
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-      channelAllowlist: ["C-allowed"],
+      getChannelConfigs: allowChannels("C-allowed"),
     });
     const thread = makeThread("C-allowed");
     await invokeMessage(thread, makeMessage());
@@ -405,8 +364,7 @@ describe("registerProactiveListener — reaction-back handler", () => {
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-      channelAllowlist: ["C-allowed"],
+      getChannelConfigs: allowChannels("C-allowed"),
       userResolver: opts.userResolver,
       executeQueryProactive: opts.executeQueryProactive,
       linkUrl: opts.linkUrl,
@@ -551,8 +509,7 @@ describe("registerProactiveListener — button handlers", () => {
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-      channelAllowlist: ["C-allowed"],
+      getChannelConfigs: allowChannels("C-allowed"),
       userResolver: linkedResolver,
       executeQueryProactive,
     });
@@ -580,8 +537,7 @@ describe("registerProactiveListener — button handlers", () => {
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-      channelAllowlist: ["C-allowed"],
+      getChannelConfigs: allowChannels("C-allowed"),
       userResolver: linkedResolver,
       executeQueryProactive,
     });
@@ -634,8 +590,7 @@ describe("registerProactiveListener — feedback buttons", () => {
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-      channelAllowlist: ["C-allowed"],
+      getChannelConfigs: allowChannels("C-allowed"),
       userResolver: linkedResolver,
       executeQueryProactive: echoExecute,
       feedbackCollector: wrapped,
@@ -724,8 +679,7 @@ describe("registerProactiveListener — feedback buttons", () => {
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-      channelAllowlist: ["C-allowed"],
+      getChannelConfigs: allowChannels("C-allowed"),
       // feedbackCollector deliberately omitted
     });
     // Should not throw even though no collector is wired
@@ -843,8 +797,7 @@ describe("registerProactiveListener — kill switch", () => {
       classify,
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-      channelAllowlist: ["C-allowed"],
+      getChannelConfigs: allowChannels("C-allowed"),
       isPaused,
       onPauseRequest: mock(async () => {}),
     });
@@ -863,8 +816,7 @@ describe("registerProactiveListener — kill switch", () => {
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-      channelAllowlist: ["C-allowed"],
+      getChannelConfigs: allowChannels("C-allowed"),
       isPaused,
       onPauseRequest: mock(async () => {}),
     });
@@ -893,8 +845,7 @@ describe("registerProactiveListener — kill switch", () => {
       classify,
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-      channelAllowlist: ["C-allowed"],
+      getChannelConfigs: allowChannels("C-allowed"),
       isPaused,
       onPauseRequest: mock(async () => {}),
       onMeterEvent,
@@ -922,8 +873,7 @@ describe("registerProactiveListener — kill switch", () => {
       classify,
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-      channelAllowlist: ["C-allowed"],
+      getChannelConfigs: allowChannels("C-allowed"),
       isPaused: mock(async () => ({ paused: false })),
       onPauseRequest,
     });
@@ -948,8 +898,7 @@ describe("registerProactiveListener — kill switch", () => {
       classify,
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-      channelAllowlist: ["C-allowed"],
+      getChannelConfigs: allowChannels("C-allowed"),
       isPaused: mock(async () => ({ paused: false })),
       onPauseRequest,
     });
@@ -973,8 +922,7 @@ describe("registerProactiveListener — kill switch", () => {
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-      channelAllowlist: ["C-allowed"],
+      getChannelConfigs: allowChannels("C-allowed"),
       isPaused: mock(async () => ({ paused: false })),
       onPauseRequest,
     });
@@ -994,8 +942,7 @@ describe("registerProactiveListener — kill switch", () => {
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-      channelAllowlist: ["C-allowed"],
+      getChannelConfigs: allowChannels("C-allowed"),
       isPaused: mock(async () => ({ paused: false })),
       onPauseRequest,
     });
@@ -1018,8 +965,7 @@ describe("registerProactiveListener — kill switch", () => {
       classify,
       resolveWorkspaceId: makeResolver(null), // unknown tenant
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-      channelAllowlist: ["C-allowed"],
+      getChannelConfigs: allowChannels("C-allowed"),
       isPaused,
     });
     const thread = makeThread("C-allowed");
@@ -1060,8 +1006,7 @@ describe("registerProactiveListener — monthly quota cap (#2301)", () => {
         classify,
         resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-        channelAllowlist: ["C-allowed"],
+        getChannelConfigs: allowChannels("C-allowed"),
           getQuotaStatus,
         onMeterEvent,
       },
@@ -1112,8 +1057,7 @@ describe("registerProactiveListener — monthly quota cap (#2301)", () => {
         classify,
         resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-        channelAllowlist: ["C-allowed"],
+        getChannelConfigs: allowChannels("C-allowed"),
           getQuotaStatus,
         onMeterEvent,
       },
@@ -1153,8 +1097,7 @@ describe("registerProactiveListener — monthly quota cap (#2301)", () => {
         classify,
         resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-        channelAllowlist: ["C-allowed"],
+        getChannelConfigs: allowChannels("C-allowed"),
           getQuotaStatus,
         onMeterEvent,
       },
@@ -1196,8 +1139,7 @@ describe("registerProactiveListener — monthly quota cap (#2301)", () => {
         classify,
         resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-        channelAllowlist: ["C-allowed"],
+        getChannelConfigs: allowChannels("C-allowed"),
           getQuotaStatus,
       },
     );
@@ -1227,8 +1169,7 @@ describe("registerProactiveListener — monthly quota cap (#2301)", () => {
         classify,
         resolveWorkspaceId: makeResolver(null),
         getWorkspaceConfig: defaultGetWorkspace,
-        getChannelConfigs: defaultGetChannels,
-        channelAllowlist: ["C-allowed"],
+          getChannelConfigs: allowChannels("C-allowed"),
         getQuotaStatus,
       },
     );
@@ -1262,8 +1203,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
       getWorkspaceConfig: defaultGetWorkspace,
-      getChannelConfigs: defaultGetChannels,
-      channelAllowlist: ["C-allowed"],
+      getChannelConfigs: allowChannels("C-allowed"),
       userResolver: opts.userResolver,
       executeQueryProactive: opts.executeQueryProactive,
       getPublicDataset: opts.getPublicDataset,
@@ -1683,8 +1623,7 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
         classify,
         resolveWorkspaceId: makeResolver(null),
         getWorkspaceConfig: defaultGetWorkspace,
-        getChannelConfigs: defaultGetChannels,
-        channelAllowlist: ["C-allowed"],
+          getChannelConfigs: allowChannels("C-allowed"),
         onMeterEvent,
       },
     );
@@ -1713,8 +1652,7 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
           throw new Error("slack_installations table missing");
         },
         getWorkspaceConfig: defaultGetWorkspace,
-        getChannelConfigs: defaultGetChannels,
-        channelAllowlist: ["C-allowed"],
+          getChannelConfigs: allowChannels("C-allowed"),
         onMeterEvent,
       },
     );
@@ -1738,8 +1676,7 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
         classify,
         resolveWorkspaceId: defaultResolver,
         getWorkspaceConfig: async () => null, // no config row
-        getChannelConfigs: defaultGetChannels,
-        channelAllowlist: ["C-allowed"],
+          getChannelConfigs: allowChannels("C-allowed"),
         onMeterEvent,
       },
     );
@@ -1780,8 +1717,7 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
         classify: yesLLM,
         resolveWorkspaceId,
         getWorkspaceConfig: defaultGetWorkspace,
-        getChannelConfigs: defaultGetChannels,
-        channelAllowlist: ["C-tenant-A", "C-tenant-B"],
+        getChannelConfigs: allowChannels("C-tenant-A", "C-tenant-B"),
         onMeterEvent,
       },
     );
@@ -1827,8 +1763,7 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
         classify: yesLLM,
         resolveWorkspaceId,
         getWorkspaceConfig: defaultGetWorkspace,
-        getChannelConfigs: defaultGetChannels,
-        channelAllowlist: ["C-general-A", "C-general-B"],
+        getChannelConfigs: allowChannels("C-general-A", "C-general-B"),
       },
     );
 
@@ -1865,8 +1800,7 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
         classify: yesLLM,
         resolveWorkspaceId,
         getWorkspaceConfig: defaultGetWorkspace,
-        getChannelConfigs: defaultGetChannels,
-        channelAllowlist: ["C-tenant-A", "C-tenant-B"],
+        getChannelConfigs: allowChannels("C-tenant-A", "C-tenant-B"),
         isPaused: mock(async () => ({ paused: false })),
         onPauseRequest,
       },
@@ -1917,8 +1851,7 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
         classify: yesLLM,
         resolveWorkspaceId,
         getWorkspaceConfig: defaultGetWorkspace,
-        getChannelConfigs: defaultGetChannels,
-        channelAllowlist: ["C-tenant-A", "C-tenant-B"],
+        getChannelConfigs: allowChannels("C-tenant-A", "C-tenant-B"),
         userResolver: linkedResolver,
         executeQueryProactive,
       },
@@ -2007,8 +1940,7 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
         classify: yesLLM,
         resolveWorkspaceId,
         getWorkspaceConfig,
-        getChannelConfigs: defaultGetChannels,
-        channelAllowlist: ["C-tenant-A", "C-tenant-B"],
+        getChannelConfigs: allowChannels("C-tenant-A", "C-tenant-B"),
       },
     );
 

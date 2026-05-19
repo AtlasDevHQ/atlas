@@ -112,7 +112,12 @@ export interface ChatQueryResult {
 
 /** Adapter-specific credential configuration. */
 export interface SlackAdapterConfig {
-  botToken: string;
+  /**
+   * Single-workspace bot token. Omit in multi-workspace deploys so
+   * `@chat-adapter/slack` resolves per-event tokens from its installation
+   * store. Required when `clientId`+`clientSecret` are not set.
+   */
+  botToken?: string;
   signingSecret: string;
   /** Client ID for multi-workspace OAuth. */
   clientId?: string;
@@ -628,7 +633,13 @@ export interface ProactiveConfig {
 // ---------------------------------------------------------------------------
 
 const SlackAdapterSchema = z.object({
-  botToken: z.string().min(1, "slack botToken must not be empty"),
+  // Optional: required for single-workspace mode (the adapter uses this
+  // bare token for every outbound call). MULTI-WORKSPACE deploys OMIT
+  // this field so `@chat-adapter/slack` resolves per-event tokens from
+  // its installation store (state-adapter `slack:installation:<teamId>`).
+  // A non-empty placeholder here puts the adapter in single-workspace
+  // mode and the placeholder ends up as the bearer token → Slack rejects.
+  botToken: z.string().min(1, "slack botToken must not be empty").optional(),
   signingSecret: z.string().min(1, "slack signingSecret must not be empty"),
   clientId: z.string().min(1).optional(),
   clientSecret: z.string().min(1).optional(),

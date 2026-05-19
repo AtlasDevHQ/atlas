@@ -82,15 +82,20 @@ export default defineConfig({
   // handle slash commands, block actions, modals, and OAuth.
   //
   // SaaS is multi-tenant: real Slack bot tokens live in the internal
-  // DB (slack_installations) keyed by team_id. The static `botToken`
-  // below is required by Zod (min(1)) but is never used for outbound
-  // calls in SaaS — `createChatPluginExecuteQuery()` resolves the
-  // per-tenant token via `getBotToken(teamId)` inside the agent loop.
+  // DB (slack_installations) keyed by team_id and are backfilled into
+  // the chat plugin's installation store (chat_cache:slack:installation:<teamId>).
+  // We intentionally OMIT `botToken` so `@chat-adapter/slack` operates in
+  // multi-workspace mode and resolves the per-event token via
+  // `resolveTokenForTeam()`. Passing a placeholder string would put the
+  // adapter in single-workspace mode and the placeholder would be sent as
+  // the Slack API bearer token (rejected with `invalid_auth`).
   plugins: [
     chatPlugin({
       adapters: {
         slack: {
-          botToken: process.env.SLACK_BOT_TOKEN ?? "saas-multi-tenant-unused",
+          ...(process.env.SLACK_BOT_TOKEN
+            ? { botToken: process.env.SLACK_BOT_TOKEN }
+            : {}),
           signingSecret:
             process.env.SLACK_SIGNING_SECRET ?? "saas-multi-tenant-unused",
           ...(process.env.SLACK_CLIENT_ID

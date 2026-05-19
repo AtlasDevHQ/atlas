@@ -2051,6 +2051,10 @@ export const workspaceProactiveConfig = pgTable(
       "chk_workspace_proactive_monthly_cap_nonneg",
       sql`${t.monthlyClassifierCap} IS NULL OR ${t.monthlyClassifierCap} >= 0`,
     ),
+    check(
+      "chk_workspace_proactive_workspace_id_nonempty",
+      sql`${t.workspaceId} <> ''`,
+    ),
   ],
 );
 

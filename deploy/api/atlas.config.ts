@@ -35,15 +35,16 @@ export default defineConfig({
   // alongside the existing /api/v1/slack/* routes; both surfaces
   // coexist after this slice. NO `proactive:` block is supplied here —
   // bridge.ts only registers the proactive listener when
-  // `config.proactive` is truthy. Slice 2 (#2607) will add it.
+  // `config.proactive` is truthy. Slice 2 of #2607 will add it.
   //
   // SaaS is multi-tenant: real Slack bot tokens live in the internal
   // DB (slack_integrations / slack_workspaces) keyed by team_id, and
   // packages/api/src/api/routes/slack.ts continues to handle every
   // production webhook today. The static `botToken` below is required
   // by Zod (min(1)) but is never used for outbound calls in SaaS —
-  // executeQuery throws a clear stub error to prevent accidental
-  // routing through this plugin until slice 3 migrates handlers.
+  // executeQuery throws a stub before any outbound call, and the
+  // Slack app manifest only POSTs to /api/v1/slack/events, not to the
+  // plugin's webhook route. Slice 3 of #2607 retires this stub.
   plugins: [
     chatPlugin({
       adapters: {
@@ -60,13 +61,27 @@ export default defineConfig({
         },
       },
       state: { backend: "pg" },
-      executeQuery: async () => {
-        // Stub: until slice 3 retires slack.ts's app_mention handler, this
-        // plugin's bridge is mounted but unused — Slack still routes to
-        // /api/v1/slack/events. Returning a clear stub error prevents
-        // accidental routing during slice 1/2.
+      executeQuery: async (question, ctx) => {
+        // Defensive stub for slice 1/2 — the chat plugin's bridge is
+        // wired but unreachable from the Slack app manifest today (only
+        // /api/v1/slack/events is registered). Slice 3 of #2607 retires
+        // this stub by migrating the @mention/thread handlers off
+        // slack.ts. If a request DOES reach this stub (e.g., manual
+        // webhook re-registration during dogfood), the bridge logs the
+        // throw via log.error and posts an error card to the user, so
+        // the surfaced message must be user-safe — not a dev string.
+        // Log the dev detail with structured context for operators.
+        console.error(
+          JSON.stringify({
+            event: "chat-plugin.executeQuery.stub-hit",
+            threadId: ctx.threadId,
+            questionPreview: question.slice(0, 80),
+            note:
+              "Chat plugin reached pre-slice-3 stub. Check Slack app manifest — only /api/v1/slack/events should be registered.",
+          }),
+        );
         throw new Error(
-          "Chat plugin executeQuery not yet wired — slice 3 will migrate handlers from slack.ts",
+          "This Slack integration is being upgraded. Please try again in a moment, or contact your Atlas admin if this persists.",
         );
       },
     }),

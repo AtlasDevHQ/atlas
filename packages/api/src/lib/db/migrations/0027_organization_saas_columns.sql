@@ -1,5 +1,8 @@
 -- 0027 — Backfill SaaS columns on the Better Auth organization table.
 --
+-- Companion script: packages/api/src/lib/db/migrations/scripts/0027_backfill_region.ts
+-- backfills `organization.region` on EU + APAC clusters (already run on prod 2026-05-12).
+--
 -- Background (#1472): 0000_baseline.sql and 0020_plan_tier_rename.sql wrap
 -- their organization-table ALTERs in `IF EXISTS (... table_name = 'organization')`.
 -- On a fresh boot, Atlas migrations historically ran BEFORE Better Auth created

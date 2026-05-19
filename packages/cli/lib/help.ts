@@ -638,6 +638,117 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
       "atlas completions fish > ~/.config/fish/completions/atlas.fish",
     ],
   },
+  proactive: {
+    description:
+      "Enable or disable proactive chat for a workspace. Operates against the tenant Postgres at ATLAS_TEAM_PG_URL (falls back to DATABASE_URL).",
+    usage: "proactive <enable|disable> --workspace <id|slug> [options]",
+    subcommands: [
+      {
+        name: "enable",
+        description:
+          "Turn proactive chat on for a workspace + opt one or more channels in (idempotent upsert).",
+      },
+      {
+        name: "disable",
+        description:
+          "Flip workspace_proactive_config.enabled to false (channel config rows preserved).",
+      },
+    ],
+    flags: [
+      {
+        flag: "--workspace <id|slug>",
+        description:
+          "Workspace slug (resolved via organization.slug) or literal `org_*` id",
+      },
+      {
+        flag: "--channels <id1,id2,...>",
+        description:
+          "Comma-separated Slack channel ids to opt in (required for `enable`)",
+      },
+    ],
+    examples: [
+      "atlas proactive enable --workspace atlas --channels C0AAA,C0BBB",
+      "atlas proactive disable --workspace atlas",
+    ],
+  },
+  seed: {
+    description:
+      "Seed durable workspace data — starter prompt collections and connection groups. Operates against the tenant Postgres at ATLAS_TEAM_PG_URL (falls back to DATABASE_URL).",
+    usage: "seed <prompts|workspace> [options]",
+    subcommands: [
+      {
+        name: "prompts",
+        description:
+          "Seed a prompt-library collection + items from a YAML file into prompt_collections / prompt_items.",
+      },
+      {
+        name: "workspace",
+        description:
+          "Provision a connection group with one or more member connections + per-group semantic entities.",
+      },
+    ],
+    flags: [
+      {
+        flag: "--workspace <id|slug>",
+        description: "Target workspace (required)",
+      },
+      {
+        flag: "--library <path>",
+        description:
+          "Path to library YAML (seed prompts) — defaults to ./prompts/library.yml",
+      },
+      {
+        flag: "--group <name>",
+        description: "Connection group name (seed workspace, required)",
+      },
+      {
+        flag: "--group-id <id>",
+        description: "Connection group id (seed workspace, defaults to `g_<group>`)",
+      },
+      {
+        flag: "--connections <id=urlEnv:type[:primary],...>",
+        description:
+          "Group members. Each entry: connection id, env var holding the URL, db type (postgres|mysql|…), and optional `:primary` marker. Exactly one entry must be primary.",
+      },
+      {
+        flag: "--semantic <path>",
+        description:
+          "Optional path to a semantic/ directory whose entities/, metrics/, glossary/ are inserted scoped to the new group.",
+      },
+    ],
+    examples: [
+      "atlas seed prompts --workspace atlas --library ./prompts/library.yml",
+      "atlas seed workspace --workspace atlas --group prod --connections us-prod=US_DB_URL:postgres:primary,eu-prod=EU_DB_URL:postgres",
+    ],
+  },
+  ops: {
+    description:
+      "Operator-only tools that touch tenant data. Destructive subcommands require an explicit double-confirm flag.",
+    usage: "ops <wipe> [options]",
+    subcommands: [
+      {
+        name: "wipe",
+        description:
+          "TRUNCATE every public table in the tenant DB (excluding migration bookkeeping) with RESTART IDENTITY CASCADE. Requires ATLAS_WIPE_OK=1 + --confirm. No backup is taken — wrap with pg_dump yourself.",
+      },
+    ],
+    flags: [
+      {
+        flag: "--confirm",
+        description:
+          "Required to proceed past the double-confirm gate. Pair with ATLAS_WIPE_OK=1 in the env.",
+      },
+      {
+        flag: "--database-url <url>",
+        description:
+          "Override the target Postgres URL (defaults to ATLAS_TEAM_PG_URL, then DATABASE_URL).",
+      },
+    ],
+    examples: [
+      "ATLAS_WIPE_OK=1 atlas ops wipe --confirm",
+      "ATLAS_WIPE_OK=1 atlas ops wipe --confirm --database-url $US_DB_URL",
+    ],
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -667,6 +778,9 @@ export function printOverviewHelp(): void {
       "  plugin           Manage plugins (list, create, add)\n" +
       "  benchmark        Run BIRD benchmark for text-to-SQL accuracy\n" +
       "  mcp              Start MCP server (stdio or SSE transport)\n" +
+      "  proactive        Enable/disable proactive chat for a workspace (operator)\n" +
+      "  seed             Seed durable workspace data — prompts, connection groups (operator)\n" +
+      "  ops              Operator-only destructive tools (e.g. wipe)\n" +
       "  completions      Output shell completion script (bash, zsh, fish)\n\n" +
       "Run atlas <command> --help for detailed usage of any command.",
   );

@@ -64,7 +64,7 @@ while [ $# -gt 0 ]; do
 done
 
 # --- Surface definitions ---
-CORE_SURFACES=(helpers health auth auth-managed conversations slack actions mcp scheduler agent-multistep error-scenarios)
+CORE_SURFACES=(helpers health auth auth-managed conversations slack slack-proactive actions mcp scheduler agent-multistep error-scenarios)
 QUERY_SURFACES=(query)
 SCAFFOLD_SURFACES=(scaffold)
 DOCKER_SURFACES=(docker)

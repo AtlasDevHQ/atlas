@@ -127,6 +127,18 @@ COPY --from=builder --chown=atlas:atlas /app/package.json ./package.json
 COPY --from=builder --chown=atlas:atlas /app/ee ./ee
 # Plugins (loaded at runtime by the plugin system)
 COPY --from=builder --chown=atlas:atlas /app/plugins ./plugins
+# Defensive symlink rebuild: bun ci in the deps stage creates
+# `plugins/chat/node_modules/@useatlas/{plugin-sdk,types}` as relative
+# workspace symlinks, but the multi-stage COPY chain isn't reliably
+# preserving them for every Docker driver. Recreate explicitly so
+# atlas.config.ts's transitive load of `./plugins/chat/src/index`
+# (added in #2608 / slice 1 of #2607) can resolve the chat plugin's
+# `@useatlas/plugin-sdk` peerDep at boot regardless of upstream
+# COPY-symlink behavior. The `-f` flag overwrites any pre-existing
+# (possibly dangling) symlink that survived the COPY.
+RUN mkdir -p /app/plugins/chat/node_modules/@useatlas && \
+    ln -sfn /app/packages/plugin-sdk /app/plugins/chat/node_modules/@useatlas/plugin-sdk && \
+    ln -sfn /app/packages/types /app/plugins/chat/node_modules/@useatlas/types
 # Demo seeding (ATLAS_SEED_DEMO=true) — single canonical seed since 1.4.0 (#2021)
 COPY --from=builder --chown=atlas:atlas /app/packages/cli/data/seeds/ecommerce/seed.sql ./data/demo.sql
 COPY --chown=atlas:atlas examples/docker/scripts/seed-demo.ts ./scripts/seed-demo.ts

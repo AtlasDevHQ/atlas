@@ -42,14 +42,15 @@
  *      registered or threw inside its outer `try` block (see #2638 for
  *      the DM-routing variant where this would otherwise mask a bug).
  *
- *   4. DM `unsubscribe` lands as `user-optout` via `onDirectMessage`
- *      (#2638). Pre-#2638 the proactive listener only registered
- *      `chat.onNewMessage(/.+/)` — but the chat SDK routes DM events
- *      to `directMessageHandlers` (then `mentionHandlers`), so the
- *      `unsubscribe` branch was unreachable in production. #2638 added
- *      an `onDirectMessage` registration; this test exercises the full
- *      DM webhook → SDK dispatch → DM handler → `onPauseRequest` chain
- *      end to end.
+ *   4. DM behaviour (#2638) — dual coverage. The SDK runs DM
+ *      handlers and returns; mention/`onNewMessage` paths only fire
+ *      for DMs when no DM handler is registered. Pre-#2638 the
+ *      proactive listener's `unsubscribe` branch sat inside
+ *      `onNewMessage` and was unreachable. Two tests pin both halves
+ *      of the dual `onDirectMessage` registration: the proactive
+ *      listener writes `user-optout` on `unsubscribe`, and the
+ *      bridge's chat-with-bot path keeps reaching `executeQuery` for
+ *      every other DM.
  *
  * Plugin webhook only — the legacy `/api/v1/slack/*` slash +
  * interaction paths stay covered by `slack.test.ts`.
@@ -752,18 +753,50 @@ describe("E2E: chat-interaction webhook — kill switch (#2607 slice trail)", ()
   });
 
   // ---------------------------------------------------------------------
-  // #2638 — DM unsubscribe lands as `user-optout` via the listener's
-  // `onDirectMessage` registration.
+  // #2638 — Non-unsubscribe DMs still reach `executeQuery` through the
+  // bridge's `onDirectMessage` handler.
   //
-  // Pre-#2638 this was a documented production gap: the listener only
-  // registered `chat.onNewMessage(/.+/)`, but the chat SDK routes DM
-  // events to `directMessageHandlers` (then `mentionHandlers`), never
-  // to `onNewMessage` patterns. The unsubscribe branch sat inside the
-  // pattern handler and was unreachable for DMs in production. #2638
-  // added the second registration; this test drives the full chain
-  // end to end so a future regression that drops the `onDirectMessage`
-  // registration (or breaks DM webhook dispatch) fails here, not in
-  // a customer's #atlas-questions Slack workspace.
+  // The proactive listener registers `onDirectMessage` for unsubscribe
+  // detection (test below), which makes the SDK route DM events to
+  // direct-message handlers and stop after the loop — mention handlers
+  // never fire for DMs. Without the bridge ALSO registering
+  // `onDirectMessage`, the chat-with-bot DM path would silently
+  // disappear ("what is MRR?" in a DM would land at the proactive
+  // listener's `if (isDM) return;` short-circuit and nothing else).
+  // This test pins both halves of the dual-registration contract.
+  // ---------------------------------------------------------------------
+  it("DM `what is MRR?` reaches executeQuery via bridge.onDirectMessage (#2638)", async () => {
+    const payload = makeEventPayload({
+      type: "message",
+      text: "what was MRR last month?",
+      ts: "1700000030.000800",
+      channel: DM_CHANNEL_ID,
+      channelType: "im",
+    });
+    const res = await app.fetch(makeSignedEventRequest(payload));
+    expect(res.status).toBe(200);
+
+    await waitFor(() => executeQueryCalls.length > 0);
+    expect(executeQueryCalls).toHaveLength(1);
+    expect(executeQueryCalls[0]!.adapterName).toBe("slack");
+    expect(executeQueryCalls[0]!.question).toContain("MRR");
+
+    // The proactive listener's DM short-circuit kicks in before
+    // classify — no classify / react meter rows should land. If they
+    // do, the listener has started running its channel-only flow on
+    // DMs, burning LLM tokens on every chat-with-bot message.
+    expectNoProactiveActivity();
+    // No unsubscribe match → no pause-registry write.
+    expect(pauseRequests).toHaveLength(0);
+  });
+
+  // ---------------------------------------------------------------------
+  // #2638 — DM unsubscribe lands as `user-optout` via the listener's
+  // `onDirectMessage` registration. Pre-#2638 this was a production
+  // gap: the SDK runs DM handlers and returns, never reaching mention
+  // handlers or `onNewMessage` patterns where the unsubscribe branch
+  // lived. End-to-end signal so a future regression fails here, not
+  // in a customer's #atlas-questions Slack workspace.
   // ---------------------------------------------------------------------
   it("DM unsubscribe — fires user-optout onPauseRequest via onDirectMessage (#2638)", async () => {
     const payload = makeEventPayload({

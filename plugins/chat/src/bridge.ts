@@ -24,7 +24,7 @@
  */
 
 import { Chat, Modal, TextInput, emoji as chatEmoji } from "chat";
-import type { Adapter, StateAdapter, Lock, CardElement, FileUpload, StreamChunk } from "chat";
+import type { Adapter, StateAdapter, Lock, CardElement, FileUpload, Message, StreamChunk, Thread } from "chat";
 import { toModalElement } from "chat/jsx-runtime";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
 import type {
@@ -708,21 +708,19 @@ export function createChatBridge(
   // --- onNewMention + onDirectMessage: first interaction in a thread ---
   //
   // Both handlers share the same body. Pre-#2638 the chat SDK
-  // (`chat@4.23.0`, `dispatchToHandlers`) marked any DM as a mention
-  // when no `onDirectMessage` handler was registered, so a single
-  // `onNewMention` registration caught both @-mentions in channels and
-  // 1:1 DMs to the bot. #2638 added `onDirectMessage` on the proactive
-  // listener (for DM `unsubscribe` detection), which makes the SDK
-  // route DMs to direct-message handlers and skip mention handlers.
-  // Without the explicit DM registration below, the chat-with-bot DM
-  // path would silently stop working — DM "what is MRR?" would no
-  // longer reach `executeQuery`. Both registrations run independently
-  // (the SDK loops every DM handler before returning); the proactive
-  // listener handles `unsubscribe` short-circuits, this handler
-  // handles every other DM the same way it always has.
+  // (`dispatchToHandlers`) marked any DM as a mention when no
+  // `onDirectMessage` was registered, so a single `onNewMention`
+  // registration caught both @-mentions and 1:1 DMs. #2638 added
+  // `onDirectMessage` on the proactive listener; once any DM handler
+  // is registered the SDK runs DM handlers and returns without
+  // touching mention handlers. Without the explicit DM registration
+  // below, the chat-with-bot DM path ("what is MRR?" in a DM) would
+  // silently stop reaching `executeQuery`. The SDK iterates every
+  // registered DM handler before returning, so the proactive
+  // listener's unsubscribe handler and this one fire independently.
   const handleMentionOrDM = async (
-    thread: Parameters<Parameters<typeof chat.onNewMention>[0]>[0],
-    message: Parameters<Parameters<typeof chat.onNewMention>[0]>[1],
+    thread: Thread,
+    message: Message,
   ): Promise<void> => {
     const threadId = `${thread.adapter.name}:${thread.id}`;
     const question = message.text?.trim();
@@ -859,11 +857,6 @@ export function createChatBridge(
   };
 
   chat.onNewMention(handleMentionOrDM);
-  // Preserve the chat-with-bot DM path now that the proactive listener
-  // also registers `onDirectMessage` (#2638). The SDK routes DM events
-  // to all registered DM handlers before returning, so this fires
-  // alongside the proactive unsubscribe handler instead of being
-  // bypassed by mention-handler routing as it was pre-#2638.
   chat.onDirectMessage(handleMentionOrDM);
 
   // --- onSubscribedMessage: follow-up in a subscribed thread ---

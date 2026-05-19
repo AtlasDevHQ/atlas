@@ -4,16 +4,8 @@
  * We capture the functions passed to `chat.onNewMessage`,
  * `chat.onDirectMessage`, `chat.onReaction`, and `chat.onAction` and
  * invoke them directly with stand-in thread, message, reaction-event,
- * and action-event objects. That keeps the test free of any real Chat
- * SDK plumbing while still proving the wiring is correct.
- *
- * The DM path is exercised via `invokeDM` (the `onDirectMessage`
- * capture) so the unit-test contract matches what the SDK actually
- * does in production. Pre-#2638 the DM tests called `invokeMessage`
- * (the `onNewMessage` capture) — that worked at the unit level but
- * the chat SDK routes real DM events to `directMessageHandlers`
- * first, so a test that only exercised the channel-pattern path
- * silently masked the production gap (#2638).
+ * and action-event objects. DM scenarios use `invokeDM` so the unit
+ * contract matches the SDK's `directMessageHandlers` dispatch path.
  */
 
 import { describe, expect, it, mock } from "bun:test";
@@ -73,11 +65,6 @@ function makeChat() {
     onNewMessage: mock((_pattern: RegExp, handler: AnyHandler) => {
       messageHandler = handler;
     }),
-    // Matches the chat SDK signature: `onDirectMessage(handler)` with
-    // a single handler arg (no pattern). Production SDK dispatches DMs
-    // here first; if no handler is registered, DMs fall through to the
-    // mention handlers (NOT the `onNewMessage` patterns) — the routing
-    // gap #2638 fixed.
     onDirectMessage: mock((handler: AnyHandler) => {
       directMessageHandler = handler;
     }),
@@ -99,11 +86,6 @@ function makeChat() {
       if (!messageHandler) throw new Error("listener never registered a message handler");
       await messageHandler(thread, message);
     },
-    // Exercises the `chat.onDirectMessage` registration (#2638). The
-    // SDK calls the handler with `(thread, message, channel, context)`;
-    // the listener's wrapper only forwards `thread` + `message` so we
-    // match that surface here. Tests that want to assert "DM path was
-    // taken" should call this, not `invokeMessage`.
     invokeDM: async (thread: unknown, message: unknown) => {
       if (!directMessageHandler) {
         throw new Error("listener never registered a direct-message handler");
@@ -272,10 +254,6 @@ describe("registerProactiveListener — gating", () => {
       getChannelConfigs: allowChannels("C-allowed"),
     });
     expect(isRegistered()).toBe(true);
-    // #2638: a separate DM handler is required because the chat SDK
-    // routes DMs to `directMessageHandlers` first; without this the
-    // `onNewMessage` pattern handler never sees DM events in
-    // production (the unsubscribe branch was unreachable).
     expect(isDMRegistered()).toBe(true);
     expect(chat.onNewMessage).toHaveBeenCalledTimes(1);
     expect(chat.onDirectMessage).toHaveBeenCalledTimes(1);
@@ -927,12 +905,6 @@ describe("registerProactiveListener — kill switch", () => {
   });
 
   it("DM `unsubscribe` (via onDirectMessage path) writes a user-optout row and skips classification", async () => {
-    // Exercises the `onDirectMessage` registration added in #2638 —
-    // the chat SDK routes real DM events to `directMessageHandlers`
-    // (then `mentionHandlers`), NEVER to `onNewMessage` patterns. The
-    // earlier version of this test invoked the `onNewMessage` capture
-    // directly, which bypassed the SDK routing and let the unit test
-    // pass even though production unsubscribe was unreachable.
     const onPauseRequest = mock(async () => {});
     const classify = mock(yesLLM);
     const { chat, invokeDM } = makeChat();
@@ -955,6 +927,31 @@ describe("registerProactiveListener — kill switch", () => {
       durationMs: null,
     });
     expect(classify).not.toHaveBeenCalled();
+  });
+
+  it("non-unsubscribe DM short-circuits before classify (cost-control contract)", async () => {
+    // The DM handler must not invoke the LLM classifier — DMs are
+    // 1:1 with the bot and the bridge owns the answer path. Pre-#2638
+    // DMs never reached the proactive handler at all; the new
+    // registration plus the `if (isDM) return;` short-circuit preserve
+    // the zero-LLM-cost contract. A regression that moves the isDM
+    // return below classify would silently burn tokens on every DM.
+    const classify = mock(yesLLM);
+    const onPauseRequest = mock(async () => {});
+    const { chat, invokeDM } = makeChat();
+    await registerProactiveListener(chat as unknown as Parameters<typeof registerProactiveListener>[0], makeLogger(), {
+      isEnabled: () => true,
+      classify,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: allowChannels("C-allowed"),
+      isPaused: mock(async () => ({ paused: false })),
+      onPauseRequest,
+    });
+    const thread = makeThread("D-direct", { isDM: true });
+    await invokeDM(thread, makeMessage({ text: "what was MRR last month?" }));
+    expect(classify).not.toHaveBeenCalled();
+    expect(onPauseRequest).not.toHaveBeenCalled();
   });
 
   it("does not treat literal `unsubscribe` in a non-DM channel as a pause command", async () => {

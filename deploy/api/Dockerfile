@@ -61,8 +61,14 @@ COPY packages/cli/data/seeds/ecommerce/semantic semantic
 # Build workspace deps whose exports point to dist/ in dependency order:
 # types → sdk → react. packages/react imports fetchStarterPrompts from
 # @useatlas/sdk, so sdk must be built before react's bundler resolves it.
+# plugin-sdk's package.json exports also point to ./dist/index.js — it must
+# be built so @useatlas/chat's transitive `import "@useatlas/plugin-sdk"`
+# resolves at boot (atlas.config.ts loads ./plugins/chat/src/index, which
+# imports plugin-sdk). Added in #2608 / slice 1 of #2607 when the chat
+# plugin first started being loaded by the SaaS config.
 RUN cd packages/types && bun run build
 RUN cd packages/sdk && bun run build
+RUN cd packages/plugin-sdk && bun run build
 RUN cd packages/react && bun run build
 
 # --- nsjail build stage (parallel with builder) ---

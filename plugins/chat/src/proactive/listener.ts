@@ -58,6 +58,7 @@ import type {
   ProactivePublicDatasetEntry,
   RecentActivity,
   ResolveWorkspaceIdFn,
+  ResolverEventLite,
   WorkspaceProactiveConfig,
 } from "./types";
 import { DEFAULT_PROACTIVE_REFUSAL_COPY } from "./types";
@@ -392,23 +393,29 @@ export async function registerProactiveListener(
   // contract is "never throw, resolve as null") still degrades to a
   // silent skip instead of crashing the SDK loop.
   //
-  // `thread` is typed loosely (`Thread<unknown, unknown>`) because the
-  // listener takes events from `onNewMessage`, `onReaction`, `onAction`,
-  // and `onModalSubmit` — each surfaces a thread with a different
-  // generic parameter. The Slack resolver reads only `adapter.name` +
+  // `thread` is typed loosely (`Thread<unknown, unknown> | undefined`)
+  // because the listener takes events from `onNewMessage`, `onReaction`,
+  // `onAction`, and `onModalSubmit` — each surfaces a thread with a
+  // different generic parameter (or none at all for the bridge's slash
+  // synthesis path). The Slack resolver reads only `adapter.name` +
   // `message.raw`; the `thread` field is passed through for forward-
   // compatibility with platforms that need it (Teams `channelData`,
   // etc.) but no current resolver dereferences it.
+  //
+  // `message` is the narrowed {@link ResolverEventLite} shape (#2623
+  // item 2) so action / modal call sites can pass `{ id, raw }`
+  // directly. Real `Message` instances also satisfy the shape because
+  // `ResolverEventLite` is `Pick<Message, "id" | "raw">`.
   const safeResolveWorkspace = async (
     adapter: Adapter,
-    thread: Thread<unknown, unknown>,
-    message: Message,
+    thread: Thread<unknown, unknown> | undefined,
+    message: ResolverEventLite,
   ): Promise<WorkspaceId | null> => {
     let raw: string | null;
     try {
       raw = await config.resolveWorkspaceId({
         adapter,
-        thread: thread as Thread,
+        thread: thread as Thread | undefined,
         message,
       });
     } catch (err) {
@@ -1001,11 +1008,12 @@ export async function registerProactiveListener(
           event.adapter,
           event.thread,
           // The action event doesn't carry the full Message that
-          // triggered the answer; pass a synthetic shape with the
-          // adapter-supplied messageId. The host's resolver is
-          // expected to derive workspaceId from `adapter` + raw, both
-          // of which are present.
-          { id: event.messageId, raw: event.raw } as unknown as Message,
+          // triggered the answer; pass a lite shape with the adapter-
+          // supplied messageId. The resolver's narrowed `ResolverEventLite`
+          // contract (#2623 item 2) is "only reads `adapter.name` +
+          // `message.raw`", so the lite shape satisfies the type
+          // directly — no `as unknown` cast needed.
+          { id: event.messageId, raw: event.raw },
         );
         if (!workspaceId) return;
         if (!(await config.isEnabled(workspaceId))) return;
@@ -1087,9 +1095,11 @@ export async function registerProactiveListener(
         event.adapter,
         relatedThread,
         // Modal events don't surface the original message; pass a
-        // synthetic shape — the host resolver's contract is to derive
-        // workspaceId from `adapter` + raw context.
-        { id: "", raw: event.raw } as unknown as Message,
+        // lite shape — the resolver's `ResolverEventLite` contract
+        // (#2623 item 2) only reads `adapter.name` + `message.raw`,
+        // so the lite shape satisfies the type directly without a
+        // cast.
+        { id: "", raw: event.raw },
       );
       if (!workspaceId) return { action: "close" as const };
       if (!(await config.isEnabled(workspaceId))) {

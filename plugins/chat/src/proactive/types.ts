@@ -117,6 +117,46 @@ export type ProactiveGateFn = (
 // meter row.
 
 /**
+ * Narrowed subset of `Message` the resolver is contractually allowed to
+ * read (#2623 item 2). The resolver-side contract has always been
+ * "only read `adapter.name` + `message.raw`", but pre-#2623 the
+ * parameter was the full `Message` and synthesis sites (action /
+ * modal / slash, which don't carry a real Message) smuggled a partial
+ * shape via a structural `Message` cast. The cast silenced the type
+ * error but a resolver author could legally read
+ * `event.message.attachments`
+ * or `event.message.author` — fields synthetic events don't populate,
+ * which would silently misroute the tenant lookup at runtime.
+ *
+ * Narrowing the parameter type closes that contract hole at compile
+ * time: a resolver that reads anything outside this set is a type
+ * error, and synthesis sites can return this shape directly without
+ * any cast.
+ *
+ * Adding a field here means every host implementation can now read it;
+ * removing means closing a hole. `raw` is the only load-bearing field
+ * (Slack `team_id`, Teams `tenantId`, ...); `id` is included because
+ * synthesis sites populate it for logging convenience but it carries
+ * no semantic value on synthetic events.
+ */
+export type ResolverEventLite = Pick<Message, "id" | "raw">;
+
+/**
+ * Per-event input to {@link ResolveWorkspaceIdFn}.
+ *
+ * `thread` is `Thread | undefined` because slash-command and home-tab
+ * events don't carry a thread context — the bridge passes `undefined`
+ * there. Pre-#2623 the bridge cast `undefined as unknown as Thread`
+ * to satisfy a stricter contract; the explicit `| undefined` lets the
+ * cast go away.
+ */
+export interface ResolverEvent {
+  adapter: Adapter;
+  thread: Thread | undefined;
+  message: ResolverEventLite;
+}
+
+/**
  * Per-event workspace resolution callback.
  *
  * Returns the Atlas workspace id (`org_id` in the internal DB) for the
@@ -133,11 +173,7 @@ export type ProactiveGateFn = (
  * canonical implementation that maps Slack `team_id` →
  * `slack_installations.org_id`.
  */
-export type ResolveWorkspaceIdFn = (event: {
-  adapter: Adapter;
-  thread: Thread;
-  message: Message;
-}) => Promise<string | null>;
+export type ResolveWorkspaceIdFn = (event: ResolverEvent) => Promise<string | null>;
 
 /**
  * Per-event workspace config fetcher.

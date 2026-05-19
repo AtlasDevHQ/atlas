@@ -98,6 +98,17 @@ describe("installation-encryption", () => {
       expect(decryptSlackInstallationToken("xoxb-pre-encryption")).toBe("xoxb-pre-encryption");
     });
 
+    it("rejects Atlas-legacy `enc:v…` ciphertext rather than returning it as a bearer", () => {
+      // Regression for the silent-leak failure mode: pre-#2634
+      // `slack_installations.bot_token_encrypted` strings start with
+      // `enc:v1:` (Atlas's versioned-keyset format). If one ever lands
+      // in chat_cache by accident, surfacing it as the Slack bearer
+      // would cause repeated 401s with the ciphertext leaking into
+      // auth logs. Throw at the decrypt boundary instead.
+      expect(() => decryptSlackInstallationToken("enc:v1:iv:tag:cipher")).toThrow(/Atlas-legacy/);
+      expect(() => decryptSlackInstallationToken("enc:v2:iv:tag:cipher")).toThrow(/Atlas-legacy/);
+    });
+
     it("throws when the row is encrypted but the key is unset at read time", () => {
       process.env.SLACK_ENCRYPTION_KEY = Buffer.alloc(32).toString("base64");
       resetSlackEncryptionKeyCache();

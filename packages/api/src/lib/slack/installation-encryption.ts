@@ -79,6 +79,14 @@ export function decodeSlackEncryptionKey(rawKey: string): Buffer {
  * Cache the decoded key per process — `decodeSlackEncryptionKey` does a
  * Buffer alloc + format check on every call, and the encrypt/decrypt
  * paths run on every Slack event for multi-workspace adapters.
+ *
+ * **Invariant.** Assumes `SLACK_ENCRYPTION_KEY` is static for the
+ * process lifetime — the only mutation hook is
+ * {@link resetSlackEncryptionKeyCache}, which exists for tests. Hosts
+ * that mutate `process.env` mid-process (a config-reload hook, a
+ * per-request secret scope) MUST call the reset hook on each change
+ * or risk serving stale-key ciphertext that the chat-adapter cannot
+ * decrypt.
  */
 let cachedKey: Buffer | null | undefined;
 
@@ -130,15 +138,34 @@ export function encryptSlackInstallationToken(plaintext: string): StoredSlackBot
   };
 }
 
+/** Prefix written by Atlas's legacy `db/secret-encryption.encryptSecret` — incompatible with this module. */
+const LEGACY_ATLAS_PREFIX = "enc:v";
+
 /**
  * Decrypt whatever was stored. Accepts both the envelope shape (when a
  * key was set at write time) and bare strings (plaintext fallback). A
  * key MUST be configured to decrypt an envelope — missing key on an
  * encrypted row throws so the failure surfaces in logs rather than
  * being returned as a useless ciphertext bearer.
+ *
+ * Also rejects strings that look like Atlas's legacy versioned-keyset
+ * ciphertext (`enc:v<N>:iv:tag:cipher`) — the pre-#2634
+ * `slack_installations` rows used that format. If one of those somehow
+ * lands in `chat_cache.value.botToken` (manual backfill, ops error, a
+ * leftover from a botched migration), returning the raw `enc:v…`
+ * string would propagate it to a Slack `Authorization: Bearer`
+ * header → repeated 401s in auth logs without an obvious signal at
+ * the call site. Throw instead so the failure surfaces.
  */
 export function decryptSlackInstallationToken(stored: StoredSlackBotToken): string {
-  if (typeof stored === "string") return stored;
+  if (typeof stored === "string") {
+    if (stored.startsWith(LEGACY_ATLAS_PREFIX)) {
+      throw new Error(
+        "Slack bot token is Atlas-legacy ciphertext (enc:v…) — cannot decrypt with chat-adapter format. Reinstall the workspace via OAuth.",
+      );
+    }
+    return stored;
+  }
   if (!isSlackEncryptedToken(stored)) {
     throw new Error("Stored Slack bot token has unexpected shape — refusing to decrypt");
   }

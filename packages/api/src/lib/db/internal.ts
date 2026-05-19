@@ -2074,6 +2074,9 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // Slack installs live in `chat_cache` post-#2634 (key prefix
     // `slack:installation:`). The partial expression index on
     // `value->>'orgId'` makes the org-scoped delete a cheap lookup.
+    // The `'orgId'` literal mirrors `lib/slack/store.ts:FIELD.orgId`
+    // — kept inline here to avoid a `db/internal.ts → lib/slack`
+    // import cycle. If FIELD ever changes, grep this file too.
     const slackInstallations = await del(
       `DELETE FROM chat_cache WHERE key LIKE 'slack:installation:%' AND value->>'orgId' = $1`,
     );

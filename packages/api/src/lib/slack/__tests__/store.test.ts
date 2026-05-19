@@ -204,8 +204,11 @@ describe("store (chat_cache-backed)", () => {
       expect(mockInternalQuery).toHaveBeenCalledTimes(1);
       const [sql, params] = mockInternalQuery.mock.calls[0];
       expect(sql).toContain("FROM chat_cache");
-      expect(sql).toContain("value->>'orgId' = $2");
-      expect(params).toEqual(["slack:installation:%", "org-1"]);
+      // The key prefix is LITERAL (not parameterized) so the planner can
+      // match the partial expression index `idx_chat_cache_slack_org_id`.
+      expect(sql).toContain("key LIKE 'slack:installation:%'");
+      expect(sql).toContain("value->>'orgId' = $1");
+      expect(params).toEqual(["org-1"]);
     });
 
     it("returns null when no matching chat_cache row", async () => {
@@ -345,8 +348,9 @@ describe("store (chat_cache-backed)", () => {
       expect(mockPoolQuery).toHaveBeenCalledTimes(1);
       const [sql, params] = mockPoolQuery.mock.calls[0];
       expect(sql).toContain("DELETE FROM chat_cache");
-      expect(sql).toContain("value->>'orgId' = $2");
-      expect(params).toEqual(["slack:installation:%", "org-1"]);
+      expect(sql).toContain("key LIKE 'slack:installation:%'");
+      expect(sql).toContain("value->>'orgId' = $1");
+      expect(params).toEqual(["org-1"]);
     });
 
     it("returns false when no matching row", async () => {

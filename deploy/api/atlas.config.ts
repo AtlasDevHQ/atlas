@@ -39,10 +39,11 @@ import {
 import { getWorkspaceQuotaStatus } from "./packages/api/src/lib/proactive/quota";
 import { getAllowlist } from "./packages/api/src/lib/proactive/public-dataset";
 // Slice 3 of #2607 — host-side `executeQuery` that resolves Slack
-// `team_id` → `slack_installations.org_id` → `botActorUser` before
-// invoking the agent loop. Replaces the slice-1 stub. The factory
-// returns a plain async function — no `effect` import surfaces here,
-// so the relative-import constraint stays satisfied.
+// `team_id` → `chat_cache:slack:installation` → `org_id` → `botActorUser`
+// before invoking the agent loop (post-#2634 the install store
+// consolidated onto `chat_cache`). Replaces the slice-1 stub. The
+// factory returns a plain async function — no `effect` import
+// surfaces here, so the relative-import constraint stays satisfied.
 import { createChatPluginExecuteQuery } from "./packages/api/src/lib/chat-plugin/executeQuery";
 
 // Dedicated runtime for the proactive classifier + answer adapters.
@@ -134,8 +135,10 @@ export default defineConfig({
       proactive: {
         platform: "slack",
         // Per-event resolution: maps Slack `team_id` →
-        // `slack_installations.org_id`. Returns null on unknown tenants
-        // (silent skip — no classify, no meter, no kill-switch read).
+        // `chat_cache.value.orgId` (post-#2634 consolidation, was
+        // `slack_installations.org_id`). Returns null on unknown
+        // tenants (silent skip — no classify, no meter, no
+        // kill-switch read).
         resolveWorkspaceId: createSlackWorkspaceIdResolver(),
         // Two-tier gate: enterprise check (cached) + per-workspace
         // `workspace_proactive_config.enabled` (re-read every call).

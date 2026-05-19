@@ -10,13 +10,20 @@
  * Stored shape (in `chat_cache.value`):
  *
  *     {
+ *       // Written by Atlas's saveInstallation:
  *       botToken:    string | { iv, data, tag },  // adapter contract
- *       botUserId?:  string,
  *       teamName?:   string,
  *       orgId?:      string,                       // Atlas extension
  *       workspaceName?: string,                    // Atlas extension
  *       installedAt: ISO-8601 string               // Atlas extension
+ *
+ *       // Optionally merged in by the chat-adapter after auth.test:
+ *       botUserId?:  string,
  *     }
+ *
+ * Atlas's writer never sets `botUserId`; the JSONB merge
+ * (`chat_cache.value || EXCLUDED.value` in the upsert) preserves any
+ * field the adapter has stamped on a previous read.
  *
  * `botToken` may be plaintext OR the chat-adapter's AES-256-GCM
  * envelope. {@link installation-encryption.encryptSlackInstallationToken}
@@ -28,8 +35,8 @@
  * when no internal DB is configured.
  *
  * The historical `slack_installations` Postgres table was dropped in
- * the same PR; see migration #0085. The pre-consolidation back-fill
- * script (`internal/backfill-chat-installations.ts`) is no longer
+ * the same PR; see migration #0085. Any back-fill bandage between the
+ * two stores (referenced in the #2634 issue body) is no longer
  * relevant — there's only one store to fill now.
  *
  * @see installation-encryption.ts — encrypt/decrypt helpers.
@@ -61,8 +68,31 @@ const log = createLogger("slack-store");
 /** Sentinel team_id for env-var-based installations (no real Slack team). */
 export const ENV_TEAM_ID = "env" as const;
 
-/** Key prefix shared with `@chat-adapter/slack`. Do not change without coordinating with the adapter's `installationKeyPrefix`. */
-const KEY_PREFIX = "slack:installation:" as const;
+/**
+ * Key prefix shared with `@chat-adapter/slack`. Do not change without
+ * coordinating with the adapter's `installationKeyPrefix` AND with
+ * migration `0085`'s partial expression index predicate
+ * (`WHERE key LIKE 'slack:installation:%'`), which is a LITERAL in
+ * both the index and the queries that hit it. A rename here without a
+ * matching migration would silently bypass the index.
+ */
+export const KEY_PREFIX = "slack:installation:" as const;
+
+/**
+ * JSONB field names in `chat_cache.value`. Centralised so a rename
+ * propagates as a TS error to every SQL builder that references the
+ * field via `${FIELD.x}` template substitution. Without this, the
+ * literal `'orgId'` string was hardcoded in ~5 places — a rename
+ * would silently miss any one of them.
+ */
+export const FIELD = {
+  botToken: "botToken",
+  botUserId: "botUserId",
+  teamName: "teamName",
+  orgId: "orgId",
+  workspaceName: "workspaceName",
+  installedAt: "installedAt",
+} as const;
 
 /** Build the `chat_cache.key` for a given Slack team. */
 function keyFor(teamId: string): string {
@@ -73,9 +103,10 @@ function keyFor(teamId: string): string {
  * Shape persisted in `chat_cache.value`. `botToken` carries the
  * chat-adapter's expected field name so the adapter can read the same
  * row directly. The rest are Atlas extensions (chat-adapter ignores
- * unknown fields).
+ * unknown fields). Exported so the org-purge helper and any future
+ * cross-cutting reader (e.g. SCIM dedupe) share one type.
  */
-interface StoredInstallation {
+export interface StoredInstallation {
   botToken: StoredSlackBotToken;
   botUserId?: string;
   teamName?: string;
@@ -152,7 +183,7 @@ export async function getInstallation(
         value: unknown;
         installed_at: string | null;
       }>(
-        `SELECT value, to_char((value->>'installedAt')::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS installed_at
+        `SELECT value, to_char((value->>'${FIELD.installedAt}')::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS installed_at
            FROM chat_cache
           WHERE key = $1
             AND (expires_at IS NULL OR expires_at > NOW())`,
@@ -196,18 +227,25 @@ export async function getInstallationByOrg(
   if (!hasInternalDB()) return null;
 
   try {
+    // NOTE: the `key LIKE 'slack:installation:%'` predicate is a LITERAL
+    // (not a `$1` parameter) so the planner can match it against the
+    // partial expression index `idx_chat_cache_slack_org_id`'s WHERE
+    // clause. A parameterized LIKE blocks the index match because
+    // Postgres can't prove `$1 = 'slack:installation:%'` statically.
+    // Same pattern in `deleteInstallationByOrg` and the org-purge
+    // DELETE in `lib/db/internal.ts`.
     const rows = await internalQuery<{
       key: string;
       value: unknown;
       installed_at: string | null;
     }>(
-      `SELECT key, value, to_char((value->>'installedAt')::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS installed_at
+      `SELECT key, value, to_char((value->>'${FIELD.installedAt}')::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS installed_at
          FROM chat_cache
-        WHERE key LIKE $1
-          AND value->>'orgId' = $2
+        WHERE key LIKE 'slack:installation:%'
+          AND value->>'${FIELD.orgId}' = $1
           AND (expires_at IS NULL OR expires_at > NOW())
         LIMIT 1`,
-      [`${KEY_PREFIX}%`, orgId],
+      [orgId],
     );
     if (rows.length === 0) return null;
     const teamId = rows[0].key.slice(KEY_PREFIX.length);
@@ -262,8 +300,8 @@ export async function saveInstallation(
      ON CONFLICT (key) DO UPDATE
        SET value = chat_cache.value || EXCLUDED.value,
            expires_at = NULL
-       WHERE chat_cache.value->>'orgId' IS NULL
-          OR chat_cache.value->>'orgId' = $3
+       WHERE chat_cache.value->>'${FIELD.orgId}' IS NULL
+          OR chat_cache.value->>'${FIELD.orgId}' = $3
      RETURNING key`,
     [keyFor(teamId), JSON.stringify(value), orgId],
   );
@@ -300,12 +338,14 @@ export async function deleteInstallationByOrg(orgId: string): Promise<boolean> {
   }
   try {
     const pool = getInternalDB();
+    // Literal LIKE for partial-index match — see `getInstallationByOrg`
+    // for the planner-rationale comment.
     const result = await pool.query(
       `DELETE FROM chat_cache
-        WHERE key LIKE $1
-          AND value->>'orgId' = $2
+        WHERE key LIKE 'slack:installation:%'
+          AND value->>'${FIELD.orgId}' = $1
         RETURNING key`,
-      [`${KEY_PREFIX}%`, orgId],
+      [orgId],
     );
     return result.rows.length > 0;
   } catch (err) {

@@ -9,10 +9,12 @@
 -- versioned secret-encryption), but the chat plugin's listener resolved
 -- per-event bot tokens from `chat_cache:slack:installation:<teamId>`.
 -- The two stores drifted on every install; an internal back-fill
--- script (`internal/backfill-chat-installations.ts`) was the working
--- bandage. That bandage goes away with this migration — Atlas writes
--- straight to `chat_cache` from the OAuth callback, the chat-adapter
--- reads the same rows, and `slack_installations` is dropped.
+-- script would have been needed (or actually was needed pre-merge,
+-- per the issue body — see #2634) to keep them in sync. With this
+-- migration consolidation removes the need for any such bandage:
+-- Atlas writes straight to `chat_cache` from the OAuth callback, the
+-- chat-adapter reads the same rows, and `slack_installations` is
+-- dropped.
 --
 -- The org_id index is preserved as a **partial expression index** on
 -- `chat_cache.value->>'orgId'`, filtered by the `slack:installation:`

@@ -92,10 +92,10 @@ The plugin mounts the following Hono routes under the plugin's base path:
 
 ## Database Schema
 
-The Slack plugin uses two Atlas internal-database tables that are auto-migrated at boot:
+The Slack plugin uses two Atlas internal-database tables:
 
-- **`chat_cache`** -- Rows keyed `slack:installation:<teamId>` hold per-workspace OAuth installs (`botToken`, `botUserId`, `teamName`, `orgId`). The same store backs the chat-plugin's multi-workspace adapter — there is no separate `slack_installations` table post-#2634. Bot tokens are encrypted at rest via AES-256-GCM when `SLACK_ENCRYPTION_KEY` is set.
-- **`slack_threads`** -- Maps Slack threads to Atlas conversations (`channel_id`, `thread_ts`, `conversation_id`).
+- **`chat_cache`** -- Created by Atlas migration `0085_consolidate_slack_installations.sql`. Rows keyed `slack:installation:<teamId>` hold per-workspace OAuth installs (`botToken`, `botUserId`, `teamName`, `orgId`). The same store backs the chat-plugin's multi-workspace adapter — there is no separate `slack_installations` table post-#2634. Bot tokens are encrypted at rest via AES-256-GCM when `SLACK_ENCRYPTION_KEY` is set.
+- **`slack_threads`** -- Created by Atlas migration `0000_baseline.sql`. Maps Slack threads to Atlas conversations (`channel_id`, `thread_ts`, `conversation_id`).
 
 <Callout type="info">
 The `executeQuery` callback is the bridge between the Slack plugin and the Atlas agent. It receives the user's question and optional prior messages (for threaded conversations), runs the agent, and returns structured results that the plugin formats into Block Kit messages.

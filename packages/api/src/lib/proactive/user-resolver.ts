@@ -81,9 +81,9 @@ export interface SlackProactiveUserResolverOptions {
    * (`createSlackWorkspaceIdResolver`) already does this lookup at
    * the per-event boundary; this is a defensive re-check so a
    * resolver invoked through a code path that bypasses the workspace
-   * resolver still refuses to attribute the asker. Cheap (PK lookup
-   * on `slack_installations.org_id` via `idx_slack_installations_org`)
-   * so the extra read isn't material.
+   * resolver still refuses to attribute the asker. Cheap (indexed
+   * lookup against `idx_slack_installations_org` on `org_id`) so the
+   * extra read isn't material.
    */
   verifyWorkspace?: (workspaceId: string) => Promise<boolean>;
 }
@@ -192,5 +192,6 @@ async function defaultVerifyWorkspace(workspaceId: string): Promise<boolean> {
       LIMIT 1`,
     [workspaceId],
   );
-  return rows.length > 0 && rows[0]!.org_id !== null;
+  const [row] = rows;
+  return row !== undefined && row.org_id !== null;
 }

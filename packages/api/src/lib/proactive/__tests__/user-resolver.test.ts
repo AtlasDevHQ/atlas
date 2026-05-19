@@ -121,6 +121,37 @@ describe("createSlackProactiveUserResolver", () => {
     expect(verifyWorkspace.mock.calls[0]![0]).toBe("WS-MixedCase-42");
   });
 
+  it("isolates two tenants seeing the same Slack externalUserId (#2624 collision case)", async () => {
+    // The point of #2624: a single Slack user-id may appear in
+    // multiple tenants on SaaS. The resolver MUST query the verifier
+    // with each per-event workspaceId distinctly — no global lookup,
+    // no caching keyed on asker.externalUserId. This test reproduces
+    // the collision scenario the issue body called out and pins that
+    // both invocations hit the verifier separately.
+    const observed: string[] = [];
+    const verifyWorkspace = mock(async (id: string) => {
+      observed.push(id);
+      return id === "ws-A"; // pretend only ws-A is installed
+    });
+    const resolver = createSlackProactiveUserResolver({ verifyWorkspace });
+
+    const sharedAsker = {
+      platform: "slack",
+      externalUserId: "U-shared",
+      userName: "shared",
+    };
+
+    const outA = await resolver(sharedAsker, { workspaceId: "ws-A" });
+    const outB = await resolver(sharedAsker, { workspaceId: "ws-B" });
+
+    // Both tenants are evaluated independently — no collision, no
+    // caching by asker identity. Until a link table lands both
+    // return unlinked, but the verifier received both ids.
+    expect(observed).toEqual(["ws-A", "ws-B"]);
+    expect(outA).toEqual({ atlasUserId: undefined });
+    expect(outB).toEqual({ atlasUserId: undefined });
+  });
+
   it("default verifier returns false without an internal DB (self-hosted / no DATABASE_URL)", async () => {
     // Drop-the-override path: when no `verifyWorkspace` is supplied,
     // the factory uses `defaultVerifyWorkspace` which short-circuits

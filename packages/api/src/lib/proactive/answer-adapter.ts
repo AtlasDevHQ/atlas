@@ -245,6 +245,7 @@ export function createProactiveAnswerAdapter(
           threadId,
           askerId,
           atlasUserId,
+          workspaceId,
           errorMessage: errorMessage(err),
           event: "proactive.answer.identity_failed",
         },
@@ -270,6 +271,7 @@ export function createProactiveAnswerAdapter(
           threadId,
           askerId,
           atlasUserId,
+          workspaceId,
           errorMessage: errorMessage(err),
           event: "proactive.answer.model_resolution_failed",
         },
@@ -326,6 +328,7 @@ export function createProactiveAnswerAdapter(
           threadId,
           askerId,
           atlasUserId,
+          workspaceId,
           errorMessage: errorMessage(err),
           event: "proactive.answer.agent_failed",
         },
@@ -416,15 +419,18 @@ function normalizeChatPlatform(platform: string): ChatBotPlatform | null {
 }
 
 /**
- * Default resolver — pick the first org the user is a member of. Tests
- * inject a stub via {@link ProactiveAnswerAdapterOptions.resolveOrgForUser}.
+ * Default resolver — pick one org the user is a member of, ordered by
+ * `organizationId ASC` so multi-org members resolve deterministically.
+ * Tests inject a stub via
+ * {@link ProactiveAnswerAdapterOptions.resolveOrgForUser}.
  *
- * Single-row `LIMIT 1` matches the activation heuristic in
- * `auth/server.ts` (the Better Auth hook that auto-activates an org on
- * sign-in). If the user belongs to multiple orgs this picks one
- * deterministically (lexical `organizationId` order); for the proactive
- * path that's adequate because the Slack workspace itself is
- * single-org-bound at install time.
+ * Adequate for the proactive path because each Slack workspace is
+ * single-org-bound at install time (`slack_installations.org_id`),
+ * so a Slack-asker who is a member of multiple Atlas orgs only sees
+ * proactive answers from one of them by definition. Note this is NOT
+ * the same policy as the Better Auth sign-in hook in `auth/server.ts`,
+ * which only auto-activates when the user has exactly one org; on
+ * multi-org members the auth hook leaves activation untouched.
  */
 async function defaultResolveOrgForUser(
   atlasUserId: string,

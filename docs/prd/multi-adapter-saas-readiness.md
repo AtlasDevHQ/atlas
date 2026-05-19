@@ -200,7 +200,65 @@ Migrations (if any land — none expected, but if `plugin_catalog` needs columns
 
 ## Further Notes
 
-- **Pre-customer posture.** Atlas SaaS today serves the maintainer's internal team and an internal demo team — no external customers. Clean breaks are permitted; no deprecation shims, no v2-route fallbacks. The existing two Workspaces will be migrated atomically as part of slice 2 / slice 3. This posture ends the moment the first external customer onboards; everything in flight at that point will need to lock contracts.
+### Catalog row shape (pin in slice 2)
+
+Flat list with `type` and `install_model` as orthogonal fields, not nested by type:
+
+```ts
+catalog: [
+  { slug: "slack",         type: "chat",        install_model: "oauth",      min_plan: "starter", enabled: true },
+  { slug: "salesforce",    type: "integration", install_model: "oauth",      min_plan: "team",    enabled: true },
+  { slug: "jira",          type: "integration", install_model: "oauth",      min_plan: "team",    enabled: true },
+  { slug: "email",         type: "integration", install_model: "form",       min_plan: "starter", enabled: true },
+  { slug: "webhook",       type: "integration", install_model: "form",       min_plan: "starter", enabled: true },
+  { slug: "obsidian",      type: "integration", install_model: "form",       min_plan: "starter", enabled: true },
+  // 1.5.3 placeholders — enabled: false in 1.5.2
+  { slug: "telegram",      type: "chat",        install_model: "static-bot", enabled: false },
+  { slug: "discord",       type: "chat",        install_model: "static-bot", enabled: false },
+  // ... etc.
+]
+```
+
+Admin UI groups by `type` for display; backend dispatches by `install_model` for the handler factory.
+
+### Multi-mode Platforms
+
+Per CONTEXT.md "Multi-mode Platforms," Linear and GitHub each support multiple install models. They land as **separate catalog rows per mode** (not one row with a toggle). All Linear and GitHub flavors are deferred to 1.5.3; this milestone's catalog placeholder strategy seeds them with `enabled: false` placeholders following the per-mode naming convention (`linear`, `linear-apikey`, `github`, `github-pat`, etc.).
+
+### SaaS-vs-self-host catalog eligibility
+
+GitHub PAT mode is unsafe on SaaS (single-user-token failure mode) — it should never appear in the SaaS catalog. The catalog row carries a `saas_eligible` flag (or `deploy_modes: ["self-host"]` equivalent) that gates visibility per CONTEXT.md "SaaS-vs-self-host eligibility." Slice 2's seed pass honors this flag. The same flag also lets self-host operators expose dev-friendly modes (Linear API key, GitHub PAT) without exposing them to SaaS customers.
+
+### Credential rotation per install_model
+
+Each install handler interface documents rotation semantics in its docstring:
+
+- OAuth handlers auto-refresh; re-prompt customer admin on refresh failure
+- Form handlers surface "credential expired" as an actionable error; no auto-refresh
+- Static-bot handlers have no per-Workspace credential to rotate; operator rotates env vars
+
+### Dispatch shape pinned in 1.5.2
+
+Slice 4 (`PlatformInstallHandler` interface family) registers a dispatch keyed on `install_model`. Even though `StaticBotInstallHandler` ships in 1.5.3, the 1.5.2 dispatch must already cover all three branches — with `StaticBotInstallHandler` registered as a stub that throws `EnterpriseError("install_model 'static-bot' not implemented until 1.5.3")` (or similar). This pins the registration shape so 1.5.3 lands as a single import + stub-removal change, not a dispatch-mechanism design call.
+
+### Per-Workspace platform identifiers
+
+Some Platforms with OAuth install still need per-Workspace platform-specific identifiers persisted alongside the credential:
+
+- Salesforce: `instance_url` (each Connected App OAuth grant returns the customer's specific Salesforce instance hostname)
+- Jira: `cloudid` (Atlassian's 3LO returns the cloud instance identifier; one Atlas Workspace = one Atlassian Cloud)
+- GitHub Apps multi-tenant (1.5.3): `installation_id` per org
+- Linear OAuth (1.5.3): per-Workspace token + Linear org id
+
+These identifiers persist in `workspace_plugins.config` (the install-record JSONB) alongside any non-credential install metadata. The credential itself (bot token, refresh token) goes to the platform-native credential store per ADR-0003.
+
+### Self-host symmetry
+
+On self-host, the operator is the customer. For OAuth Platforms, the self-host operator brings their own App Registration credentials (no Atlas-owned operator-shared App Registration applies). For static-bot Platforms, the operator owns the bot. For form-based, identical to SaaS. The catalog seed pattern works without modification — the operator-vs-customer boundary collapses naturally because both parties are the same person. Future-readers question "but does this work on self-host?" → yes, the seam at workspace-id resolution handles it; no bifurcation needed.
+
+### Pre-customer posture
+
+Atlas SaaS today serves the maintainer's internal team and an internal demo team — no external customers. Clean breaks are permitted; no deprecation shims, no v2-route fallbacks. The existing two Workspaces will be migrated atomically as part of slice 2 / slice 3. This posture ends the moment the first external customer onboards; everything in flight at that point will need to lock contracts.
 - **`#2623` item 1 is the prereq.** Discriminated unions on `ProactiveListenerConfig`. Files first; the catalog seed pattern's type contract benefits from the tightened listener config shape (avoids re-litigating union shape mid-milestone).
 - **`@atlas/oauth-helper` reuse.** The OAuth 2.1 + PKCE helper extracted in PR #2203 (arch-win #51) is the natural home for shared OAuth machinery. `OAuthStateToken` should either live alongside it or borrow its key-derivation pattern.
 - **Per-region OAuth redirect URIs.** Each region (us / eu / apac) has its own `ATLAS_PUBLIC_API_URL`. The Atlas App Registration with each Platform vendor needs all three redirect URIs whitelisted. One-time operator setup per Platform per region.

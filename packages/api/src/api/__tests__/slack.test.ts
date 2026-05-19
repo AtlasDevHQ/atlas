@@ -469,144 +469,17 @@ describe("/api/v1/slack", () => {
       expect(json.error).toBe("invalid_signature");
     });
 
-    it("processes thread follow-up events and calls the agent", async () => {
-      const app = await getApp();
-      const payload = JSON.stringify({
-        type: "event_callback",
-        team_id: "T123",
-        event: {
-          type: "message",
-          text: "what about last quarter?",
-          channel: "C456",
-          thread_ts: "1234567890.000001",
-        },
-      });
-      const { signature, timestamp } = makeSignature(payload);
-
-      const resp = await app.request("/api/v1/slack/events", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-slack-signature": signature,
-          "x-slack-request-timestamp": timestamp,
-        },
-        body: payload,
-      });
-
-      // Should ack immediately
-      expect(resp.status).toBe(200);
-
-      // Wait for async fire-and-forget processing
-      await new Promise((r) => setTimeout(r, 100));
-
-      expect(mockRunAgent).toHaveBeenCalled();
-    });
-
-    it("processes a top-level app_mention and runs the agent in a new thread", async () => {
-      const app = await getApp();
-      const payload = JSON.stringify({
-        type: "event_callback",
-        team_id: "T123",
-        event: {
-          type: "app_mention",
-          text: "<@U999BOT> how many customers do we have?",
-          channel: "C456",
-          user: "U789",
-          ts: "1234567890.000002",
-        },
-      });
-      const { signature, timestamp } = makeSignature(payload);
-
-      const resp = await app.request("/api/v1/slack/events", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-slack-signature": signature,
-          "x-slack-request-timestamp": timestamp,
-        },
-        body: payload,
-      });
-
-      expect(resp.status).toBe(200);
-      await new Promise((r) => setTimeout(r, 100));
-
-      expect(mockPostMessage).toHaveBeenCalled();
-      expect(mockRunAgent).toHaveBeenCalled();
-      expect(mockUpdateMessage).toHaveBeenCalled();
-      // The thinking message and follow-ups must thread off the mention's ts.
-      const thinkingCall = mockPostMessage.mock.calls[0]?.[1] as
-        | { thread_ts?: string }
-        | undefined;
-      expect(thinkingCall?.thread_ts).toBe("1234567890.000002");
-    });
-
-    it("skips app_mention when posted inside an existing thread (message branch owns it)", async () => {
-      const app = await getApp();
-      // Slack delivers BOTH app_mention and message for an in-thread mention.
-      // The app_mention branch must early-return so the message handler can
-      // own conversation-history loading and reply once.
-      const payload = JSON.stringify({
-        type: "event_callback",
-        team_id: "T123",
-        event: {
-          type: "app_mention",
-          text: "<@U999BOT> follow-up question",
-          channel: "C456",
-          user: "U789",
-          ts: "1234567890.000003",
-          thread_ts: "1234567890.000001",
-        },
-      });
-      const { signature, timestamp } = makeSignature(payload);
-
-      const resp = await app.request("/api/v1/slack/events", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-slack-signature": signature,
-          "x-slack-request-timestamp": timestamp,
-        },
-        body: payload,
-      });
-
-      expect(resp.status).toBe(200);
-      await new Promise((r) => setTimeout(r, 100));
-
-      expect(mockRunAgent).not.toHaveBeenCalled();
-      expect(mockPostMessage).not.toHaveBeenCalled();
-    });
-
-    it("ignores app_mention with only the bot prefix and no question", async () => {
-      const app = await getApp();
-      const payload = JSON.stringify({
-        type: "event_callback",
-        team_id: "T123",
-        event: {
-          type: "app_mention",
-          text: "<@U999BOT>   ",
-          channel: "C456",
-          user: "U789",
-          ts: "1234567890.000004",
-        },
-      });
-      const { signature, timestamp } = makeSignature(payload);
-
-      const resp = await app.request("/api/v1/slack/events", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-slack-signature": signature,
-          "x-slack-request-timestamp": timestamp,
-        },
-        body: payload,
-      });
-
-      expect(resp.status).toBe(200);
-      await new Promise((r) => setTimeout(r, 100));
-
-      expect(mockRunAgent).not.toHaveBeenCalled();
-      expect(mockPostMessage).not.toHaveBeenCalled();
-    });
+    // (deleted #2611) `processes thread follow-up events and calls the agent`
+    // (deleted #2611) `processes a top-level app_mention and runs the agent in a new thread`
+    // (deleted #2611) `skips app_mention when posted inside an existing thread (message branch owns it)` — coverage now in plugins/chat/src/bridge.test.ts (`acquireLock` dedup) and the bridge's onSubscribedMessage path
+    // (deleted #2611) `ignores app_mention with only the bot prefix and no question` — coverage now in plugins/chat/src/bridge.test.ts (the bridge's onNewMention text-extraction skip path)
+    //
+    // All four were assertions over the migrated handler (now owned by
+    // the chat plugin). Equivalent coverage lives in
+    // `packages/api/src/lib/chat-plugin/__tests__/execute-query.test.ts`
+    // (F-55 actor binding, approvalSurface stamp, conversation
+    // persistence) and `plugins/chat/src/bridge.test.ts` (dedup +
+    // text-extraction skip).
   });
 
   describe("async processing", () => {
@@ -669,86 +542,13 @@ describe("/api/v1/slack", () => {
       expect(mockAddMessage).toHaveBeenCalledTimes(2);
     });
 
-    it("loads conversation history for thread follow-ups", async () => {
-      // Set up: conversation exists with prior messages
-      mockGetConversationId.mockResolvedValueOnce("conv-existing");
-      mockGetConversation.mockResolvedValueOnce({
-        id: "conv-existing",
-        messages: [
-          { id: "m1", conversationId: "conv-existing", role: "user", content: "initial question", createdAt: "2024-01-01" },
-          { id: "m2", conversationId: "conv-existing", role: "assistant", content: "initial answer", createdAt: "2024-01-01" },
-        ],
-      });
-
-      const app = await getApp();
-      const payload = JSON.stringify({
-        type: "event_callback",
-        team_id: "T123",
-        event: {
-          type: "message",
-          text: "what about last quarter?",
-          channel: "C456",
-          thread_ts: "1234567890.000001",
-        },
-      });
-      const { signature, timestamp } = makeSignature(payload);
-
-      await app.request("/api/v1/slack/events", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-slack-signature": signature,
-          "x-slack-request-timestamp": timestamp,
-        },
-        body: payload,
-      });
-
-      await new Promise((r) => setTimeout(r, 100));
-
-      // Should have loaded conversation
-      expect(mockGetConversation).toHaveBeenCalledWith("conv-existing");
-      // Agent was called (priorMessages passed internally)
-      expect(mockRunAgent).toHaveBeenCalled();
-      // New messages persisted
-      expect(mockAddMessage).toHaveBeenCalledTimes(2);
-    });
-
-    it("handles thread follow-ups without prior conversation gracefully", async () => {
-      // No conversation mapping exists
-      mockGetConversationId.mockResolvedValueOnce(null);
-
-      const app = await getApp();
-      const payload = JSON.stringify({
-        type: "event_callback",
-        team_id: "T123",
-        event: {
-          type: "message",
-          text: "what about last quarter?",
-          channel: "C456",
-          thread_ts: "1234567890.000001",
-        },
-      });
-      const { signature, timestamp } = makeSignature(payload);
-
-      await app.request("/api/v1/slack/events", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-slack-signature": signature,
-          "x-slack-request-timestamp": timestamp,
-        },
-        body: payload,
-      });
-
-      await new Promise((r) => setTimeout(r, 100));
-
-      // Agent still called — just without prior context
-      expect(mockRunAgent).toHaveBeenCalled();
-      // No conversation to load
-      expect(mockGetConversation).not.toHaveBeenCalled();
-      // No messages persisted (no conversationId)
-      expect(mockAddMessage).not.toHaveBeenCalled();
-    });
+    // (deleted #2611) `loads conversation history for thread follow-ups`
+    // (deleted #2611) `handles thread follow-ups without prior conversation gracefully`
+    //
+    // Coverage migrated to
+    // `packages/api/src/lib/chat-plugin/__tests__/execute-query.test.ts`
+    // — the host helper owns conversation history loading via
+    // `getConversation` + `addMessage` in the new path.
   });
 
   describe("rate limiting", () => {
@@ -784,47 +584,10 @@ describe("/api/v1/slack", () => {
       expect(mockRunAgent).not.toHaveBeenCalled();
     });
 
-    it("returns rate limit message for thread follow-ups", async () => {
-      mockCheckRateLimit.mockReturnValueOnce({ allowed: false, retryAfterMs: 30000 });
-
-      const app = await getApp();
-      const payload = JSON.stringify({
-        type: "event_callback",
-        team_id: "T123",
-        event: {
-          type: "message",
-          text: "what about last quarter?",
-          channel: "C456",
-          thread_ts: "1234567890.000001",
-        },
-      });
-      const { signature, timestamp } = makeSignature(payload);
-
-      const resp = await app.request("/api/v1/slack/events", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-slack-signature": signature,
-          "x-slack-request-timestamp": timestamp,
-        },
-        body: payload,
-      });
-
-      expect(resp.status).toBe(200);
-
-      // Wait for async processing
-      await new Promise((r) => setTimeout(r, 100));
-
-      // Rate limit message posted in thread, agent NOT called
-      expect(mockPostMessage).toHaveBeenCalledWith(
-        "xoxb-test-token",
-        expect.objectContaining({
-          text: expect.stringContaining("Rate limit"),
-          thread_ts: "1234567890.000001",
-        }),
-      );
-      expect(mockRunAgent).not.toHaveBeenCalled();
-    });
+    // (deleted #2611) `returns rate limit message for thread follow-ups`
+    // — coverage migrated to the host helper test which asserts the
+    // `slack:${teamId}` rate-limit key and the "Rate limit exceeded"
+    // throw on `allowed: false`.
   });
 
   describe("POST /api/v1/slack/interactions", () => {
@@ -1280,131 +1043,15 @@ describe("/api/v1/slack", () => {
       expect(observedAgentContexts[0].user).toBeUndefined();
     });
 
-    it("binds the workspace's installation org as the agent actor for thread follow-ups", async () => {
-      // Slack's events handler is the second F-55 surface — it processes
-      // thread replies and runs the agent with conversation history. A
-      // regression that drops `actor` here is just as severe as the slash-
-      // command path, so pin it independently.
-      const app = await getApp();
-      const payload = JSON.stringify({
-        type: "event_callback",
-        team_id: "T999",
-        event: {
-          type: "message",
-          text: "what about last quarter's pii?",
-          user: "U-thread-author",
-          channel: "C456",
-          thread_ts: "1234567890.000001",
-        },
-      });
-      const { signature, timestamp } = makeSignature(payload);
-
-      const resp = await app.request("/api/v1/slack/events", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-slack-signature": signature,
-          "x-slack-request-timestamp": timestamp,
-        },
-        body: payload,
-      });
-
-      expect(resp.status).toBe(200);
-      await new Promise((r) => setTimeout(r, 100));
-
-      expect(mockGetInstallation).toHaveBeenCalledWith("T999");
-      expect(observedAgentContexts).toHaveLength(1);
-      expect(observedAgentContexts[0].user?.id).toBe("slack-bot:T999:U-thread-author");
-      expect(observedAgentContexts[0].user?.activeOrganizationId).toBe("org-xyz");
-    });
-
-    it("thread follow-up with a missing event.user still binds an actor (no trailing colon in id)", async () => {
-      // Defensive pin: previously the slash-command path passed
-      // `externalUserId: userId` without the truthy guard, producing an
-      // actor id ending in `:` (e.g. `slack-bot:T999:`) when Slack omitted
-      // the user id. The thread path always guarded with a spread; both
-      // paths now do. This test asserts the resulting actor id format is
-      // clean even when `event.user` is absent.
-      const app = await getApp();
-      const payload = JSON.stringify({
-        type: "event_callback",
-        team_id: "T999",
-        event: {
-          type: "message",
-          text: "anonymous thread reply",
-          // event.user intentionally omitted
-          channel: "C456",
-          thread_ts: "1234567890.000001",
-        },
-      });
-      const { signature, timestamp } = makeSignature(payload);
-
-      const resp = await app.request("/api/v1/slack/events", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-slack-signature": signature,
-          "x-slack-request-timestamp": timestamp,
-        },
-        body: payload,
-      });
-
-      expect(resp.status).toBe(200);
-      await new Promise((r) => setTimeout(r, 100));
-
-      expect(observedAgentContexts).toHaveLength(1);
-      // No trailing colon: `slack-bot:T999` (not `slack-bot:T999:`)
-      expect(observedAgentContexts[0].user?.id).toBe("slack-bot:T999");
-      expect(observedAgentContexts[0].user?.activeOrganizationId).toBe("org-xyz");
-    });
-
-    it("rejects approval-required thread follow-ups with a clear thread message", async () => {
-      pendingApprovalToolResultOverride = {
-        approval_required: true,
-        approval_request_id: "approval-req-thread-99",
-        matched_rules: ["Block PII reads"],
-        message: "This query requires approval before execution.",
-      };
-
-      const app = await getApp();
-      const payload = JSON.stringify({
-        type: "event_callback",
-        team_id: "T999",
-        event: {
-          type: "message",
-          text: "show me customer pii",
-          user: "U-thread-author",
-          channel: "C456",
-          thread_ts: "1234567890.000001",
-        },
-      });
-      const { signature, timestamp } = makeSignature(payload);
-
-      const resp = await app.request("/api/v1/slack/events", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-slack-signature": signature,
-          "x-slack-request-timestamp": timestamp,
-        },
-        body: payload,
-      });
-
-      expect(resp.status).toBe(200);
-      await new Promise((r) => setTimeout(r, 100));
-
-      // Thread approval surfaces as a postMessage (not updateMessage) on
-      // the same thread_ts. Find the call that mentions the rule.
-      const postCalls = mockPostMessage.mock.calls;
-      const approvalPost = postCalls.find((call) => {
-        const params = call[1] as { text?: string; thread_ts?: string } | undefined;
-        return typeof params?.text === "string" && params.text.includes("Block PII reads");
-      });
-      expect(approvalPost).toBeDefined();
-      const approvalParams = approvalPost?.[1] as { text?: string; thread_ts?: string };
-      expect(approvalParams.text).toContain("requires approval");
-      expect(approvalParams.text).toContain("Atlas admin console");
-      expect(approvalParams.thread_ts).toBe("1234567890.000001");
-    });
+    // (deleted #2611) F-55 thread follow-up assertions migrated to
+    // `packages/api/src/lib/chat-plugin/__tests__/execute-query.test.ts`:
+    //
+    //   - `binds the workspace's installation org as the agent actor for thread follow-ups`
+    //   - `thread follow-up with a missing event.user still binds an actor (no trailing colon in id)`
+    //   - `rejects approval-required thread follow-ups with a clear thread message`
+    //
+    // The host helper test pins `botActorUser` id format
+    // (`slack-bot:T${teamId}:U${user}` with the trailing-colon guard) and
+    // the `:lock:` approval-required path with the same envelope shape.
   });
 });

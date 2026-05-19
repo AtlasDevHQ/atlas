@@ -37,6 +37,12 @@ import {
 } from "./packages/api/src/lib/proactive/pause-registry";
 import { getWorkspaceQuotaStatus } from "./packages/api/src/lib/proactive/quota";
 import { getAllowlist } from "./packages/api/src/lib/proactive/public-dataset";
+// Slice 3 of #2607 — host-side `executeQuery` that resolves Slack
+// `team_id` → `slack_installations.org_id` → `botActorUser` before
+// invoking the agent loop. Replaces the slice-1 stub. The factory
+// returns a plain async function — no `effect` import surfaces here,
+// so the relative-import constraint stays satisfied.
+import { createChatPluginExecuteQuery } from "./packages/api/src/lib/chat-plugin/executeQuery";
 
 // Dedicated runtime for the proactive classifier + answer adapters.
 // Built inside the workspace by `getProactiveAiRuntime()` so this file
@@ -60,22 +66,26 @@ export default defineConfig({
   tools: ["explore", "executeSQL"],
 
   // ── Plugins ─────────────────────────────────────────────────────
-  // Slice 1 of #2607 — structural wiring only. Loads @useatlas/chat
-  // with a PgStateAdapter so chat_* tables are created on boot. The
-  // plugin's webhook routes mount at /api/plugins/chat-interaction/*
-  // alongside the existing /api/v1/slack/* routes; both surfaces
-  // coexist after this slice. NO `proactive:` block is supplied here —
-  // bridge.ts only registers the proactive listener when
-  // `config.proactive` is truthy. Slice 2 of #2607 will add it.
+  // Slice 3 of #2607 — the chat plugin now owns the @mention + thread
+  // event path end-to-end. The plugin's webhook routes at
+  // /api/plugins/chat-interaction/* are reachable.
+  //
+  // TODO(#2612 / slice 4 — HITL dogfood): the Slack app manifest MUST
+  // be flipped during slice 4 — change the Events API request URL from
+  // /api/v1/slack/events to /api/plugins/chat-interaction/webhooks/slack.
+  // The legacy /api/v1/slack/events route now ignores all event_callback
+  // types (logs at warn), so until the flip happens @mentions and thread
+  // replies are silently dropped.
+  //
+  // The legacy /api/v1/slack/{commands,interactions,install,callback}
+  // routes in packages/api/src/api/routes/slack.ts stay put — they
+  // handle slash commands, block actions, modals, and OAuth.
   //
   // SaaS is multi-tenant: real Slack bot tokens live in the internal
-  // DB (slack_integrations / slack_workspaces) keyed by team_id, and
-  // packages/api/src/api/routes/slack.ts continues to handle every
-  // production webhook today. The static `botToken` below is required
-  // by Zod (min(1)) but is never used for outbound calls in SaaS —
-  // executeQuery throws a stub before any outbound call, and the
-  // Slack app manifest only POSTs to /api/v1/slack/events, not to the
-  // plugin's webhook route. Slice 3 of #2607 retires this stub.
+  // DB (slack_installations) keyed by team_id. The static `botToken`
+  // below is required by Zod (min(1)) but is never used for outbound
+  // calls in SaaS — `createChatPluginExecuteQuery()` resolves the
+  // per-tenant token via `getBotToken(teamId)` inside the agent loop.
   plugins: [
     chatPlugin({
       adapters: {
@@ -92,29 +102,11 @@ export default defineConfig({
         },
       },
       state: { backend: "pg" },
-      executeQuery: async (question, ctx) => {
-        // Defensive stub for slice 1/2 — the chat plugin's bridge is
-        // wired but unreachable from the Slack app manifest today (only
-        // /api/v1/slack/events is registered). Slice 3 of #2607 retires
-        // this stub by migrating the @mention/thread handlers off
-        // slack.ts. If a request DOES reach this stub (e.g., manual
-        // webhook re-registration during dogfood), the bridge logs the
-        // throw via log.error and posts an error card to the user, so
-        // the surfaced message must be user-safe — not a dev string.
-        // Log the dev detail with structured context for operators.
-        console.error(
-          JSON.stringify({
-            event: "chat-plugin.executeQuery.stub-hit",
-            threadId: ctx.threadId,
-            questionPreview: question.slice(0, 80),
-            note:
-              "Chat plugin reached pre-slice-3 stub. Check Slack app manifest — only /api/v1/slack/events should be registered.",
-          }),
-        );
-        throw new Error(
-          "This Slack integration is being upgraded. Please try again in a moment, or contact your Atlas admin if this persists.",
-        );
-      },
+      // Host-side executeQuery — preserves the F-55 actor binding,
+      // approvalSurface stamp, conversation persistence, rate-limit
+      // key shape, and :lock: pending-approval flow that slack.ts's
+      // legacy app_mention / thread-followup branches used to own.
+      executeQuery: createChatPluginExecuteQuery(),
       // ── Proactive listener wiring (#2607) ─────────────────────────
       // Wires every callback the proactive listener consumes to host
       // helpers under `packages/api/src/lib/proactive/`. After this

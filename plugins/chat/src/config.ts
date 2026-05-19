@@ -34,6 +34,63 @@ import type { FeedbackCollectorFn } from "./proactive/feedback";
 /** A single message in a conversation thread. */
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 
+/** Canonical chat platform names supported by the bridge.
+ *
+ * The chat SDK's `Adapter` interface types `name` as a bare `string`
+ * because adapters are pluggable, but this plugin only loads the
+ * adapters enumerated under `ChatPluginConfig["adapters"]` — narrowing
+ * to the literal union here lets host `executeQuery` callbacks
+ * type-narrow via `if (adapter.name !== "slack")` and forces every
+ * `switch (adapter.name)` to be exhaustive at compile time. */
+export type ChatAdapterName =
+  | "slack"
+  | "teams"
+  | "discord"
+  | "gchat"
+  | "telegram"
+  | "github"
+  | "linear"
+  | "whatsapp";
+
+/** Minimal adapter shape passed through to host `executeQuery` callbacks.
+ *
+ * The chat SDK's full `Adapter` type carries platform-specific generics
+ * (`Adapter<SlackThreadId, SlackEvent>` etc.) that the host shouldn't have
+ * to thread through. The host only reads `name` to dispatch to the right
+ * tenant resolver — keep this surface intentionally narrow. */
+export interface ChatExecuteQueryAdapter {
+  /** Platform identifier. The host uses this to dispatch to the
+   * platform-specific tenant resolver — typed as a literal union
+   * (see {@link ChatAdapterName}) so dispatch branches narrow at
+   * compile time and unknown platforms cannot reach here. */
+  name: ChatAdapterName;
+}
+
+/** Context passed to `executeQuery` / `executeQueryStream`.
+ *
+ * Carries the platform identity bits the host needs to resolve tenancy
+ * before calling the agent. See `executeQuery` JSDoc on `ChatPluginConfig`
+ * for the contract.
+ *
+ * Mirrors the shape `ResolveWorkspaceIdFn` already established in #2620 —
+ * `adapter` + `message.raw` is the canonical "which tenant is this event
+ * from?" channel. Surfacing the same bits to `executeQuery` lets the host
+ * build a `botActorUser` for the agent loop's approval / RLS gates. */
+export interface ChatExecuteQueryContext {
+  /** Stable thread id, formatted by the bridge as
+   * `${adapter.name}:${thread.id}` (e.g. `"slack:C123-1234.5678"`). */
+  threadId: string;
+  /** Prior conversation messages for multi-turn context. Empty on first
+   * mention; populated by the bridge's history retrieval on follow-ups. */
+  priorMessages?: ChatMessage[];
+  /** Minimal adapter handle — see {@link ChatExecuteQueryAdapter}. */
+  adapter: ChatExecuteQueryAdapter;
+  /** Raw platform event payload (Slack: `SlackEvent` with `team_id`, `user`,
+   * etc.; Teams: `Activity`; …). Typed as `unknown` so the contract stays
+   * platform-agnostic — host code narrows by `adapter.name`. */
+  rawMessage: unknown;
+}
+
 /** A pending action that requires user approval. */
 export interface PendingAction {
   id: string;
@@ -356,13 +413,27 @@ export interface ChatPluginConfig {
    * Must start with "/" followed by a lowercase letter, then lowercase alphanumeric or hyphens. */
   slashCommandName?: string;
 
-  /** Run the Atlas agent on a question and return structured results. Required. */
+  /** Run the Atlas agent on a question and return structured results. Required.
+   *
+   * The `context` argument carries platform-specific identity bits the host
+   * needs to resolve tenancy on multi-tenant deploys:
+   *
+   *   - `adapter.name` — `"slack"`, `"teams"`, etc. The host MUST refuse
+   *     unsupported platforms cleanly (throw an error the bridge will scrub).
+   *   - `rawMessage` — the platform-specific raw event payload. For Slack
+   *     this carries `team_id`, `user`, and friends. Mirrors the
+   *     `resolveWorkspaceId({ adapter, thread, message })` shape #2620
+   *     introduced for the proactive listener.
+   *
+   * Both fields are REQUIRED — pre-customer codebase, no migration shim.
+   * Callers that have no raw event (e.g. internal/test invocations)
+   * supply a synthetic object with the platform's `name` set and an empty
+   * raw payload. The host's refuse path will reject unknown tenants and
+   * the listener gates already block synthetic events from reaching here.
+   */
   executeQuery: (
     question: string,
-    options?: {
-      threadId?: string;
-      priorMessages?: ChatMessage[];
-    },
+    context: ChatExecuteQueryContext,
   ) => Promise<ChatQueryResult>;
 
   /** Optional rate limiting callback. */
@@ -384,13 +455,11 @@ export interface ChatPluginConfig {
   /** Streaming query callback. When provided and `streaming.enabled !== false`,
    * the bridge streams responses incrementally instead of waiting for the full
    * result. If not provided, the bridge falls back to the non-streaming
-   * `executeQuery`. */
+   * `executeQuery`. Carries the same `context` shape as `executeQuery` —
+   * see its docs for `adapter` / `rawMessage` semantics. */
   executeQueryStream?: (
     question: string,
-    options?: {
-      threadId?: string;
-      priorMessages?: ChatMessage[];
-    },
+    context: ChatExecuteQueryContext,
   ) => StreamingQueryResult;
 
   /** File upload (CSV export) configuration. Controls when query results are

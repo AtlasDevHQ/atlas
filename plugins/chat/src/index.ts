@@ -155,6 +155,8 @@ export type {
   RecentAnswerEntry,
   ResolvedAsker,
   ResolveWorkspaceIdFn,
+  ResolverEvent,
+  ResolverEventLite,
   SensitivityPreset,
   WorkspaceId,
   WorkspaceProactiveConfig,

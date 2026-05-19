@@ -40,22 +40,18 @@
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { getInstallation } from "@atlas/api/lib/slack/store";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { ResolverEvent } from "@useatlas/chat";
 
 const log = createLogger("proactive:workspace-id-resolver");
 
-/**
- * Structural shape of the resolver event passed by the chat plugin.
- * Kept structural (the `chat` npm package is not a dependency of
- * `@atlas/api`) so the host helper can sit under `lib/proactive/`
- * without pulling the plugin's full type surface in. The chat plugin's
- * `ResolveWorkspaceIdFn` is the strict type; this is the minimum surface
- * the Slack resolver actually reads from the event.
- */
-interface ResolverEvent {
-  adapter: { name?: string } | undefined;
-  thread: unknown;
-  message: { raw?: unknown } | undefined;
-}
+// Pre-#2623 this module declared a local structural `interface
+// ResolverEvent { adapter; thread: unknown; message: { raw } }` to
+// avoid taking a `@useatlas/chat` runtime dependency. Post-#2623 item 2
+// the plugin's `ResolverEvent` is `Pick<Message, "id" | "raw">` plus an
+// `adapter` and an optional `thread`; importing the named type as a
+// type-only reference keeps host + plugin shapes in lockstep so a
+// future widening (e.g. adding a `metadata` field) propagates here at
+// compile time instead of silently drifting.
 
 /**
  * Build the Slack-platform workspace resolver.

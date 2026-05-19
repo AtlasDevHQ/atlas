@@ -1074,23 +1074,19 @@ export function createChatBridge(
 
     if (config.proactive && proactiveRecentAnswers) {
       try {
-        // Synthesize a minimal Message shape from adapter + raw payload
-        // so the Slack-platform resolver can read `raw.team_id`.
+        // Build the lite resolver event from adapter + raw payload so
+        // the Slack-platform resolver can read `raw.team_id`. The
+        // `ResolverEvent` shape (#2623 item 2) accepts an undefined
+        // thread and a narrowed message shape, so this synthesis is
+        // assignment-compatible with no `as unknown` casts.
         const resolveAdapter = event.adapter;
         let slashWorkspaceId: string | null = null;
         if (resolveAdapter) {
           try {
             slashWorkspaceId = await config.proactive.resolveWorkspaceId({
               adapter: resolveAdapter,
-              thread: undefined as unknown as Parameters<
-                typeof config.proactive.resolveWorkspaceId
-              >[0]["thread"],
-              message: {
-                id: "",
-                raw: event.raw,
-              } as unknown as Parameters<
-                typeof config.proactive.resolveWorkspaceId
-              >[0]["message"],
+              thread: undefined,
+              message: { id: "", raw: event.raw },
             });
           } catch (resolveErr) {
             log.warn(

@@ -31,6 +31,7 @@ import type {
   ChannelProactiveConfig,
   LLMClassifierFn,
   ProactiveMeterEvent,
+  ResolverEventLite,
   ResolveWorkspaceIdFn,
   WorkspaceProactiveConfig,
 } from "../types";
@@ -693,6 +694,98 @@ describe("registerProactiveListener — feedback buttons", () => {
     const rec = calls[0] as { outcome: string; source: string };
     expect(rec.outcome).toBe("wrong-data");
     expect(rec.source).toBe("button");
+  });
+
+  it("passes the lite ResolverEvent shape (id + raw, no full Message fields) to resolveWorkspaceId from the action handler (#2623 item 2)", async () => {
+    // The PR removed the `as unknown as Message` cast at `listener.ts:1008`.
+    // The synthesis site now constructs `{ id: event.messageId, raw: event.raw }`
+    // directly. This spy pins the exact shape so a future regression that
+    // re-introduces extra fields (or drops `id` / `raw`) fails loudly.
+    // The default fixture resolver ignores its argument, so a spy is needed.
+    const resolveWorkspaceId = mock(async () => "ws_1");
+    const { chat, invokeAction } = makeChat();
+    await registerProactiveListener(
+      chat as unknown as Parameters<typeof registerProactiveListener>[0],
+      makeLogger(),
+      {
+        isEnabled: () => true,
+        classify: yesLLM,
+        resolveWorkspaceId,
+        getWorkspaceConfig: defaultGetWorkspace,
+        getChannelConfigs: allowChannels("C-allowed"),
+        userResolver: linkedResolver,
+        executeQueryProactive: echoExecute,
+        feedbackCollector: async () => {},
+      },
+    );
+    const ev = {
+      actionId: PROACTIVE_FB_HELPFUL_ACTION_ID,
+      adapter: { name: "slack" },
+      messageId: "answer-msg-42",
+      thread: makeThread("C-allowed"),
+      threadId: "C-allowed",
+      user: { isMe: false, isBot: false, userId: "U-asker", userName: "alice" },
+      value: "answer-msg-42",
+      openModal: mock(async () => undefined),
+      raw: { team_id: "T-tenant-A" },
+    };
+    await invokeAction(PROACTIVE_FB_HELPFUL_ACTION_ID, ev);
+
+    expect(resolveWorkspaceId).toHaveBeenCalledTimes(1);
+    const arg = (resolveWorkspaceId.mock.calls[0] as unknown[])?.[0] as {
+      adapter: { name: string };
+      thread: { channelId: string };
+      message: { id: string; raw: unknown };
+    };
+    // Lite shape carries `id` + `raw` only — no `attachments`, `author`,
+    // `text`, etc. Compare a strict key-set so an accidental widening
+    // (e.g. someone synthesising `{ id, raw, text }` to "be safe") fails.
+    expect(Object.keys(arg.message).sort()).toEqual(["id", "raw"]);
+    expect(arg.message.id).toBe("answer-msg-42");
+    expect(arg.message.raw).toEqual({ team_id: "T-tenant-A" });
+    expect(arg.adapter.name).toBe("slack");
+    expect(arg.thread?.channelId).toBe("C-allowed");
+  });
+
+  it("passes the lite ResolverEvent shape (with empty id) to resolveWorkspaceId from the modal-submit handler (#2623 item 2)", async () => {
+    // Same contract pin as the action-handler test above, but for the
+    // modal-submit path at `listener.ts:1095`. Modal events legitimately
+    // synthesise `id: ""` because there's no original message id on a
+    // modal-submit event. The lite shape MUST still be exactly
+    // `{ id, raw }` so a future regression that passes the full event
+    // raw object (which carries extra fields the resolver shouldn't see)
+    // fails loudly.
+    const resolveWorkspaceId = mock(async () => "ws_1");
+    const { chat, invokeModalSubmit } = makeChat();
+    await registerProactiveListener(
+      chat as unknown as Parameters<typeof registerProactiveListener>[0],
+      makeLogger(),
+      {
+        isEnabled: () => true,
+        classify: yesLLM,
+        resolveWorkspaceId,
+        getWorkspaceConfig: defaultGetWorkspace,
+        getChannelConfigs: allowChannels("C-allowed"),
+        feedbackCollector: async () => {},
+      },
+    );
+    await invokeModalSubmit(PROACTIVE_FB_WRONG_DATA_MODAL_ID, {
+      adapter: { name: "slack" },
+      callbackId: PROACTIVE_FB_WRONG_DATA_MODAL_ID,
+      privateMetadata: "answer-msg-7",
+      relatedThread: makeThread("C-allowed"),
+      user: { isMe: false, isBot: false, userId: "U-asker", userName: "alice" },
+      values: { [PROACTIVE_FB_WRONG_DATA_INPUT_ID]: "bad data" },
+      raw: { team_id: "T-tenant-B" },
+    });
+
+    expect(resolveWorkspaceId).toHaveBeenCalledTimes(1);
+    const arg = (resolveWorkspaceId.mock.calls[0] as unknown[])?.[0] as {
+      message: { id: string; raw: unknown };
+    };
+    expect(Object.keys(arg.message).sort()).toEqual(["id", "raw"]);
+    expect(arg.message.id).toBe("");
+    expect(arg.message.raw).toEqual({ team_id: "T-tenant-B" });
   });
 
   it("silently no-ops when no feedbackCollector is configured", async () => {
@@ -1757,7 +1850,10 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
       ["C-tenant-B", "ws-B"],
     ]);
     const resolveWorkspaceId: ResolveWorkspaceIdFn = async ({ thread }) => {
-      return channelToWorkspace.get(thread.channelId) ?? null;
+      // `thread` is `Thread | undefined` per the #2623 item 2 narrowing —
+      // channel-message events always carry a real thread, so the
+      // optional-chain branch here is the unreachable defensive case.
+      return (thread && channelToWorkspace.get(thread.channelId)) ?? null;
     };
 
     const meterEvents: ProactiveMeterEvent[] = [];
@@ -1808,7 +1904,10 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
       ["C-general-B", "ws-B"],
     ]);
     const resolveWorkspaceId: ResolveWorkspaceIdFn = async ({ thread }) => {
-      return channelToWorkspace.get(thread.channelId) ?? null;
+      // `thread` is `Thread | undefined` per the #2623 item 2 narrowing —
+      // channel-message events always carry a real thread, so the
+      // optional-chain branch here is the unreachable defensive case.
+      return (thread && channelToWorkspace.get(thread.channelId)) ?? null;
     };
 
     const { chat, invokeMessage } = makeChat();
@@ -1844,7 +1943,10 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
       ["C-tenant-B", "ws-B"],
     ]);
     const resolveWorkspaceId: ResolveWorkspaceIdFn = async ({ thread }) => {
-      return channelToWorkspace.get(thread.channelId) ?? null;
+      // `thread` is `Thread | undefined` per the #2623 item 2 narrowing —
+      // channel-message events always carry a real thread, so the
+      // optional-chain branch here is the unreachable defensive case.
+      return (thread && channelToWorkspace.get(thread.channelId)) ?? null;
     };
 
     const onPauseRequest = mock(async () => {});
@@ -1894,7 +1996,10 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
       ["C-tenant-B", "ws-B"],
     ]);
     const resolveWorkspaceId: ResolveWorkspaceIdFn = async ({ thread }) => {
-      return channelToWorkspace.get(thread.channelId) ?? null;
+      // `thread` is `Thread | undefined` per the #2623 item 2 narrowing —
+      // channel-message events always carry a real thread, so the
+      // optional-chain branch here is the unreachable defensive case.
+      return (thread && channelToWorkspace.get(thread.channelId)) ?? null;
     };
 
     const isEnabled = mock(async (_: string) => true);
@@ -1980,7 +2085,10 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
       ["C-tenant-B", "ws-B"],
     ]);
     const resolveWorkspaceId: ResolveWorkspaceIdFn = async ({ thread }) => {
-      return channelToWorkspace.get(thread.channelId) ?? null;
+      // `thread` is `Thread | undefined` per the #2623 item 2 narrowing —
+      // channel-message events always carry a real thread, so the
+      // optional-chain branch here is the unreachable defensive case.
+      return (thread && channelToWorkspace.get(thread.channelId)) ?? null;
     };
 
     const getWorkspaceConfig = mock(
@@ -2030,7 +2138,10 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
       ["C-tenant-B", "ws-B"],
     ]);
     const resolveWorkspaceId: ResolveWorkspaceIdFn = async ({ thread }) => {
-      return channelToWorkspace.get(thread.channelId) ?? null;
+      // `thread` is `Thread | undefined` per the #2623 item 2 narrowing —
+      // channel-message events always carry a real thread, so the
+      // optional-chain branch here is the unreachable defensive case.
+      return (thread && channelToWorkspace.get(thread.channelId)) ?? null;
     };
 
     const userResolver = mock(
@@ -2392,5 +2503,172 @@ describe("registerProactiveListener — #2641 brand-promotion boundaries", () =>
       mock: { calls: unknown[][] };
     }).mock.calls[0]?.[0];
     expect(String(firstPostArg ?? "")).toMatch(/Sorry — I hit an error/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-event "called exactly once" sentinel for getWorkspaceConfig (#2623 item 6)
+// ---------------------------------------------------------------------------
+//
+// `types.ts:GetWorkspaceConfigFn` documents the per-event cache contract:
+// "the listener caches the result for the lifetime of the single event
+// handler call so repeated lookups inside one handler stay cheap."
+// Today the channel-message handler reads `getWorkspaceConfig` exactly
+// once per event (the `Promise.all` with `getChannelConfigs` at the top
+// of the post-pause section). This sentinel pins the invariant so a
+// future refactor that adds a second DB read inside the same event
+// (e.g. inside the answer flow, or duplicated in the public-dataset
+// branch) fails loudly here instead of silently regressing the cost
+// contract.
+//
+// Single-event semantics: one `invokeMessage` call must produce exactly
+// one `getWorkspaceConfig` invocation, regardless of how many host
+// callbacks downstream (classify / executeQueryProactive / meter) fire.
+
+describe("registerProactiveListener — per-event getWorkspaceConfig cache (#2623 item 6)", () => {
+  it("calls getWorkspaceConfig + getChannelConfigs exactly once per channel-message event (happy path)", async () => {
+    // `getChannelConfigs` rides the same `Promise.all` as `getWorkspaceConfig`
+    // (`listener.ts:661-664`) and has the identical cost-ceiling property —
+    // pin both spies so a refactor that adds a second read on EITHER fetcher
+    // fails loudly.
+    const getWorkspaceConfig = mock(async () => baseWorkspace);
+    const channelConfigs: ChannelProactiveConfig[] = [
+      { channelId: "C-allowed", allow: true },
+    ];
+    const getChannelConfigs = mock(async () => channelConfigs);
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(
+      chat as unknown as Parameters<typeof registerProactiveListener>[0],
+      makeLogger(),
+      {
+        isEnabled: () => true,
+        classify: yesLLM,
+        resolveWorkspaceId: defaultResolver,
+        getWorkspaceConfig,
+        getChannelConfigs,
+      },
+    );
+    await invokeMessage(makeThread("C-allowed"), makeMessage());
+    expect(getWorkspaceConfig).toHaveBeenCalledTimes(1);
+    expect(getChannelConfigs).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls getWorkspaceConfig exactly once even when the linked-asker answer flow runs", async () => {
+    // The answer flow runs from `onReaction`, not the channel-message
+    // handler, so the channel-message event itself MUST still see
+    // exactly one workspace-config read. The reaction handler reads
+    // the workspaceId off the pending entry (`decision.pending.workspaceId`
+    // at `listener.ts:902`) rather than re-resolving — so total
+    // `getWorkspaceConfig` invocations stay at 1 across both events.
+    // A refactor that called `getWorkspaceConfig` inside `runAnswerFlow`
+    // would push the post-reaction count to 2 and fail loudly here.
+    const getWorkspaceConfig = mock(async () => baseWorkspace);
+    const channelConfigs: ChannelProactiveConfig[] = [
+      { channelId: "C-allowed", allow: true },
+    ];
+    const getChannelConfigs = mock(async () => channelConfigs);
+    const executeQueryProactive: ProactiveExecuteQuery = mock(echoExecute);
+    const { chat, invokeMessage, invokeReaction } = makeChat();
+    await registerProactiveListener(
+      chat as unknown as Parameters<typeof registerProactiveListener>[0],
+      makeLogger(),
+      {
+        isEnabled: () => true,
+        classify: yesLLM,
+        resolveWorkspaceId: defaultResolver,
+        getWorkspaceConfig,
+        getChannelConfigs,
+        userResolver: linkedResolver,
+        executeQueryProactive,
+      },
+    );
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage({ id: "M1" }));
+    expect(getWorkspaceConfig).toHaveBeenCalledTimes(1);
+    expect(getChannelConfigs).toHaveBeenCalledTimes(1);
+
+    // Reaction-back is a separate event; the reaction handler does not
+    // (and currently must not) re-read either workspace-scoped fetcher.
+    // Pinning the post-reaction counts to 1 catches a regression that
+    // would re-read either config inside `runAnswerFlow`.
+    await invokeReaction({
+      added: true,
+      messageId: "M1",
+      threadId: thread.channelId,
+      thread,
+      user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
+      emoji: PROACTIVE_REACTION,
+      rawEmoji: "robot_face",
+      adapter: { name: "slack" },
+      raw: {},
+    });
+    expect(executeQueryProactive).toHaveBeenCalledTimes(1);
+    expect(getWorkspaceConfig).toHaveBeenCalledTimes(1);
+    expect(getChannelConfigs).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ResolverEventLite narrowing (#2623 item 2)
+// ---------------------------------------------------------------------------
+//
+// The flip from `message: Message` → `message: ResolverEventLite` is
+// only meaningful if a resolver author can no longer read fields
+// outside the lite set. Pre-#2623 the parameter type was the full
+// `Message` and synthesis sites smuggled a partial shape via a
+// structural cast — a resolver that read `event.message.attachments`
+// would compile fine and silently return `undefined.length` at
+// runtime. The cast hole is closed by the narrowing.
+//
+// The `void event.message.<field>` statements inside the resolver
+// body give each `@ts-expect-error` marker a line to attach to —
+// `tsgo --noEmit` (run by `bun run type` and CI) type-checks the body
+// regardless of whether `_resolver` is later referenced, so the
+// directives are load-bearing as soon as the file compiles. `bun test`
+// does NOT enforce `@ts-expect-error` (its transpiler strips types
+// without checking); the directives are enforced exclusively by the
+// project-level type gate. The `expect(typeof _resolver).toBe("function")`
+// line exists so this `describe` block runs through `bun test` and any
+// regression appears in the test report — but the type-check is what
+// catches a regression first. **Do not** delete the `_resolver` binding
+// or replace its body with `void 0`: that would orphan the directives
+// and let TS strip them as `TS2578: Unused '@ts-expect-error' directive`.
+
+describe("ResolveWorkspaceIdFn type narrowing (#2623 item 2)", () => {
+  it("ts-only: a resolver cannot read fields outside ResolverEventLite", () => {
+    const _resolver: ResolveWorkspaceIdFn = async (event) => {
+      // OK — `id` and `raw` are the only allowed fields.
+      void event.message.id;
+      void event.message.raw;
+      // @ts-expect-error — `attachments` is on Message but not ResolverEventLite
+      void event.message.attachments;
+      // @ts-expect-error — `author` is on Message but not ResolverEventLite
+      void event.message.author;
+      // @ts-expect-error — `text` is on Message but not ResolverEventLite
+      void event.message.text;
+      // @ts-expect-error — `formatted` is on Message but not ResolverEventLite
+      void event.message.formatted;
+      // @ts-expect-error — `threadId` is on Message but not ResolverEventLite
+      void event.message.threadId;
+      // @ts-expect-error — `metadata` is on Message but not ResolverEventLite
+      void event.message.metadata;
+      // @ts-expect-error — `links` is on Message but not ResolverEventLite
+      void event.message.links;
+      // @ts-expect-error — `isMention` is on Message but not ResolverEventLite
+      void event.message.isMention;
+      return null;
+    };
+    expect(typeof _resolver).toBe("function");
+  });
+
+  it("ts-only: ResolverEventLite is structurally a subset of Message", () => {
+    // A synthetic lite shape (`{ id, raw }`) satisfies the resolver
+    // input without any cast — the listener / bridge synthesis sites
+    // rely on this. Real `Message` instances also assign (subtype
+    // direction): the listener's channel-message path passes a real
+    // `Message` to `safeResolveWorkspace`, which narrows it to
+    // `ResolverEventLite` before calling the resolver.
+    const lite: ResolverEventLite = { id: "M1", raw: { team_id: "T1" } };
+    expect(lite.id).toBe("M1");
   });
 });

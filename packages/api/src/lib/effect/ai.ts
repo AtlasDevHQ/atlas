@@ -23,7 +23,7 @@
  * ```
  */
 
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Layer, ManagedRuntime } from "effect";
 import type { LanguageModel } from "ai";
 import { createLogger } from "@atlas/api/lib/logger";
 
@@ -154,6 +154,41 @@ export const AtlasAiModelLive: Layer.Layer<AtlasAiModel, Error> = Layer.effect(
     return bootModel satisfies AtlasAiModelShape;
   }),
 );
+
+/**
+ * Lazily-built ManagedRuntime over {@link AtlasAiModelLive}.
+ *
+ * The proactive classifier + answer adapters (`lib/proactive/*-adapter.ts`)
+ * need a `ManagedRuntime` providing `AtlasAiModel`. The server's app
+ * runtime in `api/server.ts` isn't exported and the deploy config
+ * (`deploy/api/atlas.config.ts` at `/app/`) sits outside the workspace
+ * `node_modules` tree — so `effect` itself can't be imported directly
+ * from atlas.config.ts. Exposing a built runtime through this module
+ * (which atlas.config.ts already reaches via relative path) keeps the
+ * deploy config free of bare-package imports.
+ *
+ * Process-lifetime cached. The layer's 5s settings TTL handles admin-
+ * driven model swaps without rebuilding the runtime.
+ */
+let _proactiveAiRuntime:
+  | ManagedRuntime.ManagedRuntime<AtlasAiModel, never>
+  | null = null;
+export function getProactiveAiRuntime(): ManagedRuntime.ManagedRuntime<
+  AtlasAiModel,
+  never
+> {
+  if (_proactiveAiRuntime === null) {
+    // AtlasAiModelLive has `Error` in its error channel (boot-time AI
+    // provider misconfig surfaces as a Layer failure). `Layer.orDie`
+    // converts that to an unrecoverable defect so the runtime's `E` is
+    // `never` — matching what the proactive factories require. A boot-
+    // time AI failure now surfaces as a rejected promise on the first
+    // `runPromise()`, which the classifier/answer adapters already
+    // catch + fail-closed.
+    _proactiveAiRuntime = ManagedRuntime.make(Layer.orDie(AtlasAiModelLive));
+  }
+  return _proactiveAiRuntime;
+}
 
 /**
  * Create a Live layer for a workspace-level model configuration.

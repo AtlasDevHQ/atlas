@@ -71,12 +71,35 @@ export const ENV_TEAM_ID = "env" as const;
 /**
  * Key prefix shared with `@chat-adapter/slack`. Do not change without
  * coordinating with the adapter's `installationKeyPrefix` AND with
- * migration `0085`'s partial expression index predicate
+ * migration `0086`'s partial expression index predicate
  * (`WHERE key LIKE 'slack:installation:%'`), which is a LITERAL in
  * both the index and the queries that hit it. A rename here without a
  * matching migration would silently bypass the index.
  */
 export const KEY_PREFIX = "slack:installation:" as const;
+
+/**
+ * Chat plugin cache table. Matches the chat plugin's
+ * `state.tablePrefix` default (`"chat_"`) — `chat_` + `cache` =
+ * `chat_cache`. If a self-hosted deploy sets a non-default
+ * `state.tablePrefix` (e.g. `myorg_` → `myorg_cache`), it MUST also
+ * set `ATLAS_SLACK_INSTALL_TABLE=myorg_cache` so OAuth installs land
+ * in the same physical table the chat-adapter reads from. The
+ * partial expression index in migration `0086` targets `chat_cache`;
+ * non-default prefixes also need their own equivalent index.
+ *
+ * SaaS pins the default (`chat_cache`) — no override needed.
+ */
+const INSTALL_TABLE = (() => {
+  const raw = process.env.ATLAS_SLACK_INSTALL_TABLE;
+  if (!raw) return "chat_cache";
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(raw)) {
+    throw new Error(
+      `ATLAS_SLACK_INSTALL_TABLE must be a valid SQL identifier (got '${raw}')`,
+    );
+  }
+  return raw;
+})();
 
 /**
  * JSONB field names in `chat_cache.value`. Centralised so a rename
@@ -184,7 +207,7 @@ export async function getInstallation(
         installed_at: string | null;
       }>(
         `SELECT value, to_char((value->>'${FIELD.installedAt}')::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS installed_at
-           FROM chat_cache
+           FROM ${INSTALL_TABLE}
           WHERE key = $1
             AND (expires_at IS NULL OR expires_at > NOW())`,
         [keyFor(teamId)],
@@ -240,7 +263,7 @@ export async function getInstallationByOrg(
       installed_at: string | null;
     }>(
       `SELECT key, value, to_char((value->>'${FIELD.installedAt}')::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS installed_at
-         FROM chat_cache
+         FROM ${INSTALL_TABLE}
         WHERE key LIKE 'slack:installation:%'
           AND value->>'${FIELD.orgId}' = $1
           AND (expires_at IS NULL OR expires_at > NOW())
@@ -295,7 +318,7 @@ export async function saveInstallation(
   // race). Merges `value` so the chat-adapter's own writes (e.g.
   // `botUserId` set by a future `auth.test` round-trip) aren't clobbered.
   const result = await pool.query(
-    `INSERT INTO chat_cache (key, value, expires_at)
+    `INSERT INTO ${INSTALL_TABLE} (key, value, expires_at)
      VALUES ($1, $2::jsonb, NULL)
      ON CONFLICT (key) DO UPDATE
        SET value = chat_cache.value || EXCLUDED.value,
@@ -324,7 +347,7 @@ export async function deleteInstallation(teamId: string): Promise<void> {
     return;
   }
   const pool = getInternalDB();
-  await pool.query("DELETE FROM chat_cache WHERE key = $1", [keyFor(teamId)]);
+  await pool.query(`DELETE FROM ${INSTALL_TABLE} WHERE key = $1`, [keyFor(teamId)]);
 }
 
 /**
@@ -341,7 +364,7 @@ export async function deleteInstallationByOrg(orgId: string): Promise<boolean> {
     // Literal LIKE for partial-index match — see `getInstallationByOrg`
     // for the planner-rationale comment.
     const result = await pool.query(
-      `DELETE FROM chat_cache
+      `DELETE FROM ${INSTALL_TABLE}
         WHERE key LIKE 'slack:installation:%'
           AND value->>'${FIELD.orgId}' = $1
         RETURNING key`,

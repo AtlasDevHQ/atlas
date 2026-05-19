@@ -119,6 +119,16 @@ export interface SlackAdapterConfig {
   clientId?: string;
   /** Client secret for multi-workspace OAuth. */
   clientSecret?: string;
+  /**
+   * AES-256-GCM key for at-rest encryption of bot tokens persisted in
+   * `chat_cache` (post-#2634 consolidation). Passed through to
+   * `@chat-adapter/slack`. 32 raw bytes as hex64 or base64. When set,
+   * Atlas's `lib/slack/installation-encryption.ts` and the chat-adapter
+   * both encrypt/decrypt against the same key so OAuth-write /
+   * per-event-read stay symmetric. Optional; omitting it persists
+   * tokens as plaintext (self-hosted single-user posture).
+   */
+  encryptionKey?: string;
 }
 
 /** Teams adapter credential configuration. */
@@ -648,6 +658,16 @@ const SlackAdapterSchema = z.object({
   ),
   clientId: z.string().min(1).optional(),
   clientSecret: z.string().min(1).optional(),
+  // AES-256-GCM key for at-rest encryption of bot tokens persisted in
+  // `chat_cache` (post-#2634 consolidation). Passed through to
+  // `@chat-adapter/slack`'s `encryptionKey` option — when set, persisted
+  // installation `botToken` fields land as `{ iv, data, tag }` JSONB
+  // envelopes instead of plaintext. 32 raw bytes encoded as either a
+  // 64-char hex string or a 44-char base64 string; the adapter's
+  // `decodeKey` rejects any other length at boot. Optional — omitting
+  // it (and `SLACK_ENCRYPTION_KEY`) is the legitimate self-hosted
+  // single-user posture, matching the chat-adapter's own default.
+  encryptionKey: z.string().min(1).optional(),
 }).strict().refine(
   (s) => (s.clientId == null) === (s.clientSecret == null),
   "clientId and clientSecret must both be provided for OAuth",

@@ -38,6 +38,19 @@
 -- semver — one-click reinstall is acceptable. The 1.5.0 dogfood
 -- (#sandbox-atlas) workspace is the only known existing tenant; it
 -- will be reinstalled as part of this PR's verification.
+--
+-- **Deprecated `@useatlas/slack` plugin notice.** That plugin (replaced
+-- by `@useatlas/chat`) reads/writes `slack_installations` directly via
+-- `plugins/slack/src/store.ts`. After this migration runs, the
+-- plugin-SDK's lazy `CREATE TABLE IF NOT EXISTS` will re-create the
+-- table EMPTY on the next plugin init — the plugin will continue to
+-- function, but installs written to that re-created table are NOT
+-- visible to `@useatlas/chat` (the active path). Self-hosted
+-- deployments still on `@useatlas/slack` should migrate to
+-- `@useatlas/chat` per
+-- `apps/docs/content/docs/plugins/interactions/slack.mdx` and
+-- reinstall their workspace once. The deprecated plugin removal is
+-- tracked as a follow-up.
 
 CREATE TABLE IF NOT EXISTS chat_cache (
   key         TEXT PRIMARY KEY,

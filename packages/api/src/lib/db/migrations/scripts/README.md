@@ -25,13 +25,9 @@ environment.
 - The transform is recurring or part of normal operation — promote it to
   the `atlas-cli` instead (`atlas seed`, `atlas proactive`, etc.).
 
-## Status of existing scripts
+## Existing scripts
 
-| Script                                  | Migration         | Run-on-prod date | Status     |
-| --------------------------------------- | ----------------- | ---------------- | ---------- |
-| `0027_backfill_region.ts`               | `0027_organization_saas_columns.sql` | 2026-05-12 | applied (see header) |
-| `slack_installations_to_chat_cache.ts`  | runtime DDL by `@useatlas/chat`      | 2026-05-19 | applied (see header) |
+- `0027_backfill_region.ts` — accompanies `0027_organization_saas_columns.sql`
+- `slack_installations_to_chat_cache.ts` — accompanies the runtime DDL emitted by `@useatlas/chat`'s `pg-adapter.ts`
 
-The second script doesn't accompany a numbered migration: `chat_cache` is
-created at runtime by the chat plugin's `pg-adapter.ts`. Naming it after the
-source table is the clearest signal of intent.
+See each script's header docblock for the prod-run date and the exact invocation. The second script doesn't accompany a numbered migration: `chat_cache` is created at runtime by the chat plugin. Naming it after the source table is the clearest signal of intent.

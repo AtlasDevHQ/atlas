@@ -9,16 +9,12 @@
  * on first connect. Naming the script after the source table (slack_installations
  * → chat_cache) is the clearest signal of intent.
  *
- * Status: applied on prod 2026-05-19 as part of the proactive-listener wiring
- * trail (#2607 → #2625 → #2626). Sister issue #2634 may eventually delete the
- * Atlas-owned slack_installations table outright and replace this with a
- * normal write-through at OAuth-callback time — in which case this script can
- * be removed. Until then keeping it here is the durable record.
+ * Promoted from internal/backfill-chat-installations.ts (#2635). The script
+ * was run on prod as part of the proactive-listener wiring trail
+ * (#2607 → #2625 → #2626) before promotion.
  *
  * Invocation:
  *   ATLAS_TEAM_PG_URL=... bun run packages/api/src/lib/db/migrations/scripts/slack_installations_to_chat_cache.ts
- *
- * Promoted from internal/backfill-chat-installations.ts on 2026-05-19 (#2635).
  */
 import { Client } from "pg";
 import { decryptSecret } from "../../secret-encryption";
@@ -43,17 +39,21 @@ async function main(): Promise<void> {
     console.log(`[backfill] found ${rows.rowCount} slack_installations rows`);
 
     let written = 0;
+    let decryptFailures = 0;
+    let tokenFormatRejected = 0;
     for (const row of rows.rows) {
       let botToken: string;
       try {
         botToken = decryptSecret(row.bot_token_encrypted);
       } catch (err) {
+        decryptFailures++;
         console.error(
           `[backfill] decrypt failed for ${row.team_id}: ${err instanceof Error ? err.message : String(err)}`,
         );
         continue;
       }
       if (!botToken.startsWith("xoxb-") && !botToken.startsWith("xoxe.xoxb-")) {
+        tokenFormatRejected++;
         console.warn(
           `[backfill] team ${row.team_id} token doesn't look like a bot token (starts with ${botToken.slice(0, 10)}); skipping`,
         );
@@ -81,8 +81,17 @@ async function main(): Promise<void> {
       `SELECT key, (value->>'teamName') AS team_name
        FROM chat_cache WHERE key LIKE 'slack:installation:%'`,
     );
+    console.log(
+      `[backfill] summary: read=${rows.rowCount} wrote=${written} decryptFailed=${decryptFailures} badTokenFormat=${tokenFormatRejected}`,
+    );
     console.log(`[backfill] chat_cache now has ${verify.rowCount} slack installations`);
-    console.log(`[backfill] ✓ wrote ${written} rows`);
+    // Decrypt failure is an operator-config bug (missing/wrong ATLAS_ENCRYPTION_KEYS).
+    // Fail loudly rather than letting the operator believe a partial backfill is complete.
+    if (decryptFailures > 0) {
+      throw new Error(
+        `[backfill] ${decryptFailures} rows failed to decrypt — fix ATLAS_ENCRYPTION_KEYS and re-run`,
+      );
+    }
   } finally {
     await client.end();
   }

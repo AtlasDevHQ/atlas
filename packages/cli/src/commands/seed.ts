@@ -13,6 +13,7 @@
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import * as yaml from "js-yaml";
 import { getFlag } from "../../lib/cli-utils";
 import {
   resolveTenantUrl,
@@ -37,9 +38,7 @@ export interface SeedPromptsOptions {
 }
 
 export function parsePromptLibrary(raw: string): PromptLibrary {
-  // Bun.YAML.parse is built into Bun >=1.3.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const parsed = (Bun as any).YAML.parse(raw) as PromptLibrary;
+  const parsed = yaml.load(raw) as PromptLibrary;
   if (!parsed?.collection?.name || !parsed?.collection?.industry) {
     throw new Error("library.yml: missing collection.name or collection.industry");
   }
@@ -182,10 +181,18 @@ export function loadSemanticEntities(root: string): SemanticEntityRow[] {
     let files: string[];
     try {
       files = readdirSync(join(root, dir));
-    } catch {
-      // Missing subdirectory is fine — semantic layers don't have to define
-      // every category. Treat as empty.
-      continue;
+    } catch (err) {
+      // intentionally ignored: a missing subdirectory means this semantic-layer
+      // category isn't defined (entities/metrics/glossary are all optional).
+      // EACCES / EIO / EMFILE are real I/O problems and must surface — silently
+      // producing a 0-entity seed in those cases would look identical to
+      // "the operator didn't supply any YAML".
+      const code =
+        err instanceof Error && "code" in err
+          ? (err as NodeJS.ErrnoException).code
+          : undefined;
+      if (code === "ENOENT" || code === "ENOTDIR") continue;
+      throw err;
     }
     for (const file of files) {
       if (!file.endsWith(".yml")) continue;
@@ -352,7 +359,11 @@ async function handleSeedPrompts(args: string[]): Promise<void> {
     console.error(`[seed] failed: ${err instanceof Error ? err.message : String(err)}`);
     process.exitCode = 1;
   } finally {
-    await client.end();
+    await client.end().catch((closeErr) => {
+      console.warn(
+        `[seed] connection close failed: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`,
+      );
+    });
   }
 }
 
@@ -385,8 +396,9 @@ async function handleSeedWorkspace(args: string[]): Promise<void> {
   const semanticRoot = getFlag(args, "--semantic");
   const semanticEntities = semanticRoot ? loadSemanticEntities(semanticRoot) : [];
 
-  // Lazy-load encryption so the test layer can mock @atlas/api modules without
-  // dragging the encryption module load chain into the test path.
+  // Lazy-load: encryptSecret is only needed by `seed workspace`. The `seed
+  // prompts` path doesn't touch encryption, so keeping the import dynamic
+  // avoids pulling the key-derivation chain into bundles that don't need it.
   const { encryptSecret } = await import("@atlas/api/lib/db/internal");
   const { activeKeyVersion } = await import(
     "@atlas/api/lib/db/encryption-keys"
@@ -428,7 +440,11 @@ async function handleSeedWorkspace(args: string[]): Promise<void> {
     console.error(`[seed] failed: ${err instanceof Error ? err.message : String(err)}`);
     process.exitCode = 1;
   } finally {
-    await client.end();
+    await client.end().catch((closeErr) => {
+      console.warn(
+        `[seed] connection close failed: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`,
+      );
+    });
   }
 }
 

@@ -24,9 +24,7 @@ import {
 
 export { resolveWorkspaceId };
 
-// Minimal Postgres client surface the SQL functions depend on. Both `pg.Client`
-// and the bun:test mock pool below satisfy this — gives us tests without
-// requiring a real database.
+// Re-exported for back-compat; see lib/tenant-db.ts for the type itself.
 export type ProactivePgClient = TenantPgClient;
 
 export interface EnableProactiveOptions {
@@ -38,11 +36,7 @@ export interface DisableProactiveOptions {
   workspace: string;
 }
 
-/**
- * Run the enable transaction: upsert workspace_proactive_config + one row per
- * channel into channel_proactive_config. Returns the resolved orgId so callers
- * can log it.
- */
+/** Returns the resolved orgId + channel count so callers can log them. */
 export async function enableProactive(
   client: ProactivePgClient,
   opts: EnableProactiveOptions,
@@ -77,10 +71,7 @@ export async function enableProactive(
   }
 }
 
-/**
- * Set workspace_proactive_config.enabled=false for the resolved workspace.
- * Channel rows are deliberately left intact.
- */
+/** Channel rows are left intact so a later enable doesn't lose channel configs. */
 export async function disableProactive(
   client: ProactivePgClient,
   opts: DisableProactiveOptions,
@@ -145,7 +136,11 @@ export async function handleProactive(args: string[]): Promise<void> {
       );
       process.exitCode = 1;
     } finally {
-      await client.end();
+      await client.end().catch((closeErr) => {
+        console.warn(
+          `[proactive] connection close failed: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`,
+        );
+      });
     }
     return;
   }
@@ -170,6 +165,10 @@ export async function handleProactive(args: string[]): Promise<void> {
     );
     process.exitCode = 1;
   } finally {
-    await client.end();
+    await client.end().catch((closeErr) => {
+      console.warn(
+        `[proactive] connection close failed: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`,
+      );
+    });
   }
 }

@@ -39,26 +39,34 @@ export function resolveTenantUrl(): string {
 }
 
 /**
- * Resolve `--workspace <id|slug>` to an `organization.id`. Values starting with
- * `org_` are treated as ids and returned without a slug lookup; everything else
- * is treated as a slug and looked up via `WHERE slug = $1 AND deleted_at IS NULL`.
- * Throws when the slug has no match or when multiple rows match (corruption guard).
+ * Resolve `--workspace <id|slug>` to an `organization.id`. Both id and slug
+ * forms round-trip through `organization` — there is no fast-path that
+ * accepts a literal `org_*` string without confirming it exists.
+ *
+ * Why: `workspace_proactive_config.workspace_id` has no FK to organization,
+ * so a typo'd id would silently INSERT orphan rows and the destructive
+ * subcommands would log success against a non-existent workspace. The
+ * extra SELECT is cheap; the safety win is loud.
  */
 export async function resolveWorkspaceId(
   client: TenantPgClient,
   workspace: string,
 ): Promise<string> {
-  if (workspace.startsWith("org_")) return workspace;
+  const isId = workspace.startsWith("org_");
   const r = await client.query<{ id: string }>(
-    `SELECT id FROM organization WHERE slug = $1 AND deleted_at IS NULL`,
+    isId
+      ? `SELECT id FROM organization WHERE id = $1 AND deleted_at IS NULL`
+      : `SELECT id FROM organization WHERE slug = $1 AND deleted_at IS NULL`,
     [workspace],
   );
   if (r.rows.length === 0) {
-    throw new Error(`No organization with slug='${workspace}' found.`);
+    throw new Error(
+      `No organization with ${isId ? "id" : "slug"}='${workspace}' found.`,
+    );
   }
   if (r.rows.length > 1) {
     throw new Error(
-      `Expected one organization for slug='${workspace}', found ${r.rows.length}.`,
+      `Expected one organization for ${isId ? "id" : "slug"}='${workspace}', found ${r.rows.length}.`,
     );
   }
   return r.rows[0]!.id;

@@ -9,14 +9,14 @@
  * rows tagged with a different `region` value — that would mean cross-region
  * data and we shouldn't blindly stamp the label.
  *
- * Status: applied on prod 2026-05-12 (EU + APAC). Re-runs are idempotent.
+ * Re-runs are idempotent (`WHERE region IS NULL`).
  *
  * Invocation:
  *   EU_INT_DB_URL=... APAC_INT_DB_URL=... bun run packages/api/src/lib/db/migrations/scripts/0027_backfill_region.ts
  *   DRY_RUN=1 ... (counts only, no writes)
  *
- * Promoted from internal/backfill-region.ts on 2026-05-19 (#2635) so the script
- * is type-checked, version-controlled, and discoverable next to its migration.
+ * Promoted from internal/backfill-region.ts (#2635) so the script is
+ * type-checked, version-controlled, and discoverable next to its migration.
  */
 import { Client } from "pg";
 

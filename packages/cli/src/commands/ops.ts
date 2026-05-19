@@ -21,40 +21,43 @@ export const WIPE_EXCLUDED_TABLES = [
   "region_migrations",
 ] as const;
 
-/**
- * The exact SQL we expect `wipeTenantPublicTables` to run. Pulled into a
- * constant so tests pin the literal — drift here would silently truncate
- * different tables than the operator expects.
- */
-export const WIPE_TRUNCATE_SQL = `DO $$
-DECLARE
-  tables text;
-BEGIN
-  SELECT string_agg(format('public.%I', t.tablename), ', ')
-    INTO tables
-    FROM pg_tables t
-    WHERE t.schemaname = 'public'
-      AND t.tablename NOT IN ('__atlas_migrations', 'region_migrations');
-  IF tables IS NOT NULL THEN
-    EXECUTE 'TRUNCATE ' || tables || ' RESTART IDENTITY CASCADE';
-  END IF;
-END $$;`;
+/** SQL listing every public table not in the exclusion set. Derived from
+ *  WIPE_EXCLUDED_TABLES so there's one source of truth — the table names
+ *  are static identifiers, not operator input, so interpolation is safe. */
+export const WIPE_LIST_TABLES_SQL = `SELECT tablename FROM pg_tables
+ WHERE schemaname = 'public'
+   AND tablename NOT IN (${WIPE_EXCLUDED_TABLES.map((t) => `'${t}'`).join(", ")})
+ ORDER BY tablename`;
 
 /**
- * Issue the TRUNCATE-public-tables statement. Pure function over a client —
- * callers handle the wipe-gate (ATLAS_WIPE_OK + --confirm) before invocation.
+ * Run the wipe end-to-end: list the public tables not in the exclusion set,
+ * then `TRUNCATE … RESTART IDENTITY CASCADE` in a single statement. Returns
+ * the list of tables actually truncated so the handler can warn when zero
+ * tables matched (typo'd DB URL) instead of logging a misleading "done".
+ *
+ * Table names are read from `pg_tables` (system catalog, not operator input)
+ * and quoted with `pg`'s `escapeIdentifier`, so the `EXECUTE` is safe.
  */
 export async function wipeTenantPublicTables(
   client: TenantPgClient,
-): Promise<void> {
-  await client.query(WIPE_TRUNCATE_SQL);
+): Promise<{ tablesTruncated: readonly string[] }> {
+  const tables = await client.query<{ tablename: string }>(WIPE_LIST_TABLES_SQL);
+  const names = tables.rows.map((r) => r.tablename);
+  if (names.length === 0) {
+    return { tablesTruncated: [] };
+  }
+  // pg_tables returns the unquoted identifier; quote for the EXECUTE.
+  const list = names.map((n) => `public.${quoteIdent(n)}`).join(", ");
+  await client.query(`TRUNCATE ${list} RESTART IDENTITY CASCADE`);
+  return { tablesTruncated: names };
 }
 
-/**
- * Belt-and-braces gate. Returns null if the operator passed BOTH the
- * --confirm flag AND ATLAS_WIPE_OK=1; otherwise an error message explaining
- * which gate is missing. Exported so the unit test can pin the contract.
- */
+/** Postgres identifier quoting — doubles any embedded `"` and wraps in `"`. */
+export function quoteIdent(name: string): string {
+  return `"${name.replace(/"/g, '""')}"`;
+}
+
+/** Exported so unit tests can pin the double-confirm contract. */
 export function checkWipeGate(args: string[], env: NodeJS.ProcessEnv): string | null {
   if (env.ATLAS_WIPE_OK !== "1") {
     return "Refusing to wipe: set ATLAS_WIPE_OK=1 in the env to confirm.";
@@ -93,19 +96,36 @@ async function handleWipe(args: string[]): Promise<void> {
     console.log(
       `[ops:wipe] truncating public tables (excluding ${WIPE_EXCLUDED_TABLES.join(", ")})…`,
     );
-    await wipeTenantPublicTables(client as unknown as TenantPgClient);
+    const { tablesTruncated } = await wipeTenantPublicTables(
+      client as unknown as TenantPgClient,
+    );
+    if (tablesTruncated.length === 0) {
+      // Wiping nothing is suspicious — almost always a wrong-DB typo. Exit
+      // with a distinct code (2) so chained scripts can branch on it.
+      console.warn(
+        "[ops:wipe] ⚠ zero tables matched — wrong DB? Nothing was truncated.",
+      );
+      process.exitCode = 2;
+      return;
+    }
     // Quick sanity: count the auth user table — should be 0 post-wipe.
     const r = await client.query<{ n: number }>(
       'SELECT COUNT(*)::int AS n FROM "user"',
     );
-    console.log(`[ops:wipe] ✓ done — user table now has ${r.rows[0]?.n ?? "?"} rows`);
+    console.log(
+      `[ops:wipe] ✓ truncated ${tablesTruncated.length} table(s) — user table now has ${r.rows[0]?.n ?? "?"} rows`,
+    );
   } catch (err) {
     console.error(
       `[ops:wipe] failed: ${err instanceof Error ? err.message : String(err)}`,
     );
     process.exitCode = 1;
   } finally {
-    await client.end();
+    await client.end().catch((closeErr) => {
+      console.warn(
+        `[ops:wipe] connection close failed: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`,
+      );
+    });
   }
 }
 

@@ -38,11 +38,23 @@ function createMockClient(
 // --- resolveWorkspaceId ---
 
 describe("resolveWorkspaceId", () => {
-  it("returns the value unchanged when it starts with `org_`", async () => {
-    const { client, queries } = createMockClient([]);
+  it("resolves an `org_*` id via `organization.id = $1` (no fast-path)", async () => {
+    const { client, queries } = createMockClient([
+      { rows: [{ id: "org_abc123" }] },
+    ]);
     const id = await resolveWorkspaceId(client, "org_abc123");
     expect(id).toBe("org_abc123");
-    expect(queries).toHaveLength(0);
+    expect(queries).toHaveLength(1);
+    expect(queries[0]!.sql).toContain("FROM organization WHERE id = $1");
+    expect(queries[0]!.sql).toContain("deleted_at IS NULL");
+    expect(queries[0]!.params).toEqual(["org_abc123"]);
+  });
+
+  it("throws when an `org_*` id has no match — catches typos that no FK would catch", async () => {
+    const { client } = createMockClient([{ rows: [] }]);
+    await expect(resolveWorkspaceId(client, "org_typoid")).rejects.toThrow(
+      "No organization with id='org_typoid' found.",
+    );
   });
 
   it("resolves a slug via `organization.slug = $1`", async () => {

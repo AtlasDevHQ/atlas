@@ -39,10 +39,11 @@ import {
 import { getWorkspaceQuotaStatus } from "./packages/api/src/lib/proactive/quota";
 import { getAllowlist } from "./packages/api/src/lib/proactive/public-dataset";
 // Slice 3 of #2607 — host-side `executeQuery` that resolves Slack
-// `team_id` → `slack_installations.org_id` → `botActorUser` before
-// invoking the agent loop. Replaces the slice-1 stub. The factory
-// returns a plain async function — no `effect` import surfaces here,
-// so the relative-import constraint stays satisfied.
+// `team_id` → `chat_cache:slack:installation` → `org_id` → `botActorUser`
+// before invoking the agent loop (post-#2634 the install store
+// consolidated onto `chat_cache`). Replaces the slice-1 stub. The
+// factory returns a plain async function — no `effect` import
+// surfaces here, so the relative-import constraint stays satisfied.
 import { createChatPluginExecuteQuery } from "./packages/api/src/lib/chat-plugin/executeQuery";
 
 // Dedicated runtime for the proactive classifier + answer adapters.
@@ -82,10 +83,13 @@ export default defineConfig({
   // routes in packages/api/src/api/routes/slack.ts stay put — they
   // handle slash commands, block actions, modals, and OAuth.
   //
-  // Multi-tenant SaaS: real bot tokens live in `slack_installations`
-  // and are resolved per-event by `@chat-adapter/slack` from its
-  // installation store (`chat_cache:slack:installation:<teamId>`).
-  // OMIT `botToken` so the adapter operates in multi-workspace mode.
+  // Multi-tenant SaaS: real bot tokens live in `chat_cache` under the
+  // `slack:installation:<teamId>` key prefix (#2634 consolidated the
+  // legacy `slack_installations` Postgres table into this store).
+  // Atlas's OAuth callback writes; `@chat-adapter/slack` reads — both
+  // sides share `SLACK_ENCRYPTION_KEY` so bot tokens stay encrypted
+  // at rest via AES-256-GCM. OMIT `botToken` so the adapter operates
+  // in multi-workspace mode.
   plugins: [
     chatPlugin({
       adapters: {
@@ -102,6 +106,14 @@ export default defineConfig({
             : {}),
           ...(process.env.SLACK_CLIENT_SECRET
             ? { clientSecret: process.env.SLACK_CLIENT_SECRET }
+            : {}),
+          // Required in SaaS — keys the AES-GCM envelope that the
+          // chat-adapter uses to encrypt persisted bot tokens. Atlas's
+          // `lib/slack/installation-encryption.ts` reads the same env
+          // var so OAuth-write / per-event-read stay symmetric. 32 raw
+          // bytes encoded as hex (64 chars) or base64 (44 chars).
+          ...(process.env.SLACK_ENCRYPTION_KEY
+            ? { encryptionKey: process.env.SLACK_ENCRYPTION_KEY }
             : {}),
         },
       },
@@ -123,8 +135,10 @@ export default defineConfig({
       proactive: {
         platform: "slack",
         // Per-event resolution: maps Slack `team_id` →
-        // `slack_installations.org_id`. Returns null on unknown tenants
-        // (silent skip — no classify, no meter, no kill-switch read).
+        // `chat_cache.value.orgId` (post-#2634 consolidation, was
+        // `slack_installations.org_id`). Returns null on unknown
+        // tenants (silent skip — no classify, no meter, no
+        // kill-switch read).
         resolveWorkspaceId: createSlackWorkspaceIdResolver(),
         // Two-tier gate: enterprise check (cached) + per-workspace
         // `workspace_proactive_config.enabled` (re-read every call).

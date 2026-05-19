@@ -37,9 +37,15 @@ export interface IntegrationTable {
  * Every integration credential table covered by F-41. Order matches
  * the migration history (`0001_…` → `0011_…`) and the runbook in
  * `apps/docs/content/docs/platform-ops/encryption-key-rotation.mdx`.
+ *
+ * `slack_installations` was dropped in migration `0086_consolidate_slack_installations.sql`
+ * (#2634) — Slack bot tokens now live in `chat_cache` under the
+ * `slack:installation:` key prefix and use the `@chat-adapter/slack`
+ * AES-GCM envelope (keyed off `SLACK_ENCRYPTION_KEY`). That row is
+ * deliberately absent from F-41 rotation: the chat-adapter owns its
+ * own crypto and isn't a versioned-keyset participant.
  */
 export const INTEGRATION_TABLES: ReadonlyArray<IntegrationTable> = [
-  { table: "slack_installations",   pk: "team_id",         encrypted: "bot_token_encrypted",         keyVersionColumn: "bot_token_key_version" },
   { table: "teams_installations",   pk: "tenant_id",       encrypted: "app_password_encrypted",      keyVersionColumn: "app_password_key_version" },
   { table: "discord_installations", pk: "guild_id",        encrypted: "bot_token_encrypted",         keyVersionColumn: "bot_token_key_version" },
   { table: "telegram_installations", pk: "bot_id",         encrypted: "bot_token_encrypted",         keyVersionColumn: "bot_token_key_version" },

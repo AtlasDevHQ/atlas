@@ -101,12 +101,16 @@ In your Slack app settings, under **OAuth & Permissions**:
 SLACK_CLIENT_ID=your-client-id
 SLACK_CLIENT_SECRET=your-client-secret
 SLACK_SIGNING_SECRET=your-signing-secret
-DATABASE_URL=postgresql://...        # Required — stores per-workspace bot tokens
+SLACK_ENCRYPTION_KEY=                 # 32 raw bytes (hex64 or base64) — encrypts
+                                      # per-workspace bot tokens at rest. Optional
+                                      # for self-hosted single-user; required for
+                                      # multi-workspace production.
+DATABASE_URL=postgresql://...         # Required — stores per-workspace bot tokens
 ```
 
 ### 3. Install Flow
 
-Direct users to `https://your-api-host/api/v1/slack/install`. This redirects to Slack's OAuth authorize page. After approval, the callback stores the bot token in the `slack_installations` table.
+Direct users to `https://your-api-host/api/v1/slack/install`. This redirects to Slack's OAuth authorize page. After approval, the callback persists the bot token under `chat_cache:slack:installation:<teamId>` — the single store shared with the `@chat-adapter/slack` multi-workspace lookup path.
 
 ### 4. Workspace Disclosure
 

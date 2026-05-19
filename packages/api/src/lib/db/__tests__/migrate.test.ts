@@ -97,8 +97,9 @@ describe("runMigrations", () => {
     // + 0082 (audit_log.parent_audit_id FK → DEFERRABLE)
     // + 0083 (dashboard_stage_changes, #2365)
     // + 0084 (proactive_classification_review, #2622)
-    // + 0085 (workspace_proactive_config.workspace_id <> '' CHECK, #2623 item 5) = 86.
-    expect(count).toBe(86);
+    // + 0085 (workspace_proactive_config.workspace_id <> '' CHECK, #2623 item 5)
+    // + 0086 (consolidate slack installations onto chat_cache, #2634) = 87.
+    expect(count).toBe(87);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -213,6 +214,7 @@ describe("runMigrations", () => {
         "0083_dashboard_stage_changes.sql",
         "0084_proactive_classification_review.sql",
         "0085_workspace_proactive_config_workspace_id_nonempty.sql",
+        "0086_consolidate_slack_installations.sql",
       ],
     });
 

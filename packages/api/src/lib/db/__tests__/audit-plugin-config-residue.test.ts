@@ -105,8 +105,11 @@ describe("runAudit", () => {
    * compose findings on top of this baseline.
    */
   function cleanIntegrationState(): Record<string, MockRow[]> {
+    // slack_installations was dropped in 0085 (#2634) — Slack tokens
+    // now live in `chat_cache` under the chat-adapter's own AES-GCM
+    // envelope (keyed off SLACK_ENCRYPTION_KEY), outside the F-41
+    // versioned-keyset rotation/audit set.
     return {
-      "FROM slack_installations": [{ id: "T1", encrypted: "enc:v1:1:2:3" }],
       "FROM teams_installations": [{ id: "tn1", encrypted: "enc:v1:1:2:3" }],
       "FROM discord_installations": [{ id: "g1", encrypted: "enc:v1:1:2:3" }],
       "FROM telegram_installations": [{ id: "b1", encrypted: "enc:v1:1:2:3" }],
@@ -116,6 +119,7 @@ describe("runAudit", () => {
       "FROM whatsapp_installations": [{ id: "p1", encrypted: "enc:v1:1:2:3" }],
       "FROM email_installations": [{ id: "c1", encrypted: "enc:v1:1:2:3" }],
       "FROM sandbox_credentials": [{ id: "s1", encrypted: "enc:v1:1:2:3" }],
+      "FROM sub_processor_subscriptions": [{ id: "sub1", encrypted: "enc:v1:1:2:3" }],
       "FROM plugin_settings ps": [],
       "FROM workspace_plugins wp": [],
     };

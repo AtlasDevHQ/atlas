@@ -10,11 +10,12 @@
  *
  * The `workspaceId` is the per-event tenant resolved by
  * `lib/proactive/workspace-id-resolver.ts:createSlackWorkspaceIdResolver`
- * (Slack `team_id` → `slack_installations.org_id`). This module wires
- * a resolver factory for the Slack platform that:
+ * (Slack `team_id` → `chat_cache:slack:installation` → `org_id`,
+ * post-#2634). This module wires a resolver factory for the Slack
+ * platform that:
  *
  *   1. **Verifies the workspace is a real Atlas org.** A defensive
- *      lookup against `slack_installations.org_id` — defends against a
+ *      lookup against the consolidated install store — defends against a
  *      hypothetical caller that hands us an unknown workspaceId (the
  *      listener's resolver should already have returned `null` in that
  *      case, but if a future code path bypasses the per-event resolver
@@ -66,7 +67,8 @@ import type {
   WorkspaceId,
 } from "@useatlas/chat";
 
-import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { getInstallationByOrg } from "@atlas/api/lib/slack/store";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("proactive:user-resolver");
@@ -79,16 +81,17 @@ const log = createLogger("proactive:user-resolver");
 export interface SlackProactiveUserResolverOptions {
   /**
    * Verify the given workspaceId maps to a real Atlas org via
-   * `slack_installations.org_id`. Defaults to a single-row lookup
-   * against the internal DB. Override in tests to stub.
+   * `chat_cache` (consolidated post-#2634 — was `slack_installations`).
+   * Defaults to a single-row lookup against the internal DB. Override
+   * in tests to stub.
    *
    * The Slack workspace-id resolver
    * (`createSlackWorkspaceIdResolver`) already does this lookup at
    * the per-event boundary; this is a defensive re-check so a
    * resolver invoked through a code path that bypasses the workspace
    * resolver still refuses to attribute the asker. Cheap (indexed
-   * lookup against `idx_slack_installations_org` on `org_id`) so the
-   * extra read isn't material.
+   * lookup against `idx_chat_cache_slack_org_id` on
+   * `value->>'orgId'`) so the extra read isn't material.
    *
    * Accepts a branded {@link WorkspaceId} (#2641) so a transposed-arg
    * call (e.g. passing `asker.externalUserId` here) is a compile error.
@@ -150,7 +153,7 @@ export function createSlackProactiveUserResolver(
       if (!known) {
         log.warn(
           { workspaceId, externalUserId: asker.externalUserId },
-          "Proactive user resolver: workspaceId not in slack_installations — returning unlinked",
+          "Proactive user resolver: workspaceId not in chat_cache — returning unlinked",
         );
         return { kind: "unlinked" };
       }
@@ -185,24 +188,17 @@ export function createSlackProactiveUserResolver(
 }
 
 /**
- * Default workspace verifier — single-row lookup against
- * `slack_installations`. Returns false on a missing row or null
- * `org_id`. Throws on DB error so the caller can distinguish
- * "unknown workspace" from "DB is down"; the calling resolver
- * collapses both onto the same unlinked outcome but logs them
- * separately (warn for missing, warn-with-error for outage).
+ * Default workspace verifier — single-row lookup via the consolidated
+ * `chat_cache` store (post-#2634). Returns false on a missing row.
+ * Throws on DB error so the caller can distinguish "unknown
+ * workspace" from "DB is down"; the calling resolver collapses both
+ * onto the same unlinked outcome but logs them separately (warn for
+ * missing, warn-with-error for outage).
  */
 async function defaultVerifyWorkspace(
   workspaceId: WorkspaceId,
 ): Promise<boolean> {
   if (!hasInternalDB()) return false;
-  const rows = await internalQuery<{ org_id: string | null }>(
-    `SELECT org_id
-       FROM slack_installations
-      WHERE org_id = $1
-      LIMIT 1`,
-    [workspaceId],
-  );
-  const [row] = rows;
-  return row !== undefined && row.org_id !== null;
+  const installation = await getInstallationByOrg(workspaceId);
+  return installation !== null;
 }

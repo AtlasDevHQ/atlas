@@ -4167,6 +4167,167 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       "unsure",
     ]);
   }, PG_TEST_TIMEOUT_MS);
+
+  // 0085 — consolidate Slack install storage onto `chat_cache` (#2634).
+  // Three things to lock down on a real Postgres:
+  //   (1) `slack_installations` is dropped — confirms the migration
+  //       actually executes the DROP TABLE.
+  //   (2) `chat_cache` exists with the expected shape.
+  //   (3) The partial expression index on `value->>'orgId'` (filtered
+  //       by the `slack:installation:` key prefix) is created — without
+  //       it `getInstallationByOrg` falls back to a full table scan
+  //       across every cache row (subscriptions, locks, KV).
+  it("0086: drops slack_installations and creates chat_cache + org_id index (#2634)", async () => {
+    const { rows: dropped } = await pool.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.tables
+         WHERE table_schema = current_schema() AND table_name = 'slack_installations'
+       ) AS exists`,
+    );
+    expect(dropped[0]?.exists).toBe(false);
+
+    const { rows: cache } = await pool.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.tables
+         WHERE table_schema = current_schema() AND table_name = 'chat_cache'
+       ) AS exists`,
+    );
+    expect(cache[0]?.exists).toBe(true);
+
+    const { rows: indexes } = await pool.query<{ indexname: string }>(
+      `SELECT indexname FROM pg_indexes
+        WHERE schemaname = current_schema() AND tablename = 'chat_cache'
+        ORDER BY indexname`,
+    );
+    const indexNames = indexes.map((r) => r.indexname);
+    expect(indexNames).toContain("idx_chat_cache_slack_org_id");
+    expect(indexNames).toContain("idx_chat_cache_expires");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0086: hijack protection — the upsert WHERE clause rejects a same-team different-org write (#2634)", async () => {
+    // Pre-#2634 the legacy `slack_installations` upsert used a
+    // `WHERE org_id IS NULL OR org_id = $orgId` clause to refuse
+    // rebinding a team to a different org in a single atomic
+    // statement. The consolidated path on `chat_cache` mirrors that
+    // semantic via `value->>'orgId'`. This test pins the SQL guard
+    // against a real Postgres — a refactor that drops the WHERE
+    // would let cross-org hijacks through silently.
+    const teamId = `T-hijack-${Date.now()}`;
+    const key = `slack:installation:${teamId}`;
+
+    // Seed: workspace bound to org-A.
+    await pool.query(
+      `INSERT INTO chat_cache (key, value) VALUES ($1, $2::jsonb)`,
+      [key, JSON.stringify({ botToken: "xoxb-original", orgId: "org-A" })],
+    );
+
+    // Attempt the same upsert shape `saveInstallation` uses, but with
+    // a different orgId. The WHERE clause must reject it (zero rows
+    // returned).
+    const hijack = await pool.query(
+      `INSERT INTO chat_cache (key, value, expires_at)
+       VALUES ($1, $2::jsonb, NULL)
+       ON CONFLICT (key) DO UPDATE
+         SET value = chat_cache.value || EXCLUDED.value,
+             expires_at = NULL
+         WHERE chat_cache.value->>'orgId' IS NULL
+            OR chat_cache.value->>'orgId' = $3
+       RETURNING key`,
+      [
+        key,
+        JSON.stringify({ botToken: "xoxb-hijack", orgId: "org-B" }),
+        "org-B",
+      ],
+    );
+    expect(hijack.rows).toHaveLength(0);
+
+    // The original row must survive untouched.
+    const { rows } = await pool.query<{ value: { botToken: string; orgId: string } }>(
+      `SELECT value FROM chat_cache WHERE key = $1`,
+      [key],
+    );
+    expect(rows[0]?.value.botToken).toBe("xoxb-original");
+    expect(rows[0]?.value.orgId).toBe("org-A");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0086: JSONB merge preserves adapter-extension fields on a re-save (#2634)", async () => {
+    // The upsert's `value = chat_cache.value || EXCLUDED.value` merges
+    // right-wins-shallow so a future chat-adapter write (e.g.
+    // `botUserId` set after an `auth.test` round-trip) survives a
+    // re-run of Atlas's `saveInstallation`. A refactor that switched
+    // to `value = EXCLUDED.value` (clobber) would silently lose
+    // those fields — locked down here.
+    const teamId = `T-merge-${Date.now()}`;
+    const key = `slack:installation:${teamId}`;
+
+    // Seed an existing row whose value already carries an
+    // adapter-supplied field that Atlas's `saveInstallation` does
+    // NOT write.
+    await pool.query(
+      `INSERT INTO chat_cache (key, value) VALUES ($1, $2::jsonb)`,
+      [
+        key,
+        JSON.stringify({
+          botToken: "xoxb-initial",
+          botUserId: "U-adapter-set",
+          orgId: "org-merge",
+        }),
+      ],
+    );
+
+    // Atlas's `saveInstallation` upsert — does NOT include
+    // `botUserId`. The merge must keep it.
+    await pool.query(
+      `INSERT INTO chat_cache (key, value, expires_at)
+       VALUES ($1, $2::jsonb, NULL)
+       ON CONFLICT (key) DO UPDATE
+         SET value = chat_cache.value || EXCLUDED.value,
+             expires_at = NULL
+         WHERE chat_cache.value->>'orgId' IS NULL
+            OR chat_cache.value->>'orgId' = $3
+       RETURNING key`,
+      [
+        key,
+        JSON.stringify({ botToken: "xoxb-rotated", orgId: "org-merge" }),
+        "org-merge",
+      ],
+    );
+
+    const { rows } = await pool.query<{
+      value: { botToken: string; botUserId?: string; orgId: string };
+    }>(`SELECT value FROM chat_cache WHERE key = $1`, [key]);
+
+    expect(rows[0]?.value.botToken).toBe("xoxb-rotated");
+    expect(rows[0]?.value.botUserId).toBe("U-adapter-set");
+    expect(rows[0]?.value.orgId).toBe("org-merge");
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("0086: chat_cache.value->>'orgId' returns the Atlas org id for a stored Slack install (#2634)", async () => {
+    // End-to-end shape check: a row written through the consolidated
+    // path resolves cleanly by org_id via the new partial index. Uses
+    // the chat-adapter's plaintext-bot-token branch (SLACK_ENCRYPTION_KEY
+    // unset in CI) so the assertion stays infra-free.
+    await pool.query(
+      `INSERT INTO chat_cache (key, value)
+       VALUES ($1, $2::jsonb)`,
+      [
+        "slack:installation:T-pg-test",
+        JSON.stringify({
+          botToken: "xoxb-pg-test",
+          orgId: "org-pg-test",
+          workspaceName: "PG Test Workspace",
+          installedAt: "2026-01-01T00:00:00.000Z",
+        }),
+      ],
+    );
+    const { rows } = await pool.query<{ value: { orgId: string } }>(
+      `SELECT value FROM chat_cache
+        WHERE key LIKE 'slack:installation:%' AND value->>'orgId' = $1`,
+      ["org-pg-test"],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.value.orgId).toBe("org-pg-test");
+  }, PG_TEST_TIMEOUT_MS);
 });
 
 // #2606 — source-level revert guard for the integration-store SQL formatter.

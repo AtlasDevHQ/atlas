@@ -172,24 +172,47 @@ export const messages = pgTable(
 );
 
 // ---------------------------------------------------------------------------
-// Slack integration
+// Chat plugin shared cache
 // ---------------------------------------------------------------------------
+//
+// Created in migration `0086_consolidate_slack_installations.sql` (#2634).
+// Owned-and-managed by the chat plugin's `PgStateAdapter` for general
+// thread-subscription / lock / KV-cache traffic, but takes Slack
+// workspace installs (`slack:installation:<teamId>`) as a first-class
+// citizen too — replaces the dropped `slack_installations` table as
+// the single source of truth for Slack OAuth state. See `lib/slack/store.ts`.
+//
+// The partial expression index on `value->>'orgId'` (filtered by the
+// `slack:installation:` key prefix) keeps `getInstallationByOrg`
+// efficient without pulling a full GIN onto every cache row.
 
-export const slackInstallations = pgTable(
-  "slack_installations",
+export const chatCache = pgTable(
+  "chat_cache",
   {
-    teamId: text("team_id").primaryKey(),
-    botTokenEncrypted: text("bot_token_encrypted").notNull(),
-    // F-47 key version for `bot_token_encrypted`.
-    botTokenKeyVersion: integer("bot_token_key_version").notNull().default(1),
-    orgId: text("org_id"),
-    workspaceName: text("workspace_name"),
-    installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
+    key: text("key").primaryKey(),
+    value: jsonb("value").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
   },
   (t) => [
-    index("idx_slack_installations_org").on(t.orgId),
+    index("idx_chat_cache_expires")
+      .on(t.expiresAt)
+      .where(sql`expires_at IS NOT NULL`),
+    index("idx_chat_cache_slack_org_id")
+      .on(sql`(value->>'orgId')`)
+      .where(sql`key LIKE 'slack:installation:%'`),
   ],
 );
+
+// ---------------------------------------------------------------------------
+// Slack integration
+// ---------------------------------------------------------------------------
+//
+// `slack_installations` was dropped in migration
+// `0086_consolidate_slack_installations.sql` (#2634). Workspace install
+// data now lives in `chat_cache` (above) under the `slack:installation:`
+// key prefix. The dropped table is allowed-listed by
+// `scripts/check-schema-drift.sh` (it subtracts `DROP TABLE` targets
+// from the expected pgTable set).
 
 export const slackThreads = pgTable(
   "slack_threads",

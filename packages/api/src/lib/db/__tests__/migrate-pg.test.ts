@@ -4302,6 +4302,60 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows[0]?.value.orgId).toBe("org-merge");
   }, PG_TEST_TIMEOUT_MS);
 
+  // #2650 — slice 2 of 1.5.2. Pins the two new columns + the install_model
+  // CHECK so a regression that drops either column or admits a stray value
+  // (`oauth2`, `oAuth`, etc.) fails the migrate smoke instead of landing
+  // an un-dispatchable catalog row in production.
+  it("0087: plugin_catalog.install_model + saas_eligible columns exist and CHECK is enforced", async () => {
+    const slug = `pg-smoke-${Date.now()}`;
+    const id = `cat-${slug}`;
+
+    // Happy path: insert with the canonical OAuth value + explicit
+    // saas_eligible. Defaults are tested by the seeder unit tests; here
+    // we just confirm the columns accept the documented enum values.
+    await pool.query(
+      `INSERT INTO plugin_catalog (id, name, slug, type, install_model, saas_eligible)
+       VALUES ($1, 'PG Smoke Catalog Entry', $2, 'chat', 'oauth', true)`,
+      [id, slug],
+    );
+
+    const { rows } = await pool.query<{
+      install_model: string;
+      saas_eligible: boolean;
+    }>(`SELECT install_model, saas_eligible FROM plugin_catalog WHERE id = $1`, [id]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.install_model).toBe("oauth");
+    expect(rows[0]?.saas_eligible).toBe(true);
+
+    // CHECK rejects an unknown install_model with 23514 (check_violation).
+    await expect(
+      pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type, install_model)
+         VALUES ($1, 'Should Fail', $2, 'chat', 'not-a-model')`,
+        [`${id}-bad`, `${slug}-bad`],
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+
+    // CHECK also accepts the other two documented values.
+    for (const value of ["form", "static-bot"] as const) {
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type, install_model)
+         VALUES ($1, 'PG Smoke', $2, 'integration', $3)`,
+        [`${id}-${value}`, `${slug}-${value}`, value],
+      );
+    }
+
+    // The widened `type` CHECK admits 'chat' and 'integration' alongside
+    // the legacy values. Lock both new values down.
+    for (const t of ["chat", "integration"] as const) {
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type, install_model)
+         VALUES ($1, 'PG Smoke Type', $2, $3, 'oauth')`,
+        [`${id}-type-${t}`, `${slug}-type-${t}`, t],
+      );
+    }
+  }, PG_TEST_TIMEOUT_MS);
+
   it("0086: chat_cache.value->>'orgId' returns the Atlas org id for a stored Slack install (#2634)", async () => {
     // End-to-end shape check: a row written through the consolidated
     // path resolves cleanly by org_id via the new partial index. Uses

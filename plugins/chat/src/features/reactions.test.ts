@@ -314,8 +314,19 @@ describe("ChatConfigSchema reactions field", () => {
   // Import here to avoid circular deps affecting other test groups
   const { ChatConfigSchema } = require("../config");
 
+  // Post-#2650 (slice 2 of 1.5.2): chat-adapter activation moved from
+  // `adapters: { slack: {...} }` to `catalog: [...]`. AdapterRegistry tests
+  // in `../adapter-registry.test.ts` cover the env-var credential layer.
   const baseConfig = {
-    adapters: { slack: { botToken: "xoxb-test", signingSecret: "abcdef0123456789abcdef0123456789" } },
+    catalog: [
+      {
+        slug: "slack",
+        type: "chat" as const,
+        install_model: "oauth" as const,
+        enabled: true,
+        saas_eligible: true,
+      },
+    ],
     executeQuery: () => Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
   };
 

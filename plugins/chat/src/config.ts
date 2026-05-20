@@ -37,6 +37,29 @@ import type { FeedbackCollectorFn } from "./proactive/feedback";
 /** A single message in a conversation thread. */
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 
+/**
+ * Catalog entry shape the chat plugin's `AdapterRegistry` consumes
+ * (slice 2 of #2649). Mirrors the chat-relevant subset of `CatalogEntry`
+ * from `@atlas/api/lib/config` — kept local because the chat plugin
+ * can't import `@atlas/api` directly (separate package namespace).
+ *
+ * Hosts pass this through `chatPlugin({ catalog })`; the registry
+ * filters by `type === "chat"` so integration entries pass through
+ * harmlessly (they're owned by the LazyPluginLoader in slice 3).
+ */
+export interface ChatCatalogEntryInput {
+  /** Stable slug — `"slack"`, `"telegram"`, etc. */
+  readonly slug: string;
+  /** Admin-UI grouping. The registry skips non-chat entries. */
+  readonly type: "chat" | "integration";
+  /** Install-handler dispatch key. Only `"oauth"` activates in 1.5.2. */
+  readonly install_model: "oauth" | "form" | "static-bot";
+  /** Customer can install? Ops can flip false without removing the row. */
+  readonly enabled: boolean;
+  /** Visible to SaaS admin UI? (Used in slice 3; unused by AdapterRegistry.) */
+  readonly saas_eligible: boolean;
+}
+
 /** Canonical chat platform names supported by the bridge.
  *
  * The chat SDK's `Adapter` interface types `name` as a bare `string`
@@ -408,17 +431,23 @@ export interface FileUploadConfig {
 }
 
 export interface ChatPluginConfig {
-  /** Adapter credentials keyed by platform name. */
-  adapters: {
-    slack?: SlackAdapterConfig;
-    teams?: TeamsAdapterConfig;
-    discord?: DiscordAdapterConfig;
-    gchat?: GoogleChatAdapterConfig;
-    telegram?: TelegramAdapterConfig;
-    github?: GitHubAdapterConfig;
-    linear?: LinearAdapterConfig;
-    whatsapp?: WhatsAppAdapterConfig;
-  };
+  /**
+   * Catalog entries — the chat-type subset of `atlas.config.ts:catalog`
+   * (slice 2 of #2649). The host passes the chat-relevant entries here so
+   * `AdapterRegistry` can decide which adapters to instantiate at boot.
+   *
+   * In 1.5.2, only `install_model === "oauth"` chat entries instantiate
+   * — and the only OAuth chat platform Atlas ships today is Slack.
+   * Static-bot entries (Teams, Discord, gchat, Telegram, WhatsApp) ride
+   * along as `enabled: false` placeholders; their install handlers
+   * land in 1.5.3.
+   *
+   * Per-Platform credentials come from `process.env` (per CONTEXT.md
+   * "Operator vs Customer") — the plugin reads them inside
+   * `buildChatAdapterRegistry`. This config object intentionally does
+   * NOT carry credentials.
+   */
+  catalog?: ReadonlyArray<ChatCatalogEntryInput>;
 
   /** State backend configuration. Default: { backend: "memory" } */
   state?: StateConfig;
@@ -623,171 +652,14 @@ export interface ProactiveConfig {
 // Zod schema
 // ---------------------------------------------------------------------------
 
-// Slack tokens are lowercase `xox<letter>-` (xoxb- bot, xoxp- user, xoxe-
-// rotation-enabled). Case-sensitive so an uppercase-paste regression
-// fails at the schema boundary.
-const SLACK_TOKEN_REGEX = /^xox[a-z]/;
-// Slack signing secrets are 32-char lowercase hex (Slack's actual format).
-const SLACK_SIGNING_SECRET_REGEX = /^[0-9a-f]{32}$/;
-
-const SlackAdapterSchema = z.object({
-  // Regex'd so placeholder strings (multi-workspace deploys) fail at
-  // boot rather than at the first Slack API call.
-  botToken: z.string().min(1, "slack botToken must not be empty").regex(
-    SLACK_TOKEN_REGEX,
-    "slack botToken must start with 'xox' (e.g. 'xoxb-…'). Multi-workspace deploys should omit this field instead of supplying a placeholder.",
-  ).optional(),
-  signingSecret: z.string().min(1, "slack signingSecret must not be empty").regex(
-    SLACK_SIGNING_SECRET_REGEX,
-    "slack signingSecret must be a 32-character lowercase hex string (from your Slack app's Basic Information page). Placeholder strings are rejected.",
-  ),
-  clientId: z.string().min(1).optional(),
-  clientSecret: z.string().min(1).optional(),
-  // AES-256-GCM key for at-rest encryption of bot tokens persisted in
-  // `chat_cache` (post-#2634 consolidation). Passed through to
-  // `@chat-adapter/slack`'s `encryptionKey` option — when set, persisted
-  // installation `botToken` fields land as `{ iv, data, tag }` JSONB
-  // envelopes instead of plaintext. 32 raw bytes encoded as either a
-  // 64-char hex string or a 44-char base64 string; the adapter's
-  // `decodeKey` rejects any other length at boot. Optional — omitting
-  // it (and `SLACK_ENCRYPTION_KEY`) is the legitimate self-hosted
-  // single-user posture, matching the chat-adapter's own default.
-  encryptionKey: z.string().min(1).optional(),
-}).strict().refine(
-  (s) => (s.clientId == null) === (s.clientSecret == null),
-  "clientId and clientSecret must both be provided for OAuth",
-);
-
-const TeamsAdapterSchema = z.object({
-  appId: z.string().min(1, "teams appId must not be empty"),
-  appPassword: z.string().min(1, "teams appPassword must not be empty"),
-  tenantId: z.string().min(1).optional(),
-}).strict();
-
-const DiscordAdapterSchema = z.object({
-  botToken: z.string().min(1, "discord botToken must not be empty"),
-  applicationId: z.string().min(1, "discord applicationId must not be empty"),
-  publicKey: z.string().regex(/^[0-9a-f]{64}$/i, "discord publicKey must be a 64-character hex string (Ed25519 public key from Discord Developer Portal)"),
-  mentionRoleIds: z.array(z.string().min(1)).optional(),
-}).strict();
-
-const TelegramAdapterSchema = z.object({
-  botToken: z.string().min(1, "telegram botToken must not be empty").regex(
-    /^\d+:[A-Za-z0-9_-]{20,}$/,
-    "telegram botToken must be in format '<bot-id>:<secret>' from BotFather",
-  ),
-  secretToken: z.string().min(1).optional(),
-}).strict();
-
-const GitHubAdapterSchema = z.object({
-  token: z.string().min(1, "github token must not be empty").optional(),
-  appId: z.string().min(1, "github appId must not be empty").optional(),
-  privateKey: z.string().min(1, "github privateKey must not be empty").optional(),
-  installationId: z.number().int().positive("github installationId must be a positive integer").optional(),
-  webhookSecret: z.string().min(1, "github webhookSecret must not be empty").optional(),
-  userName: z.string().min(1, "github userName must not be empty").optional(),
-}).strict().superRefine((c, ctx) => {
-  if (c.token && c.appId) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "Cannot provide both token (PAT) and appId (GitHub App) — choose one auth mode",
-    });
-  }
-  if (c.appId && !c.privateKey) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "appId requires privateKey for GitHub App auth",
-      path: ["privateKey"],
-    });
-  }
-  if (!c.appId && c.privateKey) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "privateKey requires appId for GitHub App auth",
-      path: ["appId"],
-    });
-  }
-  if (c.installationId && !c.appId) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "installationId requires appId — it is only used with GitHub App auth",
-      path: ["installationId"],
-    });
-  }
-  if (!c.token && !c.appId) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "Provide either token (PAT) or appId + privateKey (GitHub App) — at least one credential path is required",
-    });
-  }
-});
-
-const LinearAdapterSchema = z.object({
-  apiKey: z.string().min(1, "linear apiKey must not be empty").optional(),
-  accessToken: z.string().min(1, "linear accessToken must not be empty").optional(),
-  clientId: z.string().min(1, "linear clientId must not be empty").optional(),
-  clientSecret: z.string().min(1, "linear clientSecret must not be empty").optional(),
-  webhookSecret: z.string().min(1, "linear webhookSecret must not be empty").optional(),
-  userName: z.string().min(1, "linear userName must not be empty").optional(),
-}).strict().superRefine((c, ctx) => {
-  const modes = [c.apiKey, c.accessToken, c.clientId].filter(Boolean).length;
-  if (modes > 1) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "Provide exactly one auth mode: apiKey, accessToken, or clientId + clientSecret",
-    });
-  }
-  if (c.clientId && !c.clientSecret) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "clientId requires clientSecret for OAuth App auth",
-      path: ["clientSecret"],
-    });
-  }
-  if (!c.clientId && c.clientSecret) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "clientSecret requires clientId for OAuth App auth",
-      path: ["clientId"],
-    });
-  }
-  if (!c.apiKey && !c.accessToken && !c.clientId) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "Provide apiKey, accessToken, or clientId + clientSecret — at least one credential path is required",
-    });
-  }
-});
-
-const WhatsAppAdapterSchema = z.object({
-  phoneNumberId: z.string().min(1, "whatsapp phoneNumberId must not be empty"),
-  accessToken: z.string().min(1, "whatsapp accessToken must not be empty"),
-  verifyToken: z.string().min(1, "whatsapp verifyToken must not be empty"),
-  appSecret: z.string().min(1, "whatsapp appSecret must not be empty"),
-  userName: z.string().min(1).optional(),
-  apiVersion: z.string().regex(
-    /^v\d+\.\d+$/,
-    "whatsapp apiVersion must be in format 'vN.N' (e.g. 'v21.0')",
-  ).optional(),
-}).strict();
-
-const GoogleChatAdapterSchema = z.object({
-  credentials: z.object({
-    client_email: z.string().email("gchat credentials.client_email must be a valid email"),
-    private_key: z.string().min(1, "gchat credentials.private_key must not be empty"),
-    project_id: z.string().min(1).optional(),
-  }).optional(),
-  useApplicationDefaultCredentials: z.literal(true).optional(),
-  endpointUrl: z.string().url("gchat endpointUrl must be a valid URL").optional(),
-  pubsubTopic: z.string().regex(
-    /^projects\/[^/]+\/topics\/[^/]+$/,
-    "gchat pubsubTopic must be in format 'projects/{project}/topics/{topic}'",
-  ).optional(),
-  impersonateUser: z.string().email("gchat impersonateUser must be a valid email").optional(),
-}).strict().refine(
-  (c) => !(c.credentials != null && c.useApplicationDefaultCredentials === true),
-  "Provide either credentials or useApplicationDefaultCredentials, not both (or omit both for env-var auto-detection)",
-);
+// Per-Platform Zod adapter-credential schemas were removed in #2650
+// slice 2 of 1.5.2 — chat-adapter activation moved to the catalog +
+// env-var seam (`AdapterRegistry`), so the per-Platform schemas no
+// longer ran anywhere. The TypeScript types (`SlackAdapterConfig`,
+// `TeamsAdapterConfig`, etc.) above stay because the per-Platform
+// adapter factories under `./adapters/<platform>.ts` still take them.
+// 1.5.3 will reintroduce per-Platform Zod schemas as the static-bot
+// install-handler form-input validators when those handlers land.
 
 const StateConfigSchema = z
   .object({
@@ -1004,23 +876,26 @@ const ProactiveConfigSchema = z
   .strict()
   .optional();
 
-export const ChatConfigSchema = z.object({
-  adapters: z
-    .object({
-      slack: SlackAdapterSchema.optional(),
-      teams: TeamsAdapterSchema.optional(),
-      discord: DiscordAdapterSchema.optional(),
-      gchat: GoogleChatAdapterSchema.optional(),
-      telegram: TelegramAdapterSchema.optional(),
-      github: GitHubAdapterSchema.optional(),
-      linear: LinearAdapterSchema.optional(),
-      whatsapp: WhatsAppAdapterSchema.optional(),
-    })
-    .strict()
-    .refine(
-      (a) => Object.values(a).some((v) => v !== undefined),
-      "At least one adapter must be configured",
+const ChatCatalogEntrySchema = z
+  .object({
+    slug: z.string().regex(
+      /^[a-z][a-z0-9-]*$/,
+      "catalog entry slug must be lowercase alphanumeric with dashes",
     ),
+    type: z.enum(["chat", "integration"]),
+    install_model: z.enum(["oauth", "form", "static-bot"]),
+    enabled: z.boolean(),
+    saas_eligible: z.boolean(),
+  })
+  .strict();
+
+export const ChatConfigSchema = z.object({
+  // Catalog declaration (1.5.2 slice 2 — #2650). Optional at the schema
+  // boundary so the chat plugin can boot in self-host without a catalog
+  // (no chat adapters will activate; the plugin reports unhealthy via
+  // healthCheck). The host typically passes `config.catalog` straight
+  // through from `atlas.config.ts:catalog`.
+  catalog: z.array(ChatCatalogEntrySchema).optional(),
   state: StateConfigSchema,
   slashCommandName: z
     .string()

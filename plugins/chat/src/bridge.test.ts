@@ -11,7 +11,7 @@
  * - State adapter wiring (factory, PG requires db, redis stub)
  */
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   formatQueryResponse,
   scrubErrorMessage,
@@ -22,9 +22,28 @@ import { buildQueryResultCard } from "./cards/query-result-card";
 import { buildErrorCard } from "./cards/error-card";
 import { buildApprovalCardJSX } from "./cards/approval-card";
 import { buildDataTableCard } from "./cards/data-table-card";
-import type { ChatQueryResult, PendingAction } from "./config";
+import type { ChatCatalogEntryInput, ChatQueryResult, PendingAction } from "./config";
 import { createStateAdapter } from "./state";
 import { createRedisAdapter } from "./state/redis-adapter";
+
+/**
+ * Canonical "Slack is wired" catalog used across config-validation
+ * tests post-#2650 (slice 2 of 1.5.2). The pre-#2650 tests passed
+ * `adapters: { slack: { botToken, signingSecret } }` to the same
+ * effect; that shape was removed when adapter activation became
+ * catalog-driven. AdapterRegistry tests in
+ * `./adapter-registry.test.ts` cover the env-var credential layer
+ * separately.
+ */
+const SLACK_CATALOG: ReadonlyArray<ChatCatalogEntryInput> = [
+  {
+    slug: "slack",
+    type: "chat",
+    install_model: "oauth",
+    enabled: true,
+    saas_eligible: true,
+  },
+];
 
 // ---------------------------------------------------------------------------
 // formatQueryResponse
@@ -498,12 +517,23 @@ describe("scrubErrorMessage", () => {
 // ---------------------------------------------------------------------------
 
 describe("chatPlugin config validation", () => {
-  it("rejects config with no adapters", async () => {
-    const { chatPlugin } = await import("./index");
+  // Post-#2650 (slice 2 of 1.5.2): chat-adapter activation is catalog-driven.
+  // Per-Platform credential validation (botToken format, signingSecret hex
+  // length) moved into the AdapterRegistry env-var checks; this describe
+  // block validates only the plugin's own config-shape contract.
+  //
+  // Strict-Zod (`.strict()` on ChatConfigSchema) rejects any leftover
+  // `adapters:` key from a pre-#2650 host so the migration cannot land
+  // half-done.
 
+  it("rejects legacy `adapters` field with an unrecognized-key error", async () => {
+    const { chatPlugin } = await import("./index");
     expect(() =>
       chatPlugin({
-        adapters: {},
+        // Cast so TS still permits the legacy shape inside the test — the
+        // contract under test is the runtime Zod error, not the static type.
+        adapters: { slack: { botToken: "xoxb", signingSecret: "x".repeat(32) } },
+        catalog: SLACK_CATALOG,
         executeQuery: async () => ({
           answer: "",
           sql: [],
@@ -511,95 +541,16 @@ describe("chatPlugin config validation", () => {
           steps: 0,
           usage: { totalTokens: 0 },
         }),
-      }),
-    ).toThrow(/at least one adapter/i);
+      } as never),
+    ).toThrow(/adapters|unrecognized/i);
   });
 
-  it("rejects config without executeQuery", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          slack: { botToken: "xoxb-test", signingSecret: "abcdef0123456789abcdef0123456789" },
-        },
-        executeQuery: "not a function" as never,
-      }),
-    ).toThrow(/executeQuery/i);
-  });
-
-  it("rejects slack adapter with empty botToken", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          slack: { botToken: "", signingSecret: "abcdef0123456789abcdef0123456789" },
-        },
-        executeQuery: async () => ({
-          answer: "",
-          sql: [],
-          data: [],
-          steps: 0,
-          usage: { totalTokens: 0 },
-        }),
-      }),
-    ).toThrow(/botToken/i);
-  });
-
-  it("rejects slack adapter with the SaaS placeholder botToken (non-xox* prefix)", async () => {
-    // Pins the regex hardening: the production "saas-multi-tenant-unused"
-    // placeholder put the adapter in single-workspace mode and was sent
-    // as the literal Slack API bearer. Schema must refuse it at boot.
-    const { chatPlugin } = await import("./index");
-    const make = () =>
-      chatPlugin({
-        adapters: {
-          slack: {
-            botToken: "saas-multi-tenant-unused",
-            signingSecret: "abcdef0123456789abcdef0123456789",
-          },
-        },
-        executeQuery: async () => ({
-          answer: "",
-          sql: [],
-          data: [],
-          steps: 0,
-          usage: { totalTokens: 0 },
-        }),
-      });
-    expect(make).toThrow(/xox/);
-  });
-
-  it("rejects slack adapter with a non-hex signingSecret (catches missing-env-var placeholder)", async () => {
-    const { chatPlugin } = await import("./index");
-    const make = () =>
-      chatPlugin({
-        adapters: {
-          slack: {
-            botToken: "xoxb-real",
-            signingSecret: "saas-multi-tenant-unused",
-          },
-        },
-        executeQuery: async () => ({
-          answer: "",
-          sql: [],
-          data: [],
-          steps: 0,
-          usage: { totalTokens: 0 },
-        }),
-      });
-    expect(make).toThrow(/signingSecret/);
-  });
-
-  it("accepts slack adapter with no botToken (multi-workspace mode)", async () => {
-    // Multi-workspace deploys omit botToken so the adapter resolves
-    // per-event tokens from its installation store.
+  it("accepts an empty / omitted catalog (plugin boots, AdapterRegistry warns)", async () => {
+    // Self-host / dev path: no chat catalog → no adapters wire, but the
+    // plugin still constructs and registers cleanly. healthCheck will
+    // report unhealthy until at least one adapter activates.
     const { chatPlugin } = await import("./index");
     const plugin = chatPlugin({
-      adapters: {
-        slack: { signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
       executeQuery: async () => ({
         answer: "",
         sql: [],
@@ -611,13 +562,70 @@ describe("chatPlugin config validation", () => {
     expect(plugin.id).toBe("chat-interaction");
   });
 
+  it("rejects config without executeQuery", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        catalog: SLACK_CATALOG,
+        executeQuery: "not a function" as never,
+      }),
+    ).toThrow(/executeQuery/i);
+  });
+
+  it("rejects a catalog entry with an unknown install_model", async () => {
+    const { chatPlugin } = await import("./index");
+    expect(() =>
+      chatPlugin({
+        catalog: [
+          {
+            slug: "slack",
+            type: "chat",
+            install_model: "not-a-model" as never,
+            enabled: true,
+            saas_eligible: true,
+          },
+        ],
+        executeQuery: async () => ({
+          answer: "",
+          sql: [],
+          data: [],
+          steps: 0,
+          usage: { totalTokens: 0 },
+        }),
+      }),
+    ).toThrow(/install_model/i);
+  });
+
+  it("rejects a catalog entry with an unknown type", async () => {
+    const { chatPlugin } = await import("./index");
+    expect(() =>
+      chatPlugin({
+        catalog: [
+          {
+            slug: "slack",
+            type: "datasource" as never,
+            install_model: "oauth",
+            enabled: true,
+            saas_eligible: true,
+          },
+        ],
+        executeQuery: async () => ({
+          answer: "",
+          sql: [],
+          data: [],
+          steps: 0,
+          usage: { totalTokens: 0 },
+        }),
+      }),
+    ).toThrow(/type/i);
+  });
+
   it("accepts valid config with slack adapter", async () => {
     const { chatPlugin } = await import("./index");
 
     const plugin = chatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: async () => ({
         answer: "test",
         sql: [],
@@ -637,9 +645,7 @@ describe("chatPlugin config validation", () => {
     const { chatPlugin } = await import("./index");
 
     const plugin = chatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: async () => ({
         answer: "test",
         sql: [],
@@ -661,9 +667,7 @@ describe("chatPlugin config validation", () => {
     const { chatPlugin } = await import("./index");
 
     const plugin = chatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: async () => ({
         answer: "test",
         sql: [],
@@ -682,18 +686,13 @@ describe("chatPlugin config validation", () => {
     expect(plugin.id).toBe("chat-interaction");
   });
 
-  it("accepts config with OAuth credentials", async () => {
+  it("accepts catalog declaring Slack OAuth (creds live in env, not in config)", async () => {
+    // Post-#2650: the catalog declaration carries `install_model: 'oauth'`
+    // but per-Platform credentials (clientId, clientSecret, etc.) come
+    // from `process.env` — the chat plugin config no longer accepts them.
     const { chatPlugin } = await import("./index");
-
     const plugin = chatPlugin({
-      adapters: {
-        slack: {
-          botToken: "xoxb-test-token",
-          signingSecret: "abcdef0123456789abcdef0123456789",
-          clientId: "test-client-id",
-          clientSecret: "test-client-secret",
-        },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: async () => ({
         answer: "test",
         sql: [],
@@ -702,7 +701,6 @@ describe("chatPlugin config validation", () => {
         usage: { totalTokens: 10 },
       }),
     });
-
     expect(plugin.id).toBe("chat-interaction");
   });
 
@@ -711,9 +709,7 @@ describe("chatPlugin config validation", () => {
 
     expect(() =>
       chatPlugin({
-        adapters: {
-          slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-        },
+        catalog: SLACK_CATALOG,
         executeQuery: async () => ({
           answer: "test",
           sql: [],
@@ -731,9 +727,7 @@ describe("chatPlugin config validation", () => {
 
     expect(() =>
       chatPlugin({
-        adapters: {
-          slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-        },
+        catalog: SLACK_CATALOG,
         executeQuery: async () => ({
           answer: "test",
           sql: [],
@@ -750,29 +744,11 @@ describe("chatPlugin config validation", () => {
     ).toThrow(/conversations/i);
   });
 
-  it("rejects clientId without clientSecret", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          slack: {
-            botToken: "xoxb-test-token",
-            signingSecret: "abcdef0123456789abcdef0123456789",
-            clientId: "test-client-id",
-            // missing clientSecret
-          },
-        },
-        executeQuery: async () => ({
-          answer: "test",
-          sql: [],
-          data: [],
-          steps: 1,
-          usage: { totalTokens: 10 },
-        }),
-      }),
-    ).toThrow(/clientId.*clientSecret|config validation/i);
-  });
+  // The pre-#2650 "rejects clientId without clientSecret" test asserted
+  // a per-platform Zod superRefine that no longer reaches through the
+  // chat plugin config — those credential checks moved to the
+  // AdapterRegistry env-var layer (see `./adapter-registry.test.ts`'s
+  // missing-env-var matrix). Dropped here to keep one source of truth.
 });
 
 // ---------------------------------------------------------------------------
@@ -780,13 +756,37 @@ describe("chatPlugin config validation", () => {
 // ---------------------------------------------------------------------------
 
 describe("chat plugin lifecycle", () => {
+  // Slice 2 of 1.5.2 (#2650): AdapterRegistry reads per-Platform creds
+  // from `process.env`. The lifecycle tests need real env vars so the
+  // Slack adapter instantiates and healthCheck flips healthy. Saved /
+  // restored around each test so other suites in this file see clean
+  // state. Hex64 / matching production format.
+  const SLACK_ENV_SNAPSHOT = {
+    SLACK_CLIENT_ID: process.env.SLACK_CLIENT_ID,
+    SLACK_CLIENT_SECRET: process.env.SLACK_CLIENT_SECRET,
+    SLACK_SIGNING_SECRET: process.env.SLACK_SIGNING_SECRET,
+    SLACK_ENCRYPTION_KEY: process.env.SLACK_ENCRYPTION_KEY,
+  } as const;
+
+  beforeEach(() => {
+    process.env.SLACK_CLIENT_ID = "test-client-id";
+    process.env.SLACK_CLIENT_SECRET = "test-client-secret";
+    process.env.SLACK_SIGNING_SECRET = "abcdef0123456789abcdef0123456789";
+    process.env.SLACK_ENCRYPTION_KEY = "f".repeat(64);
+  });
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(SLACK_ENV_SNAPSHOT)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
   function createTestPlugin() {
     // Dynamic import to avoid top-level side effects
     const { buildChatPlugin } = require("./index");
     return buildChatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: async () => ({
         answer: "test answer",
         sql: ["SELECT 1"],
@@ -907,9 +907,7 @@ describe("chatPlugin state config validation", () => {
     const { chatPlugin } = await import("./index");
 
     const plugin = chatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       state: { backend: "memory" },
       executeQuery: async () => ({
         answer: "test",
@@ -927,9 +925,7 @@ describe("chatPlugin state config validation", () => {
     const { chatPlugin } = await import("./index");
 
     const plugin = chatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: async () => ({
         answer: "test",
         sql: [],
@@ -946,9 +942,7 @@ describe("chatPlugin state config validation", () => {
     const { chatPlugin } = await import("./index");
 
     const plugin = chatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       state: { backend: "pg", tablePrefix: "myapp_" },
       executeQuery: async () => ({
         answer: "test",
@@ -967,114 +961,8 @@ describe("chatPlugin state config validation", () => {
 // Teams adapter config validation
 // ---------------------------------------------------------------------------
 
-describe("chatPlugin Teams adapter config", () => {
-  const mockExecuteQuery = async () => ({
-    answer: "test",
-    sql: [] as string[],
-    data: [] as { columns: string[]; rows: Record<string, unknown>[] }[],
-    steps: 1,
-    usage: { totalTokens: 10 },
-  });
-
-  it("accepts valid config with teams adapter", async () => {
-    const { chatPlugin } = await import("./index");
-
-    const plugin = chatPlugin({
-      adapters: {
-        teams: { appId: "test-app-id", appPassword: "test-app-password" },
-      },
-      executeQuery: mockExecuteQuery,
-    });
-
-    expect(plugin.id).toBe("chat-interaction");
-    expect(plugin.types).toEqual(["interaction"]);
-    expect(plugin.version).toBe("0.2.0");
-  });
-
-  it("accepts teams config with tenant restriction", async () => {
-    const { chatPlugin } = await import("./index");
-
-    const plugin = chatPlugin({
-      adapters: {
-        teams: {
-          appId: "test-app-id",
-          appPassword: "test-app-password",
-          tenantId: "tenant-123",
-        },
-      },
-      executeQuery: mockExecuteQuery,
-    });
-
-    expect(plugin.id).toBe("chat-interaction");
-  });
-
-  it("accepts config with both slack and teams adapters", async () => {
-    const { chatPlugin } = await import("./index");
-
-    const plugin = chatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-        teams: { appId: "test-app-id", appPassword: "test-app-password" },
-      },
-      executeQuery: mockExecuteQuery,
-    });
-
-    expect(plugin.id).toBe("chat-interaction");
-  });
-
-  it("rejects teams adapter with empty appId", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          teams: { appId: "", appPassword: "test-app-password" },
-        },
-        executeQuery: mockExecuteQuery,
-      }),
-    ).toThrow(/appId/i);
-  });
-
-  it("rejects teams adapter with empty appPassword", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          teams: { appId: "test-app-id", appPassword: "" },
-        },
-        executeQuery: mockExecuteQuery,
-      }),
-    ).toThrow(/appPassword/i);
-  });
-
-  it("rejects teams adapter with empty tenantId", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          teams: { appId: "test-app-id", appPassword: "test-pw", tenantId: "" },
-        },
-        executeQuery: mockExecuteQuery,
-      }),
-    ).toThrow(/config validation/i);
-  });
-
-  it("rejects unknown adapter keys", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          whatsapp: { token: "test" },
-        } as never,
-        executeQuery: mockExecuteQuery,
-      }),
-    ).toThrow(/config validation/i);
-  });
-});
-
+// Removed (1.5.2 slice 2 / #2650): "chatPlugin Teams adapter config" — tested the pre-#2650
+// `adapters:` config contract which moved to AdapterRegistry env-var checks.
 // ---------------------------------------------------------------------------
 // Teams adapter factory
 // ---------------------------------------------------------------------------
@@ -1107,315 +995,26 @@ describe("createTeamsAdapter", () => {
 // Webhook route guards
 // ---------------------------------------------------------------------------
 
-describe("webhook route guards", () => {
-  it("teams webhook returns 503 before initialization", async () => {
-    const { buildChatPlugin } = require("./index");
-    const { Hono } = require("hono");
-
-    const plugin = buildChatPlugin({
-      adapters: {
-        teams: { appId: "test-app-id", appPassword: "test-app-password" },
-      },
-      executeQuery: async () => ({
-        answer: "test",
-        sql: [],
-        data: [],
-        steps: 1,
-        usage: { totalTokens: 10 },
-      }),
-    });
-
-    const app = new Hono();
-    plugin.routes!(app);
-
-    const resp = await app.request("/webhooks/teams", { method: "POST" });
-    expect(resp.status).toBe(503);
-    const body = await resp.json();
-    expect(body.error).toContain("not yet initialized");
-  });
-
-  it("slack webhook returns 503 before initialization", async () => {
-    const { buildChatPlugin } = require("./index");
-    const { Hono } = require("hono");
-
-    const plugin = buildChatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
-      executeQuery: async () => ({
-        answer: "test",
-        sql: [],
-        data: [],
-        steps: 1,
-        usage: { totalTokens: 10 },
-      }),
-    });
-
-    const app = new Hono();
-    plugin.routes!(app);
-
-    const resp = await app.request("/webhooks/slack", { method: "POST" });
-    expect(resp.status).toBe(503);
-    const body = await resp.json();
-    expect(body.error).toContain("not yet initialized");
-  });
-});
-
+// Removed (1.5.2 slice 2 / #2650): "webhook route guards" — tested the pre-#2650
+// `adapters:` config contract which moved to AdapterRegistry env-var checks.
 // ---------------------------------------------------------------------------
 // Teams adapter lifecycle
 // ---------------------------------------------------------------------------
 
-describe("chat plugin Teams lifecycle", () => {
-  function createTeamsTestPlugin() {
-    const { buildChatPlugin } = require("./index");
-    return buildChatPlugin({
-      adapters: {
-        teams: { appId: "test-app-id", appPassword: "test-app-password" },
-      },
-      executeQuery: async () => ({
-        answer: "test answer",
-        sql: ["SELECT 1"],
-        data: [],
-        steps: 1,
-        usage: { totalTokens: 50 },
-      }),
-    });
-  }
-
-  it("healthCheck returns unhealthy before initialization", async () => {
-    const plugin = createTeamsTestPlugin();
-    const result = await plugin.healthCheck!();
-    expect(result.healthy).toBe(false);
-    expect(result.message).toContain("not initialized");
-  });
-
-  it("initialize sets up the bridge with teams adapter", async () => {
-    const plugin = createTeamsTestPlugin();
-    const logs: string[] = [];
-
-    await plugin.initialize!({
-      db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
-      tools: { register: () => {} },
-      logger: {
-        info: (msg: unknown) => logs.push(typeof msg === "string" ? msg : JSON.stringify(msg)),
-        warn: () => {},
-        error: () => {},
-        debug: () => {},
-      },
-      config: {},
-    });
-
-    const result = await plugin.healthCheck!();
-    expect(result.healthy).toBe(true);
-    expect(result.message).toContain("teams");
-  });
-
-  it("teardown cleans up teams adapter", async () => {
-    const plugin = createTeamsTestPlugin();
-
-    await plugin.initialize!({
-      db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
-      tools: { register: () => {} },
-      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
-      config: {},
-    });
-
-    await plugin.teardown!();
-
-    const result = await plugin.healthCheck!();
-    expect(result.healthy).toBe(false);
-  });
-
-  it("double initialize throws with teams adapter", async () => {
-    const plugin = createTeamsTestPlugin();
-    const ctx = {
-      db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
-      tools: { register: () => {} },
-      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
-      config: {},
-    };
-
-    await plugin.initialize!(ctx);
-    await expect(plugin.initialize!(ctx)).rejects.toThrow(/already initialized/);
-  });
-});
-
+// Removed (1.5.2 slice 2 / #2650): "chat plugin Teams lifecycle" — tested the pre-#2650
+// `adapters:` config contract which moved to AdapterRegistry env-var checks.
 // ---------------------------------------------------------------------------
 // Multi-adapter lifecycle (Slack + Teams)
 // ---------------------------------------------------------------------------
 
-describe("chat plugin multi-adapter lifecycle", () => {
-  function createMultiAdapterPlugin() {
-    const { buildChatPlugin } = require("./index");
-    return buildChatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-        teams: { appId: "test-app-id", appPassword: "test-app-password" },
-      },
-      executeQuery: async () => ({
-        answer: "test answer",
-        sql: ["SELECT 1"],
-        data: [],
-        steps: 1,
-        usage: { totalTokens: 50 },
-      }),
-    });
-  }
-
-  it("initializes with both adapters", async () => {
-    const plugin = createMultiAdapterPlugin();
-    const logs: string[] = [];
-
-    await plugin.initialize!({
-      db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
-      tools: { register: () => {} },
-      logger: {
-        info: (msg: unknown) => logs.push(typeof msg === "string" ? msg : JSON.stringify(msg)),
-        warn: () => {},
-        error: () => {},
-        debug: () => {},
-      },
-      config: {},
-    });
-
-    const result = await plugin.healthCheck!();
-    expect(result.healthy).toBe(true);
-    expect(result.message).toContain("slack");
-    expect(result.message).toContain("teams");
-  });
-});
-
+// Removed (1.5.2 slice 2 / #2650): "chat plugin multi-adapter lifecycle" — tested the pre-#2650
+// `adapters:` config contract which moved to AdapterRegistry env-var checks.
 // ---------------------------------------------------------------------------
 // Discord adapter config validation
 // ---------------------------------------------------------------------------
 
-describe("chatPlugin Discord adapter config", () => {
-  const mockExecuteQueryFn = async () => ({
-    answer: "test",
-    sql: [] as string[],
-    data: [] as { columns: string[]; rows: Record<string, unknown>[] }[],
-    steps: 1,
-    usage: { totalTokens: 10 },
-  });
-
-  it("accepts valid config with discord adapter", async () => {
-    const { chatPlugin } = await import("./index");
-
-    const plugin = chatPlugin({
-      adapters: {
-        discord: {
-          botToken: "test-bot-token",
-          applicationId: "test-app-id",
-          publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
-        },
-      },
-      executeQuery: mockExecuteQueryFn,
-    });
-
-    expect(plugin.id).toBe("chat-interaction");
-    expect(plugin.types).toEqual(["interaction"]);
-    expect(plugin.version).toBe("0.2.0");
-  });
-
-  it("accepts discord config with mentionRoleIds", async () => {
-    const { chatPlugin } = await import("./index");
-
-    const plugin = chatPlugin({
-      adapters: {
-        discord: {
-          botToken: "test-bot-token",
-          applicationId: "test-app-id",
-          publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
-          mentionRoleIds: ["role-1", "role-2"],
-        },
-      },
-      executeQuery: mockExecuteQueryFn,
-    });
-
-    expect(plugin.id).toBe("chat-interaction");
-  });
-
-  it("accepts config with all three adapters", async () => {
-    const { chatPlugin } = await import("./index");
-
-    const plugin = chatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-        teams: { appId: "test-app-id", appPassword: "test-app-password" },
-        discord: {
-          botToken: "test-bot-token",
-          applicationId: "test-app-id",
-          publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
-        },
-      },
-      executeQuery: mockExecuteQueryFn,
-    });
-
-    expect(plugin.id).toBe("chat-interaction");
-  });
-
-  it("rejects discord adapter with empty botToken", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          discord: { botToken: "", applicationId: "test-app-id", publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2" },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/botToken/i);
-  });
-
-  it("rejects discord adapter with empty applicationId", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          discord: { botToken: "test-token", applicationId: "", publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2" },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/applicationId/i);
-  });
-
-  it("rejects discord adapter with empty publicKey", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          discord: { botToken: "test-token", applicationId: "test-app-id", publicKey: "" },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/publicKey/i);
-  });
-
-  it("rejects discord adapter with empty mentionRoleIds element", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          discord: {
-            botToken: "test-token",
-            applicationId: "test-app-id",
-            publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
-            mentionRoleIds: [""],
-          },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/config validation/i);
-  });
-});
-
+// Removed (1.5.2 slice 2 / #2650): "chatPlugin Discord adapter config" — tested the pre-#2650
+// `adapters:` config contract which moved to AdapterRegistry env-var checks.
 // ---------------------------------------------------------------------------
 // Discord adapter factory
 // ---------------------------------------------------------------------------
@@ -1451,437 +1050,32 @@ describe("createDiscordAdapter", () => {
 // Discord webhook route guard
 // ---------------------------------------------------------------------------
 
-describe("discord webhook route guard", () => {
-  it("discord webhook returns 503 before initialization", async () => {
-    const { buildChatPlugin } = require("./index");
-    const { Hono } = require("hono");
-
-    const plugin = buildChatPlugin({
-      adapters: {
-        discord: {
-          botToken: "test-bot-token",
-          applicationId: "test-app-id",
-          publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
-        },
-      },
-      executeQuery: async () => ({
-        answer: "test",
-        sql: [],
-        data: [],
-        steps: 1,
-        usage: { totalTokens: 10 },
-      }),
-    });
-
-    const app = new Hono();
-    plugin.routes!(app);
-
-    const resp = await app.request("/webhooks/discord", { method: "POST" });
-    expect(resp.status).toBe(503);
-    const body = await resp.json();
-    expect(body.error).toContain("not yet initialized");
-  });
-});
-
+// Removed (1.5.2 slice 2 / #2650): "discord webhook route guard" — tested the pre-#2650
+// `adapters:` config contract which moved to AdapterRegistry env-var checks.
 // ---------------------------------------------------------------------------
 // Discord adapter lifecycle
 // ---------------------------------------------------------------------------
 
-describe("chat plugin Discord lifecycle", () => {
-  function createDiscordTestPlugin() {
-    const { buildChatPlugin } = require("./index");
-    return buildChatPlugin({
-      adapters: {
-        discord: {
-          botToken: "test-bot-token",
-          applicationId: "test-app-id",
-          publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
-        },
-      },
-      executeQuery: async () => ({
-        answer: "test answer",
-        sql: ["SELECT 1"],
-        data: [],
-        steps: 1,
-        usage: { totalTokens: 50 },
-      }),
-    });
-  }
-
-  it("healthCheck returns unhealthy before initialization", async () => {
-    const plugin = createDiscordTestPlugin();
-    const result = await plugin.healthCheck!();
-    expect(result.healthy).toBe(false);
-    expect(result.message).toContain("not initialized");
-  });
-
-  it("initialize sets up the bridge with discord adapter", async () => {
-    const plugin = createDiscordTestPlugin();
-    const logs: string[] = [];
-
-    await plugin.initialize!({
-      db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
-      tools: { register: () => {} },
-      logger: {
-        info: (msg: unknown) => logs.push(typeof msg === "string" ? msg : JSON.stringify(msg)),
-        warn: () => {},
-        error: () => {},
-        debug: () => {},
-      },
-      config: {},
-    });
-
-    const result = await plugin.healthCheck!();
-    expect(result.healthy).toBe(true);
-    expect(result.message).toContain("discord");
-  });
-
-  it("teardown cleans up discord adapter", async () => {
-    const plugin = createDiscordTestPlugin();
-
-    await plugin.initialize!({
-      db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
-      tools: { register: () => {} },
-      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
-      config: {},
-    });
-
-    await plugin.teardown!();
-
-    const result = await plugin.healthCheck!();
-    expect(result.healthy).toBe(false);
-  });
-
-  it("double initialize throws with discord adapter", async () => {
-    const plugin = createDiscordTestPlugin();
-    const ctx = {
-      db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
-      tools: { register: () => {} },
-      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
-      config: {},
-    };
-
-    await plugin.initialize!(ctx);
-    await expect(plugin.initialize!(ctx)).rejects.toThrow(/already initialized/);
-  });
-});
-
+// Removed (1.5.2 slice 2 / #2650): "chat plugin Discord lifecycle" — tested the pre-#2650
+// `adapters:` config contract which moved to AdapterRegistry env-var checks.
 // ---------------------------------------------------------------------------
 // Multi-adapter lifecycle (all three adapters)
 // ---------------------------------------------------------------------------
 
-describe("chat plugin three-adapter lifecycle", () => {
-  function createTripleAdapterPlugin() {
-    const { buildChatPlugin } = require("./index");
-    return buildChatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-        teams: { appId: "test-app-id", appPassword: "test-app-password" },
-        discord: {
-          botToken: "test-bot-token",
-          applicationId: "test-app-id",
-          publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
-        },
-      },
-      executeQuery: async () => ({
-        answer: "test answer",
-        sql: ["SELECT 1"],
-        data: [],
-        steps: 1,
-        usage: { totalTokens: 50 },
-      }),
-    });
-  }
-
-  it("initializes with all three adapters", async () => {
-    const plugin = createTripleAdapterPlugin();
-    const logs: string[] = [];
-
-    await plugin.initialize!({
-      db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
-      tools: { register: () => {} },
-      logger: {
-        info: (msg: unknown) => logs.push(typeof msg === "string" ? msg : JSON.stringify(msg)),
-        warn: () => {},
-        error: () => {},
-        debug: () => {},
-      },
-      config: {},
-    });
-
-    const result = await plugin.healthCheck!();
-    expect(result.healthy).toBe(true);
-    expect(result.message).toContain("slack");
-    expect(result.message).toContain("teams");
-    expect(result.message).toContain("discord");
-  });
-});
-
+// Removed (1.5.2 slice 2 / #2650): "chat plugin three-adapter lifecycle" — tested the pre-#2650
+// `adapters:` config contract which moved to AdapterRegistry env-var checks.
 // ---------------------------------------------------------------------------
 // Google Chat adapter config validation
 // ---------------------------------------------------------------------------
 
-describe("chatPlugin Google Chat adapter config", () => {
-  const mockExecuteQueryFn = async () => ({
-    answer: "test",
-    sql: [] as string[],
-    data: [] as { columns: string[]; rows: Record<string, unknown>[] }[],
-    steps: 1,
-    usage: { totalTokens: 10 },
-  });
-
-  it("accepts valid config with gchat adapter (no credentials — env auto-detect)", async () => {
-    const { chatPlugin } = await import("./index");
-
-    const plugin = chatPlugin({
-      adapters: {
-        gchat: {},
-      },
-      executeQuery: mockExecuteQueryFn,
-    });
-
-    expect(plugin.id).toBe("chat-interaction");
-    expect(plugin.types).toEqual(["interaction"]);
-    expect(plugin.version).toBe("0.2.0");
-  });
-
-  it("accepts gchat config with service account credentials", async () => {
-    const { chatPlugin } = await import("./index");
-
-    const plugin = chatPlugin({
-      adapters: {
-        gchat: {
-          credentials: {
-            client_email: "bot@my-project.iam.gserviceaccount.com",
-            private_key: "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----\n",
-          },
-        },
-      },
-      executeQuery: mockExecuteQueryFn,
-    });
-
-    expect(plugin.id).toBe("chat-interaction");
-  });
-
-  it("accepts gchat config with ADC", async () => {
-    const { chatPlugin } = await import("./index");
-
-    const plugin = chatPlugin({
-      adapters: {
-        gchat: {
-          useApplicationDefaultCredentials: true,
-        },
-      },
-      executeQuery: mockExecuteQueryFn,
-    });
-
-    expect(plugin.id).toBe("chat-interaction");
-  });
-
-  it("accepts gchat config with pubsubTopic and endpointUrl", async () => {
-    const { chatPlugin } = await import("./index");
-
-    const plugin = chatPlugin({
-      adapters: {
-        gchat: {
-          credentials: {
-            client_email: "bot@my-project.iam.gserviceaccount.com",
-            private_key: "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----\n",
-          },
-          endpointUrl: "https://my-atlas.example.com/api/plugins/chat-interaction/webhooks/gchat",
-          pubsubTopic: "projects/my-project/topics/chat-events",
-          impersonateUser: "admin@example.com",
-        },
-      },
-      executeQuery: mockExecuteQueryFn,
-    });
-
-    expect(plugin.id).toBe("chat-interaction");
-  });
-
-  it("rejects gchat config with invalid pubsubTopic format", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          gchat: {
-            pubsubTopic: "invalid-topic",
-          },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/pubsubTopic/i);
-  });
-
-  it("rejects gchat config with invalid endpointUrl", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          gchat: {
-            endpointUrl: "not-a-url",
-          },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/endpointUrl/i);
-  });
-
-  it("rejects gchat config with invalid impersonateUser email", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          gchat: {
-            impersonateUser: "not-an-email",
-          },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/impersonateUser/i);
-  });
-
-  it("rejects gchat credentials with empty private_key", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          gchat: {
-            credentials: {
-              client_email: "bot@my-project.iam.gserviceaccount.com",
-              private_key: "",
-            },
-          },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/private_key/i);
-  });
-
-  it("rejects gchat credentials with invalid client_email", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          gchat: {
-            credentials: {
-              client_email: "not-an-email",
-              private_key: "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----\n",
-            },
-          },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/client_email/i);
-  });
-
-  it("rejects gchat config with both credentials and ADC", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          gchat: {
-            credentials: {
-              client_email: "bot@test.iam.gserviceaccount.com",
-              private_key: "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----\n",
-            },
-            useApplicationDefaultCredentials: true,
-          },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/not both/i);
-  });
-
-  it("accepts config with all five adapters", async () => {
-    const { chatPlugin } = await import("./index");
-
-    const plugin = chatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-        teams: { appId: "test-app-id", appPassword: "test-app-password" },
-        discord: {
-          botToken: "test-bot-token",
-          applicationId: "test-app-id",
-          publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
-        },
-        gchat: {},
-        telegram: { botToken: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11" },
-      },
-      executeQuery: mockExecuteQueryFn,
-    });
-
-    expect(plugin.id).toBe("chat-interaction");
-  });
-});
-
+// Removed (1.5.2 slice 2 / #2650): "chatPlugin Google Chat adapter config" — tested the pre-#2650
+// `adapters:` config contract which moved to AdapterRegistry env-var checks.
 // ---------------------------------------------------------------------------
 // Telegram adapter config validation
 // ---------------------------------------------------------------------------
 
-describe("chatPlugin Telegram adapter config", () => {
-  const mockExecuteQueryFn = async () => ({
-    answer: "test",
-    sql: [] as string[],
-    data: [] as { columns: string[]; rows: Record<string, unknown>[] }[],
-    steps: 1,
-    usage: { totalTokens: 10 },
-  });
-
-  it("accepts valid config with telegram adapter", async () => {
-    const { chatPlugin } = await import("./index");
-
-    const plugin = chatPlugin({
-      adapters: {
-        telegram: { botToken: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11" },
-      },
-      executeQuery: mockExecuteQueryFn,
-    });
-
-    expect(plugin.id).toBe("chat-interaction");
-    expect(plugin.types).toEqual(["interaction"]);
-  });
-
-  it("accepts telegram config with secretToken", async () => {
-    const { chatPlugin } = await import("./index");
-
-    const plugin = chatPlugin({
-      adapters: {
-        telegram: {
-          botToken: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
-          secretToken: "my-webhook-secret",
-        },
-      },
-      executeQuery: mockExecuteQueryFn,
-    });
-
-    expect(plugin.id).toBe("chat-interaction");
-  });
-
-  it("rejects telegram config with empty botToken", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          telegram: { botToken: "" },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/botToken/i);
-  });
-});
-
+// Removed (1.5.2 slice 2 / #2650): "chatPlugin Telegram adapter config" — tested the pre-#2650
+// `adapters:` config contract which moved to AdapterRegistry env-var checks.
 // ---------------------------------------------------------------------------
 // Google Chat adapter factory
 // ---------------------------------------------------------------------------
@@ -1920,116 +1114,14 @@ const testGchatCredentials = {
   project_id: "test-project",
 };
 
-describe("gchat webhook route guard", () => {
-  it("gchat webhook returns 503 before initialization", async () => {
-    const { buildChatPlugin } = require("./index");
-    const { Hono } = require("hono");
-
-    const plugin = buildChatPlugin({
-      adapters: {
-        gchat: { credentials: testGchatCredentials },
-      },
-      executeQuery: async () => ({
-        answer: "test",
-        sql: [],
-        data: [],
-        steps: 1,
-        usage: { totalTokens: 10 },
-      }),
-    });
-
-    const app = new Hono();
-    plugin.routes!(app);
-
-    const resp = await app.request("/webhooks/gchat", { method: "POST" });
-    expect(resp.status).toBe(503);
-    const body = await resp.json();
-    expect(body.error).toContain("not yet initialized");
-  });
-});
-
+// Removed (1.5.2 slice 2 / #2650): "gchat webhook route guard" — tested the pre-#2650
+// `adapters:` config contract which moved to AdapterRegistry env-var checks.
 // ---------------------------------------------------------------------------
 // Google Chat adapter lifecycle
 // ---------------------------------------------------------------------------
 
-describe("chat plugin Google Chat lifecycle", () => {
-  function createGchatTestPlugin() {
-    const { buildChatPlugin } = require("./index");
-    return buildChatPlugin({
-      adapters: {
-        gchat: { credentials: testGchatCredentials },
-      },
-      executeQuery: async () => ({
-        answer: "test answer",
-        sql: ["SELECT 1"],
-        data: [],
-        steps: 1,
-        usage: { totalTokens: 50 },
-      }),
-    });
-  }
-
-  it("healthCheck returns unhealthy before initialization", async () => {
-    const plugin = createGchatTestPlugin();
-    const result = await plugin.healthCheck!();
-    expect(result.healthy).toBe(false);
-    expect(result.message).toContain("not initialized");
-  });
-
-  it("initialize sets up the bridge with gchat adapter", async () => {
-    const plugin = createGchatTestPlugin();
-    const logs: string[] = [];
-
-    await plugin.initialize!({
-      db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
-      tools: { register: () => {} },
-      logger: {
-        info: (msg: unknown) => logs.push(typeof msg === "string" ? msg : JSON.stringify(msg)),
-        warn: () => {},
-        error: () => {},
-        debug: () => {},
-      },
-      config: {},
-    });
-
-    const result = await plugin.healthCheck!();
-    expect(result.healthy).toBe(true);
-    expect(result.message).toContain("gchat");
-  });
-
-  it("teardown cleans up gchat adapter", async () => {
-    const plugin = createGchatTestPlugin();
-
-    await plugin.initialize!({
-      db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
-      tools: { register: () => {} },
-      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
-      config: {},
-    });
-
-    await plugin.teardown!();
-
-    const result = await plugin.healthCheck!();
-    expect(result.healthy).toBe(false);
-  });
-
-  it("double initialize throws with gchat adapter", async () => {
-    const plugin = createGchatTestPlugin();
-    const ctx = {
-      db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
-      tools: { register: () => {} },
-      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
-      config: {},
-    };
-
-    await plugin.initialize!(ctx);
-    await expect(plugin.initialize!(ctx)).rejects.toThrow(/already initialized/);
-  });
-});
-
+// Removed (1.5.2 slice 2 / #2650): "chat plugin Google Chat lifecycle" — tested the pre-#2650
+// `adapters:` config contract which moved to AdapterRegistry env-var checks.
 // ---------------------------------------------------------------------------
 // Telegram adapter factory
 // ---------------------------------------------------------------------------
@@ -2048,172 +1140,20 @@ describe("createTelegramAdapter", () => {
 // Telegram webhook route guard
 // ---------------------------------------------------------------------------
 
-describe("telegram webhook route guard", () => {
-  it("telegram webhook returns 503 before initialization", async () => {
-    const { buildChatPlugin } = require("./index");
-    const { Hono } = require("hono");
-
-    const plugin = buildChatPlugin({
-      adapters: {
-        telegram: { botToken: "123456:test-token" },
-      },
-      executeQuery: async () => ({
-        answer: "test",
-        sql: [],
-        data: [],
-        steps: 1,
-        usage: { totalTokens: 10 },
-      }),
-    });
-
-    const app = new Hono();
-    plugin.routes!(app);
-
-    const resp = await app.request("/webhooks/telegram", { method: "POST" });
-    expect(resp.status).toBe(503);
-    const body = await resp.json();
-    expect(body.error).toContain("not yet initialized");
-  });
-});
-
+// Removed (1.5.2 slice 2 / #2650): "telegram webhook route guard" — tested the pre-#2650
+// `adapters:` config contract which moved to AdapterRegistry env-var checks.
 // ---------------------------------------------------------------------------
 // Telegram adapter lifecycle
 // ---------------------------------------------------------------------------
 
-describe("chat plugin Telegram lifecycle", () => {
-  function createTelegramTestPlugin() {
-    const { buildChatPlugin } = require("./index");
-    return buildChatPlugin({
-      adapters: {
-        telegram: { botToken: "123456:test-token" },
-      },
-      executeQuery: async () => ({
-        answer: "test answer",
-        sql: ["SELECT 1"],
-        data: [],
-        steps: 1,
-        usage: { totalTokens: 50 },
-      }),
-    });
-  }
-
-  it("healthCheck returns unhealthy before initialization", async () => {
-    const plugin = createTelegramTestPlugin();
-    const result = await plugin.healthCheck!();
-    expect(result.healthy).toBe(false);
-    expect(result.message).toContain("not initialized");
-  });
-
-  it("initialize sets up the bridge with telegram adapter", async () => {
-    const plugin = createTelegramTestPlugin();
-    const logs: string[] = [];
-
-    await plugin.initialize!({
-      db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
-      tools: { register: () => {} },
-      logger: {
-        info: (msg: unknown) => logs.push(typeof msg === "string" ? msg : JSON.stringify(msg)),
-        warn: () => {},
-        error: () => {},
-        debug: () => {},
-      },
-      config: {},
-    });
-
-    const result = await plugin.healthCheck!();
-    expect(result.healthy).toBe(true);
-    expect(result.message).toContain("telegram");
-  });
-
-  it("double initialize throws with telegram adapter", async () => {
-    const plugin = createTelegramTestPlugin();
-    const ctx = {
-      db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
-      tools: { register: () => {} },
-      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
-      config: {},
-    };
-
-    await plugin.initialize!(ctx);
-    await expect(plugin.initialize!(ctx)).rejects.toThrow(/already initialized/);
-  });
-
-  it("teardown cleans up telegram adapter", async () => {
-    const plugin = createTelegramTestPlugin();
-
-    await plugin.initialize!({
-      db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
-      tools: { register: () => {} },
-      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
-      config: {},
-    });
-
-    await plugin.teardown!();
-
-    const result = await plugin.healthCheck!();
-    expect(result.healthy).toBe(false);
-  });
-});
-
+// Removed (1.5.2 slice 2 / #2650): "chat plugin Telegram lifecycle" — tested the pre-#2650
+// `adapters:` config contract which moved to AdapterRegistry env-var checks.
 // ---------------------------------------------------------------------------
 // Multi-adapter lifecycle (all five adapters)
 // ---------------------------------------------------------------------------
 
-describe("chat plugin five-adapter lifecycle", () => {
-  function createFiveAdapterPlugin() {
-    const { buildChatPlugin } = require("./index");
-    return buildChatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-        teams: { appId: "test-app-id", appPassword: "test-app-password" },
-        discord: {
-          botToken: "test-bot-token",
-          applicationId: "test-app-id",
-          publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
-        },
-        gchat: { credentials: testGchatCredentials },
-        telegram: { botToken: "123456:test-token" },
-      },
-      executeQuery: async () => ({
-        answer: "test answer",
-        sql: ["SELECT 1"],
-        data: [],
-        steps: 1,
-        usage: { totalTokens: 50 },
-      }),
-    });
-  }
-
-  it("initializes with all five adapters", async () => {
-    const plugin = createFiveAdapterPlugin();
-    const logs: string[] = [];
-
-    await plugin.initialize!({
-      db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
-      tools: { register: () => {} },
-      logger: {
-        info: (msg: unknown) => logs.push(typeof msg === "string" ? msg : JSON.stringify(msg)),
-        warn: () => {},
-        error: () => {},
-        debug: () => {},
-      },
-      config: {},
-    });
-
-    const result = await plugin.healthCheck!();
-    expect(result.healthy).toBe(true);
-    expect(result.message).toContain("slack");
-    expect(result.message).toContain("teams");
-    expect(result.message).toContain("discord");
-    expect(result.message).toContain("gchat");
-    expect(result.message).toContain("telegram");
-  });
-});
-
+// Removed (1.5.2 slice 2 / #2650): "chat plugin five-adapter lifecycle" — tested the pre-#2650
+// `adapters:` config contract which moved to AdapterRegistry env-var checks.
 // ---------------------------------------------------------------------------
 // Streaming config validation
 // ---------------------------------------------------------------------------
@@ -2245,9 +1185,7 @@ describe("chatPlugin streaming config", () => {
     const { chatPlugin } = await import("./index");
 
     const plugin = chatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: mockExecuteQueryFn,
       streaming: { enabled: true, chunkIntervalMs: 500 },
       executeQueryStream: mockExecuteQueryStreamFn,
@@ -2260,9 +1198,7 @@ describe("chatPlugin streaming config", () => {
     const { chatPlugin } = await import("./index");
 
     const plugin = chatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: mockExecuteQueryFn,
       streaming: { enabled: false },
     });
@@ -2274,9 +1210,7 @@ describe("chatPlugin streaming config", () => {
     const { chatPlugin } = await import("./index");
 
     const plugin = chatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: mockExecuteQueryFn,
       executeQueryStream: mockExecuteQueryStreamFn,
     });
@@ -2288,9 +1222,7 @@ describe("chatPlugin streaming config", () => {
     const { chatPlugin } = await import("./index");
 
     const plugin = chatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: mockExecuteQueryFn,
       streaming: { chunkIntervalMs: 2000 },
     });
@@ -2303,9 +1235,7 @@ describe("chatPlugin streaming config", () => {
 
     expect(() =>
       chatPlugin({
-        adapters: {
-          slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-        },
+        catalog: SLACK_CATALOG,
         executeQuery: mockExecuteQueryFn,
         streaming: { chunkIntervalMs: 50 },
       }),
@@ -2317,9 +1247,7 @@ describe("chatPlugin streaming config", () => {
 
     expect(() =>
       chatPlugin({
-        adapters: {
-          slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-        },
+        catalog: SLACK_CATALOG,
         executeQuery: mockExecuteQueryFn,
         streaming: { chunkIntervalMs: 20000 },
       }),
@@ -2331,9 +1259,7 @@ describe("chatPlugin streaming config", () => {
 
     expect(() =>
       chatPlugin({
-        adapters: {
-          slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-        },
+        catalog: SLACK_CATALOG,
         executeQuery: mockExecuteQueryFn,
         executeQueryStream: "not a function" as never,
       }),
@@ -2345,9 +1271,7 @@ describe("chatPlugin streaming config", () => {
 
     expect(() =>
       chatPlugin({
-        adapters: {
-          slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-        },
+        catalog: SLACK_CATALOG,
         executeQuery: mockExecuteQueryFn,
         streaming: { enabled: true },
         // no executeQueryStream
@@ -2359,9 +1283,7 @@ describe("chatPlugin streaming config", () => {
     const { chatPlugin } = await import("./index");
 
     const plugin = chatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: mockExecuteQueryFn,
       streaming: { enabled: true },
       executeQueryStream: mockExecuteQueryStreamFn,
@@ -2376,12 +1298,34 @@ describe("chatPlugin streaming config", () => {
 // ---------------------------------------------------------------------------
 
 describe("chat plugin streaming lifecycle", () => {
+  // Mirror the env setup in `chat plugin lifecycle` — the AdapterRegistry
+  // reads Slack creds from `process.env`, so the streaming plugin's
+  // initialize() needs them to flip healthCheck healthy.
+  const SLACK_ENV_SNAPSHOT = {
+    SLACK_CLIENT_ID: process.env.SLACK_CLIENT_ID,
+    SLACK_CLIENT_SECRET: process.env.SLACK_CLIENT_SECRET,
+    SLACK_SIGNING_SECRET: process.env.SLACK_SIGNING_SECRET,
+    SLACK_ENCRYPTION_KEY: process.env.SLACK_ENCRYPTION_KEY,
+  } as const;
+
+  beforeEach(() => {
+    process.env.SLACK_CLIENT_ID = "test-client-id";
+    process.env.SLACK_CLIENT_SECRET = "test-client-secret";
+    process.env.SLACK_SIGNING_SECRET = "abcdef0123456789abcdef0123456789";
+    process.env.SLACK_ENCRYPTION_KEY = "f".repeat(64);
+  });
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(SLACK_ENV_SNAPSHOT)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
   function createStreamingPlugin() {
     const { buildChatPlugin } = require("./index");
     return buildChatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: async () => ({
         answer: "test answer",
         sql: ["SELECT 1"],
@@ -2445,9 +1389,7 @@ describe("chat plugin streaming lifecycle", () => {
     // badly-typed executeQueryStream — the error surfaces when a message arrives.
     const { buildChatPlugin } = require("./index");
     const plugin = buildChatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: async () => ({
         answer: "test",
         sql: [],
@@ -2474,9 +1416,7 @@ describe("chat plugin streaming lifecycle", () => {
   it("initializes with streaming disabled (falls back to executeQuery)", async () => {
     const { buildChatPlugin } = require("./index");
     const plugin = buildChatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: async () => ({
         answer: "test",
         sql: [],
@@ -2517,9 +1457,7 @@ describe("chatPlugin slashCommandName config", () => {
     const { chatPlugin } = await import("./index");
 
     const plugin = chatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       slashCommandName: "/data-query",
       executeQuery: mockExecuteQuery,
     });
@@ -2531,9 +1469,7 @@ describe("chatPlugin slashCommandName config", () => {
     const { chatPlugin } = await import("./index");
 
     const plugin = chatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       slashCommandName: "/query",
       executeQuery: mockExecuteQuery,
     });
@@ -2546,9 +1482,7 @@ describe("chatPlugin slashCommandName config", () => {
 
     expect(() =>
       chatPlugin({
-        adapters: {
-          slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-        },
+        catalog: SLACK_CATALOG,
         slashCommandName: "atlas",
         executeQuery: mockExecuteQuery,
       }),
@@ -2560,9 +1494,7 @@ describe("chatPlugin slashCommandName config", () => {
 
     expect(() =>
       chatPlugin({
-        adapters: {
-          slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-        },
+        catalog: SLACK_CATALOG,
         slashCommandName: "/Atlas",
         executeQuery: mockExecuteQuery,
       }),
@@ -2574,9 +1506,7 @@ describe("chatPlugin slashCommandName config", () => {
 
     expect(() =>
       chatPlugin({
-        adapters: {
-          slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-        },
+        catalog: SLACK_CATALOG,
         slashCommandName: "/my command",
         executeQuery: mockExecuteQuery,
       }),
@@ -2587,9 +1517,7 @@ describe("chatPlugin slashCommandName config", () => {
     const { chatPlugin } = await import("./index");
 
     const plugin = chatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: mockExecuteQuery,
     });
 
@@ -2687,151 +1615,8 @@ describe("buildQueryResultCard quick-action buttons", () => {
 // Linear adapter config validation
 // ---------------------------------------------------------------------------
 
-describe("chatPlugin Linear adapter config", () => {
-  const mockExecuteQueryFn = async () => ({
-    answer: "test",
-    sql: [] as string[],
-    data: [] as { columns: string[]; rows: Record<string, unknown>[] }[],
-    steps: 1,
-    usage: { totalTokens: 10 },
-  });
-
-  it("accepts valid config with apiKey auth", async () => {
-    const { chatPlugin } = await import("./index");
-
-    const plugin = chatPlugin({
-      adapters: {
-        linear: { apiKey: "lin_api_test123" },
-      },
-      executeQuery: mockExecuteQueryFn,
-    });
-
-    expect(plugin.id).toBe("chat-interaction");
-    expect(plugin.types).toEqual(["interaction"]);
-  });
-
-  it("accepts valid config with accessToken auth", async () => {
-    const { chatPlugin } = await import("./index");
-
-    const plugin = chatPlugin({
-      adapters: {
-        linear: { accessToken: "lin_oauth_test123" },
-      },
-      executeQuery: mockExecuteQueryFn,
-    });
-
-    expect(plugin.id).toBe("chat-interaction");
-  });
-
-  it("accepts valid config with clientId + clientSecret auth", async () => {
-    const { chatPlugin } = await import("./index");
-
-    const plugin = chatPlugin({
-      adapters: {
-        linear: { clientId: "test-client-id", clientSecret: "test-client-secret" },
-      },
-      executeQuery: mockExecuteQueryFn,
-    });
-
-    expect(plugin.id).toBe("chat-interaction");
-  });
-
-  it("accepts config with optional webhookSecret and userName", async () => {
-    const { chatPlugin } = await import("./index");
-
-    const plugin = chatPlugin({
-      adapters: {
-        linear: {
-          apiKey: "lin_api_test123",
-          webhookSecret: "whsec_test",
-          userName: "atlas-bot",
-        },
-      },
-      executeQuery: mockExecuteQueryFn,
-    });
-
-    expect(plugin.id).toBe("chat-interaction");
-  });
-
-  it("rejects config with no credentials", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          linear: {} as { apiKey: string },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/credential/i);
-  });
-
-  it("rejects config with empty apiKey", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          linear: { apiKey: "" } as { apiKey: string },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/apiKey/i);
-  });
-
-  it("rejects config with clientId but no clientSecret", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          linear: { clientId: "test-id" } as { clientId: string; clientSecret: string },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/clientSecret/i);
-  });
-
-  it("rejects config with clientSecret but no clientId", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          linear: { clientSecret: "test-secret" } as { clientId: string; clientSecret: string },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/clientId/i);
-  });
-
-  it("rejects config with multiple auth modes (apiKey + accessToken)", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          linear: { apiKey: "key", accessToken: "token" } as { apiKey: string },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/one auth mode/i);
-  });
-
-  it("rejects config with multiple auth modes (apiKey + clientId)", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          linear: { apiKey: "key", clientId: "id", clientSecret: "sec" } as { apiKey: string },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/one auth mode/i);
-  });
-});
-
+// Removed (1.5.2 slice 2 / #2650): "chatPlugin Linear adapter config" — tested the pre-#2650
+// `adapters:` config contract which moved to AdapterRegistry env-var checks.
 // ---------------------------------------------------------------------------
 // Linear adapter factory
 // ---------------------------------------------------------------------------
@@ -2877,261 +1662,20 @@ describe("createLinearAdapter", () => {
 // Linear webhook route guard
 // ---------------------------------------------------------------------------
 
-describe("linear webhook route guard", () => {
-  it("linear webhook returns 503 before initialization", async () => {
-    const { buildChatPlugin } = require("./index");
-    const { Hono } = require("hono");
-
-    const plugin = buildChatPlugin({
-      adapters: {
-        linear: { apiKey: "lin_api_test123" },
-      },
-      executeQuery: async () => ({
-        answer: "test",
-        sql: [],
-        data: [],
-        steps: 1,
-        usage: { totalTokens: 10 },
-      }),
-    });
-
-    const app = new Hono();
-    plugin.routes!(app);
-
-    const resp = await app.request("/webhooks/linear", { method: "POST" });
-    expect(resp.status).toBe(503);
-    const body = await resp.json();
-    expect(body.error).toContain("not yet initialized");
-  });
-});
-
+// Removed (1.5.2 slice 2 / #2650): "linear webhook route guard" — tested the pre-#2650
+// `adapters:` config contract which moved to AdapterRegistry env-var checks.
 // ---------------------------------------------------------------------------
 // Linear adapter lifecycle
 // ---------------------------------------------------------------------------
 
-describe("chat plugin Linear lifecycle", () => {
-  function createLinearTestPlugin(opts?: { omitWebhookSecret?: boolean }) {
-    const { buildChatPlugin } = require("./index");
-    return buildChatPlugin({
-      adapters: {
-        linear: {
-          apiKey: "lin_api_test123",
-          ...(opts?.omitWebhookSecret ? {} : { webhookSecret: "whsec_test" }),
-        },
-      },
-      executeQuery: async () => ({
-        answer: "test answer",
-        sql: ["SELECT 1"],
-        data: [],
-        steps: 1,
-        usage: { totalTokens: 50 },
-      }),
-    });
-  }
-
-  it("healthCheck returns unhealthy before initialization", async () => {
-    const plugin = createLinearTestPlugin();
-    const result = await plugin.healthCheck!();
-    expect(result.healthy).toBe(false);
-    expect(result.message).toContain("not initialized");
-  });
-
-  it("initialize sets up the bridge with linear adapter", async () => {
-    const plugin = createLinearTestPlugin();
-    const logs: string[] = [];
-
-    await plugin.initialize!({
-      db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
-      tools: { register: () => {} },
-      logger: {
-        info: (msg: unknown) => logs.push(typeof msg === "string" ? msg : JSON.stringify(msg)),
-        warn: () => {},
-        error: () => {},
-        debug: () => {},
-      },
-      config: {},
-    });
-
-    const result = await plugin.healthCheck!();
-    expect(result.healthy).toBe(true);
-    expect(result.message).toContain("linear");
-  });
-
-  it("double initialize throws with linear adapter", async () => {
-    const plugin = createLinearTestPlugin();
-    const ctx = {
-      db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
-      tools: { register: () => {} },
-      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
-      config: {},
-    };
-
-    await plugin.initialize!(ctx);
-    await expect(plugin.initialize!(ctx)).rejects.toThrow(/already initialized/);
-  });
-
-  it("teardown cleans up linear adapter", async () => {
-    const plugin = createLinearTestPlugin();
-
-    await plugin.initialize!({
-      db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
-      tools: { register: () => {} },
-      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
-      config: {},
-    });
-
-    await plugin.teardown!();
-
-    const result = await plugin.healthCheck!();
-    expect(result.healthy).toBe(false);
-  });
-
-  it("initialization fails when webhookSecret is missing (upstream requires it)", async () => {
-    const plugin = createLinearTestPlugin({ omitWebhookSecret: true });
-
-    await expect(
-      plugin.initialize!({
-        db: null,
-        connections: { get: () => { throw new Error("unused"); }, list: () => [] },
-        tools: { register: () => {} },
-        logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
-        config: {},
-      }),
-    ).rejects.toThrow(/webhookSecret/i);
-  });
-});
-
+// Removed (1.5.2 slice 2 / #2650): "chat plugin Linear lifecycle" — tested the pre-#2650
+// `adapters:` config contract which moved to AdapterRegistry env-var checks.
 // ---------------------------------------------------------------------------
 // WhatsApp adapter config validation
 // ---------------------------------------------------------------------------
 
-describe("chatPlugin WhatsApp adapter config", () => {
-  const mockExecuteQueryFn = async () => ({
-    answer: "test",
-    sql: [] as string[],
-    data: [] as { columns: string[]; rows: Record<string, unknown>[] }[],
-    steps: 1,
-    usage: { totalTokens: 10 },
-  });
-
-  const validWhatsAppConfig = {
-    phoneNumberId: "123456789",
-    accessToken: "EAABsbCS1iHgBO...",
-    verifyToken: "my-verify-token",
-    appSecret: "abc123def456",
-  };
-
-  it("accepts valid config with all required fields", async () => {
-    const { chatPlugin } = await import("./index");
-
-    const plugin = chatPlugin({
-      adapters: { whatsapp: validWhatsAppConfig },
-      executeQuery: mockExecuteQueryFn,
-    });
-
-    expect(plugin.id).toBe("chat-interaction");
-    expect(plugin.types).toEqual(["interaction"]);
-  });
-
-  it("accepts config with optional userName and apiVersion", async () => {
-    const { chatPlugin } = await import("./index");
-
-    const plugin = chatPlugin({
-      adapters: {
-        whatsapp: {
-          ...validWhatsAppConfig,
-          userName: "atlas-bot",
-          apiVersion: "v21.0",
-        },
-      },
-      executeQuery: mockExecuteQueryFn,
-    });
-
-    expect(plugin.id).toBe("chat-interaction");
-  });
-
-  it("rejects config with empty phoneNumberId", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          whatsapp: { ...validWhatsAppConfig, phoneNumberId: "" },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/phoneNumberId/i);
-  });
-
-  it("rejects config with empty accessToken", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          whatsapp: { ...validWhatsAppConfig, accessToken: "" },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/accessToken/i);
-  });
-
-  it("rejects config with empty verifyToken", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          whatsapp: { ...validWhatsAppConfig, verifyToken: "" },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/verifyToken/i);
-  });
-
-  it("rejects config with empty appSecret", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          whatsapp: { ...validWhatsAppConfig, appSecret: "" },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/appSecret/i);
-  });
-
-  it("rejects invalid apiVersion format", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          whatsapp: { ...validWhatsAppConfig, apiVersion: "21.0" },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/apiVersion/i);
-  });
-
-  it("rejects apiVersion without minor version", async () => {
-    const { chatPlugin } = await import("./index");
-
-    expect(() =>
-      chatPlugin({
-        adapters: {
-          whatsapp: { ...validWhatsAppConfig, apiVersion: "v21" },
-        },
-        executeQuery: mockExecuteQueryFn,
-      }),
-    ).toThrow(/apiVersion/i);
-  });
-});
-
+// Removed (1.5.2 slice 2 / #2650): "chatPlugin WhatsApp adapter config" — tested the pre-#2650
+// `adapters:` config contract which moved to AdapterRegistry env-var checks.
 // ---------------------------------------------------------------------------
 // WhatsApp adapter factory
 // ---------------------------------------------------------------------------
@@ -3170,66 +1714,8 @@ describe("createWhatsAppAdapter", () => {
 // WhatsApp webhook route guard
 // ---------------------------------------------------------------------------
 
-describe("whatsapp webhook route guard", () => {
-  it("GET webhook returns 503 before initialization", async () => {
-    const { buildChatPlugin } = require("./index");
-    const { Hono } = require("hono");
-
-    const plugin = buildChatPlugin({
-      adapters: {
-        whatsapp: {
-          phoneNumberId: "123456789",
-          accessToken: "test-token",
-          verifyToken: "test-verify",
-          appSecret: "test-secret",
-        },
-      },
-      executeQuery: async () => ({
-        answer: "test",
-        sql: [],
-        data: [],
-        steps: 1,
-        usage: { totalTokens: 10 },
-      }),
-    });
-
-    const app = new Hono();
-    plugin.routes(app);
-
-    const res = await app.request("/webhooks/whatsapp", { method: "GET" });
-    expect(res.status).toBe(503);
-  });
-
-  it("POST webhook returns 503 before initialization", async () => {
-    const { buildChatPlugin } = require("./index");
-    const { Hono } = require("hono");
-
-    const plugin = buildChatPlugin({
-      adapters: {
-        whatsapp: {
-          phoneNumberId: "123456789",
-          accessToken: "test-token",
-          verifyToken: "test-verify",
-          appSecret: "test-secret",
-        },
-      },
-      executeQuery: async () => ({
-        answer: "test",
-        sql: [],
-        data: [],
-        steps: 1,
-        usage: { totalTokens: 10 },
-      }),
-    });
-
-    const app = new Hono();
-    plugin.routes(app);
-
-    const res = await app.request("/webhooks/whatsapp", { method: "POST" });
-    expect(res.status).toBe(503);
-  });
-});
-
+// Removed (1.5.2 slice 2 / #2650): "whatsapp webhook route guard" — tested the pre-#2650
+// `adapters:` config contract which moved to AdapterRegistry env-var checks.
 // ---------------------------------------------------------------------------
 // Ephemeral error delivery
 // ---------------------------------------------------------------------------
@@ -3246,9 +1732,7 @@ describe("ephemeral error delivery", () => {
 
     // Default config: errorsAsEphemeral should be undefined (defaults to true)
     const result = ChatConfigSchema.safeParse({
-      adapters: {
-        slack: { botToken: "xoxb-test", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: () => Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
     });
 
@@ -3263,9 +1747,7 @@ describe("ephemeral error delivery", () => {
     const { ChatConfigSchema } = await import("./config");
 
     const result = ChatConfigSchema.safeParse({
-      adapters: {
-        slack: { botToken: "xoxb-test", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: () => Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
       ephemeral: { errorsAsEphemeral: false },
     });
@@ -3304,9 +1786,7 @@ describe("ProactiveConfig schema", () => {
     const { ChatConfigSchema } = await import("./config");
 
     const result = ChatConfigSchema.safeParse({
-      adapters: {
-        slack: { botToken: "xoxb-test", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: () =>
         Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
       proactive: {
@@ -3335,9 +1815,7 @@ describe("ProactiveConfig schema", () => {
     const { ChatConfigSchema } = await import("./config");
 
     const result = ChatConfigSchema.safeParse({
-      adapters: {
-        slack: { botToken: "xoxb-test", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: () =>
         Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
       proactive: {
@@ -3363,9 +1841,7 @@ describe("ProactiveConfig schema", () => {
     const { ChatConfigSchema } = await import("./config");
 
     const result = ChatConfigSchema.safeParse({
-      adapters: {
-        slack: { botToken: "xoxb-test", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: () =>
         Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
       proactive: {
@@ -3394,9 +1870,7 @@ describe("ProactiveConfig schema", () => {
     // with a kill-switch read path but no write path.
     const { ChatConfigSchema } = await import("./config");
     const result = ChatConfigSchema.safeParse({
-      adapters: {
-        slack: { botToken: "xoxb-test", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: () =>
         Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
       proactive: {
@@ -3426,9 +1900,7 @@ describe("ProactiveConfig schema", () => {
     // `collector` is rejected at the discriminated-union boundary.
     const { ChatConfigSchema } = await import("./config");
     const result = ChatConfigSchema.safeParse({
-      adapters: {
-        slack: { botToken: "xoxb-test", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: () =>
         Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
       proactive: {
@@ -3459,9 +1931,7 @@ describe("ProactiveConfig schema", () => {
     // shape did.
     const { ChatConfigSchema } = await import("./config");
     const result = ChatConfigSchema.safeParse({
-      adapters: {
-        slack: { botToken: "xoxb-test", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: () =>
         Promise.resolve({ answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 } }),
       proactive: {
@@ -3515,8 +1985,7 @@ describe("sendDirectMessage contract", () => {
     };
     const bridge = createChatBridge(
       {
-        adapters: {},
-        executeQuery: async () => ({
+        catalog: [],        executeQuery: async () => ({
           answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 },
         }),
       },
@@ -3546,8 +2015,7 @@ describe("sendDirectMessage contract", () => {
     };
     const bridge = createChatBridge(
       {
-        adapters: {},
-        executeQuery: async () => ({
+        catalog: [],        executeQuery: async () => ({
           answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 },
         }),
       },
@@ -3584,8 +2052,7 @@ describe("sendDirectMessage contract", () => {
     };
     const bridge = createChatBridge(
       {
-        adapters: {},
-        executeQuery: async () => ({
+        catalog: [],        executeQuery: async () => ({
           answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 },
         }),
       },
@@ -3619,8 +2086,7 @@ describe("sendDirectMessage contract", () => {
     };
     const bridge = createChatBridge(
       {
-        adapters: {},
-        executeQuery: async () => ({
+        catalog: [],        executeQuery: async () => ({
           answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 },
         }),
       },
@@ -3651,8 +2117,7 @@ describe("sendDirectMessage contract", () => {
     };
     const bridge = createChatBridge(
       {
-        adapters: {},
-        executeQuery: async () => ({
+        catalog: [],        executeQuery: async () => ({
           answer: "", sql: [], data: [], steps: 0, usage: { totalTokens: 0 },
         }),
       },
@@ -3705,9 +2170,7 @@ describe("executeQuery context contract", () => {
     // + `rawMessage` to confirm they're typed as required (non-optional).
     const calls: Array<{ adapterName: string; rawTeamId: unknown }> = [];
     const plugin = chatPlugin({
-      adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "abcdef0123456789abcdef0123456789" },
-      },
+      catalog: SLACK_CATALOG,
       executeQuery: async (question, ctx) => {
         const raw = ctx.rawMessage as { team_id?: string } | undefined;
         calls.push({ adapterName: ctx.adapter.name, rawTeamId: raw?.team_id });

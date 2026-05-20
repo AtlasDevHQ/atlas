@@ -10,38 +10,34 @@ bun add @useatlas/chat
 
 ## Usage
 
+Adapter activation is driven by the **Plugin Catalog** (Atlas 1.5.2,
+[#2650](https://github.com/AtlasDevHQ/atlas/issues/2650)) — operators
+declare the chat Platforms they support in `atlas.config.ts:catalog`,
+and the plugin's `AdapterRegistry` reads per-Platform credentials from
+`process.env` at boot. See
+[Plugin Catalog docs](https://docs.useatlas.dev/deployment/plugin-catalog)
+for the full data model and seed semantics.
+
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
 import { chatPlugin } from "@useatlas/chat";
 
 export default defineConfig({
+  // Operator declares which Platforms this deploy supports.
+  catalog: [
+    { slug: "slack", type: "chat", install_model: "oauth", enabled: true,
+      saas_eligible: true },
+    // 1.5.3 placeholders — visible to ops, not customer-installable yet.
+    { slug: "telegram", type: "chat", install_model: "static-bot",
+      enabled: false, saas_eligible: true },
+  ],
   plugins: [
     chatPlugin({
-      adapters: {
-        slack: {
-          botToken: process.env.SLACK_BOT_TOKEN!,
-          signingSecret: process.env.SLACK_SIGNING_SECRET!,
-          clientId: process.env.SLACK_CLIENT_ID,       // optional, for OAuth
-          clientSecret: process.env.SLACK_CLIENT_SECRET, // optional, for OAuth
-        },
-        teams: {
-          appId: process.env.TEAMS_APP_ID!,
-          appPassword: process.env.TEAMS_APP_PASSWORD!,
-          tenantId: process.env.TEAMS_TENANT_ID,       // optional, for tenant restriction
-        },
-        discord: {
-          botToken: process.env.DISCORD_BOT_TOKEN!,
-          applicationId: process.env.DISCORD_APPLICATION_ID!,
-          publicKey: process.env.DISCORD_PUBLIC_KEY!,
-          mentionRoleIds: [],                          // optional, role IDs that trigger mentions
-        },
-        gchat: {
-          credentials: JSON.parse(process.env.GOOGLE_CHAT_CREDENTIALS!),
-        },
-        telegram: {
-          botToken: process.env.TELEGRAM_BOT_TOKEN!,
-        },
-      },
+      // The host passes the chat-type subset of the catalog through.
+      catalog: [
+        { slug: "slack", type: "chat", install_model: "oauth", enabled: true,
+          saas_eligible: true },
+      ],
       executeQuery: myQueryFunction,
       actions: myActionCallbacks,        // optional — approve/deny flows
       conversations: myConversationCBs,  // optional — host conversation persistence
@@ -50,36 +46,48 @@ export default defineConfig({
 });
 ```
 
+### Per-Platform credentials (env vars)
+
+In milestone 1.5.2 only Slack OAuth is wired. Required env vars:
+
+| Var | Purpose |
+|-----|---------|
+| `SLACK_CLIENT_ID` | OAuth client ID from your Slack App Registration |
+| `SLACK_CLIENT_SECRET` | OAuth client secret |
+| `SLACK_SIGNING_SECRET` | 32-char hex from Slack app's Basic Information page |
+| `SLACK_ENCRYPTION_KEY` | AES-256-GCM key (hex64 or base64-44) for at-rest bot-token storage |
+| `SLACK_BOT_TOKEN` *(optional)* | Single-workspace mode only — omit for multi-workspace SaaS |
+
+If any required var is missing, the AdapterRegistry logs a warn and
+skips Slack. The plugin still boots; `healthCheck()` reports unhealthy
+until the env wiring is fixed.
+
+Non-Slack chat Platforms (Teams, Discord, Google Chat, Telegram,
+WhatsApp) ship as `enabled: false` catalog placeholders in 1.5.2 and
+wire up in 1.5.3 alongside `StaticBotInstallHandler`.
+
 ## Config
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `adapters.slack.botToken` | `string` | — | Slack bot token (`xoxb-...`) |
-| `adapters.slack.signingSecret` | `string` | — | Slack signing secret for request verification |
-| `adapters.slack.clientId` | `string?` | — | Client ID for multi-workspace OAuth |
-| `adapters.slack.clientSecret` | `string?` | — | Client secret for multi-workspace OAuth |
-| `adapters.teams.appId` | `string` | — | Microsoft App ID from Azure Bot registration |
-| `adapters.teams.appPassword` | `string` | — | Microsoft App Password from Azure Bot registration |
-| `adapters.teams.tenantId` | `string?` | — | Optional: restrict to a specific Microsoft Entra ID tenant |
-| `adapters.discord.botToken` | `string` | — | Discord bot token |
-| `adapters.discord.applicationId` | `string` | — | Discord application ID |
-| `adapters.discord.publicKey` | `string` | — | Application public key for Ed25519 webhook signature verification |
-| `adapters.discord.mentionRoleIds` | `string[]?` | — | Optional: role IDs that trigger mention handlers |
-| `adapters.gchat.credentials` | `object?` | — | Service account credentials (`client_email`, `private_key`) |
-| `adapters.gchat.useApplicationDefaultCredentials` | `true?` | — | Use Application Default Credentials |
-| `adapters.gchat.endpointUrl` | `string?` | — | HTTP endpoint URL for card button click actions |
-| `adapters.gchat.pubsubTopic` | `string?` | — | Pub/Sub topic for Workspace Events |
-| `adapters.gchat.impersonateUser` | `string?` | — | User email for domain-wide delegation |
-| `adapters.telegram.botToken` | `string` | — | Telegram bot token from BotFather |
-| `adapters.telegram.secretToken` | `string?` | — | Webhook secret token for request verification |
+| `catalog` | `ChatCatalogEntry[]?` | — | Chat-type subset of the operator's `atlas.config.ts:catalog`. AdapterRegistry uses this to decide which adapters to instantiate. |
 | `state` | `object?` | `{ backend: "memory" }` | State backend configuration (see below) |
 | `executeQuery` | `function` | — | Callback to run the Atlas agent on a question |
+| `executeQueryStream` | `function?` | — | Streaming variant — when set with `streaming.enabled: true`, responses stream incrementally |
 | `checkRateLimit` | `function?` | — | Optional rate limiting callback |
 | `scrubError` | `function?` | — | Optional error scrubbing callback |
 | `actions` | `ActionCallbacks?` | — | Optional action framework callbacks (`approve`, `deny`, `get`) |
 | `conversations` | `ConversationCallbacks?` | — | Optional host conversation persistence callbacks |
+| `streaming` | `StreamingConfig?` | `{ enabled: true }` | Streaming response configuration |
+| `proactive` | `ProactiveConfig?` | — | Enterprise proactive-listener wiring |
+| `reactions` | `ReactionConfig?` | — | Status emoji reactions on user messages |
+| `fileUpload` | `FileUploadConfig?` | — | CSV file-upload thresholds |
+| `ephemeral` | `EphemeralConfig?` | — | Whether errors post as ephemeral |
+| `slashCommandName` | `string?` | `"/atlas"` | Slash command registered with the Chat SDK |
 
-At least one adapter must be configured.
+Adapter activation requires (a) a `chat`-type entry in `catalog` with
+`install_model: "oauth"` and `enabled: true`, AND (b) all required env
+vars for that Platform.
 
 ### State Backend
 
@@ -93,7 +101,10 @@ The state backend controls how thread subscriptions, conversation history, and d
 
 ```typescript
 chatPlugin({
-  adapters: { slack: { ... } },
+  catalog: [
+    { slug: "slack", type: "chat", install_model: "oauth", enabled: true,
+      saas_eligible: true },
+  ],
   state: {
     backend: "pg",        // "memory" | "pg" | "redis"
     tablePrefix: "chat_", // PG table prefix (default: "chat_")

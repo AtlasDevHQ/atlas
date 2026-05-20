@@ -270,6 +270,98 @@ const ResidencyConfigSchema = z.object({
 
 export type ResidencyConfig = z.infer<typeof ResidencyConfigSchema>;
 
+// ---------------------------------------------------------------------------
+// Catalog declaration (1.5.2 slice 2 — issue #2650)
+// ---------------------------------------------------------------------------
+
+/**
+ * `install_model` discriminates the install-handler family per CONTEXT.md
+ * "Install models". The dispatch shape is pinned in slice 2 so 1.5.3's
+ * static-bot work lands as a single-import change rather than reopening
+ * the dispatch design.
+ *
+ * - `oauth` — OAuth dance against an operator-owned App Registration; per-
+ *   Workspace bot token returned and persisted to the platform-native
+ *   credential store. Chat: Slack. Integration: Salesforce, Jira, GitHub
+ *   Apps (1.5.3), Linear OAuth (1.5.3).
+ * - `form` — Customer admin fills a form (API key, SMTP creds, webhook
+ *   URL); data validates against the catalog entry's `config_schema`;
+ *   persists to `workspace_plugins.config` + encrypted credential storage.
+ *   Integrations: Email (SMTP), Webhook, Obsidian, GitHub PAT (self-host),
+ *   Linear API-key (1.5.3).
+ * - `static-bot` — Operator-shared bot serves every Workspace; customer
+ *   admin provides only a per-Workspace routing identifier (Discord
+ *   `guild_id`, Telegram `chat_id`, Teams `tenant_id`, WhatsApp phone
+ *   number) via form. No per-Workspace bot token. Chat: Teams, Discord,
+ *   Google Chat, Telegram, WhatsApp. **Not installable in 1.5.2** — the
+ *   handler ships in 1.5.3.
+ */
+export const CATALOG_INSTALL_MODELS = ["oauth", "form", "static-bot"] as const;
+export type CatalogInstallModel = (typeof CATALOG_INSTALL_MODELS)[number];
+
+/**
+ * `type` groups catalog entries for admin-UI display. Backend dispatches
+ * by `install_model` (orthogonal), not by `type`. The list is intentionally
+ * narrow today: chat Platforms vs everything-else-integration. Future
+ * milestones may add `datasource` once datasource plugins migrate to the
+ * catalog (Architecture Backlog issue, out of scope for 1.5.2).
+ */
+export const CATALOG_ENTRY_TYPES = ["chat", "integration"] as const;
+export type CatalogEntryType = (typeof CATALOG_ENTRY_TYPES)[number];
+
+/**
+ * Plan tiers a catalog entry can require. Mirrors the values already
+ * persisted in `plugin_catalog.min_plan` (text column — no DB enum). The
+ * comparison happens in the customer-install path against the Workspace's
+ * resolved plan tier (Architecture Backlog work — out of scope for 1.5.2).
+ */
+const CATALOG_MIN_PLANS = ["starter", "team", "business", "enterprise"] as const;
+
+const CatalogEntrySchema = z.object({
+  /**
+   * Stable identifier (e.g. `"slack"`, `"salesforce"`, `"linear-apikey"`).
+   * Used as the primary lookup key in `plugin_catalog.slug` and as the
+   * dispatch key in `AdapterRegistry`. Lowercase letters, digits, and
+   * dashes only — matches the Platform's canonical short name.
+   */
+  slug: z.string().regex(
+    /^[a-z][a-z0-9-]*$/,
+    "catalog entry slug must be lowercase alphanumeric with dashes (e.g. 'slack', 'linear-apikey')",
+  ),
+  /** Admin-UI grouping (chat Platforms vs integration plugins). */
+  type: z.enum(CATALOG_ENTRY_TYPES),
+  /** Install-handler dispatch key — see {@link CATALOG_INSTALL_MODELS}. */
+  install_model: z.enum(CATALOG_INSTALL_MODELS),
+  /** Optional human-readable name; defaults to slug-derived if omitted. */
+  name: z.string().min(1).optional(),
+  /** Optional admin-UI description copy. */
+  description: z.string().min(1).optional(),
+  /** Optional icon URL for admin-UI cards. */
+  iconUrl: z.string().url().optional(),
+  /** Plan-tier gate evaluated at customer-install time. Defaults to `starter`. */
+  min_plan: z.enum(CATALOG_MIN_PLANS).optional().default("starter"),
+  /**
+   * Whether customers can install this entry today. Operators flip to
+   * `false` (in DB) for emergency-disable without a deploy; the seed
+   * preserves a DB-side `false` even if the config declares `true`.
+   * Defaults to `true`.
+   */
+  enabled: z.boolean().optional().default(true),
+  /**
+   * Whether the entry is offered in SaaS deployments. `false` hides the
+   * row from SaaS admin-UI listings while keeping it available on self-
+   * host. The canonical case is GitHub PAT mode (per-user token tied to
+   * one employee — unsafe in B2B SaaS). Defaults to `true`.
+   */
+  saas_eligible: z.boolean().optional().default(true),
+}).strict();
+
+export type CatalogEntry = z.infer<typeof CatalogEntrySchema>;
+/** Input shape (defaults not yet applied) — what `atlas.config.ts` authors. */
+export type CatalogEntryInput = z.input<typeof CatalogEntrySchema>;
+
+export { CatalogEntrySchema };
+
 const AtlasConfigSchema = z.object({
   /**
    * Named datasource connections. The "default" key is used when no
@@ -456,6 +548,31 @@ const AtlasConfigSchema = z.object({
    * Requires enterprise features to be enabled.
    */
   residency: ResidencyConfigSchema.optional(),
+
+  /**
+   * Plugin Catalog declaration — flat list of installable chat Platforms
+   * and integration plugins. Implements ADR-0002 S3: declarative at deploy
+   * time, idempotently seeded into `plugin_catalog` at boot, then DB-
+   * canonical for runtime reads. Operator declares; customer admin
+   * installs via the admin UI (slice 3 — #2651).
+   *
+   * `type` groups for admin-UI display; `install_model` dispatches the
+   * install-handler family. Slugs must be unique within the array.
+   *
+   * @see docs/adr/0002-catalog-seeded-from-config-at-boot.md
+   */
+  catalog: z.array(CatalogEntrySchema).optional().refine(
+    (entries) => {
+      if (!entries) return true;
+      const slugs = new Set<string>();
+      for (const entry of entries) {
+        if (slugs.has(entry.slug)) return false;
+        slugs.add(entry.slug);
+      }
+      return true;
+    },
+    "catalog entries must have unique slugs — duplicate found",
+  ),
 });
 
 /** The output type after Zod parsing (defaults applied, all fields present). */
@@ -513,6 +630,15 @@ export interface ResolvedConfig {
   residency?: ResidencyConfig;
   /** Resolved deploy mode — binary "saas" or "self-hosted" (auto is resolved at boot). */
   deployMode?: "saas" | "self-hosted";
+  /**
+   * Plugin Catalog declaration — flat list of installable chat Platforms
+   * and integration plugins. Seeded into `plugin_catalog` at boot via
+   * `CatalogSeeder` (1.5.2 — #2650). Optional on `ResolvedConfig`
+   * (omitted when the operator declared no catalog) to match the
+   * conditional-spread pattern other optional fields use here; consumers
+   * should default to `[]` via `config.catalog ?? []`.
+   */
+  catalog?: CatalogEntry[];
   /** Whether the config was loaded from a file or synthesized from env vars. */
   source: "file" | "env";
 }
@@ -716,6 +842,8 @@ export function configFromEnv(): ResolvedConfig {
         ? { licenseKey: process.env.ATLAS_ENTERPRISE_LICENSE_KEY }
         : {}),
     },
+    // Catalog is operator-declared in atlas.config.ts; env-var fallback
+    // leaves it undefined (self-host without chat/integration installs).
     source: "env",
   };
 }
@@ -1069,6 +1197,9 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     ...(config.starterPrompts ? { starterPrompts: config.starterPrompts } : {}),
     ...(config.enterprise ? { enterprise: config.enterprise } : {}),
     ...(config.residency ? { residency: config.residency } : {}),
+    ...(config.catalog && config.catalog.length > 0
+      ? { catalog: config.catalog }
+      : {}),
     source: "file",
   };
 }

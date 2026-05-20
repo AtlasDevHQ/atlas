@@ -67,6 +67,70 @@ export default defineConfig({
   // ── Tools ───────────────────────────────────────────────────────
   tools: ["explore", "executeSQL"],
 
+  // ── Plugin Catalog (1.5.2 slice 2 — #2650) ──────────────────────
+  // Flat list with `type` + `install_model` as orthogonal fields per
+  // PRD "Further Notes" + ADR-0002. Seeded into `plugin_catalog` at
+  // boot by `CatalogSeeder`; ops can flip `enabled=false` in DB without
+  // a deploy for emergency-disable (the seed preserves DB-side false).
+  //
+  // 1.5.2 ships the OAuth install path for Slack (chat). The other
+  // chat Platforms ride along as `enabled: false` placeholders with
+  // `install_model: 'static-bot'` — their install handler lands in
+  // 1.5.3 alongside `StaticBotInstallHandler`. Integration plugins
+  // (Salesforce, Jira, Email, Webhook, Obsidian) wire in slice 3
+  // (#2651) via `LazyPluginLoader`; their entries land then.
+  catalog: [
+    {
+      slug: "slack",
+      type: "chat",
+      install_model: "oauth",
+      enabled: true,
+      saas_eligible: true,
+      min_plan: "starter",
+    },
+    // ── 1.5.3 placeholders — visible to ops, not customer-installable ─
+    // Per CONTEXT.md, each of these has Platform-specific install
+    // subtleties (Teams Azure-AD + manifest, Discord per-guild routing,
+    // Telegram chat_id capture, WhatsApp Meta verification, gchat Google
+    // Workspace Marketplace). They get `install_model: 'static-bot'`
+    // per the install-handler spectrum.
+    {
+      slug: "teams",
+      type: "chat",
+      install_model: "static-bot",
+      enabled: false,
+      saas_eligible: true,
+    },
+    {
+      slug: "discord",
+      type: "chat",
+      install_model: "static-bot",
+      enabled: false,
+      saas_eligible: true,
+    },
+    {
+      slug: "gchat",
+      type: "chat",
+      install_model: "static-bot",
+      enabled: false,
+      saas_eligible: true,
+    },
+    {
+      slug: "telegram",
+      type: "chat",
+      install_model: "static-bot",
+      enabled: false,
+      saas_eligible: true,
+    },
+    {
+      slug: "whatsapp",
+      type: "chat",
+      install_model: "static-bot",
+      enabled: false,
+      saas_eligible: true,
+    },
+  ],
+
   // ── Plugins ─────────────────────────────────────────────────────
   // Slice 3 of #2607 — the chat plugin now owns the @mention + thread
   // event path end-to-end. The plugin's webhook routes at
@@ -92,31 +156,22 @@ export default defineConfig({
   // in multi-workspace mode.
   plugins: [
     chatPlugin({
-      adapters: {
-        slack: {
-          ...(process.env.SLACK_BOT_TOKEN
-            ? { botToken: process.env.SLACK_BOT_TOKEN }
-            : {}),
-          // Single shared signing secret for the Atlas Slack app — Zod
-          // now rejects placeholder strings so an unset env var fails
-          // boot rather than silently passing webhook verification.
-          signingSecret: process.env.SLACK_SIGNING_SECRET ?? "",
-          ...(process.env.SLACK_CLIENT_ID
-            ? { clientId: process.env.SLACK_CLIENT_ID }
-            : {}),
-          ...(process.env.SLACK_CLIENT_SECRET
-            ? { clientSecret: process.env.SLACK_CLIENT_SECRET }
-            : {}),
-          // Required in SaaS — keys the AES-GCM envelope that the
-          // chat-adapter uses to encrypt persisted bot tokens. Atlas's
-          // `lib/slack/installation-encryption.ts` reads the same env
-          // var so OAuth-write / per-event-read stay symmetric. 32 raw
-          // bytes encoded as hex (64 chars) or base64 (44 chars).
-          ...(process.env.SLACK_ENCRYPTION_KEY
-            ? { encryptionKey: process.env.SLACK_ENCRYPTION_KEY }
-            : {}),
+      // Catalog-driven adapter activation (#2650 slice 2). The chat
+      // plugin's `AdapterRegistry` reads the chat-type subset of the
+      // catalog above and per-Platform credentials from `process.env`
+      // (`SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET` / `SLACK_SIGNING_SECRET`
+      // / `SLACK_ENCRYPTION_KEY` / optional `SLACK_BOT_TOKEN`). The old
+      // `adapters: { slack: {...} }` field is gone — there is no longer
+      // a way to wire a chat adapter outside the catalog seam.
+      catalog: [
+        {
+          slug: "slack",
+          type: "chat",
+          install_model: "oauth",
+          enabled: true,
+          saas_eligible: true,
         },
-      },
+      ],
       state: { backend: "pg" },
       // Host-side executeQuery — preserves the F-55 actor binding,
       // approvalSurface stamp, conversation persistence, rate-limit

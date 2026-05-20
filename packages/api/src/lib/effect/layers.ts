@@ -308,6 +308,101 @@ export const BackfillSaasTrialLive: Layer.Layer<
 );
 
 // ══════════════════════════════════════════════════════════════════════
+// ██  Catalog Seed Layer (#2650 — 1.5.2 slice 2)
+// ══════════════════════════════════════════════════════════════════════
+
+export interface CatalogSeedShape {
+  /** Newly inserted plugin_catalog rows this boot. */
+  readonly insertedCount: number;
+  /** Rows whose mutable columns were updated to match config this boot. */
+  readonly updatedCount: number;
+  /**
+   * Rows preserved at `enabled = false` because ops had manually
+   * disabled them. Surfaced so admin observability tooling can flag the
+   * config-vs-DB drift.
+   */
+  readonly preservedCount: number;
+  /** Slugs in DB without a matching declaration. Logged at warn, never deleted. */
+  readonly orphanSlugs: ReadonlyArray<string>;
+}
+
+export class CatalogSeed extends Context.Tag("CatalogSeed")<
+  CatalogSeed,
+  CatalogSeedShape
+>() {}
+
+/**
+ * Idempotent seed of `plugin_catalog` from `atlas.config.ts:catalog`.
+ * Implements ADR-0002 S3 (config-driven, idempotently seeded).
+ *
+ * Depends on `Migration` so the new install_model + saas_eligible
+ * columns (migration 0087) are guaranteed before the upsert; depends
+ * on `InternalDB` for the pool. Non-fatal: the seeder swallows
+ * errors internally and logs at error so a failed seed leaves
+ * pre-existing rows authoritative for the boot rather than crashing
+ * the API.
+ *
+ * Self-hosted with an empty `catalog: []` (or omitted) is a quick
+ * no-op: the seeder skips the upsert loop entirely and only emits the
+ * orphan warn if any catalog rows linger.
+ */
+export const CatalogSeedLive: Layer.Layer<
+  CatalogSeed,
+  never,
+  InternalDB | Migration
+> = Layer.effect(
+  CatalogSeed,
+  Effect.gen(function* () {
+    const db = yield* InternalDB;
+    const migration = yield* Migration;
+    if (!db.available || !migration.migrated) {
+      log.info(
+        { available: db.available, migrated: migration.migrated },
+        "Catalog seed skipped — upstream gate (InternalDB or Migration) not satisfied",
+      );
+      return {
+        insertedCount: 0,
+        updatedCount: 0,
+        preservedCount: 0,
+        orphanSlugs: [],
+      } satisfies CatalogSeedShape;
+    }
+
+    const result = yield* Effect.tryPromise({
+      try: async () => {
+        const { runCatalogSeedBoot } = await import(
+          "@atlas/api/lib/integrations/catalog-seeder"
+        );
+        return await runCatalogSeedBoot();
+      },
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(
+      Effect.catchAll((err) => {
+        // Only reachable if the dynamic import itself rejects — the
+        // seed function catches its own SQL/DB errors and returns the
+        // EMPTY_RESULT shape.
+        log.error({ err }, "Catalog seed boot wrapper threw");
+        return Effect.succeed({
+          insertedCount: 0,
+          updatedCount: 0,
+          preservedCount: 0,
+          applied: 0,
+          preservedSlugs: [] as string[],
+          orphanSlugs: [] as string[],
+        });
+      }),
+    );
+
+    return {
+      insertedCount: result.insertedCount,
+      updatedCount: result.updatedCount,
+      preservedCount: result.preservedCount,
+      orphanSlugs: result.orphanSlugs,
+    } satisfies CatalogSeedShape;
+  }),
+);
+
+// ══════════════════════════════════════════════════════════════════════
 // ██  Connections Hydrate Layer
 // ══════════════════════════════════════════════════════════════════════
 
@@ -1163,6 +1258,7 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
   | InternalDB
   | Migration
   | BackfillSaasTrial
+  | CatalogSeed
   | ConnectionsHydrate
   | SemanticSync
   | Settings
@@ -1181,6 +1277,13 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
   // the other layers — Effect's mergeAll doesn't order independent
   // siblings, so the only real ordering is the Migration dependency.
   const backfillSaasTrialLayer = BackfillSaasTrialLive.pipe(
+    Layer.provide(Layer.merge(internalDBLayer, migrationLayer)),
+  );
+
+  // CatalogSeedLive depends on Migration (so the install_model +
+  // saas_eligible columns added by 0087 exist) and InternalDB. Same
+  // shape as BackfillSaasTrialLive — independent peer otherwise.
+  const catalogSeedLayer = CatalogSeedLive.pipe(
     Layer.provide(Layer.merge(internalDBLayer, migrationLayer)),
   );
 
@@ -1239,6 +1342,7 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     internalDBLayer,
     migrationLayer,
     backfillSaasTrialLayer,
+    catalogSeedLayer,
     connectionsHydrateLayer,
     semanticSyncLayer,
     settingsLayer,

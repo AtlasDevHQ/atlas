@@ -90,12 +90,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 
 const ORIGINAL_ENV = { ...process.env };
 
-function setKeys(value: string | undefined): void {
-  if (value === undefined) {
-    delete process.env.ATLAS_ENCRYPTION_KEYS;
-  } else {
-    process.env.ATLAS_ENCRYPTION_KEYS = value;
-  }
+function setKeys(value: string): void {
+  process.env.ATLAS_ENCRYPTION_KEYS = value;
   delete process.env.ATLAS_ENCRYPTION_KEY;
   delete process.env.BETTER_AUTH_SECRET;
   _resetEncryptionKeyCache();

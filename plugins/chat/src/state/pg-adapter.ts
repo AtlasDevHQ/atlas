@@ -168,11 +168,36 @@ export class PgStateAdapter implements StateAdapter {
     const params: unknown[] = [key, JSON.stringify(value)];
     if (ttlMs != null) params.push(ttlMs);
 
+    // Slack installation rows (`slack:installation:<teamId>`) carry
+    // host-extension fields alongside the chat-adapter's own fields.
+    // `@chat-adapter/slack:setInstallation` writes only the fields it
+    // knows about (`botToken`, `botUserId`, `teamName`); the host
+    // (Atlas) stamps additional fields like `orgId`, `workspaceName`,
+    // `installedAt`. The straightforward `SET value = EXCLUDED.value`
+    // semantics drop those extension fields on every re-install, which
+    // silently broke `lib/proactive/workspace-id-resolver.ts` —
+    // `installation.org_id` resolves null and the proactive listener
+    // skips every event as "unknown tenant" (#2676).
+    //
+    // For installation keys we JSONB-merge instead of overwriting: the
+    // chat-adapter's freshly-written fields still win for overlapping
+    // keys (new bot token wins, new teamName wins) but host-extension
+    // fields the prior install added are preserved. Standard `||`
+    // semantics — see #2677 for the structural-prevention audit that
+    // generalises this beyond the slack-installation prefix.
+    //
+    // All other keys keep the overwrite semantics; merging in those
+    // cases would change behaviour for every consumer of the state
+    // adapter (queues, ephemeral state, CSRF tokens, ...).
+    const valueExpr = key.startsWith("slack:installation:")
+      ? `${this.t("cache")}.value || EXCLUDED.value`
+      : "EXCLUDED.value";
+
     await this.db.query(
       `INSERT INTO ${this.t("cache")} (key, value, expires_at)
        VALUES ($1, $2::jsonb, ${expiresExpr})
        ON CONFLICT (key) DO UPDATE
-         SET value = EXCLUDED.value, expires_at = EXCLUDED.expires_at`,
+         SET value = ${valueExpr}, expires_at = EXCLUDED.expires_at`,
       params,
     );
   }

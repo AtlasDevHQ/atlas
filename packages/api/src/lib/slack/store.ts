@@ -338,6 +338,99 @@ export async function saveInstallation(
 }
 
 /**
+ * Stamp `orgId` onto an existing chat_cache row written by the
+ * chat-adapter's own OAuth callback (`@chat-adapter/slack:setInstallation`).
+ *
+ * The chat-adapter is intentionally Atlas-agnostic — its state-adapter
+ * write at `plugins/chat/src/state/pg-adapter.ts:set()` does
+ * `ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, fully
+ * overwriting the row and dropping every Atlas-extension field. On a
+ * re-install via the chat-plugin OAuth callback
+ * (`plugins/chat/src/index.ts:/oauth/slack/callback`) this silently
+ * breaks `resolveWorkspaceId` (`lib/proactive/workspace-id-resolver.ts`),
+ * which looks up `installation.org_id` to attribute proactive events to
+ * a tenant — a null `orgId` resolves as "unknown tenant" and the
+ * listener silently skips. See #2676.
+ *
+ * This helper is the post-write reconciliation: idempotent,
+ * single-statement, hijack-guarded `jsonb_set`. The chat-plugin OAuth
+ * callback calls it after `slackAdapterInstance.handleOAuthCallback()`
+ * completes — the chat-adapter owns the row's content (bot-token
+ * encryption envelope, `botUserId`, `teamName`) and we just stitch the
+ * Atlas-extension `orgId` field back in.
+ *
+ * Distinguishes three terminal states:
+ *
+ *   - **Success** — `orgId` was missing or already matched, row stamped.
+ *   - **Row missing** — chat_cache row doesn't exist yet (caller-ordering
+ *     bug: preserve called before chat-adapter write). Logs at warn,
+ *     returns. Failing soft here matches `saveInstallation`'s
+ *     "ON CONFLICT" semantics and avoids 500'ing the OAuth callback on
+ *     a recoverable race.
+ *   - **Cross-tenant hijack** — row exists but bound to a different
+ *     `orgId`. Throws with the same shape as `saveInstallation`'s
+ *     hijack rejection. The chat-adapter has already written its half
+ *     of the row at this point; the throw flags the security-relevant
+ *     state for the caller to handle (typical response: refuse the
+ *     install, delete the chat-adapter's row).
+ *
+ * The UPDATE's WHERE matches both "missing" and "matching" cases.
+ * Returning 0 rows is therefore "row absent" OR "row bound to a
+ * different orgId" — a follow-up probe SELECT on the primary-key path
+ * disambiguates cheaply.
+ */
+export async function preserveOrgIdOnInstall(
+  teamId: string,
+  orgId: string,
+): Promise<void> {
+  if (!hasInternalDB()) {
+    throw new Error(
+      "Cannot preserve Slack installation orgId — no internal database configured",
+    );
+  }
+  if (!orgId) {
+    throw new Error("preserveOrgIdOnInstall: orgId must be non-empty");
+  }
+  const pool = getInternalDB();
+  const result = await pool.query(
+    `UPDATE ${INSTALL_TABLE}
+        SET value = jsonb_set(value, '{${FIELD.orgId}}', to_jsonb($2::text), true)
+      WHERE key = $1
+        AND (value->>'${FIELD.orgId}' IS NULL
+             OR value->>'${FIELD.orgId}' = $2)
+      RETURNING key`,
+    [keyFor(teamId), orgId],
+  );
+  if (result.rows.length > 0) return;
+
+  // Zero rows updated — disambiguate "row absent" from "cross-tenant
+  // hijack" with a follow-up primary-key probe.
+  const probe = await pool.query(
+    `SELECT value->>'${FIELD.orgId}' AS existing_org_id
+       FROM ${INSTALL_TABLE}
+      WHERE key = $1`,
+    [keyFor(teamId)],
+  );
+  if (probe.rows.length === 0) {
+    log.warn(
+      { teamId, orgId },
+      "preserveOrgIdOnInstall: chat_cache row not found — caller ordered preserve before chat-adapter write (no-op)",
+    );
+    return;
+  }
+  const probeRow = probe.rows[0] as { existing_org_id: string | null } | undefined;
+  const existing = probeRow?.existing_org_id ?? null;
+  if (existing && existing !== orgId) {
+    throw new Error(
+      `Slack workspace ${teamId} is already bound to a different organization (${existing}). ` +
+        "Disconnect the existing installation first.",
+    );
+  }
+  // Race: another writer stamped the matching orgId between our UPDATE
+  // and probe. Idempotent success.
+}
+
+/**
  * Remove a Slack installation by team ID. No-op (with warning) when no
  * internal DB is configured.
  */

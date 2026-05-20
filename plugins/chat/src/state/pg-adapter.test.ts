@@ -340,6 +340,48 @@ describe("PgStateAdapter cache", () => {
     expect(setCall!.sql).toContain("NULL");
   });
 
+  it("set overwrites value for non-installation keys (#2676)", async () => {
+    const mock = createMockDB({
+      queryResults: [[], [], [], [], [], []],
+    });
+    const adapter = new PgStateAdapter(mock.db);
+    await adapter.connect();
+    mock.calls.length = 0;
+
+    await adapter.set("oauth:slack:abc-123", { orgId: "org-1" }, 600_000);
+
+    const setCall = mock.calls.find((c) => c.sql.includes("INSERT INTO chat_cache"));
+    expect(setCall).toBeDefined();
+    // Non-installation key: standard EXCLUDED.value overwrite, no JSONB merge.
+    expect(setCall!.sql).toContain("SET value = EXCLUDED.value");
+    expect(setCall!.sql).not.toContain("chat_cache.value ||");
+  });
+
+  it("set JSONB-merges value for slack:installation:* keys (#2676)", async () => {
+    // Repro for #2676: chat-adapter's `setInstallation` writes the row
+    // with only its own fields (`botToken`, `botUserId`, `teamName`),
+    // dropping host-extension fields like `orgId` on every re-install.
+    // The fix flips to JSONB-merge for installation keys so prior
+    // host-extension fields are preserved.
+    const mock = createMockDB({
+      queryResults: [[], [], [], [], [], []],
+    });
+    const adapter = new PgStateAdapter(mock.db);
+    await adapter.connect();
+    mock.calls.length = 0;
+
+    await adapter.set("slack:installation:T0AQLT0EBMJ", {
+      botToken: "xoxb-new",
+      botUserId: "U1",
+      teamName: "Atlas",
+    });
+
+    const setCall = mock.calls.find((c) => c.sql.includes("INSERT INTO chat_cache"));
+    expect(setCall).toBeDefined();
+    expect(setCall!.sql).toContain("SET value = chat_cache.value || EXCLUDED.value");
+    expect(setCall!.sql).not.toContain("SET value = EXCLUDED.value,");
+  });
+
   it("delete removes by key", async () => {
     const mock = createMockDB({
       queryResults: [[], [], [], [], [], []],

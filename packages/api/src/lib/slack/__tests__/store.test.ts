@@ -53,6 +53,7 @@ const {
   getInstallation,
   getInstallationByOrg,
   saveInstallation,
+  preserveOrgIdOnInstall,
   deleteInstallation,
   deleteInstallationByOrg,
   getBotToken,
@@ -315,6 +316,98 @@ describe("store (chat_cache-backed)", () => {
       mockPoolQuery.mockRejectedValue(new Error("disk full"));
 
       await expect(saveInstallation("T123", "xoxb-token")).rejects.toThrow("disk full");
+    });
+  });
+
+  describe("preserveOrgIdOnInstall (#2676)", () => {
+    it("stamps orgId via jsonb_set when the row is missing the field", async () => {
+      mockHasInternalDB.mockReturnValue(true);
+      mockPoolQuery.mockResolvedValueOnce({ rows: [{ key: "slack:installation:T123" }] });
+
+      await expect(
+        preserveOrgIdOnInstall("T123", "org-1"),
+      ).resolves.toBeUndefined();
+
+      expect(mockPoolQuery).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockPoolQuery.mock.calls[0];
+      expect(sql).toContain("UPDATE chat_cache");
+      expect(sql).toContain("jsonb_set(value, '{orgId}'");
+      expect(sql).toContain("to_jsonb($2::text)");
+      // Hijack-guard WHERE clause mirrors saveInstallation
+      expect(sql).toContain("value->>'orgId' IS NULL");
+      expect(sql).toContain("value->>'orgId' = $2");
+      expect(params).toEqual(["slack:installation:T123", "org-1"]);
+    });
+
+    it("is idempotent when the row's orgId already matches", async () => {
+      // Same SQL semantics as the "missing" case — jsonb_set is a no-op
+      // when path's value equals the new value. RETURNING still emits
+      // the row.
+      mockHasInternalDB.mockReturnValue(true);
+      mockPoolQuery.mockResolvedValueOnce({ rows: [{ key: "slack:installation:T123" }] });
+
+      await expect(
+        preserveOrgIdOnInstall("T123", "org-1"),
+      ).resolves.toBeUndefined();
+      expect(mockPoolQuery).toHaveBeenCalledTimes(1);
+    });
+
+    it("warns and returns (no throw) when the chat_cache row doesn't exist", async () => {
+      // UPDATE returns 0 rows; follow-up probe SELECT returns 0 rows →
+      // distinguishes "row absent" from "hijack" and returns soft.
+      mockHasInternalDB.mockReturnValue(true);
+      mockPoolQuery
+        .mockResolvedValueOnce({ rows: [] }) // UPDATE — no row matched
+        .mockResolvedValueOnce({ rows: [] }); // probe — row absent
+
+      await expect(
+        preserveOrgIdOnInstall("T123", "org-1"),
+      ).resolves.toBeUndefined();
+      expect(mockPoolQuery).toHaveBeenCalledTimes(2);
+    });
+
+    it("throws on cross-tenant hijack", async () => {
+      // UPDATE returns 0 rows; follow-up probe returns the conflicting orgId.
+      mockHasInternalDB.mockReturnValue(true);
+      mockPoolQuery
+        .mockResolvedValueOnce({ rows: [] }) // UPDATE — no row matched
+        .mockResolvedValueOnce({ rows: [{ existing_org_id: "org-other" }] });
+
+      await expect(
+        preserveOrgIdOnInstall("T123", "org-mine"),
+      ).rejects.toThrow("already bound to a different organization (org-other)");
+    });
+
+    it("treats a same-orgId race as idempotent success", async () => {
+      // UPDATE returns 0 rows (another writer beat us between WHERE eval
+      // and RETURNING); probe shows the row now has the matching orgId
+      // we wanted to stamp. Return success.
+      mockHasInternalDB.mockReturnValue(true);
+      mockPoolQuery
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ existing_org_id: "org-1" }] });
+
+      await expect(
+        preserveOrgIdOnInstall("T123", "org-1"),
+      ).resolves.toBeUndefined();
+    });
+
+    it("rejects empty orgId", async () => {
+      mockHasInternalDB.mockReturnValue(true);
+
+      await expect(preserveOrgIdOnInstall("T123", "")).rejects.toThrow(
+        "orgId must be non-empty",
+      );
+      expect(mockPoolQuery).not.toHaveBeenCalled();
+    });
+
+    it("throws when no internal DB is configured", async () => {
+      mockHasInternalDB.mockReturnValue(false);
+
+      await expect(preserveOrgIdOnInstall("T123", "org-1")).rejects.toThrow(
+        "no internal database configured",
+      );
+      expect(mockPoolQuery).not.toHaveBeenCalled();
     });
   });
 

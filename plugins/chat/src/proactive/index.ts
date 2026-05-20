@@ -79,13 +79,17 @@ export {
 export {
   InvalidProactiveIdentityError,
   assertAtlasUserId,
+  assertChannelId,
   assertExternalUserId,
+  assertThreadId,
   assertWorkspaceId,
   type ProactiveIdentityField,
 } from "./identity";
 export type {
   AtlasUserId,
+  ChannelId,
   ExternalUserId,
+  ThreadId,
   WorkspaceId,
 } from "@useatlas/types/proactive";
 

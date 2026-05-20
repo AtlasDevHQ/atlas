@@ -126,6 +126,14 @@ function makeChat() {
 }
 
 interface ThreadDouble {
+  /**
+   * Encoded thread id matching the chat-adapter's contract — for Slack,
+   * `"slack:CHANNEL:THREAD_TS"`. Distinct from {@link channelId} (the
+   * bare `"slack:CHANNEL"`) so the fixture mirrors the production-shape
+   * divergence #2680 exposed: the pre-#2680 fixture collapsed both into
+   * the same string, masking the bug in CI.
+   */
+  id: string;
   channelId: string;
   isDM: boolean;
   adapter: { name: string };
@@ -138,10 +146,15 @@ interface ThreadDouble {
 
 function makeThread(
   channelId = "C-allowed",
-  opts: { isDM?: boolean; adapterName?: string } = {},
+  opts: { isDM?: boolean; adapterName?: string; threadTs?: string } = {},
 ): ThreadDouble {
   const addReaction = mock(async () => {});
+  // Mirror the chat-adapter Slack encoding so prod-shape divergence
+  // between `thread.id` and `thread.channelId` is preserved in tests.
+  const threadTs = opts.threadTs ?? "1700000000.000100";
+  const id = `${channelId}:${threadTs}`;
   return {
+    id,
     channelId,
     isDM: opts.isDM ?? false,
     // Post-#2620: the listener reads `thread.adapter` to pass to the
@@ -150,7 +163,7 @@ function makeThread(
     // constant workspaceId, so it doesn't actually inspect the adapter).
     adapter: { name: opts.adapterName ?? "slack" },
     createSentMessageFromMessage: mock(() => ({ addReaction })),
-    postEphemeral: mock(async () => ({ id: "E1", threadId: channelId, raw: {} })),
+    postEphemeral: mock(async () => ({ id: "E1", threadId: id, raw: {} })),
     post: mock(async () => ({ id: "P1" })),
     subscribe: mock(async () => {}),
     _addReaction: addReaction,
@@ -499,7 +512,7 @@ describe("registerProactiveListener — reaction-back handler", () => {
     await invokeReaction({
       added: true,
       messageId: "M1",
-      threadId: thread.channelId,
+      threadId: thread.id,
       thread,
       user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
       emoji: PROACTIVE_REACTION,
@@ -526,7 +539,7 @@ describe("registerProactiveListener — reaction-back handler", () => {
     await invokeReaction({
       added: true,
       messageId: "M1",
-      threadId: thread.channelId,
+      threadId: thread.id,
       thread,
       user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
       emoji: PROACTIVE_REACTION,
@@ -551,7 +564,7 @@ describe("registerProactiveListener — reaction-back handler", () => {
     await invokeReaction({
       added: true,
       messageId: "M1",
-      threadId: thread.channelId,
+      threadId: thread.id,
       thread,
       user: { isMe: true, isBot: true, userId: "B-atlas", userName: "atlas" },
       emoji: PROACTIVE_REACTION,
@@ -573,7 +586,7 @@ describe("registerProactiveListener — reaction-back handler", () => {
     await invokeReaction({
       added: true,
       messageId: "M-unknown",
-      threadId: thread.channelId,
+      threadId: thread.id,
       thread,
       user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
       emoji: PROACTIVE_REACTION,
@@ -601,7 +614,7 @@ describe("registerProactiveListener — reaction-back handler", () => {
     await invokeReaction({
       added: true,
       messageId: "M1",
-      threadId: thread.channelId,
+      threadId: thread.id,
       thread,
       user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
       emoji: PROACTIVE_REACTION,
@@ -651,7 +664,7 @@ describe("registerProactiveListener — button handlers", () => {
       adapter: { name: "slack" },
       messageId: "offer-msg",
       thread,
-      threadId: thread.channelId,
+      threadId: thread.id,
       user: { isMe: false, isBot: false, userId: "U-asker", userName: "alice" },
       value: "M1",
       raw: {},
@@ -679,7 +692,7 @@ describe("registerProactiveListener — button handlers", () => {
       adapter: { name: "slack" },
       messageId: "offer-msg",
       thread,
-      threadId: thread.channelId,
+      threadId: thread.id,
       user: { isMe: false, isBot: false, userId: "U-asker", userName: "alice" },
       value: "M1",
       raw: {},
@@ -689,7 +702,7 @@ describe("registerProactiveListener — button handlers", () => {
     await invokeReaction({
       added: true,
       messageId: "M1",
-      threadId: thread.channelId,
+      threadId: thread.id,
       thread,
       user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
       emoji: PROACTIVE_REACTION,
@@ -1503,7 +1516,7 @@ describe("registerProactiveListener — public dataset (#2297)", () => {
     return {
       added: true,
       messageId,
-      threadId: thread.channelId,
+      threadId: thread.id,
       thread,
       user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
       emoji: PROACTIVE_REACTION,
@@ -2175,7 +2188,7 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
     await invokeReaction({
       added: true,
       messageId: "M-A-1",
-      threadId: threadA.channelId,
+      threadId: threadA.id,
       thread: threadA,
       user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
       emoji: PROACTIVE_REACTION,
@@ -2187,7 +2200,7 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
     await invokeReaction({
       added: true,
       messageId: "M-B-1",
-      threadId: threadB.channelId,
+      threadId: threadB.id,
       thread: threadB,
       user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
       emoji: PROACTIVE_REACTION,
@@ -2319,7 +2332,7 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
     await invokeReaction({
       added: true,
       messageId: "M-A-1",
-      threadId: threadA.channelId,
+      threadId: threadA.id,
       thread: threadA,
       user: { isMe: false, isBot: false, userId: "U-shared", userName: "bob" },
       emoji: PROACTIVE_REACTION,
@@ -2330,7 +2343,7 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
     await invokeReaction({
       added: true,
       messageId: "M-B-1",
-      threadId: threadB.channelId,
+      threadId: threadB.id,
       thread: threadB,
       user: { isMe: false, isBot: false, userId: "U-shared", userName: "bob" },
       emoji: PROACTIVE_REACTION,
@@ -2405,7 +2418,7 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
     await invokeReaction({
       added: true,
       messageId: "M1",
-      threadId: thread.channelId,
+      threadId: thread.id,
       thread,
       user: { isMe: false, isBot: false, userId: "U-asker", userName: "asker" },
       emoji: PROACTIVE_REACTION,
@@ -2464,7 +2477,7 @@ describe("registerProactiveListener — multi-tenant per-event resolution (#2620
     await invokeReaction({
       added: true,
       messageId: "M1",
-      threadId: thread.channelId,
+      threadId: thread.id,
       thread,
       user: { isMe: false, isBot: false, userId: "U-asker", userName: "asker" },
       emoji: PROACTIVE_REACTION,
@@ -2583,7 +2596,7 @@ describe("registerProactiveListener — #2641 brand-promotion boundaries", () =>
     await invokeReaction({
       added: true,
       messageId: "M-orphan",
-      threadId: thread.channelId,
+      threadId: thread.id,
       thread,
       user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
       emoji: PROACTIVE_REACTION,
@@ -2632,7 +2645,7 @@ describe("registerProactiveListener — #2641 brand-promotion boundaries", () =>
     await invokeReaction({
       added: true,
       messageId: "M-rls",
-      threadId: thread.channelId,
+      threadId: thread.id,
       thread,
       user: { isMe: false, isBot: false, userId: "U-asker", userName: "asker" },
       emoji: PROACTIVE_REACTION,
@@ -2743,7 +2756,7 @@ describe("registerProactiveListener — per-event getWorkspaceConfig cache (#262
     await invokeReaction({
       added: true,
       messageId: "M1",
-      threadId: thread.channelId,
+      threadId: thread.id,
       thread,
       user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
       emoji: PROACTIVE_REACTION,

@@ -20,6 +20,7 @@ import type { Author } from "chat";
 import type {
   AtlasUserId,
   ExternalUserId,
+  ThreadId,
   WorkspaceId,
 } from "@useatlas/types/proactive";
 
@@ -223,13 +224,24 @@ export class PendingAnswers {
     private readonly now: () => number = Date.now,
   ) {}
 
-  /** Build the lookup key from thread + message IDs. */
-  static key(threadId: string, messageId: string): string {
+  /**
+   * Build the lookup key from thread + message IDs.
+   *
+   * `threadId` is branded {@link ThreadId} (#2680) — the chat-adapter's
+   * encoded form (`"slack:CHANNEL:THREAD_TS"`). Without the brand a
+   * caller could pass `thread.channelId` (bare `"slack:CHANNEL"`) and
+   * the type system wouldn't complain; in production the keys never
+   * matched the encoded form `event.threadId` carries on the
+   * reaction-back side, so every pending lookup returned null and
+   * every answer-flow attempt skipped at `unknown-message` (debug-level
+   * log, no meter row). The brand makes the bug uncompilable.
+   */
+  static key(threadId: ThreadId, messageId: string): string {
     return `${threadId}:${messageId}`;
   }
 
   /** Record that Atlas reacted to a message and is waiting on opt-in. */
-  record(threadId: string, messageId: string, entry: Omit<PendingAnswerEntry, "recordedAt">): void {
+  record(threadId: ThreadId, messageId: string, entry: Omit<PendingAnswerEntry, "recordedAt">): void {
     if (this.store.size >= this.maxEntries) {
       // Evict the oldest entry to keep the map bounded. Insertion order
       // in a Map is preserved, so the first key is the oldest.
@@ -247,7 +259,7 @@ export class PendingAnswers {
    * expired. Consuming is by design — an asker who reacts twice
    * should not trigger two answers.
    */
-  consume(threadId: string, messageId: string): PendingAnswerEntry | null {
+  consume(threadId: ThreadId, messageId: string): PendingAnswerEntry | null {
     const key = PendingAnswers.key(threadId, messageId);
     const entry = this.store.get(key);
     if (!entry) return null;
@@ -260,7 +272,7 @@ export class PendingAnswers {
   }
 
   /** Read-only peek for tests; does not consume. */
-  peek(threadId: string, messageId: string): PendingAnswerEntry | null {
+  peek(threadId: ThreadId, messageId: string): PendingAnswerEntry | null {
     const entry = this.store.get(PendingAnswers.key(threadId, messageId));
     if (!entry) return null;
     if (this.now() - entry.recordedAt > this.ttlMs) return null;

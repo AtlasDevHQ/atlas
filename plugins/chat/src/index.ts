@@ -82,12 +82,15 @@ export type {
 export {
   InvalidProactiveIdentityError,
   assertAtlasUserId,
+  assertChannelId,
   assertExternalUserId,
+  assertThreadId,
   assertWorkspaceId,
 } from "./proactive";
 export type { ProactiveIdentityField } from "./proactive";
 export type {
   AtlasUserId,
+  ChannelId,
   ChannelPauseLayer,
   ChannelProactiveConfig,
   ClassificationResult,
@@ -119,6 +122,7 @@ export type {
   ResolverEvent,
   ResolverEventLite,
   SensitivityPreset,
+  ThreadId,
   WorkspaceId,
   WorkspaceProactiveConfig,
 } from "./proactive";

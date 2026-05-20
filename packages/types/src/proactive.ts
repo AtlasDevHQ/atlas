@@ -76,6 +76,38 @@ export type AtlasUserId = string & { readonly __brand: "AtlasUserId" };
  */
 export type ExternalUserId = string & { readonly __brand: "ExternalUserId" };
 
+/**
+ * Chat-adapter encoded thread id (e.g. Slack: `"slack:CHANNEL:THREAD_TS"`).
+ *
+ * Distinct nominal type from {@link ChannelId} even though both are
+ * strings at runtime. The chat-adapter's `Thread.id` and
+ * `ReactionEvent.threadId` both surface this encoded form; the bare
+ * `"slack:CHANNEL"` channel id is the `ChannelId` brand. Branding the
+ * two prevents the #2680 class of bug — a developer reading the chat
+ * SDK's `Thread.channelId` (`string`) and passing it where a thread id
+ * is expected (`pending.record(thread.channelId, ...)` was the
+ * specific instance, which silently broke the proactive reaction-back
+ * path for the entire 1.5.0 dogfood window because Map keys never
+ * matched the encoded form `event.threadId` carries).
+ *
+ * Promoted via `assertThreadId` from `@useatlas/chat`.
+ */
+export type ThreadId = string & { readonly __brand: "ThreadId" };
+
+/**
+ * Chat-adapter channel id (e.g. Slack: `"slack:CHANNEL"`).
+ *
+ * Distinct nominal type from {@link ThreadId}. The chat-adapter's
+ * `Thread.channelId` and `channelIdFromThreadId(threadId)` both
+ * surface this bare form; the encoded `"slack:CHANNEL:THREAD_TS"` is
+ * the `ThreadId` brand. Branding eliminates the can-pass-either-string
+ * footgun that lets `pending.record(thread.channelId, ...)` compile
+ * against a slot expecting `ThreadId`.
+ *
+ * Promoted via `assertChannelId` from `@useatlas/chat`.
+ */
+export type ChannelId = string & { readonly __brand: "ChannelId" };
+
 // ---------------------------------------------------------------------------
 // Pause registry (#2295) — three-layer kill switch + per-user opt-out
 // ---------------------------------------------------------------------------

@@ -1,0 +1,220 @@
+/**
+ * `PlatformInstallHandler` interface family — slice 4 of #2649 (issue #2652).
+ *
+ * Three concrete handler shapes, one per `install_model` value in the
+ * plugin catalog (`oauth` / `form` / `static-bot`). The {@link
+ * getInstallHandler} dispatch in `./dispatch.ts` switches on the catalog
+ * row's `install_model` and returns the matching handler.
+ *
+ * Per ADR-0004, Platform OAuth is a separate subsystem from Better
+ * Auth's user OAuth. These interfaces never touch the `account` table —
+ * they write to `workspace_plugins` (install record, per ADR-0003) and
+ * to the per-Platform credential store (`chat_cache` for chat Platforms,
+ * per-plugin store for lazy integrations).
+ *
+ * Per-handler return-shape note: each handler intentionally returns its
+ * *own* result shape rather than a shared envelope, because the three
+ * install models have genuinely different success semantics (a static-
+ * bot install carries no credential, an OAuth callback carries both an
+ * install record and a credential write outcome, etc.). The dispatch
+ * union ({@link PlatformInstallHandler}) is tagged via the `kind` field
+ * so consumers can narrow safely.
+ */
+
+import type { WorkspaceId } from "@useatlas/types";
+import type { CatalogInstallModel } from "@atlas/api/lib/config";
+
+// ---------------------------------------------------------------------------
+// Shared result shapes
+// ---------------------------------------------------------------------------
+
+/**
+ * Catalog id — the slug column of `plugin_catalog` (e.g. `"slack"`,
+ * `"jira"`). Kept as a plain string for now; if catalog ids grow more
+ * structure (e.g. namespaced community plugins) we'd promote this to a
+ * branded type alongside the existing brands in `@useatlas/types`.
+ */
+export type CatalogId = string;
+
+/**
+ * Outcome of writing a Platform install record — the row in
+ * `workspace_plugins`. Returned by every handler so callers can render
+ * "installed" UI without a follow-up read.
+ *
+ * Persisted-row id and the catalog binding land here; per-Platform
+ * metadata (Slack `team_id`, Jira `cloud_id`, etc.) lives in the
+ * adapter's own state store and is not part of this envelope.
+ */
+export interface InstallRecord {
+  readonly id: string;
+  readonly workspaceId: WorkspaceId;
+  readonly catalogId: CatalogId;
+}
+
+/**
+ * Outcome of writing the per-Platform credential blob. Tracked as a
+ * distinct field from {@link InstallRecord} because a partial failure
+ * — install row written, credential write failed — needs to surface as
+ * "Reconnect needed" rather than "Installed" (admin must re-run the
+ * OAuth dance). The dual-store semantics are documented in ADR-0003.
+ */
+export interface CredentialResult {
+  readonly written: boolean;
+  /**
+   * Operator-facing reason when `written: false`. Surfaced in the
+   * `/admin/integrations` card. Never include secret material.
+   */
+  readonly reason?: string;
+}
+
+// ---------------------------------------------------------------------------
+// OAuth install handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Handler for `install_model: "oauth"` catalog entries — Slack, Jira,
+ * Salesforce, etc. Atlas's per-deploy app registration drives the
+ * OAuth dance; the Workspace gets its own bot token / per-tenant
+ * credential at callback time.
+ *
+ * Credential rotation semantics: each implementation documents how it
+ * refreshes — Slack's bot token does not expire, Salesforce / Jira use
+ * refresh tokens. See the per-Platform JSDoc in 1.5.3+ handler files.
+ */
+export interface OAuthPlatformInstallHandler {
+  readonly kind: "oauth";
+
+  /**
+   * Begin the OAuth dance. Mints a CSRF state token via
+   * {@link OAuthStateToken} bound to `(workspaceId, catalogId)` and
+   * returns the Platform's authorize URL with that state baked in.
+   *
+   * `redirectUrl` is what the admin's browser is redirected to;
+   * `stateToken` is the same token, surfaced separately so the API
+   * route can persist it client-side (cookie / hidden form input) when
+   * the Platform's authorize URL doesn't echo the state back through
+   * the query string verbatim.
+   */
+  startInstall(workspaceId: WorkspaceId): Promise<{
+    readonly redirectUrl: string;
+    readonly stateToken: string;
+  }>;
+
+  /**
+   * Handle the OAuth callback. Verifies the state token, exchanges the
+   * authorization code with the Platform, then writes both stores:
+   * the install record (`workspace_plugins`) and the per-Platform
+   * credential.
+   *
+   * Returns `null` on state-token failure (forged, expired, replayed).
+   * Bubbles a tagged error on Platform-side failures (`oauth.v2.access`
+   * non-OK responses for Slack, etc.) so the route can surface an
+   * actionable user error.
+   */
+  handleCallback(
+    code: string,
+    stateToken: string,
+  ): Promise<{
+    readonly workspaceId: WorkspaceId;
+    readonly catalogId: CatalogId;
+    readonly installRecord: InstallRecord;
+    readonly credentialResult: CredentialResult;
+  } | null>;
+}
+
+// ---------------------------------------------------------------------------
+// Form-based install handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Handler for `install_model: "form"` catalog entries — Email, Webhook,
+ * Obsidian, etc. Admin submits a form (SMTP host + creds, webhook URL +
+ * shared secret, etc.); handler validates the config and writes both
+ * stores in one shot.
+ *
+ * `formData` is `unknown` at this level — each implementation is
+ * responsible for validating with its own Zod schema before touching
+ * persistence. The catalog row's `config_schema` JSONB column is the
+ * source of truth for what fields a Platform expects.
+ *
+ * Credential rotation semantics: form-based credentials don't refresh
+ * automatically — when an SMTP password expires, the admin re-submits
+ * the form. Some implementations may surface "test connection" actions
+ * that re-validate without rewriting.
+ */
+export interface FormBasedInstallHandler {
+  readonly kind: "form";
+
+  validateConfig(
+    workspaceId: WorkspaceId,
+    formData: unknown,
+  ): Promise<{
+    readonly installRecord: InstallRecord;
+    readonly credentialWritten: boolean;
+  }>;
+}
+
+// ---------------------------------------------------------------------------
+// Static-bot install handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Handler for `install_model: "static-bot"` catalog entries — Telegram,
+ * Discord, Teams, gchat, WhatsApp. The bot itself is operator-shared
+ * (single app registration per Platform); the customer admin supplies a
+ * routing identifier (Discord `guild_id`, Telegram `chat_id`, Teams
+ * `tenant_id`, etc.) that the shared bot uses to scope messages.
+ *
+ * `verificationProof` is optional — a Platform-specific proof (e.g.
+ * Telegram's `/start@AtlasBot` echo, Discord's bot-member presence
+ * check) that the routing identifier really belongs to the requesting
+ * Workspace. Required for Platforms where impersonation would let
+ * Workspace B claim Workspace A's chat id.
+ *
+ * Credential rotation semantics: there is no per-Workspace credential —
+ * the bot's auth lives with the operator. Rotation is operator-side.
+ *
+ * **No implementation lands in 1.5.2.** The shape is pinned here so the
+ * dispatch table in `./dispatch.ts` covers all three branches today;
+ * 1.5.3 lands the real handler as an import-and-register change.
+ */
+export interface StaticBotInstallHandler {
+  readonly kind: "static-bot";
+
+  confirmInstall(
+    workspaceId: WorkspaceId,
+    routingIdentifier: string,
+    verificationProof?: string,
+  ): Promise<{
+    readonly installRecord: InstallRecord;
+  }>;
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch union
+// ---------------------------------------------------------------------------
+
+/**
+ * Discriminated union returned by {@link getInstallHandler}. The `kind`
+ * tag mirrors the catalog row's {@link CatalogInstallModel} value so
+ * callers can narrow with a single switch.
+ *
+ * Adding a new `install_model` value (e.g. `"manifest"`) in a future
+ * milestone is a compile error at the dispatch switch — the exhaustive
+ * `never` branch surfaces the missing case before any runtime drift.
+ */
+export type PlatformInstallHandler =
+  | OAuthPlatformInstallHandler
+  | FormBasedInstallHandler
+  | StaticBotInstallHandler;
+
+/**
+ * Subset of the catalog row that the dispatch needs — kept narrow so
+ * the install module doesn't depend on Drizzle row shapes. The seeder
+ * already validates `install_model` against {@link CatalogInstallModel}
+ * at read time (see `catalog-seeder.ts::readExistingCatalog`).
+ */
+export interface CatalogRowForDispatch {
+  readonly slug: CatalogId;
+  readonly install_model: CatalogInstallModel;
+}

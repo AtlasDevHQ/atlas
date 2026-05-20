@@ -241,6 +241,15 @@ Each install handler interface documents rotation semantics in its docstring:
 
 Slice 4 (`PlatformInstallHandler` interface family) registers a dispatch keyed on `install_model`. Even though `StaticBotInstallHandler` ships in 1.5.3, the 1.5.2 dispatch must already cover all three branches — with `StaticBotInstallHandler` registered as a stub that throws `EnterpriseError("install_model 'static-bot' not implemented until 1.5.3")` (or similar). This pins the registration shape so 1.5.3 lands as a single import + stub-removal change, not a dispatch-mechanism design call.
 
+Landed (slice 4 / PR #2652) calls worth pinning so 1.5.3 doesn't re-litigate them:
+
+- **Stub error type** — plain `Error` (not `EnterpriseError`). The static-bot stub is a "not implemented yet" deferral, not an EE feature gate; mapping it to a 403 "Requires Enterprise" response would mislead the admin UI. Slice 5 / #2660 callers can assert on the message substring `"not implemented until 1.5.3"`.
+- **`OAuthStateToken` shape** — compact JWT-ish three-part wire format `base64url(header).base64url(payload).base64url(hmacSha256)`. Header `{ alg: "HS256", kid: <int>, typ: "AtlasOAuthState" }`; payload `{ workspaceId, catalogId, exp }` (unix seconds). Format is local — `@atlas/oauth-helper` doesn't currently expose an HMAC signer and editing the helper is out of scope for the foundation slice.
+- **`kid` = active key version** — the `kid` integer is the `version` field of the entry in `ATLAS_ENCRYPTION_KEYS` that signed the token. Always the *highest* version at mint time; on verify, any version still present in the keyset is accepted. This lets an operator rotate keys (promote v2 to active, keep v1 readable for a window) without bulk-invalidating in-flight install dances.
+- **Default TTL** — 10 minutes. Env override `ATLAS_OAUTH_STATE_TTL_SECONDS` clamped to [60, 3600]; per-call override on `mint()` is for tests only.
+- **Verify policy** — `verify()` returns `null` on every failure path (malformed, tampered, expired, unknown kid, no key configured). Never throws — callers must not introspect which check tripped.
+- **Mint when no key is configured** — throws, does not fall back. Unlike opaque-secret encryption (which has a dev-friendly plaintext passthrough), CSRF state cannot degrade silently. Self-host operators must set at least `BETTER_AUTH_SECRET`; SaaS deploys must set `ATLAS_ENCRYPTION_KEYS`.
+
 ### Per-Workspace platform identifiers
 
 Some Platforms with OAuth install still need per-Workspace platform-specific identifiers persisted alongside the credential:

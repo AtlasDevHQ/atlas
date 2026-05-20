@@ -16,10 +16,23 @@
  * UI flows differ (form submit vs. routing-id capture) and don't share
  * this router's redirect-and-callback shape.
  *
+ * Mount sibling: `integrations-catalog.ts` is also mounted at
+ * `/api/v1/integrations` (path `/catalog`) and uses `createAdminRouter()`
+ * which applies `adminAuth` + `mfaRequired` middleware. Hono scopes
+ * sub-router middleware to that sub-router's own routes — the admin gate
+ * does NOT bleed into this router's `/:platform/install,callback`. The
+ * two sub-routers share a mount prefix but have non-overlapping paths
+ * (`/catalog` is never a valid platform slug because the row id
+ * `catalog:catalog` would never be seeded, and the catalog router owns
+ * the `/catalog` segment first).
+ *
  * Auth: install requires an authenticated workspace admin (per the F-04
  * install-hijack threat — without an org binding, an attacker can race
  * to claim a real OAuth token under their workspace). Callback verifies
- * the same binding via the state token signed at install time.
+ * the same binding via the state token signed at install time. In SaaS
+ * deploy mode, the `mode === "none"` no-auth branch is refused outright
+ * — managed-auth misconfig must never let an install land without an
+ * org binding (would write under a shared sentinel workspace id).
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
@@ -28,6 +41,7 @@ import { internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getWebOrigin } from "@atlas/api/lib/web-origin";
 import { runHandler } from "@atlas/api/lib/effect/hono";
+import { getConfig } from "@atlas/api/lib/config";
 import { getInstallHandler } from "@atlas/api/lib/integrations/install";
 import { adminAuthPreamble } from "./admin-auth";
 import { validationHook } from "./validation-hook";
@@ -106,18 +120,27 @@ interface CatalogRowFromDb extends Record<string, unknown> {
 }
 
 /**
- * Look up a catalog row by slug. Returns `null` when the row doesn't
- * exist or the row's `install_model` isn't one of the three known
- * dispatch values (the CHECK constraint normally prevents the latter,
- * but a planner-friendly assert keeps the route safe against a future
- * schema relaxation).
+ * Look up an *installable* catalog row by slug. Returns `null` when the
+ * row doesn't exist, has been disabled by ops (`enabled = false`), or
+ * carries an unknown `install_model` (the CHECK constraint normally
+ * prevents the latter, but a planner-friendly assert keeps the route
+ * safe against a future schema relaxation).
+ *
+ * The `enabled = true` predicate is load-bearing: ops can flip a row to
+ * disabled in the DB without a deploy (see ADR-0002 S3 — the seeder
+ * preserves DB-side `enabled=false`). Without this gate, a disabled
+ * platform could still be installed by hitting the URL directly,
+ * defeating the kill switch.
  */
-async function getCatalogRowBySlug(slug: string): Promise<{
+async function getInstallableCatalogRowBySlug(slug: string): Promise<{
   slug: string;
   install_model: CatalogInstallModel;
 } | null> {
   const rows = await internalQuery<CatalogRowFromDb>(
-    `SELECT slug, install_model, enabled FROM plugin_catalog WHERE slug = $1 LIMIT 1`,
+    `SELECT slug, install_model, enabled
+       FROM plugin_catalog
+      WHERE slug = $1 AND enabled = true
+      LIMIT 1`,
     [slug],
   );
   if (rows.length === 0) return null;
@@ -144,24 +167,37 @@ integrations.openapi(installRoute, async (c) =>
       return c.json(preamble.error, preamble.status, preamble.headers);
     }
 
-    // Org id is the WorkspaceId for the install row. Admin-mode "none"
-    // (no-auth local dev) sets `activeOrganizationId = undefined`; we
-    // accept that branch only for self-hosted (the SaaS-mode F-04 check
-    // lives at the catalog gate, not here, because SaaS pins managed
-    // auth so this code path can't be reached without an org id).
+    // Org id is the WorkspaceId for the install row.
+    //
+    // F-04 fail-closed under SaaS: if auth mode is "none" (no-auth) AND
+    // the deploy is SaaS, refuse outright. SaaS pins managed auth in
+    // config, so a mode=none branch here means auth middleware
+    // regressed or is misconfigured. Allowing an OAuth dance to land
+    // with a shared sentinel workspaceId would write tenant-shared
+    // install + credential rows — the exact install-hijack the legacy
+    // route's SaaS-mode guard prevented. Self-hosted no-auth keeps the
+    // sentinel branch for single-tenant dev.
+    const deployMode = getConfig()?.deployMode;
     const orgIdRaw = preamble.authResult.user?.activeOrganizationId ?? undefined;
+    if (preamble.authResult.mode === "none" && deployMode === "saas") {
+      log.warn({ deployMode }, "Refusing install: SaaS deploy with mode=none is a misconfig");
+      return c.json(
+        { error: "missing_org_binding", message: "Install must be initiated by an authenticated workspace admin.", requestId },
+        400,
+      );
+    }
     if (!orgIdRaw && preamble.authResult.mode !== "none") {
       return c.json({ error: "missing_org_binding", message: "Install must be initiated by an authenticated workspace admin.", requestId }, 400);
     }
-    // For "none" mode (self-hosted no-auth dev), use a sentinel
-    // workspace id so the slice 4 state-token mint succeeds. Anyone
-    // running self-hosted-no-auth is a single-tenant install; the
-    // install row's workspace_id only needs to be stable for the dual-
-    // store join.
+    // For "none" mode (self-hosted no-auth dev only — SaaS branch
+    // refused above), use a sentinel workspace id so the slice 4
+    // state-token mint succeeds. Anyone running self-hosted-no-auth is
+    // a single-tenant install; the install row's workspace_id only
+    // needs to be stable for the dual-store join.
     const workspaceId = (orgIdRaw ?? "self-hosted") as WorkspaceId;
 
     // ── Catalog lookup ────────────────────────────────────────────
-    const row = await getCatalogRowBySlug(platform);
+    const row = await getInstallableCatalogRowBySlug(platform);
     if (!row) {
       return c.json({ error: "not_found", message: `Unknown platform "${platform}"`, requestId }, 404);
     }
@@ -204,7 +240,7 @@ integrations.openapi(callbackRoute, async (c) =>
     const { code, state } = c.req.valid("query");
     const requestId = crypto.randomUUID();
 
-    const row = await getCatalogRowBySlug(platform);
+    const row = await getInstallableCatalogRowBySlug(platform);
     if (!row) {
       return c.json({ error: "not_found", message: `Unknown platform "${platform}"`, requestId }, 404);
     }

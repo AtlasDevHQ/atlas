@@ -25,17 +25,21 @@ const log = createLogger("integrations.install.register");
 /**
  * Read the public API origin from the operator's env. Each SaaS region
  * has its own value baked into Railway env vars; self-hosted deploys
- * set it once. Falls back to `ATLAS_CORS_ORIGIN` for legacy parity with
- * the pre-#2653 install route, since some deploys only set the latter.
+ * set it once.
  *
- * Returns `null` when neither is configured — the caller logs and skips
- * registration rather than minting tokens with a half-formed redirect.
+ * Intentionally does NOT fall back to `ATLAS_CORS_ORIGIN` — that variable
+ * is the *web app* origin (e.g. `app.useatlas.dev`), not the API host
+ * (`api.useatlas.dev`). In SaaS split-origin deploys the two diverge, so
+ * a CORS-origin fallback would generate a Slack redirect URL on the wrong
+ * host, mismatching the Slack App's registered redirect URI and surfacing
+ * as `invalid_redirect_uri` on every install attempt.
+ *
+ * Returns `null` when unset — the caller logs and skips registration
+ * rather than minting tokens with a half-formed redirect.
  */
 function resolvePublicApiUrl(): string | null {
   const explicit = process.env.ATLAS_PUBLIC_API_URL;
   if (explicit && explicit.length > 0) return explicit.replace(/\/+$/, "");
-  const corsOrigin = process.env.ATLAS_CORS_ORIGIN;
-  if (corsOrigin && corsOrigin.length > 0) return corsOrigin.replace(/\/+$/, "");
   return null;
 }
 
@@ -67,7 +71,7 @@ export function registerBuiltinInstallHandlers(): void {
   }
   if (!publicApiUrl) {
     log.warn(
-      "Slack OAuth handler not registered — neither ATLAS_PUBLIC_API_URL nor ATLAS_CORS_ORIGIN is set, so the redirect URI cannot be resolved.",
+      "Slack OAuth handler not registered — ATLAS_PUBLIC_API_URL is unset, so the redirect URI cannot be resolved. Note: ATLAS_CORS_ORIGIN is the web app origin and is intentionally NOT a fallback (would mismatch the Slack App redirect URI in split-origin deploys).",
     );
     return;
   }

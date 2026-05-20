@@ -3,6 +3,7 @@
   "description": "External provider integrations — LLM BYOT setup, sub-processor feeds, webhooks",
   "icon": "Plug",
   "pages": [
+    "admin-console",
     "llm-providers",
     "sub-processor-feed"
   ]

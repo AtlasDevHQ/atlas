@@ -31,12 +31,14 @@ Built with Hono, Vercel AI SDK, and bun. Supports Anthropic, OpenAI, Bedrock, Ol
 ## Try the demo locally
 
 ```bash
-bun create atlas-agent my-app --demo
-cd my-app && bun run dev
+bun create atlas-agent my-app
+cd my-app
+# edit .env and set your LLM API key (Anthropic / OpenAI / etc.)
+bun run dev
 # Open http://localhost:3000
 ```
 
-The `--demo` flag seeds the canonical NovaMart e-commerce dataset (52 tables, ~480K rows) — twelve generic e-commerce KPIs ship as starter prompts inside the chat UI; the canonical 5 below drive the eval harness ([#2025](https://github.com/AtlasDevHQ/atlas/issues/2025)) and the docs/landing copy.
+The scaffold seeds the canonical NovaMart e-commerce dataset (52 tables, ~480K rows) by default — twelve generic e-commerce KPIs ship as starter prompts inside the chat UI; the canonical 5 below drive the eval harness ([#2025](https://github.com/AtlasDevHQ/atlas/issues/2025)) and the docs/landing copy. The scaffold defaults to SQLite + Anthropic; pass `--defaults` for non-interactive setup or follow the prompts to pick PostgreSQL / OpenAI / etc.
 
 Ask one of the canonical questions in the chat UI:
 

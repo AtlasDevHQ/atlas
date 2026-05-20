@@ -14,17 +14,19 @@ import { Accordions, Accordion } from "fumadocs-ui/components/accordion";
 
 ## The fast path
 
-For most people, scaffolding a new Atlas app is the right starting point. One command, demo data pre-seeded:
+For most people, scaffolding a new Atlas app is the right starting point. Demo data seeds by default:
 
 ```bash
-bun create atlas-agent my-app --demo
-cd my-app && bun run dev
+bun create atlas-agent my-app
+cd my-app
+# edit .env and set your LLM API key (the scaffold writes a placeholder)
+bun run dev
 # Open http://localhost:3000
 ```
 
-The `--demo` flag scaffolds a runnable Atlas project with the canonical NovaMart e-commerce dataset (52 tables, ~480K rows) seeded into a local Docker Postgres. The scaffold walks you through picking an LLM provider and wiring its API key into `.env`.
+The scaffold creates a runnable Atlas project with the canonical NovaMart e-commerce dataset (52 tables, ~480K rows) pre-seeded and a semantic layer auto-generated. It defaults to SQLite + Anthropic — pass `--defaults` for non-interactive setup, or follow the prompts to pick PostgreSQL / OpenAI / Bedrock / Ollama / Gateway.
 
-Once it's running, jump to [Ask your first question](#ask-your-first-question) below.
+Once `bun run dev` is up, jump to [Ask your first question](#ask-your-first-question) below.
 
 <Callout type="info" title="Need to contribute to Atlas itself?">
   If you want to work on Atlas's codebase (PRs, plugin development on the monorepo's internal packages, debugging the agent loop directly), follow the [monorepo setup](#alternative-clone-the-monorepo) further down instead — that's the path for contributors, not for using Atlas as a product.

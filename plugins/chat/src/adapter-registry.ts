@@ -24,7 +24,7 @@
 
 import type { SlackAdapter } from "@chat-adapter/slack";
 import { createSlackAdapter } from "./adapters/slack";
-import type { SlackAdapterConfig } from "./config";
+import type { ChatAdapterName, SlackAdapterConfig } from "./config";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -49,15 +49,43 @@ export interface ChatCatalogEntry {
   readonly saas_eligible: boolean;
 }
 
-/** Map of platform slug → instantiated adapter. */
-export interface ChatAdapterSet {
-  readonly slack: SlackAdapter | null;
-  // Non-Slack adapters are intentionally absent in 1.5.2 — they land in
-  // 1.5.3 alongside `StaticBotInstallHandler`. Adding them here without
-  // an install handler would let an adapter receive events for a
-  // platform whose customer-install flow doesn't exist yet, leaking
-  // events across tenants. Slice-3 hardening enforces this in the
-  // listener layer via `WorkspaceInstallGate`.
+/**
+ * Map of platform slug → instantiated adapter. Slug-keyed `Partial`
+ * `Record` so future adapters (1.5.3 static-bot platforms) extend by
+ * adding map entries — no shape change to the type, no consumer
+ * rewrites. Today only `slack` is populated; the other keys are
+ * structurally allowed but never set.
+ */
+export type ChatAdapterSet = Partial<{
+  readonly [K in ChatAdapterName]: ChatAdapterInstance<K>;
+}>;
+
+/**
+ * Per-slug adapter instance type. Only Slack has a concrete type in
+ * 1.5.2 — the other slugs map to a structural placeholder so the
+ * `Partial<Record>` shape compiles without forcing every adapter class
+ * to exist today. 1.5.3 narrows each placeholder to its real class.
+ */
+type ChatAdapterInstance<K extends ChatAdapterName> = K extends "slack"
+  ? SlackAdapter
+  : { readonly name: K };
+
+/**
+ * Returned alongside `ChatAdapterSet` so `healthCheck` and admin
+ * banners can distinguish "no adapters wired (operator misconfig)" from
+ * "no chat-type entries in catalog" — both produce an empty
+ * `ChatAdapterSet` today, but the cause + fix differ.
+ */
+export interface ChatAdapterDiagnostics {
+  /** Slugs the catalog declared as oauth+enabled but for which Atlas ships no builder (operator typo). */
+  readonly unrecognizedSlugs: ReadonlyArray<string>;
+  /** Slugs the catalog declared as oauth+enabled whose required env vars are missing. */
+  readonly missingCredSlugs: ReadonlyArray<string>;
+}
+
+export interface ChatAdapterRegistration {
+  readonly adapters: ChatAdapterSet;
+  readonly diagnostics: ChatAdapterDiagnostics;
 }
 
 /**
@@ -102,19 +130,18 @@ const SLACK_BUILDER: ChatAdapterBuilder<SlackAdapter> = {
     "SLACK_ENCRYPTION_KEY",
   ],
   build(env) {
-    if (
-      !env.SLACK_CLIENT_ID ||
-      !env.SLACK_CLIENT_SECRET ||
-      !env.SLACK_SIGNING_SECRET ||
-      !env.SLACK_ENCRYPTION_KEY
-    ) {
+    const clientId = env.SLACK_CLIENT_ID;
+    const clientSecret = env.SLACK_CLIENT_SECRET;
+    const signingSecret = env.SLACK_SIGNING_SECRET;
+    const encryptionKey = env.SLACK_ENCRYPTION_KEY;
+    if (!clientId || !clientSecret || !signingSecret || !encryptionKey) {
       return null;
     }
     const config: SlackAdapterConfig = {
-      clientId: env.SLACK_CLIENT_ID,
-      clientSecret: env.SLACK_CLIENT_SECRET,
-      signingSecret: env.SLACK_SIGNING_SECRET,
-      encryptionKey: env.SLACK_ENCRYPTION_KEY,
+      clientId,
+      clientSecret,
+      signingSecret,
+      encryptionKey,
       ...(env.SLACK_BOT_TOKEN ? { botToken: env.SLACK_BOT_TOKEN } : {}),
     };
     return createSlackAdapter(config) as SlackAdapter;
@@ -176,9 +203,11 @@ export interface BuildAdapterRegistryArgs {
  */
 export function buildChatAdapterRegistry(
   args: BuildAdapterRegistryArgs,
-): ChatAdapterSet {
+): ChatAdapterRegistration {
   const logger: RegistryLogger = args.logger ?? createNoopLogger();
-  let slack: SlackAdapter | null = null;
+  const adapters: { -readonly [K in ChatAdapterName]?: ChatAdapterInstance<K> } = {};
+  const unrecognizedSlugs: string[] = [];
+  const missingCredSlugs: string[] = [];
 
   for (const entry of args.catalog) {
     if (entry.type !== "chat") continue;
@@ -186,7 +215,7 @@ export function buildChatAdapterRegistry(
     if (entry.install_model !== "oauth") {
       logger.debug?.(
         { slug: entry.slug, installModel: entry.install_model },
-        "AdapterRegistry: catalog entry skipped — non-OAuth install model is not instantiable in 1.5.2",
+        "AdapterRegistry: catalog entry skipped — non-OAuth install model has no event-loop adapter to instantiate",
       );
       continue;
     }
@@ -201,15 +230,17 @@ export function buildChatAdapterRegistry(
 
     const builder = BUILDERS_BY_SLUG[entry.slug];
     if (!builder) {
+      unrecognizedSlugs.push(entry.slug);
       logger.warn(
         { slug: entry.slug },
-        "AdapterRegistry: catalog entry for unknown chat Platform slug — no builder registered",
+        "AdapterRegistry: catalog entry for unknown chat Platform slug — no builder registered (operator typo or cross-version drift)",
       );
       continue;
     }
 
     const adapter = builder.build(args.env);
     if (!adapter) {
+      missingCredSlugs.push(entry.slug);
       logger.warn(
         {
           slug: entry.slug,
@@ -222,16 +253,22 @@ export function buildChatAdapterRegistry(
     }
 
     if (entry.slug === "slack") {
-      slack = adapter as SlackAdapter;
+      adapters.slack = adapter as SlackAdapter;
       logger.info(
         { slug: entry.slug, platform: builder.platform },
         "AdapterRegistry: chat adapter registered",
       );
     }
-    // No other adapters wire in 1.5.2 — the builder map has only `slack`.
+    // No other adapters wire today — the builder map has only `slack`.
+    // 1.5.3 work adds map entries for the static-bot platforms; the
+    // `Partial<Record>` shape of `ChatAdapterSet` admits them without
+    // a type change here.
   }
 
-  return { slack };
+  return {
+    adapters,
+    diagnostics: { unrecognizedSlugs, missingCredSlugs },
+  };
 }
 
 function createNoopLogger(): RegistryLogger {

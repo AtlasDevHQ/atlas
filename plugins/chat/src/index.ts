@@ -215,6 +215,16 @@ function buildChatPlugin(
   let slackAdapterInstance: SlackAdapter | null = null;
   let log: PluginLogger | null = null;
   let initialized = false;
+  /**
+   * Captured from `buildChatAdapterRegistry` at init so `healthCheck`
+   * and the OAuth-install route handler can surface actionable
+   * "operator misconfig" messages instead of the generic "not
+   * initialized" one. Empty until `initialize` runs.
+   */
+  let adapterDiagnostics: {
+    unrecognizedSlugs: ReadonlyArray<string>;
+    missingCredSlugs: ReadonlyArray<string>;
+  } = { unrecognizedSlugs: [], missingCredSlugs: [] };
 
   if (typeof config.executeQuery !== "function") {
     throw new Error("executeQuery callback is required and must be a function");
@@ -286,8 +296,23 @@ function buildChatPlugin(
         // `config.adapters.slack.clientId` field.
         {
           app.get("/oauth/slack/install", async (c) => {
-            if (!slackAdapterInstance || !stateAdapter) {
+            // Distinguish "plugin still booting" (transient — retry)
+            // from "adapter never instantiated due to missing creds"
+            // (terminal — operator must fix env vars). The diagnostic
+            // is captured by AdapterRegistry at init time.
+            if (!stateAdapter || !initialized) {
               return c.json({ error: "Chat plugin not yet initialized" }, 503);
+            }
+            if (!slackAdapterInstance) {
+              const missingCreds = adapterDiagnostics.missingCredSlugs.includes("slack");
+              return c.json(
+                {
+                  error: missingCreds
+                    ? "Slack OAuth not configured — required env vars missing (SLACK_CLIENT_ID / SLACK_CLIENT_SECRET / SLACK_SIGNING_SECRET / SLACK_ENCRYPTION_KEY)"
+                    : "Slack adapter not registered — check `catalog` declaration in atlas.config.ts",
+                },
+                500,
+              );
             }
 
             const clientId = process.env.SLACK_CLIENT_ID;
@@ -317,8 +342,19 @@ function buildChatPlugin(
           });
 
           app.get("/oauth/slack/callback", async (c) => {
-            if (!slackAdapterInstance || !stateAdapter) {
+            if (!stateAdapter || !initialized) {
               return c.json({ error: "Chat plugin not yet initialized" }, 503);
+            }
+            if (!slackAdapterInstance) {
+              const missingCreds = adapterDiagnostics.missingCredSlugs.includes("slack");
+              return c.json(
+                {
+                  error: missingCreds
+                    ? "Slack OAuth not configured — required env vars missing"
+                    : "Slack adapter not registered — check `catalog` declaration",
+                },
+                500,
+              );
             }
 
             const state = c.req.query("state");
@@ -396,17 +432,19 @@ function buildChatPlugin(
       stateAdapter = adapter;
 
       // Build chat-platform adapters via the catalog-driven
-      // AdapterRegistry (#2650 slice 2). Only Slack instantiates in
-      // 1.5.2 — the registry uses `process.env` for per-Platform
-      // credentials, logs warns on missing creds / non-OAuth entries,
-      // and returns `{ slack: null }` when nothing wires.
+      // AdapterRegistry (#2650 slice 2). The registry reads per-Platform
+      // credentials from `process.env`, logs warns on missing creds /
+      // non-OAuth entries, and returns the adapters map plus diagnostic
+      // slug lists. The diagnostics let `healthCheck` and the OAuth
+      // install handler surface actionable error messages.
       try {
         const registry = buildChatAdapterRegistry({
           catalog: (config.catalog ?? []) as ReadonlyArray<ChatCatalogEntry>,
           env: process.env,
           logger: ctx.logger,
         });
-        slackAdapterInstance = registry.slack;
+        slackAdapterInstance = registry.adapters.slack ?? null;
+        adapterDiagnostics = registry.diagnostics;
 
         // Bridge takes pre-built instances per-platform; non-Slack slots
         // are left `undefined` (the bridge tolerates this — see
@@ -462,10 +500,33 @@ function buildChatPlugin(
       if (slackAdapterInstance) enabledAdapters.push("slack");
 
       if (enabledAdapters.length === 0) {
+        // Use the diagnostics captured at init to point operators at the
+        // actual cause: a catalog row referencing an unknown slug, or a
+        // recognized slug whose env vars are missing.
+        const parts = [
+          "No chat adapters registered.",
+        ];
+        if (adapterDiagnostics.missingCredSlugs.length > 0) {
+          parts.push(
+            `Missing env vars for: ${adapterDiagnostics.missingCredSlugs.join(", ")}.`,
+          );
+        }
+        if (adapterDiagnostics.unrecognizedSlugs.length > 0) {
+          parts.push(
+            `Unknown slugs in catalog: ${adapterDiagnostics.unrecognizedSlugs.join(", ")}.`,
+          );
+        }
+        if (
+          adapterDiagnostics.missingCredSlugs.length === 0 &&
+          adapterDiagnostics.unrecognizedSlugs.length === 0
+        ) {
+          parts.push(
+            "No chat-type catalog entries declared in atlas.config.ts (or all are disabled / non-OAuth).",
+          );
+        }
         return {
           healthy: false,
-          message:
-            "No chat adapters registered — check `catalog` declaration in atlas.config.ts and per-Platform env vars",
+          message: parts.join(" "),
           latencyMs: Math.round(performance.now() - start),
         };
       }

@@ -45,6 +45,38 @@ const SLACK_CATALOG: ReadonlyArray<ChatCatalogEntryInput> = [
   },
 ];
 
+/**
+ * Slice 2 of 1.5.2 (#2650): AdapterRegistry reads per-Platform creds
+ * from `process.env`. Lifecycle suites need real env vars so the Slack
+ * adapter instantiates and healthCheck flips healthy. This helper wires
+ * matching beforeEach/afterEach hooks that snapshot the four
+ * SLACK_* vars on entry, override them with deterministic test values,
+ * and restore the snapshot on exit so adjacent suites see clean state.
+ * Hex64 matches production format.
+ */
+function withSlackEnv(): void {
+  const snapshot: Record<string, string | undefined> = {
+    SLACK_CLIENT_ID: process.env.SLACK_CLIENT_ID,
+    SLACK_CLIENT_SECRET: process.env.SLACK_CLIENT_SECRET,
+    SLACK_SIGNING_SECRET: process.env.SLACK_SIGNING_SECRET,
+    SLACK_ENCRYPTION_KEY: process.env.SLACK_ENCRYPTION_KEY,
+  };
+
+  beforeEach(() => {
+    process.env.SLACK_CLIENT_ID = "test-client-id";
+    process.env.SLACK_CLIENT_SECRET = "test-client-secret";
+    process.env.SLACK_SIGNING_SECRET = "abcdef0123456789abcdef0123456789";
+    process.env.SLACK_ENCRYPTION_KEY = "f".repeat(64);
+  });
+
+  afterEach(() => {
+    for (const [k, v] of Object.entries(snapshot)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+}
+
 // ---------------------------------------------------------------------------
 // formatQueryResponse
 // ---------------------------------------------------------------------------
@@ -756,31 +788,7 @@ describe("chatPlugin config validation", () => {
 // ---------------------------------------------------------------------------
 
 describe("chat plugin lifecycle", () => {
-  // Slice 2 of 1.5.2 (#2650): AdapterRegistry reads per-Platform creds
-  // from `process.env`. The lifecycle tests need real env vars so the
-  // Slack adapter instantiates and healthCheck flips healthy. Saved /
-  // restored around each test so other suites in this file see clean
-  // state. Hex64 / matching production format.
-  const SLACK_ENV_SNAPSHOT = {
-    SLACK_CLIENT_ID: process.env.SLACK_CLIENT_ID,
-    SLACK_CLIENT_SECRET: process.env.SLACK_CLIENT_SECRET,
-    SLACK_SIGNING_SECRET: process.env.SLACK_SIGNING_SECRET,
-    SLACK_ENCRYPTION_KEY: process.env.SLACK_ENCRYPTION_KEY,
-  } as const;
-
-  beforeEach(() => {
-    process.env.SLACK_CLIENT_ID = "test-client-id";
-    process.env.SLACK_CLIENT_SECRET = "test-client-secret";
-    process.env.SLACK_SIGNING_SECRET = "abcdef0123456789abcdef0123456789";
-    process.env.SLACK_ENCRYPTION_KEY = "f".repeat(64);
-  });
-
-  afterEach(() => {
-    for (const [k, v] of Object.entries(SLACK_ENV_SNAPSHOT)) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
-  });
+  withSlackEnv();
 
   function createTestPlugin() {
     // Dynamic import to avoid top-level side effects
@@ -1298,29 +1306,7 @@ describe("chatPlugin streaming config", () => {
 // ---------------------------------------------------------------------------
 
 describe("chat plugin streaming lifecycle", () => {
-  // Mirror the env setup in `chat plugin lifecycle` — the AdapterRegistry
-  // reads Slack creds from `process.env`, so the streaming plugin's
-  // initialize() needs them to flip healthCheck healthy.
-  const SLACK_ENV_SNAPSHOT = {
-    SLACK_CLIENT_ID: process.env.SLACK_CLIENT_ID,
-    SLACK_CLIENT_SECRET: process.env.SLACK_CLIENT_SECRET,
-    SLACK_SIGNING_SECRET: process.env.SLACK_SIGNING_SECRET,
-    SLACK_ENCRYPTION_KEY: process.env.SLACK_ENCRYPTION_KEY,
-  } as const;
-
-  beforeEach(() => {
-    process.env.SLACK_CLIENT_ID = "test-client-id";
-    process.env.SLACK_CLIENT_SECRET = "test-client-secret";
-    process.env.SLACK_SIGNING_SECRET = "abcdef0123456789abcdef0123456789";
-    process.env.SLACK_ENCRYPTION_KEY = "f".repeat(64);
-  });
-
-  afterEach(() => {
-    for (const [k, v] of Object.entries(SLACK_ENV_SNAPSHOT)) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
-  });
+  withSlackEnv();
 
   function createStreamingPlugin() {
     const { buildChatPlugin } = require("./index");

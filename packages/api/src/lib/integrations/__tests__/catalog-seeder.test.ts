@@ -23,7 +23,7 @@
  *     install_model propagation, saas_eligible propagation
  */
 
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, mock } from "bun:test";
 import {
   planCatalogSeed,
   seedCatalog,
@@ -117,15 +117,20 @@ function makeMockDb(seed: CatalogDbRow[] = []): {
           boolean,
         ];
         const existing = rows.findIndex((r) => r.slug === slug);
+        // Cast `type` and `installModel` to the narrow union — the
+        // upsert tuple destructure here is typed `string` because pg's
+        // param shape doesn't carry the enum constraint, but the
+        // upstream Zod validation + DB CHECK guarantee the value is
+        // one of the canonical literals.
         const next: CatalogDbRow = {
           slug,
           name,
           description,
-          type,
+          type: type as CatalogDbRow["type"],
           iconUrl,
           minPlan,
           enabled,
-          installModel,
+          installModel: installModel as CatalogDbRow["installModel"],
           saasEligible,
         };
         if (existing === -1) rows.push(next);
@@ -358,5 +363,146 @@ describe("seedCatalog", () => {
     expect(captured.some((c) => c.sql.includes("INSERT INTO plugin_catalog"))).toBe(
       false,
     );
+  });
+
+  // Pinned by PR-test-analyzer review on #2664 — guards against admin-UI
+  // copy drift on ops-disabled rows. The `preserve-disabled` branch
+  // clamps `enabled` to false but should still upsert name/description/
+  // min_plan so the admin UI displays the latest declared metadata.
+  it("preserve-disabled still upserts metadata (only `enabled` is clamped)", async () => {
+    const { db, rows } = makeMockDb([
+      row({
+        slug: "slack",
+        enabled: false,
+        name: "Old Slack Name",
+        minPlan: "starter",
+      }),
+    ]);
+    await seedCatalog(db, [
+      entry({
+        slug: "slack",
+        enabled: true, // config wants enabled
+        name: "New Slack Name",
+        min_plan: "team",
+      }),
+    ]);
+    const slack = rows.find((r) => r.slug === "slack");
+    expect(slack?.enabled).toBe(false); // ops-disable wins
+    expect(slack?.name).toBe("New Slack Name"); // metadata refreshed
+    expect(slack?.minPlan).toBe("team");
+  });
+
+  // Pinned by PR-test-analyzer review on #2664 — guards the
+  // `update` branch end-to-end. The pure planner test asserts the
+  // diff is computed; this test asserts the upsert actually flips
+  // the DB row's `installModel`.
+  it("install_model change between boots flips the DB row", async () => {
+    const { db, rows } = makeMockDb([
+      row({ slug: "slack", installModel: "form" }), // legacy DB state
+    ]);
+    const result = await seedCatalog(db, [
+      entry({ slug: "slack", install_model: "oauth" }),
+    ]);
+    expect(result.updatedCount).toBe(1);
+    expect(rows.find((r) => r.slug === "slack")?.installModel).toBe("oauth");
+  });
+
+  // Pinned by silent-failure-hunter review on #2664 — `readExistingCatalog`
+  // now Zod-validates `type` and `install_model` at read time and drops
+  // rows with stale enum values rather than letting them flow into the
+  // planner and trigger phantom updates.
+  it("drops DB rows with unknown enum values from the planner input", async () => {
+    const { db, rows } = makeMockDb([]);
+    // Inject a row directly with an out-of-enum install_model that
+    // bypasses the planner. Seed re-asserts the canonical shape.
+    rows.push({
+      slug: "slack",
+      name: "Slack",
+      description: null,
+      type: "chat",
+      iconUrl: null,
+      minPlan: "starter",
+      enabled: true,
+      // @ts-expect-error — deliberate stale value to exercise the drop path
+      installModel: "not-a-known-model",
+      saasEligible: true,
+    });
+    // The planner sees the row as if it doesn't exist (dropped + warned)
+    // so it issues an INSERT — the upsert ON CONFLICT(slug) updates
+    // the row's install_model back to 'oauth'.
+    const result = await seedCatalog(db, [entry({ slug: "slack" })]);
+    expect(result.insertedCount + result.updatedCount).toBe(1);
+    expect(rows.find((r) => r.slug === "slack")?.installModel).toBe("oauth");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runCatalogSeedBoot (boot wrapper) — swallow path
+// ---------------------------------------------------------------------------
+
+describe("runCatalogSeedBoot swallow path", () => {
+  // Pinned by PR-test-analyzer review on #2664 — without this, a
+  // regression that removes the try/catch would crash API boot on the
+  // next transient DB hiccup during seed.
+  it("returns EMPTY_RESULT and does NOT throw when seedCatalog rejects", async () => {
+    const { runCatalogSeedBoot } = await import("../catalog-seeder");
+
+    // Mock config + DB to push runCatalogSeedBoot past the early-return
+    // gates and into the inner try/catch. The DB query throws, the
+    // wrapper catches + logs + returns EMPTY_RESULT.
+    const savedDb = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = "postgresql://test:test@127.0.0.1:9/atlas-test";
+
+    // Substitute the real getInternalDB with one whose pool.query
+    // always throws — exercises the catch in runCatalogSeedBoot.
+    //
+    // Mock every export the real `db/internal` module ships so a test
+    // running in the same process after this one (CLAUDE.md flags
+    // `mock.module()` as cross-file via bun's module loader) still
+    // resolves `internalQuery`, `MANAGED_AUTH_MIGRATIONS`, etc.
+    mock.module("@atlas/api/lib/db/internal", () => ({
+      hasInternalDB: () => true,
+      getInternalDB: () => ({
+        query: async () => {
+          throw new Error("simulated DB outage");
+        },
+      }),
+      internalQuery: async () => {
+        throw new Error("simulated DB outage");
+      },
+      MANAGED_AUTH_MIGRATIONS: [],
+      makeInternalDBLive: () => ({}),
+      closeInternalDB: async () => {},
+      InternalDB: { _tag: "InternalDB" },
+      loadSavedConnections: async () => 0,
+    }));
+    mock.module("@atlas/api/lib/config", () => ({
+      getConfig: () => ({
+        catalog: [
+          {
+            slug: "slack",
+            type: "chat",
+            install_model: "oauth",
+            enabled: true,
+            saas_eligible: true,
+            min_plan: "starter",
+          },
+        ],
+      }),
+    }));
+
+    let result;
+    try {
+      result = await runCatalogSeedBoot();
+    } finally {
+      if (savedDb === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = savedDb;
+    }
+
+    // The wrapper swallowed the throw and returned a sentinel result.
+    expect(result.insertedCount).toBe(0);
+    expect(result.updatedCount).toBe(0);
+    expect(result.preservedCount).toBe(0);
+    expect(result.applied).toBe(0);
   });
 });

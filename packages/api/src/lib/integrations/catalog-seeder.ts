@@ -35,9 +35,10 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
-import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import {
   type CatalogEntry,
+  type CatalogEntryType,
+  type CatalogInstallModel,
   CATALOG_INSTALL_MODELS,
   CATALOG_ENTRY_TYPES,
 } from "@atlas/api/lib/config";
@@ -53,16 +54,21 @@ const log = createLogger("integrations.catalog-seeder");
  * Drizzle row carries `id`, `npm_package`, `config_schema`,
  * `created_at`, `updated_at` — none of which the seeder needs to compare
  * against the config. Keeping the read narrow keeps the planner pure.
+ *
+ * `type` and `installModel` are typed as their narrow union — DB rows
+ * with values outside the enum are dropped at read time (see
+ * `readExistingCatalog`) so the planner never compares a config entry
+ * against a stale row and emits a phantom update.
  */
 export interface CatalogDbRow {
   readonly slug: string;
   readonly name: string;
   readonly description: string | null;
-  readonly type: string;
+  readonly type: CatalogEntryType;
   readonly iconUrl: string | null;
   readonly minPlan: string;
   readonly enabled: boolean;
-  readonly installModel: string;
+  readonly installModel: CatalogInstallModel;
   readonly saasEligible: boolean;
 }
 
@@ -233,7 +239,13 @@ export interface CatalogSeedResult {
   readonly insertedCount: number;
   readonly updatedCount: number;
   readonly preservedCount: number;
-  /** Sum of insert + update + preserve + noop. */
+  /**
+   * Total `CatalogSeedAction` count returned by the planner — i.e.
+   * `plan.actions.length`. Equals `insertedCount + updatedCount +
+   * preservedCount + noopCount`, where `noopCount` is the implicit
+   * fourth bucket (rows that matched the declaration without any
+   * write).
+   */
   readonly applied: number;
   /** Slugs whose DB row was left untouched because ops had disabled it. */
   readonly preservedSlugs: ReadonlyArray<string>;
@@ -368,17 +380,39 @@ async function readExistingCatalog(db: CatalogSeedDb): Promise<CatalogDbRow[]> {
             install_model, saas_eligible
        FROM plugin_catalog`,
   );
-  return rows.map((r) => ({
-    slug: r.slug,
-    name: r.name,
-    description: r.description,
-    type: r.type,
-    iconUrl: r.icon_url,
-    minPlan: r.min_plan,
-    enabled: r.enabled,
-    installModel: r.install_model,
-    saasEligible: r.saas_eligible,
-  }));
+  // Validate enum membership at read time so the planner can trust the
+  // narrow `CatalogDbRow` shape. The DB CHECK constraints make a stray
+  // value structurally impossible, but a future migration could relax
+  // them; dropping unknown rows with a warn is fail-safe.
+  const valid: CatalogDbRow[] = [];
+  for (const r of rows) {
+    if (!CATALOG_ENTRY_TYPES.includes(r.type as CatalogEntryType)) {
+      log.warn(
+        { slug: r.slug, type: r.type },
+        "Catalog seed: plugin_catalog row has unknown `type` — dropping from planner input",
+      );
+      continue;
+    }
+    if (!CATALOG_INSTALL_MODELS.includes(r.install_model as CatalogInstallModel)) {
+      log.warn(
+        { slug: r.slug, install_model: r.install_model },
+        "Catalog seed: plugin_catalog row has unknown `install_model` — dropping from planner input",
+      );
+      continue;
+    }
+    valid.push({
+      slug: r.slug,
+      name: r.name,
+      description: r.description,
+      type: r.type as CatalogEntryType,
+      iconUrl: r.icon_url,
+      minPlan: r.min_plan,
+      enabled: r.enabled,
+      installModel: r.install_model as CatalogInstallModel,
+      saasEligible: r.saas_eligible,
+    });
+  }
+  return valid;
 }
 
 async function readOrphanSlugs(db: CatalogSeedDb): Promise<string[]> {
@@ -448,14 +482,22 @@ async function upsertEntry(db: CatalogSeedDb, entry: CatalogEntry): Promise<void
 }
 
 /**
- * Convenience wrapper for the boot pass — pulls the declared catalog
- * from `getConfig()` and the DB from `getInternalDB()`. Swallows errors
- * (logs at error) so a seed failure can't block API startup; admin
- * surfaces will see whatever was in `plugin_catalog` before this boot.
+ * Boot-pass wrapper. **Only this function** swallows errors — callers
+ * that need error propagation (tests, future Effect-based wiring) should
+ * use {@link seedCatalog} directly, which lets SQL / upsert errors
+ * bubble.
  *
- * Mirrors `backfillSaasTrial`'s "log-and-continue" posture — seeding
- * is best-effort during boot; failure modes are observable (the log
- * line + the absent-rows-after-deploy diagnostic) rather than fatal.
+ * Pulls the declared catalog from `getConfig()` and the DB from
+ * `getInternalDB()`, then runs `seedCatalog` inside a try/catch that
+ * logs at error and returns `EMPTY_RESULT`. The boot pass is best-
+ * effort: a failed seed leaves whichever rows were in `plugin_catalog`
+ * pre-boot authoritative for this process.
+ *
+ * Mirrors `backfillSaasTrial`'s "log-and-continue" posture. Failure
+ * modes are observable via (a) the `err` log line, which carries the
+ * original Error so Pino's `err` serializer captures the stack and
+ * (b) `CatalogSeedShape.outcome === "error"` on the Effect Tag for
+ * health-surface consumers.
  */
 export async function runCatalogSeedBoot(): Promise<CatalogSeedResult> {
   // Lazy imports keep config.ts and db/internal.ts off the static dep
@@ -488,8 +530,11 @@ export async function runCatalogSeedBoot(): Promise<CatalogSeedResult> {
   try {
     return await seedCatalog(db, config.catalog ?? []);
   } catch (err) {
+    // Pass the original Error to Pino's `err` serializer so the stack
+    // is preserved — `errorMessage(err)` would scrub it to a string.
+    // The seed failure is observable upstream via CatalogSeedShape.error.
     log.error(
-      { err: errorMessage(err) },
+      { err: err instanceof Error ? err : new Error(String(err)) },
       "Catalog seed failed — plugin_catalog rows from prior boot remain authoritative",
     );
     return EMPTY_RESULT;

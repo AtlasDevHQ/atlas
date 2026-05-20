@@ -311,6 +311,19 @@ export const BackfillSaasTrialLive: Layer.Layer<
 // ██  Catalog Seed Layer (#2650 — 1.5.2 slice 2)
 // ══════════════════════════════════════════════════════════════════════
 
+/**
+ * Discriminated outcome of the boot-time catalog seed. Mirrors
+ * {@link ConnectionsHydrateOutcome} below so a future `/health` or
+ * admin banner consumer can surface an unhealthy state without
+ * re-grepping logs.
+ *
+ * - `skipped-gate`  — InternalDB or Migration upstream not satisfied
+ * - `seeded`        — seed ran (may have applied 0 writes if config matched DB)
+ * - `error`         — the boot wrapper or its dynamic import threw;
+ *                     `plugin_catalog` reflects the pre-boot state
+ */
+export type CatalogSeedOutcome = "skipped-gate" | "seeded" | "error";
+
 export interface CatalogSeedShape {
   /** Newly inserted plugin_catalog rows this boot. */
   readonly insertedCount: number;
@@ -324,6 +337,10 @@ export interface CatalogSeedShape {
   readonly preservedCount: number;
   /** Slugs in DB without a matching declaration. Logged at warn, never deleted. */
   readonly orphanSlugs: ReadonlyArray<string>;
+  /** Discriminates intentional skip / normal seed / failure. */
+  readonly outcome: CatalogSeedOutcome;
+  /** Scrubbed error message when `outcome === "error"`. */
+  readonly error?: string;
 }
 
 export class CatalogSeed extends Context.Tag("CatalogSeed")<
@@ -340,7 +357,8 @@ export class CatalogSeed extends Context.Tag("CatalogSeed")<
  * on `InternalDB` for the pool. Non-fatal: the seeder swallows
  * errors internally and logs at error so a failed seed leaves
  * pre-existing rows authoritative for the boot rather than crashing
- * the API.
+ * the API. The failure is observable via `CatalogSeedShape.outcome ===
+ * "error"` so health surfaces can degrade instead of guessing.
  *
  * Self-hosted with an empty `catalog: []` (or omitted) is a quick
  * no-op: the seeder skips the upsert loop entirely and only emits the
@@ -355,50 +373,51 @@ export const CatalogSeedLive: Layer.Layer<
   Effect.gen(function* () {
     const db = yield* InternalDB;
     const migration = yield* Migration;
+    const zeroCounts = {
+      insertedCount: 0,
+      updatedCount: 0,
+      preservedCount: 0,
+      orphanSlugs: [] as ReadonlyArray<string>,
+    };
+
     if (!db.available || !migration.migrated) {
       log.info(
         { available: db.available, migrated: migration.migrated },
         "Catalog seed skipped — upstream gate (InternalDB or Migration) not satisfied",
       );
-      return {
-        insertedCount: 0,
-        updatedCount: 0,
-        preservedCount: 0,
-        orphanSlugs: [],
-      } satisfies CatalogSeedShape;
+      return { ...zeroCounts, outcome: "skipped-gate" } satisfies CatalogSeedShape;
     }
 
-    const result = yield* Effect.tryPromise({
+    return yield* Effect.tryPromise({
       try: async () => {
         const { runCatalogSeedBoot } = await import(
           "@atlas/api/lib/integrations/catalog-seeder"
         );
-        return await runCatalogSeedBoot();
+        const result = await runCatalogSeedBoot();
+        return {
+          insertedCount: result.insertedCount,
+          updatedCount: result.updatedCount,
+          preservedCount: result.preservedCount,
+          orphanSlugs: result.orphanSlugs,
+          outcome: "seeded",
+        } satisfies CatalogSeedShape;
       },
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     }).pipe(
       Effect.catchAll((err) => {
-        // Only reachable if the dynamic import itself rejects — the
-        // seed function catches its own SQL/DB errors and returns the
-        // EMPTY_RESULT shape.
+        // Reachable when the dynamic import itself rejects (bundle
+        // artefact missing, runtime ESM resolution issue) — the
+        // `runCatalogSeedBoot` wrapper catches its own SQL/DB errors.
+        // We still surface the failure via `outcome: "error"` so
+        // healthCheck consumers can degrade.
         log.error({ err }, "Catalog seed boot wrapper threw");
         return Effect.succeed({
-          insertedCount: 0,
-          updatedCount: 0,
-          preservedCount: 0,
-          applied: 0,
-          preservedSlugs: [] as string[],
-          orphanSlugs: [] as string[],
-        });
+          ...zeroCounts,
+          outcome: "error",
+          error: errorMessage(err),
+        } satisfies CatalogSeedShape);
       }),
     );
-
-    return {
-      insertedCount: result.insertedCount,
-      updatedCount: result.updatedCount,
-      preservedCount: result.preservedCount,
-      orphanSlugs: result.orphanSlugs,
-    } satisfies CatalogSeedShape;
   }),
 );
 

@@ -73,7 +73,7 @@ describe("buildChatAdapterRegistry — happy path", () => {
       env: SLACK_FULL_ENV,
       logger,
     });
-    expect(result.slack).not.toBeNull();
+    expect(result.adapters.slack).toBeDefined();
     expect(infos.some((l) => l.msg.includes("chat adapter registered"))).toBe(true);
   });
 });
@@ -101,7 +101,7 @@ describe("buildChatAdapterRegistry — missing env vars", () => {
         env,
         logger,
       });
-      expect(result.slack).toBeNull();
+      expect(result.adapters.slack).toBeUndefined();
       expect(warns).toHaveLength(1);
       expect(warns[0]?.msg).toContain("required env vars missing");
       expect((warns[0]?.payload.requiredEnv as string[]).includes(missing)).toBe(true);
@@ -121,7 +121,7 @@ describe("buildChatAdapterRegistry — catalog filters", () => {
       env: SLACK_FULL_ENV,
       logger,
     });
-    expect(result.slack).toBeNull();
+    expect(result.adapters.slack).toBeUndefined();
     expect(debugs.some((l) => l.msg.includes("enabled=false"))).toBe(true);
   });
 
@@ -132,7 +132,7 @@ describe("buildChatAdapterRegistry — catalog filters", () => {
       env: SLACK_FULL_ENV,
       logger,
     });
-    expect(result.slack).toBeNull();
+    expect(result.adapters.slack).toBeUndefined();
     expect(debugs.some((l) => l.msg.includes("non-OAuth install model"))).toBe(true);
   });
 
@@ -156,7 +156,7 @@ describe("buildChatAdapterRegistry — catalog filters", () => {
       },
       logger,
     });
-    expect(result.slack).toBeNull();
+    expect(result.adapters.slack).toBeUndefined();
     expect(
       debugs.filter((l) => l.msg.includes("non-OAuth install model")),
     ).toHaveLength(2);
@@ -176,7 +176,7 @@ describe("buildChatAdapterRegistry — catalog filters", () => {
       env: SLACK_FULL_ENV,
       logger,
     });
-    expect(result.slack).toBeNull();
+    expect(result.adapters.slack).toBeUndefined();
   });
 
   it("warns on a chat-type OAuth entry whose slug has no builder (operator typo)", () => {
@@ -186,13 +186,13 @@ describe("buildChatAdapterRegistry — catalog filters", () => {
       env: SLACK_FULL_ENV,
       logger,
     });
-    expect(result.slack).toBeNull();
+    expect(result.adapters.slack).toBeUndefined();
     expect(warns.some((l) => l.msg.includes("no builder registered"))).toBe(true);
   });
 
   it("returns empty registry when catalog is empty", () => {
     const result = buildChatAdapterRegistry({ catalog: [], env: SLACK_FULL_ENV });
-    expect(result.slack).toBeNull();
+    expect(result.adapters.slack).toBeUndefined();
   });
 
   it("returns empty registry when env is empty", () => {
@@ -200,6 +200,55 @@ describe("buildChatAdapterRegistry — catalog filters", () => {
       catalog: [entry({ slug: "slack" })],
       env: {},
     });
-    expect(result.slack).toBeNull();
+    expect(result.adapters.slack).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Diagnostics — surfaces enough info for healthCheck / install-route 500s
+// ---------------------------------------------------------------------------
+
+describe("buildChatAdapterRegistry — diagnostics", () => {
+  it("reports missingCredSlugs when env vars are missing", () => {
+    const result = buildChatAdapterRegistry({
+      catalog: [entry({ slug: "slack" })],
+      env: {},
+    });
+    expect(result.diagnostics.missingCredSlugs).toEqual(["slack"]);
+    expect(result.diagnostics.unrecognizedSlugs).toEqual([]);
+  });
+
+  it("reports unrecognizedSlugs when no builder is registered for the slug", () => {
+    const result = buildChatAdapterRegistry({
+      catalog: [entry({ slug: "slcak" })],
+      env: SLACK_FULL_ENV,
+    });
+    expect(result.diagnostics.unrecognizedSlugs).toEqual(["slcak"]);
+    expect(result.diagnostics.missingCredSlugs).toEqual([]);
+  });
+
+  it("reports both lists when the catalog mixes the two failure modes", () => {
+    const result = buildChatAdapterRegistry({
+      catalog: [
+        entry({ slug: "slack" }), // missing env
+        entry({ slug: "unknown-slug" }), // no builder
+      ],
+      env: {},
+    });
+    expect(result.diagnostics.missingCredSlugs).toEqual(["slack"]);
+    expect(result.diagnostics.unrecognizedSlugs).toEqual(["unknown-slug"]);
+  });
+
+  it("does not list disabled / non-OAuth / non-chat entries (they're not failures)", () => {
+    const result = buildChatAdapterRegistry({
+      catalog: [
+        entry({ slug: "slack", enabled: false }),
+        entry({ slug: "telegram", install_model: "static-bot" }),
+        entry({ slug: "salesforce", type: "integration", install_model: "oauth" }),
+      ],
+      env: {},
+    });
+    expect(result.diagnostics.missingCredSlugs).toEqual([]);
+    expect(result.diagnostics.unrecognizedSlugs).toEqual([]);
   });
 });

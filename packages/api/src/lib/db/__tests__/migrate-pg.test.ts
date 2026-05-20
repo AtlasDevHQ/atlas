@@ -4356,6 +4356,33 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     }
   }, PG_TEST_TIMEOUT_MS);
 
+  // Pinned by PR-test-analyzer review on #2664 — guards the
+  // `DEFAULT 'oauth'` / `DEFAULT true` clauses against a future
+  // "tidying" revision that drops them. Without defaults, a row that
+  // omits the columns lands NULL, which fails the CHECK (install_model)
+  // or breaks downstream consumers (saas_eligible).
+  it("0087: install_model + saas_eligible defaults apply on omission", async () => {
+    const slug = `pg-default-${Date.now()}`;
+    const id = `cat-${slug}`;
+
+    await pool.query(
+      `INSERT INTO plugin_catalog (id, name, slug, type)
+       VALUES ($1, 'PG Default Smoke', $2, 'chat')`,
+      [id, slug],
+    );
+
+    const { rows } = await pool.query<{
+      install_model: string;
+      saas_eligible: boolean;
+    }>(
+      `SELECT install_model, saas_eligible FROM plugin_catalog WHERE id = $1`,
+      [id],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.install_model).toBe("oauth");
+    expect(rows[0]?.saas_eligible).toBe(true);
+  }, PG_TEST_TIMEOUT_MS);
+
   it("0086: chat_cache.value->>'orgId' returns the Atlas org id for a stored Slack install (#2634)", async () => {
     // End-to-end shape check: a row written through the consolidated
     // path resolves cleanly by org_id via the new partial index. Uses

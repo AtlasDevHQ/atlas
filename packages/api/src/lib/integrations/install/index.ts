@@ -32,3 +32,14 @@ export {
 } from "./dispatch";
 
 export { staticBotInstallHandlerStub } from "./static-bot-stub";
+
+// Per-Platform OAuth handler implementations + their module-load
+// registration. Importing the barrel does NOT auto-register — boot
+// calls `registerBuiltinInstallHandlers()` explicitly so tests can
+// opt in selectively without the handler swallowing test env vars.
+export { SlackOAuthInstallHandler } from "./slack-oauth-handler";
+export type { SlackOAuthHandlerConfig } from "./slack-oauth-handler";
+export {
+  registerBuiltinInstallHandlers,
+  _resetRegistrationLatch,
+} from "./register";

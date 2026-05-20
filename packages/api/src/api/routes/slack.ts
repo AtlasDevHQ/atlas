@@ -1,15 +1,17 @@
 /**
- * Slack integration routes.
+ * Slack runtime routes.
  *
  * - POST /api/v1/slack/commands  — slash command handler (/atlas)
  * - POST /api/v1/slack/events   — Events API (url_verification only)
  * - POST /api/v1/slack/interactions — Block action interactions
- * - GET  /api/v1/slack/install   — OAuth install redirect
- * - GET  /api/v1/slack/callback  — OAuth callback
  *
- * POST routes verify Slack request signatures. OAuth routes use Slack's
- * server-to-server code exchange. The slash command acks within 3 seconds
- * and processes the query asynchronously.
+ * POST routes verify Slack request signatures. The slash command acks
+ * within 3 seconds and processes the query asynchronously.
+ *
+ * OAuth install + callback lifted to /api/v1/integrations/slack/{install,callback}
+ * in #2653 (slice 5 of #2649) — see `lib/integrations/install/slack-oauth-handler.ts`.
+ * The Slack App's redirect URI in api.slack.com/apps/<atlas-app-id>/oauth
+ * must point at the new path for all SaaS regions.
  *
  * Channel-message events (`app_mention`, `message + thread_ts`) used to
  * live on this route. As of slice 3 of #2607 they are owned by the
@@ -34,17 +36,14 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { checkRateLimit } from "@atlas/api/lib/auth/middleware";
 import { botActorUser } from "@atlas/api/lib/auth/actor";
 import { verifySlackSignature } from "@atlas/api/lib/slack/verify";
-import { postMessage, updateMessage, postEphemeral, slackAPI } from "@atlas/api/lib/slack/api";
+import { postMessage, updateMessage, postEphemeral } from "@atlas/api/lib/slack/api";
 import { formatQueryResponse, formatErrorResponse, formatActionApproval, formatActionResult } from "@atlas/api/lib/slack/format";
 import { approveAction, denyAction, getAction } from "@atlas/api/lib/tools/actions/handler";
-import { getBotToken, getInstallation, saveInstallation } from "@atlas/api/lib/slack/store";
+import { getBotToken, getInstallation } from "@atlas/api/lib/slack/store";
 import { getConversationId, setConversationId } from "@atlas/api/lib/slack/threads";
 import { createConversation, addMessage, generateTitle } from "@atlas/api/lib/conversations";
 import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
-import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { adminAuthPreamble } from "./admin-auth";
-import { getConfig } from "@atlas/api/lib/config";
-import { getWebOrigin } from "@atlas/api/lib/web-origin";
+import { ErrorSchema } from "./shared-schemas";
 
 const log = createLogger("slack");
 
@@ -166,75 +165,6 @@ const interactionsRoute = createRoute({
   },
 });
 
-const installRoute = createRoute({
-  method: "get",
-  path: "/install",
-  tags: ["Slack"],
-  summary: "Slack OAuth install redirect",
-  description:
-    "Redirects to the Slack OAuth authorization page. Requires SLACK_CLIENT_ID to be configured. " +
-    "Caller must be authenticated as a workspace admin/owner — the OAuth state binds the resulting " +
-    "installation to the caller's organization, so anonymous installs are rejected to prevent install hijacking.",
-  responses: {
-    302: {
-      description: "Redirect to Slack OAuth authorization page",
-    },
-    401: {
-      description: "Not authenticated",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    403: {
-      description: "Caller is not an admin/owner of the workspace",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    429: {
-      description: "Rate limited",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    501: {
-      description: "OAuth not configured",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-  },
-});
-
-const callbackRoute = createRoute({
-  method: "get",
-  path: "/callback",
-  tags: ["Slack"],
-  summary: "Slack OAuth callback",
-  description:
-    "Handles the OAuth callback from Slack, exchanges the code for a bot token, and saves the installation. " +
-    "Returns HTML on success or failure.",
-  request: {
-    query: z.object({
-      code: z.string().openapi({ description: "OAuth authorization code" }),
-      state: z.string().openapi({ description: "CSRF state parameter" }),
-    }),
-  },
-  responses: {
-    200: {
-      description: "Installation successful (HTML response, when no web origin is configured)",
-      content: { "text/html": { schema: z.string() } },
-    },
-    302: {
-      description: "Installation successful (redirect to /admin/integrations on the web app)",
-    },
-    400: {
-      description: "Invalid or expired state, or missing code",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    500: {
-      description: "Installation failed (HTML response)",
-      content: { "text/html": { schema: z.string() } },
-    },
-    501: {
-      description: "OAuth not configured",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-  },
-});
-
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -275,7 +205,7 @@ slack.openapi(commandsRoute, async (c) => {
             await fetch(responseUrl, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ response_type: "ephemeral", text: "Atlas is not configured for this workspace. Ask an admin to install via /api/v1/slack/install." }),
+              body: JSON.stringify({ response_type: "ephemeral", text: "Atlas is not configured for this workspace. Ask an admin to install via /api/v1/integrations/slack/install." }),
               signal: AbortSignal.timeout(10_000),
             });
           } catch (urlErr) {
@@ -670,113 +600,6 @@ slack.openapi(interactionsRoute, async (c) => {
   });
 
   return c.json({ ok: true }, 200);
-});
-
-// --- OAuth CSRF state (shared DB-backed store) ---
-
-import { saveOAuthState, consumeOAuthState } from "@atlas/api/lib/auth/oauth-state";
-
-// --- GET /api/v1/slack/install ---
-
-slack.openapi(installRoute, async (c) => {
-  const clientId = process.env.SLACK_CLIENT_ID;
-  if (!clientId) {
-    return c.json({ error: "oauth_not_configured", message: "OAuth not configured" }, 501);
-  }
-
-  // F-04 (security): require authenticated admin so the OAuth state binds the
-  // resulting installation to a real org. Anonymous /install was an install-hijack
-  // vector — an attacker could trigger the redirect and have the third-party
-  // workspace bound to org_id = NULL, then later be claimed by another tenant.
-  const requestId = crypto.randomUUID();
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers);
-  }
-  const orgId = preamble.authResult.user?.activeOrganizationId ?? undefined;
-
-  const state = crypto.randomUUID();
-  await saveOAuthState(state, { orgId, provider: "slack" });
-
-  const scopes = "commands,chat:write,app_mentions:read";
-  const url = `https://slack.com/oauth/v2/authorize?client_id=${clientId}&scope=${scopes}&state=${state}`;
-  return c.redirect(url);
-});
-
-// --- GET /api/v1/slack/callback ---
-
-slack.openapi(callbackRoute, async (c) => {
-  const clientId = process.env.SLACK_CLIENT_ID;
-  const clientSecret = process.env.SLACK_CLIENT_SECRET;
-
-  if (!clientId || !clientSecret) {
-    return c.json({ error: "oauth_not_configured", message: "OAuth not configured" }, 501);
-  }
-
-  const state = c.req.query("state");
-  const oauthState = state ? await consumeOAuthState(state) : null;
-  if (!oauthState) {
-    return c.json({ error: "invalid_state", message: "Invalid or expired state parameter" }, 400);
-  }
-
-  // F-04 (security): in SaaS mode, every install must bind to an org. A
-  // missing orgId here means /install was reached without a valid admin
-  // session (or the row was tampered with) — refuse to bind the workspace.
-  // Self-hosted is allowed to keep platform-wide installs (orgId may be
-  // undefined when there is no internal DB / no org concept).
-  if (oauthState.orgId === undefined && getConfig()?.deployMode === "saas") {
-    log.warn({ state }, "Rejecting Slack install: SaaS mode requires orgId on OAuth state");
-    return c.json(
-      { error: "missing_org_binding", message: "Install must be initiated by an authenticated workspace admin." },
-      400,
-    );
-  }
-
-  const code = c.req.query("code");
-  if (!code) {
-    return c.json({ error: "missing_code", message: "Missing code parameter" }, 400);
-  }
-
-  const result = await slackAPI("oauth.v2.access", "", {
-    client_id: clientId,
-    client_secret: clientSecret,
-    code,
-  });
-
-  if (!result.ok) {
-    log.error({ error: result.error }, "OAuth exchange failed");
-    return c.json({ error: "oauth_failed", message: "OAuth failed" }, 400);
-  }
-
-  const data = result as unknown as Record<string, unknown>;
-  const team = data.team as { id?: string; name?: string } | undefined;
-  const accessToken = (data.access_token as string) ?? "";
-  const teamId = team?.id ?? "";
-  const teamName = team?.name ?? null;
-
-  if (teamId && accessToken) {
-    try {
-      // Use orgId from the OAuth state (set during /install)
-      const orgId = oauthState.orgId;
-
-      await saveInstallation(teamId, accessToken, { orgId, workspaceName: teamName ?? undefined });
-      log.info({ teamId, orgId, teamName }, "Slack installation saved");
-    } catch (saveErr) {
-      log.error({ err: saveErr instanceof Error ? saveErr.message : String(saveErr), teamId }, "Failed to save Slack installation");
-      return c.html("<html><body><h1>Installation Failed</h1><p>Could not save the installation. Please try again.</p></body></html>", 500);
-    }
-  } else {
-    log.error({ hasTeamId: !!teamId, hasAccessToken: !!accessToken }, "OAuth response missing team_id or access_token");
-    return c.html("<html><body><h1>Installation Failed</h1><p>The OAuth response was incomplete. Please try again.</p></body></html>", 500);
-  }
-
-  const webOrigin = getWebOrigin();
-  if (webOrigin) {
-    return c.redirect(`${webOrigin}/admin/integrations?installed=slack`);
-  }
-  return c.html(
-    "<html><body><h1>Atlas installed!</h1><p>You can now use /atlas in your Slack workspace.</p></body></html>",
-  );
 });
 
 export { slack };

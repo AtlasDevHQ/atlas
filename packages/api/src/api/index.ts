@@ -496,9 +496,33 @@ if (process.env.STRIPE_SECRET_KEY) {
   log.debug("Billing routes disabled (STRIPE_SECRET_KEY not set)");
 }
 
+// Generalized Platform install routes — mounted unconditionally.
+// /api/v1/integrations/:platform/{install,callback} dispatches to the
+// per-Platform handler registered via `registerBuiltinInstallHandlers`
+// below. A missing handler surfaces as a clean 501 from the route
+// rather than blocking boot — operators can leave the env unset until
+// they're ready to wire a Slack app.
+try {
+  const { integrations } = await import("./routes/integrations");
+  app.route("/api/v1/integrations", integrations);
+  const { registerBuiltinInstallHandlers } = await import(
+    "@atlas/api/lib/integrations/install"
+  );
+  registerBuiltinInstallHandlers();
+  log.info("Platform install routes enabled");
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load platform install routes — /api/v1/integrations will be unavailable",
+  );
+}
+
 // Slack routes — lazy import, only loaded if SLACK_SIGNING_SECRET is set.
 // Dynamic import avoids pulling slack dependencies into the module graph
 // when Slack is disabled, and prevents mock.module leaks in test suites.
+//
+// Post-#2653: slash command, events, and block-action interactions only.
+// OAuth install + callback moved to /api/v1/integrations/slack/{install,callback}.
 if (process.env.SLACK_SIGNING_SECRET) {
   const { slack } = await import("./routes/slack");
   app.route("/api/v1/slack", slack);

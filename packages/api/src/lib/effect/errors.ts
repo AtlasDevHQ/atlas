@@ -322,6 +322,27 @@ export class AmbiguousEntityError extends Data.TaggedError("AmbiguousEntityError
   readonly groups: ReadonlyArray<string | null>;
 }> {}
 
+// ── Platform OAuth ─────────────────────────────────────────────────
+
+/**
+ * Platform OAuth code-for-token exchange failed at the upstream Platform
+ * (Slack's `oauth.v2.access`, Jira's `oauth/token`, etc.) — non-OK
+ * response, network failure, or malformed payload.
+ *
+ * Maps to HTTP 502 — the failure is on the Platform side, not ours.
+ * `platform` is the catalog slug (`"slack"`, `"jira"`, etc.) so logs
+ * partition cleanly. `slackError` (or generic `upstreamError`) carries
+ * the raw Platform error code for operator forensics; user-facing copy
+ * is translated by the route layer — never surface the raw upstream
+ * message to the admin.
+ */
+export class PlatformOAuthExchangeError extends Data.TaggedError("PlatformOAuthExchangeError")<{
+  readonly message: string;
+  readonly platform: string;
+  /** Raw Platform-side error code (e.g. Slack's `invalid_code`). Forensic-only. */
+  readonly upstreamError: string;
+}> {}
+
 // ── Scheduler ──────────────────────────────────────────────────────
 
 /** Scheduled task execution timed out. */
@@ -372,6 +393,7 @@ export type AtlasError =
   | ConversationBudgetExceededError
   | UnsafeRegionMigrationResetError
   | AmbiguousEntityError
+  | PlatformOAuthExchangeError
   | SchedulerTaskTimeoutError
   | SchedulerExecutionError
   | DeliveryError
@@ -423,6 +445,7 @@ export const ATLAS_ERROR_TAG_LIST = [
   "ConversationBudgetExceededError",
   "UnsafeRegionMigrationResetError",
   "AmbiguousEntityError",
+  "PlatformOAuthExchangeError",
   "SchedulerTaskTimeoutError",
   "SchedulerExecutionError",
   "DeliveryError",

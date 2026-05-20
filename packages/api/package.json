@@ -21,6 +21,8 @@
     "./lib/tools/*": "./src/lib/tools/*.ts",
     "./lib/plugins": "./src/lib/plugins/index.ts",
     "./lib/plugins/*": "./src/lib/plugins/*.ts",
+    "./lib/integrations/install": "./src/lib/integrations/install/index.ts",
+    "./lib/integrations/install/*": "./src/lib/integrations/install/*.ts",
     "./api/routes/*": "./src/api/routes/*.ts",
     "./testing/*": "./src/__mocks__/*.ts",
     "./__test-utils__/*": "./src/__test-utils__/*.ts"

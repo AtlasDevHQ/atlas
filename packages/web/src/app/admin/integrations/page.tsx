@@ -522,7 +522,7 @@ function SlackCard({
         action={
           canConnect ? (
             <Button size="sm" asChild>
-              <a href={`${getApiUrl()}/api/v1/slack/install`}>
+              <a href={`${getApiUrl()}/api/v1/integrations/slack/install`}>
                 <ExternalLink className="mr-1.5 size-3.5" />
                 Connect
               </a>
@@ -565,7 +565,7 @@ function SlackCard({
           )}
           {slack.connected && canConnect && (
             <Button variant="ghost" size="sm" asChild>
-              <a href={`${getApiUrl()}/api/v1/slack/install`}>
+              <a href={`${getApiUrl()}/api/v1/integrations/slack/install`}>
                 <ExternalLink className="mr-1.5 size-3.5" />
                 Reconnect
               </a>

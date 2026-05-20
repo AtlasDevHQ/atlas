@@ -42,10 +42,6 @@ const mockUpdateMessage: Mock<(token: string, params: unknown) => Promise<{ ok: 
   Promise.resolve({ ok: true }),
 );
 
-const mockSlackAPI: Mock<(method: string, token: string, body: unknown) => Promise<{ ok: boolean; team?: unknown; access_token?: string }>> = mock(() =>
-  Promise.resolve({ ok: true }),
-);
-
 const mockPostEphemeral: Mock<(token: string, params: unknown) => Promise<{ ok: boolean }>> = mock(() =>
   Promise.resolve({ ok: true }),
 );
@@ -54,7 +50,11 @@ mock.module("@atlas/api/lib/slack/api", () => ({
   postMessage: mockPostMessage,
   updateMessage: mockUpdateMessage,
   postEphemeral: mockPostEphemeral,
-  slackAPI: mockSlackAPI,
+  // `slackAPI` was used by the lifted OAuth callback handler; the lift to
+  // /api/v1/integrations/slack/* has its own test file (slack-oauth-handler.test.ts).
+  // The mock module still exports it so `mock.module` doesn't leave a partial
+  // module reference around for other imports that touch this slot.
+  slackAPI: mock(() => Promise.resolve({ ok: true })),
 }));
 
 const mockApproveAction: Mock<(actionId: string, approverId: string) => Promise<Record<string, unknown> | null>> = mock(() =>
@@ -84,8 +84,6 @@ const mockGetBotToken: Mock<(teamId: string) => Promise<string | null>> = mock((
   Promise.resolve("xoxb-test-token"),
 );
 
-const mockSaveInstallation: Mock<(teamId: string, token: string) => Promise<void>> = mock(() => Promise.resolve());
-
 const mockGetInstallation: Mock<(teamId: string) => Promise<{
   team_id: string;
   bot_token: string;
@@ -106,7 +104,10 @@ mock.module("@atlas/api/lib/slack/store", () => ({
   getBotToken: mockGetBotToken,
   getInstallation: mockGetInstallation,
   getInstallationByOrg: mock(() => Promise.resolve(null)),
-  saveInstallation: mockSaveInstallation,
+  // saveInstallation moved to the integrations route's handler post-#2653.
+  // Keep the export here so partial-mock leakage doesn't appear in unrelated
+  // tests that import the slack store module.
+  saveInstallation: mock(() => Promise.resolve()),
   deleteInstallation: mock(() => Promise.resolve()),
   deleteInstallationByOrg: mock(() => Promise.resolve(false)),
   ENV_TEAM_ID: "env" as const,
@@ -255,8 +256,6 @@ async function getApp() {
 
 describe("/api/v1/slack", () => {
   const savedSigningSecret = process.env.SLACK_SIGNING_SECRET;
-  const savedClientId = process.env.SLACK_CLIENT_ID;
-  const savedClientSecret = process.env.SLACK_CLIENT_SECRET;
 
   beforeEach(() => {
     process.env.SLACK_SIGNING_SECRET = SIGNING_SECRET;
@@ -267,9 +266,7 @@ describe("/api/v1/slack", () => {
     mockPostMessage.mockClear();
     mockUpdateMessage.mockClear();
     mockPostEphemeral.mockClear();
-    mockSlackAPI.mockClear();
     mockGetBotToken.mockClear();
-    mockSaveInstallation.mockClear();
     mockGetInstallation.mockClear();
     mockGetInstallation.mockImplementation((teamId: string) =>
       Promise.resolve({
@@ -298,10 +295,6 @@ describe("/api/v1/slack", () => {
     // Restore only the vars we changed — never replace process.env entirely
     if (savedSigningSecret !== undefined) process.env.SLACK_SIGNING_SECRET = savedSigningSecret;
     else delete process.env.SLACK_SIGNING_SECRET;
-    if (savedClientId !== undefined) process.env.SLACK_CLIENT_ID = savedClientId;
-    else delete process.env.SLACK_CLIENT_ID;
-    if (savedClientSecret !== undefined) process.env.SLACK_CLIENT_SECRET = savedClientSecret;
-    else delete process.env.SLACK_CLIENT_SECRET;
   });
 
   describe("POST /api/v1/slack/commands", () => {
@@ -712,249 +705,10 @@ describe("/api/v1/slack", () => {
     });
   });
 
-  describe("GET /api/v1/slack/install", () => {
-    it("redirects to Slack OAuth URL when configured", async () => {
-      process.env.SLACK_CLIENT_ID = "test_client_id";
-      const app = await getApp();
-
-      const resp = await app.request("/api/v1/slack/install", {
-        method: "GET",
-        redirect: "manual",
-      });
-
-      expect(resp.status).toBe(302);
-      const location = resp.headers.get("location");
-      expect(location).toContain("slack.com/oauth/v2/authorize");
-      expect(location).toContain("test_client_id");
-    });
-
-    it("returns 501 when OAuth is not configured", async () => {
-      delete process.env.SLACK_CLIENT_ID;
-      const app = await getApp();
-
-      const resp = await app.request("/api/v1/slack/install", { method: "GET" });
-      expect(resp.status).toBe(501);
-    });
-
-    // F-04 (security): /install must require authenticated admin so the OAuth state
-    // binds the resulting installation to a real org. See packages/api/src/api/routes/slack.ts.
-    it("returns 401 when caller is unauthenticated (managed mode)", async () => {
-      process.env.SLACK_CLIENT_ID = "test_client_id";
-      authResultForTests = {
-        authenticated: false,
-        mode: "managed",
-        status: 401,
-        error: "Authentication required",
-      };
-      const app = await getApp();
-
-      const resp = await app.request("/api/v1/slack/install", {
-        method: "GET",
-        redirect: "manual",
-      });
-      expect(resp.status).toBe(401);
-      const body = (await resp.json()) as Record<string, unknown>;
-      expect(body.requestId).toBeDefined();
-    });
-
-    it("returns 403 when caller is authenticated but not an admin", async () => {
-      process.env.SLACK_CLIENT_ID = "test_client_id";
-      authResultForTests = {
-        authenticated: true,
-        mode: "managed",
-        user: { id: "user-1", mode: "managed", label: "User", role: "member", activeOrganizationId: "org-test" },
-      };
-      const app = await getApp();
-
-      const resp = await app.request("/api/v1/slack/install", {
-        method: "GET",
-        redirect: "manual",
-      });
-      expect(resp.status).toBe(403);
-      const body = (await resp.json()) as Record<string, unknown>;
-      expect(body.error).toBe("forbidden_role");
-      expect(body.requestId).toBeDefined();
-    });
-  });
-
-  describe("GET /api/v1/slack/callback", () => {
-    it("completes OAuth flow and saves installation", async () => {
-      process.env.SLACK_CLIENT_ID = "test_client_id";
-      process.env.SLACK_CLIENT_SECRET = "test_client_secret";
-
-      mockSlackAPI.mockResolvedValueOnce({
-        ok: true,
-        team: { id: "T999" },
-        access_token: "xoxb-new-token",
-      });
-
-      const app = await getApp();
-
-      // Get state from install redirect
-      const installResp = await app.request("/api/v1/slack/install", {
-        method: "GET",
-        redirect: "manual",
-      });
-      const location = installResp.headers.get("location") ?? "";
-      const stateParam = new URL(location).searchParams.get("state");
-
-      const resp = await app.request(
-        `/api/v1/slack/callback?code=test_code&state=${stateParam}`,
-        { method: "GET" },
-      );
-      expect(resp.status).toBe(200);
-      const html = await resp.text();
-      expect(html).toContain("Atlas installed!");
-      expect(mockSaveInstallation).toHaveBeenCalledWith("T999", "xoxb-new-token", { orgId: undefined, workspaceName: undefined });
-    });
-
-    it("redirects to /admin/integrations on the web app when ATLAS_CORS_ORIGIN is set", async () => {
-      process.env.SLACK_CLIENT_ID = "test_client_id";
-      process.env.SLACK_CLIENT_SECRET = "test_client_secret";
-      const savedCors = process.env.ATLAS_CORS_ORIGIN;
-      process.env.ATLAS_CORS_ORIGIN = "https://app.example.com";
-      try {
-        mockSlackAPI.mockResolvedValueOnce({
-          ok: true,
-          team: { id: "T999" },
-          access_token: "xoxb-new-token",
-        });
-        const app = await getApp();
-
-        const installResp = await app.request("/api/v1/slack/install", {
-          method: "GET",
-          redirect: "manual",
-        });
-        const location = installResp.headers.get("location") ?? "";
-        const stateParam = new URL(location).searchParams.get("state");
-
-        const resp = await app.request(
-          `/api/v1/slack/callback?code=test_code&state=${stateParam}`,
-          { method: "GET", redirect: "manual" },
-        );
-        expect(resp.status).toBe(302);
-        expect(resp.headers.get("location")).toBe(
-          "https://app.example.com/admin/integrations?installed=slack",
-        );
-      } finally {
-        if (savedCors !== undefined) process.env.ATLAS_CORS_ORIGIN = savedCors;
-        else delete process.env.ATLAS_CORS_ORIGIN;
-      }
-    });
-
-    it("returns error HTML when OAuth response is missing team data", async () => {
-      process.env.SLACK_CLIENT_ID = "test_client_id";
-      process.env.SLACK_CLIENT_SECRET = "test_client_secret";
-
-      // ok: true but no team or access_token
-      mockSlackAPI.mockResolvedValueOnce({ ok: true });
-
-      const app = await getApp();
-
-      // Get a valid state
-      const installResp = await app.request("/api/v1/slack/install", {
-        method: "GET",
-        redirect: "manual",
-      });
-      const location = installResp.headers.get("location") ?? "";
-      const stateParam = new URL(location).searchParams.get("state");
-
-      const resp = await app.request(
-        `/api/v1/slack/callback?code=test_code&state=${stateParam}`,
-        { method: "GET" },
-      );
-      expect(resp.status).toBe(500);
-      const html = await resp.text();
-      expect(html).toContain("Installation Failed");
-      expect(mockSaveInstallation).not.toHaveBeenCalled();
-    });
-
-    it("returns 400 when state parameter is invalid or missing", async () => {
-      process.env.SLACK_CLIENT_ID = "test_client_id";
-      process.env.SLACK_CLIENT_SECRET = "test_client_secret";
-      const app = await getApp();
-
-      // No state at all — OpenAPIHono schema validation rejects before handler runs
-      const resp1 = await app.request("/api/v1/slack/callback?code=test_code", {
-        method: "GET",
-      });
-      expect(resp1.status).toBe(422);
-
-      // Bogus state value — passes schema validation but handler rejects unknown state
-      const resp2 = await app.request(
-        "/api/v1/slack/callback?code=test_code&state=bogus-state-value",
-        { method: "GET" },
-      );
-      expect(resp2.status).toBe(400);
-    });
-
-    it("returns 400 when code parameter is missing", async () => {
-      process.env.SLACK_CLIENT_ID = "test_client_id";
-      process.env.SLACK_CLIENT_SECRET = "test_client_secret";
-      const app = await getApp();
-
-      // Need a valid state but no code
-      const installResp = await app.request("/api/v1/slack/install", {
-        method: "GET",
-        redirect: "manual",
-      });
-      const location = installResp.headers.get("location") ?? "";
-      const stateParam = new URL(location).searchParams.get("state");
-
-      const resp = await app.request(
-        `/api/v1/slack/callback?state=${stateParam}`,
-        { method: "GET" },
-      );
-      expect(resp.status).toBe(422);
-    });
-
-    it("returns 501 when OAuth is not configured", async () => {
-      delete process.env.SLACK_CLIENT_ID;
-      delete process.env.SLACK_CLIENT_SECRET;
-      const app = await getApp();
-
-      // Both code and state are required by the OpenAPIHono route schema
-      const resp = await app.request("/api/v1/slack/callback?code=test&state=dummy", {
-        method: "GET",
-      });
-      expect(resp.status).toBe(501);
-    });
-
-    // F-04 (security): in SaaS mode, an OAuth state with orgId=undefined
-    // means /install was reached without a valid admin session — the
-    // callback must refuse to bind the workspace to a NULL org.
-    it("returns 400 in SaaS mode when oauth state has no orgId", async () => {
-      process.env.SLACK_CLIENT_ID = "test_client_id";
-      process.env.SLACK_CLIENT_SECRET = "test_client_secret";
-
-      // Mint a state row with orgId=undefined (simulates pre-fix data or
-      // a state row tampered with). Default fallback store is in-memory.
-      const { saveOAuthState, _resetMemoryFallback } = await import("@atlas/api/lib/auth/oauth-state");
-      _resetMemoryFallback();
-      await saveOAuthState("orphan-state", { provider: "slack" });
-
-      // Flip deploy mode to saas. Cast through the test setter to avoid
-      // building a full ResolvedConfig — only deployMode is read in this path.
-      const config = await import("@atlas/api/lib/config");
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
-      config._setConfigForTest({ deployMode: "saas" } as any);
-
-      try {
-        const app = await getApp();
-        const resp = await app.request(
-          "/api/v1/slack/callback?code=test_code&state=orphan-state",
-          { method: "GET" },
-        );
-        expect(resp.status).toBe(400);
-        const body = (await resp.json()) as Record<string, unknown>;
-        expect(body.error).toBe("missing_org_binding");
-        // Ensure we never reached the saveInstallation path
-        expect(mockSaveInstallation).not.toHaveBeenCalled();
-      } finally {
-        config._setConfigForTest(null);
-      }
-    });
-  });
+  // Slack OAuth `/install` + `/callback` lifted to
+  // /api/v1/integrations/slack/{install,callback} in #2653. Coverage
+  // moved to `lib/integrations/install/__tests__/slack-oauth-handler.test.ts`
+  // (handler-level) and the integrations route's own test file.
 
   // ── F-55 regression tests ────────────────────────────────────────────
   // The Slack receiver used to call executeAgentQuery without binding any

@@ -226,6 +226,11 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
     // ── 502 Bad Gateway — upstream DB error ──────────────────────
     case "QueryExecutionError":
       return { status: 502, code: "upstream_error", message: error.message };
+    // Platform OAuth — upstream Platform refused the code exchange. The
+    // route surfaces an actionable, translated message; the raw
+    // `upstreamError` stays in logs only.
+    case "PlatformOAuthExchangeError":
+      return { status: 502, code: "upstream_error", message: error.message };
 
     // ── 503 Service Unavailable ──────────────────────────────────
     case "NoDatasourceError":

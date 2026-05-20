@@ -257,11 +257,17 @@ function resolveTtlSeconds(override: number | undefined): number {
 }
 
 function encodeBase64Url(buf: Buffer): string {
+  // Standard base64 output has at most 2 trailing `=` padding chars, so
+  // the strip pattern is bounded at `{0,2}` rather than `+`. CodeQL's
+  // polynomial-regex check flags an unbounded `=+$` on input that flows
+  // from `mintOAuthStateToken` callers (`workspaceId` / `catalogId`),
+  // even though `Buffer.toString("base64")` can't produce >2 `=` chars.
+  // Bounding the quantifier closes that finding without changing output.
   return buf
     .toString("base64")
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
-    .replace(/=+$/, "");
+    .replace(/={0,2}$/, "");
 }
 
 function encodeBase64UrlJson(value: unknown): string {

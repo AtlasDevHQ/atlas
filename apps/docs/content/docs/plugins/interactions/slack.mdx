@@ -119,21 +119,40 @@ For multi-workspace OAuth, the callback URL must be registered in your Slack app
 
 ## Migrating to @useatlas/chat
 
-Replace `@useatlas/slack` with the Chat SDK bridge plugin:
+Replace `@useatlas/slack` with the Chat SDK bridge plugin. As of Atlas
+1.5.2, adapter activation is **catalog-driven** — declare Slack in
+`atlas.config.ts:catalog`, set per-Platform credentials in env vars,
+and pass the chat-type subset through to `chatPlugin`. See the
+[Plugin Catalog](/deployment/plugin-catalog) page for the data model.
 
 ```typescript
-// Before:
+// Before (pre-1.5.2):
 import { slackPlugin } from "@useatlas/slack";
 slackPlugin({ signingSecret: "...", botToken: "xoxb-...", executeQuery })
 
-// After:
+// After (1.5.2+):
+import { defineConfig } from "@atlas/api/lib/config";
 import { chatPlugin } from "@useatlas/chat";
-chatPlugin({
-  adapters: {
-    slack: { botToken: "xoxb-...", signingSecret: "..." },
-  },
-  executeQuery,
-})
+
+export default defineConfig({
+  catalog: [
+    { slug: "slack", type: "chat", install_model: "oauth",
+      enabled: true, saas_eligible: true },
+  ],
+  plugins: [
+    chatPlugin({
+      catalog: [
+        { slug: "slack", type: "chat", install_model: "oauth",
+          enabled: true, saas_eligible: true },
+      ],
+      executeQuery,
+    }),
+  ],
+});
+
+// env vars:
+//   SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, SLACK_SIGNING_SECRET, SLACK_ENCRYPTION_KEY
+//   SLACK_BOT_TOKEN (optional — single-workspace only)
 ```
 
 | Feature | @useatlas/slack | @useatlas/chat |

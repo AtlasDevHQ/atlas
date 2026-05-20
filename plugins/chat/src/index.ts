@@ -2,8 +2,12 @@
  * Atlas Chat SDK Bridge Plugin.
  *
  * Bridges vercel/chat (Chat SDK) into the Atlas plugin system as a unified
- * interaction layer. Supports Slack, Teams, Discord, Google Chat, Telegram,
- * GitHub, Linear, and WhatsApp.
+ * interaction layer. Adapter activation is driven by `atlas.config.ts:catalog`
+ * + per-Platform env vars (slice 2 of #2649 — issue #2650). Slack is the
+ * only OAuth chat Platform that instantiates in 1.5.2; the other adapters
+ * (Teams, Discord, gchat, Telegram, GitHub, Linear, WhatsApp) ride along
+ * as catalog placeholders and wire up in 1.5.3 once `StaticBotInstallHandler`
+ * lands.
  *
  * Replaces the standalone `@useatlas/slack` and `@useatlas/teams` plugins
  * with a unified Chat SDK adapter approach. See the migration guide in README.md.
@@ -14,44 +18,15 @@
  * import { chatPlugin } from "@useatlas/chat";
  *
  * export default defineConfig({
+ *   // Operator declares supported Platforms + integrations. Per-Platform
+ *   // credentials live in env vars (SLACK_CLIENT_ID etc.).
+ *   catalog: [
+ *     { slug: "slack", type: "chat", install_model: "oauth", enabled: true },
+ *   ],
  *   plugins: [
  *     chatPlugin({
- *       adapters: {
- *         slack: {
- *           botToken: process.env.SLACK_BOT_TOKEN!,
- *           signingSecret: process.env.SLACK_SIGNING_SECRET!,
- *         },
- *         teams: {
- *           appId: process.env.TEAMS_APP_ID!,
- *           appPassword: process.env.TEAMS_APP_PASSWORD!,
- *         },
- *         discord: {
- *           botToken: process.env.DISCORD_BOT_TOKEN!,
- *           applicationId: process.env.DISCORD_APPLICATION_ID!,
- *           publicKey: process.env.DISCORD_PUBLIC_KEY!,
- *         },
- *         gchat: {
- *           credentials: JSON.parse(process.env.GOOGLE_CHAT_CREDENTIALS!),
- *         },
- *         telegram: {
- *           botToken: process.env.TELEGRAM_BOT_TOKEN!,
- *         },
- *         github: {
- *           appId: process.env.GITHUB_APP_ID!,
- *           privateKey: process.env.GITHUB_PRIVATE_KEY!,
- *           webhookSecret: process.env.GITHUB_WEBHOOK_SECRET!,
- *         },
- *         linear: {
- *           apiKey: process.env.LINEAR_API_KEY!,
- *           webhookSecret: process.env.LINEAR_WEBHOOK_SECRET!,
- *         },
- *         whatsapp: {
- *           phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID!,
- *           accessToken: process.env.WHATSAPP_ACCESS_TOKEN!,
- *           verifyToken: process.env.WHATSAPP_VERIFY_TOKEN!,
- *           appSecret: process.env.WHATSAPP_APP_SECRET!,
- *         },
- *       },
+ *       // No `adapters:` field — the plugin reads `catalog` from the
+ *       // host's resolved config and `process.env` for credentials.
  *       executeQuery: myQueryFunction,
  *     }),
  *   ],
@@ -61,14 +36,6 @@
 
 import type { StateAdapter } from "chat";
 import type { SlackAdapter } from "@chat-adapter/slack";
-import type { TeamsAdapter } from "@chat-adapter/teams";
-import type { DiscordAdapter } from "@chat-adapter/discord";
-import type { GoogleChatAdapter } from "@chat-adapter/gchat";
-import type { TelegramAdapter } from "@chat-adapter/telegram";
-import type { GitHubAdapter } from "@chat-adapter/github";
-import type { LinearAdapter } from "@chat-adapter/linear";
-import type { WhatsAppAdapter } from "@chat-adapter/whatsapp";
-import type { Context } from "hono";
 import { createPlugin } from "@useatlas/plugin-sdk";
 import type {
   AtlasInteractionPlugin,
@@ -77,17 +44,11 @@ import type {
   PluginLogger,
 } from "@useatlas/plugin-sdk";
 import { ChatConfigSchema } from "./config";
-import type { ChatPluginConfig } from "./config";
+import type { ChatCatalogEntryInput, ChatPluginConfig } from "./config";
 import { createChatBridge } from "./bridge";
 import type { ChatBridge } from "./bridge";
-import { createSlackAdapter } from "./adapters/slack";
-import { createTeamsAdapter } from "./adapters/teams";
-import { createDiscordAdapter } from "./adapters/discord";
-import { createGoogleChatAdapter } from "./adapters/gchat";
-import { createTelegramAdapter } from "./adapters/telegram";
-import { createGitHubAdapter } from "./adapters/github";
-import { createLinearAdapter } from "./adapters/linear";
-import { createWhatsAppAdapter } from "./adapters/whatsapp";
+import { buildChatAdapterRegistry } from "./adapter-registry";
+import type { ChatCatalogEntry } from "./adapter-registry";
 import { createStateAdapter } from "./state";
 
 // Re-export types for host wiring convenience
@@ -223,25 +184,53 @@ export type { DataTableCardProps } from "./cards/data-table-card";
 // Plugin builder
 // ---------------------------------------------------------------------------
 
+/**
+ * Predicate the routes() block uses to decide whether to mount the
+ * Slack webhook + OAuth routes. Catalog-driven (post-#2650 slice 2) —
+ * mirrors the AdapterRegistry's filter chain, but runs at route-
+ * registration time, before initialize() has built the actual adapter.
+ *
+ * The runtime check (`if (!slackAdapterInstance) return 503`) inside the
+ * route handler is the second gate — it guards against an env-var
+ * misconfig where the catalog says "Slack OAuth" but creds are missing.
+ */
+function catalogHasSlackOauth(
+  catalog: ReadonlyArray<ChatCatalogEntryInput> | undefined,
+): boolean {
+  if (!catalog) return false;
+  return catalog.some(
+    (e) =>
+      e.slug === "slack" &&
+      e.type === "chat" &&
+      e.install_model === "oauth" &&
+      e.enabled === true,
+  );
+}
+
 function buildChatPlugin(
   config: ChatPluginConfig,
 ): AtlasInteractionPlugin<ChatPluginConfig> {
   let bridge: ChatBridge | null = null;
   let stateAdapter: StateAdapter | null = null;
   let slackAdapterInstance: SlackAdapter | null = null;
-  let teamsAdapterInstance: TeamsAdapter | null = null;
-  let discordAdapterInstance: DiscordAdapter | null = null;
-  let gchatAdapterInstance: GoogleChatAdapter | null = null;
-  let telegramAdapterInstance: TelegramAdapter | null = null;
-  let githubAdapterInstance: GitHubAdapter | null = null;
-  let linearAdapterInstance: LinearAdapter | null = null;
-  let whatsappAdapterInstance: WhatsAppAdapter | null = null;
   let log: PluginLogger | null = null;
   let initialized = false;
+  /**
+   * Captured from `buildChatAdapterRegistry` at init so `healthCheck`
+   * and the OAuth-install route handler can surface actionable
+   * "operator misconfig" messages instead of the generic "not
+   * initialized" one. Empty until `initialize` runs.
+   */
+  let adapterDiagnostics: {
+    unrecognizedSlugs: ReadonlyArray<string>;
+    missingCredSlugs: ReadonlyArray<string>;
+  } = { unrecognizedSlugs: [], missingCredSlugs: [] };
 
   if (typeof config.executeQuery !== "function") {
     throw new Error("executeQuery callback is required and must be a function");
   }
+
+  const slackOauthDeclared = catalogHasSlackOauth(config.catalog);
 
   return {
     id: "chat-interaction",
@@ -254,7 +243,18 @@ function buildChatPlugin(
       // Mount Chat SDK webhook handlers under the plugin route prefix.
       // The bridge is created during initialize() — routes that arrive
       // before initialization return 503.
-      if (config.adapters.slack) {
+      //
+      // Post-#2650 (slice 2 of 1.5.2): the route gate is the catalog
+      // declaration, not the old `config.adapters.slack` field. The
+      // AdapterRegistry resolves the actual adapter instance inside
+      // initialize() — if the env vars are missing, the runtime
+      // `if (!slackAdapterInstance)` check below returns 503.
+      //
+      // Non-Slack chat platforms are intentionally not mounted in 1.5.2
+      // — their `install_model === "static-bot"` catalog rows are
+      // placeholders; their event-loop wiring lands in 1.5.3 alongside
+      // `StaticBotInstallHandler`.
+      if (slackOauthDeclared) {
         app.post("/webhooks/slack", async (c) => {
           if (!bridge) {
             return c.json({ error: "Chat plugin not yet initialized" }, 503);
@@ -288,14 +288,40 @@ function buildChatPlugin(
           }
         });
 
-        // OAuth routes — only if clientId is configured
-        if (config.adapters.slack.clientId) {
+        // OAuth routes — always mounted when Slack OAuth is declared in
+        // the catalog. The runtime check inside the handler verifies the
+        // adapter actually initialized (i.e. env vars were present and
+        // `createSlackAdapter` succeeded); the client_id is read from
+        // `process.env.SLACK_CLIENT_ID` rather than the old
+        // `config.adapters.slack.clientId` field.
+        {
           app.get("/oauth/slack/install", async (c) => {
-            if (!slackAdapterInstance || !stateAdapter) {
+            // Distinguish "plugin still booting" (transient — retry)
+            // from "adapter never instantiated due to missing creds"
+            // (terminal — operator must fix env vars). The diagnostic
+            // is captured by AdapterRegistry at init time.
+            if (!stateAdapter || !initialized) {
               return c.json({ error: "Chat plugin not yet initialized" }, 503);
             }
+            if (!slackAdapterInstance) {
+              const missingCreds = adapterDiagnostics.missingCredSlugs.includes("slack");
+              return c.json(
+                {
+                  error: missingCreds
+                    ? "Slack OAuth not configured — required env vars missing (SLACK_CLIENT_ID / SLACK_CLIENT_SECRET / SLACK_SIGNING_SECRET / SLACK_ENCRYPTION_KEY)"
+                    : "Slack adapter not registered — check `catalog` declaration in atlas.config.ts",
+                },
+                500,
+              );
+            }
 
-            const clientId = config.adapters.slack!.clientId!;
+            const clientId = process.env.SLACK_CLIENT_ID;
+            if (!clientId) {
+              return c.json(
+                { error: "Slack OAuth not configured — SLACK_CLIENT_ID is unset" },
+                500,
+              );
+            }
             const scopes = "commands,chat:write,app_mentions:read";
             const state = crypto.randomUUID();
 
@@ -316,8 +342,19 @@ function buildChatPlugin(
           });
 
           app.get("/oauth/slack/callback", async (c) => {
-            if (!slackAdapterInstance || !stateAdapter) {
+            if (!stateAdapter || !initialized) {
               return c.json({ error: "Chat plugin not yet initialized" }, 503);
+            }
+            if (!slackAdapterInstance) {
+              const missingCreds = adapterDiagnostics.missingCredSlugs.includes("slack");
+              return c.json(
+                {
+                  error: missingCreds
+                    ? "Slack OAuth not configured — required env vars missing"
+                    : "Slack adapter not registered — check `catalog` declaration",
+                },
+                500,
+              );
             }
 
             const state = c.req.query("state");
@@ -370,248 +407,12 @@ function buildChatPlugin(
         }
       }
 
-      if (config.adapters.teams) {
-        app.post("/webhooks/teams", async (c) => {
-          if (!bridge) {
-            return c.json({ error: "Chat plugin not yet initialized" }, 503);
-          }
-
-          const handler = bridge.webhooks.teams;
-          if (!handler) {
-            return c.json({ error: "Teams adapter not configured" }, 404);
-          }
-
-          const requestId = crypto.randomUUID();
-          try {
-            const response = await handler(c.req.raw, {
-              waitUntil: (task: Promise<unknown>) => {
-                task.catch((err: unknown) => {
-                  (log ?? console).error(
-                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "teams" },
-                    "Chat SDK Teams webhook background task failed",
-                  );
-                });
-              },
-            });
-            return response;
-          } catch (err) {
-            (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "teams" },
-              "Teams webhook handler threw unexpectedly",
-            );
-            return c.json({ error: "Webhook processing failed", requestId }, 500);
-          }
-        });
-      }
-
-      if (config.adapters.discord) {
-        app.post("/webhooks/discord", async (c) => {
-          if (!bridge) {
-            return c.json({ error: "Chat plugin not yet initialized" }, 503);
-          }
-
-          const handler = bridge.webhooks.discord;
-          if (!handler) {
-            return c.json({ error: "Discord adapter not configured" }, 404);
-          }
-
-          const requestId = crypto.randomUUID();
-          try {
-            const response = await handler(c.req.raw, {
-              waitUntil: (task: Promise<unknown>) => {
-                task.catch((err: unknown) => {
-                  (log ?? console).error(
-                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "discord" },
-                    "Chat SDK Discord webhook background task failed",
-                  );
-                });
-              },
-            });
-            return response;
-          } catch (err) {
-            (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "discord" },
-              "Discord webhook handler threw unexpectedly",
-            );
-            return c.json({ error: "Webhook processing failed", requestId }, 500);
-          }
-        });
-      }
-
-      if (config.adapters.gchat) {
-        app.post("/webhooks/gchat", async (c) => {
-          if (!bridge) {
-            return c.json({ error: "Chat plugin not yet initialized" }, 503);
-          }
-
-          const handler = bridge.webhooks.gchat;
-          if (!handler) {
-            return c.json({ error: "Google Chat adapter not configured" }, 404);
-          }
-
-          const requestId = crypto.randomUUID();
-          try {
-            const response = await handler(c.req.raw, {
-              waitUntil: (task: Promise<unknown>) => {
-                task.catch((err: unknown) => {
-                  (log ?? console).error(
-                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "gchat" },
-                    "Chat SDK Google Chat webhook background task failed",
-                  );
-                });
-              },
-            });
-            return response;
-          } catch (err) {
-            (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "gchat" },
-              "Google Chat webhook handler threw unexpectedly",
-            );
-            return c.json({ error: "Webhook processing failed", requestId }, 500);
-          }
-        });
-      }
-
-      if (config.adapters.telegram) {
-        app.post("/webhooks/telegram", async (c) => {
-          if (!bridge) {
-            return c.json({ error: "Chat plugin not yet initialized" }, 503);
-          }
-
-          const handler = bridge.webhooks.telegram;
-          if (!handler) {
-            return c.json({ error: "Telegram adapter not configured" }, 404);
-          }
-
-          const requestId = crypto.randomUUID();
-          try {
-            const response = await handler(c.req.raw, {
-              waitUntil: (task: Promise<unknown>) => {
-                task.catch((err: unknown) => {
-                  (log ?? console).error(
-                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "telegram" },
-                    "Chat SDK Telegram webhook background task failed",
-                  );
-                });
-              },
-            });
-            return response;
-          } catch (err) {
-            (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "telegram" },
-              "Telegram webhook handler threw unexpectedly",
-            );
-            return c.json({ error: "Webhook processing failed", requestId }, 500);
-          }
-        });
-      }
-
-      if (config.adapters.github) {
-        app.post("/webhooks/github", async (c) => {
-          if (!bridge) {
-            return c.json({ error: "Chat plugin not yet initialized" }, 503);
-          }
-
-          const handler = bridge.webhooks.github;
-          if (!handler) {
-            return c.json({ error: "GitHub adapter not configured" }, 404);
-          }
-
-          const requestId = crypto.randomUUID();
-          try {
-            const response = await handler(c.req.raw, {
-              waitUntil: (task: Promise<unknown>) => {
-                task.catch((err: unknown) => {
-                  (log ?? console).error(
-                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "github" },
-                    "Chat SDK GitHub webhook background task failed",
-                  );
-                });
-              },
-            });
-            return response;
-          } catch (err) {
-            (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "github" },
-              "GitHub webhook handler threw unexpectedly",
-            );
-            return c.json({ error: "Webhook processing failed", requestId }, 500);
-          }
-        });
-      }
-
-      if (config.adapters.linear) {
-        app.post("/webhooks/linear", async (c) => {
-          if (!bridge) {
-            return c.json({ error: "Chat plugin not yet initialized" }, 503);
-          }
-
-          const handler = bridge.webhooks.linear;
-          if (!handler) {
-            return c.json({ error: "Linear adapter not configured" }, 404);
-          }
-
-          const requestId = crypto.randomUUID();
-          try {
-            const response = await handler(c.req.raw, {
-              waitUntil: (task: Promise<unknown>) => {
-                task.catch((err: unknown) => {
-                  (log ?? console).error(
-                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "linear" },
-                    "Chat SDK Linear webhook background task failed",
-                  );
-                });
-              },
-            });
-            return response;
-          } catch (err) {
-            (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "linear" },
-              "Linear webhook handler threw unexpectedly",
-            );
-            return c.json({ error: "Webhook processing failed", requestId }, 500);
-          }
-        });
-      }
-
-      if (config.adapters.whatsapp) {
-        // WhatsApp needs both GET (Meta verification challenge) and POST (events).
-        // The Chat SDK adapter's handleWebhook() dispatches on HTTP method internally.
-        const handleWhatsApp = async (c: Context) => {
-          if (!bridge) {
-            return c.json({ error: "Chat plugin not yet initialized" }, 503);
-          }
-
-          const handler = bridge.webhooks.whatsapp;
-          if (!handler) {
-            return c.json({ error: "WhatsApp adapter not configured" }, 404);
-          }
-
-          const requestId = crypto.randomUUID();
-          try {
-            const response = await handler(c.req.raw, {
-              waitUntil: (task: Promise<unknown>) => {
-                task.catch((err: unknown) => {
-                  (log ?? console).error(
-                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "whatsapp" },
-                    "Chat SDK WhatsApp webhook background task failed",
-                  );
-                });
-              },
-            });
-            return response;
-          } catch (err) {
-            (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "whatsapp" },
-              "WhatsApp webhook handler threw unexpectedly",
-            );
-            return c.json({ error: "Webhook processing failed", requestId }, 500);
-          }
-        };
-
-        app.get("/webhooks/whatsapp", handleWhatsApp);
-        app.post("/webhooks/whatsapp", handleWhatsApp);
-      }
+      // Non-Slack chat Platform webhook routes are intentionally not
+      // mounted in 1.5.2 (#2650 AC). Their adapters don't instantiate
+      // until 1.5.3 when `StaticBotInstallHandler` lands; mounting their
+      // routes pre-handler would let webhooks accumulate without a
+      // bridge to consume them. The route paths themselves
+      // (/webhooks/teams etc.) are reserved for future activation.
     },
 
     async initialize(ctx: AtlasPluginContext) {
@@ -630,63 +431,28 @@ function buildChatPlugin(
       await adapter.connect();
       stateAdapter = adapter;
 
-      // Create platform adapters — wrap in try-catch to disconnect
-      // the state adapter if adapter creation or bridge setup fails.
-      const adapterInstances: {
-        slack?: SlackAdapter | null;
-        teams?: TeamsAdapter | null;
-        discord?: DiscordAdapter | null;
-        gchat?: GoogleChatAdapter | null;
-        telegram?: TelegramAdapter | null;
-        github?: GitHubAdapter | null;
-        linear?: LinearAdapter | null;
-        whatsapp?: WhatsAppAdapter | null;
-      } = {};
+      // Build chat-platform adapters via the catalog-driven
+      // AdapterRegistry (#2650 slice 2). The registry reads per-Platform
+      // credentials from `process.env`, logs warns on missing creds /
+      // non-OAuth entries, and returns the adapters map plus diagnostic
+      // slug lists. The diagnostics let `healthCheck` and the OAuth
+      // install handler surface actionable error messages.
       try {
-        if (config.adapters.slack) {
-          slackAdapterInstance = createSlackAdapter(config.adapters.slack) as SlackAdapter;
-          adapterInstances.slack = slackAdapterInstance;
-        }
-        if (config.adapters.teams) {
-          teamsAdapterInstance = createTeamsAdapter(config.adapters.teams) as TeamsAdapter;
-          adapterInstances.teams = teamsAdapterInstance;
-        }
-        if (config.adapters.discord) {
-          discordAdapterInstance = createDiscordAdapter(config.adapters.discord) as DiscordAdapter;
-          adapterInstances.discord = discordAdapterInstance;
-        }
-        if (config.adapters.gchat) {
-          gchatAdapterInstance = createGoogleChatAdapter(config.adapters.gchat) as GoogleChatAdapter;
-          adapterInstances.gchat = gchatAdapterInstance;
-        }
-        if (config.adapters.telegram) {
-          telegramAdapterInstance = createTelegramAdapter(config.adapters.telegram) as TelegramAdapter;
-          adapterInstances.telegram = telegramAdapterInstance;
-        }
-        if (config.adapters.github) {
-          if (!config.adapters.github.webhookSecret) {
-            ctx.logger.warn(
-              "GitHub adapter configured without webhookSecret — webhook endpoint will accept unauthenticated requests. Set webhookSecret for production deployments.",
-            );
-          }
-          githubAdapterInstance = createGitHubAdapter(config.adapters.github) as GitHubAdapter;
-          adapterInstances.github = githubAdapterInstance;
-        }
-        if (config.adapters.linear) {
-          if (!config.adapters.linear.webhookSecret) {
-            ctx.logger.warn(
-              "Linear adapter configured without webhookSecret — webhook endpoint will accept unauthenticated requests. Set webhookSecret for production deployments.",
-            );
-          }
-          linearAdapterInstance = createLinearAdapter(config.adapters.linear) as LinearAdapter;
-          adapterInstances.linear = linearAdapterInstance;
-        }
-        if (config.adapters.whatsapp) {
-          whatsappAdapterInstance = createWhatsAppAdapter(config.adapters.whatsapp) as WhatsAppAdapter;
-          adapterInstances.whatsapp = whatsappAdapterInstance;
-        }
+        const registry = buildChatAdapterRegistry({
+          catalog: (config.catalog ?? []) as ReadonlyArray<ChatCatalogEntry>,
+          env: process.env,
+          logger: ctx.logger,
+        });
+        slackAdapterInstance = registry.adapters.slack ?? null;
+        adapterDiagnostics = registry.diagnostics;
 
-        bridge = createChatBridge(config, ctx.logger, stateAdapter, adapterInstances);
+        // Bridge takes pre-built instances per-platform; non-Slack slots
+        // are left `undefined` (the bridge tolerates this — see
+        // `createChatBridge`). When 1.5.3 lands StaticBotInstallHandler,
+        // each new instantiated adapter slots in here.
+        bridge = createChatBridge(config, ctx.logger, stateAdapter, {
+          slack: slackAdapterInstance,
+        });
       } catch (err) {
         ctx.logger.error(
           { err: err instanceof Error ? err : new Error(String(err)) },
@@ -703,24 +469,18 @@ function buildChatPlugin(
         }
         stateAdapter = null;
         slackAdapterInstance = null;
-        teamsAdapterInstance = null;
-        discordAdapterInstance = null;
-        gchatAdapterInstance = null;
-        telegramAdapterInstance = null;
-        githubAdapterInstance = null;
-        linearAdapterInstance = null;
-        whatsappAdapterInstance = null;
         throw err;
       }
 
-      const enabledAdapters = Object.entries(config.adapters)
-        .filter(([, v]) => v !== undefined)
-        .map(([k]) => k);
+      const enabledAdapters: string[] = [];
+      if (slackAdapterInstance) enabledAdapters.push("slack");
 
       const backend = config.state?.backend ?? "memory";
       ctx.logger.info(
         { adapters: enabledAdapters, stateBackend: backend },
-        `Chat interaction plugin initialized (${enabledAdapters.join(", ")}, state: ${backend})`,
+        enabledAdapters.length > 0
+          ? `Chat interaction plugin initialized (${enabledAdapters.join(", ")}, state: ${backend})`
+          : `Chat interaction plugin initialized (no chat adapters activated — see AdapterRegistry warns, state: ${backend})`,
       );
       initialized = true;
     },
@@ -736,14 +496,37 @@ function buildChatPlugin(
         };
       }
 
-      const enabledAdapters = Object.entries(config.adapters)
-        .filter(([, v]) => v !== undefined)
-        .map(([k]) => k);
+      const enabledAdapters: string[] = [];
+      if (slackAdapterInstance) enabledAdapters.push("slack");
 
       if (enabledAdapters.length === 0) {
+        // Use the diagnostics captured at init to point operators at the
+        // actual cause: a catalog row referencing an unknown slug, or a
+        // recognized slug whose env vars are missing.
+        const parts = [
+          "No chat adapters registered.",
+        ];
+        if (adapterDiagnostics.missingCredSlugs.length > 0) {
+          parts.push(
+            `Missing env vars for: ${adapterDiagnostics.missingCredSlugs.join(", ")}.`,
+          );
+        }
+        if (adapterDiagnostics.unrecognizedSlugs.length > 0) {
+          parts.push(
+            `Unknown slugs in catalog: ${adapterDiagnostics.unrecognizedSlugs.join(", ")}.`,
+          );
+        }
+        if (
+          adapterDiagnostics.missingCredSlugs.length === 0 &&
+          adapterDiagnostics.unrecognizedSlugs.length === 0
+        ) {
+          parts.push(
+            "No chat-type catalog entries declared in atlas.config.ts (or all are disabled / non-OAuth).",
+          );
+        }
         return {
           healthy: false,
-          message: "No adapters configured",
+          message: parts.join(" "),
           latencyMs: Math.round(performance.now() - start),
         };
       }
@@ -792,13 +575,6 @@ function buildChatPlugin(
         stateAdapter = null;
       }
       slackAdapterInstance = null;
-      teamsAdapterInstance = null;
-      discordAdapterInstance = null;
-      gchatAdapterInstance = null;
-      telegramAdapterInstance = null;
-      githubAdapterInstance = null;
-      linearAdapterInstance = null;
-      whatsappAdapterInstance = null;
       log = null;
       initialized = false;
     },
@@ -812,30 +588,39 @@ function buildChatPlugin(
 /**
  * Factory function for use in atlas.config.ts plugins array.
  *
+ * Adapter activation is catalog-driven (#2650 slice 2). The host wires
+ * `catalog` from `atlas.config.ts:catalog` (chat-type subset); per-Platform
+ * credentials come from `process.env`.
+ *
  * @example
  * ```typescript
- * plugins: [chatPlugin({
- *   adapters: {
- *     slack: { botToken: "xoxb-...", signingSecret: "..." },
- *     teams: { appId: "...", appPassword: "..." },
- *     discord: { botToken: "...", applicationId: "...", publicKey: "..." },
- *     gchat: { credentials: { client_email: "...", private_key: "..." } },
- *     telegram: { botToken: "..." },
- *     github: { appId: "...", privateKey: "...", webhookSecret: "..." },
- *     linear: { apiKey: "...", webhookSecret: "..." },
- *     whatsapp: { phoneNumberId: "...", accessToken: "...", verifyToken: "...", appSecret: "..." },
- *   },
- *   executeQuery: myQueryFunction,
- * })]
+ * // atlas.config.ts
+ * export default defineConfig({
+ *   catalog: [
+ *     { slug: "slack", type: "chat", install_model: "oauth", enabled: true },
+ *   ],
+ *   plugins: [
+ *     chatPlugin({
+ *       catalog: [
+ *         { slug: "slack", type: "chat", install_model: "oauth",
+ *           enabled: true, saas_eligible: true },
+ *       ],
+ *       executeQuery: myQueryFunction,
+ *     }),
+ *   ],
+ * });
+ *
+ * // env vars:
+ * //   SLACK_CLIENT_ID=...
+ * //   SLACK_CLIENT_SECRET=...
+ * //   SLACK_SIGNING_SECRET=...
+ * //   SLACK_ENCRYPTION_KEY=...
  * ```
  */
 export const chatPlugin = createPlugin<
   ChatPluginConfig,
   AtlasInteractionPlugin<ChatPluginConfig>
 >({
-  // Cast: Zod infers all-optional fields for GitHub's and Linear's schemas,
-  // but runtime superRefine validates the discriminated union constraints.
-  // The TypeScript union types provide compile-time safety separately.
   configSchema: ChatConfigSchema as unknown as { parse(input: unknown): ChatPluginConfig },
   create: buildChatPlugin,
 });

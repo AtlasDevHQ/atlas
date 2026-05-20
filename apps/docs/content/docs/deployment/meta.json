@@ -6,6 +6,7 @@
     "deploy",
     "authentication",
     "multi-datasource",
+    "plugin-catalog",
     "schema-evolution",
     "cache-configuration"
   ]

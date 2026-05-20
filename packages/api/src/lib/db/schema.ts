@@ -1585,6 +1585,12 @@ export const pluginCatalog = pgTable(
     configSchema: jsonb("config_schema"),
     minPlan: text("min_plan").notNull().default("starter"),
     enabled: boolean("enabled").notNull().default(true),
+    // #2650 — install-handler dispatch key. Mirrors `CatalogInstallModel`
+    // in lib/config.ts. CHECK constraint enforces the enum at DB layer.
+    installModel: text("install_model").notNull().default("oauth"),
+    // #2650 — gate on per-deploy-mode visibility. SaaS hides `false`
+    // rows from admin-UI listings; self-host always shows them.
+    saasEligible: boolean("saas_eligible").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1592,7 +1598,13 @@ export const pluginCatalog = pgTable(
     index("idx_plugin_catalog_slug").on(t.slug),
     index("idx_plugin_catalog_type").on(t.type),
     index("idx_plugin_catalog_enabled").on(t.enabled).where(sql`enabled = true`),
-    check("chk_plugin_catalog_type", sql`type IN ('datasource', 'context', 'interaction', 'action', 'sandbox')`),
+    // Partial on enabled = true keeps the index narrow — admin-UI catalog
+    // listing and chat-plugin AdapterRegistry both `WHERE enabled = true`.
+    index("idx_plugin_catalog_install_model")
+      .on(t.type, t.installModel)
+      .where(sql`enabled = true`),
+    check("chk_plugin_catalog_type", sql`type IN ('datasource', 'context', 'interaction', 'action', 'sandbox', 'chat', 'integration')`),
+    check("chk_plugin_catalog_install_model", sql`install_model IN ('oauth', 'form', 'static-bot')`),
   ],
 );
 

@@ -1,0 +1,187 @@
+---
+title: Plugin Catalog
+description: Declarative catalog of installable chat Platforms and integration plugins, seeded from atlas.config.ts at boot
+---
+
+# Plugin Catalog
+
+The **Plugin Catalog** is Atlas's declarative registry of installable chat
+Platforms (Slack, Teams, Discord, …) and integration plugins (Salesforce,
+Jira, Email, …). It implements
+[ADR‑0002](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0002-catalog-seeded-from-config-at-boot.md):
+operators declare capability in `atlas.config.ts`, a boot‑time idempotent
+seed pass writes the declaration into `plugin_catalog`, and runtime reads
+(admin UI, listener gates, billing tier checks) flow through the DB.
+
+## Why a catalog
+
+On SaaS the operator (who runs Atlas) and the customer (who configures a
+Workspace) are different parties. Pre‑1.5.2 the chat plugin's adapter
+wiring lived inside `atlas.config.ts:plugins[]` — operator-only, deploy-time
+only — which meant adding a Platform required a code edit and a deploy
+per customer. The catalog seam moves "what's available on this deploy"
+(operator) and "what's active for this Workspace" (customer) onto
+separate surfaces.
+
+## Declaring the catalog
+
+Add a top‑level `catalog` array to your `atlas.config.ts`:
+
+```ts
+import { defineConfig } from "@atlas/api/lib/config";
+
+export default defineConfig({
+  // …
+  catalog: [
+    {
+      slug: "slack",
+      type: "chat",
+      install_model: "oauth",
+      enabled: true,
+      saas_eligible: true,
+      min_plan: "starter",
+    },
+    {
+      slug: "salesforce",
+      type: "integration",
+      install_model: "oauth",
+      enabled: true,
+      saas_eligible: true,
+      min_plan: "team",
+    },
+    {
+      slug: "email",
+      type: "integration",
+      install_model: "form",
+      enabled: true,
+      saas_eligible: true,
+      min_plan: "starter",
+    },
+    // 1.5.3 placeholder — visible to ops, not customer-installable until
+    // the static-bot install handler lands.
+    {
+      slug: "telegram",
+      type: "chat",
+      install_model: "static-bot",
+      enabled: false,
+      saas_eligible: true,
+    },
+  ],
+});
+```
+
+Each entry carries:
+
+| Field | Required | Description |
+|---|---|---|
+| `slug` | yes | Stable identifier — lowercase alphanumeric with dashes (`slack`, `linear-apikey`). Used as the primary lookup key. |
+| `type` | yes | Admin‑UI grouping. `"chat"` or `"integration"`. |
+| `install_model` | yes | Install-handler dispatch. `"oauth"`, `"form"`, or `"static-bot"`. |
+| `enabled` | no (defaults `true`) | Whether customers can install. Ops can flip false in DB for emergency-disable. |
+| `saas_eligible` | no (defaults `true`) | Whether the entry shows in SaaS admin UI. Set `false` for self‑host-only modes (e.g. GitHub PAT). |
+| `min_plan` | no (defaults `"starter"`) | Plan-tier gate evaluated at customer-install time. |
+| `name` | no | Human-readable name; defaults to a slug-derived form. |
+| `description` | no | Admin‑UI description copy. |
+| `iconUrl` | no | Icon for admin-UI cards. |
+
+## Install models
+
+`install_model` discriminates the install-handler family (see
+[CONTEXT.md → Install models](https://github.com/AtlasDevHQ/atlas/blob/main/CONTEXT.md#install-models)):
+
+- **`oauth`** — Customer clicks Connect, OAuth dance runs against the
+  operator-owned App Registration, per-Workspace bot token returned and
+  persisted to the platform-native credential store. Examples: Slack,
+  Salesforce, Jira.
+- **`form`** — Customer fills a form (API key, SMTP creds, webhook URL).
+  Examples: Email (SMTP), Webhook, Obsidian.
+- **`static-bot`** — Operator-shared bot serves every Workspace; customer
+  provides only a per-Workspace routing identifier. Examples: Discord
+  `guild_id`, Telegram `chat_id`, Teams `tenant_id`. **Not installable
+  in 1.5.2** — handler ships in 1.5.3.
+
+## Boot-time seed
+
+On every API boot, `CatalogSeeder` runs as part of the startup Layer
+DAG and upserts `plugin_catalog` rows from the declaration. The seed is
+idempotent — same config in, same rows out — so re-running is safe.
+
+```
+plan_catalog row exists for slug?
+  NO  → INSERT
+  YES → does it match the declaration?
+          YES → no-op (debug log: "preserved")
+          NO  → UPDATE (name, description, type, install_model, …)
+
+plan_catalog row exists but slug not in declaration?
+  → log warn "orphan catalog row" — DO NOT delete
+```
+
+### Emergency disable
+
+Ops can flip `plugin_catalog.enabled = false` directly in the DB to
+disable a Platform across all Workspaces in a region without a deploy.
+The seed pass **preserves** that DB-side `false` even if the config
+declares `true` — and logs a warn so the drift is observable.
+
+```sql
+-- Atlas SaaS us region: emergency-disable Salesforce
+UPDATE plugin_catalog SET enabled = false WHERE slug = 'salesforce';
+```
+
+The next deploy's seed pass will see `config.enabled = true` but
+`db.enabled = false`, preserve the DB state, and log:
+
+```
+WARN ops-disabled row preserved — config wants enabled=true but DB has enabled=false { slug: 'salesforce' }
+```
+
+### Orphans
+
+A `plugin_catalog` row whose slug isn't in the declaration emits a
+`warn` log but is never deleted. This preserves ops's ability to
+hand-add catalog rows (community marketplace future) without the seed
+reaping them.
+
+## Per-Platform credentials
+
+The catalog entry declares **capability**; per-Platform credentials
+live in environment variables. The chat plugin's
+`AdapterRegistry` reads them at boot:
+
+| Platform | Required env vars |
+|---|---|
+| `slack` | `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_SIGNING_SECRET`, `SLACK_ENCRYPTION_KEY` |
+| _(other chat Platforms ship in 1.5.3)_ | — |
+
+If a catalog entry exists with `install_model: "oauth"` and `enabled: true`
+but its env vars are missing, the AdapterRegistry logs a warn and skips
+the adapter — the plugin still boots, the admin UI still shows the
+catalog entry, but customer Connect flows fail until the env wiring is
+fixed.
+
+## Self-host symmetry
+
+On self-host the operator and the customer are the same party. The
+catalog seam still works: the operator declares whichever Platforms
+they want to support, sets the env vars, and installs from their own
+admin UI like a SaaS customer would. No bifurcation — the same code
+path serves both deploy modes.
+
+## What ships when
+
+- **1.5.2 (slice 2, #2650 — this milestone)**: catalog data model,
+  `CatalogSeeder` boot pass, `AdapterRegistry` for chat platforms, Slack
+  OAuth wired end-to-end. Other chat Platforms (Teams/Discord/gchat/
+  Telegram/WhatsApp) seeded as `enabled: false` placeholders.
+- **1.5.2 (slice 3, #2651)**: `/api/v1/integrations/catalog` endpoint
+  + `/admin/integrations` page consuming the seeded catalog.
+- **1.5.2 (slice 4, #2652)**: `PlatformInstallHandler` interface family
+  + `OAuthStateToken`.
+- **1.5.2 (slice 5, #2653)**: Slack `OAuthPlatformInstallHandler`
+  implementation (lift of the current `slack.ts` OAuth path).
+- **1.5.3**: `StaticBotInstallHandler` — turns on the non-Slack chat
+  Platforms.
+
+See [ADR-0002](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0002-catalog-seeded-from-config-at-boot.md)
+for the design rationale.

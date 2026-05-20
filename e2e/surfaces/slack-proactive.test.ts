@@ -356,13 +356,27 @@ let teardown: (() => Promise<void>) | null = null;
 beforeAll(async () => {
   const { buildChatPlugin } = await import("../../plugins/chat/src/index");
 
+  // Slice 2 of 1.5.2 (#2650): chat-adapter activation moved from
+  // `adapters: { slack: {...} }` to `catalog: [...]` + env vars. The
+  // env vars are set in `beforeAll` below so the AdapterRegistry can
+  // instantiate the Slack adapter. The previous BOT_TOKEN /
+  // SIGNING_SECRET constants now flow through `process.env.SLACK_*`.
+  process.env.SLACK_CLIENT_ID = "test-client-id";
+  process.env.SLACK_CLIENT_SECRET = "test-client-secret";
+  process.env.SLACK_SIGNING_SECRET = SIGNING_SECRET;
+  process.env.SLACK_ENCRYPTION_KEY = "f".repeat(64);
+  process.env.SLACK_BOT_TOKEN = BOT_TOKEN;
+
   const plugin = buildChatPlugin({
-    adapters: {
-      slack: {
-        botToken: BOT_TOKEN,
-        signingSecret: SIGNING_SECRET,
+    catalog: [
+      {
+        slug: "slack",
+        type: "chat",
+        install_model: "oauth",
+        enabled: true,
+        saas_eligible: true,
       },
-    },
+    ],
     state: { backend: "memory" },
     // The plugin's `ChatExecuteQueryContext` / `ResolveWorkspaceIdFn` /
     // `OnPauseRequestFn` types pull from the broader Chat SDK type

@@ -308,6 +308,120 @@ export const BackfillSaasTrialLive: Layer.Layer<
 );
 
 // ══════════════════════════════════════════════════════════════════════
+// ██  Catalog Seed Layer (#2650 — 1.5.2 slice 2)
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * Discriminated outcome of the boot-time catalog seed. Mirrors
+ * {@link ConnectionsHydrateOutcome} below so a future `/health` or
+ * admin banner consumer can surface an unhealthy state without
+ * re-grepping logs.
+ *
+ * - `skipped-gate`  — InternalDB or Migration upstream not satisfied
+ * - `seeded`        — seed ran (may have applied 0 writes if config matched DB)
+ * - `error`         — the boot wrapper or its dynamic import threw;
+ *                     `plugin_catalog` reflects the pre-boot state
+ */
+export type CatalogSeedOutcome = "skipped-gate" | "seeded" | "error";
+
+export interface CatalogSeedShape {
+  /** Newly inserted plugin_catalog rows this boot. */
+  readonly insertedCount: number;
+  /** Rows whose mutable columns were updated to match config this boot. */
+  readonly updatedCount: number;
+  /**
+   * Rows preserved at `enabled = false` because ops had manually
+   * disabled them. Surfaced so admin observability tooling can flag the
+   * config-vs-DB drift.
+   */
+  readonly preservedCount: number;
+  /** Slugs in DB without a matching declaration. Logged at warn, never deleted. */
+  readonly orphanSlugs: ReadonlyArray<string>;
+  /** Discriminates intentional skip / normal seed / failure. */
+  readonly outcome: CatalogSeedOutcome;
+  /** Scrubbed error message when `outcome === "error"`. */
+  readonly error?: string;
+}
+
+export class CatalogSeed extends Context.Tag("CatalogSeed")<
+  CatalogSeed,
+  CatalogSeedShape
+>() {}
+
+/**
+ * Idempotent seed of `plugin_catalog` from `atlas.config.ts:catalog`.
+ * Implements ADR-0002 S3 (config-driven, idempotently seeded).
+ *
+ * Depends on `Migration` so the new install_model + saas_eligible
+ * columns (migration 0087) are guaranteed before the upsert; depends
+ * on `InternalDB` for the pool. Non-fatal: the seeder swallows
+ * errors internally and logs at error so a failed seed leaves
+ * pre-existing rows authoritative for the boot rather than crashing
+ * the API. The failure is observable via `CatalogSeedShape.outcome ===
+ * "error"` so health surfaces can degrade instead of guessing.
+ *
+ * Self-hosted with an empty `catalog: []` (or omitted) is a quick
+ * no-op: the seeder skips the upsert loop entirely and only emits the
+ * orphan warn if any catalog rows linger.
+ */
+export const CatalogSeedLive: Layer.Layer<
+  CatalogSeed,
+  never,
+  InternalDB | Migration
+> = Layer.effect(
+  CatalogSeed,
+  Effect.gen(function* () {
+    const db = yield* InternalDB;
+    const migration = yield* Migration;
+    const zeroCounts = {
+      insertedCount: 0,
+      updatedCount: 0,
+      preservedCount: 0,
+      orphanSlugs: [] as ReadonlyArray<string>,
+    };
+
+    if (!db.available || !migration.migrated) {
+      log.info(
+        { available: db.available, migrated: migration.migrated },
+        "Catalog seed skipped — upstream gate (InternalDB or Migration) not satisfied",
+      );
+      return { ...zeroCounts, outcome: "skipped-gate" } satisfies CatalogSeedShape;
+    }
+
+    return yield* Effect.tryPromise({
+      try: async () => {
+        const { runCatalogSeedBoot } = await import(
+          "@atlas/api/lib/integrations/catalog-seeder"
+        );
+        const result = await runCatalogSeedBoot();
+        return {
+          insertedCount: result.insertedCount,
+          updatedCount: result.updatedCount,
+          preservedCount: result.preservedCount,
+          orphanSlugs: result.orphanSlugs,
+          outcome: "seeded",
+        } satisfies CatalogSeedShape;
+      },
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(
+      Effect.catchAll((err) => {
+        // Reachable when the dynamic import itself rejects (bundle
+        // artefact missing, runtime ESM resolution issue) — the
+        // `runCatalogSeedBoot` wrapper catches its own SQL/DB errors.
+        // We still surface the failure via `outcome: "error"` so
+        // healthCheck consumers can degrade.
+        log.error({ err }, "Catalog seed boot wrapper threw");
+        return Effect.succeed({
+          ...zeroCounts,
+          outcome: "error",
+          error: errorMessage(err),
+        } satisfies CatalogSeedShape);
+      }),
+    );
+  }),
+);
+
+// ══════════════════════════════════════════════════════════════════════
 // ██  Connections Hydrate Layer
 // ══════════════════════════════════════════════════════════════════════
 
@@ -1163,6 +1277,7 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
   | InternalDB
   | Migration
   | BackfillSaasTrial
+  | CatalogSeed
   | ConnectionsHydrate
   | SemanticSync
   | Settings
@@ -1181,6 +1296,13 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
   // the other layers — Effect's mergeAll doesn't order independent
   // siblings, so the only real ordering is the Migration dependency.
   const backfillSaasTrialLayer = BackfillSaasTrialLive.pipe(
+    Layer.provide(Layer.merge(internalDBLayer, migrationLayer)),
+  );
+
+  // CatalogSeedLive depends on Migration (so the install_model +
+  // saas_eligible columns added by 0087 exist) and InternalDB. Same
+  // shape as BackfillSaasTrialLive — independent peer otherwise.
+  const catalogSeedLayer = CatalogSeedLive.pipe(
     Layer.provide(Layer.merge(internalDBLayer, migrationLayer)),
   );
 
@@ -1239,6 +1361,7 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     internalDBLayer,
     migrationLayer,
     backfillSaasTrialLayer,
+    catalogSeedLayer,
     connectionsHydrateLayer,
     semanticSyncLayer,
     settingsLayer,

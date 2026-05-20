@@ -264,22 +264,22 @@ export function Hero() {
         </p>
         <div className="mt-7 flex flex-wrap gap-2.5">
           <a
-            href="https://docs.useatlas.dev/guides/mcp"
+            href="https://app.useatlas.dev/demo"
             className="inline-flex items-center gap-2 rounded-lg bg-brand px-[18px] py-[11px] text-[13.5px] font-semibold text-zinc-950 transition-colors hover:bg-brand-hover"
           >
-            Install the MCP server →
+            Try the demo →
           </a>
           <a
-            href="https://docs.useatlas.dev/guides/mcp"
+            href="https://docs.useatlas.dev/getting-started"
             className="inline-flex items-center rounded-lg border border-white/10 bg-zinc-900 px-3.5 py-2.5 text-zinc-50 transition-colors hover:border-white/20"
           >
             <code className="font-mono text-[12.5px]">
-              $ bunx @useatlas/mcp init
+              $ bun create atlas-agent
             </code>
           </a>
         </div>
         <p className="mt-3.5 font-mono text-[11px] tracking-[0.04em] text-zinc-400">
-          works in claude desktop, cursor, continue · self-host is free
+          self-host is free · MCP server for claude desktop, cursor, continue · slack-native
         </p>
       </div>
 

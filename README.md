@@ -22,22 +22,23 @@
 
 ## What is Atlas?
 
-Atlas turns a directory of YAML files into a complete semantic layer for analytics — entities, dimensions, measures, joins, virtual dimensions, query patterns, glossary terms, and authoritative metrics. Humans author the YAML. AI agents consume it through the **Model Context Protocol (MCP)** to answer business questions in natural language, with deterministic, validated, read-only SQL.
+Atlas turns a directory of YAML files into a complete semantic layer for analytics — entities, dimensions, measures, joins, virtual dimensions, query patterns, glossary terms, and authoritative metrics. Humans author the YAML. AI agents consume it through a built-in chat UI, an embeddable widget, Slack-native chat, or the **Model Context Protocol (MCP)** for Claude Desktop / Cursor / Continue — all returning deterministic, validated, read-only SQL.
 
 Every YAML field exists because an LLM needs it to write correct SQL: `sample_values` ground the agent in real data, `glossary.status: ambiguous` forces clarifying questions, `metrics.objective` picks `MAX` vs `MIN`, `query_patterns` teach the canonical join shapes for your domain.
 
 Built with Hono, Vercel AI SDK, and bun. Supports Anthropic, OpenAI, Bedrock, Ollama, and Vercel AI Gateway. Works with PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, and Salesforce.
 
-## Install Atlas as an MCP server (the lead path)
-
-Add Atlas to Claude Desktop, Cursor, or Continue with one command. Auto-detects the client and falls back to a bundled demo fixture when no datasource is configured:
+## Try the demo locally
 
 ```bash
-bunx @useatlas/mcp init --local            # print paste-ready config
-bunx @useatlas/mcp init --local --write    # merge into the detected client config (with a .bak)
+bun create atlas-agent my-app --demo
+cd my-app && bun run dev
+# Open http://localhost:3000
 ```
 
-Restart Claude Desktop / Cursor and ask one of the canonical questions:
+The `--demo` flag seeds the canonical NovaMart e-commerce dataset (52 tables, ~480K rows) — twelve generic e-commerce KPIs ship as starter prompts inside the chat UI; the canonical 5 below drive the eval harness ([#2025](https://github.com/AtlasDevHQ/atlas/issues/2025)) and the docs/landing copy.
+
+Ask one of the canonical questions in the chat UI:
 
 - *"What's our GMV this quarter?"*
 - *"What's our top-performing category by GMV this month?"*
@@ -45,7 +46,21 @@ Restart Claude Desktop / Cursor and ask one of the canonical questions:
 - *"Show me revenue last quarter."* — Atlas asks which definition you mean (GMV vs. net revenue vs. seller revenue) because `revenue` is `status: ambiguous` in the glossary
 - *"What are our most common return reasons?"*
 
-The agent reads your YAML semantic layer first, picks the right entities, writes SQL, runs it through the validation pipeline, and returns answers with the underlying SQL on display. See the [MCP guide](https://docs.useatlas.dev/guides/mcp) for the full flow — hosted (`mcp.useatlas.dev` over OAuth 2.1 + DCR + PKCE) and self-hosted (stdio) live in the same page under tabs. The one-command hosted install is `bunx @useatlas/mcp init --hosted --write`.
+The agent reads your YAML semantic layer first, picks the right entities, writes SQL, runs it through the validation pipeline, and returns answers with the underlying SQL on display.
+
+The default landing for fresh installs is chat-first — admins can flip to admin in **Settings → Profile**. See the [Default Landing guide](https://docs.useatlas.dev/guides/default-landing) for the underlying preference.
+
+## Install Atlas as an MCP server
+
+Once you have an Atlas instance (local from the demo above, self-hosted, or a hosted workspace), add it to Claude Desktop, Cursor, or Continue with one command. Auto-detects the client and merges into its config:
+
+```bash
+bunx @useatlas/mcp init --local            # paste-ready config for a local Atlas instance
+bunx @useatlas/mcp init --local --write    # merge into the detected client config (with a .bak)
+bunx @useatlas/mcp init --hosted --write   # for an app.useatlas.dev workspace via OAuth 2.1
+```
+
+Restart Claude Desktop / Cursor and ask the same canonical questions through your AI client. See the [MCP guide](https://docs.useatlas.dev/guides/mcp) for the full flow — hosted (`mcp.useatlas.dev` over OAuth 2.1 + DCR + PKCE) and self-hosted (stdio) live in the same page under tabs.
 
 ## What's in the YAML?
 
@@ -81,18 +96,6 @@ joins:
 That YAML is the contract between your team and the agent — version-controlled, code-reviewed, diffable. Sibling files (`glossary.yml`, `metrics/*.yml`, `catalog.yml`) round it out: glossary terms with `status: ambiguous` force the agent to clarify, metrics with `objective: maximize` / `minimize` make optimization direction explicit, and the catalog routes the agent to the right entity for a given question.
 
 See the full [Semantic Layer reference](https://docs.useatlas.dev/getting-started/semantic-layer) for the complete schema.
-
-## Try the demo locally
-
-```bash
-bun create atlas-agent my-app --demo
-cd my-app && bun run dev
-# Open http://localhost:3000
-```
-
-The `--demo` flag seeds the canonical NovaMart e-commerce dataset (52 tables, ~480K rows) — twelve generic e-commerce KPIs ship as starter prompts inside the chat UI; the canonical 5 above drive the eval harness ([#2025](https://github.com/AtlasDevHQ/atlas/issues/2025)) and the docs/landing copy.
-
-The default landing for fresh installs is chat-first — admins can flip to admin in **Settings → Profile**. See the [Default Landing guide](https://docs.useatlas.dev/guides/default-landing) for the underlying preference.
 
 ## Embed in your app
 

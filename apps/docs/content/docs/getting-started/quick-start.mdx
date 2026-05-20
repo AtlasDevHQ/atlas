@@ -12,6 +12,24 @@ import { Accordions, Accordion } from "fumadocs-ui/components/accordion";
   If you're using [app.useatlas.dev](https://app.useatlas.dev), see the [Hosted Quick Start](/getting-started/hosted) instead — no CLI, Docker, or configuration files needed.
 </Callout>
 
+## The fast path
+
+For most people, scaffolding a new Atlas app is the right starting point. One command, demo data pre-seeded:
+
+```bash
+bun create atlas-agent my-app --demo
+cd my-app && bun run dev
+# Open http://localhost:3000
+```
+
+The `--demo` flag scaffolds a runnable Atlas project with the canonical NovaMart e-commerce dataset (52 tables, ~480K rows) seeded into a local Docker Postgres. The scaffold walks you through picking an LLM provider and wiring its API key into `.env`.
+
+Once it's running, jump to [Ask your first question](#ask-your-first-question) below.
+
+<Callout type="info" title="Need to contribute to Atlas itself?">
+  If you want to work on Atlas's codebase (PRs, plugin development on the monorepo's internal packages, debugging the agent loop directly), follow the [monorepo setup](#alternative-clone-the-monorepo) further down instead — that's the path for contributors, not for using Atlas as a product.
+</Callout>
+
 ## Prerequisites
 
 Before you start, make sure you have:
@@ -30,7 +48,9 @@ Restart your terminal after installing. Verify with `bun --version` — you need
 </Accordion>
 </Accordions>
 
-## Set up your environment
+## Alternative: clone the monorepo
+
+This longer path is for contributing to Atlas itself or working from the canonical monorepo. Most users should follow [The fast path](#the-fast-path) above instead.
 
 <Steps>
 <Step>
@@ -41,12 +61,6 @@ git clone https://github.com/AtlasDevHQ/atlas.git
 cd atlas
 bun install
 ```
-
-<Accordions>
-<Accordion title="Starting a new project instead of cloning?">
-Use `bun create atlas-agent my-app` for interactive setup with template selection, DB config, and provider setup — no need to clone the monorepo.
-</Accordion>
-</Accordions>
 </Step>
 
 <Step>

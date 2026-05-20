@@ -21,20 +21,22 @@ export function EndCta() {
         </h2>
         <div className="flex flex-wrap justify-center gap-2.5">
           <a
-            href="https://docs.useatlas.dev/guides/mcp"
+            href="https://app.useatlas.dev/demo"
             className="inline-flex items-center rounded-lg bg-brand px-[18px] py-[11px] text-[13.5px] font-semibold text-zinc-950 transition-colors hover:bg-brand-hover"
           >
-            Install the MCP server →
+            Try the NovaMart demo →
           </a>
           <a
-            href="https://app.useatlas.dev/demo"
+            href="https://docs.useatlas.dev/getting-started"
             className="inline-flex items-center rounded-lg border border-white/10 bg-zinc-900 px-3.5 py-2.5 text-[13.5px] text-zinc-50 transition-colors hover:border-white/20"
           >
-            try the NovaMart demo
+            <code className="font-mono text-[12.5px]">
+              $ bun create atlas-agent
+            </code>
           </a>
         </div>
         <p className="mt-3.5 font-mono text-[11px] tracking-[0.04em] text-zinc-400">
-          works in claude desktop, cursor, continue · slack-native (enterprise) · self-host is free
+          self-host is free · MCP server for claude desktop, cursor, continue · slack-native (enterprise)
         </p>
       </div>
     </section>

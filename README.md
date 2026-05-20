@@ -62,6 +62,8 @@ bunx @useatlas/mcp init --local --write    # merge into the detected client conf
 bunx @useatlas/mcp init --hosted --write   # for an app.useatlas.dev workspace via OAuth 2.1
 ```
 
+> **On WSL2?** Bun's `bunx` shim has resolution issues on some WSL2 setups — substitute `bun x` (space-separated) for any `bunx` command above (e.g. `bun x @useatlas/mcp init --local`). The space-separated form is a bun subcommand and resolves correctly.
+
 Restart Claude Desktop / Cursor and ask the same canonical questions through your AI client. See the [MCP guide](https://docs.useatlas.dev/guides/mcp) for the full flow — hosted (`mcp.useatlas.dev` over OAuth 2.1 + DCR + PKCE) and self-hosted (stdio) live in the same page under tabs.
 
 ## What's in the YAML?

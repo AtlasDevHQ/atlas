@@ -41,6 +41,10 @@ bunx @useatlas/mcp init --hosted --write
 
 The installer discovers Atlas's authorization server, registers itself via DCR, opens your browser for PKCE-protected consent (same shape as `gh auth login`), and merges a workspace-scoped server block into your detected MCP client config at mode `0600`. A `.bak` of any prior config is written first.
 
+<Callout type="info" title="On WSL2? Use `bun x` (space-separated)">
+  Bun's `bunx` shim has resolution issues on some WSL2 setups — `bunx @useatlas/mcp init` may error with `Script not found "@useatlas/mcp"`. Run `bun x @useatlas/mcp init --hosted --write` instead (the space-separated form is a bun subcommand and resolves correctly). Same for any other `bunx <pkg>` command on WSL.
+</Callout>
+
 ```bash
 # Print to stdout instead of writing
 bunx @useatlas/mcp init --hosted

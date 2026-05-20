@@ -168,6 +168,13 @@ they want to support, sets the env vars, and installs from their own
 admin UI like a SaaS customer would. No bifurcation — the same code
 path serves both deploy modes.
 
+## Customer-facing surface
+
+What you declare here surfaces to Workspace admins at `/admin/integrations`.
+See the [Integrations admin console](/docs/integrations/admin-console)
+page for how customers browse, install, and disconnect entries you've
+declared.
+
 ## What ships when
 
 - **1.5.2 (slice 2, #2650 — this milestone)**: catalog data model,
@@ -175,11 +182,14 @@ path serves both deploy modes.
   OAuth wired end-to-end. Other chat Platforms (Teams/Discord/gchat/
   Telegram/WhatsApp) seeded as `enabled: false` placeholders.
 - **1.5.2 (slice 3, #2651)**: `/api/v1/integrations/catalog` endpoint
-  + `/admin/integrations` page consuming the seeded catalog.
+  + `/admin/integrations` page consuming the seeded catalog (read-only).
 - **1.5.2 (slice 4, #2652)**: `PlatformInstallHandler` interface family
   + `OAuthStateToken`.
-- **1.5.2 (slice 5, #2653)**: Slack `OAuthPlatformInstallHandler`
-  implementation (lift of the current `slack.ts` OAuth path).
+- **1.5.2 (slice 5, #2654)**: Slack `OAuthPlatformInstallHandler`
+  implementation (lift of the current `slack.ts` OAuth path) +
+  customer-facing Connect button.
+- **1.5.2 (slice 6, #2656)**: Disconnect button + retirement of the
+  legacy per-platform admin chrome.
 - **1.5.3**: `StaticBotInstallHandler` — turns on the non-Slack chat
   Platforms.
 

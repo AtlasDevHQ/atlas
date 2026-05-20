@@ -19,6 +19,10 @@ import type {
 } from "@useatlas/types";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+// 1.5.2 slice 3 (#2651) — catalog-driven card surface above the legacy
+// per-platform admin chrome. The legacy blocks below will be lifted out
+// in slice 6 (#2656) once Disconnect lands on the catalog flow.
+import { CatalogSection } from "./catalog-section";
 import {
   CompactRow,
   DetailList,
@@ -315,6 +319,10 @@ export default function IntegrationsPage() {
       </header>
 
       <ErrorBoundary>
+        {/* Slice 3 (#2651) — read-only catalog cards. The legacy
+            per-platform admin chrome below stays put until slice 6
+            (#2656) lifts the install / disconnect flow onto the catalog. */}
+        <CatalogSection />
         <AdminContentWrapper
           loading={loading}
           error={error}

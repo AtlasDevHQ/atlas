@@ -64498,6 +64498,199 @@
         "operationId": "deleteAdminSettingsByKey"
       }
     },
+    "/api/v1/integrations/catalog": {
+      "get": {
+        "tags": [
+          "Integrations"
+        ],
+        "summary": "List installable integrations for the current workspace",
+        "description": "Returns every enabled catalog entry visible to the requesting workspace. Rows above the workspace's plan tier are returned with `upsellOnly: true` so the UI can render a read-only upsell card. On SaaS deploys, `saas_eligible = false` rows are hidden entirely. The `installed` boolean reflects whether the workspace has a row in `workspace_plugins` for the catalog entry.",
+        "responses": {
+          "200": {
+            "description": "Catalog entries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "catalog": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "slug": {
+                            "type": "string"
+                          },
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "chat",
+                              "integration"
+                            ]
+                          },
+                          "installModel": {
+                            "type": "string",
+                            "enum": [
+                              "oauth",
+                              "form",
+                              "static-bot"
+                            ]
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "iconUrl": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "minPlan": {
+                            "type": "string"
+                          },
+                          "configSchema": {},
+                          "installed": {
+                            "type": "boolean"
+                          },
+                          "installedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "installedBy": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "upsellOnly": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "slug",
+                          "type",
+                          "installModel",
+                          "name",
+                          "description",
+                          "iconUrl",
+                          "minPlan",
+                          "installed",
+                          "installedAt",
+                          "installedBy",
+                          "upsellOnly"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "catalog"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getIntegrationsCatalog"
+      }
+    },
     "/api/v1/platform/workspaces": {
       "get": {
         "tags": [
@@ -73962,6 +74155,9 @@
     },
     {
       "name": "Health"
+    },
+    {
+      "name": "Integrations"
     },
     {
       "name": "Me — Connection Groups"

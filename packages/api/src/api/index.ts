@@ -356,6 +356,20 @@ try {
   );
 }
 
+// Integrations catalog — read-only customer-facing surface over plugin_catalog
+// (1.5.2 slice 3, #2651). Admin-gated via createAdminRouter; install /
+// disconnect mutations land in #2654 / #2656 under the same prefix.
+try {
+  const { integrationsCatalog } = await import("./routes/integrations-catalog");
+  app.route("/api/v1/integrations", integrationsCatalog);
+  log.info("Integrations catalog routes enabled");
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load integrations catalog routes",
+  );
+}
+
 // Self-mint MCP load-test token (#2135 follow-up). Workspace-member
 // gated, scoped to the caller's active workspace. Replaces the original
 // platform-admin variant — see me-load-test.ts header for the rationale.

@@ -298,6 +298,34 @@ export const PlatformCatalogResponseSchema = z.object({
   total: z.number(),
 });
 
+// ── Integrations Catalog (1.5.2 slice 3 — #2651) ────────────────
+//
+// Customer-facing read over `plugin_catalog`, joined with
+// `workspace_plugins` to compute per-card install state. Used by
+// the /admin/integrations catalog card section.
+
+export const IntegrationsCatalogEntrySchema = z.object({
+  id: z.string(),
+  slug: z.string(),
+  type: z.enum(["chat", "integration"]),
+  installModel: z.enum(["oauth", "form", "static-bot"]),
+  name: z.string(),
+  description: z.string().nullable(),
+  iconUrl: z.string().nullable(),
+  minPlan: z.string(),
+  configSchema: z.unknown().nullable(),
+  installed: z.boolean(),
+  installedAt: z.string().nullable(),
+  installedBy: z.string().nullable(),
+  upsellOnly: z.boolean(),
+});
+
+export type IntegrationsCatalogEntry = z.infer<typeof IntegrationsCatalogEntrySchema>;
+
+export const IntegrationsCatalogResponseSchema = z.object({
+  catalog: z.array(IntegrationsCatalogEntrySchema),
+});
+
 // ── Security adoption telemetry ───────────────────────────────
 // Wire schemas live in `@useatlas/schemas` (single source of truth shared
 // with the API route layer). Re-exported here for `useAdminFetch` call

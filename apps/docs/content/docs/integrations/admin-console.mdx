@@ -1,0 +1,138 @@
+---
+title: Integrations admin console
+description: Customer-facing surface for browsing and installing the integrations your operator has declared
+---
+
+# Integrations admin console
+
+The **Integrations admin console** at `/admin/integrations` is the
+customer-facing counterpart to the [Plugin Catalog](/docs/deployment/plugin-catalog).
+Workspace admins see one card per catalog entry, grouped by type
+(chat platforms vs integration plugins), with their install state and
+plan-tier eligibility surfaced at a glance.
+
+This page documents what Workspace admins see — for the operator
+declaration side (`atlas.config.ts:catalog`, boot-time seed, emergency
+disable) see the [Plugin Catalog](/docs/deployment/plugin-catalog) page.
+
+## What you see
+
+Open `/admin/integrations` as a Workspace admin. Above the legacy
+per-platform admin chrome, an **Available integrations** section
+renders one card per catalog entry your operator has declared.
+
+Each card carries:
+
+| Field | What it shows |
+|---|---|
+| **Name** | Operator-declared display name (defaults to a title-cased version of the slug). |
+| **Description** | Optional copy supplied by the operator. |
+| **Install model** | `installModel` field — one of `oauth`, `form`, or `static-bot`. Determines which Connect flow runs. |
+| **Installed badge** | Visible when this Workspace has the integration installed. |
+| **Plan-tier badge** | Visible when the integration requires a higher plan than your Workspace holds — see [Upgrade required](#upgrade-required-cards). |
+| **Action button** | `Connect` (not installed, eligible), `Manage` / `Disconnect` (installed), or `Upgrade` (above plan). |
+
+### Grouping
+
+Cards are grouped by `type`:
+
+- **Chat platforms** — Slack, Teams, Discord, Google Chat, Telegram, WhatsApp.
+  These are message-driven adapters that send and receive in chat threads.
+- **Integrations** — Salesforce, Jira, GitHub, Linear, Email, Webhook,
+  Obsidian, and others. These extend Atlas's data surface or delivery channels.
+
+## Install state
+
+The `installed` boolean derives from a join against `workspace_plugins`
+scoped to your Workspace. The `installedAt` and `installedBy` fields
+record when the integration was installed and by whom — useful for
+audit trail.
+
+A catalog entry is **available to install** when:
+
+1. Your operator declared it in `atlas.config.ts:catalog` with `enabled: true`.
+2. It hasn't been emergency-disabled at the DB layer.
+3. On SaaS deploys, it has `saas_eligible: true` (some integrations like
+   GitHub PAT mode are unsafe in multi-tenant SaaS and hidden).
+4. Your Workspace's plan tier meets the entry's `min_plan` requirement.
+
+## Upgrade required cards
+
+When a catalog entry requires a higher plan than your Workspace holds,
+the card still renders but read-only:
+
+- The plan-tier badge (e.g. `team`, `business`, `enterprise`) is visible
+  in the card header.
+- The action button reads `Upgrade` and is disabled.
+- The Connect flow is unreachable from this card.
+
+This deliberately keeps the integration discoverable — you can see
+what's available on higher plans without contacting sales.
+
+## Connect flow
+
+> **Coming in 1.5.2 — slice 5 (#2654).** This slice ships the catalog
+> read-only surface so the install flow has somewhere to land.
+
+When slice 5 lands, clicking **Connect** on an OAuth integration (Slack
+today; Salesforce in a later slice) opens an authorization tab against
+the Platform. After approval, Atlas writes a `workspace_plugins` row
+and the card flips to **Installed**. Form-based integrations (e.g.
+Linear via API key) open a modal that collects the credentials inline.
+
+## Disconnect
+
+> **Coming in 1.5.2 — slice 6 (#2656).** Today the **Disconnect**
+> button renders but is inert; use the legacy per-platform admin blocks
+> further down `/admin/integrations` to disconnect Slack / Teams /
+> Discord / etc.
+
+After slice 6, **Disconnect** deletes the `workspace_plugins` row
+(scoped to the catalog entry and your Workspace), revokes the OAuth
+grant where possible, and logs an admin-action audit row.
+
+## Empty state
+
+If your operator hasn't declared any catalog entries (or you're
+running self-hosted with the default config), the section renders an
+empty state pointing at the [Plugin Catalog](/docs/deployment/plugin-catalog)
+docs. Ask your operator to add an entry; the seed runs on every API boot.
+
+## Endpoint
+
+The page reads from:
+
+```
+GET /api/v1/integrations/catalog
+```
+
+Admin-role gated, scoped to the active Workspace. Response shape:
+
+```json
+{
+  "catalog": [
+    {
+      "id": "catalog:slack",
+      "slug": "slack",
+      "type": "chat",
+      "installModel": "oauth",
+      "name": "Slack",
+      "description": "Connect Slack to receive answers in channel.",
+      "iconUrl": null,
+      "minPlan": "starter",
+      "configSchema": null,
+      "installed": false,
+      "installedAt": null,
+      "installedBy": null,
+      "upsellOnly": false
+    }
+  ]
+}
+```
+
+## Related
+
+- [Plugin Catalog](/docs/deployment/plugin-catalog) — operator-side
+  declaration and boot-time seed semantics.
+- [ADR-0002](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0002-catalog-seeded-from-config-at-boot.md) —
+  why the catalog is config-declared and DB-canonical for runtime reads.

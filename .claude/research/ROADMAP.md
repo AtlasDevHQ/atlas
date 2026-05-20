@@ -145,7 +145,7 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
 
 ## Active
 
-- **1.5.2 — Multi-Adapter SaaS Readiness** ([milestone #50](https://github.com/AtlasDevHQ/atlas/milestone/50), 13 issues + [PRD #2649](https://github.com/AtlasDevHQ/atlas/issues/2649)) — establish operator/customer seam for chat Platforms + integration plugins; customer admins self-serve install via OAuth against operator-owned App Registrations. Slice 1 shipped via #2663 (discriminated unions on `ProactiveListenerConfig`); next up is slice 2 (#2650 — catalog data model + CatalogSeeder + AdapterRegistry). See [`docs/prd/multi-adapter-saas-readiness.md`](../../docs/prd/multi-adapter-saas-readiness.md) + ADRs 0001–0004.
+- **1.5.2 — Multi-Adapter SaaS Readiness** ([milestone #50](https://github.com/AtlasDevHQ/atlas/milestone/50), 13 issues + [PRD #2649](https://github.com/AtlasDevHQ/atlas/issues/2649)) — establish operator/customer seam for chat Platforms + integration plugins; customer admins self-serve install via OAuth against operator-owned App Registrations. Slices 1–3 shipped (#2663 discriminated unions, #2664/#2650 catalog data model + CatalogSeeder + AdapterRegistry, #2667/#2651 `/api/v1/integrations/catalog` endpoint + `/admin/integrations` cards); slice 4 (#2652 OAuthStateToken + PlatformOAuthHandler interface) is next. See [`docs/prd/multi-adapter-saas-readiness.md`](../../docs/prd/multi-adapter-saas-readiness.md) + ADRs 0001–0004.
 
 ## Planned
 

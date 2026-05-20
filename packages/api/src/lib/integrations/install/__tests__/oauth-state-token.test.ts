@@ -209,4 +209,17 @@ describe("OAuthStateToken — misconfig", () => {
     setKeys(undefined);
     expect(verifyOAuthStateToken(token)).toBeNull();
   });
+
+  it("returns null (does not throw) when ATLAS_ENCRYPTION_KEYS is malformed", () => {
+    // Mint a token under a valid keyset first.
+    setKeys("v1:test-key");
+    const token = mintOAuthStateToken("org-abc", "slack");
+
+    // Now drift the env to a malformed value that makes
+    // `getEncryptionKeyset()` throw (duplicate version labels). The
+    // contract is that `verify` returns null on every failure mode —
+    // a keyset misconfig must not bubble a 500 from a verify call.
+    setKeys("v1:one,v1:two");
+    expect(verifyOAuthStateToken(token)).toBeNull();
+  });
 });

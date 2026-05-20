@@ -162,7 +162,24 @@ export function mintOAuthStateToken(
 export function verifyOAuthStateToken(token: string): VerifiedState | null {
   if (typeof token !== "string" || token.length === 0) return null;
 
-  const keyset = getEncryptionKeyset();
+  // `getEncryptionKeyset()` throws on malformed `ATLAS_ENCRYPTION_KEYS`
+  // (duplicate version labels, mixed prefixed/bare, out-of-range version
+  // ints). Those are operator misconfig that should normally fail at
+  // boot — but the keyset resolver is lazy, so a regression that bypasses
+  // the boot-time validation could surface the throw here. `verify` is
+  // contractually `null`-only; warn loud once so the operator sees the
+  // misconfig in logs, then return null. We don't surface the message to
+  // callers because the verify return value is a boolean-shaped signal.
+  let keyset: ReturnType<typeof getEncryptionKeyset>;
+  try {
+    keyset = getEncryptionKeyset();
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "verifyOAuthStateToken: keyset resolution threw — operator misconfig in ATLAS_ENCRYPTION_KEYS; rejecting all tokens",
+    );
+    return null;
+  }
   if (!keyset) {
     log.debug("verifyOAuthStateToken: no encryption key configured — rejecting");
     return null;
@@ -194,6 +211,11 @@ export function verifyOAuthStateToken(token: string): VerifiedState | null {
   try {
     providedSig = base64UrlToBuffer(sigB64);
   } catch {
+    // intentionally ignored: `verify` returns null on every failure
+    // mode. A non-base64url signature segment is the same signal as
+    // any other tampering — surfacing the specific cause (log or
+    // distinct return value) would help an attacker probe the
+    // pipeline. The contract is boolean-shaped.
     return null;
   }
   if (providedSig.length !== expectedSig.length) return null;
@@ -267,6 +289,11 @@ function decodeBase64UrlJson<T>(input: string): T | null {
     if (typeof parsed !== "object" || parsed === null) return null;
     return parsed;
   } catch {
+    // intentionally ignored: helper's return type pairs success with
+    // `null` for both base64url and JSON parse failures. Callers in
+    // `verifyOAuthStateToken` already gate on the null and return
+    // null to the outer caller — the boolean-shaped contract is
+    // documented at the function level.
     return null;
   }
 }

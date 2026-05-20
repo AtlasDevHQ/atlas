@@ -21,7 +21,9 @@
 
 import type {
   AtlasUserId,
+  ChannelId,
   ExternalUserId,
+  ThreadId,
   WorkspaceId,
 } from "@useatlas/types/proactive";
 
@@ -35,7 +37,9 @@ import type {
 export type ProactiveIdentityField =
   | "WorkspaceId"
   | "AtlasUserId"
-  | "ExternalUserId";
+  | "ExternalUserId"
+  | "ThreadId"
+  | "ChannelId";
 
 /**
  * Thrown by the `assert*Id` helpers when a boundary input is empty.
@@ -109,4 +113,38 @@ export function assertExternalUserId(value: string): ExternalUserId {
     throw new InvalidProactiveIdentityError("ExternalUserId");
   }
   return value as ExternalUserId;
+}
+
+/**
+ * Promote a bare string into a {@link ThreadId} — the chat-adapter's
+ * encoded thread id (e.g. Slack `"slack:CHANNEL:THREAD_TS"`). Use at
+ * the seam where the chat SDK's untyped `Thread.id` /
+ * `ReactionEvent.threadId` (both `string`) flow into the listener's
+ * branded slots — `PendingAnswers.record/peek/consume`.
+ *
+ * Branding both `ThreadId` and {@link ChannelId} eliminates the #2680
+ * footgun where `pending.record(thread.channelId, ...)` compiled
+ * silently against a slot that semantically required `thread.id` — the
+ * keys never matched the encoded form `event.threadId` carries on the
+ * reaction-back side, and every dogfood answer-flow attempt skipped at
+ * the `unknown-message` branch (debug-level log, no meter row).
+ */
+export function assertThreadId(value: string): ThreadId {
+  if (!isNonEmptyIdentifier(value)) {
+    throw new InvalidProactiveIdentityError("ThreadId");
+  }
+  return value as ThreadId;
+}
+
+/**
+ * Promote a bare string into a {@link ChannelId} — the chat-adapter's
+ * bare channel id (e.g. Slack `"slack:CHANNEL"`). Distinct nominal
+ * type from {@link ThreadId} even though both are strings; see
+ * {@link assertThreadId} for the bug-pattern context.
+ */
+export function assertChannelId(value: string): ChannelId {
+  if (!isNonEmptyIdentifier(value)) {
+    throw new InvalidProactiveIdentityError("ChannelId");
+  }
+  return value as ChannelId;
 }

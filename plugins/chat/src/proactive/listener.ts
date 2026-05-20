@@ -40,6 +40,7 @@ import {
   InvalidProactiveIdentityError,
   assertAtlasUserId,
   assertExternalUserId,
+  assertThreadId,
   assertWorkspaceId,
 } from "./identity";
 import type {
@@ -811,7 +812,13 @@ export async function registerProactiveListener(
         );
         return;
       }
-      pending.record(thread.channelId, message.id, { text, asker, workspaceId });
+      // Pending lookup key is the chat-adapter's encoded thread id
+      // (#2680). The corresponding `pending.peek` on the reaction-back
+      // side reads `event.threadId`, also the encoded form — passing
+      // `thread.channelId` (bare `"slack:CHANNEL"`) here would key
+      // pending under a value the reaction handler could never produce,
+      // silently breaking the answer flow.
+      pending.record(assertThreadId(thread.id), message.id, { text, asker, workspaceId });
 
       // Meter: reaction landed — emit a `react` row so the admin
       // analytics panel and the eventual billing aggregator have a
@@ -861,7 +868,8 @@ export async function registerProactiveListener(
       // gate or DB read. If there IS a pending entry, the workspace was
       // already known-good at react-time; we just re-check the gate
       // (license / kill-switch flip while the asker paused).
-      const lookup = pending.peek(event.threadId, event.messageId);
+      const reactionThreadId = assertThreadId(event.threadId);
+      const lookup = pending.peek(reactionThreadId, event.messageId);
       const decision = shouldAnswerOnReaction({
         added: event.added,
         reactor: event.user,
@@ -881,7 +889,7 @@ export async function registerProactiveListener(
       const workspaceId = decision.pending.workspaceId;
       if (!(await config.isEnabled(workspaceId))) return;
       // Consume now so a second reactor doesn't double-fire.
-      pending.consume(event.threadId, event.messageId);
+      pending.consume(reactionThreadId, event.messageId);
       await runAnswerFlow(
         event.thread,
         event.threadId,
@@ -914,7 +922,8 @@ export async function registerProactiveListener(
       // `event.value` is the original message ID the offer card was
       // built against.
       const originalMessageId = typeof event.value === "string" ? event.value : "";
-      const lookup = pending.consume(event.threadId, originalMessageId);
+      const actionThreadId = assertThreadId(event.threadId);
+      const lookup = pending.consume(actionThreadId, originalMessageId);
       if (!lookup) {
         log.debug(
           {
@@ -951,7 +960,7 @@ export async function registerProactiveListener(
   chat.onAction(PROACTIVE_DISMISS_ACTION_ID, async (event) => {
     try {
       const originalMessageId = typeof event.value === "string" ? event.value : "";
-      pending.consume(event.threadId, originalMessageId);
+      pending.consume(assertThreadId(event.threadId), originalMessageId);
       log.debug(
         { threadId: event.threadId, messageId: originalMessageId },
         "Proactive offer dismissed by asker",

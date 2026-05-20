@@ -42,6 +42,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { getWebOrigin } from "@atlas/api/lib/web-origin";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { getConfig } from "@atlas/api/lib/config";
+import { PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
 import { getInstallHandler } from "@atlas/api/lib/integrations/install";
 import { adminAuthPreamble } from "./admin-auth";
 import { validationHook } from "./validation-hook";
@@ -308,18 +309,24 @@ integrations.openapi(callbackRoute, async (c) =>
     try {
       result = await handler.handleCallback(code, state);
     } catch (err) {
-      // The handler throws `PlatformOAuthExchangeError` for upstream
-      // failures (e.g. Slack `oauth.v2.access` non-OK). For browser
-      // callers, redirect to the admin UI with an actionable reason so
-      // the toast can translate the upstream error. JSON callers fall
-      // through to runHandler's default tagged-error → HTTP mapping
-      // (which surfaces 502 for `PlatformOAuthExchangeError`).
-      log.warn(
-        { platform, err: err instanceof Error ? err.message : String(err) },
-        "Install callback failed with upstream error",
-      );
-      if (prefersHtml(c.req.raw)) {
-        return c.redirect(buildAdminIntegrationsUrl("error", platform, { reason: "upstream_error" }));
+      // ONLY `PlatformOAuthExchangeError` is a user-actionable
+      // "the upstream Platform refused the code exchange" — those get
+      // the browser redirect to a translated toast. Every other throw
+      // (e.g. the workspace_plugins INSERT in slice 5's handler
+      // failing, an unhandled DB error, a logic bug) must propagate
+      // to `runHandler`'s tagged-error → HTTP mapping so the user
+      // sees a real 5xx with a `requestId` for log correlation —
+      // not a misleading "click Reconnect" toast on top of a server
+      // fault. JSON callers always fall through to the standard
+      // mapper.
+      if (err instanceof PlatformOAuthExchangeError) {
+        log.warn(
+          { platform, err: err.message, upstreamError: err.upstreamError },
+          "Install callback failed: upstream OAuth exchange refused",
+        );
+        if (prefersHtml(c.req.raw)) {
+          return c.redirect(buildAdminIntegrationsUrl("error", platform, { reason: "upstream_error" }));
+        }
       }
       throw err;
     }

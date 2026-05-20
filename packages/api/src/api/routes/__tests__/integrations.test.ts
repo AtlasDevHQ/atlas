@@ -316,3 +316,43 @@ describe("GET /api/v1/integrations/slack/callback — upstream Slack failure", (
     expect(res.status).toBe(502);
   });
 });
+
+describe("GET /api/v1/integrations/slack/callback — non-OAuth-exchange failure", () => {
+  // Slice 5's SlackOAuthInstallHandler re-throws raw errors when the
+  // workspace_plugins INSERT fails — those must NOT be downgraded to a
+  // "click Reconnect" toast. The browser caller still sees a 500 with a
+  // request id so the admin reports an actual bug instead of cycling
+  // through an unhelpful retry loop.
+  it("rethrows non-PlatformOAuthExchangeError for browser callers — runHandler maps to 500", async () => {
+    callbackImpl = async () => {
+      throw new Error("workspace_plugins INSERT failed: connection refused");
+    };
+
+    const res = await request(
+      "/api/v1/integrations/slack/callback?code=auth-abc&state=stub",
+      { headers: { Accept: "text/html" } },
+    );
+
+    // Definitely not a redirect masking the fault.
+    expect(res.status).not.toBe(302);
+    // runHandler's default mapper surfaces unknown errors as 500.
+    expect(res.status).toBe(500);
+  });
+
+  it("rethrows non-PlatformOAuthExchangeError for JSON callers too", async () => {
+    callbackImpl = async () => {
+      throw new Error("workspace_plugins INSERT failed: connection refused");
+    };
+
+    const res = await request(
+      "/api/v1/integrations/slack/callback?code=auth-abc&state=stub",
+      { headers: { Accept: "application/json" } },
+    );
+
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { requestId?: string };
+    // 500 responses always include a requestId for log correlation
+    // (runHandler bridge invariant).
+    expect(body.requestId).toBeDefined();
+  });
+});

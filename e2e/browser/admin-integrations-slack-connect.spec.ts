@@ -47,6 +47,7 @@ function buildStatus(slack: SlackStatusFixture) {
       workspaceName: slack.workspaceName,
       installedAt: slack.connected ? "2026-05-20T12:00:00.000Z" : null,
       installedBy: slack.installedBy,
+      hasOAuthInstall: slack.connected,
       oauthConfigured: true,
       envConfigured: false,
       configurable: true,

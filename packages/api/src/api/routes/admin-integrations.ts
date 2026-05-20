@@ -291,12 +291,21 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
       // Prefer `workspace_plugins.installed_at` when present — it's the
       // canonical first-store timestamp (slice 5 always writes it). Fall
       // back to the chat_cache value for legacy installs.
+      //
+      // `hasOAuthInstall` discriminates OAuth installs (slice-5 wrote a
+      // workspace_plugins row) from BYOT / env-token installs (only
+      // chat_cache or env). The admin UI gates the slice-6 "Disconnect
+      // pending in #2655" placeholder on this — BYOT installs still get
+      // the working DisconnectDialog because their teardown path
+      // (`DELETE /admin/integrations/slack` → `deleteInstallationByOrg`)
+      // is unchanged.
       const slack = {
         connected: slackInstall !== null,
         teamId: slackInstall?.team_id ?? null,
         workspaceName: slackInstall?.workspace_name ?? null,
         installedAt: slackInstallMeta?.installed_at ?? slackInstall?.installed_at ?? null,
         installedBy: slackInstallMeta?.installed_by ?? null,
+        hasOAuthInstall: slackInstallMeta !== null,
         oauthConfigured,
         envConfigured,
         configurable: slackConfigurable,

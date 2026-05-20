@@ -42644,6 +42644,9 @@
                             "null"
                           ]
                         },
+                        "hasOAuthInstall": {
+                          "type": "boolean"
+                        },
                         "oauthConfigured": {
                           "type": "boolean"
                         },
@@ -42660,6 +42663,7 @@
                         "workspaceName",
                         "installedAt",
                         "installedBy",
+                        "hasOAuthInstall",
                         "oauthConfigured",
                         "envConfigured",
                         "configurable"

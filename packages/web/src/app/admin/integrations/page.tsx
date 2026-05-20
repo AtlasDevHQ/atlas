@@ -655,14 +655,17 @@ function SlackCard({
       onCollapse={!slack.connected ? collapse : undefined}
       actions={
         <>
-          {/* OAuth installs get the slice-6 disabled-Disconnect tooltip
-              while #2655 lands the real Disconnect flow. BYOT installs
-              keep the existing DisconnectDialog wired to /admin/integrations/slack
-              DELETE — that endpoint already supports BYOT teardown. */}
-          {slack.connected && canConnect && (
+          {/* Gate on the *install source*, not on whether OAuth env
+              vars are configured. `canConnect` (= slack.configurable)
+              only reports that SLACK_CLIENT_ID/SECRET are set on this
+              deploy — a workspace can have OAuth env vars available
+              and still be connected via BYOT. In that case the working
+              chat_cache-backed DisconnectDialog must stay, otherwise
+              the admin loses the ability to remove their token. */}
+          {slack.connected && slack.hasOAuthInstall && (
             <DisconnectPendingButton issue="#2655" />
           )}
-          {slack.connected && !canConnect && canByot && (
+          {slack.connected && !slack.hasOAuthInstall && (canConnect || canByot) && (
             <DisconnectDialog
               name="Slack"
               description="This will remove the Slack connection for this workspace. The /atlas command and thread follow-ups will stop working until you reconnect."

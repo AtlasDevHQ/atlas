@@ -57,12 +57,16 @@ const PLAN_RANK: Record<string, number> = {
   enterprise: 4,
 };
 
-function isUpsellOnly(workspacePlan: string, requiredPlan: string): boolean {
+function isUpsellOnly(
+  workspacePlan: string,
+  requiredPlan: string,
+  context?: { slug?: string; id?: string },
+): boolean {
   const requiredRank = PLAN_RANK[requiredPlan];
   if (requiredRank === undefined) {
     // Unknown required tier — treat as upsell so the card renders read-only.
     log.warn(
-      { requiredPlan },
+      { requiredPlan, slug: context?.slug, id: context?.id },
       "plugin_catalog.min_plan has unknown value — flagging entry as upsellOnly",
     );
     return true;
@@ -79,7 +83,10 @@ const CatalogEntryResponseSchema = z.object({
   id: z.string(),
   slug: z.string(),
   type: z.enum(["chat", "integration"]),
-  install_model: z.enum(["oauth", "form", "static-bot"]),
+  // `installModel` (camelCase) — wire-side casing match for the rest of
+  // the response shape. The DB column is `install_model`; the mapper
+  // below at `entries.map(...)` does the translation.
+  installModel: z.enum(["oauth", "form", "static-bot"]),
   name: z.string(),
   description: z.string().nullable(),
   iconUrl: z.string().nullable(),
@@ -187,35 +194,57 @@ integrationsCatalog.openapi(listCatalogRoute, async (c) => {
       // Independent queries — plan lookup, catalog read, install lookup all
       // resolve from the same internal DB. Run in parallel to keep latency
       // bounded by the slowest, not the sum.
+      //
+      // `type IN ('chat', 'integration')` excludes legacy marketplace rows
+      // (`datasource|context|interaction|action|sandbox`) — the DB CHECK
+      // still admits them (migration 0014 + 0087) and `admin-marketplace`'s
+      // platform-admin write path can insert them. Letting them through
+      // would fail the client-side Zod parse on `type` (which enums
+      // `chat | integration`) and render the page as a schema-mismatch
+      // banner. See `admin-schemas.ts:IntegrationsCatalogEntrySchema`.
       const catalogSql = isSaas
         ? `SELECT id, slug, name, description, type, install_model, icon_url,
                   config_schema, min_plan, saas_eligible
              FROM plugin_catalog
             WHERE enabled = true AND saas_eligible = true
+              AND type IN ('chat', 'integration')
             ORDER BY type ASC, name ASC`
         : `SELECT id, slug, name, description, type, install_model, icon_url,
                   config_schema, min_plan, saas_eligible
              FROM plugin_catalog
             WHERE enabled = true
+              AND type IN ('chat', 'integration')
             ORDER BY type ASC, name ASC`;
 
-      const [planRows, catalog, installations] = yield* Effect.promise(() =>
-        Promise.all([
-          internalQuery<{ plan_tier: string }>(
-            "SELECT plan_tier FROM organization WHERE id = $1",
-            [orgId],
-          ),
-          internalQuery<CatalogRow>(catalogSql),
-          internalQuery<InstallationRow>(
-            `SELECT catalog_id, installed_at, installed_by
-               FROM workspace_plugins
-              WHERE workspace_id = $1`,
-            [orgId],
-          ),
-        ]),
-      );
+      // `Effect.tryPromise` (not `Effect.promise`) — DB rejections must
+      // flow through Effect's typed-failure channel so `runEffect` /
+      // `classifyError` map them to a clean 500 with `requestId`. The
+      // `Effect.promise` constructor declares "never rejects" and would
+      // turn DB failures into defects.
+      const [planRows, catalog, installations] = yield* Effect.tryPromise({
+        try: () =>
+          Promise.all([
+            internalQuery<{ plan_tier: string }>(
+              "SELECT plan_tier FROM organization WHERE id = $1",
+              [orgId],
+            ),
+            internalQuery<CatalogRow>(catalogSql),
+            internalQuery<InstallationRow>(
+              `SELECT catalog_id, installed_at, installed_by
+                 FROM workspace_plugins
+                WHERE workspace_id = $1`,
+              [orgId],
+            ),
+          ]),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      });
 
-      const workspacePlan = planRows[0]?.plan_tier ?? "starter";
+      // Fallback to "free" matches the `organization.plan_tier` column
+      // default. `requireOrgContext` already 400'd if the active org is
+      // missing — this empty-row case is the rare "org exists but
+      // plan_tier is null" path; fail closed to the most restrictive
+      // tier so upsell flagging stays conservative.
+      const workspacePlan = planRows[0]?.plan_tier ?? "free";
 
       const installedByCatalogId = new Map<string, InstallationRow>(
         installations.map((row) => [row.catalog_id, row]),
@@ -227,7 +256,7 @@ integrationsCatalog.openapi(listCatalogRoute, async (c) => {
           id: row.id,
           slug: row.slug,
           type: row.type as "chat" | "integration",
-          install_model: row.install_model as "oauth" | "form" | "static-bot",
+          installModel: row.install_model as "oauth" | "form" | "static-bot",
           name: row.name,
           description: row.description,
           iconUrl: row.icon_url,
@@ -236,7 +265,7 @@ integrationsCatalog.openapi(listCatalogRoute, async (c) => {
           installed: installation !== undefined,
           installedAt: installation ? asIsoString(installation.installed_at) : null,
           installedBy: installation?.installed_by ?? null,
-          upsellOnly: isUpsellOnly(workspacePlan, row.min_plan),
+          upsellOnly: isUpsellOnly(workspacePlan, row.min_plan, { slug: row.slug, id: row.id }),
         };
       });
 

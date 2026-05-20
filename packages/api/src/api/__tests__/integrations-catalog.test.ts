@@ -91,6 +91,23 @@ mock.module("effect", () => {
       const effectValue: TestEffectPromise = { _tag: "EffectPromise", fn, errorTaps: [] };
       return makePipeable(effectValue);
     },
+    // `tryPromise({ try, catch })` — shim treats it as a promise that runs
+    // `try()`; on rejection it applies `catch(err)` before propagation
+    // (matches real Effect's typed-failure channel for assertions).
+    tryPromise: <E>(opts: { try: () => Promise<unknown>; catch: (err: unknown) => E }) => {
+      const effectValue: TestEffectPromise = {
+        _tag: "EffectPromise",
+        fn: async () => {
+          try {
+            return await opts.try();
+          } catch (err) {
+            throw opts.catch(err);
+          }
+        },
+        errorTaps: [],
+      };
+      return makePipeable(effectValue);
+    },
     runPromise: (value: unknown) => Promise.resolve(value),
     sync: (syncFn: () => unknown) => ({ _tag: "EffectSync", fn: syncFn }),
     tapError: (handler: (err: unknown) => unknown) => (source: TestPipeable) => {
@@ -441,7 +458,7 @@ describe("GET /api/v1/integrations/catalog", () => {
       expect(entry.id).toBe("catalog:slack");
       expect(entry.slug).toBe("slack");
       expect(entry.type).toBe("chat");
-      expect(entry.install_model).toBe("oauth");
+      expect(entry.installModel).toBe("oauth");
       expect(entry.name).toBe("Slack");
       expect(entry.minPlan).toBe("starter");
       expect(entry.installed).toBe(false);
@@ -466,6 +483,24 @@ describe("GET /api/v1/integrations/catalog", () => {
       expect(catalogQuery).toBeDefined();
       expect(catalogQuery!.sql).toContain("enabled = true");
     });
+
+    it("filters out legacy plugin_catalog `type` values at the SQL layer", async () => {
+      // The DB CHECK admits `datasource|context|interaction|action|sandbox`
+      // (legacy marketplace types) alongside the new `chat|integration`
+      // values. The customer-facing endpoint must narrow to the new pair
+      // or the client-side Zod parse will fail.
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("FROM plugin_catalog", [slackRow]);
+      setQueryResult("FROM workspace_plugins", []);
+
+      const app = buildApp();
+      const res = await app.request("/integrations/catalog");
+      expect(res.status).toBe(200);
+
+      const catalogQuery = capturedQueries.find((q) => q.sql.includes("FROM plugin_catalog"));
+      expect(catalogQuery).toBeDefined();
+      expect(catalogQuery!.sql).toContain("type IN ('chat', 'integration')");
+    });
   });
 
   describe("install-state join", () => {
@@ -489,7 +524,26 @@ describe("GET /api/v1/integrations/catalog", () => {
       expect(body.catalog[0].installedBy).toBe("user-42");
     });
 
-    it("scopes workspace_plugins lookup to caller's org", async () => {
+    it("converts Date-typed installed_at to ISO string (pg returns timestamptz as Date)", async () => {
+      const installedDate = new Date("2026-05-19T10:00:00Z");
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("FROM plugin_catalog", [slackRow]);
+      setQueryResult("FROM workspace_plugins", [
+        {
+          catalog_id: "catalog:slack",
+          installed_at: installedDate,
+          installed_by: "user-42",
+        },
+      ]);
+
+      const app = buildApp();
+      const res = await app.request("/integrations/catalog");
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect(body.catalog[0].installedAt).toBe(installedDate.toISOString());
+    });
+
+    it("scopes workspace_plugins lookup to caller's org via WHERE workspace_id = $1", async () => {
       setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
       setQueryResult("FROM plugin_catalog", [slackRow]);
       setQueryResult("FROM workspace_plugins", []);
@@ -498,7 +552,12 @@ describe("GET /api/v1/integrations/catalog", () => {
       await app.request("/integrations/catalog");
       const wpQuery = capturedQueries.find((q) => q.sql.includes("FROM workspace_plugins"));
       expect(wpQuery).toBeDefined();
-      expect(wpQuery!.params).toContain("org-1");
+      // Asserting both the SQL fragment AND `params[0] === orgId` guards
+      // against a regression that drops the WHERE clause (cross-tenant
+      // install-state leakage). `params.toContain` alone would pass even
+      // if `workspace_id = $1` were removed.
+      expect(wpQuery!.sql).toContain("workspace_id = $1");
+      expect(wpQuery!.params[0]).toBe("org-1");
     });
   });
 
@@ -519,6 +578,23 @@ describe("GET /api/v1/integrations/catalog", () => {
       const salesforce = body.catalog.find((e: { slug: string }) => e.slug === "salesforce");
       expect(slack.upsellOnly).toBe(false);
       expect(salesforce.upsellOnly).toBe(true);
+    });
+
+    it("flags unknown min_plan values as upsellOnly (fail-closed)", async () => {
+      // `#2666` migration window: a min_plan value outside both vocabularies
+      // (e.g. typo or future tier) must render read-only rather than
+      // silently allow install.
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("FROM plugin_catalog", [
+        { ...slackRow, min_plan: "platinum" },
+      ]);
+      setQueryResult("FROM workspace_plugins", []);
+
+      const app = buildApp();
+      const res = await app.request("/integrations/catalog");
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect(body.catalog[0].upsellOnly).toBe(true);
     });
 
     it("flags upsellOnly=false when workspace plan meets min_plan", async () => {

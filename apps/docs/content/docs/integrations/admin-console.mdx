@@ -27,7 +27,7 @@ Each card carries:
 |---|---|
 | **Name** | Operator-declared display name (defaults to a title-cased version of the slug). |
 | **Description** | Optional copy supplied by the operator. |
-| **Install model** | One of `oauth`, `form`, or `static-bot`. Determines which Connect flow runs. |
+| **Install model** | `installModel` field — one of `oauth`, `form`, or `static-bot`. Determines which Connect flow runs. |
 | **Installed badge** | Visible when this Workspace has the integration installed. |
 | **Plan-tier badge** | Visible when the integration requires a higher plan than your Workspace holds — see [Upgrade required](#upgrade-required-cards). |
 | **Action button** | `Connect` (not installed, eligible), `Manage` / `Disconnect` (installed), or `Upgrade` (above plan). |
@@ -115,7 +115,7 @@ Admin-role gated, scoped to the active Workspace. Response shape:
       "id": "catalog:slack",
       "slug": "slack",
       "type": "chat",
-      "install_model": "oauth",
+      "installModel": "oauth",
       "name": "Slack",
       "description": "Connect Slack to receive answers in channel.",
       "iconUrl": null,

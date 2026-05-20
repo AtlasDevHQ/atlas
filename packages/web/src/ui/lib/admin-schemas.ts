@@ -308,7 +308,7 @@ export const IntegrationsCatalogEntrySchema = z.object({
   id: z.string(),
   slug: z.string(),
   type: z.enum(["chat", "integration"]),
-  install_model: z.enum(["oauth", "form", "static-bot"]),
+  installModel: z.enum(["oauth", "form", "static-bot"]),
   name: z.string(),
   description: z.string().nullable(),
   iconUrl: z.string().nullable(),

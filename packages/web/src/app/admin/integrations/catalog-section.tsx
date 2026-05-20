@@ -70,7 +70,7 @@ function CatalogCard({ entry }: CatalogCardProps) {
         )}
         <div className="flex items-center justify-between gap-2">
           <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
-            {entry.install_model}
+            {entry.installModel}
           </span>
           {/* TODO(#2654/#2656) — Connect/Manage/Disconnect wire-up.
               Buttons render in this slice for shape parity, but are

@@ -19,6 +19,8 @@ const slack = {
   teamId: "T01ABCD2EF",
   workspaceName: "Acme HQ",
   installedAt: "2026-04-19T12:00:00.000Z",
+  installedBy: "user_01ABCDEF",
+  hasOAuthInstall: true,
   oauthConfigured: true,
   envConfigured: false,
   configurable: true,

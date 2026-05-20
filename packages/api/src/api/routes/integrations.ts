@@ -42,6 +42,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { getWebOrigin } from "@atlas/api/lib/web-origin";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { getConfig } from "@atlas/api/lib/config";
+import { PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
 import { getInstallHandler } from "@atlas/api/lib/integrations/install";
 import { adminAuthPreamble } from "./admin-auth";
 import { validationHook } from "./validation-hook";
@@ -101,11 +102,16 @@ const callbackRoute = createRoute({
     }),
   },
   responses: {
-    302: { description: "Install complete — redirected to /admin/integrations" },
-    400: { description: "Invalid or expired state, or unknown platform", content: { "application/json": { schema: ErrorSchema } } },
+    302: {
+      description:
+        "Install complete or failed in a recoverable way — redirected to /admin/integrations. " +
+        "Success: `?installed=<platform>`. Credential write missed: `?reconnect=<platform>`. " +
+        "Hard failure (browser caller): `?error=<platform>&reason=<code>`. JSON callers receive 400/502 instead.",
+    },
+    400: { description: "Invalid or expired state, or unknown platform (JSON-Accept caller)", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "Platform not found in catalog", content: { "application/json": { schema: ErrorSchema } } },
     501: { description: "OAuth handler not registered", content: { "application/json": { schema: ErrorSchema } } },
-    502: { description: "Upstream Platform rejected the OAuth exchange", content: { "application/json": { schema: ErrorSchema } } },
+    502: { description: "Upstream Platform rejected the OAuth exchange (JSON-Accept caller)", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -117,6 +123,36 @@ interface CatalogRowFromDb extends Record<string, unknown> {
   readonly slug: string;
   readonly install_model: string;
   readonly enabled: boolean;
+}
+
+/**
+ * The OAuth callback's realistic caller is a browser — the platform
+ * authorize page redirects with a `<meta>`-driven 302. We want hard
+ * failures (invalid state, upstream-non-OK) to land on the admin UI with
+ * an actionable toast, not on a raw JSON page.
+ *
+ * Heuristic: if the `Accept` header includes `text/html` (the browser
+ * default), redirect to `/admin/integrations?error=:platform&reason=:code`.
+ * Otherwise keep the JSON response so curl-based debugging still sees the
+ * machine-readable error. Browsers don't send `application/json` on a
+ * top-level navigation, so this split is stable.
+ */
+function prefersHtml(req: Request): boolean {
+  const accept = req.headers.get("accept") ?? "";
+  return accept.includes("text/html");
+}
+
+function buildAdminIntegrationsUrl(
+  param: "installed" | "reconnect" | "error",
+  platform: string,
+  extra?: Record<string, string>,
+): string {
+  const webOrigin = getWebOrigin();
+  const base = webOrigin
+    ? `${webOrigin}/admin/integrations`
+    : "/admin/integrations";
+  const qs = new URLSearchParams({ [param]: platform, ...extra });
+  return `${base}?${qs.toString()}`;
 }
 
 /**
@@ -269,8 +305,40 @@ integrations.openapi(callbackRoute, async (c) =>
       return c.json({ error: "handler_unavailable", message: "Install handler misconfigured.", requestId }, 501);
     }
 
-    const result = await handler.handleCallback(code, state);
+    let result: Awaited<ReturnType<typeof handler.handleCallback>>;
+    try {
+      result = await handler.handleCallback(code, state);
+    } catch (err) {
+      // ONLY `PlatformOAuthExchangeError` is a user-actionable
+      // "the upstream Platform refused the code exchange" — those get
+      // the browser redirect to a translated toast. Every other throw
+      // (e.g. the workspace_plugins INSERT in slice 5's handler
+      // failing, an unhandled DB error, a logic bug) must propagate
+      // to `runHandler`'s tagged-error → HTTP mapping so the user
+      // sees a real 5xx with a `requestId` for log correlation —
+      // not a misleading "click Reconnect" toast on top of a server
+      // fault. JSON callers always fall through to the standard
+      // mapper.
+      if (err instanceof PlatformOAuthExchangeError) {
+        log.warn(
+          { platform, err: err.message, upstreamError: err.upstreamError },
+          "Install callback failed: upstream OAuth exchange refused",
+        );
+        if (prefersHtml(c.req.raw)) {
+          return c.redirect(buildAdminIntegrationsUrl("error", platform, { reason: "upstream_error" }));
+        }
+      }
+      throw err;
+    }
     if (result === null) {
+      // Forged / expired / tampered state. Log once at the handler
+      // boundary so the operator sees the rate (a flood of these means
+      // an attacker probing). Browser callers get a toast-friendly
+      // redirect; JSON callers keep the 400.
+      log.warn({ platform }, "Install callback rejected invalid state token");
+      if (prefersHtml(c.req.raw)) {
+        return c.redirect(buildAdminIntegrationsUrl("error", platform, { reason: "invalid_state" }));
+      }
       return c.json(
         { error: "invalid_state", message: "Invalid or expired install state. Restart the install from /admin/integrations.", requestId },
         400,
@@ -280,12 +348,8 @@ integrations.openapi(callbackRoute, async (c) =>
     // Success — redirect to admin UI. Partial-failure (credential write
     // didn't land) flips the query param so /admin/integrations shows
     // a Reconnect affordance per ADR-0003.
-    const webOrigin = getWebOrigin();
     const queryParam = result.credentialResult.written ? "installed" : "reconnect";
-    const target = webOrigin
-      ? `${webOrigin}/admin/integrations?${queryParam}=${encodeURIComponent(platform)}`
-      : `/admin/integrations?${queryParam}=${encodeURIComponent(platform)}`;
-    return c.redirect(target);
+    return c.redirect(buildAdminIntegrationsUrl(queryParam, platform));
   }),
 );
 

@@ -42638,6 +42638,15 @@
                           ],
                           "format": "date-time"
                         },
+                        "installedBy": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "hasOAuthInstall": {
+                          "type": "boolean"
+                        },
                         "oauthConfigured": {
                           "type": "boolean"
                         },
@@ -42653,6 +42662,8 @@
                         "teamId",
                         "workspaceName",
                         "installedAt",
+                        "installedBy",
+                        "hasOAuthInstall",
                         "oauthConfigured",
                         "envConfigured",
                         "configurable"
@@ -72195,10 +72206,10 @@
         ],
         "responses": {
           "302": {
-            "description": "Install complete — redirected to /admin/integrations"
+            "description": "Install complete or failed in a recoverable way — redirected to /admin/integrations. Success: `?installed=<platform>`. Credential write missed: `?reconnect=<platform>`. Hard failure (browser caller): `?error=<platform>&reason=<code>`. JSON callers receive 400/502 instead."
           },
           "400": {
-            "description": "Invalid or expired state, or unknown platform",
+            "description": "Invalid or expired state, or unknown platform (JSON-Accept caller)",
             "content": {
               "application/json": {
                 "schema": {
@@ -72273,7 +72284,7 @@
             }
           },
           "502": {
-            "description": "Upstream Platform rejected the OAuth exchange",
+            "description": "Upstream Platform rejected the OAuth exchange (JSON-Accept caller)",
             "content": {
               "application/json": {
                 "schema": {

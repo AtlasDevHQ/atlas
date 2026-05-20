@@ -54,6 +54,25 @@ interface ConnectedPlatformBase {
 export interface SlackStatus extends ConnectedPlatformBase {
   teamId: string | null;
   workspaceName: string | null;
+  /**
+   * User id of the admin who completed the OAuth install (from
+   * `workspace_plugins.installed_by`). Null on legacy installs that
+   * predate the slice-5 install handler — the UI degrades to
+   * "Connected on {installedAt}" when null.
+   */
+  installedBy: string | null;
+  /**
+   * True when the active install was completed via OAuth — i.e. a
+   * `workspace_plugins` row exists for this workspace's Slack catalog
+   * entry. BYOT and env-token installs leave this `false` because they
+   * write only to `chat_cache`, not `workspace_plugins`.
+   *
+   * The admin UI uses this to decide whether to render the OAuth-only
+   * Disconnect affordance (slice-6 placeholder pointing at #2655) vs.
+   * the existing BYOT Disconnect dialog (which already works against
+   * the chat_cache row).
+   */
+  hasOAuthInstall: boolean;
   /** Whether Slack OAuth env vars are configured (SLACK_CLIENT_ID etc.). */
   oauthConfigured: boolean;
   /** Whether env-based token is set (single-workspace mode). */

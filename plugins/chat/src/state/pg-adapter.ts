@@ -246,11 +246,11 @@ export class PgStateAdapter implements StateAdapter {
       params,
     );
 
-    // Trim to maxLength if needed (keeps newest entries)
+    // Trim to maxLength if needed (keeps newest entries).
+    // Uses its own param list so Postgres can infer types — leaving the
+    // append-query's $2/$3 bound but unreferenced here triggers
+    // "could not determine data type of parameter $2".
     if (options?.maxLength != null) {
-      const trimParam = options.ttlMs != null ? "$4" : "$3";
-      const trimParams = [...params, options.maxLength];
-
       await this.db.query(
         `UPDATE ${this.t("cache")}
          SET value = (
@@ -258,12 +258,12 @@ export class PgStateAdapter implements StateAdapter {
              SELECT elem, ord
              FROM jsonb_array_elements(value) WITH ORDINALITY AS t(elem, ord)
              ORDER BY ord DESC
-             LIMIT ${trimParam}::int
+             LIMIT $2::int
            ) sub
          )
          WHERE key = $1
-           AND jsonb_array_length(value) > ${trimParam}::int`,
-        trimParams,
+           AND jsonb_array_length(value) > $2::int`,
+        [key, options.maxLength],
       );
     }
   }

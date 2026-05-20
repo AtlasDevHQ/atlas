@@ -466,7 +466,10 @@ describe("PgStateAdapter lists", () => {
     expect(result).toEqual([]);
   });
 
-  it("appendToList with both maxLength and ttlMs uses $4 for trim", async () => {
+  it("appendToList with both maxLength and ttlMs trims with a fresh param list", async () => {
+    // Regression: previously the trim query inherited the insert's [key, jsonValue, ttlMs]
+    // params and tacked maxLength on as $4, leaving $2 and $3 bound but never referenced
+    // in the trim SQL. Postgres rejects that with "could not determine data type of parameter $2".
     const mock = createMockDB({
       queryResults: [[], [], [], [], [], [], []],
     });
@@ -476,13 +479,29 @@ describe("PgStateAdapter lists", () => {
 
     await adapter.appendToList("list1", { msg: "hi" }, { maxLength: 200, ttlMs: 604800000 });
 
-    // Insert uses $3 for TTL
+    // Insert uses $3 for TTL.
     expect(mock.calls[0].params).toEqual(["list1", '{"msg":"hi"}', 604800000]);
     expect(mock.calls[0].sql).toContain("make_interval");
 
-    // Trim uses $4 for maxLength
-    expect(mock.calls[1].sql).toContain("$4::int");
-    expect(mock.calls[1].params).toEqual(["list1", '{"msg":"hi"}', 604800000, 200]);
+    // Trim uses its own [key, maxLength] params with $2 for the limit — no orphan binds.
+    expect(mock.calls[1].sql).toContain("$2::int");
+    expect(mock.calls[1].sql).not.toContain("$3");
+    expect(mock.calls[1].sql).not.toContain("$4");
+    expect(mock.calls[1].params).toEqual(["list1", 200]);
+  });
+
+  it("appendToList with only maxLength (no ttlMs) also trims with $2", async () => {
+    const mock = createMockDB({
+      queryResults: [[], [], [], [], [], [], []],
+    });
+    const adapter = new PgStateAdapter(mock.db);
+    await adapter.connect();
+    mock.calls.length = 0;
+
+    await adapter.appendToList("list1", { msg: "hi" }, { maxLength: 50 });
+
+    expect(mock.calls[1].sql).toContain("$2::int");
+    expect(mock.calls[1].params).toEqual(["list1", 50]);
   });
 
   it("getList returns empty array for non-array value", async () => {

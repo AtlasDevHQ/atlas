@@ -72019,6 +72019,288 @@
         "operationId": "postBillingByot"
       }
     },
+    "/api/v1/integrations/{platform}/install": {
+      "get": {
+        "tags": [
+          "Integrations"
+        ],
+        "summary": "Platform OAuth install redirect",
+        "description": "Redirects to the Platform's OAuth authorization page. Requires the caller to be an authenticated workspace admin — the state token binds the resulting install record to the caller's workspace.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Catalog slug (e.g. 'slack')"
+            },
+            "required": true,
+            "description": "Catalog slug (e.g. 'slack')",
+            "name": "platform",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to Platform OAuth authorization page"
+          },
+          "400": {
+            "description": "Platform is not OAuth-installable, or unknown",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a workspace admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Platform not found in catalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "OAuth handler not registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getIntegrationsByPlatformInstall"
+      }
+    },
+    "/api/v1/integrations/{platform}/callback": {
+      "get": {
+        "tags": [
+          "Integrations"
+        ],
+        "summary": "Platform OAuth callback",
+        "description": "Handles the OAuth callback from the Platform: verifies the state token, exchanges the code for credentials, and writes the install record + per-Platform credential. Returns a 302 to /admin/integrations on success.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Catalog slug"
+            },
+            "required": true,
+            "description": "Catalog slug",
+            "name": "platform",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "OAuth authorization code"
+            },
+            "required": true,
+            "description": "OAuth authorization code",
+            "name": "code",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Signed state token from install"
+            },
+            "required": true,
+            "description": "Signed state token from install",
+            "name": "state",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Install complete — redirected to /admin/integrations"
+          },
+          "400": {
+            "description": "Invalid or expired state, or unknown platform",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Platform not found in catalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "OAuth handler not registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream Platform rejected the OAuth exchange",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getIntegrationsByPlatformCallback"
+      }
+    },
     "/api/v1/slack/commands": {
       "post": {
         "tags": [
@@ -72229,186 +72511,6 @@
           }
         },
         "operationId": "postSlackInteractions"
-      }
-    },
-    "/api/v1/slack/install": {
-      "get": {
-        "tags": [
-          "Slack"
-        ],
-        "summary": "Slack OAuth install redirect",
-        "description": "Redirects to the Slack OAuth authorization page. Requires SLACK_CLIENT_ID to be configured. Caller must be authenticated as a workspace admin/owner — the OAuth state binds the resulting installation to the caller's organization, so anonymous installs are rejected to prevent install hijacking.",
-        "responses": {
-          "302": {
-            "description": "Redirect to Slack OAuth authorization page"
-          },
-          "401": {
-            "description": "Not authenticated",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Caller is not an admin/owner of the workspace",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Rate limited",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "501": {
-            "description": "OAuth not configured",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          }
-        },
-        "operationId": "getSlackInstall"
-      }
-    },
-    "/api/v1/slack/callback": {
-      "get": {
-        "tags": [
-          "Slack"
-        ],
-        "summary": "Slack OAuth callback",
-        "description": "Handles the OAuth callback from Slack, exchanges the code for a bot token, and saves the installation. Returns HTML on success or failure.",
-        "parameters": [
-          {
-            "schema": {
-              "type": "string",
-              "description": "OAuth authorization code"
-            },
-            "required": true,
-            "description": "OAuth authorization code",
-            "name": "code",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "CSRF state parameter"
-            },
-            "required": true,
-            "description": "CSRF state parameter",
-            "name": "state",
-            "in": "query"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Installation successful (HTML response, when no web origin is configured)",
-            "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "302": {
-            "description": "Installation successful (redirect to /admin/integrations on the web app)"
-          },
-          "400": {
-            "description": "Invalid or expired state, or missing code",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Installation failed (HTML response)",
-            "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "501": {
-            "description": "OAuth not configured",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          }
-        },
-        "operationId": "getSlackCallback"
       }
     },
     "/api/v1/teams/install": {

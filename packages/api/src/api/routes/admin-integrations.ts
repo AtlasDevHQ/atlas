@@ -200,12 +200,36 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
 
       const deployMode = getConfig()?.deployMode ?? "self-hosted";
 
-      // Run all integration lookups in parallel — they are independent
-      const [slackInstall, teamsInstall, discordInstall, telegramInstall, gchatInstall, githubInstall, linearInstall, whatsappInstall, emailInstall, webhookActiveCount] =
+      // Run all integration lookups in parallel — they are independent.
+      // The `slackInstallMeta` lookup reads the slice 5 install record
+      // (`workspace_plugins`) for `installed_by` / `installed_at`, which
+      // `chat_cache` does not carry. Null on legacy installs that
+      // predate slice 5 — the UI then degrades to "Connected on <chat_cache
+      // installed_at>" without the "by X" part. Cheap (one PK lookup
+      // on the unique workspace_id + catalog_id index).
+      const [slackInstall, slackInstallMeta, teamsInstall, discordInstall, telegramInstall, gchatInstall, githubInstall, linearInstall, whatsappInstall, emailInstall, webhookActiveCount] =
         yield* Effect.all(
           [
             Effect.tryPromise({
               try: () => getInstallationByOrg(orgId),
+              catch: (err) => err instanceof Error ? err : new Error(String(err)),
+            }),
+            Effect.tryPromise({
+              try: async () => {
+                if (!hasInternalDB()) return null;
+                const rows = await internalQuery<{
+                  installed_at: string | null;
+                  installed_by: string | null;
+                }>(
+                  `SELECT to_char(installed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS installed_at,
+                          installed_by
+                     FROM workspace_plugins
+                    WHERE workspace_id = $1 AND catalog_id = 'catalog:slack'
+                    LIMIT 1`,
+                  [orgId],
+                );
+                return rows[0] ?? null;
+              },
               catch: (err) => err instanceof Error ? err : new Error(String(err)),
             }),
             Effect.tryPromise({
@@ -264,11 +288,15 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
       const envConfigured = !!process.env.SLACK_BOT_TOKEN;
       const slackConfigurable = oauthConfigured;
 
+      // Prefer `workspace_plugins.installed_at` when present — it's the
+      // canonical first-store timestamp (slice 5 always writes it). Fall
+      // back to the chat_cache value for legacy installs.
       const slack = {
         connected: slackInstall !== null,
         teamId: slackInstall?.team_id ?? null,
         workspaceName: slackInstall?.workspace_name ?? null,
-        installedAt: slackInstall?.installed_at ?? null,
+        installedAt: slackInstallMeta?.installed_at ?? slackInstall?.installed_at ?? null,
+        installedBy: slackInstallMeta?.installed_by ?? null,
         oauthConfigured,
         envConfigured,
         configurable: slackConfigurable,

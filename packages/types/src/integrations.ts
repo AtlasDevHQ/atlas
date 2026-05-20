@@ -54,6 +54,13 @@ interface ConnectedPlatformBase {
 export interface SlackStatus extends ConnectedPlatformBase {
   teamId: string | null;
   workspaceName: string | null;
+  /**
+   * User id of the admin who completed the OAuth install (from
+   * `workspace_plugins.installed_by`). Null on legacy installs that
+   * predate the slice-5 install handler — the UI degrades to
+   * "Connected on {installedAt}" when null.
+   */
+  installedBy: string | null;
   /** Whether Slack OAuth env vars are configured (SLACK_CLIENT_ID etc.). */
   oauthConfigured: boolean;
   /** Whether env-based token is set (single-workspace mode). */

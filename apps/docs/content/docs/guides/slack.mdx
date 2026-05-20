@@ -110,7 +110,9 @@ DATABASE_URL=postgresql://...         # Required — stores per-workspace bot to
 
 ### 3. Install Flow
 
-Direct users to `https://your-api-host/api/v1/integrations/slack/install`. This redirects to Slack's OAuth authorize page. After approval, the callback persists the bot token under `chat_cache:slack:installation:<teamId>` — the single store shared with the `@chat-adapter/slack` multi-workspace lookup path.
+The supported path is the admin UI: a Workspace admin opens **`/admin/integrations`** and clicks **Connect** on the Slack card. The button redirects to Slack's OAuth authorize page; after approval, the callback persists the bot token under `chat_cache:slack:installation:<teamId>` — the single store shared with the `@chat-adapter/slack` multi-workspace lookup path. The admin lands back on `/admin/integrations` with a success toast and the Slack card now showing the connected workspace name, install timestamp, and the user who completed the install.
+
+For headless installs (CI provisioning, SDK consumers), the install endpoint is still callable directly at `https://your-api-host/api/v1/integrations/slack/install`. A browser-based callback failure (invalid state, upstream Slack error) redirects to `/admin/integrations?error=slack&reason=...` with an actionable toast; JSON-Accept callers receive the original 400/502 for machine-readable debugging.
 
 ### 4. Workspace Disclosure
 

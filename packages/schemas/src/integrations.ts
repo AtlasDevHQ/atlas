@@ -45,6 +45,7 @@ export const SlackStatusSchema = z.object({
   teamId: z.string().nullable(),
   workspaceName: z.string().nullable(),
   installedAt: z.string().datetime().nullable(),
+  installedBy: z.string().nullable(),
   oauthConfigured: z.boolean(),
   envConfigured: z.boolean(),
   configurable: z.boolean(),

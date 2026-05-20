@@ -1,6 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { toast } from "sonner";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyErrorOrNull } from "@/ui/lib/fetch-error";
@@ -48,6 +50,12 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import Link from "next/link";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -70,9 +78,46 @@ import {
 
 // -- Component --
 
+// Human-readable labels for OAuth callback query-param toasts. New
+// platforms must be appended as their slice-6 equivalent wires the
+// Connect button — TS narrowing on `data.<platform>` won't flag a
+// missing entry here, so audit when adding a row.
+const PLATFORM_LABEL: Record<string, string> = {
+  slack: "Slack",
+  teams: "Microsoft Teams",
+  discord: "Discord",
+};
+
+/**
+ * Translate the `reason=` code from the API callback's error redirect
+ * into actionable copy. Reasons are stable wire codes (`invalid_state`,
+ * `upstream_error`) emitted by `packages/api/src/api/routes/integrations.ts`
+ * — keep the cases in lockstep with that file. Unknown reasons fall back
+ * to a non-vague but generic message; "Something went wrong" is forbidden
+ * per CLAUDE.md.
+ */
+function translateInstallError(platform: string, reason: string | null): string {
+  const platformLabel = PLATFORM_LABEL[platform] ?? platform;
+  switch (reason) {
+    case "invalid_state":
+      return `The ${platformLabel} install session expired or was tampered with. Click Connect to start a fresh install.`;
+    case "upstream_error":
+      return `${platformLabel} rejected the OAuth handshake. Check the app's redirect URL matches this deploy, then retry.`;
+    default:
+      return `The ${platformLabel} OAuth callback failed. Click Connect to retry — if the problem persists, check the app credentials.`;
+  }
+}
+
 export default function IntegrationsPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const { data, loading, error, refetch } =
     useAdminFetch("/api/v1/admin/integrations/status", { schema: IntegrationStatusSchema });
+
+  // Holds the platform slug whose success toast is waiting for fresh
+  // data — fired in a follow-up effect once the GET reflects the new
+  // Connected state (so the toast can surface the team name).
+  const [pendingSuccessPlatform, setPendingSuccessPlatform] = useState<string | null>(null);
 
   const disconnectMutation = useAdminMutation<{ message: string }>({
     path: "/api/v1/admin/integrations/slack",
@@ -260,6 +305,61 @@ export default function IntegrationsPage() {
   async function handleWhatsAppDisconnect() {
     await whatsappDisconnectMutation.mutate({});
   }
+
+  // ── OAuth callback query-param toasts ──────────────────────────────
+  //
+  // The API callback (`/api/v1/integrations/:platform/callback`) lands
+  // here with one of `?installed=`, `?reconnect=`, or `?error=&reason=`.
+  // Strip the param after firing the toast so a refresh doesn't replay
+  // it. Success toasts pause until the fresh GET reflects the new
+  // Connected state — that's how we get the team name in the toast.
+  useEffect(() => {
+    const installed = searchParams.get("installed");
+    const reconnect = searchParams.get("reconnect");
+    const errParam = searchParams.get("error");
+    const reason = searchParams.get("reason");
+    if (!installed && !reconnect && !errParam) return;
+
+    if (installed) {
+      setPendingSuccessPlatform(installed);
+      refetch();
+    }
+    if (reconnect) {
+      const label = PLATFORM_LABEL[reconnect] ?? reconnect;
+      toast.warning(`${label} install completed but credentials didn't persist`, {
+        description: "Click Reconnect on the card to retry the OAuth dance.",
+      });
+      refetch();
+    }
+    if (errParam) {
+      const label = PLATFORM_LABEL[errParam] ?? errParam;
+      toast.error(`Couldn't connect ${label}`, {
+        description: translateInstallError(errParam, reason),
+      });
+    }
+    // Strip query params so a manual refresh doesn't re-fire the toast.
+    router.replace("/admin/integrations", { scroll: false });
+    // Deps narrow on the serialized search string so a transient render
+    // with an unchanged URL doesn't re-trigger. router + refetch are
+    // stable references from Next + useAdminFetch and don't need to be
+    // listed here.
+  }, [searchParams, refetch, router]);
+
+  // Fire the deferred success toast once the GET reports the platform
+  // as connected. Reading the team name from the response keeps the
+  // toast specific ("Slack connected to TestTeam") rather than generic.
+  useEffect(() => {
+    if (!pendingSuccessPlatform || !data) return;
+    if (pendingSuccessPlatform === "slack" && data.slack?.connected) {
+      const workspace = data.slack.workspaceName?.trim();
+      toast.success(
+        workspace
+          ? `Slack connected to ${workspace}`
+          : "Slack connected successfully",
+      );
+      setPendingSuccessPlatform(null);
+    }
+  }, [pendingSuccessPlatform, data]);
 
   const isSaas = data?.deployMode === "saas";
   const hasDB = data?.hasInternalDB ?? false;
@@ -555,7 +655,14 @@ function SlackCard({
       onCollapse={!slack.connected ? collapse : undefined}
       actions={
         <>
-          {slack.connected && (canConnect || canByot) && (
+          {/* OAuth installs get the slice-6 disabled-Disconnect tooltip
+              while #2655 lands the real Disconnect flow. BYOT installs
+              keep the existing DisconnectDialog wired to /admin/integrations/slack
+              DELETE — that endpoint already supports BYOT teardown. */}
+          {slack.connected && canConnect && (
+            <DisconnectPendingButton issue="#2655" />
+          )}
+          {slack.connected && !canConnect && canByot && (
             <DisconnectDialog
               name="Slack"
               description="This will remove the Slack connection for this workspace. The /atlas command and thread follow-ups will stop working until you reconnect."
@@ -583,7 +690,14 @@ function SlackCard({
             <DetailRow label="Team ID" value={slack.teamId} mono truncate />
           )}
           {slack.installedAt && (
-            <DetailRow label="Connected" value={formatDateTime(slack.installedAt)} />
+            <DetailRow
+              label="Connected"
+              value={
+                slack.installedBy
+                  ? `${formatDateTime(slack.installedAt)} · by ${slack.installedBy}`
+                  : formatDateTime(slack.installedAt)
+              }
+            />
           )}
           {!isSaas && slack.envConfigured && !slack.oauthConfigured && (
             <div className="pt-1.5 text-[11px] leading-relaxed text-muted-foreground">
@@ -1997,6 +2111,34 @@ function EmailCard({ email }: { email: EmailStatus }) {
         </Button>
       }
     />
+  );
+}
+
+// -- Disconnect Pending (slice 6 placeholder) --
+
+/**
+ * Slice-6 placeholder for OAuth-installed platforms — the real
+ * Disconnect handler ships in #2655. Renders a disabled button with a
+ * tooltip that points to the follow-up issue so an admin clicking it
+ * knows where the work is tracked.
+ */
+function DisconnectPendingButton({ issue }: { issue: string }) {
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          {/* span wrapper so the disabled button still receives pointer events for the tooltip */}
+          <span tabIndex={0} aria-disabled="true" className="inline-flex">
+            <Button variant="outline" size="sm" disabled aria-disabled="true">
+              Disconnect
+            </Button>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="top" align="end">
+          Disconnect ships in {issue}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }
 

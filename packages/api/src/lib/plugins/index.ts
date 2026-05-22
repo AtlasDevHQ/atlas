@@ -27,3 +27,10 @@ export { loadPluginSettings, savePluginEnabled, savePluginConfig, getPluginConfi
 export type { PluginSettings } from "./settings";
 export { MASKED_PLACEHOLDER, maskSecretFields, restoreMaskedSecrets, parseConfigSchema } from "./secrets";
 export type { ConfigSchema } from "./secrets";
+export {
+  LazyPluginLoader,
+  lazyPluginLoader,
+  LazyPluginBuilderMissingError,
+  LazyPluginInstallNotFoundError,
+} from "./lazy-loader";
+export type { LazyPluginBuilder, LazyPluginBuilderArgs } from "./lazy-loader";

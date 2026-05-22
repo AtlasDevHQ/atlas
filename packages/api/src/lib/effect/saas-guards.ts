@@ -87,6 +87,7 @@ const log = createLogger("effect:saas-guards");
 const ISSUE_REF = "#1978";
 const RATE_LIMIT_ISSUE_REF = "#1983";
 const ISSUE_REF_1988 = "#1988";
+const CHAT_ADAPTER_ISSUE_REF = "#2672";
 
 // ══════════════════════════════════════════════════════════════════════
 // ██  Tagged errors
@@ -220,6 +221,30 @@ export class PluginConfigStaleError extends Data.TaggedError("PluginConfigStaleE
 export class PluginConfigCheckFailedError extends Data.TaggedError("PluginConfigCheckFailedError")<{
   readonly message: string;
   readonly cause: Error;
+}> {}
+
+/**
+ * SaaS region declared a chat catalog entry with `install_model:
+ * "oauth"` and `enabled: true` but the env vars the adapter builder
+ * needs to instantiate are missing. Without this guard the
+ * `AdapterRegistry` builder returns `null`, the adapter is silently
+ * dropped, and the api still boots — the proactive listener registers,
+ * admin analytics keep returning 200s, and no Slack event ever lands.
+ * The 2026-05-19 → 2026-05-20 incident in `#sandbox-atlas` (~22h of
+ * silent outage) hit exactly this path: `SLACK_ENCRYPTION_KEY` was
+ * unset across all three Railway api services and every health signal
+ * stayed green while no events were processed.
+ *
+ * `slug` is the catalog entry slug (e.g. `"slack"`) the guard tripped
+ * on; `missingEnv` is the subset of the builder's `requiredEnv` that
+ * `process.env` resolved as undefined/empty. Both exposed on the
+ * error so the operator log line names the missing keys without
+ * re-parsing `message`.
+ */
+export class ChatAdapterEnvMissingError extends Data.TaggedError("ChatAdapterEnvMissingError")<{
+  readonly message: string;
+  readonly slug: string;
+  readonly missingEnv: readonly string[];
 }> {}
 
 /**
@@ -712,6 +737,124 @@ export const PluginConfigGuardLive: Layer.Layer<never, PluginConfigStaleError | 
     // because the docstring at the top of this guard claims "stale
     // configs are always logged as warnings", and that promise lives
     // in the validator, not here. See #2252.
+  }),
+);
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  ChatAdapterEnvGuardLive (#2672)
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * Fail boot in SaaS when a chat catalog entry declares
+ * `install_model: "oauth"` and `enabled: true` but the platform
+ * adapter's `requiredEnv` keys aren't all present.
+ *
+ * Background: between 2026-05-19 17:59 UTC and 2026-05-20 16:39 UTC,
+ * proactive chat silently stopped in prod because `SLACK_ENCRYPTION_KEY`
+ * was unset across all three Railway api services. The chat plugin's
+ * `AdapterRegistry.SLACK_BUILDER.build()` returns `null` when any of
+ * its four envs (`SLACK_CLIENT_ID`, `_SECRET`, `_SIGNING_SECRET`,
+ * `_ENCRYPTION_KEY`) is missing, so the adapter was dropped, the api
+ * still booted, the proactive listener still registered, and the
+ * admin analytics endpoints kept returning 200s — every signal looked
+ * green except actual events.
+ *
+ * Self-hosted is intentionally unaffected: a self-hosted dev box can
+ * legitimately have an OAuth catalog entry without populated creds
+ * (the adapter quietly doesn't activate, the api boots, the operator
+ * fixes the env when they're ready). The SaaS contract is stricter
+ * because there's no operator at the keyboard to notice the silent
+ * downgrade.
+ *
+ * Walks `config.catalog`, filters by `type === "chat"` AND
+ * `install_model === "oauth"` AND `enabled === true`, then for each
+ * entry looks up `getChatAdapterRequiredEnv(slug)` from
+ * `@useatlas/chat`. The per-slug `requiredEnv` lives there as the
+ * single source of truth — duplicating in core would let the lists
+ * drift between packages. Unknown slugs are ignored (the
+ * AdapterRegistry's `unrecognizedSlugs` diagnostic already covers
+ * operator typos at runtime).
+ *
+ * The `@useatlas/chat` accessor is loaded via dynamic `import()` to
+ * match the lazy-import pattern of `EncryptionKeyGuardLive` and
+ * `PluginConfigGuardLive` — keeps the chat plugin's static graph out
+ * of `saas-guards.ts` (the wall-off rationale is documented at the
+ * bottom of this file). A rejected import is rare-but-possible (build
+ * artefact missing); we promote it to a defect via `Effect.orDie` so
+ * the boot Layer dies rather than silently skipping the check. The
+ * silent-skip path was the exact #2672 outage pattern — log+continue
+ * here would reintroduce the same class of bug this guard exists to
+ * prevent. `@useatlas/chat` is a workspace dep used throughout core
+ * (proactive listeners, install handlers, executeQuery wiring), so
+ * in practice an import rejection means the api can't run anyway —
+ * dying here surfaces the root cause at boot instead of letting a
+ * downstream route 500 minutes later.
+ */
+export const ChatAdapterEnvGuardLive: Layer.Layer<never, ChatAdapterEnvMissingError, Config> = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const { config } = yield* Config;
+    if (config.deployMode !== "saas") return;
+
+    const catalog = config.catalog ?? [];
+    if (catalog.length === 0) return;
+
+    // Lazy-import the per-slug requiredEnv accessor from the chat
+    // plugin. `Effect.tryPromise` routes a rejected import into the E
+    // channel; `Effect.orDie` then converts that into a defect, which
+    // crashes the boot Layer. This keeps the E channel narrow (still
+    // just `ChatAdapterEnvMissingError`) while ensuring an
+    // accessor-unreachable failure doesn't silently bypass the check.
+    const accessor = yield* Effect.tryPromise({
+      try: async (): Promise<(slug: string) => ReadonlyArray<string> | null> => {
+        const mod = await import("@useatlas/chat");
+        return mod.getChatAdapterRequiredEnv;
+      },
+      catch: (err) =>
+        err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.orDie);
+
+    for (const entry of catalog) {
+      if (entry.type !== "chat") continue;
+      if (entry.install_model !== "oauth") continue;
+      if (!entry.enabled) continue;
+
+      const requiredEnv = accessor(entry.slug);
+      // Unknown slug — let the runtime AdapterRegistry warn about the
+      // operator typo; this guard's contract is "if Atlas ships a
+      // builder, every key the builder needs must be present."
+      if (!requiredEnv) continue;
+
+      // Read each key directly from `process.env` so the contract
+      // honors the builder map's single source of truth. Going through
+      // `readSaasEnv()` would silently treat any key not statically
+      // enumerated in `SaasEnv` as undefined — a future adapter adding
+      // a new `requiredEnv` entry would then fail boot for a properly-
+      // configured operator until they also touched `saas-env.ts`,
+      // which would break the "builder is the source of truth" claim.
+      // The runtime AdapterRegistry reads `process.env` for the same
+      // reason; matching it keeps the parity check load-bearing.
+      const missingEnv = requiredEnv.filter((key) => {
+        const value = process.env[key];
+        return value === undefined || value === "";
+      });
+
+      if (missingEnv.length > 0) {
+        return yield* Effect.fail(
+          new ChatAdapterEnvMissingError({
+            slug: entry.slug,
+            missingEnv,
+            message:
+              `SaaS region booted with catalog entry slug="${entry.slug}" (type=chat, ` +
+              `install_model=oauth, enabled=true) but the adapter builder's required env ` +
+              `vars are missing: [${missingEnv.join(", ")}]. Without them the AdapterRegistry ` +
+              `silently drops the adapter — the api would boot, proactive chat would register, ` +
+              `and every health signal would stay green while no chat event ever lands. Set ` +
+              `the missing env var(s) on every region's api service before booting. ` +
+              `See ${CHAT_ADAPTER_ISSUE_REF}.`,
+          }),
+        );
+      }
+    }
   }),
 );
 

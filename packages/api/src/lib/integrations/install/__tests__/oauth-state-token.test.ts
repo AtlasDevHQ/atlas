@@ -16,6 +16,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { _resetEncryptionKeyCache } from "@atlas/api/lib/db/encryption-keys";
+import { mutateLastChar } from "../../../../__test-utils__/base64url";
 import {
   mintOAuthStateToken,
   verifyOAuthStateToken,
@@ -77,14 +78,14 @@ describe("OAuthStateToken — tampering", () => {
     const parts = token.split(".");
     expect(parts.length).toBe(3);
     // Flip one character in the payload segment (middle).
-    const tampered = `${parts[0]}.${parts[1].slice(0, -1)}X.${parts[2]}`;
+    const tampered = `${parts[0]}.${mutateLastChar(parts[1])}.${parts[2]}`;
     expect(verifyOAuthStateToken(tampered)).toBeNull();
   });
 
   it("returns null when the signature segment is tampered", () => {
     const token = mintOAuthStateToken("org-abc", "slack");
     const parts = token.split(".");
-    const tamperedSig = `${parts[2].slice(0, -1)}A`;
+    const tamperedSig = mutateLastChar(parts[2]);
     expect(verifyOAuthStateToken(`${parts[0]}.${parts[1]}.${tamperedSig}`)).toBeNull();
   });
 

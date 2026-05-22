@@ -1931,7 +1931,43 @@ Atlas wrote to (1). The chat-adapter read from (2). `internal/backfill-chat-inst
 - **3 test files updated** (`store.test.ts` rewritten to assert chat_cache SQL, `installation-encryption.test.ts` added, `workspace-id-resolver.test.ts` re-pointed at the store mock, `audit-plugin-config-residue.test.ts:cleanIntegrationState()` corrected, `migrate.test.ts` augmented for 0085, `migrate-pg.test.ts` gains two end-to-end cases).
 
 **Category:** Deep module + pure-function-pair pattern. Same shape as the connection-mode resolver (win #58) and the dashboard versioning module (win #64) — when one module owns the boundary and its non-DB logic is pure, the test surface stays narrow even as the storage shape changes. The pure-helper file (`installation-encryption.ts`) is the seam that lets two systems (Atlas's OAuth callback + the chat-adapter's webhook lookup) agree on a single on-disk format without either side importing the other's internals.
-## 68. `WorkspaceInstallGate` — four-fact integration-active predicate as a deep module (#2655)
+## 68. `LazyPluginLoader` — per-Workspace plugin instances as one module (#2657)
+
+**Date:** 2026-05-22
+**Issue:** #2657 (1.5.2 slice 3, parent PRD #2649)
+**PR:** #2685
+**Commit:** f52f9fb9
+
+**Before:** Atlas's existing `PluginRegistry` (`lib/plugins/registry.ts`) is the global, boot-time singleton — one plugin instance per id, shared across every Workspace, mounted at server start. That shape is correct for first-party datasource/context/interaction/action/sandbox plugins where the same code path serves every tenant.
+
+But the multi-Adapter SaaS milestone needed something different: integrations like Salesforce and Jira where **each Workspace has its own OAuth credentials** stored in `workspace_plugins.config`. Sharing one `salesforcePlugin` instance across Acme and Contoso would cross-talk credentials between tenants — the bearer token from whichever Workspace booted first would leak into the other's API calls. Without a per-Workspace seam, every downstream consumer (#2658 Salesforce wire-up, #2659 Jira wire-up, future per-tenant integrations) would have to roll its own `Map<workspaceId, instance>` cache, its own `workspace_plugins.config` read, its own concurrency coalescing, its own teardown story on uninstall.
+
+**The win:** `lib/plugins/lazy-loader.ts` — one module that owns the per-Workspace instance lifecycle. Public surface is four methods (`registerBuilder`, `getOrInstantiate`, `evict`, `hasBuilder`) plus two tagged errors. Downstream consumers register a builder once at boot (`{ workspaceId, catalogId, config } => PluginLike`) and pull instances by `(workspaceId, catalogId)` — the loader handles everything in between.
+
+What the module owns (so consumers don't reinvent it):
+- **First-use construction** with a one-row SELECT from `workspace_plugins.config` (filtered `enabled = true` — disabled installs are treated as not-installed for execution; admin surfaces that need to inspect them read the table directly).
+- **Per-Workspace cache** keyed `${workspaceId}::${catalogId}` — same `catalogId` across two Workspaces returns distinct instances by construction. The `::` collision-safety is documented inline.
+- **Concurrency coalescing.** Overlapping `getOrInstantiate` calls for the same key share one in-flight `Promise`. The agent loop's tool-call paths can dispatch multiple plugin actions in parallel; without coalescing each one would race to read `workspace_plugins.config` and call the builder.
+- **Eviction-during-build race.** An `evict` racing with a mid-flight build is honored — the build resolves to its original caller, but a generation counter (incremented on every new build, checked when the build's result is about to be cached) means the result is **not** written to the shared cache after eviction. Next call reconstructs against current stored config.
+- **Failure-without-poisoning.** A thrown builder clears the pending entry so the next call retries from scratch. Transient OAuth refresh failures recover on the next tool call rather than wedging the install until process restart. Verified by a test that flips the builder from throw → succeed.
+- **Teardown on evict.** `evict` is async and calls `instance.teardown?.()` with errors caught + logged so a failing close cannot block re-instantiation. The disconnect path (#2656) now has one call to make — sockets, refresh timers, and any other plugin resources close deterministically.
+- **JSONB defensive coercion.** `workspace_plugins.config` is `NOT NULL DEFAULT '{}'`, but defensive code warns and collapses to `{}` for JSON null, primitives, and arrays so a corrupt write doesn't crash the builder or silently produce an empty-config plugin without leaving a breadcrumb. Five-row parameterized test pins every coerced shape.
+
+**What got unbundled:**
+- **No `Map<workspaceId, instance>` in #2658 or #2659.** The Salesforce and Jira wire-ups become a single `lazyPluginLoader.registerBuilder("salesforce", buildSalesforce)` line at boot plus per-tool-call `getOrInstantiate(workspaceId, "salesforce")` reads. No per-feature reinvention of "did we already build this?".
+- **No per-builder concurrency story.** Two parallel agent tool calls for the same Workspace's Salesforce plugin will share one in-flight `buildSalesforce` invocation, even though that builder is consumer code.
+- **No per-builder teardown plumbing.** Whatever the builder returns, its `teardown()` runs on uninstall.
+- **No bespoke `workspace_plugins` read.** Builders never see the SQL — they receive `{ workspaceId, catalogId, config: Record<string, unknown> }` and decide what to decrypt (secret-marked fields are still ciphertext until the builder calls `decryptSecretFields` against the catalog schema). Loader stays generic; builder owns its catalog schema.
+- **No special-case for "is the install enabled?"** in consumer code. Disabled rows look identical to uninstalled to the loader — both throw `LazyPluginInstallNotFoundError`. Admin surfaces that need the distinction read the table directly.
+
+**Impact:**
+- **3 files,** initial commit +521 lines + review-response commit +237 / -64.
+- **`lib/plugins/lazy-loader.ts`** (~290 LOC, mostly docstring — the actual logic is ~80 lines).
+- **`lib/plugins/__tests__/lazy-loader.test.ts`** (23 tests, 53 expect calls) covers every advertised invariant: four acceptance cases (first call, cache hit, per-Workspace isolation, evict + reconstruct), concurrency coalescing, failed-builder retry, missing-builder / missing-install / disabled-install / duplicate-registration errors, JSONB coercion across five shapes (null, string, number, boolean, array), teardown-called-on-evict, teardown-error-swallowed, eviction-during-in-flight doesn't repopulate cache.
+- **`lib/plugins/index.ts`** gains 7 re-exports — `LazyPluginLoader`, `lazyPluginLoader`, `LazyPluginBuilderMissingError`, `LazyPluginInstallNotFoundError`, and the `LazyPluginBuilder` / `LazyPluginBuilderArgs` types.
+
+**Category:** Deep module with a small interface (Ousterhout). Same shape as the chat `AdapterRegistry` (`plugins/chat/src/adapter-registry.ts`, slice 2 of the same PRD) — per-slug builders registered once, consumed many times — but keyed per-Workspace instead of per-Platform. Sibling shape to `PluginRegistry`: same domain (plugin lifecycle), different axis (boot-time global vs request-time per-tenant). The two registries cover the two install models cleanly: built-in plugins via the catalog go through `PluginRegistry`; marketplace-installed per-Workspace integrations go through `LazyPluginLoader`. Codex reviewed the original commit and flagged the evict-during-build race as P2 — the review-response commit's pending-clear + generation counter closed that exact gap before merge, with a dedicated test pinning the invariant.
+## 69. `WorkspaceInstallGate` — four-fact integration-active predicate as a deep module (#2655)
 
 **Date:** 2026-05-22
 **Issue:** #2655 (1.5.2 slice 7 — multi-adapter SaaS readiness)

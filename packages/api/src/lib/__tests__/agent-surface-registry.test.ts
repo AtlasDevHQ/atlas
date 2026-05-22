@@ -3,9 +3,12 @@
  *
  * The class of bug F-54 + F-55 closed was "agent runs without a user
  * bound — approval gate silently disabled." The unit tests pin
- * scheduler + Slack specifically, but a 4th surface added later (or an
- * existing surface losing its actor binding via refactor) would
- * silently regress with no failing test.
+ * scheduler + (formerly) Slack specifically, but a new surface added
+ * later (or an existing surface losing its actor binding via refactor)
+ * would silently regress with no failing test. The legacy Slack route
+ * was retired in #2683 — Slack is now an `@useatlas/chat` adapter and
+ * the actor-binding guardrail for that surface lives in
+ * `packages/api/src/lib/chat-plugin/__tests__/execute-query.test.ts`.
  *
  * This file is the structural answer to "approval rules fire on EVERY
  * surface that runs the agent": it enumerates the known agent call
@@ -55,11 +58,6 @@ const KNOWN_AGENT_CALLERS: AgentCallerSpec[] = [
     // that includes both fields, so future option additions don't trip
     // this guardrail.
     bindingProof: /agentQueryEffect\([^)]*,\s*\{[^{}]*\bactor\b/,
-  },
-  {
-    file: "packages/api/src/api/routes/slack.ts",
-    // F-55: builds botActorUser from installation, passes as actor.
-    bindingProof: /executeAgentQuery\([^)]*\bactor\b/s,
   },
   {
     file: "packages/api/src/api/routes/query.ts",
@@ -115,8 +113,6 @@ const KNOWN_SURFACE_STAMPERS: SurfaceStamperSpec[] = [
   { file: "packages/api/src/api/routes/chat.ts", surfaceProof: /approvalSurface:\s*"chat"/ },
   { file: "packages/api/src/api/routes/query.ts", surfaceProof: /approvalSurface:\s*"chat"/ },
   { file: "packages/api/src/api/routes/demo.ts", surfaceProof: /approvalSurface:\s*"chat"/ },
-  // Slack receivers stamp 'slack' (both DM and thread-followup paths).
-  { file: "packages/api/src/api/routes/slack.ts", surfaceProof: /approvalSurface:\s*"slack"/ },
   // Scheduler executor stamps 'scheduler' on every scheduled run.
   { file: "packages/api/src/lib/scheduler/executor.ts", surfaceProof: /approvalSurface:\s*"scheduler"/ },
   // MCP — both the per-tool dispatch frames and the outer hosted-MCP

@@ -517,20 +517,6 @@ try {
   );
 }
 
-// Slack routes — lazy import, only loaded if SLACK_SIGNING_SECRET is set.
-// Dynamic import avoids pulling slack dependencies into the module graph
-// when Slack is disabled, and prevents mock.module leaks in test suites.
-//
-// Post-#2653: slash command, events, and block-action interactions only.
-// OAuth install + callback moved to /api/v1/integrations/slack/{install,callback}.
-if (process.env.SLACK_SIGNING_SECRET) {
-  const { slack } = await import("./routes/slack");
-  app.route("/api/v1/slack", slack);
-  log.info("Slack integration enabled");
-} else {
-  log.debug("Slack integration disabled (SLACK_SIGNING_SECRET not set)");
-}
-
 // Teams routes — lazy import, only loaded if TEAMS_APP_ID is set.
 // Dynamic import avoids pulling teams dependencies into the module graph
 // when Teams is disabled, and prevents mock.module leaks in test suites.

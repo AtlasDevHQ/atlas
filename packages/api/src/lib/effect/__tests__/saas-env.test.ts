@@ -55,6 +55,9 @@ describe("SAAS_ENV_KEYS", () => {
       BETTER_AUTH_URL: undefined,
       BETTER_AUTH_TRUSTED_ORIGINS: undefined,
       SLACK_SIGNING_SECRET: undefined,
+      SLACK_CLIENT_ID: undefined,
+      SLACK_CLIENT_SECRET: undefined,
+      SLACK_ENCRYPTION_KEY: undefined,
     };
     const expectedKeys: readonly string[] = Object.keys(exhaustive).sort();
     const actualKeys: readonly string[] = [...SAAS_ENV_KEYS].sort();

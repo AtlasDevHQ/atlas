@@ -333,6 +333,7 @@ describe("migrateAuthTables", () => {
             { name: "0085_workspace_proactive_config_workspace_id_nonempty.sql" },
             { name: "0086_consolidate_slack_installations.sql" },
             { name: "0087_plugin_catalog_install_model.sql" },
+            { name: "0088_backfill_workspace_plugins.sql" },
           ],
         };
       }

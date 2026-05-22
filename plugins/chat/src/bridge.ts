@@ -1176,6 +1176,7 @@ export function createChatBridge(
                 answerFlow: config.proactive.answerFlow,
                 killSwitch: config.proactive.killSwitch,
                 feedback: config.proactive.feedback,
+                installGate: config.proactive.installGate,
                 linkUrl: config.proactive.linkUrl,
                 platform: config.proactive.platform,
               },
@@ -1822,6 +1823,11 @@ export function createChatBridge(
           onMeterEvent: proactiveConfig.onMeterEvent,
           // Monthly quota cap (#2301).
           getQuotaStatus: proactiveConfig.getQuotaStatus,
+          // WorkspaceInstallGate (#2655) — outermost workspace-scoped
+          // check, runs before classify / meter / quota / kill-switch.
+          // Discriminated union; the `enabled: false` branch keeps the
+          // listener at pre-#2655 behaviour.
+          installGate: proactiveConfig.installGate,
           refusalCopy: proactiveConfig.refusalCopy,
           allowAnswerWhenEntitiesUnknown:
             proactiveConfig.allowAnswerWhenEntitiesUnknown,

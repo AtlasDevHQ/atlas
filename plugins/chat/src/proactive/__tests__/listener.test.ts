@@ -32,6 +32,7 @@ import type {
   ChannelProactiveConfig,
   FeedbackConfig,
   GetPublicDatasetFn,
+  InstallGateConfig,
   KillSwitchConfig,
   LLMClassifierFn,
   OnPauseRequestFn,
@@ -264,11 +265,13 @@ const allowChannels = (...ids: string[]) =>
 const OFF_ANSWER_FLOW: AnswerFlowConfig = { mode: "off" };
 const OFF_KILL_SWITCH: KillSwitchConfig = { enabled: false };
 const OFF_FEEDBACK: FeedbackConfig = { enabled: false };
+const OFF_INSTALL_GATE: InstallGateConfig = { enabled: false };
 
 const offUnions = {
   answerFlow: OFF_ANSWER_FLOW,
   killSwitch: OFF_KILL_SWITCH,
   feedback: OFF_FEEDBACK,
+  installGate: OFF_INSTALL_GATE,
 } as const;
 
 /** Build a `linked-only` answer flow from the standard linked resolver. */
@@ -2910,5 +2913,181 @@ describe("ProactiveListenerConfig discriminated-union contract (#2623 item 1)", 
     void _flow;
     void _kill;
     void _fb;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WorkspaceInstallGate (#2655) — outermost per-event gate
+// ---------------------------------------------------------------------------
+//
+// The install gate is the OUTERMOST workspace-scoped check on every
+// channel-message event. Pinning behaviour:
+//
+//   - gate returns true → message flows through to classify/react
+//   - gate returns false → silent skip BEFORE classify, isEnabled,
+//     workspaceConfig, channelConfigs, killSwitch, or quota are read
+//   - gate throws → fail closed (treated as false; no SDK loop crash)
+//   - per-event cache: gate is called exactly once per event even when
+//     wired multiple times, mirroring the #2623 item 6 sentinel pattern
+//
+// Acceptance: matches the "Proactive listener gates per-event before
+// classify; absent install → silent skip" criterion on #2655.
+describe("registerProactiveListener — WorkspaceInstallGate (#2655)", () => {
+  // Helper — build the `{ enabled: true, gate, catalogId }` wiring
+  // shape from a bare mock function. Replaces the pre-discriminated-
+  // union pair (`installGate` + `installCatalogId`) and keeps every
+  // test below readable.
+  const onGate = (
+    gate: import("../types").InstallGateFn,
+    catalogId = "slack",
+  ): InstallGateConfig => ({ enabled: true, gate, catalogId });
+
+  it("flows through when the install gate returns true", async () => {
+    const gate = mock(async () => true);
+    const classify = mock(yesLLM);
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(chat as any, makeLogger(), {
+      isEnabled: () => true,
+      classify,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: allowChannels("C-allowed"),
+      ...offUnions,
+      installGate: onGate(gate),
+    });
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage());
+    expect(gate).toHaveBeenCalledTimes(1);
+    expect(gate).toHaveBeenCalledWith("ws_1", "slack");
+    expect(classify).toHaveBeenCalled();
+    expect(thread._addReaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("silent-skips before classify when the install gate returns false", async () => {
+    const gate = mock(async () => false);
+    const classify = mock(yesLLM);
+    const isEnabled = mock(() => true);
+    const getWorkspaceConfig = mock(async () => baseWorkspace);
+    const getChannelConfigs = mock(async () => [
+      { channelId: "C-allowed", allow: true } as ChannelProactiveConfig,
+    ]);
+    const meter: (event: ProactiveMeterEvent) => Promise<void> = mock(
+      async () => {},
+    );
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(chat as any, makeLogger(), {
+      isEnabled,
+      classify,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig,
+      getChannelConfigs,
+      onMeterEvent: meter,
+      ...offUnions,
+      installGate: onGate(gate),
+    });
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage());
+
+    // Gate runs.
+    expect(gate).toHaveBeenCalledTimes(1);
+    // Nothing else does past the gate: no classify, no meter, no
+    // workspace/channel reads, no per-event isEnabled, no reaction.
+    // `isEnabled` IS still called once at registration with the empty
+    // sentinel (`registerProactiveListener` probes the boot-time gate);
+    // the per-event call (with a real workspaceId) must not fire.
+    expect(classify).not.toHaveBeenCalled();
+    expect(isEnabled).not.toHaveBeenCalledWith("ws_1");
+    expect(getWorkspaceConfig).not.toHaveBeenCalled();
+    expect(getChannelConfigs).not.toHaveBeenCalled();
+    expect(meter).not.toHaveBeenCalled();
+    expect(thread._addReaction).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the install gate throws (no SDK loop crash, no classify)", async () => {
+    const gate: import("../types").InstallGateFn = mock(async () => {
+      throw new Error("DB outage");
+    });
+    const classify = mock(yesLLM);
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(chat as any, makeLogger(), {
+      isEnabled: () => true,
+      classify,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: allowChannels("C-allowed"),
+      ...offUnions,
+      installGate: onGate(gate),
+    });
+    const thread = makeThread("C-allowed");
+    // Must not propagate the throw.
+    await invokeMessage(thread, makeMessage());
+    expect(gate).toHaveBeenCalledTimes(1);
+    expect(classify).not.toHaveBeenCalled();
+    expect(thread._addReaction).not.toHaveBeenCalled();
+  });
+
+  it("does no install gating when installGate.enabled is false (backwards-compat)", async () => {
+    // The `enabled: false` branch keeps the listener at pre-#2655
+    // behaviour: resolveWorkspaceId → isEnabled → classify → react.
+    // No gate function is even required by the type — this is the
+    // safe default `offUnions` carries.
+    const classify = mock(yesLLM);
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(chat as any, makeLogger(), {
+      isEnabled: () => true,
+      classify,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: allowChannels("C-allowed"),
+      ...offUnions,
+    });
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage());
+    expect(classify).toHaveBeenCalled();
+    expect(thread._addReaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls installGate exactly once per event (per-event cache sentinel)", async () => {
+    // Mirrors the #2623 item 6 sentinel pattern for `getWorkspaceConfig`.
+    // One channel-message event = one installGate roundtrip even though
+    // the listener may consult the cache through multiple decision
+    // points downstream. A regression that re-reads the gate inside
+    // the answer flow (or duplicates the call inside the channel-message
+    // handler) fails loudly here.
+    const gate = mock(async () => true);
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(chat as any, makeLogger(), {
+      isEnabled: () => true,
+      classify: yesLLM,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: allowChannels("C-allowed"),
+      ...offUnions,
+      installGate: onGate(gate),
+    });
+    await invokeMessage(makeThread("C-allowed"), makeMessage());
+    expect(gate).toHaveBeenCalledTimes(1);
+  });
+
+  it("allocates a fresh cache per event (admin uninstall takes effect next message)", async () => {
+    // Cross-event invariant: a verdict from event A must NOT leak into
+    // event B. The listener allocates a fresh `Map` at the top of each
+    // event so admin toggle flips (or chat_cache rotations) are picked
+    // up immediately. Two invokeMessage calls = two installGate calls.
+    const gate = mock(async () => true);
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(chat as any, makeLogger(), {
+      isEnabled: () => true,
+      classify: yesLLM,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: allowChannels("C-allowed"),
+      ...offUnions,
+      installGate: onGate(gate),
+    });
+    const thread = makeThread("C-allowed");
+    await invokeMessage(thread, makeMessage({ id: "M1" }));
+    await invokeMessage(thread, makeMessage({ id: "M2" }));
+    expect(gate).toHaveBeenCalledTimes(2);
   });
 });

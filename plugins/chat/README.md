@@ -147,7 +147,7 @@ The plugin bridges Chat SDK events to Atlas:
 
 ## Migrating from @useatlas/slack or @useatlas/teams
 
-See the [`@useatlas/slack` README](../slack/README.md) or [`@useatlas/teams` README](../teams/README.md) for migration guides with comparison tables.
+The standalone `@useatlas/slack` plugin was retired from the monorepo in #2683 (`@useatlas/slack@0.0.5` remains on npm but is unmaintained). See the [Chat plugin docs migration guide](https://docs.useatlas.dev/plugins/interactions/chat#migrating-from-useatlas-slack) for the slack-side comparison table, or the [`@useatlas/teams` README](../teams/README.md) for the teams equivalent.
 
 ## Error Scrubbing
 

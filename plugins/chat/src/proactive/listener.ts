@@ -50,6 +50,8 @@ import type {
   GetChannelConfigsFn,
   GetQuotaStatusFn,
   GetWorkspaceConfigFn,
+  InstallGateConfig,
+  InstallGateFn,
   KillSwitchConfig,
   LLMClassifierFn,
   ProactiveGateFn,
@@ -116,6 +118,20 @@ export interface ProactiveListenerConfig {
    * (arrays are short in practice). Empty array = no overrides.
    */
   getChannelConfigs: GetChannelConfigsFn;
+
+  /**
+   * Per-event catalog-install predicate wiring (#2655). Discriminated
+   * union — `{ enabled: false }` keeps the listener at pre-#2655
+   * behaviour; `{ enabled: true, gate, catalogId }` enables the
+   * outermost workspace-scoped check on every channel-message event
+   * BEFORE classify, meter, quota, kill-switch, or any DB read.
+   *
+   * Per-event caching: the listener wraps `gate` in a Map memo at the
+   * top of each event handler invocation. Mirrors the contract on
+   * {@link GetWorkspaceConfigFn} — implementations should be cheap;
+   * the listener still de-duplicates concurrent in-flight calls.
+   */
+  installGate: InstallGateConfig;
 
   // ---- Coupled feature groups (#2623 item 1) ------------------------------
   //
@@ -454,6 +470,49 @@ export async function registerProactiveListener(
     }
   };
 
+  // Build a per-event memo around `config.installGate` (#2655). The
+  // returned function keeps a tiny `Map<workspaceId, Promise<boolean>>`
+  // closed over so a second call within the same event handler
+  // invocation returns the same verdict from ONE underlying host call.
+  // De-duplicates concurrent in-flight calls too (caching the Promise,
+  // not the resolved value). Wraps the host callback's `catalogId`
+  // upfront so call sites stay terse — the gate is keyed on workspace
+  // for the lifetime of one event (the catalog id is constant across
+  // the wiring lifetime).
+  //
+  // Defensive try/catch on the host call: the {@link InstallGateFn}
+  // contract is "never throw, resolve as false". Wrapping here matches
+  // the safe-fetcher posture of `safeGetWorkspaceConfig` /
+  // `safeGetChannelConfigs` above so a host wiring bug never crashes
+  // the SDK event loop.
+  const installGateCacheForEvent = (
+    gate: InstallGateFn,
+    catalogId: string,
+  ): ((workspaceId: WorkspaceId) => Promise<boolean>) => {
+    const cache = new Map<string, Promise<boolean>>();
+    return (workspaceId) => {
+      const cached = cache.get(workspaceId);
+      if (cached !== undefined) return cached;
+      const pending = (async () => {
+        try {
+          return await gate(workspaceId, catalogId);
+        } catch (err) {
+          log.warn(
+            {
+              err: err instanceof Error ? err : new Error(String(err)),
+              workspaceId,
+              catalogId,
+            },
+            "Proactive installGate threw — treating as closed (silent skip)",
+          );
+          return false;
+        }
+      })();
+      cache.set(workspaceId, pending);
+      return pending;
+    };
+  };
+
   const safeGetChannelConfigs = async (
     workspaceId: WorkspaceId,
   ): Promise<ReadonlyArray<ChannelProactiveConfig>> => {
@@ -520,6 +579,36 @@ export async function registerProactiveListener(
         message,
       );
       if (!workspaceId) return;
+
+      // ---------------------------------------------------------------
+      // WorkspaceInstallGate (#2655) — OUTERMOST workspace-scoped check.
+      // Runs BEFORE `isEnabled`, classify, meter, quota, kill-switch.
+      // Absent / disabled install → silent skip with a debug log so
+      // operators can confirm "gate said no" during dogfood.
+      //
+      // Per-event cache mirrors the `safeGetWorkspaceConfig` contract:
+      // one fresh `Map` per `handleProactiveMessage` invocation, so an
+      // admin toggling the workspace install off takes effect on the
+      // very next event (no cross-event leak).
+      // ---------------------------------------------------------------
+      if (config.installGate.enabled === true) {
+        const cachedGate = installGateCacheForEvent(
+          config.installGate.gate,
+          config.installGate.catalogId,
+        );
+        const active = await cachedGate(workspaceId);
+        if (!active) {
+          log.debug(
+            {
+              workspaceId,
+              catalogId: config.installGate.catalogId,
+              channelId: thread.channelId,
+            },
+            "Proactive: install gate closed — skipping (no classify, no meter, no DB write)",
+          );
+          return;
+        }
+      }
 
       if (!(await config.isEnabled(workspaceId))) return;
 

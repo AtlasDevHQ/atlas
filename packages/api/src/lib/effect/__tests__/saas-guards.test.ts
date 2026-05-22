@@ -46,6 +46,7 @@ import type {
   InternalDatabaseRequiredError as TInternalDatabaseRequiredError,
   RateLimitRequiredError as TRateLimitRequiredError,
   RegionMisconfiguredError as TRegionMisconfiguredError,
+  ChatAdapterEnvMissingError as TChatAdapterEnvMissingError,
 } from "../saas-guards";
 
 const {
@@ -60,6 +61,8 @@ const {
   RateLimitRequiredError,
   RegionGuardLive,
   RegionMisconfiguredError,
+  ChatAdapterEnvGuardLive,
+  ChatAdapterEnvMissingError,
 } = await import("../saas-guards");
 const { Config } = await import("../layers");
 const { _resetEncryptionKeyCache } = await import("@atlas/api/lib/db/encryption-keys");
@@ -716,3 +719,365 @@ describe("RegionGuardLive", () => {
 // (`plugin-config-guard.test.ts`) — the validator is mocked via
 // `mock.module()` and bun's mock scope is per-file, so isolating
 // avoids leaking the mocks into the other guards' tests in this file.
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  ChatAdapterEnvGuardLive (#2672)
+// ══════════════════════════════════════════════════════════════════════
+
+// The 2026-05-19 → 2026-05-20 incident: every Railway api region booted
+// fine with `SLACK_ENCRYPTION_KEY` unset; the adapter was silently
+// dropped, the proactive listener registered, and ~22h of "green health
+// signals + zero events" followed. These tests pin the contract that
+// the same misconfig must now fail boot in SaaS, stay tolerant on
+// self-hosted, and only fire when the catalog opts in.
+//
+// The Slack builder's actual requiredEnv list lives in
+// `plugins/chat/src/adapter-registry.ts :: SLACK_BUILDER.requiredEnv`
+// — the guard imports it via `getChatAdapterRequiredEnv` so these tests
+// exercise the real list (any future addition to the builder's
+// requiredEnv automatically flows through). The fixture envs below
+// populate everything except the key we want to fail on.
+
+type SlackEnvOverrides = Partial<Record<
+  "SLACK_CLIENT_ID" | "SLACK_CLIENT_SECRET" | "SLACK_SIGNING_SECRET" | "SLACK_ENCRYPTION_KEY",
+  string | undefined
+>>;
+
+const SLACK_ENV_KEYS_FULL: Required<SlackEnvOverrides> = {
+  SLACK_CLIENT_ID: "ci-client-id",
+  SLACK_CLIENT_SECRET: "ci-client-secret",
+  SLACK_SIGNING_SECRET: "0123456789abcdef0123456789abcdef",
+  SLACK_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef",
+};
+
+function setSlackEnv(overrides: SlackEnvOverrides = SLACK_ENV_KEYS_FULL): void {
+  for (const [key, value] of Object.entries({ ...SLACK_ENV_KEYS_FULL, ...overrides })) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+}
+
+describe("ChatAdapterEnvGuardLive", () => {
+  test("fails boot in SaaS when catalog enables Slack but SLACK_ENCRYPTION_KEY is unset (the #2672 incident)", async () => {
+    await withCleanEnv(async () => {
+      setSlackEnv({ SLACK_ENCRYPTION_KEY: undefined });
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            ChatAdapterEnvGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({
+                deployMode: "saas",
+                catalog: [
+                  {
+                    slug: "slack",
+                    type: "chat",
+                    install_model: "oauth",
+                    enabled: true,
+                    saas_eligible: true,
+                  },
+                ],
+              })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+      expect(failure).toBeInstanceOf(ChatAdapterEnvMissingError);
+      expect((failure as TChatAdapterEnvMissingError)._tag).toBe("ChatAdapterEnvMissingError");
+      expect((failure as TChatAdapterEnvMissingError).slug).toBe("slack");
+      expect((failure as TChatAdapterEnvMissingError).missingEnv).toEqual(["SLACK_ENCRYPTION_KEY"]);
+      expect((failure as TChatAdapterEnvMissingError).message).toContain("#2672");
+      expect((failure as TChatAdapterEnvMissingError).message).toContain("SLACK_ENCRYPTION_KEY");
+    });
+  });
+
+  test("fails boot in SaaS reporting every missing key (not just the first)", async () => {
+    await withCleanEnv(async () => {
+      setSlackEnv({
+        SLACK_CLIENT_SECRET: undefined,
+        SLACK_ENCRYPTION_KEY: undefined,
+      });
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            ChatAdapterEnvGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({
+                deployMode: "saas",
+                catalog: [
+                  {
+                    slug: "slack",
+                    type: "chat",
+                    install_model: "oauth",
+                    enabled: true,
+                    saas_eligible: true,
+                  },
+                ],
+              })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+      expect(failure).toBeInstanceOf(ChatAdapterEnvMissingError);
+      const missing = (failure as TChatAdapterEnvMissingError).missingEnv;
+      expect([...missing].sort()).toEqual(["SLACK_CLIENT_SECRET", "SLACK_ENCRYPTION_KEY"]);
+    });
+  });
+
+  test("treats empty-string env values as missing (matches AdapterRegistry's truthy check)", async () => {
+    await withCleanEnv(async () => {
+      // The builder's `if (!encryptionKey)` rejects empty strings as
+      // surely as it rejects undefined — the guard must match.
+      setSlackEnv({ SLACK_ENCRYPTION_KEY: "" });
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            ChatAdapterEnvGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({
+                deployMode: "saas",
+                catalog: [
+                  {
+                    slug: "slack",
+                    type: "chat",
+                    install_model: "oauth",
+                    enabled: true,
+                    saas_eligible: true,
+                  },
+                ],
+              })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+      expect(failure).toBeInstanceOf(ChatAdapterEnvMissingError);
+      expect((failure as TChatAdapterEnvMissingError).missingEnv).toEqual(["SLACK_ENCRYPTION_KEY"]);
+    });
+  });
+
+  test("succeeds in SaaS when every Slack env var is set", async () => {
+    await withCleanEnv(async () => {
+      setSlackEnv();
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            ChatAdapterEnvGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({
+                deployMode: "saas",
+                catalog: [
+                  {
+                    slug: "slack",
+                    type: "chat",
+                    install_model: "oauth",
+                    enabled: true,
+                    saas_eligible: true,
+                  },
+                ],
+              })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("succeeds in SaaS when catalog entry is disabled — operator-disabled rows don't activate the adapter", async () => {
+    await withCleanEnv(async () => {
+      // No Slack env at all. With `enabled: false` the guard must skip.
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            ChatAdapterEnvGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({
+                deployMode: "saas",
+                catalog: [
+                  {
+                    slug: "slack",
+                    type: "chat",
+                    install_model: "oauth",
+                    enabled: false,
+                    saas_eligible: true,
+                  },
+                ],
+              })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("succeeds in SaaS when catalog entry is non-OAuth — static-bot has no event-loop adapter to instantiate", async () => {
+    await withCleanEnv(async () => {
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            ChatAdapterEnvGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({
+                deployMode: "saas",
+                catalog: [
+                  {
+                    slug: "teams",
+                    type: "chat",
+                    install_model: "static-bot",
+                    enabled: true,
+                    saas_eligible: true,
+                  },
+                ],
+              })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("succeeds in SaaS when catalog has no chat entries", async () => {
+    await withCleanEnv(async () => {
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            ChatAdapterEnvGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({
+                deployMode: "saas",
+                catalog: [
+                  {
+                    slug: "salesforce",
+                    type: "integration",
+                    install_model: "oauth",
+                    enabled: true,
+                    saas_eligible: true,
+                  },
+                ],
+              })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("succeeds in SaaS when catalog is empty / unset", async () => {
+    await withCleanEnv(async () => {
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            ChatAdapterEnvGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("succeeds in SaaS for an unknown slug — operator typo falls through to AdapterRegistry's runtime warn", async () => {
+    await withCleanEnv(async () => {
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            ChatAdapterEnvGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({
+                deployMode: "saas",
+                catalog: [
+                  {
+                    slug: "slakc",
+                    type: "chat",
+                    install_model: "oauth",
+                    enabled: true,
+                    saas_eligible: true,
+                  },
+                ],
+              })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("succeeds on self-hosted with the same misconfig (the dev box can fix env when ready)", async () => {
+    await withCleanEnv(async () => {
+      setSlackEnv({ SLACK_ENCRYPTION_KEY: undefined });
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            ChatAdapterEnvGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({
+                deployMode: "self-hosted",
+                catalog: [
+                  {
+                    slug: "slack",
+                    type: "chat",
+                    install_model: "oauth",
+                    enabled: true,
+                    saas_eligible: true,
+                  },
+                ],
+              })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  // Iteration-continuation regression guard. If the for...of ever
+  // accidentally bailed after the first healthy entry (e.g. a
+  // `return` in the success path instead of `continue`), a second
+  // oauth+enabled chat entry with missing envs would silently pass.
+  // Today only `slack` ships; this test future-proofs the iteration
+  // against the static-bot platforms gaining OAuth flows in 1.5.3.
+  test("walks past healthy chat entries to inspect later entries", async () => {
+    await withCleanEnv(async () => {
+      setSlackEnv();
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            ChatAdapterEnvGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({
+                deployMode: "saas",
+                catalog: [
+                  // Healthy entry first (every Slack env set above).
+                  {
+                    slug: "slack",
+                    type: "chat",
+                    install_model: "oauth",
+                    enabled: true,
+                    saas_eligible: true,
+                  },
+                  // Second chat+oauth+enabled entry the guard MUST
+                  // also inspect. Unknown-slug fall-through means
+                  // the loop exits cleanly without crashing — the
+                  // load-bearing assertion is that the iteration
+                  // doesn't bail after the first healthy entry.
+                  {
+                    slug: "slcak",
+                    type: "chat",
+                    install_model: "oauth",
+                    enabled: true,
+                    saas_eligible: true,
+                  },
+                ],
+              })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+});

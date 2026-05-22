@@ -38,6 +38,7 @@ import {
 } from "./packages/api/src/lib/proactive/pause-registry";
 import { getWorkspaceQuotaStatus } from "./packages/api/src/lib/proactive/quota";
 import { getAllowlist } from "./packages/api/src/lib/proactive/public-dataset";
+import { WorkspaceInstallGate } from "./packages/api/src/lib/integrations/install/workspace-install-gate";
 // Slice 3 of #2607 — host-side `executeQuery` that resolves Slack
 // `team_id` → `chat_cache:slack:installation` → `org_id` → `botActorUser`
 // before invoking the agent loop (post-#2634 the install store
@@ -132,20 +133,15 @@ export default defineConfig({
   ],
 
   // ── Plugins ─────────────────────────────────────────────────────
-  // Slice 3 of #2607 — the chat plugin now owns the @mention + thread
-  // event path end-to-end. The plugin's webhook routes at
-  // /api/plugins/chat-interaction/* are reachable.
-  //
-  // TODO(#2612 / slice 4 — HITL dogfood): the Slack app manifest MUST
-  // be flipped during slice 4 — change the Events API request URL from
-  // /api/v1/slack/events to /api/plugins/chat-interaction/webhooks/slack.
-  // The legacy /api/v1/slack/events route now ignores all event_callback
-  // types (logs at warn), so until the flip happens @mentions and thread
-  // replies are silently dropped.
-  //
-  // The legacy /api/v1/slack/{commands,interactions,install,callback}
-  // routes in packages/api/src/api/routes/slack.ts stay put — they
-  // handle slash commands, block actions, modals, and OAuth.
+  // Post-#2683: the chat plugin owns the full Slack surface end-to-end
+  // at `/api/plugins/chat-interaction/webhooks/slack` — Bolt dispatches
+  // events, slash commands, and interactivity off that single URL. The
+  // pre-chat-plugin `/api/v1/slack/{commands,events,interactions}`
+  // routes are retired; all three Slack-app request URLs (Events,
+  // Slash Commands, Interactivity) MUST point at the chat-plugin
+  // webhook. OAuth install/callback still live at
+  // `/api/v1/integrations/slack/{install,callback}` — that surface is
+  // separate from the retired routes.
   //
   // Multi-tenant SaaS: real bot tokens live in `chat_cache` under the
   // `slack:installation:<teamId>` key prefix (#2634 consolidated the
@@ -264,6 +260,17 @@ export default defineConfig({
         // `{ workspaceId }`; the host helper takes a bare `workspaceId`
         // (plus an optional `now` for tests), so adapt the shape here.
         getQuotaStatus: (input) => getWorkspaceQuotaStatus(input.workspaceId),
+        // WorkspaceInstallGate (#2655) — outermost workspace-scoped
+        // check, runs before classify / meter / quota / kill-switch.
+        // `slack` matches `plugin_catalog.slug` for the Slack catalog
+        // row above; the gate accepts both the slug and the
+        // `catalog:slack` id, so the catalog seed timing (seeder runs
+        // post-migration) doesn't matter here.
+        installGate: {
+          enabled: true,
+          gate: WorkspaceInstallGate.isWorkspaceInstallActive,
+          catalogId: "slack",
+        },
       },
     }),
   ],

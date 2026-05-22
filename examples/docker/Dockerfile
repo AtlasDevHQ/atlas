@@ -29,7 +29,6 @@ COPY plugins/mysql/package.json plugins/mysql/package.json
 COPY plugins/nsjail/package.json plugins/nsjail/package.json
 COPY plugins/obsidian/package.json plugins/obsidian/package.json
 COPY plugins/sidecar/package.json plugins/sidecar/package.json
-COPY plugins/slack/package.json plugins/slack/package.json
 COPY plugins/snowflake/package.json plugins/snowflake/package.json
 COPY plugins/salesforce/package.json plugins/salesforce/package.json
 COPY plugins/vercel-sandbox/package.json plugins/vercel-sandbox/package.json

@@ -646,6 +646,21 @@ export interface ProactiveConfig {
    * `@atlas/api/lib/proactive/quota`.
    */
   getQuotaStatus?: GetQuotaStatusFn;
+
+  // ---- Slice #2655: WorkspaceInstallGate ---------------------------------
+
+  /**
+   * Per-event catalog-install predicate wiring (#2655). Discriminated
+   * union — `{ enabled: false }` keeps the listener at pre-#2655
+   * behaviour (hosts that haven't adopted the catalog install model);
+   * `{ enabled: true, gate, catalogId }` enables the OUTERMOST
+   * workspace-scoped check on every channel-message event.
+   *
+   * Host wiring: see
+   * `packages/api/src/lib/integrations/install/workspace-install-gate.ts`
+   * (`WorkspaceInstallGate.isWorkspaceInstallActive`).
+   */
+  installGate: import("./proactive/types").InstallGateConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -832,6 +847,24 @@ const FeedbackSchema = z.discriminatedUnion("enabled", [
     .strict(),
 ]);
 
+// #2655 — WorkspaceInstallGate wiring. Half-wired states (gate set but
+// catalogId missing, or vice versa) are compile-impossible via the
+// discriminated union. The `enabled: false` branch keeps the listener
+// at pre-#2655 behaviour for hosts that haven't adopted the catalog
+// install model.
+const InstallGateSchema = z.discriminatedUnion("enabled", [
+  z.object({ enabled: z.literal(false) }).strict(),
+  z
+    .object({
+      enabled: z.literal(true),
+      gate: zCallback<import("./proactive/types").InstallGateFn>(
+        "proactive.installGate.gate must be a function returning Promise<boolean>",
+      ),
+      catalogId: z.string().min(1, "proactive.installGate.catalogId must be a non-empty string"),
+    })
+    .strict(),
+]);
+
 const ProactiveConfigSchema = z
   .object({
     // Per-event workspace resolution (#2620). Required.
@@ -870,6 +903,12 @@ const ProactiveConfigSchema = z
     getQuotaStatus: zCallback<GetQuotaStatusFn>(
       "proactive.getQuotaStatus must be a function returning Promise<ProactiveQuotaStatus>",
     ).optional(),
+    // WorkspaceInstallGate wiring (#2655). Discriminated union matching
+    // the `answerFlow` / `killSwitch` / `feedback` pattern (#2623 item 1)
+    // — half-wired states are compile-impossible. `{ enabled: false }`
+    // is the safe default for hosts that haven't adopted the catalog
+    // install model.
+    installGate: InstallGateSchema,
   })
   // Fail loud on stale config keys. Removed in #2629 — surface the rename
   // at boot rather than silently no-op'ing in production.

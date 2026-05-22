@@ -20,6 +20,7 @@
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, mock, type Mock } from "bun:test";
 import { _resetEncryptionKeyCache } from "@atlas/api/lib/db/encryption-keys";
+import { mutateLastChar } from "../../../../__test-utils__/base64url";
 import {
   mintOAuthStateToken,
   verifyOAuthStateToken,
@@ -256,7 +257,7 @@ describe("SlackOAuthInstallHandler.handleCallback — state rejection", () => {
     const handler = new SlackOAuthInstallHandler(SLACK_CONFIG);
     const good = mintOAuthStateToken(WSID, "slack");
     const parts = good.split(".");
-    const tampered = `${parts[0]}.${parts[1].slice(0, -1)}X.${parts[2]}`;
+    const tampered = `${parts[0]}.${mutateLastChar(parts[1])}.${parts[2]}`;
 
     const result = await handler.handleCallback("auth-code-abc", tampered);
 

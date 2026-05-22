@@ -70,7 +70,7 @@ Add communication surfaces. Interaction plugins mount HTTP routes or manage non-
 |-------|------|----------|-------------|
 | `routes` | `(app: Hono) => void` | No | Mount Hono routes for webhooks, OAuth, etc. Optional for non-HTTP transports |
 
-**Reference:** [`slack`](../../plugins/slack/src/index.ts), [`mcp`](../../plugins/mcp/src/index.ts)
+**Reference:** [`chat`](../../plugins/chat/src/index.ts), [`mcp`](../../plugins/mcp/src/index.ts)
 
 ### Action (`AtlasActionPlugin`)
 
@@ -302,7 +302,7 @@ if (isDatasourcePlugin(plugin)) {
 | [duckdb](../../plugins/duckdb/) | Datasource | `@useatlas/duckdb` | DuckDB in-process adapter |
 | [yaml-context](../../plugins/yaml-context/) | Context | `@useatlas/yaml-context` | YAML semantic layer context provider |
 | [mcp](../../plugins/mcp/) | Interaction | `@useatlas/mcp` | MCP server lifecycle (stdio + SSE) |
-| [slack](../../plugins/slack/) | Interaction | `@useatlas/slack` | Slack bot (slash commands, threads, OAuth) |
+| [chat](../../plugins/chat/) | Interaction | `@useatlas/chat` | Chat SDK bridge — Slack, Teams, Discord, etc. via unified adapter |
 | [jira](../../plugins/jira/) | Action | `@useatlas/jira` | Create JIRA tickets from analysis |
 | [email](../../plugins/email/) | Action | `@useatlas/email` | Send email reports via Resend |
 | [nsjail](../../plugins/nsjail/) | Sandbox | `@useatlas/nsjail` | Linux namespace isolation via nsjail |

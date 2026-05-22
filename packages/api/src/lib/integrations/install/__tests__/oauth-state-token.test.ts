@@ -16,6 +16,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { _resetEncryptionKeyCache } from "@atlas/api/lib/db/encryption-keys";
+import { mutateLastChar } from "../../../../__test-utils__/base64url";
 import {
   mintOAuthStateToken,
   verifyOAuthStateToken,
@@ -26,14 +27,6 @@ import {
 // ---------------------------------------------------------------------------
 
 const ORIGINAL_ENV = { ...process.env };
-
-// Flip the last char of a base64url segment to something guaranteed
-// different. Constant-replace (`.slice(0, -1) + "A"`) is a no-op ~1/64 of
-// the time when the original already ends in that char — caught
-// empirically on PR #2680 CI (see #2681).
-function flipLastChar(s: string): string {
-  return s.slice(0, -1) + (s.slice(-1) === "A" ? "B" : "A");
-}
 
 function setKeys(value: string | undefined): void {
   if (value === undefined) {
@@ -85,14 +78,14 @@ describe("OAuthStateToken — tampering", () => {
     const parts = token.split(".");
     expect(parts.length).toBe(3);
     // Flip one character in the payload segment (middle).
-    const tampered = `${parts[0]}.${flipLastChar(parts[1])}.${parts[2]}`;
+    const tampered = `${parts[0]}.${mutateLastChar(parts[1])}.${parts[2]}`;
     expect(verifyOAuthStateToken(tampered)).toBeNull();
   });
 
   it("returns null when the signature segment is tampered", () => {
     const token = mintOAuthStateToken("org-abc", "slack");
     const parts = token.split(".");
-    const tamperedSig = flipLastChar(parts[2]);
+    const tamperedSig = mutateLastChar(parts[2]);
     expect(verifyOAuthStateToken(`${parts[0]}.${parts[1]}.${tamperedSig}`)).toBeNull();
   });
 

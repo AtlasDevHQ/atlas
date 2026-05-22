@@ -46,7 +46,6 @@
         "@useatlas/nsjail",
         "@useatlas/sidecar",
         "@useatlas/vercel-sandbox",
-        "@useatlas/slack",
         "@useatlas/teams",
         "@useatlas/webhook",
         "@useatlas/email-digest",

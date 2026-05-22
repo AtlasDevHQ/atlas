@@ -664,20 +664,6 @@
         "@useatlas/plugin-sdk": ">=0.0.1",
       },
     },
-    "plugins/slack": {
-      "name": "@useatlas/slack",
-      "version": "0.0.5",
-      "devDependencies": {
-        "@useatlas/plugin-sdk": "workspace:*",
-        "hono": "^4.12.9",
-        "zod": "^4.3.6",
-      },
-      "peerDependencies": {
-        "@useatlas/plugin-sdk": ">=0.0.1",
-        "hono": "^4.0.0",
-        "zod": "^4.0.0",
-      },
-    },
     "plugins/snowflake": {
       "name": "@useatlas/snowflake",
       "version": "0.0.5",
@@ -2165,8 +2151,6 @@
     "@useatlas/sdk": ["@useatlas/sdk@workspace:packages/sdk"],
 
     "@useatlas/sidecar": ["@useatlas/sidecar@workspace:plugins/sidecar"],
-
-    "@useatlas/slack": ["@useatlas/slack@workspace:plugins/slack"],
 
     "@useatlas/snowflake": ["@useatlas/snowflake@workspace:plugins/snowflake"],
 

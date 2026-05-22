@@ -194,9 +194,11 @@ export type { DataTableCardProps } from "./cards/data-table-card";
  * the AdapterRegistry's filter chain, but runs at route-registration
  * time, before initialize() has built the actual adapter.
  *
- * The runtime check (`if (!bridge)` / `if (!handler)`) inside the
- * route handler is the second gate — it guards against an env-var
- * misconfig where the catalog says "Slack OAuth" but creds are missing.
+ * Two runtime checks inside the webhook handler form the second gate:
+ * `if (!bridge)` → 503 covers the "still booting" case, and
+ * `if (!handler)` → 404 catches the env-var misconfig where the catalog
+ * says "Slack OAuth" but the AdapterRegistry never instantiated the
+ * Slack adapter (missing creds).
  *
  * OAuth install + callback used to be gated by this predicate too;
  * since #2682 they live at `/api/v1/integrations/slack/*` and the
@@ -336,8 +338,8 @@ function buildChatPlugin(
       // AdapterRegistry (#2650 slice 2). The registry reads per-Platform
       // credentials from `process.env`, logs warns on missing creds /
       // non-OAuth entries, and returns the adapters map plus diagnostic
-      // slug lists. The diagnostics let `healthCheck` and the OAuth
-      // install handler surface actionable error messages.
+      // slug lists. The diagnostics let `healthCheck` surface actionable
+      // error messages.
       try {
         const registry = buildChatAdapterRegistry({
           catalog: (config.catalog ?? []) as ReadonlyArray<ChatCatalogEntry>,

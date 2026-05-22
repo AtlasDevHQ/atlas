@@ -1,22 +1,17 @@
 /**
- * Unit tests for `LazyPluginLoader` (#2657, milestone 1.5.2 slice 3).
+ * Unit tests for `LazyPluginLoader`.
  *
- * The loader builds and caches per-Workspace plugin instances on first
- * use. `workspace_plugins.config` is the source of truth for per-install
- * config; the loader reads it once per `(workspaceId, catalogId)` and
- * memoizes the instantiated plugin until `evict` clears the entry. The
- * internal-DB module is mocked so we control the row set without
- * spinning up Postgres.
+ * The internal-DB module is mocked so we control the row set without
+ * spinning up Postgres; tests exercise the loader through its public
+ * surface (no peeking at private maps).
  */
 
 import { describe, test, expect, mock, beforeEach } from "bun:test";
 
-// `internalQuery` returns rows keyed by `(workspaceId, catalogId)`. We
-// stash the row set on a mutable map so each test can stage the exact
-// surface it needs. `hasInternalDB` is forced true — the loader is
-// always called from request paths that already require an internal DB.
-type StoredRow = { config: Record<string, unknown> };
-const mockRowsByKey = new Map<string, StoredRow>();
+// `internalQuery` returns rows keyed by `(workspaceId, catalogId)`. The
+// mock value is `unknown` so tests can stage malformed JSONB shapes
+// (null, primitive, array) without fighting the type system.
+const mockRowsByKey = new Map<string, { config: unknown }>();
 const queryCalls: Array<{ sql: string; params: unknown[] }> = [];
 
 mock.module("@atlas/api/lib/db/internal", () => ({
@@ -42,7 +37,7 @@ function buildPlugin(args: { id: string; config: Record<string, unknown> }): Plu
   };
 }
 
-function stageRow(workspaceId: string, catalogId: string, config: Record<string, unknown>): void {
+function stageRow(workspaceId: string, catalogId: string, config: unknown): void {
   mockRowsByKey.set(`${workspaceId}::${catalogId}`, { config });
 }
 
@@ -83,7 +78,6 @@ describe("LazyPluginLoader.getOrInstantiate", () => {
 
     expect(second).toBe(first);
     expect(constructionCount).toBe(1);
-    // Only the first call touches `workspace_plugins` — cache hit short-circuits the read.
     expect(queryCalls).toHaveLength(1);
   });
 
@@ -120,7 +114,7 @@ describe("LazyPluginLoader.getOrInstantiate", () => {
     const before = await loader.getOrInstantiate("ws-1", "salesforce");
     expect(constructionCount).toBe(1);
 
-    const evicted = loader.evict("ws-1", "salesforce");
+    const evicted = await loader.evict("ws-1", "salesforce");
     expect(evicted).toBe(true);
 
     const after = await loader.getOrInstantiate("ws-1", "salesforce");
@@ -165,7 +159,7 @@ describe("LazyPluginLoader.getOrInstantiate", () => {
     );
 
     await expect(loader.getOrInstantiate("ws-1", "salesforce")).rejects.toThrow(
-      /no install row/i,
+      /no enabled install/i,
     );
   });
 
@@ -213,9 +207,9 @@ describe("LazyPluginLoader.getOrInstantiate", () => {
 });
 
 describe("LazyPluginLoader.evict", () => {
-  test("returns false when there's no cached entry for the pair", () => {
+  test("returns false when there's no cached entry for the pair", async () => {
     const loader = new LazyPluginLoader();
-    expect(loader.evict("ws-1", "salesforce")).toBe(false);
+    expect(await loader.evict("ws-1", "salesforce")).toBe(false);
   });
 
   test("only clears the targeted (workspaceId, catalogId) — other entries survive", async () => {
@@ -230,13 +224,129 @@ describe("LazyPluginLoader.evict", () => {
     const acmeBefore = await loader.getOrInstantiate("ws-1", "salesforce");
     const contosoBefore = await loader.getOrInstantiate("ws-2", "salesforce");
 
-    expect(loader.evict("ws-1", "salesforce")).toBe(true);
+    expect(await loader.evict("ws-1", "salesforce")).toBe(true);
 
     const acmeAfter = await loader.getOrInstantiate("ws-1", "salesforce");
     const contosoAfter = await loader.getOrInstantiate("ws-2", "salesforce");
 
     expect(acmeAfter).not.toBe(acmeBefore);
     expect(contosoAfter).toBe(contosoBefore);
+  });
+
+  test("calls instance.teardown() before dropping it from the cache", async () => {
+    const loader = new LazyPluginLoader();
+    stageRow("ws-1", "salesforce", {});
+
+    let teardownCalled = false;
+    loader.registerBuilder("salesforce", ({ catalogId, workspaceId, config }) => ({
+      id: `${catalogId}@${workspaceId}`,
+      types: ["context"],
+      version: "1.0.0",
+      config,
+      teardown: async () => {
+        teardownCalled = true;
+      },
+    }));
+
+    await loader.getOrInstantiate("ws-1", "salesforce");
+    expect(await loader.evict("ws-1", "salesforce")).toBe(true);
+    expect(teardownCalled).toBe(true);
+  });
+
+  test("swallows teardown errors so a failing close cannot block re-instantiation", async () => {
+    const loader = new LazyPluginLoader();
+    stageRow("ws-1", "salesforce", { v: 1 });
+
+    let constructionCount = 0;
+    loader.registerBuilder("salesforce", ({ catalogId, workspaceId, config }) => {
+      constructionCount++;
+      return {
+        id: `${catalogId}@${workspaceId}#${constructionCount}`,
+        types: ["context"],
+        version: "1.0.0",
+        config,
+        teardown: async () => {
+          throw new Error("teardown failed");
+        },
+      };
+    });
+
+    await loader.getOrInstantiate("ws-1", "salesforce");
+    // Should resolve true and not throw.
+    expect(await loader.evict("ws-1", "salesforce")).toBe(true);
+
+    const next = await loader.getOrInstantiate("ws-1", "salesforce");
+    expect(next.id).toBe("salesforce@ws-1#2");
+  });
+
+  test("racing evict during an in-flight build does not repopulate the cache with a stale instance", async () => {
+    const loader = new LazyPluginLoader();
+    stageRow("ws-1", "salesforce", { v: "stale" });
+
+    let constructionCount = 0;
+    let resolveBuild!: (plugin: PluginLike) => void;
+    const buildGate = new Promise<PluginLike>((resolve) => {
+      resolveBuild = resolve;
+    });
+    loader.registerBuilder("salesforce", async ({ catalogId, workspaceId, config }) => {
+      constructionCount++;
+      return buildGate.then(() => buildPlugin({ id: `${catalogId}@${workspaceId}`, config }));
+    });
+
+    const inFlight = loader.getOrInstantiate("ws-1", "salesforce");
+    await loader.evict("ws-1", "salesforce");
+    resolveBuild(buildPlugin({ id: "stale", config: { v: "stale" } }));
+    // The in-flight caller still gets its instance — but it is NOT cached.
+    await inFlight;
+    expect(loader.size()).toBe(0);
+
+    // Stored config has changed since eviction — the next call must
+    // re-read and build from fresh state.
+    stageRow("ws-1", "salesforce", { v: "fresh" });
+    const fresh = await loader.getOrInstantiate("ws-1", "salesforce");
+    expect(fresh.config).toEqual({ v: "fresh" });
+    expect(constructionCount).toBe(2);
+  });
+});
+
+describe("LazyPluginLoader readInstallConfig", () => {
+  test("treats workspace_plugins.enabled = false as not-installed (filter is in the SQL)", () => {
+    const loader = new LazyPluginLoader();
+    loader.registerBuilder("salesforce", ({ workspaceId, catalogId, config }) =>
+      buildPlugin({ id: `${catalogId}@${workspaceId}`, config }),
+    );
+
+    // The mocked `internalQuery` returns rows only when `mockRowsByKey`
+    // has an entry — by not staging a row we model a disabled install
+    // being filtered out. The assertion that matters is the SQL itself.
+    expect(loader.getOrInstantiate("ws-1", "salesforce")).rejects.toThrow(
+      /no enabled install/i,
+    );
+
+    return loader.getOrInstantiate("ws-1", "salesforce").catch(() => {
+      expect(queryCalls[0].sql).toContain("enabled = true");
+    });
+  });
+
+  test.each([
+    ["JSON null", null],
+    ["a string", "an-evil-string"],
+    ["a number", 42],
+    ["a boolean", true],
+    ["an array", [1, 2, 3]],
+  ])("coerces non-object config (%s) to {} and lets the builder run", async (_label, raw) => {
+    const loader = new LazyPluginLoader();
+    stageRow("ws-1", "salesforce", raw);
+
+    let seenConfig: Record<string, unknown> | undefined;
+    loader.registerBuilder("salesforce", ({ workspaceId, catalogId, config }) => {
+      seenConfig = config;
+      return buildPlugin({ id: `${catalogId}@${workspaceId}`, config });
+    });
+
+    const instance = await loader.getOrInstantiate("ws-1", "salesforce");
+    expect(seenConfig).toEqual({});
+    expect(instance.config).toEqual({});
   });
 });
 

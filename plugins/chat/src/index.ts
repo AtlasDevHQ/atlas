@@ -198,13 +198,19 @@ export type { DataTableCardProps } from "./cards/data-table-card";
 
 /**
  * Predicate the routes() block uses to decide whether to mount the
- * Slack webhook + OAuth routes. Catalog-driven (post-#2650 slice 2) —
- * mirrors the AdapterRegistry's filter chain, but runs at route-
- * registration time, before initialize() has built the actual adapter.
+ * Slack webhook route. Catalog-driven (post-#2650 slice 2) — mirrors
+ * the AdapterRegistry's filter chain, but runs at route-registration
+ * time, before initialize() has built the actual adapter.
  *
- * The runtime check (`if (!slackAdapterInstance) return 503`) inside the
- * route handler is the second gate — it guards against an env-var
- * misconfig where the catalog says "Slack OAuth" but creds are missing.
+ * Two runtime checks inside the webhook handler form the second gate:
+ * `if (!bridge)` → 503 covers the "still booting" case, and
+ * `if (!handler)` → 404 catches the env-var misconfig where the catalog
+ * says "Slack OAuth" but the AdapterRegistry never instantiated the
+ * Slack adapter (missing creds).
+ *
+ * OAuth install + callback used to be gated by this predicate too;
+ * since #2682 they live at `/api/v1/integrations/slack/*` and the
+ * webhook is the only chat-plugin route still scoped here.
  */
 function catalogHasSlackOauth(
   catalog: ReadonlyArray<ChatCatalogEntryInput> | undefined,
@@ -229,9 +235,8 @@ function buildChatPlugin(
   let initialized = false;
   /**
    * Captured from `buildChatAdapterRegistry` at init so `healthCheck`
-   * and the OAuth-install route handler can surface actionable
-   * "operator misconfig" messages instead of the generic "not
-   * initialized" one. Empty until `initialize` runs.
+   * can surface actionable "operator misconfig" messages instead of
+   * the generic "not initialized" one. Empty until `initialize` runs.
    */
   let adapterDiagnostics: {
     unrecognizedSlugs: ReadonlyArray<string>;
@@ -259,8 +264,14 @@ function buildChatPlugin(
       // Post-#2650 (slice 2 of 1.5.2): the route gate is the catalog
       // declaration, not the old `config.adapters.slack` field. The
       // AdapterRegistry resolves the actual adapter instance inside
-      // initialize() — if the env vars are missing, the runtime
-      // `if (!slackAdapterInstance)` check below returns 503.
+      // initialize() — if env vars are missing the webhook handler's
+      // runtime `if (!handler)` check returns 404 (no adapter wired
+      // means no Chat SDK webhook to dispatch into).
+      //
+      // Slack OAuth install + callback used to mount here too; #2682
+      // retired them. The canonical flow now lives at
+      // `/api/v1/integrations/slack/{install,callback}` via
+      // `SlackOAuthInstallHandler` (slices #2671 + #2674).
       //
       // Non-Slack chat platforms are intentionally not mounted in 1.5.2
       // — their `install_model === "static-bot"` catalog rows are
@@ -300,123 +311,11 @@ function buildChatPlugin(
           }
         });
 
-        // OAuth routes — always mounted when Slack OAuth is declared in
-        // the catalog. The runtime check inside the handler verifies the
-        // adapter actually initialized (i.e. env vars were present and
-        // `createSlackAdapter` succeeded); the client_id is read from
-        // `process.env.SLACK_CLIENT_ID` rather than the old
-        // `config.adapters.slack.clientId` field.
-        {
-          app.get("/oauth/slack/install", async (c) => {
-            // Distinguish "plugin still booting" (transient — retry)
-            // from "adapter never instantiated due to missing creds"
-            // (terminal — operator must fix env vars). The diagnostic
-            // is captured by AdapterRegistry at init time.
-            if (!stateAdapter || !initialized) {
-              return c.json({ error: "Chat plugin not yet initialized" }, 503);
-            }
-            if (!slackAdapterInstance) {
-              const missingCreds = adapterDiagnostics.missingCredSlugs.includes("slack");
-              return c.json(
-                {
-                  error: missingCreds
-                    ? "Slack OAuth not configured — required env vars missing (SLACK_CLIENT_ID / SLACK_CLIENT_SECRET / SLACK_SIGNING_SECRET / SLACK_ENCRYPTION_KEY)"
-                    : "Slack adapter not registered — check `catalog` declaration in atlas.config.ts",
-                },
-                500,
-              );
-            }
-
-            const clientId = process.env.SLACK_CLIENT_ID;
-            if (!clientId) {
-              return c.json(
-                { error: "Slack OAuth not configured — SLACK_CLIENT_ID is unset" },
-                500,
-              );
-            }
-            const scopes = "commands,chat:write,app_mentions:read";
-            const state = crypto.randomUUID();
-
-            // Store CSRF state in state adapter (10 minute TTL).
-            // Must complete before redirecting — callback validates this token.
-            try {
-              await stateAdapter.set(`oauth:slack:${state}`, true, 600_000);
-            } catch (err) {
-              (log ?? console).error(
-                { err: err instanceof Error ? err : new Error(String(err)) },
-                "Failed to store OAuth CSRF state — cannot proceed with install",
-              );
-              return c.json({ error: "Unable to initiate OAuth flow. Please try again." }, 500);
-            }
-
-            const url = `https://slack.com/oauth/v2/authorize?client_id=${encodeURIComponent(clientId)}&scope=${encodeURIComponent(scopes)}&state=${encodeURIComponent(state)}`;
-            return c.redirect(url);
-          });
-
-          app.get("/oauth/slack/callback", async (c) => {
-            if (!stateAdapter || !initialized) {
-              return c.json({ error: "Chat plugin not yet initialized" }, 503);
-            }
-            if (!slackAdapterInstance) {
-              const missingCreds = adapterDiagnostics.missingCredSlugs.includes("slack");
-              return c.json(
-                {
-                  error: missingCreds
-                    ? "Slack OAuth not configured — required env vars missing"
-                    : "Slack adapter not registered — check `catalog` declaration",
-                },
-                500,
-              );
-            }
-
-            const state = c.req.query("state");
-            if (!state) {
-              return c.json({ error: "Missing state parameter" }, 400);
-            }
-
-            // Validate CSRF state
-            const valid = await stateAdapter.get(`oauth:slack:${state}`);
-            if (!valid) {
-              return c.json({ error: "Invalid or expired state parameter" }, 400);
-            }
-
-            // Delete used state token — failure is non-fatal (TTL will expire it)
-            try {
-              await stateAdapter.delete(`oauth:slack:${state}`);
-            } catch (deleteErr) {
-              (log ?? console).warn(
-                { err: deleteErr instanceof Error ? deleteErr : new Error(String(deleteErr)), state },
-                "Failed to delete OAuth state — token will expire via TTL",
-              );
-            }
-
-            const code = c.req.query("code");
-            if (!code) {
-              return c.json({ error: "Missing code parameter" }, 400);
-            }
-
-            try {
-              const result = await slackAdapterInstance.handleOAuthCallback(
-                c.req.raw,
-              );
-
-              (log ?? console).info({ teamId: result.teamId }, "Slack installation saved via OAuth");
-
-              return c.html(
-                "<html><body><h1>Atlas installed!</h1><p>You can now use /atlas in your Slack workspace.</p></body></html>",
-              );
-            } catch (oauthErr) {
-              (log ?? console).error(
-                { err: oauthErr instanceof Error ? oauthErr : new Error(String(oauthErr)) },
-                "OAuth callback failed",
-              );
-              return c.html(
-                "<html><body><h1>Installation Failed</h1><p>Could not complete the OAuth flow. Please try again.</p></body></html>",
-                500,
-              );
-            }
-          });
-        }
+        // Slack OAuth install + callback used to live here. Retired in
+        // #2682 — the canonical flow is now
+        // `/api/v1/integrations/slack/{install,callback}` via
+        // `SlackOAuthInstallHandler` (slices #2671 + #2674). The webhook
+        // route above stays — only the OAuth dance moved.
       }
 
       // Non-Slack chat Platform webhook routes are intentionally not
@@ -447,8 +346,8 @@ function buildChatPlugin(
       // AdapterRegistry (#2650 slice 2). The registry reads per-Platform
       // credentials from `process.env`, logs warns on missing creds /
       // non-OAuth entries, and returns the adapters map plus diagnostic
-      // slug lists. The diagnostics let `healthCheck` and the OAuth
-      // install handler surface actionable error messages.
+      // slug lists. The diagnostics let `healthCheck` surface actionable
+      // error messages.
       try {
         const registry = buildChatAdapterRegistry({
           catalog: (config.catalog ?? []) as ReadonlyArray<ChatCatalogEntry>,

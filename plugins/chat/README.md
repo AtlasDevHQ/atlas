@@ -133,8 +133,17 @@ The plugin bridges Chat SDK events to Atlas:
 | `/webhooks/discord` | POST | Discord Interactions endpoint (handles slash commands, mentions, and buttons) |
 | `/webhooks/gchat` | POST | Google Chat webhook (handles @mentions, DMs, card clicks, Pub/Sub) |
 | `/webhooks/telegram` | POST | Telegram Bot API webhook (handles messages, @mentions, commands, callback queries) |
-| `/oauth/slack/install` | GET | Slack OAuth install redirect (only when `clientId` configured) |
-| `/oauth/slack/callback` | GET | Slack OAuth callback (only when `clientId` configured) |
+
+> **Slack OAuth lives in core, not in this plugin.** As of
+> [#2682](https://github.com/AtlasDevHQ/atlas/issues/2682) the install +
+> callback flow is mounted at
+> `/api/v1/integrations/slack/{install,callback}` by Atlas core's
+> `SlackOAuthInstallHandler` (slices [#2671](https://github.com/AtlasDevHQ/atlas/issues/2671)
+> + [#2674](https://github.com/AtlasDevHQ/atlas/issues/2674)). The
+> previous chat-plugin paths
+> (`/api/plugins/chat-interaction/oauth/slack/{install,callback}`)
+> return 404 — operators should remove the legacy callback URL from
+> their Slack app's OAuth Redirect URLs allowlist.
 
 ## Migrating from @useatlas/slack or @useatlas/teams
 

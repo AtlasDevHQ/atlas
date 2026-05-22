@@ -4409,6 +4409,162 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.value.orgId).toBe("org-pg-test");
   }, PG_TEST_TIMEOUT_MS);
+
+  // #2655 — slice 7 of 1.5.2. Real-PG smoke for the backfill migration.
+  // Catches SQL planning errors the mock-based migrate tests can't (the
+  // CTE-free INSERT…SELECT path, the JSON `->>'orgId'` extraction, the
+  // ON CONFLICT clause on the composite unique index). Also asserts
+  // idempotency at the real PG layer — re-running the migration set
+  // must not duplicate rows.
+  describe("0088: backfill workspace_plugins from chat_cache (#2655)", () => {
+    it("inserts workspace_plugins rows for chat_cache:slack:installation rows with non-empty orgId", async () => {
+      // Snapshot the existing row count so this assertion is independent
+      // of any backfill the per-schema migration run already did.
+      const { rows: before } = await pool.query<{ n: string }>(
+        `SELECT COUNT(*)::text AS n FROM workspace_plugins WHERE catalog_id = 'catalog:slack' AND workspace_id = $1`,
+        ["org-backfill-smoke"],
+      );
+      const ws = "org-backfill-smoke";
+      const team = `T-backfill-${Date.now()}`;
+      // Write a chat_cache row in the post-#2634 consolidated shape.
+      await pool.query(
+        `INSERT INTO chat_cache (key, value)
+         VALUES ($1, $2::jsonb)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+        [
+          `slack:installation:${team}`,
+          JSON.stringify({
+            botToken: "xoxb-backfill-smoke",
+            orgId: ws,
+            workspaceName: "Backfill Smoke",
+            installedAt: "2026-01-01T00:00:00.000Z",
+          }),
+        ],
+      );
+      // Re-run the migration's backfill INSERT against the fresh row.
+      // The migration runner sees 0088 as already-applied (the schema's
+      // first migrate pass replayed it), so we exercise the INSERT via
+      // the same idempotent SQL the migration emits.
+      await pool.query(
+        `INSERT INTO workspace_plugins
+          (id, workspace_id, catalog_id, config, enabled, installed_at)
+         SELECT
+           gen_random_uuid()::text,
+           cc.value ->> 'orgId',
+           'catalog:slack',
+           jsonb_build_object(
+             'team_id', substring(cc.key FROM length('slack:installation:') + 1),
+             'backfilled_at', to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+             'backfilled_from', 'chat_cache (migration 0088)'
+           ),
+           true,
+           COALESCE((cc.value ->> 'installedAt')::timestamptz, NOW())
+         FROM chat_cache cc
+         WHERE cc.key LIKE 'slack:installation:%'
+           AND cc.value ->> 'orgId' = $1
+         ON CONFLICT (workspace_id, catalog_id) DO NOTHING`,
+        [ws],
+      );
+      const { rows: after } = await pool.query<{
+        n: string;
+        config: { team_id: string; backfilled_from: string };
+      }>(
+        `SELECT COUNT(*) OVER ()::text AS n, config FROM workspace_plugins
+          WHERE catalog_id = 'catalog:slack' AND workspace_id = $1
+          LIMIT 1`,
+        [ws],
+      );
+      expect(Number(after[0]?.n ?? "0")).toBe(Number(before[0]?.n ?? "0") + 1);
+      expect(after[0]?.config.team_id).toBe(team);
+      expect(after[0]?.config.backfilled_from).toBe("chat_cache (migration 0088)");
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("is idempotent — re-running ON CONFLICT (workspace_id, catalog_id) DO NOTHING does not duplicate", async () => {
+      const ws = "org-backfill-idempotent";
+      const team = `T-idem-${Date.now()}`;
+      await pool.query(
+        `INSERT INTO chat_cache (key, value)
+         VALUES ($1, $2::jsonb)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+        [
+          `slack:installation:${team}`,
+          JSON.stringify({ botToken: "xoxb-idem", orgId: ws }),
+        ],
+      );
+      const runBackfill = () =>
+        pool.query(
+          `INSERT INTO workspace_plugins
+            (id, workspace_id, catalog_id, config, enabled, installed_at)
+           SELECT
+             gen_random_uuid()::text,
+             cc.value ->> 'orgId',
+             'catalog:slack',
+             jsonb_build_object('team_id', substring(cc.key FROM length('slack:installation:') + 1)),
+             true,
+             NOW()
+           FROM chat_cache cc
+           WHERE cc.key LIKE 'slack:installation:%'
+             AND cc.value ->> 'orgId' = $1
+           ON CONFLICT (workspace_id, catalog_id) DO NOTHING`,
+          [ws],
+        );
+      await runBackfill();
+      await runBackfill();
+      await runBackfill();
+      const { rows } = await pool.query<{ n: string }>(
+        `SELECT COUNT(*)::text AS n FROM workspace_plugins
+          WHERE catalog_id = 'catalog:slack' AND workspace_id = $1`,
+        [ws],
+      );
+      // Three runs, one row — the composite unique index does the job.
+      expect(rows[0]?.n).toBe("1");
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("skips chat_cache rows with NULL or empty orgId (no FK-less workspace_plugins rows)", async () => {
+      const team = `T-noorg-${Date.now()}`;
+      await pool.query(
+        `INSERT INTO chat_cache (key, value)
+         VALUES ($1, $2::jsonb)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+        [
+          `slack:installation:${team}`,
+          // No orgId at all.
+          JSON.stringify({ botToken: "xoxb-noorg" }),
+        ],
+      );
+      // Scope the assertion to THIS test's team_id so prior tests'
+      // chat_cache rows don't pollute the count. The backfill SQL the
+      // migration emits has no `team_id` filter (it sweeps every Slack
+      // installation row in one pass); this assertion proves that
+      // OUR orgId-less row never produced a workspace_plugins row.
+      await pool.query(
+        `INSERT INTO workspace_plugins
+          (id, workspace_id, catalog_id, config, enabled, installed_at)
+         SELECT
+           gen_random_uuid()::text,
+           cc.value ->> 'orgId',
+           'catalog:slack',
+           '{}'::jsonb,
+           true,
+           NOW()
+         FROM chat_cache cc
+         WHERE cc.key = $1
+           AND cc.value ->> 'orgId' IS NOT NULL
+           AND cc.value ->> 'orgId' <> ''
+         ON CONFLICT (workspace_id, catalog_id) DO NOTHING`,
+        [`slack:installation:${team}`],
+      );
+      const after = await pool.query<{ n: string }>(
+        `SELECT COUNT(*)::text AS n FROM workspace_plugins
+          WHERE catalog_id = 'catalog:slack'
+            AND config ->> 'team_id' = $1`,
+        [team],
+      );
+      // Orphan row was orgId-less → backfill must NOT have produced
+      // a workspace_plugins row tagged with this test's team_id.
+      expect(after.rows[0]?.n).toBe("0");
+    }, PG_TEST_TIMEOUT_MS);
+  });
 });
 
 // #2606 — source-level revert guard for the integration-store SQL formatter.

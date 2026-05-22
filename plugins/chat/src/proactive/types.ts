@@ -228,6 +228,42 @@ export type GetChannelConfigsFn = (
   workspaceId: string,
 ) => Promise<ReadonlyArray<ChannelProactiveConfig>>;
 
+/**
+ * Per-event "is the workspace's install of this catalog entry active?"
+ * predicate (#2655).
+ *
+ * The proactive listener calls this as the outermost check on every
+ * channel-message event — BEFORE classification, meter, kill-switch,
+ * quota, or any other DB read. A `false` verdict is a silent skip:
+ * no LLM call, no meter row, no rate-limit hit, no DB write further
+ * down the pipeline.
+ *
+ * Returns `true` ONLY when all four facts hold:
+ *
+ *   1. A `workspace_plugins` row exists for `(workspaceId, catalogId)`,
+ *   2. that row's `enabled = true`,
+ *   3. the joined `plugin_catalog` row's `enabled = true`,
+ *   4. the workspace's plan ranks ≥ the catalog row's `min_plan`.
+ *
+ * Implementations must never throw — failures should resolve as
+ * `false` so the listener fails closed (silent skip) rather than
+ * crashing the SDK event loop.
+ *
+ * Host wiring: see
+ * `packages/api/src/lib/integrations/install/workspace-install-gate.ts`
+ * (`WorkspaceInstallGate.isWorkspaceInstallActive`).
+ *
+ * Per-event caching: the listener wraps the host callback with a
+ * `Map`-based memo at the top of each event so a second call within
+ * one handler invocation returns the same verdict from ONE underlying
+ * roundtrip. Mirrors the per-event-fetch contract on
+ * {@link GetWorkspaceConfigFn}.
+ */
+export type InstallGateFn = (
+  workspaceId: string,
+  catalogId: string,
+) => Promise<boolean>;
+
 // ---------------------------------------------------------------------------
 // Kill switch (#2295) — three-layer pause + per-user opt-out
 // ---------------------------------------------------------------------------

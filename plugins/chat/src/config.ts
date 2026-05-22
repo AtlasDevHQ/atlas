@@ -646,6 +646,34 @@ export interface ProactiveConfig {
    * `@atlas/api/lib/proactive/quota`.
    */
   getQuotaStatus?: GetQuotaStatusFn;
+
+  // ---- Slice #2655: WorkspaceInstallGate ---------------------------------
+
+  /**
+   * Per-event catalog-install predicate (#2655). The listener calls
+   * this as the OUTERMOST workspace-scoped check on every channel-
+   * message event — before classify, before meter, before quota, before
+   * the kill-switch read. Absent / disabled install → silent skip (no
+   * LLM call, no meter row, no rate-limit hit, no DB write).
+   *
+   * Optional for backwards-compatibility: hosts that haven't yet
+   * adopted the catalog install model can omit this field and the
+   * listener falls back to its pre-#2655 behaviour (no install gating).
+   *
+   * Host wiring: see
+   * `packages/api/src/lib/integrations/install/workspace-install-gate.ts`
+   * (`WorkspaceInstallGate.isWorkspaceInstallActive`).
+   */
+  installGate?: import("./proactive/types").InstallGateFn;
+
+  /**
+   * Catalog id passed to {@link installGate} per event (#2655). When
+   * `installGate` is set, this must also be set. The bridge wires the
+   * catalog row's `slug` here (e.g. `"slack"`) — matching the catalog
+   * seed in `atlas.config.ts:catalog`. The host's gate accepts either
+   * the `slug` or the `catalog:<slug>` id for flexibility.
+   */
+  installCatalogId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -870,6 +898,18 @@ const ProactiveConfigSchema = z
     getQuotaStatus: zCallback<GetQuotaStatusFn>(
       "proactive.getQuotaStatus must be a function returning Promise<ProactiveQuotaStatus>",
     ).optional(),
+    // WorkspaceInstallGate wiring (#2655). Optional — when omitted no
+    // install gating runs and the listener behaves exactly as pre-#2655.
+    // When set, `installCatalogId` MUST also be set (validated by the
+    // bridge's structural check at registration time; we keep the Zod
+    // schema permissive so partial configs surface a clearer error in
+    // the bridge wiring than a Zod refinement would).
+    installGate: zCallback<
+      import("./proactive/types").InstallGateFn
+    >(
+      "proactive.installGate must be a function returning Promise<boolean>",
+    ).optional(),
+    installCatalogId: z.string().min(1).optional(),
   })
   // Fail loud on stale config keys. Removed in #2629 — surface the rename
   // at boot rather than silently no-op'ing in production.

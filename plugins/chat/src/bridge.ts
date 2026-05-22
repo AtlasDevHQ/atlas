@@ -1822,6 +1822,12 @@ export function createChatBridge(
           onMeterEvent: proactiveConfig.onMeterEvent,
           // Monthly quota cap (#2301).
           getQuotaStatus: proactiveConfig.getQuotaStatus,
+          // WorkspaceInstallGate (#2655) — outermost workspace-scoped
+          // check, runs before classify / meter / quota / kill-switch.
+          // Pass through both pieces if either is set; the listener's
+          // own guard handles the half-wired case (both required).
+          installGate: proactiveConfig.installGate,
+          installCatalogId: proactiveConfig.installCatalogId,
           refusalCopy: proactiveConfig.refusalCopy,
           allowAnswerWhenEntitiesUnknown:
             proactiveConfig.allowAnswerWhenEntitiesUnknown,

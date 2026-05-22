@@ -78,6 +78,20 @@ export interface SaasEnv {
   // boot-smoke fixture emits a syntactically-valid placeholder so the
   // schema parses without crashing the boot guards.
   readonly SLACK_SIGNING_SECRET: string | undefined;
+
+  // Slack OAuth + at-rest credentials (#2672 — ChatAdapterEnvGuardLive).
+  // When the chat catalog enables `slug: "slack"` with `install_model:
+  // "oauth"`, the AdapterRegistry's `SLACK_BUILDER.build()` requires all
+  // four envs (the signing secret above plus these three). Missing any
+  // of them in SaaS silently drops the adapter — proactive chat keeps
+  // booting, admin analytics keep returning 200s, and no Slack event
+  // ever lands. The 2026-05-19 → 2026-05-20 incident hit exactly this
+  // path (`SLACK_ENCRYPTION_KEY` unset across all three Railway api
+  // services). Listed here so the boot-smoke fixture populates them and
+  // `ChatAdapterEnvGuardLive` asserts on them via `readSaasEnv()`.
+  readonly SLACK_CLIENT_ID: string | undefined;
+  readonly SLACK_CLIENT_SECRET: string | undefined;
+  readonly SLACK_ENCRYPTION_KEY: string | undefined;
 }
 
 /**
@@ -106,6 +120,9 @@ export const SAAS_ENV_KEYS = [
   "BETTER_AUTH_URL",
   "BETTER_AUTH_TRUSTED_ORIGINS",
   "SLACK_SIGNING_SECRET",
+  "SLACK_CLIENT_ID",
+  "SLACK_CLIENT_SECRET",
+  "SLACK_ENCRYPTION_KEY",
 ] as const satisfies readonly (keyof SaasEnv)[];
 
 // Compile-time exhaustiveness: every key in SaasEnv must appear in
@@ -140,6 +157,9 @@ export function readSaasEnv(env: NodeJS.ProcessEnv = process.env): SaasEnv {
     BETTER_AUTH_URL: env.BETTER_AUTH_URL,
     BETTER_AUTH_TRUSTED_ORIGINS: env.BETTER_AUTH_TRUSTED_ORIGINS,
     SLACK_SIGNING_SECRET: env.SLACK_SIGNING_SECRET,
+    SLACK_CLIENT_ID: env.SLACK_CLIENT_ID,
+    SLACK_CLIENT_SECRET: env.SLACK_CLIENT_SECRET,
+    SLACK_ENCRYPTION_KEY: env.SLACK_ENCRYPTION_KEY,
   };
 }
 
@@ -211,6 +231,17 @@ export function makeBootSmokeFixture(
     // SaaS deploy config parses cleanly under Boot Smoke without
     // requiring a real Slack app credential.
     SLACK_SIGNING_SECRET: "0123456789abcdef0123456789abcdef",
+    // #2672 — placeholders for the SLACK adapter's other three
+    // requiredEnv keys. ChatAdapterEnvGuardLive only asserts presence
+    // (non-empty), so any non-empty string suffices for the boot-smoke
+    // gate. The encryption key placeholder mirrors the
+    // `SLACK_SIGNING_SECRET` shape (32-char lowercase hex) since
+    // `@chat-adapter/slack` derives an AES-256-GCM key from it via
+    // SHA-256 and a syntactically valid placeholder keeps adapter
+    // construction clean under Boot Smoke.
+    SLACK_CLIENT_ID: "ci-fixture-slack-client-id-not-a-secret",
+    SLACK_CLIENT_SECRET: "ci-fixture-slack-client-secret-not-a-secret",
+    SLACK_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef",
   };
   return { ...fixture, ...opts.overrides };
 }

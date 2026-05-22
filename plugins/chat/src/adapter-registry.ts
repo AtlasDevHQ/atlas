@@ -152,6 +152,23 @@ const BUILDERS_BY_SLUG: Readonly<Record<string, ChatAdapterBuilder<unknown>>> = 
   slack: SLACK_BUILDER,
 };
 
+/**
+ * Look up the per-slug `requiredEnv` list. Core (`@atlas/api`) calls
+ * this from `ChatAdapterEnvGuardLive` (#2672) so the SaaS boot guard
+ * can assert that every env var the builder needs is present without
+ * redeclaring the list (single source of truth — the builder map above
+ * is the only place `requiredEnv` is authored).
+ *
+ * Returns `null` for unknown slugs. The guard treats that the same as
+ * the registry's `unrecognizedSlugs` diagnostic: a catalog row for a
+ * Platform Atlas doesn't ship code for is an operator typo, not a
+ * missing-env failure.
+ */
+export function getChatAdapterRequiredEnv(slug: string): ReadonlyArray<string> | null {
+  const builder = BUILDERS_BY_SLUG[slug];
+  return builder ? builder.requiredEnv : null;
+}
+
 // ---------------------------------------------------------------------------
 // Logger contract
 // ---------------------------------------------------------------------------

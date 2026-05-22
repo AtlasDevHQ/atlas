@@ -166,6 +166,14 @@ export type { StreamChunk, TaskUpdateChunk, PlanUpdateChunk, MarkdownTextChunk }
 export { createStateAdapter } from "./state";
 export type { PluginDB } from "./state";
 
+// Per-slug adapter env-var lookup (#2672). Core's `ChatAdapterEnvGuardLive`
+// imports this to assert that a SaaS deploy whose chat catalog enables an
+// OAuth Platform has every env var the AdapterRegistry would otherwise
+// silently drop the adapter for. Single source of truth for the
+// per-Platform requiredEnv list — duplicating in core would let the lists
+// drift across packages.
+export { getChatAdapterRequiredEnv } from "./adapter-registry";
+
 // File upload / CSV export utilities
 export {
   generateCSV,

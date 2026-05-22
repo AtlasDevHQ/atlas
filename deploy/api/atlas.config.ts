@@ -38,6 +38,7 @@ import {
 } from "./packages/api/src/lib/proactive/pause-registry";
 import { getWorkspaceQuotaStatus } from "./packages/api/src/lib/proactive/quota";
 import { getAllowlist } from "./packages/api/src/lib/proactive/public-dataset";
+import { WorkspaceInstallGate } from "./packages/api/src/lib/integrations/install/workspace-install-gate";
 // Slice 3 of #2607 — host-side `executeQuery` that resolves Slack
 // `team_id` → `chat_cache:slack:installation` → `org_id` → `botActorUser`
 // before invoking the agent loop (post-#2634 the install store
@@ -259,6 +260,17 @@ export default defineConfig({
         // `{ workspaceId }`; the host helper takes a bare `workspaceId`
         // (plus an optional `now` for tests), so adapt the shape here.
         getQuotaStatus: (input) => getWorkspaceQuotaStatus(input.workspaceId),
+        // WorkspaceInstallGate (#2655) — outermost workspace-scoped
+        // check, runs before classify / meter / quota / kill-switch.
+        // `slack` matches `plugin_catalog.slug` for the Slack catalog
+        // row above; the gate accepts both the slug and the
+        // `catalog:slack` id, so the catalog seed timing (seeder runs
+        // post-migration) doesn't matter here.
+        installGate: {
+          enabled: true,
+          gate: WorkspaceInstallGate.isWorkspaceInstallActive,
+          catalogId: "slack",
+        },
       },
     }),
   ],

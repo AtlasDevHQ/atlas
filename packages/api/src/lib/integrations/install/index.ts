@@ -33,6 +33,13 @@ export {
 
 export { staticBotInstallHandlerStub } from "./static-bot-stub";
 
+export {
+  WorkspaceInstallGate,
+  isWorkspaceInstallActive,
+  createInstallGateCache,
+  type WorkspaceInstallGateFn,
+} from "./workspace-install-gate";
+
 // Per-Platform OAuth handler implementations + their module-load
 // registration. Importing the barrel does NOT auto-register — boot
 // calls `registerBuiltinInstallHandlers()` explicitly so tests can

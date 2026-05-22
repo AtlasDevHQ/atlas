@@ -145,7 +145,7 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
 
 ## Active
 
-- **1.5.2 — Multi-Adapter SaaS Readiness** ([milestone #50](https://github.com/AtlasDevHQ/atlas/milestone/50), 13 issues + [PRD #2649](https://github.com/AtlasDevHQ/atlas/issues/2649)) — establish operator/customer seam for chat Platforms + integration plugins; customer admins self-serve install via OAuth against operator-owned App Registrations. Slices 1–6 shipped (#2674/#2654 admin Connect button now wires end-to-end); #2660 (form-based install pattern) is the next unblock. See [`docs/prd/multi-adapter-saas-readiness.md`](../../docs/prd/multi-adapter-saas-readiness.md) + ADRs 0001–0004 for per-slice detail.
+- **1.5.2 — Multi-Adapter SaaS Readiness** ([milestone #50](https://github.com/AtlasDevHQ/atlas/milestone/50), 13 issues + [PRD #2649](https://github.com/AtlasDevHQ/atlas/issues/2649)) — establish operator/customer seam for chat Platforms + integration plugins; customer admins self-serve install via OAuth against operator-owned App Registrations. Slices 1–7 shipped (LazyPluginLoader #2685, WorkspaceInstallGate #2692; pre-chat-plugin Slack and legacy chat-plugin OAuth retired #2687/#2689); #2660 (form-based install pattern) is the next unblock. See [`docs/prd/multi-adapter-saas-readiness.md`](../../docs/prd/multi-adapter-saas-readiness.md) + ADRs 0001–0004 for per-slice detail.
 
 ## Planned
 

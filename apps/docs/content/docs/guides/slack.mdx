@@ -58,17 +58,27 @@ Under **OAuth & Permissions**, add these **Bot Token Scopes**:
 Under **Slash Commands**, create a new command:
 
 - **Command:** `/atlas`
-- **Request URL:** `https://your-api-host/api/v1/slack/commands`
+- **Request URL:** `https://your-api-host/api/plugins/chat-interaction/webhooks/slack`
 - **Description:** Ask a data question
 
 ### 4. Enable Events
 
 Under **Event Subscriptions**:
 
-- **Request URL:** `https://your-api-host/api/v1/slack/events`
+- **Request URL:** `https://your-api-host/api/plugins/chat-interaction/webhooks/slack`
 - **Subscribe to bot events:** `message.channels`, `message.groups`
 
-### 5. Install and Configure
+### 5. Enable Interactivity
+
+Under **Interactivity & Shortcuts**:
+
+- **Request URL:** `https://your-api-host/api/plugins/chat-interaction/webhooks/slack`
+
+<Callout type="info" title="One webhook URL, three Slack app fields">
+The Slack app's Slash Commands, Event Subscriptions, and Interactivity & Shortcuts Request URLs all point at the **same** `/api/plugins/chat-interaction/webhooks/slack` endpoint. That's the standard Bolt contract — the chat-plugin's Bolt receiver dispatches slash commands, events, and block-action interactions off a single URL.
+</Callout>
+
+### 6. Install and Configure
 
 Install the app to your workspace, then copy the **Bot User OAuth Token** and **Signing Secret**:
 
@@ -138,7 +148,7 @@ When proactive mode is first enabled for a workspace, Atlas posts a one-time ann
 /atlas What was last month's revenue?
 ```
 
-1. Slack sends the command to `POST /api/v1/slack/commands`
+1. Slack sends the command to `POST /api/plugins/chat-interaction/webhooks/slack`
 2. Atlas verifies the request signature (HMAC-SHA256, 5-minute timestamp window)
 3. Atlas immediately acknowledges within 3 seconds (Slack requirement)
 4. In the background, Atlas posts a "Thinking..." message, runs the agent, and updates the message with the formatted response
@@ -156,7 +166,7 @@ This provides multi-turn conversations within Slack threads.
 
 ### Action Approvals
 
-When the [action framework](/guides/actions) is enabled and a query produces pending actions, Atlas posts approval buttons visible only to the requesting user. Clicking **Approve** or **Deny** triggers `POST /api/v1/slack/interactions`.
+When the [action framework](/guides/actions) is enabled and a query produces pending actions, Atlas posts approval buttons visible only to the requesting user. Clicking **Approve** or **Deny** triggers `POST /api/plugins/chat-interaction/webhooks/slack` (the same endpoint that handles slash commands and events — Bolt routes by payload type).
 
 ### Query approval rules
 

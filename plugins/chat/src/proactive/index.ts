@@ -13,6 +13,7 @@ export type {
   ClassificationResult,
   GetChannelConfigsFn,
   GetWorkspaceConfigFn,
+  InstallGateConfig,
   InstallGateFn,
   InterjectionAction,
   InterjectionDecision,

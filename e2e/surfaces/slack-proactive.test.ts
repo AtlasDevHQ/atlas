@@ -422,6 +422,8 @@ beforeAll(async () => {
         executeQueryProactive: async () => ({ answer: "" }),
       },
       feedback: { enabled: false },
+      // #2655 — discriminated union; e2e surface doesn't exercise the gate.
+      installGate: { enabled: false },
       onMeterEvent: mockMeterEvent,
     },
   });

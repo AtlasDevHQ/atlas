@@ -50,6 +50,7 @@ import type {
   GetChannelConfigsFn,
   GetQuotaStatusFn,
   GetWorkspaceConfigFn,
+  InstallGateConfig,
   InstallGateFn,
   KillSwitchConfig,
   LLMClassifierFn,
@@ -119,31 +120,18 @@ export interface ProactiveListenerConfig {
   getChannelConfigs: GetChannelConfigsFn;
 
   /**
-   * Per-event catalog-install predicate (#2655). The listener calls
-   * this as the OUTERMOST check on every channel-message event — before
-   * classify, before meter, before quota, before the kill-switch read.
-   * Absent install → silent skip (no LLM call, no DB write, no
-   * rate-limit hit).
+   * Per-event catalog-install predicate wiring (#2655). Discriminated
+   * union — `{ enabled: false }` keeps the listener at pre-#2655
+   * behaviour; `{ enabled: true, gate, catalogId }` enables the
+   * outermost workspace-scoped check on every channel-message event
+   * BEFORE classify, meter, quota, kill-switch, or any DB read.
    *
-   * Optional for backwards-compatibility: hosts that haven't yet
-   * adopted the catalog install model can omit this field and the
-   * listener falls back to its pre-#2655 behaviour (no install gating).
-   *
-   * Per-event caching: the listener wraps this callback in a Map memo
-   * at the top of each event handler invocation. Mirror the contract
-   * on {@link GetWorkspaceConfigFn} — implementations should be cheap
-   * but the listener still de-duplicates concurrent in-flight calls.
+   * Per-event caching: the listener wraps `gate` in a Map memo at the
+   * top of each event handler invocation. Mirrors the contract on
+   * {@link GetWorkspaceConfigFn} — implementations should be cheap;
+   * the listener still de-duplicates concurrent in-flight calls.
    */
-  installGate?: InstallGateFn;
-
-  /**
-   * Catalog id passed to {@link installGate} per event (#2655). When
-   * `installGate` is set, this must also be set — the listener treats
-   * the absence as a wiring bug and falls back to "gate not configured"
-   * (no skip). The bridge wires `"slack"` (or the catalog row's `slug`)
-   * here when the adapter is the Slack catalog entry.
-   */
-  installCatalogId?: string;
+  installGate: InstallGateConfig;
 
   // ---- Coupled feature groups (#2623 item 1) ------------------------------
   //
@@ -603,17 +591,17 @@ export async function registerProactiveListener(
       // admin toggling the workspace install off takes effect on the
       // very next event (no cross-event leak).
       // ---------------------------------------------------------------
-      if (config.installGate && config.installCatalogId) {
+      if (config.installGate.enabled === true) {
         const cachedGate = installGateCacheForEvent(
-          config.installGate,
-          config.installCatalogId,
+          config.installGate.gate,
+          config.installGate.catalogId,
         );
         const active = await cachedGate(workspaceId);
         if (!active) {
           log.debug(
             {
               workspaceId,
-              catalogId: config.installCatalogId,
+              catalogId: config.installGate.catalogId,
               channelId: thread.channelId,
             },
             "Proactive: install gate closed — skipping (no classify, no meter, no DB write)",

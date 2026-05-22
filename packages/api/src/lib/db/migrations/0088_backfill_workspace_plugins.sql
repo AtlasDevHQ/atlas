@@ -45,8 +45,7 @@
 -- (`type='chat'`, `install_model='oauth'`, `enabled=true`); the seeder
 -- rewrites `name` / `description` / `icon_url` / `min_plan` /
 -- `saas_eligible` from `atlas.config.ts` on the next boot pass. `id`
--- stays `catalog:slack` so any rows we INSERT below keep pointing at
--- the right catalog entry across seeds.
+-- stays whatever already exists for the slug — see the JOIN below.
 INSERT INTO plugin_catalog (id, name, slug, type, install_model, enabled)
 VALUES ('catalog:slack', 'Slack', 'slack', 'chat', 'oauth', true)
 ON CONFLICT (slug) DO NOTHING;
@@ -55,6 +54,16 @@ ON CONFLICT (slug) DO NOTHING;
 -- The 1.5.2 dogfood deploy carries 2 such rows (maintainer's team +
 -- demo team); other environments may have zero, in which case this
 -- INSERT is a clean no-op.
+--
+-- Codex P1 fix: do NOT hard-code `'catalog:slack'` as the FK target.
+-- `packages/api/src/api/routes/admin-marketplace.ts` mints catalog
+-- rows with `crypto.randomUUID()` as the id, so an environment that
+-- created the Slack catalog row through admin-UI has slug='slack' with
+-- a UUID id, not `catalog:slack`. The `INSERT … ON CONFLICT (slug) DO
+-- NOTHING` above preserves whatever id already exists; we must resolve
+-- the FK target via a slug JOIN, not a string literal. Otherwise the
+-- backfill aborts the entire migration with a foreign-key violation
+-- on first deploy.
 --
 -- `substring(key FROM length('slack:installation:') + 1)` strips the
 -- prefix so the config carries the raw `team_id`. We could also harvest
@@ -66,7 +75,7 @@ INSERT INTO workspace_plugins
 SELECT
   gen_random_uuid()::text,
   cc.value ->> 'orgId',
-  'catalog:slack',
+  pc.id,
   jsonb_build_object(
     'team_id', substring(cc.key FROM length('slack:installation:') + 1),
     'backfilled_at', to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
@@ -78,6 +87,7 @@ SELECT
     NOW()
   )
 FROM chat_cache cc
+JOIN plugin_catalog pc ON pc.slug = 'slack'
 WHERE cc.key LIKE 'slack:installation:%'
   AND cc.value ->> 'orgId' IS NOT NULL
   AND cc.value ->> 'orgId' <> ''

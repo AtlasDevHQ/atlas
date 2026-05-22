@@ -264,6 +264,38 @@ export type InstallGateFn = (
   catalogId: string,
 ) => Promise<boolean>;
 
+/**
+ * WorkspaceInstallGate wiring (#2655).
+ *
+ * Discriminated union matching the {@link AnswerFlowConfig} /
+ * {@link KillSwitchConfig} / {@link FeedbackConfig} pattern (#2623 item 1):
+ * the union makes half-wired states compile-impossible. Pre-union the
+ * shape was two independent optionals (`installGate?` + `installCatalogId?`),
+ * and a host that wired only one silently disabled the gate — exactly
+ * the "documented-but-not-type-enforced legal combinations" failure
+ * mode #2623 was meant to eliminate.
+ *
+ * `{ enabled: false }` is the safe default: hosts that haven't adopted
+ * the catalog install model use this branch and the listener does no
+ * install gating (behaves exactly as pre-#2655).
+ */
+export type InstallGateConfig =
+  | { readonly enabled: false }
+  | {
+      readonly enabled: true;
+      /**
+       * Host-supplied gate predicate. See {@link InstallGateFn}.
+       */
+      readonly gate: InstallGateFn;
+      /**
+       * Catalog id passed to {@link gate} per event. The host gate
+       * accepts either the catalog row's `slug` (e.g. `"slack"`) or
+       * the catalog row's `id` (e.g. `"catalog:slack"`) for
+       * flexibility.
+       */
+      readonly catalogId: string;
+    };
+
 // ---------------------------------------------------------------------------
 // Kill switch (#2295) — three-layer pause + per-user opt-out
 // ---------------------------------------------------------------------------

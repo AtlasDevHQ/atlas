@@ -1791,6 +1791,7 @@ describe("ProactiveConfig schema", () => {
         answerFlow: { mode: "off" },
         killSwitch: { enabled: false },
         feedback: { enabled: false },
+        installGate: { enabled: false },
       },
     });
 
@@ -1817,6 +1818,7 @@ describe("ProactiveConfig schema", () => {
         answerFlow: { mode: "off" },
         killSwitch: { enabled: false },
         feedback: { enabled: false },
+        installGate: { enabled: false },
       },
     });
 
@@ -1843,6 +1845,7 @@ describe("ProactiveConfig schema", () => {
         answerFlow: { mode: "off" },
         killSwitch: { enabled: false },
         feedback: { enabled: false },
+        installGate: { enabled: false },
       },
     });
 

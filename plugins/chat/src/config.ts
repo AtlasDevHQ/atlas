@@ -650,30 +650,17 @@ export interface ProactiveConfig {
   // ---- Slice #2655: WorkspaceInstallGate ---------------------------------
 
   /**
-   * Per-event catalog-install predicate (#2655). The listener calls
-   * this as the OUTERMOST workspace-scoped check on every channel-
-   * message event — before classify, before meter, before quota, before
-   * the kill-switch read. Absent / disabled install → silent skip (no
-   * LLM call, no meter row, no rate-limit hit, no DB write).
-   *
-   * Optional for backwards-compatibility: hosts that haven't yet
-   * adopted the catalog install model can omit this field and the
-   * listener falls back to its pre-#2655 behaviour (no install gating).
+   * Per-event catalog-install predicate wiring (#2655). Discriminated
+   * union — `{ enabled: false }` keeps the listener at pre-#2655
+   * behaviour (hosts that haven't adopted the catalog install model);
+   * `{ enabled: true, gate, catalogId }` enables the OUTERMOST
+   * workspace-scoped check on every channel-message event.
    *
    * Host wiring: see
    * `packages/api/src/lib/integrations/install/workspace-install-gate.ts`
    * (`WorkspaceInstallGate.isWorkspaceInstallActive`).
    */
-  installGate?: import("./proactive/types").InstallGateFn;
-
-  /**
-   * Catalog id passed to {@link installGate} per event (#2655). When
-   * `installGate` is set, this must also be set. The bridge wires the
-   * catalog row's `slug` here (e.g. `"slack"`) — matching the catalog
-   * seed in `atlas.config.ts:catalog`. The host's gate accepts either
-   * the `slug` or the `catalog:<slug>` id for flexibility.
-   */
-  installCatalogId?: string;
+  installGate: import("./proactive/types").InstallGateConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -860,6 +847,24 @@ const FeedbackSchema = z.discriminatedUnion("enabled", [
     .strict(),
 ]);
 
+// #2655 — WorkspaceInstallGate wiring. Half-wired states (gate set but
+// catalogId missing, or vice versa) are compile-impossible via the
+// discriminated union. The `enabled: false` branch keeps the listener
+// at pre-#2655 behaviour for hosts that haven't adopted the catalog
+// install model.
+const InstallGateSchema = z.discriminatedUnion("enabled", [
+  z.object({ enabled: z.literal(false) }).strict(),
+  z
+    .object({
+      enabled: z.literal(true),
+      gate: zCallback<import("./proactive/types").InstallGateFn>(
+        "proactive.installGate.gate must be a function returning Promise<boolean>",
+      ),
+      catalogId: z.string().min(1, "proactive.installGate.catalogId must be a non-empty string"),
+    })
+    .strict(),
+]);
+
 const ProactiveConfigSchema = z
   .object({
     // Per-event workspace resolution (#2620). Required.
@@ -898,18 +903,12 @@ const ProactiveConfigSchema = z
     getQuotaStatus: zCallback<GetQuotaStatusFn>(
       "proactive.getQuotaStatus must be a function returning Promise<ProactiveQuotaStatus>",
     ).optional(),
-    // WorkspaceInstallGate wiring (#2655). Optional — when omitted no
-    // install gating runs and the listener behaves exactly as pre-#2655.
-    // When set, `installCatalogId` MUST also be set (validated by the
-    // bridge's structural check at registration time; we keep the Zod
-    // schema permissive so partial configs surface a clearer error in
-    // the bridge wiring than a Zod refinement would).
-    installGate: zCallback<
-      import("./proactive/types").InstallGateFn
-    >(
-      "proactive.installGate must be a function returning Promise<boolean>",
-    ).optional(),
-    installCatalogId: z.string().min(1).optional(),
+    // WorkspaceInstallGate wiring (#2655). Discriminated union matching
+    // the `answerFlow` / `killSwitch` / `feedback` pattern (#2623 item 1)
+    // — half-wired states are compile-impossible. `{ enabled: false }`
+    // is the safe default for hosts that haven't adopted the catalog
+    // install model.
+    installGate: InstallGateSchema,
   })
   // Fail loud on stale config keys. Removed in #2629 — surface the rename
   // at boot rather than silently no-op'ing in production.

@@ -271,8 +271,11 @@ export default defineConfig({
         // row above; the gate accepts both the slug and the
         // `catalog:slack` id, so the catalog seed timing (seeder runs
         // post-migration) doesn't matter here.
-        installGate: WorkspaceInstallGate.isWorkspaceInstallActive,
-        installCatalogId: "slack",
+        installGate: {
+          enabled: true,
+          gate: WorkspaceInstallGate.isWorkspaceInstallActive,
+          catalogId: "slack",
+        },
       },
     }),
   ],

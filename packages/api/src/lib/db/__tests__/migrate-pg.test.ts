@@ -4416,14 +4416,23 @@ describeIfPg("migrate-pg (real Postgres)", () => {
   // ON CONFLICT clause on the composite unique index). Also asserts
   // idempotency at the real PG layer — re-running the migration set
   // must not duplicate rows.
+  //
+  // Tests load the migration's actual SQL via `readFileSync` and execute
+  // it verbatim — drift in the file (column rename, ON CONFLICT typo,
+  // wrong substring offset) fails the smoke instead of silently passing
+  // a hand-rolled copy. Pinned by pr-test-analyzer review on #2692.
   describe("0088: backfill workspace_plugins from chat_cache (#2655)", () => {
+    const migration0088Sql = readFileSync(
+      join(
+        import.meta.dir,
+        "..",
+        "migrations",
+        "0088_backfill_workspace_plugins.sql",
+      ),
+      "utf-8",
+    );
+
     it("inserts workspace_plugins rows for chat_cache:slack:installation rows with non-empty orgId", async () => {
-      // Snapshot the existing row count so this assertion is independent
-      // of any backfill the per-schema migration run already did.
-      const { rows: before } = await pool.query<{ n: string }>(
-        `SELECT COUNT(*)::text AS n FROM workspace_plugins WHERE catalog_id = 'catalog:slack' AND workspace_id = $1`,
-        ["org-backfill-smoke"],
-      );
       const ws = "org-backfill-smoke";
       const team = `T-backfill-${Date.now()}`;
       // Write a chat_cache row in the post-#2634 consolidated shape.
@@ -4441,45 +4450,84 @@ describeIfPg("migrate-pg (real Postgres)", () => {
           }),
         ],
       );
-      // Re-run the migration's backfill INSERT against the fresh row.
-      // The migration runner sees 0088 as already-applied (the schema's
-      // first migrate pass replayed it), so we exercise the INSERT via
-      // the same idempotent SQL the migration emits.
+      // Re-execute the migration's actual SQL verbatim. The migration
+      // runner already replayed it at beforeAll (so `catalog:slack` row
+      // exists); this run picks up the new chat_cache row via the
+      // INSERT…SELECT sweep.
+      await pool.query(migration0088Sql);
+      const { rows: after } = await pool.query<{
+        catalog_id: string;
+        config: { team_id: string; backfilled_from: string };
+      }>(
+        `SELECT wp.catalog_id, wp.config
+           FROM workspace_plugins wp
+           JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+          WHERE pc.slug = 'slack' AND wp.workspace_id = $1
+          LIMIT 1`,
+        [ws],
+      );
+      expect(after).toHaveLength(1);
+      expect(after[0]?.config.team_id).toBe(team);
+      expect(after[0]?.config.backfilled_from).toBe("chat_cache (migration 0088)");
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("resolves catalog_id via slug JOIN, not the literal 'catalog:slack' string (Codex P1)", async () => {
+      // Codex flagged on #2692: if `plugin_catalog` already carried a
+      // `slug='slack'` row with a non-`catalog:slack` id (admin-marketplace
+      // mints UUIDs via `crypto.randomUUID()`), the migration's
+      // `ON CONFLICT (slug) DO NOTHING` keeps the legacy id, and a
+      // hard-coded `'catalog:slack'` FK target would abort with a
+      // foreign-key violation. Pinning the slug-JOIN posture here.
+      const customCatalogId = `cat-custom-${Date.now()}`;
+      const customSlug = `custom-slack-${Date.now()}`;
+      const ws = `org-custom-${Date.now()}`;
+      const team = `T-custom-${Date.now()}`;
+
+      // Pre-seed plugin_catalog with a non-canonical id but slug=custom-slack.
+      // (Using a non-'slack' slug so we don't disturb the dogfood catalog row.)
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type, install_model, enabled)
+         VALUES ($1, 'Custom Slack', $2, 'chat', 'oauth', true)`,
+        [customCatalogId, customSlug],
+      );
+      await pool.query(
+        `INSERT INTO chat_cache (key, value)
+         VALUES ($1, $2::jsonb)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+        [
+          `slack:installation:${team}`,
+          JSON.stringify({ botToken: "xoxb-custom", orgId: ws }),
+        ],
+      );
+      // Run the equivalent slug-JOIN INSERT against the custom slug.
+      // Demonstrates the JOIN pattern is robust to non-canonical
+      // catalog ids — exactly what the Codex P1 fix protects against.
       await pool.query(
         `INSERT INTO workspace_plugins
           (id, workspace_id, catalog_id, config, enabled, installed_at)
          SELECT
            gen_random_uuid()::text,
            cc.value ->> 'orgId',
-           'catalog:slack',
-           jsonb_build_object(
-             'team_id', substring(cc.key FROM length('slack:installation:') + 1),
-             'backfilled_at', to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
-             'backfilled_from', 'chat_cache (migration 0088)'
-           ),
+           pc.id,
+           jsonb_build_object('team_id', substring(cc.key FROM length('slack:installation:') + 1)),
            true,
-           COALESCE((cc.value ->> 'installedAt')::timestamptz, NOW())
+           NOW()
          FROM chat_cache cc
+         JOIN plugin_catalog pc ON pc.slug = $2
          WHERE cc.key LIKE 'slack:installation:%'
            AND cc.value ->> 'orgId' = $1
          ON CONFLICT (workspace_id, catalog_id) DO NOTHING`,
+        [ws, customSlug],
+      );
+      const { rows } = await pool.query<{ catalog_id: string }>(
+        `SELECT catalog_id FROM workspace_plugins WHERE workspace_id = $1`,
         [ws],
       );
-      const { rows: after } = await pool.query<{
-        n: string;
-        config: { team_id: string; backfilled_from: string };
-      }>(
-        `SELECT COUNT(*) OVER ()::text AS n, config FROM workspace_plugins
-          WHERE catalog_id = 'catalog:slack' AND workspace_id = $1
-          LIMIT 1`,
-        [ws],
-      );
-      expect(Number(after[0]?.n ?? "0")).toBe(Number(before[0]?.n ?? "0") + 1);
-      expect(after[0]?.config.team_id).toBe(team);
-      expect(after[0]?.config.backfilled_from).toBe("chat_cache (migration 0088)");
+      // FK resolved against the pre-seeded id, not 'catalog:custom-slack'.
+      expect(rows[0]?.catalog_id).toBe(customCatalogId);
     }, PG_TEST_TIMEOUT_MS);
 
-    it("is idempotent — re-running ON CONFLICT (workspace_id, catalog_id) DO NOTHING does not duplicate", async () => {
+    it("is idempotent — re-running the migration SQL does not duplicate", async () => {
       const ws = "org-backfill-idempotent";
       const team = `T-idem-${Date.now()}`;
       await pool.query(
@@ -4491,29 +4539,13 @@ describeIfPg("migrate-pg (real Postgres)", () => {
           JSON.stringify({ botToken: "xoxb-idem", orgId: ws }),
         ],
       );
-      const runBackfill = () =>
-        pool.query(
-          `INSERT INTO workspace_plugins
-            (id, workspace_id, catalog_id, config, enabled, installed_at)
-           SELECT
-             gen_random_uuid()::text,
-             cc.value ->> 'orgId',
-             'catalog:slack',
-             jsonb_build_object('team_id', substring(cc.key FROM length('slack:installation:') + 1)),
-             true,
-             NOW()
-           FROM chat_cache cc
-           WHERE cc.key LIKE 'slack:installation:%'
-             AND cc.value ->> 'orgId' = $1
-           ON CONFLICT (workspace_id, catalog_id) DO NOTHING`,
-          [ws],
-        );
-      await runBackfill();
-      await runBackfill();
-      await runBackfill();
+      await pool.query(migration0088Sql);
+      await pool.query(migration0088Sql);
+      await pool.query(migration0088Sql);
       const { rows } = await pool.query<{ n: string }>(
-        `SELECT COUNT(*)::text AS n FROM workspace_plugins
-          WHERE catalog_id = 'catalog:slack' AND workspace_id = $1`,
+        `SELECT COUNT(*)::text AS n FROM workspace_plugins wp
+           JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+          WHERE pc.slug = 'slack' AND wp.workspace_id = $1`,
         [ws],
       );
       // Three runs, one row — the composite unique index does the job.
@@ -4532,36 +4564,18 @@ describeIfPg("migrate-pg (real Postgres)", () => {
           JSON.stringify({ botToken: "xoxb-noorg" }),
         ],
       );
-      // Scope the assertion to THIS test's team_id so prior tests'
-      // chat_cache rows don't pollute the count. The backfill SQL the
-      // migration emits has no `team_id` filter (it sweeps every Slack
-      // installation row in one pass); this assertion proves that
-      // OUR orgId-less row never produced a workspace_plugins row.
-      await pool.query(
-        `INSERT INTO workspace_plugins
-          (id, workspace_id, catalog_id, config, enabled, installed_at)
-         SELECT
-           gen_random_uuid()::text,
-           cc.value ->> 'orgId',
-           'catalog:slack',
-           '{}'::jsonb,
-           true,
-           NOW()
-         FROM chat_cache cc
-         WHERE cc.key = $1
-           AND cc.value ->> 'orgId' IS NOT NULL
-           AND cc.value ->> 'orgId' <> ''
-         ON CONFLICT (workspace_id, catalog_id) DO NOTHING`,
-        [`slack:installation:${team}`],
-      );
+      // Run the migration's actual SQL — it sweeps every chat_cache
+      // installation row, so this exercises the WHERE-filter against
+      // a real orgId-less row sitting in the table.
+      await pool.query(migration0088Sql);
       const after = await pool.query<{ n: string }>(
-        `SELECT COUNT(*)::text AS n FROM workspace_plugins
-          WHERE catalog_id = 'catalog:slack'
-            AND config ->> 'team_id' = $1`,
+        `SELECT COUNT(*)::text AS n FROM workspace_plugins wp
+           JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+          WHERE pc.slug = 'slack' AND wp.config ->> 'team_id' = $1`,
         [team],
       );
-      // Orphan row was orgId-less → backfill must NOT have produced
-      // a workspace_plugins row tagged with this test's team_id.
+      // Orphan row was orgId-less → migration's WHERE clause filtered
+      // it out, so no workspace_plugins row carries our team_id.
       expect(after.rows[0]?.n).toBe("0");
     }, PG_TEST_TIMEOUT_MS);
   });

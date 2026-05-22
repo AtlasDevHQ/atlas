@@ -67,18 +67,30 @@ import { createLogger } from "@atlas/api/lib/logger";
 const log = createLogger("integrations:workspace-install-gate");
 
 /**
+ * Union of every plan name the gate knows how to rank. Pulls the
+ * catalog's `min_plan` enum (`starter | team | business | enterprise`)
+ * and the organization's `plan_tier` enum (`free | trial | starter |
+ * pro | business`) into one literal-string union. Encoded as the key
+ * type of {@link PLAN_RANK} so a typo in the table is a compile error.
+ */
+type PlanName =
+  | "free"
+  | "trial"
+  | "starter"
+  | "team"
+  | "pro"
+  | "business"
+  | "enterprise";
+
+/**
  * Numeric rank of every known plan value. Higher = more privileged.
- *
- * Pulls the catalog's `min_plan` enum (`starter | team | business |
- * enterprise`) and the organization's `plan_tier` enum (`free | trial
- * | starter | pro | business`) into one ordering so the gate's
- * "min_plan ≤ workspace.plan" comparison is well-defined regardless
- * of which enum each value was minted from.
+ * The gate's "min_plan ≤ workspace.plan" comparison is well-defined
+ * across both source enums via this single ordering.
  *
  * The ordering matches the customer-visible price ladder; if pricing
  * tiers ever reshuffle, this table is the single place to update.
  */
-const PLAN_RANK: Readonly<Record<string, number>> = {
+const PLAN_RANK: Readonly<Record<PlanName, number>> = {
   free: 0,
   trial: 1,
   starter: 2,
@@ -96,8 +108,11 @@ const PLAN_RANK: Readonly<Record<string, number>> = {
  */
 function planRank(name: string | null | undefined): number | null {
   if (typeof name !== "string") return null;
-  const rank = PLAN_RANK[name];
-  return typeof rank === "number" ? rank : null;
+  // `name in PLAN_RANK` narrows `name` from `string` to `PlanName` so
+  // the lookup is type-safe; the runtime check also catches drift
+  // (a typo in a catalog seed) at the boundary.
+  if (!(name in PLAN_RANK)) return null;
+  return PLAN_RANK[name as PlanName];
 }
 
 /**
@@ -156,7 +171,10 @@ export async function isWorkspaceInstallActive(
       {
         workspaceId,
         catalogId,
-        err: err instanceof Error ? err.message : String(err),
+        // Pass the full Error so pino's serializer captures the stack —
+        // aligns with the listener's `installGateCacheForEvent` wrapper
+        // posture (`listener.ts:installGateCacheForEvent`).
+        err: err instanceof Error ? err : new Error(String(err)),
       },
       "WorkspaceInstallGate: gate query failed — denying (fail-closed)",
     );
@@ -188,8 +206,7 @@ export async function isWorkspaceInstallActive(
     );
     return false;
   }
-  // NULL plan_tier (workspace pre-dates the column, or LEFT JOIN miss)
-  // ranks 0 — same fail-closed default as an explicit `'free'`.
+  // LEFT JOIN miss / unknown value → rank 0 (see PLAN_RANK header note).
   const workspaceRank = planRank(row.plan_tier) ?? 0;
   return workspaceRank >= minRank;
 }

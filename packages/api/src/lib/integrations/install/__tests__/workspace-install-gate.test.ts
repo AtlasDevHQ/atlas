@@ -101,7 +101,6 @@ afterEach(() => {
   mockLogWarn.mockClear();
 });
 
-// Convenience: build a fake row for the gate query response.
 function row(overrides: Partial<{
   install_enabled: boolean;
   catalog_enabled: boolean;
@@ -218,6 +217,23 @@ describe("isWorkspaceInstallActive", () => {
     );
     expect(await isWorkspaceInstallActive("ws-1", "catalog:slack")).toBe(false);
   });
+
+  it("admits legacy plan_tier='team' against min_plan='starter' (rank 3 ≥ 2)", async () => {
+    // Pre-1472 plan_tier rename retained 'team' as a legacy value. The
+    // ordering admits it for catalogs requiring 'starter' or below. Pin
+    // both directions so any future PLAN_RANK reshuffle is intentional.
+    mockInternalQuery.mockImplementation(async () =>
+      [row({ min_plan: "starter", plan_tier: "team" })],
+    );
+    expect(await isWorkspaceInstallActive("ws-1", "catalog:slack")).toBe(true);
+  });
+
+  it("denies plan_tier='team' against min_plan='business' (rank 3 < 5)", async () => {
+    mockInternalQuery.mockImplementation(async () =>
+      [row({ min_plan: "business", plan_tier: "team" })],
+    );
+    expect(await isWorkspaceInstallActive("ws-1", "catalog:slack")).toBe(false);
+  });
 });
 
 // ───────────────────────────────────────────────────────────────────
@@ -288,6 +304,30 @@ describe("createInstallGateCache", () => {
     resolveGate(true);
     expect(await a).toBe(true);
     expect(await b).toBe(true);
+    expect(underlying).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates a rejected gate promise to all concurrent callers without re-invoking", async () => {
+    // Cache-the-Promise (not the value) means a rejected verdict is
+    // ALSO cached. Concurrent callers within one event share the same
+    // rejection — they don't independently retry the gate. The listener
+    // wraps the cache with its own try/catch (`installGateCacheForEvent`
+    // in listener.ts), so this is the expected contract: the cache is
+    // the de-dup layer, the wrapper is the fail-closed layer.
+    const underlying: Mock<
+      (workspaceId: string, catalogId: string) => Promise<boolean>
+    > = mock(async () => {
+      throw new Error("gate failed");
+    });
+    const cached = createInstallGateCache(underlying);
+
+    const a = cached("ws-1", "catalog:slack");
+    const b = cached("ws-1", "catalog:slack");
+
+    await expect(a).rejects.toThrow("gate failed");
+    await expect(b).rejects.toThrow("gate failed");
+    // Only one underlying call — the rejected Promise is cached and
+    // re-awaited by the second caller.
     expect(underlying).toHaveBeenCalledTimes(1);
   });
 

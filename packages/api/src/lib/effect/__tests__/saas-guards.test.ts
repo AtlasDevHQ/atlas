@@ -738,14 +738,19 @@ describe("RegionGuardLive", () => {
 // requiredEnv automatically flows through). The fixture envs below
 // populate everything except the key we want to fail on.
 
-const SLACK_ENV_KEYS_FULL = {
+type SlackEnvOverrides = Partial<Record<
+  "SLACK_CLIENT_ID" | "SLACK_CLIENT_SECRET" | "SLACK_SIGNING_SECRET" | "SLACK_ENCRYPTION_KEY",
+  string | undefined
+>>;
+
+const SLACK_ENV_KEYS_FULL: Required<SlackEnvOverrides> = {
   SLACK_CLIENT_ID: "ci-client-id",
   SLACK_CLIENT_SECRET: "ci-client-secret",
   SLACK_SIGNING_SECRET: "0123456789abcdef0123456789abcdef",
   SLACK_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef",
-} as const;
+};
 
-function setSlackEnv(overrides: Partial<typeof SLACK_ENV_KEYS_FULL> = SLACK_ENV_KEYS_FULL): void {
+function setSlackEnv(overrides: SlackEnvOverrides = SLACK_ENV_KEYS_FULL): void {
   for (const [key, value] of Object.entries({ ...SLACK_ENV_KEYS_FULL, ...overrides })) {
     if (value === undefined) {
       delete process.env[key];

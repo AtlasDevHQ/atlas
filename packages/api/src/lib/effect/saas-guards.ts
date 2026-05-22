@@ -237,7 +237,7 @@ export class PluginConfigCheckFailedError extends Data.TaggedError("PluginConfig
  *
  * `slug` is the catalog entry slug (e.g. `"slack"`) the guard tripped
  * on; `missingEnv` is the subset of the builder's `requiredEnv` that
- * `readSaasEnv()` resolved as undefined/empty. Both exposed on the
+ * `process.env` resolved as undefined/empty. Both exposed on the
  * error so the operator log line names the missing keys without
  * re-parsing `message`.
  */
@@ -798,9 +798,6 @@ export const ChatAdapterEnvGuardLive: Layer.Layer<never, ChatAdapterEnvMissingEr
     const catalog = config.catalog ?? [];
     if (catalog.length === 0) return;
 
-    const env = readSaasEnv();
-    const envRecord = env as unknown as Record<string, string | undefined>;
-
     // Lazy-import the per-slug requiredEnv accessor from the chat
     // plugin. `Effect.tryPromise` routes a rejected import into the E
     // channel; `Effect.orDie` then converts that into a defect, which
@@ -827,8 +824,17 @@ export const ChatAdapterEnvGuardLive: Layer.Layer<never, ChatAdapterEnvMissingEr
       // builder, every key the builder needs must be present."
       if (!requiredEnv) continue;
 
+      // Read each key directly from `process.env` so the contract
+      // honors the builder map's single source of truth. Going through
+      // `readSaasEnv()` would silently treat any key not statically
+      // enumerated in `SaasEnv` as undefined — a future adapter adding
+      // a new `requiredEnv` entry would then fail boot for a properly-
+      // configured operator until they also touched `saas-env.ts`,
+      // which would break the "builder is the source of truth" claim.
+      // The runtime AdapterRegistry reads `process.env` for the same
+      // reason; matching it keeps the parity check load-bearing.
       const missingEnv = requiredEnv.filter((key) => {
-        const value = envRecord[key];
+        const value = process.env[key];
         return value === undefined || value === "";
       });
 

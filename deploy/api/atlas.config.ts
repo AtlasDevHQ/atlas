@@ -132,20 +132,15 @@ export default defineConfig({
   ],
 
   // ── Plugins ─────────────────────────────────────────────────────
-  // Slice 3 of #2607 — the chat plugin now owns the @mention + thread
-  // event path end-to-end. The plugin's webhook routes at
-  // /api/plugins/chat-interaction/* are reachable.
-  //
-  // TODO(#2612 / slice 4 — HITL dogfood): the Slack app manifest MUST
-  // be flipped during slice 4 — change the Events API request URL from
-  // /api/v1/slack/events to /api/plugins/chat-interaction/webhooks/slack.
-  // The legacy /api/v1/slack/events route now ignores all event_callback
-  // types (logs at warn), so until the flip happens @mentions and thread
-  // replies are silently dropped.
-  //
-  // The legacy /api/v1/slack/{commands,interactions,install,callback}
-  // routes in packages/api/src/api/routes/slack.ts stay put — they
-  // handle slash commands, block actions, modals, and OAuth.
+  // Post-#2683: the chat plugin owns the full Slack surface end-to-end
+  // at `/api/plugins/chat-interaction/webhooks/slack` — Bolt dispatches
+  // events, slash commands, and interactivity off that single URL. The
+  // pre-chat-plugin `/api/v1/slack/{commands,events,interactions}`
+  // routes are retired; all three Slack-app request URLs (Events,
+  // Slash Commands, Interactivity) MUST point at the chat-plugin
+  // webhook. OAuth install/callback still live at
+  // `/api/v1/integrations/slack/{install,callback}` — that surface is
+  // separate from the retired routes.
   //
   // Multi-tenant SaaS: real bot tokens live in `chat_cache` under the
   // `slack:installation:<teamId>` key prefix (#2634 consolidated the

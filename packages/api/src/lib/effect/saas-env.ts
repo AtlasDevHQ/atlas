@@ -234,11 +234,11 @@ export function makeBootSmokeFixture(
     // #2672 — placeholders for the SLACK adapter's other three
     // requiredEnv keys. ChatAdapterEnvGuardLive only asserts presence
     // (non-empty), so any non-empty string suffices for the boot-smoke
-    // gate. The encryption key placeholder mirrors the
-    // `SLACK_SIGNING_SECRET` shape (32-char lowercase hex) since
-    // `@chat-adapter/slack` derives an AES-256-GCM key from it via
-    // SHA-256 and a syntactically valid placeholder keeps adapter
-    // construction clean under Boot Smoke.
+    // gate. The encryption key reuses the 32-char hex shape for
+    // consistency with `SLACK_SIGNING_SECRET`; the real key (used by
+    // `lib/slack/installation-encryption.ts` to decode bot tokens) is
+    // hex (64 chars) or base64 (44 chars), so this placeholder would
+    // fail real decode — boot-smoke never reaches that path.
     SLACK_CLIENT_ID: "ci-fixture-slack-client-id-not-a-secret",
     SLACK_CLIENT_SECRET: "ci-fixture-slack-client-secret-not-a-secret",
     SLACK_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef",

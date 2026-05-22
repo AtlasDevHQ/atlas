@@ -763,8 +763,6 @@ function setSlackEnv(overrides: SlackEnvOverrides = SLACK_ENV_KEYS_FULL): void {
 describe("ChatAdapterEnvGuardLive", () => {
   test("fails boot in SaaS when catalog enables Slack but SLACK_ENCRYPTION_KEY is unset (the #2672 incident)", async () => {
     await withCleanEnv(async () => {
-      // Set every required Slack env EXCEPT the encryption key — exactly
-      // the prod misconfig that caused the silent outage.
       setSlackEnv({ SLACK_ENCRYPTION_KEY: undefined });
       const exit = await Effect.runPromiseExit(
         Effect.void.pipe(
@@ -799,8 +797,6 @@ describe("ChatAdapterEnvGuardLive", () => {
 
   test("fails boot in SaaS reporting every missing key (not just the first)", async () => {
     await withCleanEnv(async () => {
-      // Two missing keys — the error's `missingEnv` array must list
-      // both so the operator can fix them in one pass.
       setSlackEnv({
         SLACK_CLIENT_SECRET: undefined,
         SLACK_ENCRYPTION_KEY: undefined,
@@ -988,11 +984,6 @@ describe("ChatAdapterEnvGuardLive", () => {
 
   test("succeeds in SaaS for an unknown slug — operator typo falls through to AdapterRegistry's runtime warn", async () => {
     await withCleanEnv(async () => {
-      // The guard's contract is "if Atlas ships a builder, every key
-      // the builder needs must be present". An unknown slug has no
-      // builder so there's nothing for this guard to assert; the
-      // AdapterRegistry's `unrecognizedSlugs` diagnostic surfaces the
-      // typo at runtime instead.
       const exit = await Effect.runPromiseExit(
         Effect.void.pipe(
           Effect.provide(
@@ -1019,8 +1010,6 @@ describe("ChatAdapterEnvGuardLive", () => {
 
   test("succeeds on self-hosted with the same misconfig (the dev box can fix env when ready)", async () => {
     await withCleanEnv(async () => {
-      // Exactly the prod incident — but on self-hosted, the api just
-      // doesn't activate the adapter and boots fine.
       setSlackEnv({ SLACK_ENCRYPTION_KEY: undefined });
       const exit = await Effect.runPromiseExit(
         Effect.void.pipe(
@@ -1031,6 +1020,52 @@ describe("ChatAdapterEnvGuardLive", () => {
                 catalog: [
                   {
                     slug: "slack",
+                    type: "chat",
+                    install_model: "oauth",
+                    enabled: true,
+                    saas_eligible: true,
+                  },
+                ],
+              })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  // Iteration-continuation regression guard. If the for...of ever
+  // accidentally bailed after the first healthy entry (e.g. a
+  // `return` in the success path instead of `continue`), a second
+  // oauth+enabled chat entry with missing envs would silently pass.
+  // Today only `slack` ships; this test future-proofs the iteration
+  // against the static-bot platforms gaining OAuth flows in 1.5.3.
+  test("walks past healthy chat entries to inspect later entries", async () => {
+    await withCleanEnv(async () => {
+      setSlackEnv();
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            ChatAdapterEnvGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({
+                deployMode: "saas",
+                catalog: [
+                  // Healthy entry first (every Slack env set above).
+                  {
+                    slug: "slack",
+                    type: "chat",
+                    install_model: "oauth",
+                    enabled: true,
+                    saas_eligible: true,
+                  },
+                  // Second chat+oauth+enabled entry the guard MUST
+                  // also inspect. Unknown-slug fall-through means
+                  // the loop exits cleanly without crashing — the
+                  // load-bearing assertion is that the iteration
+                  // doesn't bail after the first healthy entry.
+                  {
+                    slug: "slcak",
                     type: "chat",
                     install_model: "oauth",
                     enabled: true,

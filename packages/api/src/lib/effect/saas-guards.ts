@@ -780,9 +780,15 @@ export const PluginConfigGuardLive: Layer.Layer<never, PluginConfigStaleError | 
  * `PluginConfigGuardLive` — keeps the chat plugin's static graph out
  * of `saas-guards.ts` (the wall-off rationale is documented at the
  * bottom of this file). A rejected import is rare-but-possible (build
- * artefact missing); we surface it as a `defect` rather than a typed
- * failure so the boot Layer's `E` channel stays narrowed to the one
- * tagged error this guard produces.
+ * artefact missing); we promote it to a defect via `Effect.orDie` so
+ * the boot Layer dies rather than silently skipping the check. The
+ * silent-skip path was the exact #2672 outage pattern — log+continue
+ * here would reintroduce the same class of bug this guard exists to
+ * prevent. `@useatlas/chat` is a workspace dep used throughout core
+ * (proactive listeners, install handlers, executeQuery wiring), so
+ * in practice an import rejection means the api can't run anyway —
+ * dying here surfaces the root cause at boot instead of letting a
+ * downstream route 500 minutes later.
  */
 export const ChatAdapterEnvGuardLive: Layer.Layer<never, ChatAdapterEnvMissingError, Config> = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -795,28 +801,20 @@ export const ChatAdapterEnvGuardLive: Layer.Layer<never, ChatAdapterEnvMissingEr
     const env = readSaasEnv();
     const envRecord = env as unknown as Record<string, string | undefined>;
 
-    // Lazy-import the per-slug requiredEnv accessor from the chat plugin.
-    // Wrapped in a try/catch so a missing build artefact doesn't widen
-    // this Effect's E channel — same defect-channel pattern as
-    // EncryptionKeyGuardLive.
-    const accessor = yield* Effect.promise(
-      async (): Promise<((slug: string) => ReadonlyArray<string> | null) | null> => {
-        try {
-          const mod = await import("@useatlas/chat");
-          return mod.getChatAdapterRequiredEnv;
-        } catch (err) {
-          log.warn(
-            { err: err instanceof Error ? err.message : String(err) },
-            `ChatAdapterEnvGuardLive: failed to load @useatlas/chat — skipping check ` +
-              `(catalog declares chat entries but adapter accessor is unreachable). ` +
-              `See ${CHAT_ADAPTER_ISSUE_REF}.`,
-          );
-          return null;
-        }
+    // Lazy-import the per-slug requiredEnv accessor from the chat
+    // plugin. `Effect.tryPromise` routes a rejected import into the E
+    // channel; `Effect.orDie` then converts that into a defect, which
+    // crashes the boot Layer. This keeps the E channel narrow (still
+    // just `ChatAdapterEnvMissingError`) while ensuring an
+    // accessor-unreachable failure doesn't silently bypass the check.
+    const accessor = yield* Effect.tryPromise({
+      try: async (): Promise<(slug: string) => ReadonlyArray<string> | null> => {
+        const mod = await import("@useatlas/chat");
+        return mod.getChatAdapterRequiredEnv;
       },
-    );
-
-    if (!accessor) return;
+      catch: (err) =>
+        err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.orDie);
 
     for (const entry of catalog) {
       if (entry.type !== "chat") continue;

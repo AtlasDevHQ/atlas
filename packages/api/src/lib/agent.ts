@@ -401,6 +401,34 @@ function buildSystemPrompt(
  *   (OpenAI caches automatically for prompts >= 1024 tokens; others have
  *   no caching).
  */
+/**
+ * #2705 — Conversational-mode addendum.
+ *
+ * Appended to the system prompt when the caller requests
+ * `presentationMode: "conversational"` (Slack @mention + proactive
+ * paths). Overrides the prefix/suffix formatting guidance so the
+ * agent renders a chat-platform-friendly answer rather than the
+ * analyst-grade developer view. Pairs with the proactive listener's
+ * progressive-disclosure buttons (#2705) — anything heavier
+ * (markdown tables, SQL, glossary) is one tap away on demand.
+ *
+ * Exported so unit tests can pin the contract that the conversational
+ * branch suppresses SQL/tables and reframes the closing CTA.
+ */
+export const CONVERSATIONAL_PROMPT_ADDENDUM = `
+
+## Presentation mode — conversational
+
+You are answering inside a chat platform (Slack/Teams/etc.) where the audience is a non-analyst teammate skimming a thread. Override the standard formatting guidance with the following rules:
+
+- Keep the answer to **1-2 sentences of plain English prose**. No headings, no bullet lists, no preamble.
+- **Do NOT include SQL** in the response body. The chat surface attaches a "Show SQL" button that surfaces the query on demand.
+- **Do NOT use markdown tables.** Express small comparisons as prose ("3 in the US, 1 in EU, 1 in APAC"); use bare numbers, not formatted tables. For larger result sets, summarize the top line in prose and let the "Show details" button surface the breakdown.
+- **Skip the glossary lecture.** Assume the reader already knows what a customer / order / MRR is. Don't define terms.
+- Cite figures inline in the prose, with units. ("Revenue grew to $1.2M in March, up 14% from February.")
+- End with a single short line offering the analyst view: "Want the SQL or full breakdown? Tap the button below." Do NOT use markdown formatting on this closing line.
+`;
+
 export function buildSystemParam(
   providerType: ProviderType,
   registry: ToolRegistry = defaultRegistry,
@@ -409,8 +437,13 @@ export function buildSystemParam(
   learnedPatternsSection?: string,
   routingContext?: ScopeRoutingContext,
   boundDashboardContext?: BoundDashboardAgentContext,
+  presentationMode: "developer" | "conversational" = "developer",
 ): string | SystemModelMessage {
   let content = buildSystemPrompt(registry, orgSemanticIndex, learnedPatternsSection, routingContext, boundDashboardContext);
+
+  if (presentationMode === "conversational") {
+    content += CONVERSATIONAL_PROMPT_ADDENDUM;
+  }
 
   if (warnings && warnings.length > 0) {
     content += "\n\n## Warnings\n\n" + warnings.map((w) => `- ${w}`).join("\n");
@@ -607,6 +640,7 @@ export async function runAgent({
   /** Optional pre-resolved AI model. When provided, skips provider resolution. */
   aiModel: injectedAiModel,
   boundDashboardContext,
+  presentationMode,
 }: {
   messages: UIMessage[];
   tools?: ToolRegistry;
@@ -639,6 +673,22 @@ export async function runAgent({
    * after the conversation is created / loaded.
    */
   boundDashboardContext?: BoundDashboardAgentContext;
+  /**
+   * #2705 — presentation mode for the agent's response body.
+   *
+   * - `"developer"` (default): analyst-grade output — markdown,
+   *   SQL, tables, glossary disambiguation. Matches every pre-#2705
+   *   surface (web chat, SDK, MCP).
+   * - `"conversational"`: 1-2 sentence prose answer for chat-platform
+   *   surfaces (Slack @mention, proactive). Suppresses SQL by
+   *   default, replaces markdown tables with prose comparisons, drops
+   *   glossary lectures. The chat plugin pairs this with progressive-
+   *   disclosure buttons that surface the developer view on demand.
+   *
+   * Optional + defaulting to `"developer"` keeps every pre-#2705
+   * caller's behavior unchanged.
+   */
+  presentationMode?: "developer" | "conversational";
 }) {
   // Capture context eagerly — AsyncLocalStorage may have exited by the time onFinish fires
   const reqCtx = getRequestContext();
@@ -833,7 +883,7 @@ export async function runAgent({
   try {
     result = otelContext.with(agentCtx, () => streamText({
       model,
-      system: buildSystemParam(providerType, toolRegistry, warnings, orgSemanticIndex, learnedPatternsSection, scopeRoutingContext, boundDashboardContext),
+      system: buildSystemParam(providerType, toolRegistry, warnings, orgSemanticIndex, learnedPatternsSection, scopeRoutingContext, boundDashboardContext, presentationMode ?? "developer"),
       messages: modelMessages,
       tools,
       temperature: 0.2,

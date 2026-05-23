@@ -175,6 +175,12 @@ export function createProactiveAnswerAdapter(
   return async (question, context): Promise<ProactiveQueryResult> => {
     const requestId = crypto.randomUUID();
     const { threadId, asker, atlasUserId, workspaceId } = context;
+    // #2705 — Slack presentation mode. Default to "developer" so a
+    // host whose `executeQueryProactive` predates #2705 still produces
+    // the analyst-grade body (the backward-compatible posture). The
+    // chat plugin's listener now always passes `"conversational"` for
+    // both the linked-asker and public-dataset branches.
+    const presentationMode = context.presentationMode ?? "developer";
     const askerId = describeAskerId(asker);
 
     // 1. Resolve identity + (unlinked) restricted tool registry ----------
@@ -304,6 +310,9 @@ export function createProactiveAnswerAdapter(
             ],
             aiModel,
             ...(toolRegistry ? { tools: toolRegistry } : {}),
+            // #2705 — pass through the listener's presentation mode so
+            // the system prompt branches to the conversational shape.
+            presentationMode,
           }),
       );
 
@@ -563,6 +572,9 @@ export function collectProactiveResult(
 export function toProactiveQueryResult(
   collected: CollectedProactiveResult,
 ): ProactiveQueryResult {
+  const developerView = collected.data.length > 0
+    ? renderDataAsMarkdownTables(collected.data)
+    : "";
   return {
     answer: collected.answer,
     ...(collected.entitiesReferenced.length > 0
@@ -571,5 +583,59 @@ export function toProactiveQueryResult(
     ...(collected.metricsReferenced.length > 0
       ? { metricsReferenced: collected.metricsReferenced }
       : {}),
+    // #2705 — surface SQL + developer view so the chat plugin can
+    // render the "Show SQL" / "Show details" disclosure buttons on
+    // conversational responses. Both fields are optional; the listener
+    // omits the corresponding button when empty/absent.
+    ...(collected.sql.length > 0 ? { sql: collected.sql } : {}),
+    ...(developerView.length > 0 ? { developerView } : {}),
   };
+}
+
+/**
+ * Render the collected tool data as a markdown-tables string for the
+ * "Show details" disclosure (#2705). Each tool-result becomes a
+ * separate table; rows beyond {@link DEVELOPER_VIEW_ROW_CAP} are
+ * truncated with a "+N more" footer so the post stays under Slack's
+ * 40k-char block limit even on chatty answers.
+ *
+ * Caps are applied per-table — a single 10k-row result is summarized;
+ * three small results render in full. Truncation is intentionally
+ * lossy: the developer view is a convenience disclosure, not the
+ * authoritative answer (the actual CSV / dashboard lives in Atlas).
+ */
+const DEVELOPER_VIEW_ROW_CAP = 50;
+
+export function renderDataAsMarkdownTables(
+  data: ReadonlyArray<{ columns: string[]; rows: Record<string, unknown>[] }>,
+): string {
+  const parts: string[] = [];
+  for (const result of data) {
+    if (result.columns.length === 0) continue;
+    const headerCells = result.columns.map((c) => escapeCell(c));
+    const headerLine = `| ${headerCells.join(" | ")} |`;
+    const separatorLine = `| ${headerCells.map(() => "---").join(" | ")} |`;
+    const visibleRows = result.rows.slice(0, DEVELOPER_VIEW_ROW_CAP);
+    const bodyLines = visibleRows.map((row) => {
+      const cells = result.columns.map((col) => escapeCell(formatCell(row[col])));
+      return `| ${cells.join(" | ")} |`;
+    });
+    const truncatedCount = result.rows.length - visibleRows.length;
+    const truncationLine =
+      truncatedCount > 0 ? `\n_… ${truncatedCount} more row${truncatedCount === 1 ? "" : "s"} omitted_` : "";
+    parts.push([headerLine, separatorLine, ...bodyLines].join("\n") + truncationLine);
+  }
+  return parts.join("\n\n");
+}
+
+function formatCell(value: unknown): string {
+  if (value === null || value === undefined) return "—";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function escapeCell(value: string): string {
+  // Escape pipes (table delimiter) and collapse newlines so a single
+  // row stays on one line in the rendered markdown.
+  return value.replace(/\|/g, "\\|").replace(/\s*\n+\s*/g, " ");
 }

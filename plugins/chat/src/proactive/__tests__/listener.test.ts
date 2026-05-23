@@ -17,6 +17,8 @@ import {
 import {
   PROACTIVE_ANSWER_ACTION_ID,
   PROACTIVE_DISMISS_ACTION_ID,
+  PROACTIVE_SHOW_DETAILS_ACTION_ID,
+  PROACTIVE_SHOW_SQL_ACTION_ID,
 } from "../../cards/proactive-answer-card";
 import {
   PROACTIVE_FB_HELPFUL_ACTION_ID,
@@ -137,7 +139,15 @@ interface ThreadDouble {
   id: string;
   channelId: string;
   isDM: boolean;
-  adapter: { name: string };
+  /**
+   * Post-#2704: proactive replies go through `adapter.postMessage`
+   * directly so the in-thread reply target is explicit at the call
+   * site. The `postMessage` mock here delegates back to `post` so
+   * pre-#2704 assertions on `thread.post` continue to count — tests
+   * that want to verify the threadId target assert on
+   * `adapter.postMessage` directly.
+   */
+  adapter: { name: string; postMessage: ReturnType<typeof mock> };
   createSentMessageFromMessage: ReturnType<typeof mock>;
   postEphemeral: ReturnType<typeof mock>;
   post: ReturnType<typeof mock>;
@@ -154,18 +164,29 @@ function makeThread(
   // between `thread.id` and `thread.channelId` is preserved in tests.
   const threadTs = opts.threadTs ?? "1700000000.000100";
   const id = `${channelId}:${threadTs}`;
+  const post = mock(async () => ({ id: "P1" }));
+  // adapter.postMessage forwards the content to `post` so the existing
+  // `expect(thread.post).toHaveBeenCalled()` pattern stays meaningful
+  // even after #2704 routed every proactive reply through
+  // `adapter.postMessage`. Tests that want to verify the in-thread
+  // reply target read `thread.adapter.postMessage.mock.calls`.
+  const postMessage = mock(async (replyThreadId: string, content: unknown) => {
+    await post(content);
+    return { id: "P1", threadId: replyThreadId, raw: {} };
+  });
   return {
     id,
     channelId,
     isDM: opts.isDM ?? false,
     // Post-#2620: the listener reads `thread.adapter` to pass to the
     // host-supplied `resolveWorkspaceId`. Test threads supply a minimal
-    // adapter stub (name only — the default fixture resolver returns a
-    // constant workspaceId, so it doesn't actually inspect the adapter).
-    adapter: { name: opts.adapterName ?? "slack" },
+    // adapter stub (name + postMessage — the default fixture resolver
+    // returns a constant workspaceId, so it doesn't actually inspect
+    // the adapter).
+    adapter: { name: opts.adapterName ?? "slack", postMessage },
     createSentMessageFromMessage: mock(() => ({ addReaction })),
     postEphemeral: mock(async () => ({ id: "E1", threadId: id, raw: {} })),
-    post: mock(async () => ({ id: "P1" })),
+    post,
     subscribe: mock(async () => {}),
     _addReaction: addReaction,
   };
@@ -358,7 +379,8 @@ describe("registerProactiveListener — gating", () => {
     expect(chat.onDirectMessage).toHaveBeenCalledTimes(1);
     expect(chat.onReaction).toHaveBeenCalledTimes(1);
     // Offer card: Yes,answer + Not now. Feedback row: Helpful, Not helpful, Wrong data.
-    expect(handlerCount()).toBe(5);
+    // Disclosure row (#2705): Show SQL + Show details.
+    expect(handlerCount()).toBe(7);
     // Wrong-data textarea modal.
     expect(modalCount()).toBe(1);
   });
@@ -640,6 +662,141 @@ describe("registerProactiveListener — reaction-back handler", () => {
     // `mode: "off"` must not subscribe the thread (that's the answer-
     // delivered tail's responsibility, not the unlinked-stub path).
     expect(thread.subscribe).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// In-thread reply primitive (#2704) — proactive replies must thread
+// off the asker's message rather than landing at channel level.
+// ---------------------------------------------------------------------------
+
+describe("registerProactiveListener — in-thread reply primitive (#2704)", () => {
+  async function bootListenerForReactionFlow(
+    answerFlow: AnswerFlowConfig,
+    linkUrl?: string,
+  ) {
+    const { chat, invokeMessage, invokeReaction } = makeChat();
+    await registerProactiveListener(chat as any, makeLogger(), {
+      isEnabled: () => true,
+      classify: yesLLM,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: allowChannels("C-allowed"),
+      ...offUnions,
+      answerFlow,
+      linkUrl,
+    });
+    return { invokeMessage, invokeReaction };
+  }
+
+  /**
+   * Read the threadId argument from a recorded `adapter.postMessage`
+   * call. The mock returns `(replyThreadId, content) => {...}` so
+   * `calls[i][0]` is the threadId.
+   */
+  function recordedReplyThreadIds(thread: ThreadDouble): string[] {
+    return (
+      thread.adapter.postMessage as unknown as {
+        mock: { calls: unknown[][] };
+      }
+    ).mock.calls.map((c) => String(c[0]));
+  }
+
+  it("threads the unlinked-asker stub off the asker's message ts (top-level asker)", async () => {
+    const { invokeMessage, invokeReaction } = await bootListenerForReactionFlow(
+      OFF_ANSWER_FLOW,
+      "https://app.useatlas.dev/link",
+    );
+    // Top-level asker: thread.id encodes a non-empty threadTs (Slack's
+    // `event.thread_ts || event.ts` produces the message's own ts).
+    const thread = makeThread("C-allowed", { threadTs: "1700000000.000999" });
+    await invokeMessage(thread, makeMessage({ id: "1700000000.000999" }));
+    await invokeReaction({
+      added: true,
+      messageId: "1700000000.000999",
+      threadId: thread.id,
+      thread,
+      user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
+      emoji: PROACTIVE_REACTION,
+      rawEmoji: "robot_face",
+      adapter: { name: "slack" },
+      raw: {},
+    });
+
+    // Critical invariant: the reply was posted via adapter.postMessage
+    // (the in-thread primitive), NOT bypassed via Channel-level post.
+    expect(thread.adapter.postMessage).toHaveBeenCalledTimes(1);
+    const replyThreadIds = recordedReplyThreadIds(thread);
+    // The reply threadId encodes the asker's message ts as the trailing
+    // segment, guaranteeing in-thread delivery regardless of any
+    // chat-sdk weirdness around thread.id construction.
+    expect(replyThreadIds[0]).toContain("1700000000.000999");
+    const lastSegment = replyThreadIds[0]!.split(":").pop() ?? "";
+    expect(lastSegment.length).toBeGreaterThan(0);
+  });
+
+  it("falls back to a synthesized in-thread threadId when thread.id has an empty trailing segment", async () => {
+    // Dogfood signal (#2704): some chat-sdk paths surfaced a thread.id
+    // whose trailing segment was empty (decoded to `thread_ts=""`),
+    // which would normally post at channel level. `computeReplyThreadId`
+    // must construct a synthetic threadId from `thread.channelId` +
+    // `askerMessageId` so the reply STILL lands in-thread.
+    const { invokeMessage, invokeReaction } = await bootListenerForReactionFlow(
+      OFF_ANSWER_FLOW,
+      "https://app.useatlas.dev/link",
+    );
+    // Build a thread fixture with an empty trailing segment in `id` to
+    // mimic the buggy chat-sdk state.
+    const thread = makeThread("C-allowed", { threadTs: "" });
+    expect(thread.id.endsWith(":")).toBe(true);
+
+    await invokeMessage(thread, makeMessage({ id: "M-asker-99" }));
+    await invokeReaction({
+      added: true,
+      messageId: "M-asker-99",
+      threadId: thread.id,
+      thread,
+      user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
+      emoji: PROACTIVE_REACTION,
+      rawEmoji: "robot_face",
+      adapter: { name: "slack" },
+      raw: {},
+    });
+
+    // The reply must have been synthesized to thread off the asker's
+    // message id rather than landing at channel level. The synthesized
+    // id is `${thread.channelId}:${askerMessageId}` per the helper's
+    // contract.
+    expect(thread.adapter.postMessage).toHaveBeenCalledTimes(1);
+    const [replyThreadId] = recordedReplyThreadIds(thread);
+    expect(replyThreadId).toBe(`${thread.channelId}:M-asker-99`);
+    const lastSegment = replyThreadId!.split(":").pop() ?? "";
+    expect(lastSegment).toBe("M-asker-99");
+  });
+
+  it("threads the linked-asker answer card off the asker's message", async () => {
+    const executeQueryProactive: ProactiveExecuteQuery = mock(echoExecute);
+    const { invokeMessage, invokeReaction } = await bootListenerForReactionFlow(
+      linkedOnlyFlow(executeQueryProactive),
+    );
+    const thread = makeThread("C-allowed", { threadTs: "1700000000.111000" });
+    await invokeMessage(thread, makeMessage({ id: "1700000000.111000" }));
+    await invokeReaction({
+      added: true,
+      messageId: "1700000000.111000",
+      threadId: thread.id,
+      thread,
+      user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
+      emoji: PROACTIVE_REACTION,
+      rawEmoji: "robot_face",
+      adapter: { name: "slack" },
+      raw: {},
+    });
+
+    expect(executeQueryProactive).toHaveBeenCalledTimes(1);
+    expect(thread.adapter.postMessage).toHaveBeenCalledTimes(1);
+    const [answerReplyThreadId] = recordedReplyThreadIds(thread);
+    expect(answerReplyThreadId).toContain("1700000000.111000");
   });
 });
 
@@ -3089,5 +3246,235 @@ describe("registerProactiveListener — WorkspaceInstallGate (#2655)", () => {
     await invokeMessage(thread, makeMessage({ id: "M1" }));
     await invokeMessage(thread, makeMessage({ id: "M2" }));
     expect(gate).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Progressive disclosure buttons (#2705) — Show SQL / Show details
+// ---------------------------------------------------------------------------
+
+describe("registerProactiveListener — disclosure buttons (#2705)", () => {
+  async function bootListenerWithDisclosure(
+    executeQueryProactive: ProactiveExecuteQuery,
+  ) {
+    const { chat, invokeMessage, invokeReaction, invokeAction } = makeChat();
+    await registerProactiveListener(chat as any, makeLogger(), {
+      isEnabled: () => true,
+      classify: yesLLM,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: allowChannels("C-allowed"),
+      ...offUnions,
+      answerFlow: linkedOnlyFlow(executeQueryProactive),
+    });
+    return { invokeMessage, invokeReaction, invokeAction };
+  }
+
+  /**
+   * Run the full reaction-back flow to land an answer in the fixture
+   * `thread`. Returns the answer message id (`"P1"` per the mock
+   * `postMessage` return) so the test can drive the disclosure
+   * handler against the correct message.
+   */
+  async function postConversationalAnswer(
+    thread: ThreadDouble,
+    invokeMessage: Awaited<ReturnType<typeof bootListenerWithDisclosure>>["invokeMessage"],
+    invokeReaction: Awaited<ReturnType<typeof bootListenerWithDisclosure>>["invokeReaction"],
+  ): Promise<string> {
+    await invokeMessage(thread, makeMessage({ id: "M-ask-1" }));
+    await invokeReaction({
+      added: true,
+      messageId: "M-ask-1",
+      threadId: thread.id,
+      thread,
+      user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
+      emoji: PROACTIVE_REACTION,
+      rawEmoji: "robot_face",
+      adapter: { name: "slack" },
+      raw: {},
+    });
+    return "P1";
+  }
+
+  it("renders Show SQL + Show details buttons when the result carries both payloads", async () => {
+    const executeQueryProactive: ProactiveExecuteQuery = mock(async () => ({
+      answer: "3 in the US, 1 in EU.",
+      sql: ["SELECT region, COUNT(*) FROM customers GROUP BY region"],
+      developerView:
+        "| region | count |\n| --- | --- |\n| US | 3 |\n| EU | 1 |",
+    }));
+    const { invokeMessage, invokeReaction } = await bootListenerWithDisclosure(
+      executeQueryProactive,
+    );
+    const thread = makeThread("C-allowed");
+    await postConversationalAnswer(thread, invokeMessage, invokeReaction);
+
+    // Inspect the answer card that was posted. The card is the second
+    // adapter.postMessage call (first is implicit from the makeMessage
+    // path — actually the answer post is the first reply posted via
+    // adapter.postMessage). The card carries the Actions row; we
+    // assert the two new buttons are present by id.
+    const postCalls = (
+      thread.adapter.postMessage as unknown as {
+        mock: { calls: unknown[][] };
+      }
+    ).mock.calls;
+    // Exactly one post: the answer card itself.
+    expect(postCalls.length).toBe(1);
+    const card = postCalls[0][1] as { card?: unknown; fallbackText?: string };
+    const cardJson = JSON.stringify(card);
+    expect(cardJson).toContain(PROACTIVE_SHOW_SQL_ACTION_ID);
+    expect(cardJson).toContain(PROACTIVE_SHOW_DETAILS_ACTION_ID);
+  });
+
+  it("omits both disclosure buttons when the host returns no sql + no developerView", async () => {
+    const executeQueryProactive: ProactiveExecuteQuery = mock(async () => ({
+      answer: "Yes, 4 active customers.",
+    }));
+    const { invokeMessage, invokeReaction } = await bootListenerWithDisclosure(
+      executeQueryProactive,
+    );
+    const thread = makeThread("C-allowed");
+    await postConversationalAnswer(thread, invokeMessage, invokeReaction);
+
+    const postCalls = (
+      thread.adapter.postMessage as unknown as {
+        mock: { calls: unknown[][] };
+      }
+    ).mock.calls;
+    const cardJson = JSON.stringify(postCalls[0][1]);
+    // The Helpful / Not helpful / Wrong data row is always present;
+    // the SQL and details buttons must NOT appear when their payloads
+    // are absent. Asserting `not.toContain` on the action ids is the
+    // tightest pin — a future card refactor that always emits the
+    // button (with a no-op state) breaks this.
+    expect(cardJson).not.toContain(PROACTIVE_SHOW_SQL_ACTION_ID);
+    expect(cardJson).not.toContain(PROACTIVE_SHOW_DETAILS_ACTION_ID);
+  });
+
+  it("posts the SQL in-thread (under the asker's message) on Show SQL click", async () => {
+    const executeQueryProactive: ProactiveExecuteQuery = mock(async () => ({
+      answer: "3 in the US, 1 in EU.",
+      sql: ["SELECT region, COUNT(*) FROM customers GROUP BY region"],
+      developerView: "",
+    }));
+    const { invokeMessage, invokeReaction, invokeAction } = await bootListenerWithDisclosure(
+      executeQueryProactive,
+    );
+    const thread = makeThread("C-allowed");
+    const answerMessageId = await postConversationalAnswer(
+      thread,
+      invokeMessage,
+      invokeReaction,
+    );
+
+    const beforeCallCount = (
+      thread.adapter.postMessage as unknown as { mock: { calls: unknown[][] } }
+    ).mock.calls.length;
+
+    await invokeAction(PROACTIVE_SHOW_SQL_ACTION_ID, {
+      actionId: PROACTIVE_SHOW_SQL_ACTION_ID,
+      adapter: { name: "slack" },
+      messageId: answerMessageId,
+      thread,
+      threadId: thread.id,
+      user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
+      value: answerMessageId,
+      raw: {},
+    });
+
+    const postCalls = (
+      thread.adapter.postMessage as unknown as {
+        mock: { calls: unknown[][] };
+      }
+    ).mock.calls;
+    expect(postCalls.length).toBe(beforeCallCount + 1);
+    const [replyThreadId, content] = postCalls[postCalls.length - 1] as [
+      string,
+      string,
+    ];
+    // Reply threadId must encode the asker's message id (M-ask-1, the
+    // postConversationalAnswer fixture) so the disclosure post threads
+    // under the asker's question rather than landing at channel level.
+    // The fixture uses the 2-part `channelId:threadTs` test encoding
+    // which triggers `computeReplyThreadId`'s fallback (the production
+    // 3-part `slack:CHANNEL:THREAD_TS` form would use thread.id
+    // directly — covered separately by the reaction-flow tests).
+    expect(replyThreadId).toContain("M-ask-1");
+    expect(content).toContain("SELECT region");
+    expect(content).toContain("```sql");
+  });
+
+  it("posts the developer-view markdown table in-thread on Show details click", async () => {
+    const developerView =
+      "| region | count |\n| --- | --- |\n| US | 3 |\n| EU | 1 |";
+    const executeQueryProactive: ProactiveExecuteQuery = mock(async () => ({
+      answer: "3 in the US, 1 in EU.",
+      sql: [],
+      developerView,
+    }));
+    const { invokeMessage, invokeReaction, invokeAction } = await bootListenerWithDisclosure(
+      executeQueryProactive,
+    );
+    const thread = makeThread("C-allowed");
+    const answerMessageId = await postConversationalAnswer(
+      thread,
+      invokeMessage,
+      invokeReaction,
+    );
+
+    await invokeAction(PROACTIVE_SHOW_DETAILS_ACTION_ID, {
+      actionId: PROACTIVE_SHOW_DETAILS_ACTION_ID,
+      adapter: { name: "slack" },
+      messageId: answerMessageId,
+      thread,
+      threadId: thread.id,
+      user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
+      value: answerMessageId,
+      raw: {},
+    });
+
+    const postCalls = (
+      thread.adapter.postMessage as unknown as {
+        mock: { calls: unknown[][] };
+      }
+    ).mock.calls;
+    const [replyThreadId, content] = postCalls[postCalls.length - 1] as [
+      string,
+      string,
+    ];
+    expect(replyThreadId).toContain("M-ask-1");
+    expect(content).toBe(developerView);
+  });
+
+  it("silently skips when the disclosure payload is missing (expired or pre-#2705 answer)", async () => {
+    const executeQueryProactive: ProactiveExecuteQuery = mock(async () => ({
+      answer: "Yes, 4 active customers.",
+    }));
+    const { invokeAction } = await bootListenerWithDisclosure(executeQueryProactive);
+    const thread = makeThread("C-allowed");
+
+    const beforeCallCount = (
+      thread.adapter.postMessage as unknown as { mock: { calls: unknown[][] } }
+    ).mock.calls.length;
+
+    // No answer was posted, so the disclosure store has nothing for
+    // this message id. The handler must NOT throw and must NOT post.
+    await invokeAction(PROACTIVE_SHOW_SQL_ACTION_ID, {
+      actionId: PROACTIVE_SHOW_SQL_ACTION_ID,
+      adapter: { name: "slack" },
+      messageId: "M-stale-answer",
+      thread,
+      threadId: thread.id,
+      user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
+      value: "M-stale-answer",
+      raw: {},
+    });
+
+    const afterCallCount = (
+      thread.adapter.postMessage as unknown as { mock: { calls: unknown[][] } }
+    ).mock.calls.length;
+    // No post on stale lookup — handler short-circuits silently.
+    expect(afterCallCount).toBe(beforeCallCount);
   });
 });

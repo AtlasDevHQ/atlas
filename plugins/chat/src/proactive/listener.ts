@@ -16,7 +16,15 @@
  */
 
 import { emoji } from "chat";
-import type { Adapter, Author, Chat, Message, ReactionEvent, Thread } from "chat";
+import type {
+  Adapter,
+  AdapterPostableMessage,
+  Author,
+  Chat,
+  Message,
+  ReactionEvent,
+  Thread,
+} from "chat";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
 import type {
   AtlasUserId,
@@ -71,6 +79,8 @@ import {
   buildWrongDataModal,
   PROACTIVE_ANSWER_ACTION_ID,
   PROACTIVE_DISMISS_ACTION_ID,
+  PROACTIVE_SHOW_DETAILS_ACTION_ID,
+  PROACTIVE_SHOW_SQL_ACTION_ID,
 } from "../cards/proactive-answer-card";
 import {
   outcomeForActionId,
@@ -373,6 +383,9 @@ export async function registerProactiveListener(
   // Most-recent Atlas answer per (channelId, externalUserId) for the
   // slice #2298 `/atlas feedback <text>` fallback path.
   const recentAnswers = new RecentAnswers();
+  // Per-answer SQL / developer-view payload for the #2705 "Show SQL" /
+  // "Show details" disclosure buttons.
+  const disclosures = new ProactiveDisclosureStore();
 
   // Local alias for the module-scope `emitProactiveMeter` helper —
   // pre-applies `config` + `log` so call sites stay terse and the
@@ -982,12 +995,19 @@ export async function registerProactiveListener(
       await runAnswerFlow(
         event.thread,
         event.threadId,
+        // Asker's message id — the reaction-back lands on the asker's
+        // original question, so `event.messageId` IS the asker's
+        // message id. Used by `postProactiveReply` to synthesize an
+        // in-thread reply target when the chat-sdk produces a
+        // bare-channel thread.id (#2704).
+        event.messageId,
         decision.pending.text,
         decision.pending.asker,
         workspaceId,
         config,
         log,
         recentAnswers,
+        disclosures,
       );
     } catch (err) {
       log.warn(
@@ -1028,12 +1048,18 @@ export async function registerProactiveListener(
       await runAnswerFlow(
         event.thread,
         event.threadId,
+        // Asker's message id — the offer card's button `value` carries
+        // the original messageId the card was built for. Used by
+        // `postProactiveReply` to thread the answer under the asker's
+        // question (#2704).
+        originalMessageId,
         lookup.text,
         lookup.asker,
         workspaceId,
         config,
         log,
         recentAnswers,
+        disclosures,
       );
     } catch (err) {
       log.warn(
@@ -1061,6 +1087,91 @@ export async function registerProactiveListener(
       );
     }
   });
+
+  // -------------------------------------------------------------------------
+  // Progressive disclosure buttons (#2705)
+  //
+  // The conversational answer card includes "Show SQL" / "Show details"
+  // buttons. The handlers below look the disclosure payload up by the
+  // answer-card message id (which IS `event.messageId` — Slack returns
+  // the message the button lives on) and post the expanded content as
+  // an in-thread reply under the asker's original question.
+  //
+  // Both handlers route through `postProactiveReply` so the disclosure
+  // post threads correctly off the asker's question (#2704), matching
+  // the answer-card placement.
+  // -------------------------------------------------------------------------
+  chat.onAction(
+    [PROACTIVE_SHOW_SQL_ACTION_ID, PROACTIVE_SHOW_DETAILS_ACTION_ID],
+    async (event) => {
+      try {
+        if (!event.thread) return;
+        // The answer card carries the answer message id as `event.messageId`
+        // (Slack populates this with the message the action lives on).
+        // The disclosure payload was recorded under that id at answer
+        // post time, so a direct lookup works without round-tripping
+        // through `event.value`.
+        const answerMessageId = event.messageId;
+        const payload = disclosures.lookup(answerMessageId);
+        if (!payload) {
+          log.debug(
+            {
+              actionId: event.actionId,
+              threadId: event.threadId,
+              answerMessageId,
+            },
+            "Proactive disclosure clicked but no payload — likely expired (>24h) or pre-#2705 answer",
+          );
+          return;
+        }
+
+        let content: string;
+        if (event.actionId === PROACTIVE_SHOW_SQL_ACTION_ID) {
+          if (payload.sql.length === 0) {
+            log.debug(
+              { answerMessageId },
+              "Proactive Show SQL clicked but payload carries no SQL — skipping",
+            );
+            return;
+          }
+          // Slack code fences render `sql` syntax-highlighting when the
+          // info string is set. Multiple queries are concatenated with
+          // a blank line between them; the agent typically issues 1-2.
+          content = payload.sql
+            .map((q) => "```sql\n" + q.trim() + "\n```")
+            .join("\n\n");
+        } else {
+          // PROACTIVE_SHOW_DETAILS_ACTION_ID
+          if (payload.developerView.trim().length === 0) {
+            log.debug(
+              { answerMessageId },
+              "Proactive Show details clicked but payload carries no developer view — skipping",
+            );
+            return;
+          }
+          content = payload.developerView;
+        }
+
+        await postProactiveReply(event.thread, payload.askerMessageId, content);
+        log.info(
+          {
+            actionId: event.actionId,
+            threadId: event.threadId,
+            answerMessageId,
+          },
+          "Proactive disclosure posted in-thread",
+        );
+      } catch (err) {
+        log.warn(
+          {
+            err: err instanceof Error ? err : new Error(String(err)),
+            actionId: event.actionId,
+          },
+          "Proactive disclosure handler threw — suppressed",
+        );
+      }
+    },
+  );
 
   // -------------------------------------------------------------------------
   // Feedback button handlers (slice #2298)
@@ -1303,15 +1414,70 @@ async function postOfferCard(thread: AnyThread, message: Message, log: PluginLog
   }
 }
 
+/**
+ * Compute the threadId to post a proactive reply against (#2704).
+ *
+ * Chat-sdk encoded threadId convention: `${platform}:${channel}:${threadTs}`.
+ * For Slack the trailing `threadTs` is the parent thread's ts when the
+ * asker's message is itself a thread reply, OR the message's own ts
+ * when the asker's message is top-level — both cases produce the right
+ * thread parent for in-thread replies.
+ *
+ * Happy path: `thread.id` already encodes a non-empty trailing segment;
+ * we use it as-is so an asker who fired proactive from inside an
+ * existing thread keeps the reply in THAT thread (not a sub-thread off
+ * their reply, which Slack doesn't support anyway).
+ *
+ * Defensive fallback: some chat-sdk event paths surfaced a `thread.id`
+ * with an empty trailing segment during dogfood (#2704), which decoded
+ * to `thread_ts=""` and posted the reply at channel level. When that
+ * shape lands we synthesize a threadId from `thread.channelId` plus the
+ * asker's messageId so the reply still threads under the asker's
+ * question rather than spamming the channel.
+ */
+function computeReplyThreadId(thread: AnyThread, askerMessageId: string): string {
+  const threadId = thread.id;
+  const parts = threadId.split(":");
+  const trailing = parts.length > 0 ? parts[parts.length - 1] : "";
+  if (parts.length >= 3 && typeof trailing === "string" && trailing.length > 0) {
+    return threadId;
+  }
+  return `${thread.channelId}:${askerMessageId}`;
+}
+
+/**
+ * Post a proactive reply in-thread under the asker's original message
+ * (#2704). Calls the adapter's `postMessage` directly with an explicit
+ * reply threadId so the threading parent is unambiguous at the call
+ * site — `thread.post(...)` was landing at channel level in production
+ * (dogfood signal in #sandbox-atlas) when the chat-sdk's event-derived
+ * Thread happened to carry an empty `thread_ts` portion.
+ *
+ * Mirrors the result shape `thread.post` returns (`{ id }`) so call
+ * sites that capture the posted message id (the answer-card path)
+ * don't need to know about the swap.
+ */
+async function postProactiveReply(
+  thread: AnyThread,
+  askerMessageId: string,
+  content: AdapterPostableMessage,
+): Promise<{ id: string }> {
+  const replyThreadId = computeReplyThreadId(thread, askerMessageId);
+  const raw = await thread.adapter.postMessage(replyThreadId, content);
+  return { id: raw.id };
+}
+
 async function runAnswerFlow(
   thread: AnyThread,
   threadId: string,
+  askerMessageId: string,
   text: string,
   asker: ProactiveAsker,
   workspaceId: WorkspaceId,
   config: ProactiveListenerConfig,
   log: PluginLogger,
   recentAnswers: RecentAnswers,
+  disclosures: ProactiveDisclosureStore,
 ): Promise<void> {
   const flow = config.answerFlow;
 
@@ -1335,7 +1501,9 @@ async function runAnswerFlow(
   // identity wasn't enforced.
   if (resolved.kind === "errored") {
     try {
-      await thread.post(
+      await postProactiveReply(
+        thread,
+        askerMessageId,
         "Sorry — I hit an error while answering. Try asking again or use `@atlas` directly.",
       );
     } catch (err) {
@@ -1390,7 +1558,7 @@ async function runAnswerFlow(
   if (resolved.kind === "unlinked") {
     if (flow.mode !== "public-only" && flow.mode !== "both") {
       const prompt = buildUnlinkedAskerPrompt(config.linkUrl);
-      await thread.post(prompt);
+      await postProactiveReply(thread, askerMessageId, prompt);
       log.info(
         { threadId, externalUserId: asker.externalUserId },
         "Proactive answer: posted unlinked-asker stub (no public-dataset wiring)",
@@ -1416,7 +1584,7 @@ async function runAnswerFlow(
     }
 
     if (allowlist.length === 0) {
-      await postPublicRefusal(thread, config, log, asker, threadId, undefined);
+      await postPublicRefusal(thread, askerMessageId, config, log, asker, threadId, undefined);
       await emitMeter({
         channelId: thread.channelId,
         eventType: "public_refused",
@@ -1440,6 +1608,11 @@ async function runAnswerFlow(
         // forces deliberate null handling on every host.
         atlasUserId: null,
         workspaceId,
+        // #2705 — proactive Slack audience is non-analyst team members.
+        // Ask the agent for a 1-2 sentence prose answer; the
+        // listener pairs this with progressive-disclosure buttons that
+        // surface the SQL / full breakdown on demand.
+        presentationMode: "conversational",
       });
     } catch (err) {
       log.error(
@@ -1449,7 +1622,9 @@ async function runAnswerFlow(
         },
         "Proactive executeQueryProactive threw (unlinked-asker / public-dataset path)",
       );
-      await thread.post(
+      await postProactiveReply(
+        thread,
+        askerMessageId,
         "Sorry — I hit an error while answering. Try asking again or use `@atlas` directly.",
       );
       return;
@@ -1460,7 +1635,7 @@ async function runAnswerFlow(
     });
     if (!allowlistCheck.allowed) {
       const firstRefused = allowlistCheck.refusedEntities[0];
-      await postPublicRefusal(thread, config, log, asker, threadId, firstRefused);
+      await postPublicRefusal(thread, askerMessageId, config, log, asker, threadId, firstRefused);
       await emitMeter({
         channelId: thread.channelId,
         eventType: "public_refused",
@@ -1475,7 +1650,17 @@ async function runAnswerFlow(
       return;
     }
 
-    await postProactiveAnswer(thread, log, threadId, asker, text, publicResult, recentAnswers);
+    await postProactiveAnswer(
+      thread,
+      askerMessageId,
+      log,
+      threadId,
+      asker,
+      text,
+      publicResult,
+      recentAnswers,
+      disclosures,
+    );
     log.info(
       { threadId, externalUserId: asker.externalUserId, mode: "public-dataset" },
       "Proactive answer delivered to unlinked asker via public dataset",
@@ -1506,6 +1691,12 @@ async function runAnswerFlow(
       asker,
       atlasUserId: resolved.atlasUserId,
       workspaceId,
+      // #2705 — conversational Slack-audience mode. Same rationale as
+      // the public-dataset branch above; centralizing the choice here
+      // means a future "dev follows proactive into a thread" surface
+      // can opt back into developer mode at one site without changing
+      // the agent.
+      presentationMode: "conversational",
     });
   } catch (err) {
     log.error(
@@ -1515,13 +1706,25 @@ async function runAnswerFlow(
       },
       "Proactive executeQueryProactive threw",
     );
-    await thread.post(
+    await postProactiveReply(
+      thread,
+      askerMessageId,
       "Sorry — I hit an error while answering. Try asking again or use `@atlas` directly.",
     );
     return;
   }
 
-  await postProactiveAnswer(thread, log, threadId, asker, text, result, recentAnswers);
+  await postProactiveAnswer(
+    thread,
+    askerMessageId,
+    log,
+    threadId,
+    asker,
+    text,
+    result,
+    recentAnswers,
+    disclosures,
+  );
   log.info(
     { threadId, externalUserId: asker.externalUserId, atlasUserId: resolved.atlasUserId },
     "Proactive answer delivered to linked asker",
@@ -1543,7 +1746,66 @@ type ProactiveQueryResultLike = {
   followupSubscribe?: boolean;
   entitiesReferenced?: string[];
   metricsReferenced?: string[];
+  /** #2705 — SQL the agent ran, for the "Show SQL" disclosure button. */
+  sql?: string[];
+  /** #2705 — developer-mode rendering, for the "Show details" button. */
+  developerView?: string;
 };
+
+/**
+ * Disclosure payload stored per-answer (#2705). Looked up by the
+ * "Show SQL" / "Show details" button handlers to render the expanded
+ * content as an in-thread reply. Stored in-memory only — single-pod
+ * scope matches `PendingAnswers` and `RecentAnswers`; multi-pod scale
+ * lands in the same future PG/Redis move those registries already
+ * planned for. TTL bounds the registry so a forgotten button click
+ * after several days doesn't keep stale payloads pinned in memory.
+ */
+interface DisclosurePayload {
+  /** Encoded thread id of the answer card itself — `${platform}:CHANNEL:THREAD_TS`. */
+  threadId: string;
+  /** Asker's original message id, for in-thread reply target (#2704). */
+  askerMessageId: string;
+  /** SQL the agent ran. Empty array → no "Show SQL" button was rendered. */
+  sql: string[];
+  /** Developer-mode rendering. Empty string → no "Show details" button was rendered. */
+  developerView: string;
+  recordedAt: number;
+}
+
+const DISCLOSURE_TTL_MS = 24 * 60 * 60 * 1000; // 24h — matches typical Slack thread half-life
+const DISCLOSURE_MAX_ENTRIES = 10_000;
+
+class ProactiveDisclosureStore {
+  private readonly store = new Map<string, DisclosurePayload>();
+  constructor(
+    private readonly ttlMs: number = DISCLOSURE_TTL_MS,
+    private readonly maxEntries: number = DISCLOSURE_MAX_ENTRIES,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  record(answerMessageId: string, payload: Omit<DisclosurePayload, "recordedAt">): void {
+    if (this.store.size >= this.maxEntries) {
+      const oldestKey = this.store.keys().next().value;
+      if (oldestKey) this.store.delete(oldestKey);
+    }
+    this.store.set(answerMessageId, { ...payload, recordedAt: this.now() });
+  }
+
+  lookup(answerMessageId: string): DisclosurePayload | null {
+    const entry = this.store.get(answerMessageId);
+    if (!entry) return null;
+    if (this.now() - entry.recordedAt > this.ttlMs) {
+      this.store.delete(answerMessageId);
+      return null;
+    }
+    return entry;
+  }
+
+  size(): number {
+    return this.store.size;
+  }
+}
 
 /** Discriminated allowlist verdict. */
 type AllowlistCheck =
@@ -1637,6 +1899,7 @@ function checkResultAgainstAllowlist(
  */
 async function postPublicRefusal(
   thread: AnyThread,
+  askerMessageId: string,
   config: ProactiveListenerConfig,
   log: PluginLogger,
   asker: ProactiveAsker,
@@ -1645,7 +1908,7 @@ async function postPublicRefusal(
 ): Promise<void> {
   const copy = config.refusalCopy ?? DEFAULT_PROACTIVE_REFUSAL_COPY;
   try {
-    await thread.post(copy);
+    await postProactiveReply(thread, askerMessageId, copy);
   } catch (err) {
     log.warn(
       { err: err instanceof Error ? err : new Error(String(err)), threadId },
@@ -1656,7 +1919,7 @@ async function postPublicRefusal(
   // decision pairs the refusal with the existing link button.
   try {
     const linkPrompt = buildUnlinkedAskerPrompt(config.linkUrl);
-    await thread.post(linkPrompt);
+    await postProactiveReply(thread, askerMessageId, linkPrompt);
   } catch (err) {
     log.warn(
       { err: err instanceof Error ? err : new Error(String(err)), threadId },
@@ -1682,19 +1945,42 @@ async function postPublicRefusal(
  */
 async function postProactiveAnswer(
   thread: AnyThread,
+  askerMessageId: string,
   log: PluginLogger,
   threadId: string,
   asker: ProactiveAsker,
   question: string,
   result: ProactiveQueryResultLike,
   recentAnswers: RecentAnswers,
+  disclosures: ProactiveDisclosureStore,
 ): Promise<void> {
-  const answer = buildProactiveAnswerCard(result.answer);
-  const sent = await thread.post(answer);
-  const answerMessageId =
-    typeof sent === "object" && sent != null && "id" in sent && typeof sent.id === "string"
-      ? sent.id
-      : "";
+  const sql = result.sql ?? [];
+  const developerView = result.developerView ?? "";
+  const showSql = sql.length > 0;
+  const showDetails = developerView.trim().length > 0;
+  // The card builder uses `answerId` as the buttons' `value` so the
+  // action handler can look the disclosure payload up by message id.
+  // We don't know `answerMessageId` until AFTER posting — but the
+  // card embeds the message id into the button value AT post time,
+  // so we'd have a chicken-and-egg. Workaround: render the card with
+  // an empty `answerId`, post it, then rely on the disclosure store
+  // being keyed on the posted message id (which the action handler
+  // resolves from `event.messageId`, the message the button lives on).
+  const answer = buildProactiveAnswerCard(result.answer, undefined, {
+    showSql,
+    showDetails,
+  });
+  const sent = await postProactiveReply(thread, askerMessageId, answer);
+  const answerMessageId = typeof sent.id === "string" ? sent.id : "";
+
+  if (answerMessageId && (showSql || showDetails)) {
+    disclosures.record(answerMessageId, {
+      threadId,
+      askerMessageId,
+      sql,
+      developerView,
+    });
+  }
 
   if (answerMessageId) {
     recentAnswers.record(thread.channelId, asker.externalUserId, {

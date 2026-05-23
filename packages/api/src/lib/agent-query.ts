@@ -80,6 +80,18 @@ export interface ExecuteAgentQueryOptions {
   connectionId?: string;
   /** Content scope for group-aware semantic overlays. */
   connectionGroupId?: string;
+  /**
+   * #2705 — presentation mode for the agent's response body. Threaded
+   * through to {@link runAgent}'s `presentationMode` parameter; the
+   * chat plugin's `executeQuery` path sets `"conversational"` so the
+   * Slack @mention reply renders as 1-2 sentences of prose with the
+   * SQL and tables surfaced via progressive-disclosure buttons (#2705).
+   *
+   * Optional, defaulting to `"developer"` so the synchronous JSON
+   * `/api/v1/query` route, MCP, and any other non-chat caller keep
+   * the analyst-grade body unchanged.
+   */
+  presentationMode?: "developer" | "conversational";
 }
 
 /**
@@ -160,6 +172,7 @@ export async function executeAgentQuery(
       messages,
       ...(toolRegistry && { tools: toolRegistry }),
       ...(options?.conversationId && { conversationId: options.conversationId }),
+      ...(options?.presentationMode && { presentationMode: options.presentationMode }),
     });
 
     const [text, steps, totalUsage] = await Promise.all([

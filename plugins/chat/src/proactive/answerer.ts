@@ -130,6 +130,22 @@ export interface ProactiveQueryResult {
    * touches a sensitive column inside an otherwise-public entity.
    */
   metricsReferenced?: string[];
+  /**
+   * SQL queries the agent executed while answering (#2705). Populated
+   * by the host when the conversational presentation mode is in play;
+   * the proactive listener uses it to render the "Show SQL" disclosure
+   * button on the answer card. Empty / undefined means "host doesn't
+   * report this" — the listener simply omits the button.
+   */
+  sql?: string[];
+  /**
+   * Developer-mode rendering of the answer (#2705) — markdown that
+   * includes tables, breakdowns, and any other detail the
+   * conversational `answer` intentionally suppressed. Surfaced via the
+   * "Show details" disclosure button. Empty / undefined means "no
+   * extra detail" — button omitted.
+   */
+  developerView?: string;
 }
 
 /**
@@ -170,6 +186,16 @@ export type ProactiveExecuteQuery = (
      * `assertWorkspaceId` at the listener's boundary.
      */
     workspaceId: WorkspaceId;
+    /**
+     * Presentation mode for the response body (#2705). The proactive
+     * listener always passes `"conversational"` because the Slack
+     * audience is non-analyst team members reading a thread — the
+     * agent should produce a 1-2 sentence prose answer rather than the
+     * web-chat developer view. Hosts whose `executeQueryProactive`
+     * predates #2705 ignore the field and serve the developer-mode
+     * body, which is the backward-compatible default.
+     */
+    presentationMode?: "developer" | "conversational";
   }>,
 ) => Promise<ProactiveQueryResult>;
 

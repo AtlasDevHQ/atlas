@@ -8,6 +8,20 @@
 
 import { z } from "zod";
 import type { StreamChunk } from "chat";
+// #2665 — catalog vocabulary lives in @useatlas/types so the chat plugin
+// and @atlas/api share one source of truth for the literal unions.
+// Re-exported below as `ChatAdapterName` for back-compat with downstream
+// hosts that imported it from `@useatlas/chat`.
+import {
+  CATALOG_ENTRY_TYPES,
+  CATALOG_INSTALL_MODELS,
+  CHAT_ADAPTER_NAMES,
+} from "@useatlas/types";
+import type {
+  CatalogEntryType,
+  CatalogInstallModel,
+  ChatAdapterName as SharedChatAdapterName,
+} from "@useatlas/types";
 import type { ReactionConfig } from "./features/reactions";
 import type {
   AnswerFlowConfig,
@@ -71,32 +85,24 @@ export interface ChatCatalogEntryInput {
   /** Stable slug — `"slack"`, `"telegram"`, etc. */
   readonly slug: string;
   /** Admin-UI grouping. The registry skips non-chat entries. */
-  readonly type: "chat" | "integration";
+  readonly type: CatalogEntryType;
   /** Install-handler dispatch key. Only `"oauth"` activates in 1.5.2. */
-  readonly install_model: "oauth" | "form" | "static-bot";
+  readonly install_model: CatalogInstallModel;
   /** Customer can install? Ops can flip false without removing the row. */
   readonly enabled: boolean;
   /** Visible to SaaS admin UI? (Used in slice 3; unused by AdapterRegistry.) */
   readonly saas_eligible: boolean;
 }
 
-/** Canonical chat platform names supported by the bridge.
- *
- * The chat SDK's `Adapter` interface types `name` as a bare `string`
- * because adapters are pluggable, but this plugin only loads the
- * adapters enumerated under `ChatPluginConfig["adapters"]` — narrowing
- * to the literal union here lets host `executeQuery` callbacks
- * type-narrow via `if (adapter.name !== "slack")` and forces every
- * `switch (adapter.name)` to be exhaustive at compile time. */
-export type ChatAdapterName =
-  | "slack"
-  | "teams"
-  | "discord"
-  | "gchat"
-  | "telegram"
-  | "github"
-  | "linear"
-  | "whatsapp";
+/**
+ * Canonical chat platform names — re-exported from `@useatlas/types`
+ * (#2665) so the literal union is shared with `@atlas/api`'s catalog
+ * dispatch. Adding a platform happens in one place
+ * (`packages/types/src/catalog.ts:CHAT_ADAPTER_NAMES`) and propagates
+ * to both packages via TypeScript exhaustiveness.
+ */
+export type ChatAdapterName = SharedChatAdapterName;
+export { CHAT_ADAPTER_NAMES };
 
 /** Minimal adapter shape passed through to host `executeQuery` callbacks.
  *
@@ -957,8 +963,10 @@ const ChatCatalogEntrySchema = z
       /^[a-z][a-z0-9-]*$/,
       "catalog entry slug must be lowercase alphanumeric with dashes",
     ),
-    type: z.enum(["chat", "integration"]),
-    install_model: z.enum(["oauth", "form", "static-bot"]),
+    // #2665 — shared with @atlas/api via @useatlas/types so the
+    // accepted literal set propagates from one source of truth.
+    type: z.enum(CATALOG_ENTRY_TYPES),
+    install_model: z.enum(CATALOG_INSTALL_MODELS),
     enabled: z.boolean(),
     saas_eligible: z.boolean(),
   })

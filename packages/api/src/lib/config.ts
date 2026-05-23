@@ -275,39 +275,25 @@ export type ResidencyConfig = z.infer<typeof ResidencyConfigSchema>;
 // ---------------------------------------------------------------------------
 
 /**
- * `install_model` discriminates the install-handler family per CONTEXT.md
- * "Install models". The dispatch shape is pinned in slice 2 so 1.5.3's
- * static-bot work lands as a single-import change rather than reopening
- * the dispatch design.
- *
- * - `oauth` — OAuth dance against an operator-owned App Registration; per-
- *   Workspace bot token returned and persisted to the platform-native
- *   credential store. Chat: Slack. Integration: Salesforce, Jira, GitHub
- *   Apps (1.5.3), Linear OAuth (1.5.3).
- * - `form` — Customer admin fills a form (API key, SMTP creds, webhook
- *   URL); data validates against the catalog entry's `config_schema`;
- *   persists to `workspace_plugins.config` + encrypted credential storage.
- *   Integrations: Email (SMTP), Webhook, Obsidian, GitHub PAT (self-host),
- *   Linear API-key (1.5.3).
- * - `static-bot` — Operator-shared bot serves every Workspace; customer
- *   admin provides only a per-Workspace routing identifier (Discord
- *   `guild_id`, Telegram `chat_id`, Teams `tenant_id`, WhatsApp phone
- *   number) via form. No per-Workspace bot token. Chat: Teams, Discord,
- *   Google Chat, Telegram, WhatsApp. **Not installable in 1.5.2** — the
- *   handler ships in 1.5.3.
+ * Catalog vocabulary (`install_model`, `type`) is hoisted to
+ * `@useatlas/types` (#2665) so `@useatlas/chat` can share the literal
+ * unions without taking a hard `@atlas/api` dep. JSDoc on each member
+ * lives in `packages/types/src/catalog.ts`. The re-exports here keep
+ * the long-standing call sites (`from "@atlas/api/lib/config"`) working
+ * without churn.
  */
-export const CATALOG_INSTALL_MODELS = ["oauth", "form", "static-bot"] as const;
-export type CatalogInstallModel = (typeof CATALOG_INSTALL_MODELS)[number];
-
-/**
- * `type` groups catalog entries for admin-UI display. Backend dispatches
- * by `install_model` (orthogonal), not by `type`. The list is intentionally
- * narrow today: chat Platforms vs everything-else-integration. Future
- * milestones may add `datasource` once datasource plugins migrate to the
- * catalog (Architecture Backlog issue, out of scope for 1.5.2).
- */
-export const CATALOG_ENTRY_TYPES = ["chat", "integration"] as const;
-export type CatalogEntryType = (typeof CATALOG_ENTRY_TYPES)[number];
+import {
+  CATALOG_INSTALL_MODELS,
+  CATALOG_ENTRY_TYPES,
+} from "@useatlas/types";
+export {
+  CATALOG_INSTALL_MODELS,
+  CATALOG_ENTRY_TYPES,
+};
+export type {
+  CatalogInstallModel,
+  CatalogEntryType,
+} from "@useatlas/types";
 
 /**
  * Plan tiers a catalog entry can require. Unified with `PLAN_TIERS`

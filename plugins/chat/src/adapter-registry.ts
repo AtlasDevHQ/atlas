@@ -23,8 +23,13 @@
  */
 
 import type { SlackAdapter } from "@chat-adapter/slack";
+import type {
+  CatalogEntryType,
+  CatalogInstallModel,
+  ChatAdapterName,
+} from "@useatlas/types";
 import { createSlackAdapter } from "./adapters/slack";
-import type { ChatAdapterName, SlackAdapterConfig } from "./config";
+import type { SlackAdapterConfig } from "./config";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -43,8 +48,10 @@ import type { ChatAdapterName, SlackAdapterConfig } from "./config";
  */
 export interface ChatCatalogEntry {
   readonly slug: string;
-  readonly type: "chat" | "integration";
-  readonly install_model: "oauth" | "form" | "static-bot";
+  // #2665 — literal unions hoisted to @useatlas/types so renames in
+  // one place propagate via TS exhaustiveness.
+  readonly type: CatalogEntryType;
+  readonly install_model: CatalogInstallModel;
   readonly enabled: boolean;
   readonly saas_eligible: boolean;
 }

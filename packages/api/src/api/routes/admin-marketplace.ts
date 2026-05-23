@@ -25,7 +25,11 @@ import {
   checkStrictPluginSecrets,
 } from "@atlas/api/lib/plugins/secrets";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
-import { PLAN_TIERS, type PlanTier } from "@useatlas/types";
+import { PLAN_TIERS } from "@useatlas/types";
+import {
+  isPlanEligible as planRankEligible,
+  planRank,
+} from "@atlas/api/lib/integrations/install/plan-rank";
 import {
   ErrorSchema,
   AuthErrorSchema,
@@ -43,26 +47,17 @@ const PLUGIN_TYPES = ["datasource", "context", "interaction", "action", "sandbox
 type PluginType = (typeof PLUGIN_TYPES)[number];
 
 /**
- * Plan tier ordering for eligibility checks.
- * A workspace with tier N can install plugins with min_plan <= N.
- * Typed as Record<PlanTier, number> so adding a tier to @useatlas/types
- * produces a compile error here until the rank is assigned.
+ * Whether the workspace's tier admits installing a plugin requiring
+ * `requiredPlan`. Logs at warn on unknown `requiredPlan` so catalog
+ * drift surfaces — every other branching is identical to the shared
+ * `isPlanEligible` from `lib/integrations/install/plan-rank.ts`.
  */
-const PLAN_RANK: Record<PlanTier, number> = {
-  free: 0,
-  trial: 1,
-  starter: 1,
-  pro: 2,
-  business: 3,
-};
-
 function isPlanEligible(workspacePlan: string, requiredPlan: string): boolean {
-  const requiredRank = PLAN_RANK[requiredPlan as PlanTier];
-  if (requiredRank === undefined) {
+  if (planRank(requiredPlan) === null) {
     log.warn({ requiredPlan }, "Unknown required plan tier — denying access");
     return false;
   }
-  return (PLAN_RANK[workspacePlan as PlanTier] ?? 0) >= requiredRank;
+  return planRankEligible(workspacePlan, requiredPlan);
 }
 
 // ---------------------------------------------------------------------------

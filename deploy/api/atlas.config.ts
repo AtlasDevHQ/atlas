@@ -450,6 +450,14 @@ export default defineConfig({
           enabled: true,
           gate: WorkspaceInstallGate.isWorkspaceInstallActive,
           catalogId: "slack",
+          // #2703 — feeds the listener's throttled deny log with the
+          // four fact-state booleans + plan info so operators see
+          // WHY a workspace is denied without running the rank table
+          // themselves. The listener calls this only on the deny
+          // path inside an open throttle window, so the cost is one
+          // extra DB read per (workspaceId, channelId) per 10 min
+          // for steady-state denied workspaces.
+          describeState: WorkspaceInstallGate.describeState,
         },
       },
     }),

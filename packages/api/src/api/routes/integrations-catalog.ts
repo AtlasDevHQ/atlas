@@ -17,10 +17,10 @@
  * `workspace_plugins WHERE workspace_id = ?` so the catalog query is a single
  * SQL fragment per deploy-mode branch (no per-row LATERAL).
  *
- * Vocabulary note: catalog `min_plan` is `starter|team|business|enterprise`,
- * but workspace `plan_tier` is `free|trial|starter|pro|business`. Tracking
- * issue #2666 covers the cleanup; in the interim {@link PLAN_RANK} below
- * holds one comparator that handles both vocabularies.
+ * Vocabulary note: both catalog `min_plan` and workspace `plan_tier`
+ * use the same `PLAN_TIERS` union from `@useatlas/types`
+ * (`free|trial|starter|pro|business`) after #2666. Comparator lives in
+ * `lib/integrations/install/plan-rank.ts`.
  */
 
 import { Effect } from "effect";
@@ -30,49 +30,43 @@ import { RequestContext } from "@atlas/api/lib/effect/services";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { getConfig } from "@atlas/api/lib/config";
 import { createLogger } from "@atlas/api/lib/logger";
+import {
+  isPlanEligible,
+  planRank,
+} from "@atlas/api/lib/integrations/install/plan-rank";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("integrations-catalog");
 
 // ---------------------------------------------------------------------------
-// Plan rank — interim unified table covering both vocabularies (#2666).
+// Eligibility helpers — wrap the shared comparator with logging.
 // ---------------------------------------------------------------------------
 
 /**
- * Rank for the plan-tier comparator. The catalog's `min_plan` and the
- * workspace's `plan_tier` use different vocabularies today (#2666); this
- * table holds the union so both sides can be ranked. A row is installable
- * when `PLAN_RANK[workspacePlan] >= PLAN_RANK[catalogMinPlan]`.
+ * Whether the workspace can install a row at its current plan tier.
+ * Operator workspaces (per the `is_operator_workspace` flag on
+ * `organization`) bypass every check.
+ *
+ * Unknown `requiredPlan` values (catalog drift) are logged at warn
+ * and treated as upsell-only so the card renders read-only — never
+ * silently admit something the gate would later deny.
  */
-const PLAN_RANK: Record<string, number> = {
-  // workspace plan_tier (@useatlas/types PLAN_TIERS)
-  free: 0,
-  trial: 1,
-  starter: 1,
-  pro: 2,
-  business: 3,
-  // catalog-only min_plan values (config.ts CATALOG_MIN_PLANS)
-  team: 2,
-  enterprise: 4,
-};
-
-function isUpsellOnly(
+function isAccessible(
   workspacePlan: string,
   requiredPlan: string,
+  isOperator: boolean,
   context?: { slug?: string; id?: string },
 ): boolean {
-  const requiredRank = PLAN_RANK[requiredPlan];
-  if (requiredRank === undefined) {
-    // Unknown required tier — treat as upsell so the card renders read-only.
+  if (isOperator) return true;
+  if (planRank(requiredPlan) === null) {
     log.warn(
       { requiredPlan, slug: context?.slug, id: context?.id },
       "plugin_catalog.min_plan has unknown value — flagging entry as upsellOnly",
     );
-    return true;
+    return false;
   }
-  const wsRank = PLAN_RANK[workspacePlan] ?? 0;
-  return wsRank < requiredRank;
+  return isPlanEligible(workspacePlan, requiredPlan);
 }
 
 // ---------------------------------------------------------------------------
@@ -102,6 +96,22 @@ const CatalogEntryResponseSchema = z.object({
   // when the token refresh permanently failed (#2658).
   installStatus: z.string().nullable(),
   upsellOnly: z.boolean(),
+  /**
+   * Whether the workspace's current plan tier admits installing this
+   * entry. Mirrors `!upsellOnly` today, but the explicit field reads
+   * better at call sites (`if (!entry.accessible) ...` vs the double
+   * negative). Operator workspaces (`is_operator_workspace = true`)
+   * always see `accessible: true` regardless of plan tier.
+   */
+  accessible: z.boolean(),
+  /**
+   * Plan tier the workspace would need to upgrade to in order to
+   * install this entry, or `null` when the entry is already accessible.
+   * Matches `minPlan` for inaccessible entries; the dedicated field
+   * lets the UI render "Upgrade to Starter" copy without re-deriving
+   * the comparison.
+   */
+  upgradeRequired: z.string().nullable(),
 });
 
 const CatalogResponseSchema = z.object({
@@ -231,8 +241,8 @@ integrationsCatalog.openapi(listCatalogRoute, async (c) => {
       const [planRows, catalog, installations] = yield* Effect.tryPromise({
         try: () =>
           Promise.all([
-            internalQuery<{ plan_tier: string }>(
-              "SELECT plan_tier FROM organization WHERE id = $1",
+            internalQuery<{ plan_tier: string; is_operator_workspace: boolean | null }>(
+              "SELECT plan_tier, is_operator_workspace FROM organization WHERE id = $1",
               [orgId],
             ),
             internalQuery<CatalogRow>(catalogSql),
@@ -253,6 +263,7 @@ integrationsCatalog.openapi(listCatalogRoute, async (c) => {
       // plan_tier is null" path; fail closed to the most restrictive
       // tier so upsell flagging stays conservative.
       const workspacePlan = planRows[0]?.plan_tier ?? "free";
+      const isOperator = planRows[0]?.is_operator_workspace === true;
 
       const installedByCatalogId = new Map<string, InstallationRow>(
         installations.map((row) => [row.catalog_id, row]),
@@ -260,6 +271,10 @@ integrationsCatalog.openapi(listCatalogRoute, async (c) => {
 
       const entries = catalog.map((row) => {
         const installation = installedByCatalogId.get(row.id);
+        const accessible = isAccessible(workspacePlan, row.min_plan, isOperator, {
+          slug: row.slug,
+          id: row.id,
+        });
         return {
           id: row.id,
           slug: row.slug,
@@ -274,7 +289,9 @@ integrationsCatalog.openapi(listCatalogRoute, async (c) => {
           installedAt: installation ? asIsoString(installation.installed_at) : null,
           installedBy: installation?.installed_by ?? null,
           installStatus: installation?.install_status ?? null,
-          upsellOnly: isUpsellOnly(workspacePlan, row.min_plan, { slug: row.slug, id: row.id }),
+          upsellOnly: !accessible,
+          accessible,
+          upgradeRequired: accessible ? null : row.min_plan,
         };
       });
 

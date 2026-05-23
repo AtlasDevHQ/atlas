@@ -45,6 +45,8 @@ import { getConfig } from "@atlas/api/lib/config";
 import { PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
 import { getInstallHandler } from "@atlas/api/lib/integrations/install";
 import { FormInstallValidationError } from "@atlas/api/lib/integrations/install/email-form-handler";
+import { isPlanEligible } from "@atlas/api/lib/integrations/install/plan-rank";
+import { verifyOAuthStateToken } from "@atlas/api/lib/integrations/install/oauth-state-token";
 import { deleteInstallation as deleteSlackInstallation } from "@atlas/api/lib/slack/store";
 import { deleteCredentialBundle } from "@atlas/api/lib/integrations/credentials/store";
 import {
@@ -84,10 +86,20 @@ const installRoute = createRoute({
     }),
   },
   responses: {
-    302: { description: "Redirect to Platform OAuth authorization page" },
+    302: {
+      description:
+        "Redirect to Platform OAuth authorization page on success, or to " +
+        "`/admin/integrations?error=<platform>&reason=plan_upgrade_required` " +
+        "when the workspace's plan does not admit the install (browser callers).",
+    },
     400: { description: "Platform is not OAuth-installable, or unknown", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Not authenticated", content: { "application/json": { schema: AuthErrorSchema } } },
-    403: { description: "Caller is not a workspace admin", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: {
+      description:
+        "Caller is not a workspace admin, or the workspace's plan tier does not " +
+        "admit this integration (JSON callers; browsers see a 302 to the admin UI).",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
     404: { description: "Platform not found in catalog", content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate limited", content: { "application/json": { schema: AuthErrorSchema } } },
     501: { description: "OAuth handler not registered", content: { "application/json": { schema: ErrorSchema } } },
@@ -154,7 +166,12 @@ const installFormRoute = createRoute({
       },
     },
     401: { description: "Not authenticated", content: { "application/json": { schema: AuthErrorSchema } } },
-    403: { description: "Caller is not a workspace admin", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: {
+      description:
+        "Caller is not a workspace admin, or the workspace's plan tier " +
+        "does not admit this integration.",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
     404: { description: "Platform not found in catalog", content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate limited", content: { "application/json": { schema: AuthErrorSchema } } },
     501: { description: "Form handler not registered", content: { "application/json": { schema: ErrorSchema } } },
@@ -187,6 +204,12 @@ const callbackRoute = createRoute({
         "Hard failure (browser caller): `?error=<platform>&reason=<code>`. JSON callers receive 400/502 instead.",
     },
     400: { description: "Invalid or expired state, or unknown platform (JSON-Accept caller)", content: { "application/json": { schema: ErrorSchema } } },
+    403: {
+      description:
+        "Workspace plan changed mid-OAuth and no longer admits this " +
+        "integration (JSON callers; browsers see a 302 to the admin UI).",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
     404: { description: "Platform not found in catalog", content: { "application/json": { schema: ErrorSchema } } },
     501: { description: "OAuth handler not registered", content: { "application/json": { schema: ErrorSchema } } },
     502: { description: "Upstream Platform rejected the OAuth exchange (JSON-Accept caller)", content: { "application/json": { schema: ErrorSchema } } },
@@ -237,6 +260,7 @@ interface CatalogRowFromDb extends Record<string, unknown> {
   readonly slug: string;
   readonly install_model: string;
   readonly enabled: boolean;
+  readonly min_plan: string;
 }
 
 /**
@@ -285,9 +309,10 @@ function buildAdminIntegrationsUrl(
 async function getInstallableCatalogRowBySlug(slug: string): Promise<{
   slug: string;
   install_model: CatalogInstallModel;
+  min_plan: string;
 } | null> {
   const rows = await internalQuery<CatalogRowFromDb>(
-    `SELECT slug, install_model, enabled
+    `SELECT slug, install_model, enabled, min_plan
        FROM plugin_catalog
       WHERE slug = $1 AND enabled = true
       LIMIT 1`,
@@ -299,8 +324,75 @@ async function getInstallableCatalogRowBySlug(slug: string): Promise<{
     log.warn({ slug, install_model: row.install_model }, "Unknown install_model in plugin_catalog row");
     return null;
   }
-  return { slug: row.slug, install_model: row.install_model as CatalogInstallModel };
+  return {
+    slug: row.slug,
+    install_model: row.install_model as CatalogInstallModel,
+    min_plan: row.min_plan,
+  };
 }
+
+/**
+ * Resolve `{ planTier, isOperator }` for a workspace from the
+ * `organization` table. Both fields are optional in the DB shape
+ * (NULL plan_tier on a pre-#1472 row; LEFT JOIN miss on a freshly
+ * provisioned workspace) — callers should treat `null` as
+ * "no plan / not an operator", which by construction denies any
+ * `min_plan != 'free'` install attempt without admitting the
+ * operator bypass.
+ *
+ * On a self-hosted no-auth deploy (sentinel `workspaceId =
+ * "self-hosted"`), there's no organization row at all. Return
+ * `null` / `null` so the gate falls back to whichever default the
+ * caller picked — today that's "free tier" plus "not operator".
+ */
+async function getWorkspaceEntitlement(orgId: string): Promise<{
+  planTier: string | null;
+  isOperator: boolean;
+}> {
+  if (orgId === "self-hosted") return { planTier: null, isOperator: false };
+  const rows = await internalQuery<{
+    plan_tier: string | null;
+    is_operator_workspace: boolean | null;
+  }>(
+    `SELECT plan_tier, is_operator_workspace
+       FROM organization
+      WHERE id = $1
+      LIMIT 1`,
+    [orgId],
+  );
+  if (rows.length === 0) return { planTier: null, isOperator: false };
+  return {
+    planTier: rows[0]?.plan_tier ?? null,
+    isOperator: rows[0]?.is_operator_workspace === true,
+  };
+}
+
+/**
+ * Plan-tier gate for the install endpoints. Returns `null` when the
+ * workspace's plan admits installing this catalog row (operator
+ * workspaces always do) and a `{ required_plan, current_plan }`
+ * tuple otherwise. The tuple is the exact shape returned in the 403
+ * body so the caller can drop it straight into `c.json(...)`.
+ *
+ * Note: an unknown `min_plan` value (catalog drift) is treated as
+ * "deny" with `required_plan: <whatever the catalog row carries>` so
+ * the customer sees an upgrade prompt rather than a 500 — the
+ * operator surface (catalog admin) is responsible for fixing the
+ * row. Mirrors `lib/integrations/install/plan-rank.ts:isPlanEligible`
+ * which fail-closes on unknown.
+ */
+function checkPlanEligibility(
+  entitlement: { planTier: string | null; isOperator: boolean },
+  catalogMinPlan: string,
+): { required_plan: string; current_plan: string } | null {
+  if (entitlement.isOperator) return null;
+  if (isPlanEligible(entitlement.planTier ?? "free", catalogMinPlan)) return null;
+  return {
+    required_plan: catalogMinPlan,
+    current_plan: entitlement.planTier ?? "free",
+  };
+}
+
 
 // ---------------------------------------------------------------------------
 // Handlers
@@ -356,6 +448,46 @@ integrations.openapi(installRoute, async (c) =>
         { error: "wrong_install_model", message: `Platform "${platform}" uses install_model "${row.install_model}" — not OAuth-installable via this route.`, requestId },
         400,
       );
+    }
+
+    // ── Plan-tier gate (#2701) ────────────────────────────────────
+    // Browser callers expect a redirect-driven UX (clicking Connect on a
+    // locked card already routes through the UI, but a direct deep-link
+    // or stale-state click must land somewhere sensible). Send browsers
+    // back to /admin/integrations with the same reason code the catalog
+    // upsell banner reads. JSON callers receive the structured 403.
+    if (orgIdRaw) {
+      const entitlement = await getWorkspaceEntitlement(orgIdRaw);
+      const planMismatch = checkPlanEligibility(entitlement, row.min_plan);
+      if (planMismatch !== null) {
+        log.info(
+          {
+            workspaceId,
+            platform,
+            requiredPlan: planMismatch.required_plan,
+            currentPlan: planMismatch.current_plan,
+          },
+          "Install denied: workspace plan does not admit this integration",
+        );
+        if (prefersHtml(c.req.raw)) {
+          return c.redirect(
+            buildAdminIntegrationsUrl("error", platform, {
+              reason: "plan_upgrade_required",
+              required_plan: planMismatch.required_plan,
+            }),
+          );
+        }
+        return c.json(
+          {
+            error: "plan_upgrade_required",
+            message: `Installing ${platform} requires the "${planMismatch.required_plan}" plan. Your workspace is on the "${planMismatch.current_plan}" plan.`,
+            required_plan: planMismatch.required_plan,
+            current_plan: planMismatch.current_plan,
+            requestId,
+          },
+          403,
+        );
+      }
     }
 
     // ── Dispatch + start install ──────────────────────────────────
@@ -464,6 +596,36 @@ integrations.openapi(installFormRoute, async (c) =>
       return c.json({ error: "handler_unavailable", message: "Install handler misconfigured.", requestId }, 501);
     }
 
+    // ── Plan-tier gate (#2701) ────────────────────────────────────
+    // POST callers (admin UI form submit) get the structured 403
+    // body — no redirect path because the UI's `useAdminMutation`
+    // already routes 403 responses to the upgrade toast.
+    if (orgIdRaw) {
+      const entitlement = await getWorkspaceEntitlement(orgIdRaw);
+      const planMismatch = checkPlanEligibility(entitlement, row.min_plan);
+      if (planMismatch !== null) {
+        log.info(
+          {
+            workspaceId,
+            platform,
+            requiredPlan: planMismatch.required_plan,
+            currentPlan: planMismatch.current_plan,
+          },
+          "Form install denied: workspace plan does not admit this integration",
+        );
+        return c.json(
+          {
+            error: "plan_upgrade_required",
+            message: `Installing ${platform} requires the "${planMismatch.required_plan}" plan. Your workspace is on the "${planMismatch.current_plan}" plan.`,
+            required_plan: planMismatch.required_plan,
+            current_plan: planMismatch.current_plan,
+            requestId,
+          },
+          403,
+        );
+      }
+    }
+
     // ── Validate + persist ────────────────────────────────────────
     try {
       const { installRecord } = await handler.validateConfig(workspaceId, formData);
@@ -531,6 +693,58 @@ integrations.openapi(callbackRoute, async (c) =>
       log.error({ platform, kind: handler.kind }, "Catalog install_model='oauth' but dispatch returned non-OAuth handler");
       return c.json({ error: "handler_unavailable", message: "Install handler misconfigured.", requestId }, 501);
     }
+
+    // ── Plan-tier gate (#2701, defensive) ──────────────────────────
+    // The /install endpoint already plan-checked, but a downgrade
+    // mid-OAuth would let an OAuth token land on a no-longer-eligible
+    // workspace. Verify the state token first (no DB write, no
+    // upstream call), extract the workspace binding, plan-check, then
+    // delegate to the per-Platform `handleCallback`. The handler does
+    // its own state verification, so we re-verify here only to read
+    // the binding — the redundant work is a few microseconds of HMAC
+    // and is fail-loud on tamper, which is the right posture for a
+    // defensive gate.
+    //
+    // Browser callers get a redirect to the admin UI with the same
+    // reason code the catalog upsell banner reads; JSON callers see
+    // a structured 403.
+    const verifiedState = verifyOAuthStateToken(state);
+    if (verifiedState !== null) {
+      const entitlement = await getWorkspaceEntitlement(verifiedState.workspaceId);
+      const planMismatch = checkPlanEligibility(entitlement, row.min_plan);
+      if (planMismatch !== null) {
+        log.info(
+          {
+            workspaceId: verifiedState.workspaceId,
+            platform,
+            requiredPlan: planMismatch.required_plan,
+            currentPlan: planMismatch.current_plan,
+          },
+          "OAuth callback denied: workspace plan changed mid-OAuth — install not written",
+        );
+        if (prefersHtml(c.req.raw)) {
+          return c.redirect(
+            buildAdminIntegrationsUrl("error", platform, {
+              reason: "plan_upgrade_required",
+              required_plan: planMismatch.required_plan,
+            }),
+          );
+        }
+        return c.json(
+          {
+            error: "plan_upgrade_required",
+            message: `Installing ${platform} requires the "${planMismatch.required_plan}" plan. Your workspace is on the "${planMismatch.current_plan}" plan.`,
+            required_plan: planMismatch.required_plan,
+            current_plan: planMismatch.current_plan,
+            requestId,
+          },
+          403,
+        );
+      }
+    }
+    // Note: a null `verifiedState` (forged / expired / tampered) is
+    // intentionally left to the per-Platform handler to surface as
+    // `invalid_state` — we don't duplicate that branch here.
 
     let result: Awaited<ReturnType<typeof handler.handleCallback>>;
     try {

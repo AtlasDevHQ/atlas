@@ -890,6 +890,13 @@ const InstallGateSchema = z.discriminatedUnion("enabled", [
         "proactive.installGate.gate must be a function returning Promise<boolean>",
       ),
       catalogId: z.string().min(1, "proactive.installGate.catalogId must be a non-empty string"),
+      // #2703 — optional diagnostic that returns the structured
+      // verdict for the gate-deny log. Strict schema requires every
+      // field be declared; the per-(workspaceId, channelId) throttle
+      // in the listener caps the call rate even when wired.
+      describeState: zCallback<import("./proactive/types").InstallGateDescribeFn>(
+        "proactive.installGate.describeState must be a function returning Promise<InstallGateVerdict>",
+      ).optional(),
     })
     .strict(),
 ]);

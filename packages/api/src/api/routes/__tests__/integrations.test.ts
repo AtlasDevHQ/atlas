@@ -109,9 +109,21 @@ mock.module("@atlas/api/lib/config", () => ({
 // found" path.
 // ---------------------------------------------------------------------------
 
-const mockInternalQuery = mock(async (_sql: string, _params?: unknown[]): Promise<unknown[]> => [
-  { slug: "slack", install_model: "oauth", enabled: true },
-]);
+// SQL-aware default: route the catalog query and the workspace
+// entitlement query (#2701 / #2702) to distinct mock rows. Each
+// test's `mockImplementation` override still receives both queries
+// — to keep existing tests terse, the override only needs to supply
+// the catalog row; the org row is patched in below if absent.
+function defaultMockInternalQuery(sql: string): unknown[] {
+  if (sql.includes("FROM organization")) {
+    return [{ plan_tier: "business", is_operator_workspace: false }];
+  }
+  return [{ slug: "slack", install_model: "oauth", enabled: true, min_plan: "starter" }];
+}
+
+const mockInternalQuery = mock(
+  async (sql: string, _params?: unknown[]): Promise<unknown[]> => defaultMockInternalQuery(sql),
+);
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   InternalDB: MockInternalDB,
@@ -297,9 +309,12 @@ afterAll(() => {
 
 beforeEach(() => {
   callbackImpl = async () => null;
-  mockInternalQuery.mockImplementation(async () => [
-    { slug: "slack", install_model: "oauth", enabled: true },
-  ]);
+  mockInternalQuery.mockImplementation(async (sql: string) => {
+    if (sql.includes("FROM organization")) {
+      return [{ plan_tier: "business", is_operator_workspace: false }];
+    }
+    return [{ slug: "slack", install_model: "oauth", enabled: true, min_plan: "starter" }];
+  });
   authResultImpl = async () => ({
     authenticated: true,
     mode: "managed",
@@ -507,7 +522,7 @@ describe("POST /api/v1/integrations/:platform/install-form — happy path", () =
     // Catalog lookup returns the Email row for the form-install
     // branch; reset between tests since other suites pin "slack".
     mockInternalQuery.mockImplementation(async () => [
-      { slug: "email", install_model: "form", enabled: true },
+      { slug: "email", install_model: "form", enabled: true, min_plan: "free" },
     ]);
     validateImpl = async () => ({
       installRecord: {
@@ -544,7 +559,7 @@ describe("POST /api/v1/integrations/:platform/install-form — happy path", () =
 describe("POST /api/v1/integrations/:platform/install-form — validation failure", () => {
   beforeEach(() => {
     mockInternalQuery.mockImplementation(async () => [
-      { slug: "email", install_model: "form", enabled: true },
+      { slug: "email", install_model: "form", enabled: true, min_plan: "free" },
     ]);
     // Simulate the real EmailFormInstallHandler refusing the form
     // for a missing password — the route must translate this to a
@@ -580,7 +595,7 @@ describe("POST /api/v1/integrations/:platform/install-form — wrong install_mod
     // Catalog lookup returns the Slack row (oauth) but the caller
     // hit the form-install endpoint for it — must reject with 400.
     mockInternalQuery.mockImplementation(async () => [
-      { slug: "slack", install_model: "oauth", enabled: true },
+      { slug: "slack", install_model: "oauth", enabled: true, min_plan: "free" },
     ]);
   });
 
@@ -623,7 +638,7 @@ describe("POST /api/v1/integrations/:platform/install-form — unknown platform"
 describe("POST /install-form — F-04 SaaS-mode-none guard", () => {
   beforeEach(() => {
     mockInternalQuery.mockImplementation(async () => [
-      { slug: "email", install_model: "form", enabled: true },
+      { slug: "email", install_model: "form", enabled: true, min_plan: "free" },
     ]);
     authResultImpl = async () => ({
       authenticated: true,
@@ -655,7 +670,7 @@ describe("POST /install-form — F-04 SaaS-mode-none guard", () => {
 describe("POST /install-form — managed mode missing activeOrganizationId", () => {
   beforeEach(() => {
     mockInternalQuery.mockImplementation(async () => [
-      { slug: "email", install_model: "form", enabled: true },
+      { slug: "email", install_model: "form", enabled: true, min_plan: "free" },
     ]);
     authResultImpl = async () => ({
       authenticated: true,
@@ -686,7 +701,7 @@ describe("POST /install-form — managed mode missing activeOrganizationId", () 
 describe("POST /install-form — dispatch failures", () => {
   beforeEach(() => {
     mockInternalQuery.mockImplementation(async () => [
-      { slug: "email", install_model: "form", enabled: true },
+      { slug: "email", install_model: "form", enabled: true, min_plan: "free" },
     ]);
   });
 
@@ -726,6 +741,151 @@ describe("POST /install-form — dispatch failures", () => {
       registerOAuthHandler("slack", fakeHandler);
       registerFormHandler("email", fakeFormHandler);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plan-tier gating (#2701 / #2702) — install + install-form + callback
+// each return 403 plan_upgrade_required when the workspace's tier ranks
+// below the catalog row's min_plan, and operator workspaces bypass the
+// check entirely. Disconnect is intentionally NOT plan-checked so a
+// downgraded customer can always clean up their existing install.
+// ---------------------------------------------------------------------------
+
+describe("plan-tier gating", () => {
+  describe("GET /:platform/install — denies when plan is below min_plan", () => {
+    beforeEach(() => {
+      mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("FROM organization")) {
+          return [{ plan_tier: "free", is_operator_workspace: false }];
+        }
+        // Slack ships at min_plan='starter' in the real catalog.
+        return [{ slug: "slack", install_model: "oauth", enabled: true, min_plan: "starter" }];
+      });
+    });
+
+    it("redirects browser callers to /admin/integrations?error=slack&reason=plan_upgrade_required", async () => {
+      const res = await request("/api/v1/integrations/slack/install", {
+        headers: { Accept: "text/html" },
+      });
+      expect(res.status).toBe(302);
+      const location = res.headers.get("location") ?? "";
+      expect(location).toContain("error=slack");
+      expect(location).toContain("reason=plan_upgrade_required");
+      expect(location).toContain("required_plan=starter");
+    });
+
+    it("returns 403 plan_upgrade_required JSON for non-browser callers", async () => {
+      const res = await request("/api/v1/integrations/slack/install", {
+        headers: { Accept: "application/json" },
+      });
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as {
+        error: string;
+        required_plan: string;
+        current_plan: string;
+      };
+      expect(body.error).toBe("plan_upgrade_required");
+      expect(body.required_plan).toBe("starter");
+      expect(body.current_plan).toBe("free");
+    });
+  });
+
+  describe("POST /:platform/install-form — denies when plan is below min_plan", () => {
+    beforeEach(() => {
+      mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("FROM organization")) {
+          return [{ plan_tier: "trial", is_operator_workspace: false }];
+        }
+        return [{ slug: "email", install_model: "form", enabled: true, min_plan: "business" }];
+      });
+    });
+
+    it("returns 403 plan_upgrade_required with required_plan + current_plan", async () => {
+      const res = await request("/api/v1/integrations/email/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ host: "smtp.example.com" }),
+      });
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as {
+        error: string;
+        required_plan: string;
+        current_plan: string;
+      };
+      expect(body.error).toBe("plan_upgrade_required");
+      expect(body.required_plan).toBe("business");
+      expect(body.current_plan).toBe("trial");
+    });
+  });
+
+  describe("operator-workspace bypass — admits regardless of plan", () => {
+    it("/install admits an operator workspace even when plan_tier=trial and min_plan=business", async () => {
+      mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("FROM organization")) {
+          return [{ plan_tier: "trial", is_operator_workspace: true }];
+        }
+        return [{ slug: "slack", install_model: "oauth", enabled: true, min_plan: "business" }];
+      });
+
+      const res = await request("/api/v1/integrations/slack/install");
+      // Happy path — redirects to the upstream Slack OAuth page.
+      expect(res.status).toBe(302);
+      const location = res.headers.get("location") ?? "";
+      expect(location).toContain("slack.com/oauth");
+    });
+
+    it("/install-form admits an operator workspace even with a starve-low plan_tier", async () => {
+      // Reset validateImpl — earlier suites set it to throw a
+      // FormInstallValidationError; here we want the happy path.
+      validateImpl = async () => ({
+        installRecord: { id: "install-email-op", workspaceId: "ws-1" as never, catalogId: "email" },
+        credentialWritten: true,
+      });
+      mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("FROM organization")) {
+          return [{ plan_tier: "trial", is_operator_workspace: true }];
+        }
+        return [{ slug: "email", install_model: "form", enabled: true, min_plan: "business" }];
+      });
+
+      const res = await request("/api/v1/integrations/email/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ host: "smtp.example.com" }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { installed: boolean };
+      expect(body.installed).toBe(true);
+    });
+  });
+
+  describe("DELETE /:platform — not plan-checked (downgrade cleanup always works)", () => {
+    it("permits a free-tier workspace to disconnect an install that requires business", async () => {
+      // Worst case: the workspace downgraded post-install and is now
+      // below the catalog gate. Disconnect must still succeed —
+      // otherwise the install is stranded with no admin-visible UI to
+      // clear its credentials.
+      mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("DELETE FROM workspace_plugins")) {
+          callOrder.push("workspace_plugins.delete");
+          return [];
+        }
+        if (sql.includes("FROM plugin_catalog")) {
+          return [{ id: "catalog:slack", slug: "slack", install_model: "oauth", enabled: true, min_plan: "business" }];
+        }
+        if (sql.includes("FROM workspace_plugins")) {
+          return [{ team_id: "T-downgraded" }];
+        }
+        if (sql.includes("FROM organization")) {
+          return [{ plan_tier: "free", is_operator_workspace: false }];
+        }
+        return [];
+      });
+
+      const res = await request("/api/v1/integrations/slack", { method: "DELETE" });
+      expect(res.status).toBe(200);
+    });
   });
 });
 

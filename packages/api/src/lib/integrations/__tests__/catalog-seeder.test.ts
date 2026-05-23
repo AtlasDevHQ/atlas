@@ -206,7 +206,7 @@ describe("planCatalogSeed", () => {
 
   it("updates when columns differ", () => {
     const plan = planCatalogSeed(
-      [entry({ slug: "slack", min_plan: "team", saas_eligible: false })],
+      [entry({ slug: "slack", min_plan: "business", saas_eligible: false })],
       [row({ slug: "slack" })], // minPlan starter, saasEligible true
     );
     expect(plan.actions).toHaveLength(1);
@@ -357,10 +357,10 @@ describe("seedCatalog", () => {
   it("propagates plan_tier from config to DB row", async () => {
     const { db, rows } = makeMockDb([]);
     await seedCatalog(db, [
-      entry({ slug: "slack", min_plan: "team" }),
+      entry({ slug: "slack", min_plan: "pro" }),
       entry({ slug: "salesforce", type: "integration", min_plan: "business" }),
     ]);
-    expect(rows.find((r) => r.slug === "slack")?.minPlan).toBe("team");
+    expect(rows.find((r) => r.slug === "slack")?.minPlan).toBe("pro");
     expect(rows.find((r) => r.slug === "salesforce")?.minPlan).toBe("business");
   });
 
@@ -439,13 +439,13 @@ describe("seedCatalog", () => {
         slug: "slack",
         enabled: true, // config wants enabled
         name: "New Slack Name",
-        min_plan: "team",
+        min_plan: "pro",
       }),
     ]);
     const slack = rows.find((r) => r.slug === "slack");
     expect(slack?.enabled).toBe(false); // ops-disable wins
     expect(slack?.name).toBe("New Slack Name"); // metadata refreshed
-    expect(slack?.minPlan).toBe("team");
+    expect(slack?.minPlan).toBe("pro");
   });
 
   // Pinned by PR-test-analyzer review on #2664 — guards the

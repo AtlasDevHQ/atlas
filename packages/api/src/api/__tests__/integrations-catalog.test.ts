@@ -379,6 +379,10 @@ const slackRow = {
   updated_at: now,
 };
 
+// Post-#2666 vocabulary: catalog min_plan uses PLAN_TIERS only (no
+// `team` / `enterprise`). Salesforce is a premium integration that
+// would have been `team` pre-#2666; the migration backfills to
+// `business`.
 const teamRow = {
   id: "catalog:salesforce",
   slug: "salesforce",
@@ -388,7 +392,7 @@ const teamRow = {
   install_model: "oauth",
   icon_url: null,
   config_schema: null,
-  min_plan: "team",
+  min_plan: "business",
   enabled: true,
   saas_eligible: true,
   created_at: now,
@@ -426,7 +430,7 @@ describe("GET /api/v1/integrations/catalog", () => {
 
   describe("admin gating", () => {
     it("returns 400 when no active org", async () => {
-      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
       setQueryResult("FROM plugin_catalog", [slackRow]);
       setQueryResult("FROM workspace_plugins", []);
 
@@ -445,7 +449,7 @@ describe("GET /api/v1/integrations/catalog", () => {
 
   describe("response shape", () => {
     it("returns enabled catalog entries with installed=false when no installations", async () => {
-      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
       setQueryResult("FROM plugin_catalog", [slackRow]);
       setQueryResult("FROM workspace_plugins", []);
 
@@ -473,7 +477,7 @@ describe("GET /api/v1/integrations/catalog", () => {
       // 'reconnect_needed' on permanent failure. The catalog response
       // carries the flag so /admin/integrations can render the
       // Reconnect affordance.
-      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
       setQueryResult("FROM plugin_catalog", [slackRow]);
       setQueryResult("FROM workspace_plugins", [
         {
@@ -495,7 +499,7 @@ describe("GET /api/v1/integrations/catalog", () => {
       // Endpoint should issue `WHERE enabled = true` — the mock matches the
       // SQL fragment and returns only enabled rows. This test asserts the
       // contract by verifying the captured SQL.
-      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
       setQueryResult("FROM plugin_catalog", [slackRow]);
       setQueryResult("FROM workspace_plugins", []);
 
@@ -513,7 +517,7 @@ describe("GET /api/v1/integrations/catalog", () => {
       // (legacy marketplace types) alongside the new `chat|integration`
       // values. The customer-facing endpoint must narrow to the new pair
       // or the client-side Zod parse will fail.
-      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
       setQueryResult("FROM plugin_catalog", [slackRow]);
       setQueryResult("FROM workspace_plugins", []);
 
@@ -529,7 +533,7 @@ describe("GET /api/v1/integrations/catalog", () => {
 
   describe("install-state join", () => {
     it("marks rows installed when workspace_plugins row exists", async () => {
-      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
       setQueryResult("FROM plugin_catalog", [slackRow]);
       setQueryResult("FROM workspace_plugins", [
         {
@@ -550,7 +554,7 @@ describe("GET /api/v1/integrations/catalog", () => {
 
     it("converts Date-typed installed_at to ISO string (pg returns timestamptz as Date)", async () => {
       const installedDate = new Date("2026-05-19T10:00:00Z");
-      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
       setQueryResult("FROM plugin_catalog", [slackRow]);
       setQueryResult("FROM workspace_plugins", [
         {
@@ -568,7 +572,7 @@ describe("GET /api/v1/integrations/catalog", () => {
     });
 
     it("scopes workspace_plugins lookup to caller's org via WHERE workspace_id = $1", async () => {
-      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
       setQueryResult("FROM plugin_catalog", [slackRow]);
       setQueryResult("FROM workspace_plugins", []);
 
@@ -587,9 +591,9 @@ describe("GET /api/v1/integrations/catalog", () => {
 
   describe("plan filtering", () => {
     it("flags above-plan entries as upsellOnly=true", async () => {
-      // Workspace on starter; Salesforce requires team — should appear with
-      // `upsellOnly: true`, not be filtered out.
-      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      // Workspace on starter; Salesforce requires business — should appear
+      // with `upsellOnly: true`, not be filtered out.
+      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
       setQueryResult("FROM plugin_catalog", [slackRow, teamRow]);
       setQueryResult("FROM workspace_plugins", []);
 
@@ -608,7 +612,7 @@ describe("GET /api/v1/integrations/catalog", () => {
       // `#2666` migration window: a min_plan value outside both vocabularies
       // (e.g. typo or future tier) must render read-only rather than
       // silently allow install.
-      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
       setQueryResult("FROM plugin_catalog", [
         { ...slackRow, min_plan: "platinum" },
       ]);
@@ -622,7 +626,7 @@ describe("GET /api/v1/integrations/catalog", () => {
     });
 
     it("flags upsellOnly=false when workspace plan meets min_plan", async () => {
-      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "business" }]);
+      setQueryResult("FROM organization WHERE id", [{ plan_tier: "business" }]);
       setQueryResult("FROM plugin_catalog", [slackRow, teamRow]);
       setQueryResult("FROM workspace_plugins", []);
 
@@ -638,7 +642,7 @@ describe("GET /api/v1/integrations/catalog", () => {
   describe("deploy-mode filter", () => {
     it("issues a SaaS-narrowed catalog query (`saas_eligible = true`) when deployMode is `saas`", async () => {
       mockConfigOverride = { deployMode: "saas" };
-      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
       setQueryResult("FROM plugin_catalog", [slackRow]);
       setQueryResult("FROM workspace_plugins", []);
 
@@ -653,7 +657,7 @@ describe("GET /api/v1/integrations/catalog", () => {
 
     it("omits the `saas_eligible = true` predicate on self-hosted deploys", async () => {
       mockConfigOverride = { deployMode: "self-hosted" };
-      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
       setQueryResult("FROM plugin_catalog", [slackRow, githubPatRow]);
       setQueryResult("FROM workspace_plugins", []);
 
@@ -672,7 +676,7 @@ describe("GET /api/v1/integrations/catalog", () => {
 
     it("treats unloaded config as self-hosted (no `saas_eligible = true` predicate)", async () => {
       mockConfigOverride = null;
-      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
       setQueryResult("FROM plugin_catalog", [slackRow, githubPatRow]);
       setQueryResult("FROM workspace_plugins", []);
 

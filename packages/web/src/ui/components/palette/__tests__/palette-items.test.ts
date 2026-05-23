@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { buildAdminPaletteGroups } from "../palette-items";
+import { paletteItemSearchValue } from "../global-command-palette";
 import { navGroups } from "@/ui/components/admin/admin-nav";
 
 describe("buildAdminPaletteGroups", () => {
@@ -74,6 +75,34 @@ describe("buildAdminPaletteGroups", () => {
     // Convention: nav-derived items are namespaced `nav:` so settings items
     // and chat actions can't collide.
     for (const id of ids) expect(id.startsWith("nav:")).toBe(true);
+  });
+
+  test("search value joins title + hint + keywords so cmdk matches alt phrasings", () => {
+    // The whole point of `keywords` on a settings item is letting the user
+    // type the env var or section name and still find the row. If a
+    // refactor drops `keywords` from the join, the visible label becomes
+    // the only matchable text — search by `ATLAS_ROW_LIMIT` silently
+    // breaks. Lock the join contract.
+    const value = paletteItemSearchValue({
+      id: "setting:ATLAS_ROW_LIMIT",
+      title: "Row Limit",
+      hint: "Settings → Query Limits",
+      keywords: ["ATLAS_ROW_LIMIT", "row cap", "Query Limits"],
+      action: { kind: "navigate", href: "/admin/settings#setting-ATLAS_ROW_LIMIT" },
+    });
+    expect(value).toContain("Row Limit");
+    expect(value).toContain("ATLAS_ROW_LIMIT");
+    expect(value).toContain("Query Limits");
+    expect(value).toContain("row cap");
+  });
+
+  test("search value drops empty hint/keywords cleanly", () => {
+    const value = paletteItemSearchValue({
+      id: "nav:/admin/billing",
+      title: "Billing",
+      action: { kind: "navigate", href: "/admin/billing" },
+    });
+    expect(value).toBe("Billing");
   });
 
   test("members see no admin groups at all", () => {

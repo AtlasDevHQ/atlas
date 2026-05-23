@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import {
   CommandDialog,
   CommandEmpty,
@@ -116,10 +117,12 @@ export function GlobalCommandPalette({
           }
         })
         .catch((err: unknown) => {
-          console.warn(
-            "[palette] action failed:",
-            err instanceof Error ? err.message : String(err),
-          );
+          const msg = err instanceof Error ? err.message : String(err);
+          // Silent dismissal would feel like the palette ate the click.
+          // Toast keeps the user informed; the console.warn keeps Sentry's
+          // breadcrumb trail accurate.
+          console.warn("[palette] action failed:", msg);
+          toast.error("Couldn't complete that action.", { description: msg });
         });
     }, 0);
     pendingTimers.current.add(timer);
@@ -170,6 +173,17 @@ function RenderGroup({
   );
 }
 
+/**
+ * The string cmdk fuzzy-matches against. Title + hint + keywords are joined
+ * so a user can type the env var (`ATLAS_ROW_LIMIT`) or the section name
+ * ("Query Limits") and hit a row whose visible label is something else.
+ */
+export function paletteItemSearchValue(item: PaletteItem): string {
+  return [item.title, item.hint, ...(item.keywords ?? [])]
+    .filter(Boolean)
+    .join(" ");
+}
+
 function RenderItem({
   item,
   onSelect,
@@ -178,14 +192,8 @@ function RenderItem({
   onSelect: (action: PaletteAction) => void;
 }) {
   const Icon = item.icon ?? ArrowRight;
-  // cmdk matches on the `value` string — joining keywords here lets the
-  // user find a setting by env var or by its description even when the
-  // visible label doesn't contain the query.
-  const value = [item.title, item.hint, ...(item.keywords ?? [])]
-    .filter(Boolean)
-    .join(" ");
   return (
-    <CommandItem value={value} onSelect={() => onSelect(item.action)}>
+    <CommandItem value={paletteItemSearchValue(item)} onSelect={() => onSelect(item.action)}>
       <Icon />
       <span className="flex-1 truncate">{item.title}</span>
       {item.badge != null && item.badge > 0 && (

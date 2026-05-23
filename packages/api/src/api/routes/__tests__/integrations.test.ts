@@ -197,7 +197,6 @@ mock.module("@atlas/api/lib/slack/store", () => ({
   getInstallation: mock(() => Promise.resolve(null)),
   getInstallationByOrg: mock(() => Promise.resolve(null)),
   saveInstallation: mock(() => Promise.resolve()),
-  preserveOrgIdOnInstall: mock(() => Promise.resolve()),
   deleteInstallationByOrg: mock(() => Promise.resolve(false)),
   getBotToken: mock(() => Promise.resolve(null)),
   ENV_TEAM_ID: "env",

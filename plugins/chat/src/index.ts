@@ -347,8 +347,8 @@ function buildChatPlugin(
 
       // Build chat-platform adapters via the catalog-driven
       // AdapterRegistry (#2650 slice 2). The registry reads per-Platform
-      // credentials from `process.env`, logs warns on missing creds /
-      // non-OAuth entries, and returns the adapters map plus diagnostic
+      // credentials from `process.env`, logs errors on missing creds /
+      // warns on non-OAuth entries, and returns the adapters map plus diagnostic
       // slug lists. The diagnostics let `healthCheck` surface actionable
       // error messages.
       try {
@@ -397,7 +397,7 @@ function buildChatPlugin(
       const msg =
         enabledAdapters.length > 0
           ? `Chat interaction plugin initialized (${enabledAdapters.join(", ")}, state: ${backend})`
-          : `Chat interaction plugin initialized (no chat adapters activated — see AdapterRegistry warns, state: ${backend})`;
+          : `Chat interaction plugin initialized (no chat adapters activated — see AdapterRegistry errors, state: ${backend})`;
 
       if (initFailedSilently) {
         // SaaS-eligible catalog entry failed to instantiate (missing

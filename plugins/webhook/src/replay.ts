@@ -1,11 +1,10 @@
 /**
  * Replay protection for the webhook plugin.
  *
- * Mirrors the Slack pattern (`packages/api/src/lib/slack/verify.ts`) but drops
- * the `v0:` version prefix — the signing input here is `${timestamp}:${body}`.
- * Requests outside a 5-minute window are rejected, and a small per-channel
- * signature cache blocks in-window replays. TTL is 305s so entries expire
- * just after the window closes.
+ * Signing input is `${timestamp}:${body}` (no version prefix). Requests
+ * outside a 5-minute window are rejected, and a small per-channel signature
+ * cache blocks in-window replays. TTL is 305s so entries expire just after
+ * the window closes.
  *
  * Legacy soft-fail (`ATLAS_WEBHOOK_REPLAY_LEGACY=true`) lets operators stage
  * the upgrade — it tolerates a missing `X-Webhook-Timestamp` header and

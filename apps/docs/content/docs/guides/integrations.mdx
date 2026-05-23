@@ -399,6 +399,51 @@ All endpoints require admin authentication.
 
 ---
 
+## Jira (Lazy OAuth — 1.5.2 / #2659)
+
+Jira is the second **lazy OAuth integration**, riding the shared infrastructure Salesforce established in #2658 — credentials in `integration_credentials`, per-Workspace plugin instances built on demand by `LazyPluginLoader`, dual-store teardown via the same disconnect path.
+
+Atlassian-specific notes vs Salesforce:
+
+- Authorize + token endpoints are **fixed** (`auth.atlassian.com`) — no per-tenant login host.
+- After the token exchange Atlas calls `GET https://api.atlassian.com/oauth/token/accessible-resources` to learn the **`cloudid`** of the Atlassian Cloud the user connected. One Atlas Workspace = one Atlassian Cloud; `cloudid` lands in `workspace_plugins.config`.
+- Atlassian **rotates** the `refresh_token` on every refresh; the new value is persisted back to `integration_credentials` (Salesforce sometimes returns one, sometimes not).
+
+### Operator setup
+
+1. In your Atlassian Developer Console, create an **OAuth 2.0 (3LO) integration**.
+2. Configure permissions — at minimum `read:jira-work`, `read:jira-user`, plus `offline_access` (required to receive refresh tokens).
+3. Set the **Callback URL** to `https://<your-api>/api/v1/integrations/jira/callback`.
+4. Capture the **Client ID** and **Client Secret** from the App's Settings tab.
+5. Set these env vars on your API service:
+
+| Env var | Required | Notes |
+|---|---|---|
+| `JIRA_CLIENT_ID` | yes | Atlassian App's Client ID |
+| `JIRA_CLIENT_SECRET` | yes | Atlassian App's Client Secret |
+| `ATLAS_PUBLIC_API_URL` | yes | Public origin of the API — used to construct the OAuth callback URL |
+
+Without `JIRA_CLIENT_ID` / `JIRA_CLIENT_SECRET`, the install handler logs `Jira OAuth handler not registered` at boot and `GET /api/v1/integrations/jira/install` returns 501.
+
+### Customer admin flow
+
+1. Click **Connect** on the Jira card in `/admin/integrations`.
+2. Atlas redirects to `https://auth.atlassian.com/authorize` with the operator's `client_id`, the required `audience=api.atlassian.com` param, and a CSRF-signed state token.
+3. The Jira admin signs in + selects the Atlassian site(s) to grant access to.
+4. Atlassian redirects back to `/api/v1/integrations/jira/callback?code=...&state=...`. Atlas exchanges the code, calls `accessible-resources` for the `cloudid`, then writes:
+   - `workspace_plugins` — install row with `config = { cloudid, scopes, status: "ok", site_url, site_name }`.
+   - `integration_credentials` — encrypted `{ accessToken, refreshToken, expiresAt, tokenType, scope, instanceUrl }` blob (`instanceUrl = https://api.atlassian.com/ex/jira/<cloudid>`).
+
+### Refresh + reconnect
+
+Jira access tokens are short-lived. On HTTP 401 during a query, Atlas runs `grant_type=refresh_token` and retries; the rotated `refresh_token` is persisted back. On a permanent failure (`invalid_grant`, `unauthorized_client`, `access_denied`), Atlas flips `workspace_plugins.config.status` to `"reconnect_needed"` and the admin UI surfaces a **Reconnect needed** badge + Reconnect button. A re-run of the OAuth dance heals the install.
+
+### Disconnect
+
+`DELETE /api/v1/integrations/jira` tears down both stores in the ADR-0003 order (credentials FIRST, install record SECOND).
+
+---
+
 ## Salesforce (Lazy OAuth — 1.5.2 / #2658)
 
 Salesforce is the first **lazy OAuth integration** — credentials live in the dedicated `integration_credentials` table (per [ADR-0005](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0005-integration-credentials-table.md)) and the per-Workspace plugin instance is built on demand by `LazyPluginLoader` on the first agent tool call.

@@ -67,9 +67,9 @@ Rejected because:
 4. Both should succeed atomically — wrap in a transaction OR accept that a transient credential-write failure leaves an installable-but-broken Connection that the customer can re-trigger via "Reconnect"
 
 **For uninstall** — on disconnect:
-1. DELETE `workspace_plugins` row
-2. DELETE `chat_cache:<platform>:installation:<T>` for that team
-3. Same atomicity caveat as install
+1. DELETE `chat_cache:<platform>:installation:<T>` for that team — credentials FIRST
+2. DELETE `workspace_plugins` row — install metadata SECOND
+3. Order is load-bearing: credentials must not outlive the install record. If `workspace_plugins` went first and the credential delete then failed, the bot token would still be sitting in `chat_cache` with no admin-visible UI to reach it. The reverse failure mode (install row dangles, credentials gone) is recoverable — the listener gate's downstream credential lookup fails on the next event and silently skips.
 
 ## References
 

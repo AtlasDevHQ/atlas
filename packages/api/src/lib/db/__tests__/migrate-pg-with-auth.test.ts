@@ -79,16 +79,32 @@ describeIfPg("migrate-pg-with-auth (real Postgres, Better Auth tables present)",
   const schemaName = `boot_smoke_auth_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
 
   beforeAll(async () => {
-    pool = new Pool({ connectionString: TEST_DB_URL });
-    pool.on("connect", (client) => {
-      void client.query(`SET search_path TO "${schemaName}"`).catch((err) => {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(
-          `migrate-pg-with-auth: SET search_path failed on new connection: ${message}`,
-        );
-      });
+    // Bootstrap the scratch schema on a one-shot client BEFORE creating
+    // the long-lived pool. CREATE SCHEMA must exist before any
+    // `search_path`-scoped connection lands, so a `SET search_path`
+    // pool listener has a real target.
+    const bootstrap = new Pool({ connectionString: TEST_DB_URL });
+    try {
+      await bootstrap.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+    } finally {
+      await bootstrap.end();
+    }
+
+    // libpq `options` baked into the connection string sets search_path
+    // at connection startup — synchronously, server-side, before any
+    // user query runs on that connection. Replaces the pool.on("connect")
+    // listener that submitted `SET search_path` as an unawaited
+    // `void client.query(...)` (per Codex P1 #2722): even though
+    // pg client queries serialize per-connection, relying on
+    // submission-order racing against the pool handing the client to
+    // the next caller is fragile. Setting it via libpq options closes
+    // the window entirely. Both `schemaName` and `public` are listed so
+    // built-in objects (extensions, system catalog references) still
+    // resolve.
+    pool = new Pool({
+      connectionString: TEST_DB_URL,
+      options: `-c search_path="${schemaName}",public`,
     });
-    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
     await pool.query(BETTER_AUTH_BOOTSTRAP_SQL);
   });
 

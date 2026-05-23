@@ -4579,6 +4579,177 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       expect(after.rows[0]?.n).toBe("0");
     }, PG_TEST_TIMEOUT_MS);
   });
+
+  // 0092 / #2739 — three-pillar taxonomy + install_id foundation.
+  // Schema-only slice: callers under integrations/install/*-handler.ts
+  // continue to omit `pillar` and `install_id`; the BEFORE INSERT
+  // trigger fills them in. These tests pin the trigger behavior + the
+  // new constraints so a future "tidying" revision that drops them
+  // surfaces here rather than at the next handler INSERT.
+  describe("0092: pillar + install_id columns (#2739, 1.5.3 slice 1)", () => {
+    it("plugin_catalog: pillar + implementation_status + auto_install columns exist and CHECK is enforced", async () => {
+      const slug = `pg-0092-${Date.now()}`;
+      const id = `cat-${slug}`;
+
+      // Happy path: insert an integration row, get backfilled `action` pillar
+      // and the documented defaults for the other two columns.
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type, pillar)
+         VALUES ($1, '0092 Smoke', $2, 'integration', 'action')`,
+        [id, slug],
+      );
+
+      const { rows } = await pool.query<{
+        pillar: string;
+        implementation_status: string;
+        auto_install: boolean;
+      }>(
+        `SELECT pillar, implementation_status, auto_install FROM plugin_catalog WHERE id = $1`,
+        [id],
+      );
+      expect(rows[0]?.pillar).toBe("action");
+      expect(rows[0]?.implementation_status).toBe("available");
+      expect(rows[0]?.auto_install).toBe(false);
+
+      // CHECK rejects unknown pillar with 23514.
+      await expect(
+        pool.query(
+          `INSERT INTO plugin_catalog (id, name, slug, type, pillar)
+           VALUES ($1, 'Bad Pillar', $2, 'chat', 'something-else')`,
+          [`${id}-bad-pillar`, `${slug}-bad-pillar`],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+
+      // CHECK rejects unknown implementation_status with 23514.
+      await expect(
+        pool.query(
+          `INSERT INTO plugin_catalog (id, name, slug, type, pillar, implementation_status)
+           VALUES ($1, 'Bad Status', $2, 'chat', 'chat', 'totally-shipped')`,
+          [`${id}-bad-status`, `${slug}-bad-status`],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("workspace_plugins: BEFORE INSERT trigger fills install_id + pillar when caller omits them", async () => {
+      // Seed a catalog row whose pillar will flow through the trigger.
+      const slug = `pg-0092-trig-${Date.now()}`;
+      const catalogId = `cat-${slug}`;
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type, pillar)
+         VALUES ($1, '0092 Trigger Smoke', $2, 'chat', 'chat')`,
+        [catalogId, slug],
+      );
+
+      // Mimic the existing handler INSERT shape (no install_id, no
+      // pillar). Trigger fills both.
+      const installId = `wp-${slug}`;
+      const workspaceId = `ws-${slug}`;
+      await pool.query(
+        `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, enabled, installed_at)
+         VALUES ($1, $2, $3, '{}'::jsonb, true, NOW())`,
+        [installId, workspaceId, catalogId],
+      );
+
+      const { rows } = await pool.query<{
+        install_id: string;
+        pillar: string;
+      }>(
+        `SELECT install_id, pillar FROM workspace_plugins WHERE workspace_id = $1 AND catalog_id = $2`,
+        [workspaceId, catalogId],
+      );
+      expect(rows[0]?.install_id).toBe(catalogId);
+      expect(rows[0]?.pillar).toBe("chat");
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("workspace_plugins: partial unique 'workspace_plugins_singleton' blocks a second chat install for the same (workspace, catalog)", async () => {
+      const slug = `pg-0092-uniq-${Date.now()}`;
+      const catalogId = `cat-${slug}`;
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type, pillar)
+         VALUES ($1, '0092 Unique Smoke', $2, 'chat', 'chat')`,
+        [catalogId, slug],
+      );
+
+      const workspaceId = `ws-${slug}`;
+      await pool.query(
+        `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, enabled, installed_at)
+         VALUES ($1, $2, $3, '{}'::jsonb, true, NOW())`,
+        [`first-${slug}`, workspaceId, catalogId],
+      );
+
+      // Second insert for the same (workspace, catalog) — different `id`
+      // and `install_id` — should still be blocked. The pre-existing
+      // `idx_workspace_plugins_unique` would catch it too in this slice,
+      // but the partial unique is the post-1.5.3 invariant that survives
+      // slice 5/6's global-unique drop. Either way: 23505.
+      await expect(
+        pool.query(
+          `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
+           VALUES ($1, $2, $3, $4, 'chat', '{}'::jsonb, true, NOW())`,
+          [`second-${slug}`, workspaceId, catalogId, `second-install-${slug}`],
+        ),
+      ).rejects.toMatchObject({ code: "23505" });
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("workspace_plugins: composite PK rejects an exact (workspace, catalog, install) duplicate even across pillars", async () => {
+      const slug = `pg-0092-pk-${Date.now()}`;
+      const catalogId = `cat-${slug}`;
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type, pillar)
+         VALUES ($1, '0092 PK Smoke', $2, 'integration', 'action')`,
+        [catalogId, slug],
+      );
+
+      const workspaceId = `ws-${slug}`;
+      const installId = `inst-${slug}`;
+
+      await pool.query(
+        `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
+         VALUES ($1, $2, $3, $4, 'action', '{}'::jsonb, true, NOW())`,
+        [`first-${slug}`, workspaceId, catalogId, installId],
+      );
+
+      await expect(
+        pool.query(
+          `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
+           VALUES ($1, $2, $3, $4, 'action', '{}'::jsonb, true, NOW())`,
+          [`second-${slug}`, workspaceId, catalogId, installId],
+        ),
+      ).rejects.toMatchObject({ code: "23505" });
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("workspace_plugins: `id` uniqueness preserved after PK swap", async () => {
+      // The dropped single-column PK used to enforce id uniqueness;
+      // `workspace_plugins_id_unique` takes over. Reuse the same id
+      // across two distinct (workspace, catalog) pairs and confirm
+      // the second insert rejects with 23505.
+      const slug = `pg-0092-id-${Date.now()}`;
+      const catalogIdA = `cat-a-${slug}`;
+      const catalogIdB = `cat-b-${slug}`;
+      const sharedId = `shared-${slug}`;
+
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type, pillar)
+         VALUES ($1, '0092 ID Smoke A', $2, 'chat', 'chat'),
+                ($3, '0092 ID Smoke B', $4, 'chat', 'chat')`,
+        [catalogIdA, `${slug}-a`, catalogIdB, `${slug}-b`],
+      );
+
+      await pool.query(
+        `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, enabled, installed_at)
+         VALUES ($1, $2, $3, '{}'::jsonb, true, NOW())`,
+        [sharedId, `ws-${slug}`, catalogIdA],
+      );
+
+      await expect(
+        pool.query(
+          `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, enabled, installed_at)
+           VALUES ($1, $2, $3, '{}'::jsonb, true, NOW())`,
+          [sharedId, `ws-${slug}`, catalogIdB],
+        ),
+      ).rejects.toMatchObject({ code: "23505" });
+    }, PG_TEST_TIMEOUT_MS);
+  });
 });
 
 // #2606 — source-level revert guard for the integration-store SQL formatter.

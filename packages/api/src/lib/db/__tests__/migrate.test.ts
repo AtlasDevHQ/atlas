@@ -103,8 +103,9 @@ describe("runMigrations", () => {
     // + 0088 (backfill workspace_plugins from chat_cache, #2655)
     // + 0089 (integration_credentials table, #2658)
     // + 0090 (organization.is_operator_workspace flag, #2702)
-    // + 0091 (unify catalog min_plan vocabulary, #2666) = 92.
-    expect(count).toBe(92);
+    // + 0091 (unify catalog min_plan vocabulary, #2666)
+    // + 0092 (pillar + install_id columns, #2739) = 93.
+    expect(count).toBe(93);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -225,6 +226,7 @@ describe("runMigrations", () => {
         "0089_integration_credentials.sql",
         "0090_organization_is_operator_workspace.sql",
         "0091_unify_catalog_min_plan.sql",
+        "0092_pillar_install_id_columns.sql",
       ],
     });
 

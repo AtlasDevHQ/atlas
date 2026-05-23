@@ -145,7 +145,7 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
 
 ## Active
 
-- **1.5.2 — Multi-Adapter SaaS Readiness** ([milestone #50](https://github.com/AtlasDevHQ/atlas/milestone/50), 13 issues + [PRD #2649](https://github.com/AtlasDevHQ/atlas/issues/2649)) — establish operator/customer seam for chat Platforms + integration plugins; customer admins self-serve install via OAuth against operator-owned App Registrations. Slack platform end-to-end (slices 1–7 + Disconnect #2695) and form-based install pattern + Email plugin (#2697) shipped; #2658 (Salesforce lazy OAuth integration) is the next unblock. See [`docs/prd/multi-adapter-saas-readiness.md`](../../docs/prd/multi-adapter-saas-readiness.md) + ADRs 0001–0004 for per-slice detail.
+- **1.5.2 — Multi-Adapter SaaS Readiness** ([milestone #50](https://github.com/AtlasDevHQ/atlas/milestone/50), 13 issues + [PRD #2649](https://github.com/AtlasDevHQ/atlas/issues/2649)) — establish operator/customer seam for chat Platforms + integration plugins. Slack end-to-end (slices 1–7 + Disconnect #2695), form-based install + Email (#2697), Webhook + Obsidian (#2699), Salesforce + `integration_credentials` table + [ADR-0005](../../docs/adr/0005-integration-credentials-table.md) (#2700) shipped; remaining: #2659 Jira + entitlement UX polish (#2701–#2705). See [`docs/prd/multi-adapter-saas-readiness.md`](../../docs/prd/multi-adapter-saas-readiness.md).
 
 ## Planned
 

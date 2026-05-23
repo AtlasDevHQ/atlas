@@ -47,7 +47,7 @@ import { ChatConfigSchema } from "./config";
 import type { ChatCatalogEntryInput, ChatPluginConfig } from "./config";
 import { createChatBridge } from "./bridge";
 import type { ChatBridge } from "./bridge";
-import { buildChatAdapterRegistry } from "./adapter-registry";
+import { buildChatAdapterRegistry, hasInstantiationFailure } from "./adapter-registry";
 import type { ChatCatalogEntry } from "./adapter-registry";
 import { createStateAdapter } from "./state";
 
@@ -347,8 +347,8 @@ function buildChatPlugin(
 
       // Build chat-platform adapters via the catalog-driven
       // AdapterRegistry (#2650 slice 2). The registry reads per-Platform
-      // credentials from `process.env`, logs warns on missing creds /
-      // non-OAuth entries, and returns the adapters map plus diagnostic
+      // credentials from `process.env`, logs errors on missing creds /
+      // warns on non-OAuth entries, and returns the adapters map plus diagnostic
       // slug lists. The diagnostics let `healthCheck` surface actionable
       // error messages.
       try {
@@ -390,12 +390,33 @@ function buildChatPlugin(
       if (slackAdapterInstance) enabledAdapters.push("slack");
 
       const backend = config.state?.backend ?? "memory";
-      ctx.logger.info(
-        { adapters: enabledAdapters, stateBackend: backend },
+      const initFailedSilently =
+        enabledAdapters.length === 0 &&
+        hasInstantiationFailure(adapterDiagnostics);
+
+      const msg =
         enabledAdapters.length > 0
           ? `Chat interaction plugin initialized (${enabledAdapters.join(", ")}, state: ${backend})`
-          : `Chat interaction plugin initialized (no chat adapters activated — see AdapterRegistry warns, state: ${backend})`,
-      );
+          : `Chat interaction plugin initialized (no chat adapters activated — see AdapterRegistry errors, state: ${backend})`;
+
+      if (initFailedSilently) {
+        // SaaS-eligible catalog entry failed to instantiate (missing
+        // env vars or unknown slug) — see #2673. Surface at `error` so
+        // operator log streams catch the silent-degradation case.
+        ctx.logger.error(
+          {
+            adapters: enabledAdapters,
+            stateBackend: backend,
+            diagnostics: adapterDiagnostics,
+          },
+          msg,
+        );
+      } else {
+        ctx.logger.info(
+          { adapters: enabledAdapters, stateBackend: backend },
+          msg,
+        );
+      }
       initialized = true;
     },
 

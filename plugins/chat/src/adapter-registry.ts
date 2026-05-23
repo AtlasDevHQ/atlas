@@ -181,6 +181,7 @@ export function getChatAdapterRequiredEnv(slug: string): ReadonlyArray<string> |
 export interface RegistryLogger {
   info(payload: Record<string, unknown>, msg: string): void;
   warn(payload: Record<string, unknown>, msg: string): void;
+  error(payload: Record<string, unknown>, msg: string): void;
   debug?(payload: Record<string, unknown>, msg: string): void;
 }
 
@@ -258,7 +259,13 @@ export function buildChatAdapterRegistry(
     const adapter = builder.build(args.env);
     if (!adapter) {
       missingCredSlugs.push(entry.slug);
-      logger.warn(
+      // `error`, not `warn` — the entry-disabled branch above already
+      // short-circuits, so reaching here means the operator opted the
+      // Platform in and the env vars are missing. On a SaaS deploy this
+      // is always a critical misconfig; on self-hosted it surfaces the
+      // same way (operator declared enabled=true and meant it). See
+      // #2673 for the 2026-05-20 silent-degradation incident.
+      logger.error(
         {
           slug: entry.slug,
           platform: builder.platform,
@@ -292,6 +299,25 @@ function createNoopLogger(): RegistryLogger {
   return {
     info: () => {},
     warn: () => {},
+    error: () => {},
     debug: () => {},
   };
+}
+
+/**
+ * True when the catalog declared an instantiable adapter we couldn't
+ * wire — missing env vars or unknown slug. Both are SaaS-deploy bugs:
+ * the operator opted the Platform in, but the adapter isn't there.
+ *
+ * Empty adapters with empty diagnostics is fine (intentionally-empty
+ * catalog, or only non-OAuth / disabled entries declared); that path
+ * stays at `info`. This predicate gates the post-init log severity so
+ * a silently-degraded SaaS deploy surfaces as an error in operator
+ * log streams instead of blending into routine boot info noise.
+ *
+ * See #2673 — 2026-05-20 incident where a dropped `SLACK_ENCRYPTION_KEY`
+ * left `adapters=[]` for ~22h and the warn/info lines were missed.
+ */
+export function hasInstantiationFailure(d: ChatAdapterDiagnostics): boolean {
+  return d.missingCredSlugs.length > 0 || d.unrecognizedSlugs.length > 0;
 }

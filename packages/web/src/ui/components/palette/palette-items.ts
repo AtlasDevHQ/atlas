@@ -7,6 +7,13 @@ import type { PaletteGroup, PaletteItem } from "./palette-types";
  * gating, self-hosted-only, badge counts) is applied here in the same shape
  * the sidebar uses — keeping one source of truth (#2176 lesson: any
  * pathname/label rule that lives in two places will drift).
+ *
+ * Returns `[]` for roles that lack admin access (`member`, `viewer`, or
+ * unknown). The palette mounts on chat surfaces too, where exposing admin
+ * routes to non-admins would surface privileged paths and route into
+ * dead-end 403s on click. The previous filter only handled `requiredRole`
+ * on individual groups (Platform), which left the other six admin groups
+ * visible to everyone.
  */
 export function buildAdminPaletteGroups(opts: {
   userRole: "admin" | "member" | "platform_admin" | "viewer" | null;
@@ -14,6 +21,9 @@ export function buildAdminPaletteGroups(opts: {
   badges?: Record<string, number>;
 }): PaletteGroup[] {
   const { userRole, isSaas, badges = {} } = opts;
+
+  const canSeeAdminRoutes = userRole === "admin" || userRole === "platform_admin";
+  if (!canSeeAdminRoutes) return [];
 
   return navGroups
     .filter((g) => !g.requiredRole || g.requiredRole === userRole)

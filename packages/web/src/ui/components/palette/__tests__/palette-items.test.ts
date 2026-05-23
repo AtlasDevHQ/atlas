@@ -76,17 +76,14 @@ describe("buildAdminPaletteGroups", () => {
     for (const id of ids) expect(id.startsWith("nav:")).toBe(true);
   });
 
-  test("members see no admin groups", () => {
-    const groups = buildAdminPaletteGroups({
-      userRole: "member",
-      isSaas: false,
-    });
-    // Every nav group's items are unconditional today (no per-item role
-    // requirements beyond the group level). If we add `requiredRole` at the
-    // item level later, this assertion needs to relax — but for now,
-    // members should still see all non-platform groups since the items
-    // themselves aren't gated. The gate is the admin-layout MFA / role
-    // check, not the palette registry.
-    expect(groups.map((g) => g.heading)).not.toContain("Platform");
+  test("members see no admin groups at all", () => {
+    // Codex review on the consolidation PR caught that the prior gate only
+    // filtered `requiredRole` groups (Platform), leaving every other admin
+    // group visible to non-admins on the chat surface. Members must see
+    // an empty admin section so the palette never surfaces a route they'd
+    // 403 on click.
+    expect(buildAdminPaletteGroups({ userRole: "member", isSaas: false })).toEqual([]);
+    expect(buildAdminPaletteGroups({ userRole: "viewer", isSaas: false })).toEqual([]);
+    expect(buildAdminPaletteGroups({ userRole: null, isSaas: false })).toEqual([]);
   });
 });

@@ -35,12 +35,20 @@ function guessDeployModeFromHost(): DeployMode {
   return "saas";
 }
 
-export function useDeployMode(): {
+export function useDeployMode(opts?: { enabled?: boolean }): {
   deployMode: DeployMode;
   loading: boolean;
   error: FetchError | null;
 } {
-  const { data, loading, error } = useAdminFetch<SettingsResponse>("/api/v1/admin/settings");
+  // `enabled: false` skips the network call entirely so non-admin callers
+  // (chat-surface Cmd+K palette for a member/viewer session) don't trigger
+  // a 403 on `/api/v1/admin/settings` and the warning effect below. The
+  // hostname fallback still resolves a sensible `deployMode` for any
+  // gating that doesn't require server-authoritative truth.
+  const { data, loading, error } = useAdminFetch<SettingsResponse>(
+    "/api/v1/admin/settings",
+    { enabled: opts?.enabled },
+  );
 
   useEffect(() => {
     if (error) {

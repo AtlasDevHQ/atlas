@@ -47,13 +47,20 @@ export function GlobalCommandPalette({
   const [open, setOpen] = useState(false);
   const router = useRouter();
   const role = useUserRole();
-  const { deployMode } = useDeployMode();
-  const isSaas = deployMode === "saas";
 
   // Narrow to the four roles the nav registry actually filters on. Anything
   // else (or `undefined` while session is loading) maps to `null` so the
   // sidebar's `requiredRole` check excludes platform-only groups.
   const userRole = normalizeRole(role);
+  const isPlatformAdmin = userRole === "platform_admin";
+
+  // Only resolve deploy mode for platform admins — they're the only role
+  // that sees `selfHostedOnly`-filtered items (`/platform/plugins`,
+  // `/platform/plugin-registry`). Without this guard the palette mounted
+  // on the chat shell would fire `/api/v1/admin/settings` for every signed-
+  // in member/viewer and 403 on each chat load.
+  const { deployMode } = useDeployMode({ enabled: isPlatformAdmin });
+  const isSaas = deployMode === "saas";
 
   // Cmd/Ctrl-K (and `?` outside an input) toggle the palette. Also listen
   // for the existing PALETTE_EVENT so the chat help menu's "Open command

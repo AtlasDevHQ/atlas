@@ -44,6 +44,31 @@ import type { ResolverEvent } from "@useatlas/chat";
 
 const log = createLogger("proactive:workspace-id-resolver");
 
+/**
+ * Per-`teamId` dedup window for the "row exists but orgId missing"
+ * contract-violation warn (#2677). A stuck tenant emits Slack events
+ * continuously; without dedup we'd write one warn row per event, which
+ * is unbounded log spend for a condition that's actionable from a
+ * single occurrence. 5 minutes balances "loud enough to catch the
+ * regression in the next on-call sweep" against log volume. Module-
+ * scoped Map; the resolver is a singleton, so cross-event state is
+ * intentional. Bounded growth: a deploy with N actively-misconfigured
+ * tenants holds N entries, each <100 bytes — well under any
+ * meaningful memory pressure even at 10k tenants.
+ */
+const CONTRACT_WARN_DEDUPE_MS = 5 * 60_000;
+const recentContractWarnAt = new Map<string, number>();
+
+/**
+ * Test-only — clears the dedup cache so each test starts cold. Not
+ * exported through `@atlas/api/lib/proactive` because no production
+ * code path needs to reach into module state. Marked `@internal`.
+ * @internal
+ */
+export function __resetContractWarnDedupForTests(): void {
+  recentContractWarnAt.clear();
+}
+
 // Pre-#2623 this module declared a local structural `interface
 // ResolverEvent { adapter; thread: unknown; message: { raw } }` to
 // avoid taking a `@useatlas/chat` runtime dependency. Post-#2623 item 2
@@ -100,7 +125,32 @@ export function createSlackWorkspaceIdResolver(): (
 
     try {
       const installation = await getInstallation(teamId);
-      return installation?.org_id ?? null;
+      if (!installation) return null;
+      if (!installation.org_id) {
+        // Contract violation, not "unknown tenant": the row exists in
+        // `chat_cache` (so an OAuth install completed for this team) but
+        // the `orgId` Atlas extension is missing. Was the silent failure
+        // mode in #2676 — the chat-adapter's `setInstallation` rewrote
+        // the row without orgId on every event, so this resolver
+        // null-returned without leaving a trace and every event got
+        // silently dropped. Post-#2676 the pg-adapter JSONB-merges
+        // installation keys, so reaching this branch means a write site
+        // bypassed `lib/slack/store` AND the pg-adapter merge (e.g. a
+        // direct INSERT, or a future adapter backend that doesn't
+        // merge). Log so the audit catches it.
+        // See docs/architecture/chat-plugin-atlas-contract.md.
+        const now = Date.now();
+        const last = recentContractWarnAt.get(teamId) ?? 0;
+        if (now - last > CONTRACT_WARN_DEDUPE_MS) {
+          recentContractWarnAt.set(teamId, now);
+          log.warn(
+            { teamId },
+            "Proactive workspace resolver: chat_cache row missing orgId Atlas extension — contract violation, skipping event",
+          );
+        }
+        return null;
+      }
+      return installation.org_id;
     } catch (err) {
       // `pg`-shaped errors carry a `.code` (e.g. `57P01` admin shutdown,
       // `42P01` undefined-table); spread onto the warn payload so an

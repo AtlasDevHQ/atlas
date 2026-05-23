@@ -647,8 +647,8 @@ async function getCatalogRowBySlugForDisconnect(slug: string): Promise<{
 
 /**
  * Slugs whose credentials live in `integration_credentials` keyed by
- * (workspace_id, catalog_id). Salesforce ships first (#2658); future
- * lazy OAuth integrations (Jira, etc.) join the set as they land.
+ * (workspace_id, catalog_id). Salesforce shipped first (#2658); Jira
+ * (#2659) is the second consumer that proves the abstraction.
  *
  * Adding a new lazy OAuth integration requires (per the "Consequences"
  * section of ADR-0005):
@@ -663,7 +663,7 @@ async function getCatalogRowBySlugForDisconnect(slug: string): Promise<{
  *
  * @see docs/adr/0005-integration-credentials-table.md
  */
-const INTEGRATION_CREDENTIALS_SLUGS = new Set<string>(["salesforce"]);
+const INTEGRATION_CREDENTIALS_SLUGS = new Set<string>(["salesforce", "jira"]);
 
 /**
  * Credential-store teardown. Branches by slug:

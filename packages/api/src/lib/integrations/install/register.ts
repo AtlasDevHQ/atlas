@@ -23,10 +23,15 @@ import { EmailFormInstallHandler } from "./email-form-handler";
 import { ObsidianFormInstallHandler } from "./obsidian-form-handler";
 import { WebhookFormInstallHandler } from "./webhook-form-handler";
 import {
+  JiraOAuthInstallHandler,
+  JIRA_CATALOG_ID,
+} from "./jira-oauth-handler";
+import {
   SalesforceOAuthInstallHandler,
   SALESFORCE_CATALOG_ID,
 } from "./salesforce-oauth-handler";
 import { lazyPluginLoader } from "@atlas/api/lib/plugins/lazy-loader";
+import { createJiraLazyBuilder } from "@atlas/api/lib/integrations/jira/lazy-builder";
 import { createSalesforceLazyBuilder } from "@atlas/api/lib/integrations/salesforce/lazy-builder";
 
 const log = createLogger("integrations.install.register");
@@ -91,13 +96,14 @@ export function registerBuiltinInstallHandlers(): void {
   // ── Slack OAuth ───────────────────────────────────────────────────
   registerSlackOAuthHandler();
 
-  // ── Salesforce OAuth (#2658) ──────────────────────────────────────
-  // First lazy OAuth integration. Registers both the OAuth install
-  // handler (for the install + callback routes) AND the
-  // LazyPluginLoader builder (for the on-demand per-Workspace plugin
-  // instantiation that the agent loop dispatches into). Env gates the
-  // pair as a unit — without SALESFORCE_CLIENT_ID / SALESFORCE_CLIENT_SECRET
-  // there is no operator-side Connected App to drive either side.
+  // ── Lazy OAuth integrations (alphabetical — #2658 / #2659) ────────
+  // Each registers both the OAuth install handler (for the install +
+  // callback routes) AND the LazyPluginLoader builder (for the
+  // on-demand per-Workspace plugin instantiation the agent loop
+  // dispatches into). Env gates the pair as a unit so a half-wired
+  // operator install doesn't end up with an installable card that
+  // breaks on the first tool call.
+  registerJiraOAuthHandler();
   registerSalesforceOAuthHandler();
 }
 
@@ -128,6 +134,41 @@ function registerSlackOAuthHandler(): void {
     }),
   );
   log.info({ publicApiUrl }, "Registered SlackOAuthInstallHandler");
+}
+
+function registerJiraOAuthHandler(): void {
+  const clientId = process.env.JIRA_CLIENT_ID;
+  const clientSecret = process.env.JIRA_CLIENT_SECRET;
+  const publicApiUrl = resolvePublicApiUrl();
+
+  if (!clientId || !clientSecret) {
+    log.info(
+      "Jira OAuth handler not registered — JIRA_CLIENT_ID / JIRA_CLIENT_SECRET unset. /api/v1/integrations/jira/install will return 501 until configured.",
+    );
+    return;
+  }
+  if (!publicApiUrl) {
+    log.warn(
+      "Jira OAuth handler not registered — ATLAS_PUBLIC_API_URL is unset, so the redirect URI cannot be resolved.",
+    );
+    return;
+  }
+
+  registerOAuthHandler(
+    "jira",
+    new JiraOAuthInstallHandler({
+      clientId,
+      clientSecret,
+      redirectUri: `${publicApiUrl}/api/v1/integrations/jira/callback`,
+    }),
+  );
+  if (!lazyPluginLoader.hasBuilder(JIRA_CATALOG_ID)) {
+    lazyPluginLoader.registerBuilder(
+      JIRA_CATALOG_ID,
+      createJiraLazyBuilder({ clientId, clientSecret }),
+    );
+  }
+  log.info({ publicApiUrl }, "Registered JiraOAuthInstallHandler + LazyPluginLoader builder");
 }
 
 function registerSalesforceOAuthHandler(): void {

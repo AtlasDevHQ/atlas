@@ -369,6 +369,32 @@ export class SalesforceReconnectRequiredError extends Data.TaggedError(
   readonly upstreamError: string;
 }> {}
 
+/**
+ * Jira refresh-token rotation failed permanently — Atlassian returned
+ * `invalid_grant`, the stored refresh token was rejected, or the
+ * Connected App scopes no longer include `offline_access`. The install
+ * row's `workspace_plugins.config.status` has already been flipped to
+ * `"reconnect_needed"` by the refresh flow; this error signals the route
+ * layer / agent loop that the install needs admin attention.
+ *
+ * Maps to HTTP 409 Conflict — same wire shape as
+ * {@link SalesforceReconnectRequiredError}. Per the #2659 "if you find
+ * yourself adding shared infra, STOP and file an extraction issue"
+ * rule, the duplication is intentional in this PR — a single
+ * `IntegrationReconnectRequiredError(platform)` is a follow-up
+ * extraction once the third consumer arrives.
+ *
+ * @see packages/api/src/lib/integrations/install/jira-token-refresh.ts
+ */
+export class JiraReconnectRequiredError extends Data.TaggedError(
+  "JiraReconnectRequiredError",
+)<{
+  readonly message: string;
+  readonly workspaceId: string;
+  /** Raw Atlassian error code (`invalid_grant`, etc.). Forensic-only. */
+  readonly upstreamError: string;
+}> {}
+
 // ── Scheduler ──────────────────────────────────────────────────────
 
 /** Scheduled task execution timed out. */
@@ -421,6 +447,7 @@ export type AtlasError =
   | AmbiguousEntityError
   | PlatformOAuthExchangeError
   | SalesforceReconnectRequiredError
+  | JiraReconnectRequiredError
   | SchedulerTaskTimeoutError
   | SchedulerExecutionError
   | DeliveryError
@@ -474,6 +501,7 @@ export const ATLAS_ERROR_TAG_LIST = [
   "AmbiguousEntityError",
   "PlatformOAuthExchangeError",
   "SalesforceReconnectRequiredError",
+  "JiraReconnectRequiredError",
   "SchedulerTaskTimeoutError",
   "SchedulerExecutionError",
   "DeliveryError",

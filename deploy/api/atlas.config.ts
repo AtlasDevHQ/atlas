@@ -130,19 +130,38 @@ export default defineConfig({
       enabled: false,
       saas_eligible: true,
     },
-    // ── Lazy OAuth integrations (1.5.2 slice 8 — #2658) ─────────────
-    // First lazy OAuth integration. Establishes the pattern future
-    // OAuth integrations (Jira / etc.) will reuse:
+    // ── Lazy OAuth integrations (1.5.2 slice 8 — #2658 / #2659) ─────
+    // Salesforce (#2658) established the pattern; Jira (#2659) proves
+    // the abstraction by riding the same shared infra:
     //   - `install_model: 'oauth'` routes through the OAuth install
     //     handler dispatch.
     //   - Credentials persist in `integration_credentials` (migration
     //     0089), not `workspace_plugins.config` JSONB — refresh-token
     //     lifecycle needs its own row.
-    //   - Operator wires `SALESFORCE_CLIENT_ID` + `SALESFORCE_CLIENT_SECRET`
-    //     to a single Connected App per region; per-Workspace OAuth
+    //   - Operator wires `<PLATFORM>_CLIENT_ID` + `<PLATFORM>_CLIENT_SECRET`
+    //     to a single App registration per region; per-Workspace OAuth
     //     consent against that App writes the install + credential rows.
     //   - On refresh failure, `workspace_plugins.config.status = 'reconnect_needed'`
     //     is set and the admin UI surfaces a Reconnect affordance.
+    //
+    // Jira note: Atlassian's 3LO returns a `cloudid` identifying which
+    // Atlassian Cloud instance the customer connected. One Atlas
+    // Workspace = one Atlassian Cloud (matches Salesforce's
+    // `instance_url` shape). `cloudid` goes into
+    // `workspace_plugins.config`; tokens go into
+    // `integration_credentials`. Atlassian rotates the refresh token on
+    // every refresh, so the new value is written back each time.
+    {
+      slug: "jira",
+      type: "integration",
+      install_model: "oauth",
+      enabled: true,
+      saas_eligible: true,
+      name: "Jira",
+      description:
+        "Query Jira issues via JQL. Connects through your operator's Atlassian OAuth 2.0 (3LO) App and refreshes access tokens automatically.",
+      min_plan: "starter",
+    },
     {
       slug: "salesforce",
       type: "integration",

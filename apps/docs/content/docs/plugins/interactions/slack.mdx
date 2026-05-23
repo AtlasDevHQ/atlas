@@ -158,7 +158,7 @@ export default defineConfig({
 | Feature | @useatlas/slack | @useatlas/chat |
 |---------|----------------|----------------|
 | Webhook | `/commands`, `/events`, `/interactions` | `/webhooks/slack` |
-| OAuth | `/install`, `/callback` | `/oauth/slack/install`, `/oauth/slack/callback` |
+| OAuth | `/install`, `/callback` | `/api/v1/integrations/slack/install`, `/api/v1/integrations/slack/callback` |
 | Block Kit | Hand-rolled builders | Automatic via Chat SDK |
 | State | Custom DB tables | State adapter (memory/PG/Redis) |
 | Multi-platform | Slack only | Slack, Teams, Discord, etc. |

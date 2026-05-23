@@ -475,10 +475,10 @@ The `chunkIntervalMs` setting controls how frequently messages are edited on pla
 | `POST` | `/webhooks/linear` | Linear webhook (issue comment events) |
 | `GET` | `/webhooks/whatsapp` | WhatsApp webhook verification (Meta challenge-response) |
 | `POST` | `/webhooks/whatsapp` | WhatsApp webhook (incoming messages) |
-| `GET` | `/oauth/slack/install` | Slack OAuth install redirect (only when `clientId` configured) |
-| `GET` | `/oauth/slack/callback` | Slack OAuth callback (only when `clientId` configured) |
 
 Routes are mounted under the plugin's base path (e.g., `/api/plugins/chat-interaction/webhooks/slack`).
+
+Slack OAuth install + callback are NOT mounted under the chat-plugin prefix — they live at the canonical integration surface `/api/v1/integrations/slack/{install,callback}` (owned by `SlackOAuthInstallHandler`). See [Integrations guide](/docs/guides/integrations) for the operator/customer seam and install-model design.
 
 ## Install consent language
 
@@ -620,8 +620,8 @@ Update your Slack app webhook URLs:
 | Slash commands | `/commands` | `/webhooks/slack` |
 | Events | `/events` | `/webhooks/slack` |
 | Interactions | `/interactions` | `/webhooks/slack` |
-| OAuth install | `/install` | `/oauth/slack/install` |
-| OAuth callback | `/callback` | `/oauth/slack/callback` |
+| OAuth install | `/install` | `/api/v1/integrations/slack/install` |
+| OAuth callback | `/callback` | `/api/v1/integrations/slack/callback` |
 
 ## Migrating from @useatlas/teams
 

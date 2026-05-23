@@ -130,6 +130,70 @@ export default defineConfig({
       enabled: false,
       saas_eligible: true,
     },
+    // ── Form-based integrations (1.5.2 slice 7 — #2660) ─────────────
+    // First form-based catalog entry. `configSchema` declares the SMTP
+    // fields admins see in the install modal; the server-side Zod
+    // mirror in `EmailFormInstallHandler` validates submissions. The
+    // `password` field is `secret: true` so the seeded entry's schema
+    // tells `encryptSecretFields` to route only that key through
+    // `db/secret-encryption.ts` at install time.
+    {
+      slug: "email",
+      type: "integration",
+      install_model: "form",
+      enabled: true,
+      saas_eligible: true,
+      name: "Email (SMTP)",
+      description:
+        "Send analysis emails through your own SMTP relay. Atlas stores credentials encrypted at rest and uses them only to deliver emails the agent generates.",
+      configSchema: [
+        {
+          key: "host",
+          type: "string",
+          label: "SMTP host",
+          description: "e.g. smtp.sendgrid.net or mail.example.com",
+          required: true,
+        },
+        {
+          key: "port",
+          type: "number",
+          label: "Port",
+          description: "Typically 587 for STARTTLS or 465 for TLS.",
+          required: true,
+          default: 587,
+        },
+        {
+          key: "username",
+          type: "string",
+          label: "Username",
+          description: "SMTP auth username — often a full email address.",
+          required: true,
+        },
+        {
+          key: "password",
+          type: "string",
+          label: "Password",
+          description: "SMTP auth password or API key. Stored encrypted at rest.",
+          required: true,
+          secret: true,
+        },
+        {
+          key: "fromAddress",
+          type: "string",
+          label: "From address",
+          description: "Sender — bare email or display-name form (\"Atlas <atlas@example.com>\").",
+          required: true,
+        },
+        {
+          key: "secure",
+          type: "boolean",
+          label: "Use TLS",
+          description: "Defaults to true. Turn off only for internal-only relays without TLS.",
+          required: false,
+          default: true,
+        },
+      ],
+    },
   ],
 
   // ── Plugins ─────────────────────────────────────────────────────

@@ -23,9 +23,12 @@ import {
 } from "@atlas/api/testing/api-test-mocks";
 import {
   _resetInstallHandlerRegistries,
+  registerFormHandler,
   registerOAuthHandler,
+  type FormBasedInstallHandler,
   type OAuthPlatformInstallHandler,
 } from "@atlas/api/lib/integrations/install";
+import { EmailFormValidationError } from "@atlas/api/lib/integrations/install/email-form-handler";
 
 // ---------------------------------------------------------------------------
 // Auth — admin user with an org binding for the install route. The
@@ -138,6 +141,7 @@ process.env.ATLAS_CORS_ORIGIN = "https://app.atlas.example";
 // ---------------------------------------------------------------------------
 
 type CallbackResult = Awaited<ReturnType<OAuthPlatformInstallHandler["handleCallback"]>>;
+type ValidateResult = Awaited<ReturnType<FormBasedInstallHandler["validateConfig"]>>;
 
 let callbackImpl: () => Promise<CallbackResult> = async () => null;
 
@@ -148,6 +152,21 @@ const fakeHandler: OAuthPlatformInstallHandler = {
     stateToken: "stub",
   }),
   handleCallback: async () => callbackImpl(),
+};
+
+// Stubbed form handler — slug "email". The form-install tests below
+// swap `validateImpl` per test so we can drive the validation /
+// happy-path branches without depending on Postgres or real
+// encryption. The real implementation is tested in
+// `email-form-handler.test.ts`.
+let validateImpl: (form: unknown) => Promise<ValidateResult> = async () => ({
+  installRecord: { id: "install-email-1", workspaceId: "ws-1" as never, catalogId: "email" },
+  credentialWritten: true,
+});
+
+const fakeFormHandler: FormBasedInstallHandler = {
+  kind: "form" as const,
+  validateConfig: async (_wsid, formData) => validateImpl(formData),
 };
 
 // ---------------------------------------------------------------------------
@@ -170,6 +189,7 @@ function request(path: string, init?: RequestInit) {
 
 beforeAll(() => {
   registerOAuthHandler("slack", fakeHandler);
+  registerFormHandler("email", fakeFormHandler);
 });
 
 afterAll(() => {
@@ -354,5 +374,118 @@ describe("GET /api/v1/integrations/slack/callback — non-OAuth-exchange failure
     // 500 responses always include a requestId for log correlation
     // (runHandler bridge invariant).
     expect(body.requestId).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /:platform/install-form — slice 7 (#2660)
+// ---------------------------------------------------------------------------
+
+describe("POST /api/v1/integrations/:platform/install-form — happy path", () => {
+  beforeEach(() => {
+    // Catalog lookup returns the Email row for the form-install
+    // branch; reset between tests since other suites pin "slack".
+    mockInternalQuery.mockImplementation(async () => [
+      { slug: "email", install_model: "form", enabled: true },
+    ]);
+    validateImpl = async () => ({
+      installRecord: {
+        id: "install-email-happy",
+        workspaceId: "ws-1" as never,
+        catalogId: "email",
+      },
+      credentialWritten: true,
+    });
+  });
+
+  it("dispatches to the form handler and returns the install id on success", async () => {
+    const res = await request("/api/v1/integrations/email/install-form", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        host: "smtp.example.com",
+        port: 587,
+        username: "u",
+        password: "p",
+        fromAddress: "atlas@example.com",
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { installed: boolean; installId: string; platform: string };
+    expect(body).toEqual({
+      installed: true,
+      platform: "email",
+      installId: "install-email-happy",
+    });
+  });
+});
+
+describe("POST /api/v1/integrations/:platform/install-form — validation failure", () => {
+  beforeEach(() => {
+    mockInternalQuery.mockImplementation(async () => [
+      { slug: "email", install_model: "form", enabled: true },
+    ]);
+    // Simulate the real EmailFormInstallHandler refusing the form
+    // for a missing password — the route must translate this to a
+    // 400 with field-level detail.
+    validateImpl = async () => {
+      throw new EmailFormValidationError({ password: ["password is required"] });
+    };
+  });
+
+  it("returns 400 with fieldErrors when the handler rejects the form", async () => {
+    const res = await request("/api/v1/integrations/email/install-form", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ host: "smtp.example.com" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as {
+      error: string;
+      message: string;
+      fieldErrors: Record<string, string[]>;
+      requestId: string;
+    };
+    expect(body.error).toBe("invalid_form_data");
+    expect(body.fieldErrors.password).toEqual(["password is required"]);
+    expect(body.requestId).toBeDefined();
+  });
+});
+
+describe("POST /api/v1/integrations/:platform/install-form — wrong install_model", () => {
+  beforeEach(() => {
+    // Catalog lookup returns the Slack row (oauth) but the caller
+    // hit the form-install endpoint for it — must reject with 400.
+    mockInternalQuery.mockImplementation(async () => [
+      { slug: "slack", install_model: "oauth", enabled: true },
+    ]);
+  });
+
+  it("refuses with 400 wrong_install_model when the catalog row is OAuth", async () => {
+    const res = await request("/api/v1/integrations/slack/install-form", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("wrong_install_model");
+  });
+});
+
+describe("POST /api/v1/integrations/:platform/install-form — unknown platform", () => {
+  beforeEach(() => {
+    mockInternalQuery.mockImplementation(async () => []);
+  });
+
+  it("returns 404 when the catalog row doesn't exist", async () => {
+    const res = await request("/api/v1/integrations/nope/install-form", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("not_found");
   });
 });

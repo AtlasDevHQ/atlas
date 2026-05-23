@@ -47,6 +47,13 @@ export {
 export { SlackOAuthInstallHandler } from "./slack-oauth-handler";
 export type { SlackOAuthHandlerConfig } from "./slack-oauth-handler";
 export {
+  EmailFormInstallHandler,
+  EmailFormDataSchema,
+  EmailFormValidationError,
+  type EmailFormData,
+  type EmailFormInstallHandlerOptions,
+} from "./email-form-handler";
+export {
   registerBuiltinInstallHandlers,
   _resetRegistrationLatch,
 } from "./register";

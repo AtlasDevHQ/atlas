@@ -354,6 +354,39 @@ const CatalogEntrySchema = z.object({
    * one employee — unsafe in B2B SaaS). Defaults to `true`.
    */
   saas_eligible: z.boolean().optional().default(true),
+  /**
+   * Form-field declaration for `install_model: "form"` entries (#2660 —
+   * Email, Webhook, Obsidian). Each entry describes a field rendered by
+   * `/admin/integrations`' install modal and validated server-side at
+   * `POST /api/v1/integrations/:slug/install-form`. Fields flagged
+   * `secret: true` flow through `plugins/secrets.ts::encryptSecretFields`
+   * before persistence so credential material lands encrypted in
+   * `workspace_plugins.config` JSONB.
+   *
+   * Persisted into `plugin_catalog.config_schema` (JSONB) by the catalog
+   * seeder, then echoed back to the admin UI on the `/catalog` read so
+   * the modal renders the right inputs without a deploy-specific build
+   * artifact. The shape mirrors `ConfigSchemaField` from
+   * `lib/plugins/registry.ts` — kept structurally identical to avoid an
+   * import cycle (the schema layer can't pull from the plugins layer).
+   *
+   * Optional even for `install_model: "form"` so OAuth / static-bot
+   * entries don't need a placeholder. Form-based entries without a
+   * declared schema are rejected at the install route with a 400 — the
+   * route can't validate user input without one.
+   */
+  configSchema: z.array(
+    z.object({
+      key: z.string().min(1),
+      type: z.enum(["string", "number", "boolean", "select"]),
+      label: z.string().optional(),
+      description: z.string().optional(),
+      required: z.boolean().optional(),
+      secret: z.boolean().optional(),
+      options: z.array(z.string()).optional(),
+      default: z.unknown().optional(),
+    }).strict(),
+  ).optional(),
 }).strict();
 
 export type CatalogEntry = z.infer<typeof CatalogEntrySchema>;

@@ -12,6 +12,8 @@
  * Manage / Disconnect and removes the legacy per-platform blocks below.
  */
 
+import { useState } from "react";
+import { toast } from "sonner";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import {
   IntegrationsCatalogResponseSchema,
@@ -21,7 +23,9 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { getApiUrl } from "@/lib/api-url";
 import { Cable, Sparkles } from "lucide-react";
+import { FormInstallModal } from "./form-install-modal";
 
 function groupByType(entries: IntegrationsCatalogEntry[]) {
   const chat: IntegrationsCatalogEntry[] = [];
@@ -35,11 +39,16 @@ function groupByType(entries: IntegrationsCatalogEntry[]) {
 
 interface CatalogCardProps {
   entry: IntegrationsCatalogEntry;
+  /** Fires after a successful install so the catalog list refreshes. */
+  onInstalled: () => void;
 }
 
-function CatalogCard({ entry }: CatalogCardProps) {
+function CatalogCard({ entry, onInstalled }: CatalogCardProps) {
   const isUpsell = entry.upsellOnly;
   const isInstalled = entry.installed;
+  const isForm = entry.installModel === "form";
+  const isOAuth = entry.installModel === "oauth";
+  const [formModalOpen, setFormModalOpen] = useState(false);
 
   return (
     <Card
@@ -72,11 +81,12 @@ function CatalogCard({ entry }: CatalogCardProps) {
           <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
             {entry.installModel}
           </span>
-          {/* TODO(#2654/#2656) — Connect/Manage/Disconnect wire-up.
-              Buttons render in this slice for shape parity, but are
-              deliberately inert. Slice 5 wires the Connect path; slice 6
-              wires Disconnect and lifts the legacy per-platform blocks
-              below this section out. */}
+          {/* Install action — branched on `installModel`:
+              - "oauth" lands on the existing GET /install redirect
+                (slice 5, #2653 — wired here in slice 7 so OAuth
+                catalog cards stop being inert).
+              - "form" opens the FormInstallModal (slice 7, #2660).
+                Disconnect / Manage still ship in #2656. */}
           {isUpsell ? (
             <Button size="sm" variant="outline" disabled aria-label={`Upgrade required for ${entry.name}`}>
               Upgrade
@@ -95,13 +105,44 @@ function CatalogCard({ entry }: CatalogCardProps) {
                 Disconnect
               </Button>
             </div>
+          ) : isForm ? (
+            <Button
+              size="sm"
+              onClick={() => setFormModalOpen(true)}
+              aria-label={`Install ${entry.name}`}
+              data-testid={`catalog-card-${entry.slug}-install`}
+            >
+              Install
+            </Button>
+          ) : isOAuth ? (
+            <Button size="sm" asChild aria-label={`Connect ${entry.name}`}>
+              <a href={`${getApiUrl()}/api/v1/integrations/${entry.slug}/install`}>
+                Connect
+              </a>
+            </Button>
           ) : (
-            <Button size="sm" onClick={() => undefined} aria-label={`Connect ${entry.name}`}>
+            // static-bot — handler ships in 1.5.3; render inert so the
+            // card is visible but not actionable yet.
+            <Button size="sm" disabled aria-label={`Connect ${entry.name}`}>
               Connect
             </Button>
           )}
         </div>
       </CardContent>
+      {isForm && (
+        <FormInstallModal
+          open={formModalOpen}
+          onOpenChange={setFormModalOpen}
+          slug={entry.slug}
+          name={entry.name}
+          description={entry.description}
+          configSchema={entry.configSchema}
+          onInstalled={() => {
+            toast.success(`${entry.name} installed`);
+            onInstalled();
+          }}
+        />
+      )}
     </Card>
   );
 }
@@ -144,7 +185,7 @@ export function CatalogSection() {
               </h3>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {chat.map((entry) => (
-                  <CatalogCard key={entry.id} entry={entry} />
+                  <CatalogCard key={entry.id} entry={entry} onInstalled={refetch} />
                 ))}
               </div>
             </div>
@@ -156,7 +197,7 @@ export function CatalogSection() {
               </h3>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {integration.map((entry) => (
-                  <CatalogCard key={entry.id} entry={entry} />
+                  <CatalogCard key={entry.id} entry={entry} onInstalled={refetch} />
                 ))}
               </div>
             </div>

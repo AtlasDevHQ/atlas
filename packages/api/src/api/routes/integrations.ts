@@ -44,7 +44,8 @@ import { runHandler } from "@atlas/api/lib/effect/hono";
 import { getConfig } from "@atlas/api/lib/config";
 import { PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
 import { getInstallHandler } from "@atlas/api/lib/integrations/install";
-import { adminAuthPreamble } from "./admin-auth";
+import { EmailFormValidationError } from "@atlas/api/lib/integrations/install/email-form-handler";
+import { adminAuthPreamble, requireAdminAuth } from "./admin-auth";
 import { validationHook } from "./validation-hook";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import type { WorkspaceId } from "@useatlas/types";
@@ -80,6 +81,60 @@ const installRoute = createRoute({
     404: { description: "Platform not found in catalog", content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate limited", content: { "application/json": { schema: AuthErrorSchema } } },
     501: { description: "OAuth handler not registered", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const installFormRoute = createRoute({
+  method: "post",
+  path: "/{platform}/install-form",
+  tags: ["Integrations"],
+  summary: "Submit form-based install (no OAuth)",
+  description:
+    "Persists the submitted credentials + install metadata for an `install_model: \"form\"` " +
+    "catalog entry (#2660 — Email, future Webhook / Obsidian). Validates the JSON body " +
+    "against the per-Platform schema, encrypts secret-marked fields at rest, and upserts the " +
+    "workspace_plugins row. 400 with field-level detail on validation failure; the route " +
+    "rejects requests pointed at non-form catalog entries with 400 (`wrong_install_model`).",
+  request: {
+    params: z.object({
+      platform: z.string().openapi({ description: "Catalog slug (e.g. 'email')" }),
+    }),
+    body: {
+      content: {
+        "application/json": {
+          schema: z.record(z.string(), z.unknown()).openapi({
+            description:
+              "Form data shaped to the catalog entry's `configSchema`. Validated " +
+              "server-side by the per-Platform handler — never trust the client.",
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Install record + credential persisted",
+      content: {
+        "application/json": {
+          schema: z.object({
+            installed: z.literal(true),
+            platform: z.string(),
+            installId: z.string(),
+          }),
+        },
+      },
+    },
+    400: {
+      description:
+        "Validation failure (per-field detail in `fieldErrors`), missing org binding, or " +
+        "platform is not form-installable.",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: { description: "Not authenticated", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Caller is not a workspace admin", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Platform not found in catalog", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limited", content: { "application/json": { schema: AuthErrorSchema } } },
+    501: { description: "Form handler not registered", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -267,6 +322,106 @@ integrations.openapi(installRoute, async (c) =>
 
     const { redirectUrl } = await handler.startInstall(workspaceId);
     return c.redirect(redirectUrl);
+  }),
+);
+
+integrations.openapi(installFormRoute, async (c) =>
+  runHandler(c, "platform install-form", async () => {
+    const { platform } = c.req.valid("param");
+    const formData = c.req.valid("json");
+
+    // ── Admin auth ────────────────────────────────────────────────
+    // `requireAdminAuth` throws an HTTPException carrying the
+    // pre-built JSON response on failure, so the four auth-preamble
+    // failure modes (401 unauthenticated / 403 forbidden / 429 rate
+    // limited / 500 auth system fault) flow out directly and don't
+    // pollute this handler's declared response union — without that
+    // narrowing, the @hono/zod-openapi route signature rejects the
+    // `c.json(preamble.error, preamble.status)` return because no
+    // single declared status matches the four-way union.
+    const requestId = crypto.randomUUID();
+    const preamble = await adminAuthPreamble(c.req.raw, requestId);
+    requireAdminAuth(preamble);
+
+    // F-04 same posture as the OAuth install branch: SaaS mode=none is
+    // refused outright because it would write the workspace_plugins
+    // row under a tenant-shared sentinel workspaceId — leaking creds
+    // across customers. Self-hosted no-auth still gets the sentinel
+    // (single-tenant dev). The OAuth branch's docblock covers the
+    // full rationale; this is the form-based mirror.
+    const deployMode = getConfig()?.deployMode;
+    const orgIdRaw = preamble.authResult.user?.activeOrganizationId ?? undefined;
+    if (preamble.authResult.mode === "none" && deployMode === "saas") {
+      log.warn({ deployMode }, "Refusing form install: SaaS deploy with mode=none is a misconfig");
+      return c.json(
+        { error: "missing_org_binding", message: "Install must be initiated by an authenticated workspace admin.", requestId },
+        400,
+      );
+    }
+    if (!orgIdRaw && preamble.authResult.mode !== "none") {
+      return c.json(
+        { error: "missing_org_binding", message: "Install must be initiated by an authenticated workspace admin.", requestId },
+        400,
+      );
+    }
+    const workspaceId = (orgIdRaw ?? "self-hosted") as WorkspaceId;
+
+    // ── Catalog lookup + dispatch ─────────────────────────────────
+    const row = await getInstallableCatalogRowBySlug(platform);
+    if (!row) {
+      return c.json({ error: "not_found", message: `Unknown platform "${platform}"`, requestId }, 404);
+    }
+    if (row.install_model !== "form") {
+      return c.json(
+        { error: "wrong_install_model", message: `Platform "${platform}" uses install_model "${row.install_model}" — not form-installable via this route.`, requestId },
+        400,
+      );
+    }
+
+    let handler: ReturnType<typeof getInstallHandler>;
+    try {
+      handler = getInstallHandler(row);
+    } catch (err) {
+      log.warn(
+        { platform, err: err instanceof Error ? err.message : String(err) },
+        "No form install handler registered for platform — operator must wire the handler",
+      );
+      return c.json(
+        { error: "handler_unavailable", message: `Form handler for "${platform}" is not registered on this deploy.`, requestId },
+        501,
+      );
+    }
+    if (handler.kind !== "form") {
+      // Catalog said form, dispatch returned a non-form handler — a
+      // config drift. Surface as 501-equivalent for the route's
+      // invariants. Mirrors the OAuth branch's defensive check.
+      log.error({ platform, kind: handler.kind }, "Catalog install_model='form' but dispatch returned non-form handler");
+      return c.json({ error: "handler_unavailable", message: "Install handler misconfigured.", requestId }, 501);
+    }
+
+    // ── Validate + persist ────────────────────────────────────────
+    try {
+      const { installRecord } = await handler.validateConfig(workspaceId, formData);
+      log.info({ workspaceId, platform, installId: installRecord.id }, "Form-based install completed");
+      return c.json({ installed: true as const, platform, installId: installRecord.id }, 200);
+    } catch (err) {
+      // Tagged validation errors → 400 with field-level detail so the
+      // UI modal can highlight the wrong inputs. Every other throw
+      // bubbles up to `runHandler`'s `classifyError` for the standard
+      // 5xx-with-requestId path.
+      if (err instanceof EmailFormValidationError) {
+        return c.json(
+          {
+            error: "invalid_form_data",
+            message: "One or more fields failed validation.",
+            requestId,
+            fieldErrors: err.fieldErrors,
+          },
+          400,
+        );
+      }
+      throw err;
+    }
   }),
 );
 

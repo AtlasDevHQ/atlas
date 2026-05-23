@@ -17,8 +17,9 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
-import { registerOAuthHandler } from "./dispatch";
+import { registerFormHandler, registerOAuthHandler } from "./dispatch";
 import { SlackOAuthInstallHandler } from "./slack-oauth-handler";
+import { EmailFormInstallHandler } from "./email-form-handler";
 
 const log = createLogger("integrations.install.register");
 
@@ -85,6 +86,15 @@ export function registerBuiltinInstallHandlers(): void {
     }),
   );
   log.info({ publicApiUrl }, "Registered SlackOAuthInstallHandler");
+
+  // ── Email (form-based, #2660) ──────────────────────────────────────
+  // No env-var gate: the customer admin supplies their own SMTP
+  // credentials at install time, so the handler is always available
+  // whenever the Email catalog row is enabled. The handler still
+  // requires the internal DB (workspace_plugins write target); the
+  // route layer enforces that.
+  registerFormHandler("email", new EmailFormInstallHandler());
+  log.info("Registered EmailFormInstallHandler");
 }
 
 /** @internal Test-only — resets the idempotency latch. */

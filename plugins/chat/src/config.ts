@@ -38,6 +38,26 @@ import type { FeedbackCollectorFn } from "./proactive/feedback";
 export type ChatMessage = { role: "user" | "assistant"; content: string };
 
 /**
+ * Presentation mode for the Atlas agent's response (#2705).
+ *
+ * - `"developer"` (default for the web chat surface): analyst-grade
+ *   output — full markdown, SQL code blocks, tables, glossary
+ *   disambiguation, entity links.
+ * - `"conversational"`: 1-2 sentence prose answers for Slack
+ *   @mentions and proactive replies, where the audience is a
+ *   non-analyst team member skimming a thread. Suppresses SQL,
+ *   markdown tables, and glossary lectures by default; the chat
+ *   plugin pairs this with progressive-disclosure buttons that
+ *   surface the developer-mode view on demand.
+ *
+ * Threaded through `executeQuery` / `executeQueryStream` and
+ * `executeQueryProactive` so the host can adjust the system prompt
+ * accordingly. Backward-compatible: when the host's callback ignores
+ * the field, behavior matches pre-#2705 ("developer" mode).
+ */
+export type PresentationMode = "developer" | "conversational";
+
+/**
  * Catalog entry shape the chat plugin's `AdapterRegistry` consumes
  * (slice 2 of #2649). Mirrors the chat-relevant subset of `CatalogEntry`
  * from `@atlas/api/lib/config` — kept local because the chat plugin
@@ -115,6 +135,15 @@ export interface ChatExecuteQueryContext {
    * etc.; Teams: `Activity`; …). Typed as `unknown` so the contract stays
    * platform-agnostic — host code narrows by `adapter.name`. */
   rawMessage: unknown;
+  /**
+   * Presentation mode for the agent's response (#2705). Set by the
+   * bridge to `"conversational"` for @mention and proactive paths —
+   * the Slack audience is non-analyst team members skimming a
+   * thread. Hosts whose `executeQuery` callback predates #2705
+   * ignore the field and serve the developer-mode body, which is the
+   * backward-compatible default.
+   */
+  presentationMode?: PresentationMode;
 }
 
 /** A pending action that requires user approval. */

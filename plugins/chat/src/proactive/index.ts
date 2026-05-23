@@ -98,6 +98,8 @@ export type {
 export {
   PROACTIVE_ANSWER_ACTION_ID,
   PROACTIVE_DISMISS_ACTION_ID,
+  PROACTIVE_SHOW_DETAILS_ACTION_ID,
+  PROACTIVE_SHOW_SQL_ACTION_ID,
   buildProactiveAnswerCard,
   buildProactiveOfferCard,
   buildUnlinkedAskerPrompt,

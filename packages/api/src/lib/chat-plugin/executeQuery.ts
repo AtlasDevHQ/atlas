@@ -326,6 +326,13 @@ export async function runExecuteQuery(
       actor,
       approvalSurface: "slack",
       ...(conversationId ? { conversationId } : {}),
+      // #2705 — propagate the bridge's presentation-mode signal so the
+      // Slack @mention path produces the conversational shape. Default
+      // to "conversational" because every call through this entrypoint
+      // originates from the chat plugin's bridge (Slack/Teams/etc.);
+      // if `ctx.presentationMode` is unset (older bridge versions),
+      // we still want the chat-platform shape rather than the web view.
+      presentationMode: ctx.presentationMode ?? "conversational",
     });
   } catch (err) {
     // Log the original `err` (with stack trace) so Sentry sees the

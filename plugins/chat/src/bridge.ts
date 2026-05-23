@@ -529,6 +529,12 @@ export function createChatBridge(
       ...(priorMessages !== undefined ? { priorMessages } : {}),
       adapter: { name: adapter.name as ChatAdapterName },
       rawMessage,
+      // #2705 — every bridge call (mention, slash, subscribed reply)
+      // is destined for a chat-platform surface whose audience is
+      // non-analyst team members. Ask the agent for the conversational
+      // shape; hosts whose `executeQuery` callback predates #2705
+      // ignore the field and keep producing the developer-mode body.
+      presentationMode: "conversational",
     });
 
     // Post the card response first — ensure the user gets the answer
@@ -622,6 +628,11 @@ export function createChatBridge(
       ...(priorMessages !== undefined ? { priorMessages } : {}),
       adapter: { name: adapter.name as ChatAdapterName },
       rawMessage,
+      // #2705 — same conversational-mode rationale as `handleQuery`
+      // above. Sticky between bridge surfaces (mention / slash /
+      // subscribed) so streaming and non-streaming responses look
+      // identical from the user's perspective.
+      presentationMode: "conversational",
     });
     if (!streamResult?.stream || !streamResult?.result) {
       throw new Error(

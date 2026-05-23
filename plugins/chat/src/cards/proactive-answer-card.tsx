@@ -20,6 +20,20 @@ export const PROACTIVE_ANSWER_ACTION_ID = "atlas_proactive_answer";
 /** Action ID for the "Not now" dismissal button. */
 export const PROACTIVE_DISMISS_ACTION_ID = "atlas_proactive_dismiss";
 
+/**
+ * Action ID for the "Show SQL" disclosure button on a conversational
+ * proactive-answer card (#2705). Surfaces the analyst-grade SQL that
+ * the conversational presentation mode intentionally suppressed.
+ */
+export const PROACTIVE_SHOW_SQL_ACTION_ID = "atlas_proactive_show_sql";
+
+/**
+ * Action ID for the "Show details" disclosure button (#2705). Surfaces
+ * the developer-mode rendering (tables, breakdowns) the conversational
+ * answer omitted to keep the channel post terse.
+ */
+export const PROACTIVE_SHOW_DETAILS_ACTION_ID = "atlas_proactive_show_details";
+
 // ---------------------------------------------------------------------------
 // Offer card
 // ---------------------------------------------------------------------------
@@ -84,6 +98,18 @@ export function buildProactiveOfferCard(messageId: string): {
 export function buildProactiveAnswerCard(
   answer: string,
   answerId?: string,
+  /**
+   * Optional disclosure-button toggles (#2705). When the host returns
+   * a conversational `answer` alongside `sql` / `developerView`, the
+   * proactive listener passes these flags so the card renders the
+   * "Show SQL" / "Show details" buttons. The action handlers look the
+   * expanded content up by `event.messageId` — the message containing
+   * the button — at click time (NOT by the button `value`, which is
+   * unused for disclosure routing). Keeping the payload server-side
+   * sidesteps Slack's ~2000-char button-value cap and the chicken-and-
+   * egg where the card's own message id isn't known until AFTER post.
+   */
+  disclosures: { showSql?: boolean; showDetails?: boolean } = {},
 ): {
   card: CardElement;
   fallbackText: string;
@@ -96,6 +122,16 @@ export function buildProactiveAnswerCard(
         <CardText>{trimmed}</CardText>
       </Section>
       <Actions>
+        {disclosures.showSql ? (
+          <Button id={PROACTIVE_SHOW_SQL_ACTION_ID} value={value}>
+            Show SQL
+          </Button>
+        ) : null}
+        {disclosures.showDetails ? (
+          <Button id={PROACTIVE_SHOW_DETAILS_ACTION_ID} value={value}>
+            Show details
+          </Button>
+        ) : null}
         <Button id={PROACTIVE_FB_HELPFUL_ACTION_ID} value={value}>
           Helpful
         </Button>

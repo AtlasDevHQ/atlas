@@ -162,9 +162,8 @@ import {
 const { createAiModelTestLayer } = await import(
   "@atlas/api/lib/effect/ai"
 );
-const { createProactiveAnswerAdapter, collectProactiveResult } = await import(
-  "../answer-adapter"
-);
+const { createProactiveAnswerAdapter, collectProactiveResult, renderDataAsMarkdownTables } =
+  await import("../answer-adapter");
 const { createAtlasUser } = await import("@atlas/api/lib/auth/types");
 
 // ---------------------------------------------------------------------------
@@ -664,6 +663,66 @@ describe("collectProactiveResult", () => {
 // ---------------------------------------------------------------------------
 // Sanity: the factory satisfies the ProactiveExecuteQuery wire contract
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// renderDataAsMarkdownTables — #2705 disclosure rendering
+// ---------------------------------------------------------------------------
+
+describe("renderDataAsMarkdownTables (#2705)", () => {
+  it("normalizes Date cells to ISO 8601 instead of locale-dependent String(date)", () => {
+    // pg's type parser hands us Date objects for timestamp columns.
+    // `String(date)` produces e.g. "Mon May 23 2026 …" which is
+    // locale-dependent and lacks an explicit timezone — useless in a
+    // chat post. ISO is canonical and shorter.
+    const rendered = renderDataAsMarkdownTables([
+      {
+        columns: ["created_at"],
+        rows: [{ created_at: new Date("2026-05-23T03:30:00.000Z") }],
+      },
+    ]);
+    expect(rendered).toContain("2026-05-23T03:30:00.000Z");
+    // The locale-dependent prefix must NOT leak through. "Mon" / "Tue" /
+    // "Sat" all show up in `Date.prototype.toString()` — guard a future
+    // refactor that drops the Date check.
+    expect(rendered).not.toMatch(/Mon |Tue |Wed |Thu |Fri |Sat |Sun /);
+  });
+
+  it("truncates the developer view when it exceeds the character budget", () => {
+    // Build a single very-wide row that blows past 30k chars on its
+    // own. The cap is enforced AFTER per-table row truncation so we
+    // can't reach it via row count alone.
+    const wideValue = "x".repeat(40_000);
+    const rendered = renderDataAsMarkdownTables([
+      {
+        columns: ["payload"],
+        rows: [{ payload: wideValue }],
+      },
+    ]);
+    expect(rendered.length).toBeLessThanOrEqual(30_000 + 200); // budget + truncation marker
+    expect(rendered).toContain("developer view truncated");
+  });
+
+  it("does not append the truncation marker when the rendered output fits", () => {
+    const rendered = renderDataAsMarkdownTables([
+      { columns: ["region", "count"], rows: [{ region: "US", count: 3 }] },
+    ]);
+    expect(rendered).not.toContain("developer view truncated");
+    expect(rendered).toContain("US");
+  });
+
+  it("escapes pre-existing backslashes before escaping pipes so cell values with '\\|' don't break the table", () => {
+    // Without escaping backslashes first, input "a\|b" → "a\\|b" which a
+    // markdown renderer reads as escaped-backslash + raw pipe, breaking
+    // the table. CodeQL flagged this as js/incomplete-sanitization.
+    const rendered = renderDataAsMarkdownTables([
+      { columns: ["raw"], rows: [{ raw: "a\\|b" }] },
+    ]);
+    // Expect the row line to contain "a\\\|b" — two chars to escape the
+    // backslash, two chars to escape the pipe — so the renderer sees a
+    // literal "\" then a literal "|" inside the cell.
+    expect(rendered).toContain("a\\\\\\|b");
+  });
+});
 
 describe("createProactiveAnswerAdapter — contract", () => {
   it("returns a ProactiveExecuteQuery-shaped callback", () => {

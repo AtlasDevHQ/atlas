@@ -13,6 +13,27 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "1.5.2",
+    title: "Self-serve integrations",
+    date: "2026-05-23",
+    summary:
+      "Atlas integrations no longer require an `atlas.config.ts` edit per customer. A new `/admin/integrations` page lets workspace admins install Slack, Salesforce, Jira, Email, Webhook, and Obsidian themselves — operators register the App once per platform, customers click Connect, OAuth (or a short form) handles the rest. Six platforms shipped via two re-usable patterns: lazy-loaded OAuth handlers under `/api/v1/integrations/<platform>/{install,callback}` for Slack/Salesforce/Jira, and a form-based install path for static-credential platforms (Email/Webhook/Obsidian). Per-tenant credentials live in two stores by concern (ADR-0003 + ADR-0005): install metadata in `workspace_plugins`, secrets in a new `integration_credentials` table encrypted with `ATLAS_ENCRYPTION_KEYS`. Disconnect is a single button with dual-store teardown. A new `WorkspaceInstallGate` short-circuits proactive listener events for workspaces that don't have a Connection — every chat event consults the gate before classifier work runs. Slack proactive answers also got a UX pass: threaded replies, conversational tone (not SQL-developer-mode), and disclosure buttons for the asker to see the underlying SQL on demand. Numbers: 33 issues + parent PRD #2649, 7 OAuth slices + 7-step closeout sweep, 1.5.1's `core → ee` inversion held throughout.",
+    highlights: [
+      "Self-serve `/admin/integrations` page — workspace admins see catalog cards for every Platform the operator registered (per-region SaaS App Registrations) and click **Connect** to start OAuth; the catalog is seeded from `atlas.config.ts:catalog` at boot, so adding a new Platform is a one-time operator task per region rather than a per-customer config edit",
+      "Slack OAuth lifted to `/api/v1/integrations/slack/{install,callback}` (#2653) — `SlackOAuthInstallHandler` writes the install record (`workspace_plugins`) and the credential (`chat_cache:slack:installation:<teamId>`) atomically per [ADR-0003](/docs/adr/0003-two-store-chat-install-metadata-credentials); legacy `/api/v1/slack/{commands,events,interactions}` routes retired in #2683 in favour of the chat-plugin's single webhook",
+      "Salesforce as first lazy integration (#2658) + `integration_credentials` table — per-platform OAuth handler + `LazyPluginLoader` instantiates the plugin on first use per workspace, process-cached thereafter; secrets land in the new `integration_credentials` table (one row per (workspace × catalog_id × credential_type)) encrypted by `ATLAS_ENCRYPTION_KEYS`, eliminating the JSONB-blob credential pattern. See [ADR-0005](/docs/adr/0005-integration-credentials-table)",
+      "Jira as second lazy integration (#2659) — ~54% fewer files than Salesforce; proved the lazy-OAuth pattern abstracts and ships in days, not weeks. Same `OAuthPlatformInstallHandler` + `OAuthPlatformTokenRefresher` shape — adding a 3rd platform now costs ~5 files",
+      "Form-based install for static-credential platforms (#2660 / #2661) — Email/Webhook/Obsidian don't need OAuth; admins paste a target URL / SMTP creds / vault path into a typed form and the install record lands directly. Same catalog seam as OAuth, different handler kind (`form` vs `oauth`)",
+      "Disconnect flow (#2656) — `DELETE /api/v1/integrations/:platform` + an admin button on every connected card; dual-store teardown deletes credentials FIRST then the install record (ordering per ADR-0003 so a half-failed disconnect can't leave an orphan token in `chat_cache`)",
+      "`WorkspaceInstallGate` (#2655) — every proactive listener event consults `workspace_plugins` for an enabled row before classifier work runs; no install record = no Connection = silent skip (no classify, no meter, no rate-limit hit). Closes the multi-tenant proactive bypass that #2607 left open",
+      "Entitlement bundle (#2713, arch-win #70) — unified `PLAN_RANK` rank ordering across the wire + `is_operator_workspace` flag for the Atlas dogfood org's runtime bypass + 4-layer gating (catalog → wire → backend → renderer) + throttled gate-deny logging. Admin UI no longer lets you configure features your plan-tier can't actually use (#2701 closed the silent-deny gap)",
+      "Slack proactive UX polish (#2704 / #2705 / #2709) — answers now post as threaded replies off the asker's message instead of bare-channel posts; tone shifted from SQL-developer-mode to conversational; disclosure buttons reveal the underlying SQL + result table on demand",
+      "Chat-plugin × Atlas extension contract audit (#2677 / #2725) — new `docs/architecture/chat-plugin-atlas-contract.md` enumerates every Atlas extension field at the `@useatlas/chat` / `@chat-adapter/*` boundary with legacy-writer → new-writer → read-sites → fail-loud transitions, closing the 3-of-3 pattern that produced #2628 / #2630 / #2676. CLAUDE.md gains a `Plugin migrations` checklist locking future PRs to update the contract doc",
+      "Pre-customer posture, clean breaks allowed — no migration shim for the legacy `slack.ts` routes; the chat-plugin owns the surface end-to-end. `@useatlas/types@0.1.6` hoists catalog literal unions so SDK + react consumers share the wire vocabulary",
+    ],
+    githubMilestone: 50,
+  },
+  {
     version: "1.5.0",
     title: "Proactive Chat",
     date: "2026-05-17",

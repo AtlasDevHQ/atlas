@@ -20,6 +20,8 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { registerFormHandler, registerOAuthHandler } from "./dispatch";
 import { SlackOAuthInstallHandler } from "./slack-oauth-handler";
 import { EmailFormInstallHandler } from "./email-form-handler";
+import { ObsidianFormInstallHandler } from "./obsidian-form-handler";
+import { WebhookFormInstallHandler } from "./webhook-form-handler";
 
 const log = createLogger("integrations.install.register");
 
@@ -67,15 +69,18 @@ export function registerBuiltinInstallHandlers(): void {
   if (alreadyRegistered) return;
   alreadyRegistered = true;
 
-  // ── Email (form-based, #2660) ──────────────────────────────────────
-  // No env-var gate: the customer admin supplies their own SMTP
-  // credentials at install time, so the handler is always available
-  // whenever the Email catalog row is enabled. The handler still
-  // requires the internal DB (workspace_plugins write target); the
-  // route layer enforces that. Registered FIRST so a deploy without
-  // any OAuth integrations still gets Email.
+  // ── Form-based handlers (alphabetical — #2660, #2661) ─────────────
+  // No env-var gates: the customer admin supplies their own credentials
+  // at install time, so each handler is always available whenever the
+  // matching catalog row is enabled. Handlers stay alphabetical so
+  // additive merges (e.g. Salesforce slice #2658) land at predictable
+  // line offsets and don't conflict here.
   registerFormHandler("email", new EmailFormInstallHandler());
   log.info("Registered EmailFormInstallHandler");
+  registerFormHandler("obsidian", new ObsidianFormInstallHandler());
+  log.info("Registered ObsidianFormInstallHandler");
+  registerFormHandler("webhook", new WebhookFormInstallHandler());
+  log.info("Registered WebhookFormInstallHandler");
 
   // ── Slack OAuth ───────────────────────────────────────────────────
   registerSlackOAuthHandler();

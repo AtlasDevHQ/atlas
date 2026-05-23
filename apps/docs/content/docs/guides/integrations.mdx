@@ -305,6 +305,50 @@ The webhook card shows the count of active webhook delivery tasks. Webhooks are 
 
 In SaaS mode with webhook support enabled, a **Create Webhook** link navigates to the Scheduled Tasks page.
 
+### Outbound Webhook (HMAC-signed)
+
+The `webhook` integration card lets the agent POST analysis output to a customer-managed HTTPS endpoint with HMAC-SHA256 signing.
+
+Install via **Integrations → Webhook → Connect**. The form captures:
+
+- **Webhook URL** — destination URL, must be `https://`.
+- **Signing secret** — shared secret used to sign each request.
+- **Retry policy** — `exponential` (default) retries 5xx and network failures with backoff; `none` is one-shot.
+
+Each request ships a hex-encoded HMAC-SHA256 of the raw JSON body in the `X-Atlas-Signature` header. Receivers verify with:
+
+```ts
+import crypto from "crypto";
+
+function verify(signingSecret: string, body: string, signature: string): boolean {
+  const expected = crypto.createHmac("sha256", signingSecret).update(body).digest("hex");
+  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+}
+```
+
+**Rotating the signing secret:** re-run the install form with a new value. The previous secret is overwritten in the same `workspace_plugins.config` row. Roll receivers to the new secret before re-installing to avoid a verification gap.
+
+---
+
+## Obsidian
+
+The `obsidian` integration card lets the agent search the user's connected Obsidian vault.
+
+### Prerequisites
+
+1. In Obsidian, install the **Local REST API** community plugin (`coddingtonbear/obsidian-local-rest-api`).
+2. Enable it and copy the API key from the plugin's settings tab.
+3. Note the listen URL — defaults to `http://127.0.0.1:27123`.
+
+### Connect
+
+Install via **Integrations → Obsidian → Connect**. The form captures:
+
+- **API URL** — base URL of the Local REST API. Defaults to `http://127.0.0.1:27123`; override for tunneled / remote vaults.
+- **API key** — Bearer token from the plugin's settings.
+
+The integration is read-only — the agent can search the vault but never writes.
+
 ---
 
 ## SaaS vs Self-Hosted

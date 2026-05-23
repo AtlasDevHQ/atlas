@@ -28,6 +28,7 @@ import type { Adapter, StateAdapter, Lock, CardElement, FileUpload, Message, Str
 import { toModalElement } from "chat/jsx-runtime";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
 import type {
+  ActionCallbacks,
   ChatAdapterName,
   ChatPluginConfig,
   ChatQueryResult,
@@ -437,6 +438,152 @@ export interface ChatBridge {
 /**
  * Create a Chat SDK bridge wired to Atlas callbacks.
  *
+/**
+ * Structural subset of the chat-sdk `ActionEvent` that the approve/deny
+ * dispatch path actually reads. Defined as a subset so tests can pass
+ * plain objects without constructing real chat-sdk event types.
+ */
+export interface ApproveDenyActionEvent {
+  readonly actionId: string;
+  readonly value?: string;
+  readonly user: { readonly userId: string };
+  readonly threadId: string;
+  readonly messageId: string;
+  readonly adapter: {
+    editMessage(
+      threadId: string,
+      messageId: string,
+      content: { markdown: string },
+    ): Promise<unknown>;
+  };
+}
+
+/**
+ * Dispatch an approve/deny button click. Extracted from the
+ * `chat.onAction([approve, deny], ...)` registration in
+ * `createChatBridge` so the dispatch behaviour can be unit-tested
+ * without standing up a real `Chat` instance (#2693).
+ *
+ * Actor identity is `chat-sdk:<userId>` — the chat-sdk's `event.user.userId`
+ * is platform-prefixed (`slack:U123`, `teams:abc`, …) so adding the
+ * `chat-sdk:` prefix here records the action came through the chat
+ * surface (vs the web UI's `web:<userId>` actor format used by
+ * action-routes elsewhere).
+ *
+ * Terminal states:
+ *   - Missing `event.value` (button rendered without an action ID): warn + return.
+ *   - `actions.get(actionId)` returns null: edit message with "no longer available" fallback.
+ *   - `actions.approve|deny(...)` returns null (already resolved): edit message with "already resolved" fallback.
+ *   - Success: edit message with `formatActionResult(...)` body.
+ *   - Thrown error in the try block: log + edit with a "failed to process" fallback. Both
+ *     the dispatch error AND a failure to edit the fallback are logged.
+ */
+export async function dispatchApproveDenyAction(
+  event: ApproveDenyActionEvent,
+  actions: ActionCallbacks,
+  log: PluginLogger,
+): Promise<void> {
+  const actionId = event.value;
+  const isApprove = event.actionId === "atlas_action_approve";
+  const userId = event.user.userId;
+
+  if (!actionId) {
+    log.warn({ actionId: event.actionId }, "Action event missing value");
+    return;
+  }
+
+  log.info(
+    { actionId, userId, action: isApprove ? "approve" : "deny" },
+    "Action button clicked",
+  );
+
+  try {
+    const actionEntry = await actions.get(actionId);
+    if (!actionEntry) {
+      log.warn({ actionId, userId }, "Action not found — may have expired");
+      try {
+        await event.adapter.editMessage(event.threadId, event.messageId, {
+          markdown: "This action is no longer available — it may have expired or already been resolved.",
+        });
+      } catch (editErr) {
+        log.warn(
+          { err: editErr instanceof Error ? editErr : new Error(String(editErr)), actionId },
+          "Failed to edit message for missing action",
+        );
+      }
+      return;
+    }
+
+    const pendingAction: PendingAction = {
+      id: actionEntry.id,
+      type: actionEntry.action_type,
+      target: actionEntry.target,
+      summary: actionEntry.summary,
+    };
+
+    if (isApprove) {
+      const result = await actions.approve(actionId, `chat-sdk:${userId}`);
+
+      if (!result) {
+        // Already resolved
+        log.warn({ actionId, userId }, "Action already resolved");
+        await event.adapter.editMessage(event.threadId, event.messageId, {
+          markdown: `${pendingAction.summary || pendingAction.type} — this action has already been resolved.`,
+        });
+        return;
+      }
+
+      const status =
+        result.status === "executed"
+          ? ("executed" as const)
+          : result.status === "failed"
+            ? ("failed" as const)
+            : ("approved" as const);
+      const resultText = formatActionResult(
+        pendingAction,
+        status,
+        result.error ?? undefined,
+      );
+      await event.adapter.editMessage(event.threadId, event.messageId, {
+        markdown: resultText,
+      });
+    } else {
+      const result = await actions.deny(actionId, `chat-sdk:${userId}`);
+
+      if (!result) {
+        log.warn({ actionId }, "Action already resolved when deny attempted");
+        await event.adapter.editMessage(event.threadId, event.messageId, {
+          markdown: `${pendingAction.summary || pendingAction.type} — this action has already been resolved.`,
+        });
+        return;
+      }
+
+      const resultText = formatActionResult(pendingAction, "denied");
+      await event.adapter.editMessage(event.threadId, event.messageId, {
+        markdown: resultText,
+      });
+    }
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)), actionId },
+      "Failed to process action",
+    );
+
+    // Try to update the original message with an error
+    try {
+      await event.adapter.editMessage(event.threadId, event.messageId, {
+        markdown: `${chatEmoji.warning} Failed to process action. Please try again or use the web UI.`,
+      });
+    } catch (editErr) {
+      log.warn(
+        { err: editErr instanceof Error ? editErr : new Error(String(editErr)), actionId },
+        "Failed to edit message with action error",
+      );
+    }
+  }
+}
+
+/**
  * The bridge:
  * 1. Creates the Chat SDK instance from pre-built adapters
  * 2. Sets up onNewMention → lock + subscribe + executeQuery → thread.post
@@ -1412,115 +1559,13 @@ export function createChatBridge(
   });
 
   // --- onAction: approve/deny buttons ---
+  // Body extracted to `dispatchApproveDenyAction` (#2693) for unit
+  // testability — the chat-sdk's `event` is structurally compatible
+  // with `ApproveDenyActionEvent`, so the lambda is a thin pass-through.
   if (config.actions) {
     chat.onAction(
       ["atlas_action_approve", "atlas_action_deny"],
-      async (event) => {
-        const actionId = event.value;
-        const isApprove = event.actionId === "atlas_action_approve";
-        const userId = event.user.userId;
-
-        if (!actionId) {
-          log.warn({ actionId: event.actionId }, "Action event missing value");
-          return;
-        }
-
-        log.info(
-          { actionId, userId, action: isApprove ? "approve" : "deny" },
-          "Action button clicked",
-        );
-
-        try {
-          const actionEntry = await config.actions!.get(actionId);
-          if (!actionEntry) {
-            log.warn({ actionId, userId }, "Action not found — may have expired");
-            try {
-              await event.adapter.editMessage(event.threadId, event.messageId, {
-                markdown: "This action is no longer available — it may have expired or already been resolved.",
-              });
-            } catch (editErr) {
-              log.warn(
-                { err: editErr instanceof Error ? editErr : new Error(String(editErr)), actionId },
-                "Failed to edit message for missing action",
-              );
-            }
-            return;
-          }
-
-          const pendingAction: PendingAction = {
-            id: actionEntry.id,
-            type: actionEntry.action_type,
-            target: actionEntry.target,
-            summary: actionEntry.summary,
-          };
-
-          if (isApprove) {
-            const result = await config.actions!.approve(
-              actionId,
-              `chat-sdk:${userId}`,
-            );
-
-            if (!result) {
-              // Already resolved
-              log.warn({ actionId, userId }, "Action already resolved");
-              await event.adapter.editMessage(event.threadId, event.messageId, {
-                markdown: `${pendingAction.summary || pendingAction.type} — this action has already been resolved.`,
-              });
-              return;
-            }
-
-            const status =
-              result.status === "executed"
-                ? "executed" as const
-                : result.status === "failed"
-                  ? "failed" as const
-                  : "approved" as const;
-            const resultText = formatActionResult(
-              pendingAction,
-              status,
-              result.error ?? undefined,
-            );
-            await event.adapter.editMessage(event.threadId, event.messageId, {
-              markdown: resultText,
-            });
-          } else {
-            const result = await config.actions!.deny(
-              actionId,
-              `chat-sdk:${userId}`,
-            );
-
-            if (!result) {
-              log.warn({ actionId }, "Action already resolved when deny attempted");
-              await event.adapter.editMessage(event.threadId, event.messageId, {
-                markdown: `${pendingAction.summary || pendingAction.type} — this action has already been resolved.`,
-              });
-              return;
-            }
-
-            const resultText = formatActionResult(pendingAction, "denied");
-            await event.adapter.editMessage(event.threadId, event.messageId, {
-              markdown: resultText,
-            });
-          }
-        } catch (err) {
-          log.error(
-            { err: err instanceof Error ? err : new Error(String(err)), actionId },
-            "Failed to process action",
-          );
-
-          // Try to update the original message with an error
-          try {
-            await event.adapter.editMessage(event.threadId, event.messageId, {
-              markdown: `${chatEmoji.warning} Failed to process action. Please try again or use the web UI.`,
-            });
-          } catch (editErr) {
-            log.warn(
-              { err: editErr instanceof Error ? editErr : new Error(String(editErr)), actionId },
-              "Failed to edit message with action error",
-            );
-          }
-        }
-      },
+      async (event) => dispatchApproveDenyAction(event, config.actions!, log),
     );
   }
 

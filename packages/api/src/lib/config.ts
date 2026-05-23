@@ -310,12 +310,14 @@ export const CATALOG_ENTRY_TYPES = ["chat", "integration"] as const;
 export type CatalogEntryType = (typeof CATALOG_ENTRY_TYPES)[number];
 
 /**
- * Plan tiers a catalog entry can require. Mirrors the values already
- * persisted in `plugin_catalog.min_plan` (text column — no DB enum). The
- * comparison happens in the customer-install path against the Workspace's
- * resolved plan tier (Architecture Backlog work — out of scope for 1.5.2).
+ * Plan tiers a catalog entry can require. Unified with `PLAN_TIERS`
+ * from `@useatlas/types` (#2666) so catalog `min_plan` and workspace
+ * `plan_tier` share one vocabulary — the comparator in
+ * `lib/integrations/install/plan-rank.ts` ranks both sides off the
+ * same table. Pre-#2666 catalog rows still carrying `team` /
+ * `enterprise` are normalized to `business` by migration 0090.
  */
-const CATALOG_MIN_PLANS = ["starter", "team", "business", "enterprise"] as const;
+const CATALOG_MIN_PLANS = ["free", "trial", "starter", "pro", "business"] as const;
 
 const CatalogEntrySchema = z.object({
   /**

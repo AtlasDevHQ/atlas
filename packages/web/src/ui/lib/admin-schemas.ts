@@ -322,6 +322,14 @@ export const IntegrationsCatalogEntrySchema = z.object({
   // integration card (#2658).
   installStatus: z.string().nullable(),
   upsellOnly: z.boolean(),
+  // Post-#2701: `accessible` mirrors `!upsellOnly` (operator workspaces
+  // always see `true`). `upgradeRequired` is the plan tier needed for
+  // ineligible rows, or `null` when the row is accessible. Both fields
+  // are additive so older API responses (pre-#2701) parse via
+  // `.optional()` — the UI defaults to deriving from `upsellOnly` /
+  // `minPlan` when they're absent.
+  accessible: z.boolean().optional(),
+  upgradeRequired: z.string().nullable().optional(),
 });
 
 export type IntegrationsCatalogEntry = z.infer<typeof IntegrationsCatalogEntrySchema>;

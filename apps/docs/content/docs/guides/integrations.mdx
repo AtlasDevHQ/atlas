@@ -554,6 +554,42 @@ Salesforce access tokens are short-lived. On `INVALID_SESSION_ID` during a query
 
 ---
 
+## Plan tiers and integrations
+
+Every catalog entry declares a minimum plan tier via `min_plan` in
+`atlas.config.ts`. The vocabulary matches the workspace `plan_tier`
+column on `organization`:
+
+| Tier      | Notes                                                          |
+| --------- | -------------------------------------------------------------- |
+| `free`    | Accessible to every workspace.                                 |
+| `trial`   | Trial workspaces and above.                                    |
+| `starter` | Paid Starter and above. Slack ships at this tier.              |
+| `pro`     | Pro and above.                                                 |
+| `business`| Business / premium integrations (Salesforce ships here).       |
+
+The admin Integrations page renders a card per entry; a workspace
+sitting below the entry's `min_plan` sees the card in a **locked**
+visual state with a "Premium — requires &lt;plan&gt;" badge and a
+disabled Upgrade CTA. The install / install-form / OAuth-callback
+endpoints all return `403 plan_upgrade_required` when the workspace
+plan does not admit the integration, with `{ required_plan, current_plan }`
+in the response body for the UI to surface in an upgrade prompt.
+
+Disconnect is intentionally **not** plan-checked: a workspace that
+downgrades after installing an integration always sees a
+"Configured but inactive — plan downgrade" banner with a working
+Disconnect button so credentials can be cleaned up.
+
+### Operator workspaces
+
+The `organization.is_operator_workspace` boolean flag bypasses every
+plan-tier check for Atlas's own dogfood / per-region operator orgs.
+The flag is operator-only — never exposed in customer-facing UI or
+billing surfaces.
+
+---
+
 ## See Also
 
 - [Slack Integration](/guides/slack) — Full Slack setup guide

@@ -12,7 +12,6 @@ import * as path from "path";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import { eeOnError } from "./ee-error-handler";
-import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { createLogger, withRequestContext, getRequestContext } from "@atlas/api/lib/logger";
 import { withRequestId, resolveMode, parseModeFromCookie } from "./middleware";

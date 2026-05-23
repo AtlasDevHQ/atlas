@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 
-let warnCalls = 0;
+let _warnCalls = 0;
 
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     debug: () => {},
     info: () => {},
     warn: () => {
-      warnCalls += 1;
+      _warnCalls += 1;
     },
     error: () => {},
   }),
@@ -31,7 +31,7 @@ describe("Vercel sandbox detection", () => {
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
-    warnCalls = 0;
+    _warnCalls = 0;
     for (const key of SANDBOX_ENV) {
       delete process.env[key];
     }

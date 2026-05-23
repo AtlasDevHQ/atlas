@@ -25,7 +25,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { getApiUrl } from "@/lib/api-url";
-import { Cable, Sparkles } from "lucide-react";
+import { Cable, Lock, Sparkles } from "lucide-react";
 import { FormInstallModal } from "./form-install-modal";
 
 function groupByType(entries: IntegrationsCatalogEntry[]) {
@@ -45,10 +45,22 @@ interface CatalogCardProps {
 }
 
 function CatalogCard({ entry, onInstalled }: CatalogCardProps) {
+  // Three visual states a card can land in (#2701):
+  //   1. accessible              — plan admits + not installed → Connect / Install CTA
+  //   2. upgrade-required        — plan does NOT admit + not installed → locked card,
+  //                                "Premium — requires <plan>" badge, disabled Upgrade CTA
+  //   3. configured-but-downgraded — plan does NOT admit + already installed → Installed
+  //                                  badge + warning "Configured but inactive — plan
+  //                                  downgrade" + upgrade CTA (Disconnect still works)
+  //
+  // We derive these from `upsellOnly` (true when plan < min_plan) and
+  // `installed` so the API stays the source of truth and the UI doesn't
+  // re-implement the rank table.
   const isUpsell = entry.upsellOnly;
   const isInstalled = entry.installed;
   const isForm = entry.installModel === "form";
   const isOAuth = entry.installModel === "oauth";
+  const isDowngraded = isInstalled && isUpsell;
   // `reconnect_needed` is set by the refresh-token flow when a permanent
   // failure (invalid_grant, revoked Connected App, etc.) proves the
   // install can't recover without a fresh OAuth dance. The Reconnect
@@ -61,13 +73,34 @@ function CatalogCard({ entry, onInstalled }: CatalogCardProps) {
   return (
     <Card
       data-testid={`catalog-card-${entry.slug}`}
-      className="relative transition-colors hover:border-primary/40"
+      className={
+        isUpsell && !isInstalled
+          ? "relative transition-colors opacity-90 hover:border-primary/40"
+          : "relative transition-colors hover:border-primary/40"
+      }
     >
       <CardHeader>
         <div className="flex items-start justify-between gap-3">
-          <CardTitle className="text-base">{entry.name}</CardTitle>
+          <CardTitle className="flex items-center gap-1.5 text-base">
+            {isUpsell && !isInstalled && (
+              <Lock
+                className="size-3.5 text-muted-foreground"
+                aria-label="Premium integration"
+                data-testid={`catalog-card-${entry.slug}-lock-icon`}
+              />
+            )}
+            {entry.name}
+          </CardTitle>
           <div className="flex shrink-0 items-center gap-1">
-            {needsReconnect ? (
+            {isDowngraded ? (
+              <Badge
+                variant="destructive"
+                className="text-[10px]"
+                data-testid={`catalog-card-${entry.slug}-downgrade-badge`}
+              >
+                Plan downgrade
+              </Badge>
+            ) : needsReconnect ? (
               <Badge variant="destructive" className="text-[10px]" data-testid={`catalog-card-${entry.slug}-reconnect-badge`}>
                 Reconnect needed
               </Badge>
@@ -77,9 +110,13 @@ function CatalogCard({ entry, onInstalled }: CatalogCardProps) {
               </Badge>
             ) : null}
             {isUpsell && (
-              <Badge variant="outline" className="gap-1 text-[10px]">
+              <Badge
+                variant="outline"
+                className="gap-1 text-[10px]"
+                data-testid={`catalog-card-${entry.slug}-plan-badge`}
+              >
                 <Sparkles className="size-3" />
-                {entry.minPlan}
+                Premium — requires {entry.minPlan}
               </Badge>
             )}
           </div>
@@ -88,6 +125,20 @@ function CatalogCard({ entry, onInstalled }: CatalogCardProps) {
       <CardContent className="flex flex-col gap-3">
         {entry.description && (
           <p className="text-sm text-muted-foreground">{entry.description}</p>
+        )}
+        {isDowngraded && (
+          // State 3: install row exists but the workspace dropped below
+          // the catalog's min_plan. Surface the explanation inline so
+          // an admin investigating "why isn't Slack firing?" doesn't
+          // have to cross-reference the catalog gate themselves.
+          <p
+            className="text-xs text-destructive"
+            data-testid={`catalog-card-${entry.slug}-downgrade-banner`}
+          >
+            Configured but inactive — your plan was downgraded below{" "}
+            <span className="font-medium">{entry.minPlan}</span>. Upgrade to
+            re-enable this integration, or disconnect to clean up.
+          </p>
         )}
         <div className="flex items-center justify-between gap-2">
           <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
@@ -99,8 +150,16 @@ function CatalogCard({ entry, onInstalled }: CatalogCardProps) {
                 catalog cards stop being inert).
               - "form" opens the FormInstallModal (slice 7, #2660).
                 Disconnect / Manage still ship in #2656. */}
-          {isUpsell ? (
-            <Button size="sm" variant="outline" disabled aria-label={`Upgrade required for ${entry.name}`}>
+          {isUpsell && !isInstalled ? (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled
+              aria-label={`Available on ${entry.minPlan} plans and above`}
+              title={`Available on ${entry.minPlan} plans and above`}
+              data-testid={`catalog-card-${entry.slug}-locked-cta`}
+            >
+              <Lock className="mr-1 size-3" />
               Upgrade
             </Button>
           ) : needsReconnect ? (

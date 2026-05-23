@@ -12,8 +12,10 @@
  *   1. A `workspace_plugins` row exists for `(workspaceId, catalogId)`,
  *   2. that row's `enabled = true`,
  *   3. the joined `plugin_catalog` row's `enabled = true`,
- *   4. the workspace's `organization.plan_tier` ranks ≥ the catalog
- *      row's `min_plan`.
+ *   4. EITHER the workspace's `organization.is_operator_workspace`
+ *      flag is true (operator bypass — Atlas's own dogfood / per-region
+ *      operator orgs that never hold a paid plan), OR the workspace's
+ *      `organization.plan_tier` ranks ≥ the catalog row's `min_plan`.
  *
  * Any other state (missing install row, install disabled, catalog
  * disabled, plan mismatch, DB hiccup) returns `false`. Fails closed so
@@ -22,18 +24,14 @@
  *
  * ## Plan-tier ranking
  *
- * The two enums historically drifted (catalog's `min_plan` enum vs
- * organization's `plan_tier`):
- *
- *   - `plugin_catalog.min_plan ∈ { starter, team, business, enterprise }`
- *   - `organization.plan_tier  ∈ { free, trial, starter, pro, business }`
- *
- * `PLAN_RANK` below assigns each known value a numeric rank so the
- * comparison is well-defined across both enums. Unknown plan_tier
+ * Both vocabularies share one ranking table — see {@link planRank}
+ * in `./plan-rank.ts`. Catalog `min_plan` and workspace `plan_tier`
+ * use the same `PLAN_TIERS` union from `@useatlas/types`
+ * (`free | trial | starter | pro | business`). Unknown `plan_tier`
  * values rank 0 (most restrictive — when we can't classify the
- * workspace, default to "below all gates"). Unknown min_plan values
- * fail closed by *not* admitting the row — a typo in a catalog seed
- * shouldn't accidentally widen access.
+ * workspace, default to "below all gates"). Unknown `min_plan`
+ * values fail closed by *not* admitting the row — a typo in a
+ * catalog seed shouldn't accidentally widen access.
  *
  * ## Per-event caching
  *
@@ -63,57 +61,9 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import { planRank } from "./plan-rank";
 
 const log = createLogger("integrations:workspace-install-gate");
-
-/**
- * Union of every plan name the gate knows how to rank. Pulls the
- * catalog's `min_plan` enum (`starter | team | business | enterprise`)
- * and the organization's `plan_tier` enum (`free | trial | starter |
- * pro | business`) into one literal-string union. Encoded as the key
- * type of {@link PLAN_RANK} so a typo in the table is a compile error.
- */
-type PlanName =
-  | "free"
-  | "trial"
-  | "starter"
-  | "team"
-  | "pro"
-  | "business"
-  | "enterprise";
-
-/**
- * Numeric rank of every known plan value. Higher = more privileged.
- * The gate's "min_plan ≤ workspace.plan" comparison is well-defined
- * across both source enums via this single ordering.
- *
- * The ordering matches the customer-visible price ladder; if pricing
- * tiers ever reshuffle, this table is the single place to update.
- */
-const PLAN_RANK: Readonly<Record<PlanName, number>> = {
-  free: 0,
-  trial: 1,
-  starter: 2,
-  team: 3,
-  pro: 4,
-  business: 5,
-  enterprise: 6,
-};
-
-/**
- * Returns the numeric rank for a plan name. `null` means "value not
- * recognised". Callers decide the fail-closed default per call site —
- * for `plan_tier` we treat unknown as rank 0 (most restrictive); for
- * `min_plan` we refuse the row outright (a typo shouldn't widen access).
- */
-function planRank(name: string | null | undefined): number | null {
-  if (typeof name !== "string") return null;
-  // `name in PLAN_RANK` narrows `name` from `string` to `PlanName` so
-  // the lookup is type-safe; the runtime check also catches drift
-  // (a typo in a catalog seed) at the boundary.
-  if (!(name in PLAN_RANK)) return null;
-  return PLAN_RANK[name as PlanName];
-}
 
 /**
  * Raw shape returned by the gate's JOIN query. The index signature
@@ -125,6 +75,7 @@ interface GateRow {
   catalog_enabled: boolean;
   min_plan: string;
   plan_tier: string | null;
+  is_operator_workspace: boolean | null;
   [key: string]: unknown;
 }
 
@@ -150,10 +101,11 @@ export async function isWorkspaceInstallActive(
   try {
     rows = await internalQuery<GateRow>(
       `SELECT
-         wp.enabled        AS install_enabled,
-         pc.enabled        AS catalog_enabled,
-         pc.min_plan       AS min_plan,
-         org.plan_tier     AS plan_tier
+         wp.enabled                     AS install_enabled,
+         pc.enabled                     AS catalog_enabled,
+         pc.min_plan                    AS min_plan,
+         org.plan_tier                  AS plan_tier,
+         org.is_operator_workspace      AS is_operator_workspace
        FROM workspace_plugins wp
        JOIN plugin_catalog pc ON pc.id = wp.catalog_id
        LEFT JOIN organization org ON org.id = wp.workspace_id
@@ -206,6 +158,22 @@ export async function isWorkspaceInstallActive(
     );
     return false;
   }
+
+  // Operator bypass (#2702). Atlas-own / per-region operator orgs
+  // skip the plan check entirely — they never hold a paid plan. The
+  // install + catalog `enabled` flags above still gate (an operator
+  // workspace can't admit a disabled integration, and uninstalls
+  // still take effect). Log at info so operators investigating
+  // "why does the gate admit this workspace?" see the answer in the
+  // structured log instead of debugging the rank table.
+  if (row.is_operator_workspace === true) {
+    log.info(
+      { workspaceId, catalogId, operatorBypass: true },
+      "WorkspaceInstallGate: operator workspace bypass — admitting regardless of plan_tier",
+    );
+    return true;
+  }
+
   // LEFT JOIN miss / unknown value → rank 0 (see PLAN_RANK header note).
   const workspaceRank = planRank(row.plan_tier) ?? 0;
   return workspaceRank >= minRank;
@@ -221,6 +189,130 @@ export type WorkspaceInstallGateFn = (
   workspaceId: string,
   catalogId: string,
 ) => Promise<boolean>;
+
+/**
+ * Structured verdict returned by {@link describeInstallGateState}. Used
+ * by the proactive listener's deny-path log (#2703) so operators
+ * investigating "why doesn't proactive work for workspace X?" see the
+ * answer in the structured log instead of running the rank table by
+ * hand. Not used inside the per-event gate hot path — the boolean
+ * verdict is enough there.
+ */
+export interface InstallGateVerdict {
+  readonly active: boolean;
+  readonly installFound: boolean;
+  readonly installEnabled: boolean;
+  readonly catalogEnabled: boolean;
+  readonly planTier: string | null;
+  readonly minPlan: string | null;
+  readonly operatorBypass: boolean;
+  readonly reason:
+    | "active"
+    | "no_install_row"
+    | "install_disabled"
+    | "catalog_disabled"
+    | "unknown_min_plan"
+    | "plan_below_min"
+    | "db_error";
+}
+
+/**
+ * Diagnostic variant of {@link isWorkspaceInstallActive} that returns
+ * the full set of facts the gate evaluated, plus a `reason` code naming
+ * which one failed. Used by the proactive listener on the deny path
+ * (after a throttle window opens) so the gate-deny log carries the
+ * information needed to debug "why is this workspace denied?" without
+ * a second round of DB diving.
+ *
+ * Fails closed on DB error: returns `{ active: false, reason: "db_error" }`
+ * with every fact field null. The caller's log is the operator surface.
+ */
+export async function describeInstallGateState(
+  workspaceId: string,
+  catalogId: string,
+): Promise<InstallGateVerdict> {
+  const NEUTRAL: Omit<InstallGateVerdict, "active" | "reason"> = {
+    installFound: false,
+    installEnabled: false,
+    catalogEnabled: false,
+    planTier: null,
+    minPlan: null,
+    operatorBypass: false,
+  };
+  if (!hasInternalDB()) {
+    return { ...NEUTRAL, active: false, reason: "db_error" };
+  }
+  if (typeof workspaceId !== "string" || workspaceId.length === 0) {
+    return { ...NEUTRAL, active: false, reason: "no_install_row" };
+  }
+  if (typeof catalogId !== "string" || catalogId.length === 0) {
+    return { ...NEUTRAL, active: false, reason: "no_install_row" };
+  }
+
+  let rows: GateRow[];
+  try {
+    rows = await internalQuery<GateRow>(
+      `SELECT
+         wp.enabled                     AS install_enabled,
+         pc.enabled                     AS catalog_enabled,
+         pc.min_plan                    AS min_plan,
+         org.plan_tier                  AS plan_tier,
+         org.is_operator_workspace      AS is_operator_workspace
+       FROM workspace_plugins wp
+       JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+       LEFT JOIN organization org ON org.id = wp.workspace_id
+       WHERE wp.workspace_id = $1
+         AND (pc.id = $2 OR pc.slug = $2)
+       LIMIT 1`,
+      [workspaceId, catalogId],
+    );
+  } catch (err) {
+    // Diagnostic-only path — the listener calls this on the deny path
+    // inside an open throttle window. Log so an operator can correlate
+    // the rate-limited deny line with the underlying pg failure (transient
+    // outage, schema drift after a botched 0090 deploy, etc.). Mirrors the
+    // log shape `isWorkspaceInstallActive` already uses for the sibling
+    // boolean call site.
+    log.warn(
+      {
+        workspaceId,
+        catalogId,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "describeInstallGateState query failed — falling back to db_error verdict",
+    );
+    return { ...NEUTRAL, active: false, reason: "db_error" };
+  }
+
+  if (rows.length === 0) {
+    return { ...NEUTRAL, active: false, reason: "no_install_row" };
+  }
+  const row = rows[0]!;
+  const facts = {
+    installFound: true,
+    installEnabled: row.install_enabled === true,
+    catalogEnabled: row.catalog_enabled === true,
+    planTier: row.plan_tier ?? null,
+    minPlan: row.min_plan ?? null,
+    operatorBypass: row.is_operator_workspace === true,
+  } as const;
+
+  if (!facts.installEnabled) return { ...facts, active: false, reason: "install_disabled" };
+  if (!facts.catalogEnabled) return { ...facts, active: false, reason: "catalog_disabled" };
+
+  const minRank = planRank(row.min_plan);
+  if (minRank === null) {
+    return { ...facts, active: false, reason: "unknown_min_plan" };
+  }
+  if (facts.operatorBypass) {
+    return { ...facts, active: true, reason: "active" };
+  }
+  const wsRank = planRank(row.plan_tier) ?? 0;
+  if (wsRank < minRank) {
+    return { ...facts, active: false, reason: "plan_below_min" };
+  }
+  return { ...facts, active: true, reason: "active" };
+}
 
 /**
  * Build a per-event cache wrapper around the gate.
@@ -268,4 +360,5 @@ export function createInstallGateCache(
 export const WorkspaceInstallGate = {
   isWorkspaceInstallActive,
   createCache: createInstallGateCache,
+  describeState: describeInstallGateState,
 } as const;

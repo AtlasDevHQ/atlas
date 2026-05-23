@@ -856,6 +856,9 @@ export const MANAGED_AUTH_MIGRATIONS = [
   "0050_backfill_email_verified_grandfathered.sql",
   // Adds default_landing column to Better Auth's "user" table (#2022).
   "0061_user_default_landing.sql",
+  // Adds is_operator_workspace column to Better Auth's "organization"
+  // table (#2702).
+  "0090_organization_is_operator_workspace.sql",
 ];
 
 /**

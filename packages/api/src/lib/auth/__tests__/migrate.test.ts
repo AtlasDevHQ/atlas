@@ -335,6 +335,8 @@ describe("migrateAuthTables", () => {
             { name: "0087_plugin_catalog_install_model.sql" },
             { name: "0088_backfill_workspace_plugins.sql" },
             { name: "0089_integration_credentials.sql" },
+            { name: "0090_organization_is_operator_workspace.sql" },
+            { name: "0091_unify_catalog_min_plan.sql" },
           ],
         };
       }

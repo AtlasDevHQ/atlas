@@ -265,6 +265,41 @@ export type InstallGateFn = (
 ) => Promise<boolean>;
 
 /**
+ * Structured verdict the listener logs on the gate-deny path
+ * (#2703). The host's optional {@link InstallGateConfig.describeState}
+ * returns one of these so an operator investigating "why doesn't
+ * proactive work for workspace X?" sees the answer in the structured
+ * log instead of running the rank table by hand.
+ *
+ * The shape is host-facing (this types.ts file is shared with the
+ * chat plugin SDK). Fields are nullable to support hosts that can't
+ * surface every fact — the listener treats missing fields as "no
+ * data" rather than "false".
+ */
+export interface InstallGateVerdict {
+  readonly active: boolean;
+  readonly installFound: boolean;
+  readonly installEnabled: boolean;
+  readonly catalogEnabled: boolean;
+  readonly planTier: string | null;
+  readonly minPlan: string | null;
+  readonly operatorBypass: boolean;
+  readonly reason: string;
+}
+
+/**
+ * Optional diagnostic variant of {@link InstallGateFn}. Wired by the
+ * host alongside the boolean gate; the listener calls it only when a
+ * gate-deny log fires AND the per-(workspaceId, channelId) throttle
+ * window is open. Operators get the four-fact verdict without paying
+ * the extra DB read on every event.
+ */
+export type InstallGateDescribeFn = (
+  workspaceId: string,
+  catalogId: string,
+) => Promise<InstallGateVerdict>;
+
+/**
  * WorkspaceInstallGate wiring (#2655).
  *
  * Discriminated union matching the {@link AnswerFlowConfig} /
@@ -294,6 +329,16 @@ export type InstallGateConfig =
        * flexibility.
        */
       readonly catalogId: string;
+      /**
+       * Optional structured-verdict diagnostic. When wired, the
+       * listener uses it on the gate-deny path (rate-limited per
+       * `${workspaceId}:${channelId}` pair, default 10 minutes) to
+       * log WHICH fact failed (`reason: "plan_below_min"`,
+       * `"install_disabled"`, ...) along with the underlying booleans
+       * + plan info (#2703). When omitted, the listener logs the
+       * deny event with only the workspace / catalog / channel IDs.
+       */
+      readonly describeState?: InstallGateDescribeFn;
     };
 
 // ---------------------------------------------------------------------------

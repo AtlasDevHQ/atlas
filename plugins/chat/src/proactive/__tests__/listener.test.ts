@@ -3286,6 +3286,176 @@ describe("registerProactiveListener — WorkspaceInstallGate (#2655)", () => {
     await invokeMessage(thread, makeMessage({ id: "M2" }));
     expect(gate).toHaveBeenCalledTimes(2);
   });
+
+  // ──────────────────────────────────────────────────────────────────
+  // Gate-deny log throttle (#2703) — promoted to info, rate-limited
+  // by (workspaceId, channelId).
+  // ──────────────────────────────────────────────────────────────────
+
+  it("emits an info log on the first gate-deny for a (workspace, channel) pair", async () => {
+    const gate = mock(async () => false);
+    const logger = makeLogger();
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(chat as any, logger, {
+      isEnabled: () => true,
+      classify: yesLLM,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: allowChannels("C-allowed"),
+      ...offUnions,
+      installGate: onGate(gate),
+    });
+    await invokeMessage(makeThread("C-allowed"), makeMessage());
+
+    // Find the gate-deny info log. The listener has other info-level
+    // calls (e.g. "Proactive listener registered" at startup) so we
+    // filter on the message string. Each `logger.info.mock.calls[i]`
+    // is `[fields, message]`.
+    const denyCalls = (logger.info.mock.calls as unknown[][]).filter(
+      (call) =>
+        typeof call[1] === "string" && (call[1] as string).includes("install gate closed"),
+    );
+    expect(denyCalls).toHaveLength(1);
+    const fields = denyCalls[0]![0] as Record<string, unknown>;
+    expect(fields.workspaceId).toBe("ws_1");
+    expect(fields.catalogId).toBe("slack");
+    expect(fields.channelId).toBe("C-allowed");
+  });
+
+  it("throttles repeated denials for the same (workspace, channel) — 20 calls → 1 log", async () => {
+    const gate = mock(async () => false);
+    const logger = makeLogger();
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(chat as any, logger, {
+      isEnabled: () => true,
+      classify: yesLLM,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: allowChannels("C-allowed"),
+      ...offUnions,
+      installGate: onGate(gate),
+    });
+    const thread = makeThread("C-allowed");
+    for (let i = 0; i < 20; i++) {
+      await invokeMessage(thread, makeMessage({ id: `M${i}` }));
+    }
+    const denyCalls = (logger.info.mock.calls as unknown[][]).filter(
+      (call) =>
+        typeof call[1] === "string" && (call[1] as string).includes("install gate closed"),
+    );
+    // First deny logs; subsequent denials inside the 10-minute window
+    // are throttled into silence.
+    expect(denyCalls).toHaveLength(1);
+    // Gate itself still runs every event — the throttle is on the log,
+    // not the gate decision.
+    expect(gate).toHaveBeenCalledTimes(20);
+  });
+
+  it("does NOT share throttle across different (workspace, channel) pairs", async () => {
+    const gate = mock(async () => false);
+    const logger = makeLogger();
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(chat as any, logger, {
+      isEnabled: () => true,
+      classify: yesLLM,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: allowChannels("C-1", "C-2"),
+      ...offUnions,
+      installGate: onGate(gate),
+    });
+    await invokeMessage(makeThread("C-1"), makeMessage({ id: "A" }));
+    await invokeMessage(makeThread("C-2"), makeMessage({ id: "B" }));
+    const denyCalls = (logger.info.mock.calls as unknown[][]).filter(
+      (call) =>
+        typeof call[1] === "string" && (call[1] as string).includes("install gate closed"),
+    );
+    // Two distinct channels → two log lines, even though both denied.
+    expect(denyCalls).toHaveLength(2);
+  });
+
+  it("includes the fact-state verdict when describeState is wired", async () => {
+    const gate = mock(async () => false);
+    const describeState = mock(async () => ({
+      active: false,
+      installFound: true,
+      installEnabled: true,
+      catalogEnabled: true,
+      planTier: "trial",
+      minPlan: "starter",
+      operatorBypass: false,
+      reason: "plan_below_min",
+    }));
+    const logger = makeLogger();
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(chat as any, logger, {
+      isEnabled: () => true,
+      classify: yesLLM,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: allowChannels("C-allowed"),
+      ...offUnions,
+      installGate: {
+        enabled: true,
+        gate,
+        catalogId: "slack",
+        describeState,
+      },
+    });
+    await invokeMessage(makeThread("C-allowed"), makeMessage());
+
+    expect(describeState).toHaveBeenCalledWith("ws_1", "slack");
+    const denyCalls = (logger.info.mock.calls as unknown[][]).filter(
+      (call) =>
+        typeof call[1] === "string" && (call[1] as string).includes("install gate closed"),
+    );
+    expect(denyCalls).toHaveLength(1);
+    const fields = denyCalls[0]![0] as Record<string, unknown>;
+    expect(fields.reason).toBe("plan_below_min");
+    expect(fields.installEnabled).toBe(true);
+    expect(fields.catalogEnabled).toBe(true);
+    expect(fields.planTier).toBe("trial");
+    expect(fields.minPlan).toBe("starter");
+    expect(fields.operatorBypass).toBe(false);
+  });
+
+  it("logs without fact-state and warns when describeState throws", async () => {
+    const gate = mock(async () => false);
+    const describeState = mock(async () => {
+      throw new Error("DB outage during describeState");
+    });
+    const logger = makeLogger();
+    const { chat, invokeMessage } = makeChat();
+    await registerProactiveListener(chat as any, logger, {
+      isEnabled: () => true,
+      classify: yesLLM,
+      resolveWorkspaceId: defaultResolver,
+      getWorkspaceConfig: defaultGetWorkspace,
+      getChannelConfigs: allowChannels("C-allowed"),
+      ...offUnions,
+      installGate: {
+        enabled: true,
+        gate,
+        catalogId: "slack",
+        describeState,
+      },
+    });
+    await invokeMessage(makeThread("C-allowed"), makeMessage());
+
+    // Deny log still emits (without the fact-state fields), and the
+    // describeState failure surfaces as a warn so operators see the
+    // diagnostic outage without losing the deny event.
+    const denyCalls = (logger.info.mock.calls as unknown[][]).filter(
+      (call) =>
+        typeof call[1] === "string" && (call[1] as string).includes("install gate closed"),
+    );
+    expect(denyCalls).toHaveLength(1);
+    const warnCalls = (logger.warn.mock.calls as unknown[][]).filter(
+      (call) =>
+        typeof call[1] === "string" && (call[1] as string).includes("describeState threw"),
+    );
+    expect(warnCalls.length).toBeGreaterThanOrEqual(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

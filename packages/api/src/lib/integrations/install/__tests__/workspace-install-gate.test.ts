@@ -37,11 +37,12 @@ import {
 // ── Logger mock ─────────────────────────────────────────────────────
 
 const mockLogWarn: Mock<(...args: unknown[]) => void> = mock(() => {});
+const mockLogInfo: Mock<(...args: unknown[]) => void> = mock(() => {});
 
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     warn: mockLogWarn,
-    info: () => {},
+    info: mockLogInfo,
     debug: () => {},
     error: () => {},
     trace: () => {},
@@ -49,7 +50,7 @@ mock.module("@atlas/api/lib/logger", () => ({
     silent: () => {},
     child: () => ({
       warn: mockLogWarn,
-      info: () => {},
+      info: mockLogInfo,
       debug: () => {},
       error: () => {},
       trace: () => {},
@@ -83,6 +84,7 @@ const gateModule = require("../workspace-install-gate") as typeof import("../wor
 const {
   isWorkspaceInstallActive,
   createInstallGateCache,
+  describeInstallGateState,
   WorkspaceInstallGate,
 } = gateModule;
 
@@ -94,11 +96,13 @@ beforeEach(() => {
   mockHasInternalDB.mockClear();
   mockHasInternalDB.mockImplementation(() => true);
   mockLogWarn.mockClear();
+  mockLogInfo.mockClear();
 });
 
 afterEach(() => {
   mockInternalQuery.mockClear();
   mockLogWarn.mockClear();
+  mockLogInfo.mockClear();
 });
 
 function row(overrides: Partial<{
@@ -106,12 +110,14 @@ function row(overrides: Partial<{
   catalog_enabled: boolean;
   min_plan: string;
   plan_tier: string | null;
+  is_operator_workspace: boolean | null;
 }> = {}): Record<string, unknown> {
   return {
     install_enabled: true,
     catalog_enabled: true,
     min_plan: "starter",
     plan_tier: "business",
+    is_operator_workspace: false,
     ...overrides,
   };
 }
@@ -148,7 +154,7 @@ describe("isWorkspaceInstallActive", () => {
   });
 
   it("returns false when the workspace plan_tier ranks below catalog min_plan", async () => {
-    // free (rank 0) < business (rank 5)
+    // free (rank 0) < business (rank 4)
     mockInternalQuery.mockImplementation(async () =>
       [row({ min_plan: "business", plan_tier: "free" })],
     );
@@ -201,36 +207,87 @@ describe("isWorkspaceInstallActive", () => {
   });
 
   it("accepts pro plan_tier against starter min_plan (pro ranks higher)", async () => {
-    // Regression guard for the cross-enum ranking: 'pro' lives in
-    // organization.plan_tier but NOT in plugin_catalog.min_plan, and
-    // 'team' lives in min_plan but NOT in plan_tier. Both must rank
-    // sensibly against each other.
     mockInternalQuery.mockImplementation(async () =>
       [row({ min_plan: "starter", plan_tier: "pro" })],
     );
     expect(await isWorkspaceInstallActive("ws-1", "catalog:slack")).toBe(true);
   });
 
-  it("denies starter plan_tier against team min_plan (cross-enum below-rank)", async () => {
+  it("denies trial plan_tier against business min_plan (trial ranks below)", async () => {
     mockInternalQuery.mockImplementation(async () =>
-      [row({ min_plan: "team", plan_tier: "starter" })],
+      [row({ min_plan: "business", plan_tier: "trial" })],
     );
     expect(await isWorkspaceInstallActive("ws-1", "catalog:slack")).toBe(false);
   });
 
-  it("admits legacy plan_tier='team' against min_plan='starter' (rank 3 ≥ 2)", async () => {
-    // Pre-1472 plan_tier rename retained 'team' as a legacy value. The
-    // ordering admits it for catalogs requiring 'starter' or below. Pin
-    // both directions so any future PLAN_RANK reshuffle is intentional.
+  // ── Operator-workspace bypass (#2702) ───────────────────────────
+
+  it("admits operator workspace regardless of plan_tier (bypass)", async () => {
+    // Atlas-own: plan_tier='trial' (rank 1), min_plan='business' (rank 4).
+    // Without the bypass: deny. With is_operator_workspace=true: admit.
     mockInternalQuery.mockImplementation(async () =>
-      [row({ min_plan: "starter", plan_tier: "team" })],
+      [row({ min_plan: "business", plan_tier: "trial", is_operator_workspace: true })],
     );
-    expect(await isWorkspaceInstallActive("ws-1", "catalog:slack")).toBe(true);
+    expect(await isWorkspaceInstallActive("ws-op", "catalog:slack")).toBe(true);
   });
 
-  it("denies plan_tier='team' against min_plan='business' (rank 3 < 5)", async () => {
+  it("admits operator workspace with NULL plan_tier (no plan at all)", async () => {
     mockInternalQuery.mockImplementation(async () =>
-      [row({ min_plan: "business", plan_tier: "team" })],
+      [row({ min_plan: "starter", plan_tier: null, is_operator_workspace: true })],
+    );
+    expect(await isWorkspaceInstallActive("ws-op", "catalog:slack")).toBe(true);
+  });
+
+  it("denies operator workspace when install_enabled=false (flag does NOT bypass install gate)", async () => {
+    // Operators still have to actually install the integration. The
+    // bypass only covers plan ranking, not the install row's enabled
+    // bit — otherwise an operator couldn't uninstall a misbehaving
+    // integration without flipping the column off.
+    mockInternalQuery.mockImplementation(async () =>
+      [row({ install_enabled: false, is_operator_workspace: true })],
+    );
+    expect(await isWorkspaceInstallActive("ws-op", "catalog:slack")).toBe(false);
+  });
+
+  it("denies operator workspace when catalog_enabled=false (flag does NOT bypass kill switch)", async () => {
+    // A platform-admin kill switch must override the operator bypass —
+    // otherwise an emergency-disabled platform would still fire for
+    // the dogfood workspace.
+    mockInternalQuery.mockImplementation(async () =>
+      [row({ catalog_enabled: false, is_operator_workspace: true })],
+    );
+    expect(await isWorkspaceInstallActive("ws-op", "catalog:slack")).toBe(false);
+  });
+
+  it("denies operator workspace when min_plan is unknown (catalog drift still fails closed)", async () => {
+    // Even for operators, a typo in a catalog seed should fail closed —
+    // the operator-bypass branch sits BELOW the unknown-min_plan check
+    // so drift surfaces as a denial + warn rather than silent admit.
+    mockInternalQuery.mockImplementation(async () =>
+      [row({ min_plan: "ultimate", is_operator_workspace: true })],
+    );
+    expect(await isWorkspaceInstallActive("ws-op", "catalog:slack")).toBe(false);
+    expect(mockLogWarn).toHaveBeenCalled();
+  });
+
+  it("non-operator workspace unaffected by the flag column (false / null treated identically)", async () => {
+    // The flag defaults to false on the DB column; a NULL would only
+    // appear on a LEFT JOIN miss, which is also "not an operator".
+    mockInternalQuery.mockImplementation(async () =>
+      [row({ min_plan: "business", plan_tier: "trial", is_operator_workspace: false })],
+    );
+    expect(await isWorkspaceInstallActive("ws-1", "catalog:slack")).toBe(false);
+  });
+
+  it("denies legacy plan_tier='team' (unknown post-#2666) — falls back to rank 0", async () => {
+    // Post-#2666 PLAN_TIERS is the single vocabulary. 'team' is not in
+    // the rank table; planRank returns null, plan_tier falls back to
+    // rank 0, and even a free-tier catalog row admits at-or-above 0.
+    // For any min_plan stricter than 'free', a legacy 'team' workspace
+    // is denied. Pin the strict case here; the unknown-value branch is
+    // the same as a NULL plan_tier from a LEFT JOIN miss.
+    mockInternalQuery.mockImplementation(async () =>
+      [row({ min_plan: "starter", plan_tier: "team" })],
     );
     expect(await isWorkspaceInstallActive("ws-1", "catalog:slack")).toBe(false);
   });
@@ -354,12 +411,100 @@ describe("createInstallGateCache", () => {
 // ───────────────────────────────────────────────────────────────────
 
 describe("WorkspaceInstallGate namespace", () => {
-  it("exposes isWorkspaceInstallActive and createCache from the bound namespace", () => {
+  it("exposes isWorkspaceInstallActive, createCache, and describeState from the bound namespace", () => {
     expect(typeof WorkspaceInstallGate.isWorkspaceInstallActive).toBe("function");
     expect(typeof WorkspaceInstallGate.createCache).toBe("function");
+    expect(typeof WorkspaceInstallGate.describeState).toBe("function");
     expect(WorkspaceInstallGate.isWorkspaceInstallActive).toBe(
       isWorkspaceInstallActive,
     );
     expect(WorkspaceInstallGate.createCache).toBe(createInstallGateCache);
+    expect(WorkspaceInstallGate.describeState).toBe(describeInstallGateState);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────
+// describeInstallGateState — structured verdict for the deny-path log
+// ───────────────────────────────────────────────────────────────────
+
+describe("describeInstallGateState", () => {
+  it("returns active=true + reason='active' on the happy path", async () => {
+    mockInternalQuery.mockImplementation(async () => [
+      row({ min_plan: "starter", plan_tier: "business" }),
+    ]);
+    const verdict = await describeInstallGateState("ws-1", "catalog:slack");
+    expect(verdict.active).toBe(true);
+    expect(verdict.reason).toBe("active");
+    expect(verdict.installEnabled).toBe(true);
+    expect(verdict.catalogEnabled).toBe(true);
+    expect(verdict.planTier).toBe("business");
+    expect(verdict.minPlan).toBe("starter");
+    expect(verdict.operatorBypass).toBe(false);
+  });
+
+  it("returns reason='plan_below_min' with the rank facts on plan mismatch", async () => {
+    mockInternalQuery.mockImplementation(async () => [
+      row({ min_plan: "business", plan_tier: "trial" }),
+    ]);
+    const verdict = await describeInstallGateState("ws-1", "catalog:slack");
+    expect(verdict.active).toBe(false);
+    expect(verdict.reason).toBe("plan_below_min");
+    expect(verdict.planTier).toBe("trial");
+    expect(verdict.minPlan).toBe("business");
+  });
+
+  it("returns reason='operatorBypass active' for operator workspaces", async () => {
+    mockInternalQuery.mockImplementation(async () => [
+      row({ min_plan: "business", plan_tier: "trial", is_operator_workspace: true }),
+    ]);
+    const verdict = await describeInstallGateState("ws-op", "catalog:slack");
+    expect(verdict.active).toBe(true);
+    expect(verdict.reason).toBe("active");
+    expect(verdict.operatorBypass).toBe(true);
+  });
+
+  it("returns reason='install_disabled' when wp.enabled=false", async () => {
+    mockInternalQuery.mockImplementation(async () => [
+      row({ install_enabled: false }),
+    ]);
+    const verdict = await describeInstallGateState("ws-1", "catalog:slack");
+    expect(verdict.active).toBe(false);
+    expect(verdict.reason).toBe("install_disabled");
+  });
+
+  it("returns reason='catalog_disabled' when pc.enabled=false", async () => {
+    mockInternalQuery.mockImplementation(async () => [
+      row({ catalog_enabled: false }),
+    ]);
+    const verdict = await describeInstallGateState("ws-1", "catalog:slack");
+    expect(verdict.active).toBe(false);
+    expect(verdict.reason).toBe("catalog_disabled");
+  });
+
+  it("returns reason='unknown_min_plan' on catalog drift", async () => {
+    mockInternalQuery.mockImplementation(async () => [
+      row({ min_plan: "ultimate" }),
+    ]);
+    const verdict = await describeInstallGateState("ws-1", "catalog:slack");
+    expect(verdict.active).toBe(false);
+    expect(verdict.reason).toBe("unknown_min_plan");
+    expect(verdict.minPlan).toBe("ultimate");
+  });
+
+  it("returns reason='no_install_row' when the workspace has no install", async () => {
+    mockInternalQuery.mockImplementation(async () => []);
+    const verdict = await describeInstallGateState("ws-1", "catalog:slack");
+    expect(verdict.active).toBe(false);
+    expect(verdict.reason).toBe("no_install_row");
+    expect(verdict.installFound).toBe(false);
+  });
+
+  it("returns reason='db_error' when internalQuery throws", async () => {
+    mockInternalQuery.mockImplementation(async () => {
+      throw new Error("connection terminated");
+    });
+    const verdict = await describeInstallGateState("ws-1", "catalog:slack");
+    expect(verdict.active).toBe(false);
+    expect(verdict.reason).toBe("db_error");
   });
 });

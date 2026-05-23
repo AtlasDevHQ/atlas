@@ -378,6 +378,14 @@ export async function registerProactiveListener(
   // that share a channel id (different Slack workspaces both have a
   // "C-general") don't share a cooldown row.
   const recent = new Map<string, RecentActivity>();
+  // Per-(workspaceId, channelId) throttle for the gate-deny log
+  // (#2703). A steady-state denied workspace shouldn't fill the log
+  // with one line per Slack message — emit at most one info line per
+  // (workspace, channel) pair per 10 minutes. Mirrors the `recent`
+  // map's shape (string key → timestamp ms) so the pattern reads
+  // identically to the cooldown gate.
+  const denyLogged = new Map<string, number>();
+  const DENY_LOG_THROTTLE_MS = 10 * 60 * 1000;
   // Pending answers awaiting a reaction-back or button-click.
   const pending = new PendingAnswers();
   // Most-recent Atlas answer per (channelId, externalUserId) for the
@@ -611,14 +619,72 @@ export async function registerProactiveListener(
         );
         const active = await cachedGate(workspaceId);
         if (!active) {
-          log.debug(
-            {
-              workspaceId,
-              catalogId: config.installGate.catalogId,
-              channelId: thread.channelId,
-            },
-            "Proactive: install gate closed — skipping (no classify, no meter, no DB write)",
-          );
+          // #2703 — promote the gate-deny log debug → info so operators
+          // investigating "why doesn't proactive work for workspace X?"
+          // see the answer in the structured log. Throttle by
+          // `${workspaceId}:${channelId}` (10 min default) so a
+          // steady-state denied workspace doesn't spam a line per
+          // event. When the host wires `describeState` (the
+          // server-side WorkspaceInstallGate has one), the log carries
+          // the four fact-state booleans + plan info; otherwise just
+          // the IDs.
+          const denyKey = `${workspaceId}:${thread.channelId}`;
+          const lastLoggedAt = denyLogged.get(denyKey);
+          const nowMs = Date.now();
+          if (
+            lastLoggedAt === undefined ||
+            nowMs - lastLoggedAt >= DENY_LOG_THROTTLE_MS
+          ) {
+            denyLogged.set(denyKey, nowMs);
+            const installGateCfg = config.installGate;
+            let factState:
+              | {
+                  reason: string;
+                  installFound: boolean;
+                  installEnabled: boolean;
+                  catalogEnabled: boolean;
+                  planTier: string | null;
+                  minPlan: string | null;
+                  operatorBypass: boolean;
+                }
+              | undefined;
+            if (installGateCfg.describeState !== undefined) {
+              try {
+                const verdict = await installGateCfg.describeState(
+                  workspaceId,
+                  installGateCfg.catalogId,
+                );
+                factState = {
+                  reason: verdict.reason,
+                  installFound: verdict.installFound,
+                  installEnabled: verdict.installEnabled,
+                  catalogEnabled: verdict.catalogEnabled,
+                  planTier: verdict.planTier,
+                  minPlan: verdict.minPlan,
+                  operatorBypass: verdict.operatorBypass,
+                };
+              } catch (err) {
+                log.warn(
+                  {
+                    workspaceId,
+                    catalogId: installGateCfg.catalogId,
+                    err: err instanceof Error ? err : new Error(String(err)),
+                  },
+                  "Proactive installGate.describeState threw — logging without fact-state",
+                );
+              }
+            }
+            log.info(
+              {
+                workspaceId,
+                catalogId: installGateCfg.catalogId,
+                channelId: thread.channelId,
+                throttleWindowMs: DENY_LOG_THROTTLE_MS,
+                ...factState,
+              },
+              "Proactive: install gate closed — skipping (no classify, no meter, no DB write)",
+            );
+          }
           return;
         }
       }

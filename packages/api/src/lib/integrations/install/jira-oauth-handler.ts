@@ -146,6 +146,36 @@ interface AccessibleResource {
   readonly scopes?: readonly string[];
 }
 
+/**
+ * Hard timeout on the install-time Atlassian round-trips. A hung
+ * endpoint would otherwise stall the OAuth callback request
+ * indefinitely (the install caller is a synchronous HTTP handler).
+ * 15s is generous for both `oauth/token` (typically <1s) and
+ * `accessible-resources` (typically <500ms).
+ */
+const INSTALL_FETCH_TIMEOUT_MS = 15_000;
+
+/**
+ * Fetch with an AbortController-based timeout. Returns the Response on
+ * success; the AbortError surface bubbles up so the caller's existing
+ * `catch` block can wrap it as a `PlatformOAuthExchangeError`. We
+ * don't catch+wrap here so the original `err.message` survives the
+ * upstreamError forensics.
+ */
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Token exchange — extracted so the refresh-token flow can reuse it
 // ---------------------------------------------------------------------------
@@ -172,29 +202,39 @@ export async function exchangeAuthCodeForTokens(
 ): Promise<JiraTokenSuccess> {
   let resp: Response;
   try {
-    resp = await fetch(TOKEN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        grant_type: "authorization_code",
-        client_id: args.clientId,
-        client_secret: args.clientSecret,
-        code: args.code,
-        redirect_uri: args.redirectUri,
-      }),
-    });
+    resp = await fetchWithTimeout(
+      TOKEN_URL,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          grant_type: "authorization_code",
+          client_id: args.clientId,
+          client_secret: args.clientSecret,
+          code: args.code,
+          redirect_uri: args.redirectUri,
+        }),
+      },
+      INSTALL_FETCH_TIMEOUT_MS,
+    );
   } catch (err) {
+    const isAbort = err instanceof Error && err.name === "AbortError";
     log.warn(
       {
         err: err instanceof Error ? err.message : String(err),
         stack: err instanceof Error ? err.stack : undefined,
+        timedOut: isAbort,
       },
-      "Atlassian token endpoint unreachable — surfacing PlatformOAuthExchangeError",
+      isAbort
+        ? "Atlassian token endpoint timed out — surfacing PlatformOAuthExchangeError"
+        : "Atlassian token endpoint unreachable — surfacing PlatformOAuthExchangeError",
     );
     throw new PlatformOAuthExchangeError({
-      message: "Failed to reach Atlassian token endpoint. Restart the install.",
+      message: isAbort
+        ? "Atlassian token endpoint timed out. Restart the install."
+        : "Failed to reach Atlassian token endpoint. Restart the install.",
       platform: JIRA_SLUG,
-      upstreamError: err instanceof Error ? err.message : String(err),
+      upstreamError: isAbort ? "timeout" : err instanceof Error ? err.message : String(err),
     });
   }
 
@@ -244,24 +284,34 @@ export async function fetchAccessibleResources(
 ): Promise<readonly AccessibleResource[]> {
   let resp: Response;
   try {
-    resp = await fetch(ACCESSIBLE_RESOURCES_URL, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: "application/json",
+    resp = await fetchWithTimeout(
+      ACCESSIBLE_RESOURCES_URL,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: "application/json",
+        },
       },
-    });
+      INSTALL_FETCH_TIMEOUT_MS,
+    );
   } catch (err) {
+    const isAbort = err instanceof Error && err.name === "AbortError";
     log.warn(
       {
         err: err instanceof Error ? err.message : String(err),
+        timedOut: isAbort,
       },
-      "Atlassian accessible-resources endpoint unreachable",
+      isAbort
+        ? "Atlassian accessible-resources endpoint timed out"
+        : "Atlassian accessible-resources endpoint unreachable",
     );
     throw new PlatformOAuthExchangeError({
-      message: "Failed to reach Atlassian accessible-resources endpoint. Restart the install.",
+      message: isAbort
+        ? "Atlassian accessible-resources endpoint timed out. Restart the install."
+        : "Failed to reach Atlassian accessible-resources endpoint. Restart the install.",
       platform: JIRA_SLUG,
-      upstreamError: err instanceof Error ? err.message : String(err),
+      upstreamError: isAbort ? "timeout" : err instanceof Error ? err.message : String(err),
     });
   }
 
@@ -355,8 +405,40 @@ export class JiraOAuthInstallHandler implements OAuthPlatformInstallHandler {
     // Atlassian doesn't return the cloudid in the token response — it
     // comes from a separate accessible-resources call. We pick `[0]`
     // per the #2659 one-Atlas-Workspace = one-Atlassian-Cloud rule.
+    // `fetchAccessibleResources` throws on empty, so destructuring +
+    // explicit null guard sidesteps the non-null assertion (per
+    // CLAUDE.md "minimize non-null assertions").
     const resources = await fetchAccessibleResources(tokens.access_token);
-    const primaryResource = resources[0]!;
+    const [primaryResource, ...otherResources] = resources;
+    if (!primaryResource) {
+      // Defensive — `fetchAccessibleResources` already rejects empty
+      // arrays, but TS narrows the destructure to `T | undefined` so
+      // we exhaustively handle it. Treating an empty array post-throw
+      // as a fresh PlatformOAuthExchangeError keeps the user-facing
+      // copy consistent with the upstream-empty branch.
+      throw new PlatformOAuthExchangeError({
+        message: "Atlassian returned no accessible Clouds for this OAuth grant. Install Atlas's app into a Jira Cloud workspace and restart.",
+        platform: JIRA_SLUG,
+        upstreamError: "no_accessible_resources_post_fetch",
+      });
+    }
+    if (otherResources.length > 0) {
+      // The #2659 rule binds one Atlas Workspace to one Atlassian
+      // Cloud — but the OAuth grant may cover several. Log the picked
+      // vs available so an operator dogfooding multi-Cloud setups can
+      // see WHICH Cloud got bound without decrypting the credential
+      // row or grepping the audit log. Future multi-Cloud semantics
+      // would surface a picker between the OAuth callback and the
+      // install write.
+      log.info(
+        {
+          workspaceId,
+          picked: { id: primaryResource.id, url: primaryResource.url },
+          alsoAvailable: otherResources.map((r) => ({ id: r.id, url: r.url })),
+        },
+        "Atlassian OAuth grant covers multiple Clouds — bound to the first per one-Workspace = one-Cloud rule",
+      );
+    }
     const cloudid = primaryResource.id;
 
     const scopes = tokens.scope ?? JIRA_SCOPES;

@@ -100,11 +100,16 @@ function readCloudid(config: Record<string, unknown>): string | null {
 /**
  * Treat any 401 from the Jira REST API as "session expired" — the
  * stored access token has expired and a refresh is warranted.
+ *
+ * Class-only check: `runJqlSearch` is the single 401 source and it
+ * throws `JiraUnauthorizedError` exclusively. A previous string-match
+ * fallback (`err.message.includes("401")`) was dropped because it
+ * could match unrelated errors (e.g. a `4011` HTTP code, or a body
+ * payload that happens to contain "401") and trigger spurious
+ * refreshes.
  */
 function isSessionExpiredError(err: unknown): boolean {
-  if (err instanceof JiraUnauthorizedError) return true;
-  if (!(err instanceof Error)) return false;
-  return err.message.includes("401");
+  return err instanceof JiraUnauthorizedError;
 }
 
 class JiraUnauthorizedError extends Error {

@@ -24,6 +24,7 @@ import { ChangePasswordDialog } from "./change-password-dialog";
 import { MfaGateProvider, useMfaGate } from "./mfa-gate-context";
 import { MfaEnrollmentDialog } from "./mfa-enrollment-dialog";
 import { usePasswordStatus } from "@/ui/hooks/use-password-status";
+import { GlobalCommandPalette } from "@/ui/components/palette";
 
 /**
  * Routes that must render normally even when the admin is not yet enrolled
@@ -191,6 +192,10 @@ function AdminLayoutInner({ children }: { children: ReactNode }) {
         onComplete={() => { /* Dialog handles its own state */ }}
       />
       <MfaEnrollmentDialog />
+      {/* Admin routes don't share the chat shell, so mount the palette
+          here. Both surfaces use the same component; only `extraGroups`
+          differs by surface. */}
+      <GlobalCommandPalette />
     </SidebarProvider>
   );
 }

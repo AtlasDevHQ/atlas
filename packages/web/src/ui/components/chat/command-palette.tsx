@@ -1,14 +1,5 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import {
-  CommandDialog,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from "@/components/ui/command";
 import {
   BookOpen,
   Compass,
@@ -20,10 +11,16 @@ import {
 } from "lucide-react";
 import type { Conversation } from "../../lib/types";
 import { useTourContext } from "@/ui/components/tour/guided-tour";
-import { PALETTE_EVENT, SHORTCUTS_EVENT } from "./palette-events";
+import { GlobalCommandPalette, type PaletteGroup } from "../palette";
 
 const MAX_RECENT_CONVERSATIONS = 8;
 
+/**
+ * Chat-surface wrapper around `GlobalCommandPalette`. Supplies chat-only
+ * groups (new conversation, prompt library, schema explorer, recent
+ * conversations, replay tour); routes and settings come from the shared
+ * registry.
+ */
 export function CommandPalette({
   conversations,
   onNewChat,
@@ -43,157 +40,69 @@ export function CommandPalette({
   onOpenSchemaExplorer: () => void;
 }) {
   const tour = useTourContext();
-  const [open, setOpen] = useState(false);
-  // Tracks pending defer-after-close timers so they're cleared if the
-  // palette unmounts (route change) before the action fires — otherwise
-  // the action runs against an unmounted tree.
-  const pendingTimers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
-
-  // Global Cmd/Ctrl-K to open the palette + listen for the help-menu event
-  useEffect(() => {
-    function handleKey(e: KeyboardEvent) {
-      const isPaletteShortcut =
-        (e.key === "k" || e.key === "K") && (e.metaKey || e.ctrlKey);
-      if (isPaletteShortcut) {
-        e.preventDefault();
-        setOpen((prev) => !prev);
-        return;
-      }
-      // `?` opens the palette only when the user isn't typing in a field —
-      // otherwise typing "?" anywhere would steal focus.
-      const target = e.target as HTMLElement | null;
-      const isInField =
-        target &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.isContentEditable);
-      if (e.key === "?" && !isInField && !e.metaKey && !e.ctrlKey) {
-        e.preventDefault();
-        setOpen(true);
-      }
-    }
-    function handleOpenEvent() {
-      setOpen(true);
-    }
-    document.addEventListener("keydown", handleKey);
-    window.addEventListener(SHORTCUTS_EVENT, handleOpenEvent);
-    window.addEventListener(PALETTE_EVENT, handleOpenEvent);
-    return () => {
-      document.removeEventListener("keydown", handleKey);
-      window.removeEventListener(SHORTCUTS_EVENT, handleOpenEvent);
-      window.removeEventListener(PALETTE_EVENT, handleOpenEvent);
-    };
-  }, []);
-
-  // Clear any deferred actions still in flight when the palette unmounts.
-  useEffect(() => {
-    const timers = pendingTimers.current;
-    return () => {
-      for (const id of timers) clearTimeout(id);
-      timers.clear();
-    };
-  }, []);
-
-  function run(action: () => void | Promise<void>) {
-    setOpen(false);
-    // Defer past Radix's close cleanup so a follow-on dialog/sheet doesn't
-    // open into an inert body (Radix Dialog leaves `pointer-events: none`
-    // on `<body>` for a frame after close). `Promise.resolve(...).catch`
-    // guards against both synchronous throws and async rejections from the
-    // user-supplied action — without this the rejection has no owner.
-    const timer = setTimeout(() => {
-      pendingTimers.current.delete(timer);
-      Promise.resolve()
-        .then(() => action())
-        .catch((err: unknown) => {
-          console.warn(
-            "[command-palette] action failed:",
-            err instanceof Error ? err.message : String(err),
-          );
-        });
-    }, 0);
-    pendingTimers.current.add(timer);
-  }
 
   const recent = [...conversations]
     .toSorted((a, b) => Number(!!b.starred) - Number(!!a.starred))
     .slice(0, MAX_RECENT_CONVERSATIONS);
 
-  return (
-    <CommandDialog
-      open={open}
-      onOpenChange={setOpen}
-      title="Command palette"
-      description="Search for an action or jump to a conversation"
-    >
-      <CommandInput placeholder="Type a command or search conversations…" />
-      <CommandList>
-        <CommandEmpty>No matches.</CommandEmpty>
-        <CommandGroup heading="Actions">
-          <CommandItem onSelect={() => run(onNewChat)}>
-            <MessageSquarePlus />
-            <span>New conversation</span>
-          </CommandItem>
-          <CommandItem onSelect={() => run(onOpenPromptLibrary)}>
-            <BookOpen />
-            <span>Prompt library</span>
-          </CommandItem>
-          <CommandItem onSelect={() => run(onOpenSchemaExplorer)}>
-            <TableProperties />
-            <span>Schema explorer</span>
-          </CommandItem>
-          {tour && (
-            <CommandItem onSelect={() => run(() => tour.startTour())}>
-              <Compass />
-              <span>Replay guided tour</span>
-            </CommandItem>
-          )}
-          <CommandItem
-            onSelect={() =>
-              run(() => {
-                window.open("https://docs.useatlas.dev", "_blank", "noopener");
-              })
-            }
-          >
-            <ExternalLink />
-            <span>Documentation</span>
-          </CommandItem>
-        </CommandGroup>
+  const actions: PaletteGroup = {
+    heading: "Actions",
+    items: [
+      {
+        id: "chat:new",
+        title: "New conversation",
+        icon: MessageSquarePlus,
+        action: { kind: "run", run: onNewChat },
+      },
+      {
+        id: "chat:prompts",
+        title: "Prompt library",
+        icon: BookOpen,
+        action: { kind: "run", run: onOpenPromptLibrary },
+      },
+      {
+        id: "chat:schema",
+        title: "Schema explorer",
+        icon: TableProperties,
+        action: { kind: "run", run: onOpenSchemaExplorer },
+      },
+      ...(tour
+        ? [
+            {
+              id: "chat:tour",
+              title: "Replay guided tour",
+              icon: Compass,
+              action: { kind: "run" as const, run: () => tour.startTour() },
+            },
+          ]
+        : []),
+      {
+        id: "chat:docs",
+        title: "Documentation",
+        icon: ExternalLink,
+        action: {
+          kind: "run",
+          run: () => {
+            window.open("https://docs.useatlas.dev", "_blank", "noopener");
+          },
+        },
+      },
+    ],
+  };
 
-        {recent.length > 0 && (
-          <CommandGroup heading="Recent conversations">
-            {recent.map((c) => (
-              <CommandItem
-                key={c.id}
-                value={`${c.title || "New conversation"} ${c.id}`}
-                onSelect={() => run(() => onSelectConversation(c.id))}
-              >
-                {c.starred ? (
-                  <Star className="text-amber-400" fill="currentColor" />
-                ) : (
-                  <MessageSquare />
-                )}
-                <span className="truncate">{c.title || "New conversation"}</span>
-              </CommandItem>
-            ))}
-          </CommandGroup>
-        )}
+  const recents: PaletteGroup = {
+    heading: "Recent conversations",
+    items: recent.map((c) => ({
+      id: `convo:${c.id}`,
+      title: c.title || "New conversation",
+      icon: c.starred ? Star : MessageSquare,
+      action: { kind: "run", run: () => onSelectConversation(c.id) },
+      keywords: [c.id],
+    })),
+  };
 
-        <CommandGroup heading="Shortcuts">
-          <CommandItem disabled>
-            <span className="flex-1">Send message</span>
-            <kbd className="rounded border border-zinc-200 px-1.5 py-0.5 text-[10px] font-mono text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
-              Enter
-            </kbd>
-          </CommandItem>
-          <CommandItem disabled>
-            <span className="flex-1">Open this palette</span>
-            <kbd className="rounded border border-zinc-200 px-1.5 py-0.5 text-[10px] font-mono text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
-              ⌘ K
-            </kbd>
-          </CommandItem>
-        </CommandGroup>
-      </CommandList>
-    </CommandDialog>
-  );
+  const extraGroups: PaletteGroup[] =
+    recents.items.length > 0 ? [actions, recents] : [actions];
+
+  return <GlobalCommandPalette extraGroups={extraGroups} />;
 }

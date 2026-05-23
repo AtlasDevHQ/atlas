@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import dynamic from "next/dynamic";
+import { useQueryStates } from "nuqs";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { UsageSummarySchema } from "@/ui/lib/admin-schemas";
@@ -9,6 +10,7 @@ import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
@@ -23,6 +25,8 @@ import { getUserUsageColumns } from "./columns";
 import { formatNumber } from "./format";
 import { useDataTable } from "@/hooks/use-data-table";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+import { TokenUsageTab } from "../token-usage/tab";
+import { usageSearchParams } from "./search-params";
 import {
   BarChart3,
   Coins,
@@ -30,6 +34,7 @@ import {
   TrendingUp,
   ExternalLink,
   CreditCard,
+  Activity,
 } from "lucide-react";
 import type { ReactNode } from "react";
 
@@ -62,6 +67,7 @@ function formatPeriod(start: string, end: string): string {
 
 export default function UsageDashboardPage() {
   const dark = useDarkMode();
+  const [{ tab }, setParams] = useQueryStates(usageSearchParams);
 
   const { data, loading, error, refetch } = useAdminFetch(
     "/api/v1/admin/usage/summary",
@@ -105,6 +111,7 @@ export default function UsageDashboardPage() {
     <ErrorBoundary>
     <TooltipProvider>
     <div className="p-6">
+      <Tabs value={tab} onValueChange={(v) => setParams({ tab: v as "plan" | "tokens" })}>
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Usage</h1>
@@ -114,21 +121,33 @@ export default function UsageDashboardPage() {
               : "Monitor workspace consumption relative to plan limits."}
           </p>
         </div>
-        {data?.hasStripe && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={openBillingPortal}
-            disabled={portalLoading}
-          >
-            <CreditCard className="mr-1.5 size-3.5" />
-            {portalLoading ? "Opening..." : "Manage Plan"}
-            <ExternalLink className="ml-1.5 size-3" />
-          </Button>
-        )}
+        <div className="flex items-center gap-2">
+          {data?.hasStripe && tab === "plan" && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={openBillingPortal}
+              disabled={portalLoading}
+            >
+              <CreditCard className="mr-1.5 size-3.5" />
+              {portalLoading ? "Opening..." : "Manage Plan"}
+              <ExternalLink className="ml-1.5 size-3" />
+            </Button>
+          )}
+          <TabsList>
+            <TabsTrigger value="plan">
+              <CreditCard className="mr-1.5 size-3.5" />
+              Plan
+            </TabsTrigger>
+            <TabsTrigger value="tokens">
+              <Activity className="mr-1.5 size-3.5" />
+              Tokens
+            </TabsTrigger>
+          </TabsList>
+        </div>
       </div>
 
-      <div className="space-y-6">
+      <TabsContent value="plan" className="space-y-6">
         {/* Billing portal: FetchError routes through MutationErrorSurface;
             portalUrlError is the local-fallback string for "200 OK but no URL"
             edge case (not a FetchError, so kept as a plain ErrorBanner). Each
@@ -234,7 +253,12 @@ export default function UsageDashboardPage() {
             </Card>
           </>}
         </AdminContentWrapper>
-      </div>
+      </TabsContent>
+
+      <TabsContent value="tokens" className="space-y-6">
+        <TokenUsageTab />
+      </TabsContent>
+      </Tabs>
     </div>
     </TooltipProvider>
     </ErrorBoundary>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ComponentType } from "react";
+import { useEffect, useState, type ComponentType } from "react";
 import { z } from "zod";
 import { authClient } from "@/lib/auth/client";
 import { Button } from "@/components/ui/button";
@@ -42,6 +42,7 @@ import {
   Loader2,
   Lock,
   Pencil,
+  Plug,
   RefreshCw,
   RotateCcw,
   Settings,
@@ -84,6 +85,7 @@ const SECTION_ORDER = [
   "Sandbox",
   "Agent",
   "Intelligence",
+  "MCP",
   "Demo",
 ] as const;
 type KnownSection = (typeof SECTION_ORDER)[number];
@@ -95,6 +97,7 @@ const SECTION_ICONS: Record<KnownSection, ComponentType<{ className?: string }>>
   Sandbox: Cpu,
   Agent: Bot,
   Intelligence: Brain,
+  MCP: Plug,
   Demo: FlaskConical,
 };
 
@@ -105,6 +108,7 @@ const SECTION_DESCRIPTIONS: Record<KnownSection, string> = {
   Sandbox: "Where explore and Python tools run",
   Agent: "LLM behavior, model selection, and step caps",
   Intelligence: "Learning and memory features",
+  MCP: "What MCP-connected agents can see and do",
   Demo: "Demo mode fixtures and sample data",
 };
 
@@ -302,8 +306,11 @@ function SettingRow({
 
   return (
     <div
+      id={`setting-${setting.key}`}
       className={cn(
         "group flex items-start gap-3 rounded-xl border bg-card/40 px-3.5 py-3 transition-colors",
+        "scroll-mt-24",
+        "data-[palette-highlight=true]:border-primary data-[palette-highlight=true]:bg-primary/5",
         "hover:border-border/80 hover:bg-card/70",
         isOverride && "border-primary/15",
       )}
@@ -518,6 +525,41 @@ export default function SettingsPage() {
       itemId: key,
     });
   }
+
+  // Deep-link target from the Cmd+K palette: `/admin/settings#setting-<key>`.
+  // Scroll the row into view and pulse a brief highlight so the user sees
+  // which knob the palette landed them on. We re-run when `settings` flips
+  // from empty to populated (rows aren't in the DOM until then) and listen
+  // for in-page hash changes so navigating from one setting to another via
+  // the palette without a full re-render still scrolls.
+  useEffect(() => {
+    function focusFromHash() {
+      const hash = window.location.hash;
+      if (!hash.startsWith("#setting-")) return;
+      const id = hash.slice(1);
+      const el = document.getElementById(id);
+      if (!el) {
+        // Stale palette cache pointing at a renamed/removed setting key.
+        // Warn instead of silently no-op'ing so the symptom is debuggable
+        // when a user reports "Cmd+K sent me to settings but nothing
+        // highlighted."
+        console.debug(`[settings] palette hash target not found: #${id}`);
+        return;
+      }
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.setAttribute("data-palette-highlight", "true");
+      const t = setTimeout(() => {
+        el.removeAttribute("data-palette-highlight");
+      }, 1600);
+      return () => clearTimeout(t);
+    }
+    const cleanup = focusFromHash();
+    window.addEventListener("hashchange", focusFromHash);
+    return () => {
+      window.removeEventListener("hashchange", focusFromHash);
+      cleanup?.();
+    };
+  }, [settings.length]);
 
   const subtitle = !manageable
     ? "Read-only — configure an internal database to enable overrides."

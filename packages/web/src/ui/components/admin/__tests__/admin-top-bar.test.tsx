@@ -55,14 +55,17 @@ describe("AdminTopBar breadcrumb", () => {
     expect(container.textContent).not.toContain("Admin /");
   });
 
-  test("/admin/account-security renders [org] / Admin / Security / MFA & Sessions", () => {
+  test("/admin/account-security renders [org] / Admin / Security / My Security", () => {
     mockedPath = "/admin/account-security";
     cleanup();
     const { container } = render(<AdminTopBar />, { wrapper: Wrapper });
     expect(container.textContent).toContain("Acme");
     expect(container.textContent).toContain("Admin");
     expect(container.textContent).toContain("Security");
-    expect(container.textContent).toContain("MFA & Sessions");
+    // Label change (May 2026): "MFA & Sessions" → "My Security" so it reads
+    // as the *user's* security surface, not a sibling of the SSO/SCIM/IP
+    // Allowlist controls that share the Security group.
+    expect(container.textContent).toContain("My Security");
     // The "Admin" link goes back to /admin so deep crumbs are navigable.
     const adminLink = container.querySelector('a[href="/admin"]');
     expect(adminLink?.textContent).toBe("Admin");
@@ -76,16 +79,18 @@ describe("AdminTopBar breadcrumb", () => {
     expect(container.textContent).not.toContain("Semantic Layer");
   });
 
-  test("/admin/settings/mcp resolves to MCP, not Settings (#2176 regression — sibling leaf must not collapse the child)", () => {
-    mockedPath = "/admin/settings/mcp";
+  test("#2176 regression — /admin/settings does not opt into prefixMatch", () => {
+    // The MCP sub-route that used to be the sibling here was folded into
+    // /admin/settings as a section (May 2026 consolidation), so we assert
+    // the same invariant in sibling-agnostic form: an arbitrary child path
+    // under /admin/settings must NOT resolve to the Settings entry — only
+    // the exact path does. If a future refactor enables prefixMatch on the
+    // Settings entry this test fails, which is exactly the #2176 bug.
+    mockedPath = "/admin/settings/anything-else";
     cleanup();
     const { container } = render(<AdminTopBar />, { wrapper: Wrapper });
-    expect(container.textContent).toContain("MCP");
-    // "Settings" is the section name (Configuration), not the page label here.
-    const text = container.textContent ?? "";
-    // Page label MCP appears, and "Configuration" (group) appears, but the
-    // sibling "Settings" leaf entry must not collapse the MCP child.
-    expect(text.includes("Configuration")).toBe(true);
+    // Unknown subpath collapses to the overview crumb.
+    expect(container.textContent).toContain("Admin Console");
   });
 
   test("an unmapped /admin/* path collapses to overview crumb", () => {

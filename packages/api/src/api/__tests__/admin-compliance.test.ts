@@ -125,7 +125,7 @@ interface PIIClassification {
   updatedAt: string;
 }
 
-let mockGetClassification: PIIClassification | null = null;
+let _mockGetClassification: PIIClassification | null = null;
 let mockUpdateResult: PIIClassification | null = null;
 let mockUpdateError: Error | null = null;
 let mockDeleteError: Error | null = null;
@@ -233,7 +233,7 @@ function makeClassification(
 }
 
 function resetMocks(): void {
-  mockGetClassification = null;
+  _mockGetClassification = null;
   mockUpdateResult = null;
   mockUpdateError = null;
   mockDeleteError = null;

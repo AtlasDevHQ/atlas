@@ -1041,7 +1041,7 @@ export class ModelRouter extends Context.Tag("ModelRouter")<
 export const NoopModelRouterLayer: Layer.Layer<ModelRouter> = Layer.sync(
   ModelRouter,
   () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+     
     const notAvailable = makeNotAvailable("Model routing requires enterprise features to be enabled.");
     return {
       available: false,
@@ -1332,7 +1332,7 @@ export const NoopApprovalGateLayer: Layer.Layer<ApprovalGate> = Layer.sync(
         message: `Approval request "${id}" not found.`,
         code: "not_found",
       });
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+     
     const notAvailable = makeNotAvailable("Approval workflows require enterprise features to be enabled.");
     return {
       available: false,
@@ -1415,7 +1415,7 @@ export class SlaMetrics extends Context.Tag("SlaMetrics")<
 export const NoopSlaMetricsLayer: Layer.Layer<SlaMetrics> = Layer.sync(
   SlaMetrics,
   () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+     
     const notAvailable = makeNotAvailable("SLA monitoring requires enterprise features to be enabled.");
     return {
       available: false,
@@ -1496,7 +1496,7 @@ export class BackupsManager extends Context.Tag("BackupsManager")<
 export const NoopBackupsManagerLayer: Layer.Layer<BackupsManager> = Layer.sync(
   BackupsManager,
   () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+     
     const notAvailable = makeNotAvailable("Automated backups require enterprise features to be enabled.");
     return {
     available: false,
@@ -1761,7 +1761,7 @@ export class IpAllowlistPolicy extends Context.Tag("IpAllowlistPolicy")<
 export const NoopIpAllowlistPolicyLayer: Layer.Layer<IpAllowlistPolicy> = Layer.sync(
   IpAllowlistPolicy,
   () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+     
     const notAvailable = makeNotAvailable("IP allowlist requires enterprise features to be enabled.");
     return {
       available: false,
@@ -1873,7 +1873,7 @@ export class SSOPolicy extends Context.Tag("SSOPolicy")<
 export const NoopSSOPolicyLayer: Layer.Layer<SSOPolicy> = Layer.sync(
   SSOPolicy,
   () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+     
     const notAvailable = makeNotAvailable("SSO requires enterprise features to be enabled.");
     // Pure-helper inline copy of EE's `extractEmailDomain`. Pre-#2570
     // middleware called the EE static export; now it reaches it through
@@ -1977,7 +1977,7 @@ export class SCIMProvenance extends Context.Tag("SCIMProvenance")<
 export const NoopSCIMProvenanceLayer: Layer.Layer<SCIMProvenance> = Layer.sync(
   SCIMProvenance,
   () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+     
     const notAvailable = makeNotAvailable("SCIM provisioning requires enterprise features to be enabled.");
     return {
       available: false,

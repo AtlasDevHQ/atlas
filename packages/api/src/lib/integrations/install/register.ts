@@ -20,6 +20,12 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { registerFormHandler, registerOAuthHandler } from "./dispatch";
 import { SlackOAuthInstallHandler } from "./slack-oauth-handler";
 import { EmailFormInstallHandler } from "./email-form-handler";
+import {
+  SalesforceOAuthInstallHandler,
+  SALESFORCE_CATALOG_ID,
+} from "./salesforce-oauth-handler";
+import { lazyPluginLoader } from "@atlas/api/lib/plugins/lazy-loader";
+import { createSalesforceLazyBuilder } from "@atlas/api/lib/integrations/salesforce/lazy-builder";
 
 const log = createLogger("integrations.install.register");
 
@@ -79,6 +85,15 @@ export function registerBuiltinInstallHandlers(): void {
 
   // ── Slack OAuth ───────────────────────────────────────────────────
   registerSlackOAuthHandler();
+
+  // ── Salesforce OAuth (#2658) ──────────────────────────────────────
+  // First lazy OAuth integration. Registers both the OAuth install
+  // handler (for the install + callback routes) AND the
+  // LazyPluginLoader builder (for the on-demand per-Workspace plugin
+  // instantiation that the agent loop dispatches into). Env gates the
+  // pair as a unit — without SALESFORCE_CLIENT_ID / SALESFORCE_CLIENT_SECRET
+  // there is no operator-side Connected App to drive either side.
+  registerSalesforceOAuthHandler();
 }
 
 function registerSlackOAuthHandler(): void {
@@ -108,6 +123,54 @@ function registerSlackOAuthHandler(): void {
     }),
   );
   log.info({ publicApiUrl }, "Registered SlackOAuthInstallHandler");
+}
+
+function registerSalesforceOAuthHandler(): void {
+  const clientId = process.env.SALESFORCE_CLIENT_ID;
+  const clientSecret = process.env.SALESFORCE_CLIENT_SECRET;
+  const publicApiUrl = resolvePublicApiUrl();
+  // Operator override for sandboxes — defaults to login.salesforce.com
+  // inside the handler when unset.
+  const loginUrl = process.env.SALESFORCE_LOGIN_URL || undefined;
+
+  if (!clientId || !clientSecret) {
+    log.info(
+      "Salesforce OAuth handler not registered — SALESFORCE_CLIENT_ID / SALESFORCE_CLIENT_SECRET unset. /api/v1/integrations/salesforce/install will return 501 until configured.",
+    );
+    return;
+  }
+  if (!publicApiUrl) {
+    log.warn(
+      "Salesforce OAuth handler not registered — ATLAS_PUBLIC_API_URL is unset, so the redirect URI cannot be resolved.",
+    );
+    return;
+  }
+
+  registerOAuthHandler(
+    "salesforce",
+    new SalesforceOAuthInstallHandler({
+      clientId,
+      clientSecret,
+      redirectUri: `${publicApiUrl}/api/v1/integrations/salesforce/callback`,
+      ...(loginUrl ? { loginUrl } : {}),
+    }),
+  );
+  // Register the LazyPluginLoader builder too — the OAuth install dance
+  // and the on-demand per-Workspace plugin instantiation are two halves
+  // of the same Platform wiring; registering them together keeps the
+  // env-gate seam aligned and avoids the "install works but tool calls
+  // fail with builder_missing" failure mode.
+  if (!lazyPluginLoader.hasBuilder(SALESFORCE_CATALOG_ID)) {
+    lazyPluginLoader.registerBuilder(
+      SALESFORCE_CATALOG_ID,
+      createSalesforceLazyBuilder({
+        clientId,
+        clientSecret,
+        ...(loginUrl ? { loginUrl } : {}),
+      }),
+    );
+  }
+  log.info({ publicApiUrl }, "Registered SalesforceOAuthInstallHandler + LazyPluginLoader builder");
 }
 
 /** @internal Test-only — resets the idempotency latch. */

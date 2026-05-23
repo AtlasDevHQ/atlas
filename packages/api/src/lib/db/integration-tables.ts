@@ -56,6 +56,11 @@ export const INTEGRATION_TABLES: ReadonlyArray<IntegrationTable> = [
   { table: "email_installations",   pk: "config_id",       encrypted: "config_encrypted",            keyVersionColumn: "config_key_version" },
   { table: "sandbox_credentials",   pk: "id",              encrypted: "credentials_encrypted",       keyVersionColumn: "credentials_key_version" },
   { table: "sub_processor_subscriptions", pk: "id",        encrypted: "token_encrypted",             keyVersionColumn: "token_key_version" },
+  // 0089 (#2658) — Salesforce + future lazy OAuth integrations land
+  // here. Composite (workspace_id, catalog_id) uniqueness, but the
+  // table still keys on a single uuid `id` column so the rotation /
+  // audit scripts walk it generically (single-PK assumption preserved).
+  { table: "integration_credentials", pk: "id",            encrypted: "credentials_encrypted",       keyVersionColumn: "credentials_key_version" },
 ] as const;
 
 /**

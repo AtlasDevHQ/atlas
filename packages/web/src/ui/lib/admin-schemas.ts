@@ -317,6 +317,10 @@ export const IntegrationsCatalogEntrySchema = z.object({
   installed: z.boolean(),
   installedAt: z.string().nullable(),
   installedBy: z.string().nullable(),
+  // Per-install state derived from `workspace_plugins.config.status`.
+  // `"reconnect_needed"` triggers the Reconnect affordance on the
+  // integration card (#2658).
+  installStatus: z.string().nullable(),
   upsellOnly: z.boolean(),
 });
 

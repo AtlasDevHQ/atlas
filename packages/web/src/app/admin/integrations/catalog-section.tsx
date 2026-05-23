@@ -49,6 +49,13 @@ function CatalogCard({ entry, onInstalled }: CatalogCardProps) {
   const isInstalled = entry.installed;
   const isForm = entry.installModel === "form";
   const isOAuth = entry.installModel === "oauth";
+  // `reconnect_needed` is set by the refresh-token flow when a permanent
+  // failure (invalid_grant, revoked Connected App, etc.) proves the
+  // install can't recover without a fresh OAuth dance. The Reconnect
+  // CTA routes through the same /install endpoint as a fresh install
+  // — the OAuth callback upserts both the install row and the
+  // credential row, so re-running the dance heals the install.
+  const needsReconnect = isInstalled && entry.installStatus === "reconnect_needed";
   const [formModalOpen, setFormModalOpen] = useState(false);
 
   return (
@@ -60,11 +67,15 @@ function CatalogCard({ entry, onInstalled }: CatalogCardProps) {
         <div className="flex items-start justify-between gap-3">
           <CardTitle className="text-base">{entry.name}</CardTitle>
           <div className="flex shrink-0 items-center gap-1">
-            {isInstalled && (
+            {needsReconnect ? (
+              <Badge variant="destructive" className="text-[10px]" data-testid={`catalog-card-${entry.slug}-reconnect-badge`}>
+                Reconnect needed
+              </Badge>
+            ) : isInstalled ? (
               <Badge variant="secondary" className="text-[10px]">
                 Installed
               </Badge>
-            )}
+            ) : null}
             {isUpsell && (
               <Badge variant="outline" className="gap-1 text-[10px]">
                 <Sparkles className="size-3" />
@@ -92,6 +103,28 @@ function CatalogCard({ entry, onInstalled }: CatalogCardProps) {
             <Button size="sm" variant="outline" disabled aria-label={`Upgrade required for ${entry.name}`}>
               Upgrade
             </Button>
+          ) : needsReconnect ? (
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="default"
+                asChild
+                aria-label={`Reconnect ${entry.name}`}
+                data-testid={`catalog-card-${entry.slug}-reconnect`}
+              >
+                <a href={`${getApiUrl()}/api/v1/integrations/${entry.slug}/install`}>
+                  Reconnect
+                </a>
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => undefined}
+                aria-label={`Disconnect ${entry.name}`}
+              >
+                Disconnect
+              </Button>
+            </div>
           ) : isInstalled ? (
             <div className="flex items-center gap-2">
               <Button size="sm" variant="outline" onClick={() => undefined} aria-label={`Manage ${entry.name}`}>

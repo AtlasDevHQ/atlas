@@ -95,6 +95,12 @@ const CatalogEntryResponseSchema = z.object({
   installed: z.boolean(),
   installedAt: z.string().nullable(),
   installedBy: z.string().nullable(),
+  // Per-install state derived from `workspace_plugins.config.status`.
+  // `null` when the install row is absent OR the platform doesn't
+  // participate in the status taxonomy (Slack today — only lazy OAuth
+  // integrations flip status on refresh failure). `"reconnect_needed"`
+  // when the token refresh permanently failed (#2658).
+  installStatus: z.string().nullable(),
   upsellOnly: z.boolean(),
 });
 
@@ -123,6 +129,7 @@ interface InstallationRow extends Record<string, unknown> {
   catalog_id: string;
   installed_at: string | Date;
   installed_by: string | null;
+  install_status: string | null;
 }
 
 function asIsoString(value: string | Date): string {
@@ -230,7 +237,8 @@ integrationsCatalog.openapi(listCatalogRoute, async (c) => {
             ),
             internalQuery<CatalogRow>(catalogSql),
             internalQuery<InstallationRow>(
-              `SELECT catalog_id, installed_at, installed_by
+              `SELECT catalog_id, installed_at, installed_by,
+                      config->>'status' AS install_status
                  FROM workspace_plugins
                 WHERE workspace_id = $1`,
               [orgId],
@@ -265,6 +273,7 @@ integrationsCatalog.openapi(listCatalogRoute, async (c) => {
           installed: installation !== undefined,
           installedAt: installation ? asIsoString(installation.installed_at) : null,
           installedBy: installation?.installed_by ?? null,
+          installStatus: installation?.install_status ?? null,
           upsellOnly: isUpsellOnly(workspacePlan, row.min_plan, { slug: row.slug, id: row.id }),
         };
       });

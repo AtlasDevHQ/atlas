@@ -355,6 +355,47 @@ All endpoints require admin authentication.
 
 ---
 
+## Salesforce (Lazy OAuth — 1.5.2 / #2658)
+
+Salesforce is the first **lazy OAuth integration** — credentials live in the dedicated `integration_credentials` table (per [ADR-0005](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0005-integration-credentials-table.md)) and the per-Workspace plugin instance is built on demand by `LazyPluginLoader` on the first agent tool call.
+
+### Operator setup
+
+1. Create a Salesforce **Connected App** in your Salesforce org's setup (Setup → App Manager → New Connected App).
+2. Enable OAuth Settings:
+   - **Callback URL** — `https://<your-api>/api/v1/integrations/salesforce/callback`
+   - **OAuth Scopes** — `Manage user data via APIs (api)`, `Perform requests at any time (refresh_token, offline_access)`
+3. After save, capture the **Consumer Key** and **Consumer Secret** from the Connected App detail page.
+4. Set these env vars on your API service:
+
+| Env var | Required | Default | Notes |
+|---|---|---|---|
+| `SALESFORCE_CLIENT_ID` | yes | — | Connected App's Consumer Key |
+| `SALESFORCE_CLIENT_SECRET` | yes | — | Connected App's Consumer Secret |
+| `SALESFORCE_LOGIN_URL` | no | `https://login.salesforce.com` | Set to `https://test.salesforce.com` for Sandbox orgs |
+| `ATLAS_PUBLIC_API_URL` | yes | — | Public origin of the API — used to construct the OAuth callback URL |
+
+Without `SALESFORCE_CLIENT_ID` / `SALESFORCE_CLIENT_SECRET`, the install handler logs `Salesforce OAuth handler not registered` at boot and `GET /api/v1/integrations/salesforce/install` returns 501.
+
+### Customer admin flow
+
+1. Click **Connect** on the Salesforce card in `/admin/integrations`.
+2. Atlas redirects to `<loginUrl>/services/oauth2/authorize` with the operator's Connected App `client_id` and a CSRF-signed state token.
+3. The Salesforce admin signs in + approves the requested scopes.
+4. Salesforce redirects back to `/api/v1/integrations/salesforce/callback?code=...&state=...`. Atlas exchanges the code for an access token + refresh token bundle and writes:
+   - `workspace_plugins` — install row with `config = { instance_url, scopes, status: "ok", org_id, org_user_id }`.
+   - `integration_credentials` — encrypted `{ accessToken, refreshToken, expiresAt, tokenType, scope, instanceUrl }` blob.
+
+### Refresh + reconnect
+
+Salesforce access tokens are short-lived. On `INVALID_SESSION_ID` during a query, Atlas runs `grant_type=refresh_token` and retries. On a permanent failure (Salesforce returns `invalid_grant` / `invalid_client` / `inactive_user` / `org_locked` / `inactive_org`), Atlas flips `workspace_plugins.config.status` to `"reconnect_needed"` and the admin UI surfaces a **Reconnect needed** badge + Reconnect button on the integration card. A re-run of the OAuth dance heals the install.
+
+### Disconnect
+
+`DELETE /api/v1/integrations/salesforce` tears down both stores in the ADR-0003 order (credentials FIRST, install record SECOND). The credential teardown deletes the row in `integration_credentials` keyed by `(workspace_id, catalog_id)`.
+
+---
+
 ## See Also
 
 - [Slack Integration](/guides/slack) — Full Slack setup guide

@@ -194,6 +194,79 @@ export default defineConfig({
         },
       ],
     },
+    // Obsidian — read-only access to the user's vault via the Local
+    // REST API plugin (https://github.com/coddingtonbear/obsidian-
+    // local-rest-api). `api_url` defaults to the plugin's loopback
+    // listener so the canonical "install on my laptop" path works
+    // without typing a URL; remote/tunneled vaults override it.
+    {
+      slug: "obsidian",
+      type: "integration",
+      install_model: "form",
+      enabled: true,
+      saas_eligible: true,
+      name: "Obsidian",
+      description:
+        "Search the agent against notes in your Obsidian vault. Atlas reads through the Local REST API plugin — read-only, never writes.",
+      configSchema: [
+        {
+          key: "api_url",
+          type: "string",
+          label: "API URL",
+          description: "Base URL of the Obsidian Local REST API. Defaults to http://127.0.0.1:27123.",
+          required: false,
+          default: "http://127.0.0.1:27123",
+        },
+        {
+          key: "api_key",
+          type: "string",
+          label: "API key",
+          description: "Bearer token from the Local REST API plugin's settings tab. Stored encrypted at rest.",
+          required: true,
+          secret: true,
+        },
+      ],
+    },
+    // Outbound webhook — POSTs analysis output to a customer-managed
+    // HTTPS endpoint with HMAC-SHA256 signing. `signing_secret` is the
+    // shared secret receivers verify against; rotation is "re-install"
+    // (the form modal re-runs and overwrites the JSONB row).
+    {
+      slug: "webhook",
+      type: "integration",
+      install_model: "form",
+      enabled: true,
+      saas_eligible: true,
+      name: "Webhook",
+      description:
+        "POST analysis output to a customer-managed HTTPS endpoint. Each request is signed with HMAC-SHA256 in the X-Atlas-Signature header.",
+      configSchema: [
+        {
+          key: "url",
+          type: "string",
+          label: "Webhook URL",
+          description: "Destination URL — must be https.",
+          required: true,
+        },
+        {
+          key: "signing_secret",
+          type: "string",
+          label: "Signing secret",
+          description: "Shared secret used for HMAC-SHA256 signing. Stored encrypted at rest.",
+          required: true,
+          secret: true,
+        },
+        {
+          key: "retry_policy",
+          type: "select",
+          label: "Retry policy",
+          description: "How to handle 5xx / network failures.",
+          required: false,
+          default: "exponential",
+          options: ["none", "exponential"],
+        },
+      ],
+    },
   ],
 
   // ── Plugins ─────────────────────────────────────────────────────

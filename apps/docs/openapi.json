@@ -64584,6 +64584,12 @@
                               "null"
                             ]
                           },
+                          "installStatus": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "upsellOnly": {
                             "type": "boolean"
                           }
@@ -64600,6 +64606,7 @@
                           "installed",
                           "installedAt",
                           "installedBy",
+                          "installStatus",
                           "upsellOnly"
                         ]
                       }

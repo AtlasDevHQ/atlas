@@ -46,6 +46,7 @@ import { PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
 import { getInstallHandler } from "@atlas/api/lib/integrations/install";
 import { FormInstallValidationError } from "@atlas/api/lib/integrations/install/email-form-handler";
 import { deleteInstallation as deleteSlackInstallation } from "@atlas/api/lib/slack/store";
+import { deleteCredentialBundle } from "@atlas/api/lib/integrations/credentials/store";
 import {
   detectMisrouting,
   isStrictRoutingEnabled,
@@ -583,27 +584,34 @@ integrations.openapi(callbackRoute, async (c) =>
 // DELETE /:platform — disconnect a Platform install
 //
 // Tears down a Platform install in two stores in the order mandated by
-// ADR-0003:
+// ADR-0003 / ADR-0005:
 //
-//   1. `chat_cache:<platform>:installation:<teamId>` — credentials
-//   2. `workspace_plugins` row — install metadata
+//   1. Credential row — `chat_cache:<platform>:installation:<teamId>`
+//      for Slack, or the `integration_credentials` row keyed by
+//      (workspace_id, catalog_id) for lazy OAuth integrations
+//      (Salesforce today; future Jira / etc.).
+//   2. `workspace_plugins` row — install metadata.
 //
 // Order is load-bearing: the credential row MUST go first. If the
 // workspace_plugins delete then fails the install row dangles, but
 // the next event's downstream credential resolution misses on the
-// already-cleared chat_cache row and the listener short-circuits
-// silently (the WorkspaceInstallGate itself only joins the install +
-// catalog + organization tables — it does NOT check credentials, so
-// it returns true on the dangling row; the silent skip happens one
-// step later in the per-event handler). The workspace is safe either
-// way. The reverse order opens the failure mode where the install
-// row is gone but a bot token is still resident in chat_cache with
-// no admin-visible UI to reach it.
+// already-cleared credential store and the listener / agent loop
+// short-circuits with a clear "credential missing" signal (the
+// WorkspaceInstallGate itself only joins the install + catalog +
+// organization tables — it does NOT check credentials; the silent skip
+// or explicit-error happens one step later in the per-event handler
+// or the LazyPluginLoader builder). The workspace is safe either way.
+// The reverse order opens the failure mode where the install row is
+// gone but a credential is still resident with no admin-visible UI to
+// reach it.
 //
-// Per-Platform credential teardown is dispatched by slug — currently
-// only `slack` is wired (it's the only Platform with an OAuth install
-// handler today). Other slugs surface 501 rather than a no-op so the
-// admin sees a real error if they try.
+// Per-Platform credential teardown is dispatched by slug:
+//   - `slack` → chat_cache (legacy two-store, ADR-0003)
+//   - Anything in `INTEGRATION_CREDENTIALS_SLUGS` →
+//     `integration_credentials` (lazy OAuth, ADR-0005)
+//
+// Other slugs surface 501 rather than a no-op so the admin sees a
+// real error if they try.
 // ---------------------------------------------------------------------------
 
 interface InstallRowFromDb extends Record<string, unknown> {
@@ -637,16 +645,57 @@ async function getCatalogRowBySlugForDisconnect(slug: string): Promise<{
   return { id: rows[0]!.id, slug: rows[0]!.slug };
 }
 
-async function deleteCredentialStore(platform: string, teamId: string): Promise<void> {
+/**
+ * Slugs whose credentials live in `integration_credentials` keyed by
+ * (workspace_id, catalog_id). Salesforce ships first (#2658); future
+ * lazy OAuth integrations (Jira, etc.) join the set as they land.
+ *
+ * Adding a new lazy OAuth integration requires (per the "Consequences"
+ * section of ADR-0005):
+ *   1. One line here.
+ *   2. A `<slug>-oauth-handler.ts` + `<slug>-token-refresh.ts` pair.
+ *   3. Registration in `lib/integrations/install/register.ts`
+ *      (handler + LazyPluginLoader builder, env-gated together).
+ *   4. A catalog entry in `deploy/api/atlas.config.ts`.
+ *
+ * Kept as a Set rather than a single `=== "salesforce"` check so the
+ * one-line addition for the next integration is obvious.
+ *
+ * @see docs/adr/0005-integration-credentials-table.md
+ */
+const INTEGRATION_CREDENTIALS_SLUGS = new Set<string>(["salesforce"]);
+
+/**
+ * Credential-store teardown. Branches by slug:
+ *   - `slack` → chat_cache row (legacy single-store path).
+ *   - Any slug in {@link INTEGRATION_CREDENTIALS_SLUGS} → row in
+ *     `integration_credentials` keyed by (workspace_id, catalog_id).
+ *
+ * Returns nothing — failure throws and the route layer surfaces 500.
+ * Callers must invoke this BEFORE deleting `workspace_plugins` per
+ * ADR-0003 (credentials must not outlive the install record).
+ */
+async function deleteCredentialStore(
+  platform: string,
+  workspaceId: string,
+  catalogId: string,
+  teamId: string | null,
+): Promise<void> {
   if (platform === "slack") {
+    if (!teamId) {
+      throw new Error("Slack disconnect requires a team_id from workspace_plugins.config");
+    }
     await deleteSlackInstallation(teamId);
     return;
   }
-  // Any non-Slack slug that reached here passed the catalog enabled-check
-  // — so it's a real Platform, just one whose disconnect path isn't wired
-  // yet. The route surfaces 501 before reaching this branch, but the
-  // throw is a defensive backstop against future slugs slipping past
-  // the dispatch table.
+  if (INTEGRATION_CREDENTIALS_SLUGS.has(platform)) {
+    await deleteCredentialBundle(workspaceId, catalogId);
+    return;
+  }
+  // Any other slug that reached here passed the catalog enabled-check
+  // — so it's a real Platform, just one whose disconnect path isn't
+  // wired yet. The route surfaces 501 before reaching this branch, but
+  // the throw is a defensive backstop.
   throw new Error(`Disconnect not implemented for platform "${platform}"`);
 }
 
@@ -736,16 +785,22 @@ integrations.openapi(disconnectRoute, async (c) =>
     }
 
     // ── Per-Platform disconnect-handler check ─────────────────────
-    if (platform !== "slack") {
+    const isSlack = platform === "slack";
+    const isIntegrationCredentials = INTEGRATION_CREDENTIALS_SLUGS.has(platform);
+    if (!isSlack && !isIntegrationCredentials) {
       return c.json(
         { error: "disconnect_unavailable", message: `Disconnect for "${platform}" is not yet implemented on this deploy.`, requestId },
         501,
       );
     }
 
-    // ── Resolve teamId from the install row ───────────────────────
-    // `workspace_plugins.config` is JSONB; the Slack OAuth install
-    // handler writes `{ team_id, team_name, bot_user_id, scopes, app_id }`.
+    // ── Resolve install row ───────────────────────────────────────
+    // Slack needs `config.team_id` to look up the chat_cache row.
+    // Salesforce / future integration_credentials Platforms only need
+    // the existence check — credential deletion is keyed by
+    // (workspace_id, catalog_id) directly. Reading `team_id`
+    // unconditionally is harmless (returns NULL for non-Slack rows).
+    //
     // The install row's `catalog_id` matches `plugin_catalog.id` (read
     // from the catalog lookup above) — synthesizing `catalog:${slug}`
     // would be brittle if the seeder's id-derivation ever changes.
@@ -757,27 +812,38 @@ integrations.openapi(disconnectRoute, async (c) =>
         LIMIT 1`,
       [workspaceId, catalogId],
     );
-    if (installRows.length === 0 || !installRows[0]?.team_id) {
+    if (installRows.length === 0) {
       return c.json(
         { error: "not_found", message: `No ${platform} install found for this workspace.`, requestId },
         404,
       );
     }
-    const teamId = installRows[0].team_id;
+    const teamId = installRows[0]?.team_id ?? null;
+    if (isSlack && !teamId) {
+      // Defensive — a Slack install row should always carry team_id.
+      // If it doesn't, the row is corrupted and the credential cleanup
+      // can't run; surface as 404 rather than throwing so the admin
+      // can disconnect via the legacy path.
+      return c.json(
+        { error: "not_found", message: `No ${platform} install found for this workspace.`, requestId },
+        404,
+      );
+    }
 
     // ── Two-store teardown (ADR-0003 order is load-bearing) ───────
-    // 1) chat_cache FIRST — credentials must not outlive install record.
-    //    A failure here aborts the workspace_plugins delete; the admin
-    //    sees a 500 with a requestId and the install row is preserved
-    //    so they can retry.
+    // 1) Credential row FIRST — credentials must not outlive the install
+    //    record. A failure here aborts the workspace_plugins delete; the
+    //    admin sees a 500 with a requestId and the install row is
+    //    preserved so they can retry.
     // 2) workspace_plugins SECOND. A failure here leaves the install
-    //    row dangling but credentials are already gone — the listener's
-    //    per-event credential lookup misses on the cleared chat_cache
-    //    row and the event is silently skipped (the gate itself returns
-    //    true on the dangling row, but the downstream lookup fails one
-    //    step later). Acceptable failed state per ADR-0003
-    //    "Consequences > For uninstall."
-    await deleteCredentialStore(platform, teamId);
+    //    row dangling but credentials are already gone. For Slack the
+    //    listener's per-event credential lookup misses on the cleared
+    //    chat_cache row and the event is silently skipped. For lazy
+    //    OAuth integrations the LazyPluginLoader's next build will fail
+    //    with "integration_credentials row is missing" and the agent
+    //    surfaces a clear "disconnect + reinstall" error. Acceptable
+    //    failed states per ADR-0003 "Consequences > For uninstall."
+    await deleteCredentialStore(platform, workspaceId, catalogId, teamId);
 
     await internalQuery(
       `DELETE FROM workspace_plugins
@@ -785,7 +851,10 @@ integrations.openapi(disconnectRoute, async (c) =>
       [workspaceId, catalogId],
     );
 
-    log.info({ workspaceId, platform, teamId }, "Platform install disconnected (both stores cleared)");
+    log.info(
+      { workspaceId, platform, teamId },
+      "Platform install disconnected (both stores cleared)",
+    );
     return c.json({ message: `${platform} disconnected successfully.` }, 200);
   }),
 );

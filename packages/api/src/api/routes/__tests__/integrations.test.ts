@@ -163,6 +163,20 @@ const mockDeleteInstallation = mock(async (_teamId: string): Promise<void> => {
   callOrder.push("chat_cache.delete");
 });
 
+const mockDeleteCredentialBundle = mock(async (_workspaceId: string, _catalogId: string): Promise<boolean> => {
+  callOrder.push("integration_credentials.delete");
+  return true;
+});
+
+mock.module("@atlas/api/lib/integrations/credentials/store", () => ({
+  deleteCredentialBundle: mockDeleteCredentialBundle,
+  // CLAUDE.md "Mock all exports" — the disconnect path only calls
+  // `deleteCredentialBundle`; stub the read/write so other tests that
+  // import this module don't see partial mocks.
+  readCredentialBundle: mock(() => Promise.resolve(null)),
+  saveCredentialBundle: mock(() => Promise.resolve()),
+}));
+
 mock.module("@atlas/api/lib/slack/store", () => ({
   deleteInstallation: mockDeleteInstallation,
   // mock.module() requires every named export to be mocked (CLAUDE.md
@@ -301,6 +315,11 @@ beforeEach(() => {
   mockDeleteInstallation.mockClear();
   mockDeleteInstallation.mockImplementation(async (_teamId: string) => {
     callOrder.push("chat_cache.delete");
+  });
+  mockDeleteCredentialBundle.mockClear();
+  mockDeleteCredentialBundle.mockImplementation(async () => {
+    callOrder.push("integration_credentials.delete");
+    return true;
   });
   mockMisrouted = null;
   mockStrictRouting = false;
@@ -1038,5 +1057,77 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
       (p) => Array.isArray(p) && p[0] === "self-hosted" && p[1] === "catalog:slack",
     );
     expect(selectParams).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/v1/integrations/salesforce — dual-store teardown for the
+// first lazy OAuth integration (#2658).
+//
+// Same ADR-0003 ordering as Slack but the credential store is
+// `integration_credentials` keyed by (workspace_id, catalog_id) rather
+// than `chat_cache` keyed by team_id.
+// ---------------------------------------------------------------------------
+
+function stageSalesforceInstallLookup(present: boolean) {
+  mockInternalQuery.mockImplementation(async (sql: string, _params?: unknown[]): Promise<unknown[]> => {
+    if (sql.includes("DELETE FROM workspace_plugins")) {
+      callOrder.push("workspace_plugins.delete");
+      return [];
+    }
+    if (sql.includes("FROM plugin_catalog")) {
+      return [{ id: "catalog:salesforce", slug: "salesforce", install_model: "oauth", enabled: true }];
+    }
+    if (sql.includes("FROM workspace_plugins")) {
+      callOrder.push("workspace_plugins.select");
+      // Salesforce installs don't carry team_id — `team_id` resolves to NULL
+      // through the JSONB extraction. The disconnect path tolerates a null
+      // teamId for non-Slack platforms.
+      return present ? [{ team_id: null }] : [];
+    }
+    return [];
+  });
+}
+
+describe("DELETE /api/v1/integrations/salesforce — dual-store teardown", () => {
+  it("deletes integration_credentials BEFORE workspace_plugins (ADR-0003 ordering)", async () => {
+    stageSalesforceInstallLookup(true);
+
+    const res = await request("/api/v1/integrations/salesforce", { method: "DELETE" });
+
+    expect(res.status).toBe(200);
+    const teardownSequence = callOrder.filter(
+      (c) => c === "integration_credentials.delete" || c === "workspace_plugins.delete",
+    );
+    expect(teardownSequence).toEqual([
+      "integration_credentials.delete",
+      "workspace_plugins.delete",
+    ]);
+    expect(mockDeleteCredentialBundle).toHaveBeenCalledWith("ws-1", "catalog:salesforce");
+    expect(mockDeleteInstallation).not.toHaveBeenCalled();
+  });
+
+  it("aborts (no workspace_plugins delete) when integration_credentials delete fails", async () => {
+    stageSalesforceInstallLookup(true);
+    mockDeleteCredentialBundle.mockImplementationOnce(async () => {
+      callOrder.push("integration_credentials.delete");
+      throw new Error("integration_credentials write conflict");
+    });
+
+    const res = await request("/api/v1/integrations/salesforce", { method: "DELETE" });
+
+    expect(res.status).toBe(500);
+    expect(callOrder).toContain("integration_credentials.delete");
+    expect(callOrder).not.toContain("workspace_plugins.delete");
+  });
+
+  it("returns 404 when no Salesforce install row exists for the workspace", async () => {
+    stageSalesforceInstallLookup(false);
+
+    const res = await request("/api/v1/integrations/salesforce", { method: "DELETE" });
+
+    expect(res.status).toBe(404);
+    expect(mockDeleteCredentialBundle).not.toHaveBeenCalled();
+    expect(callOrder).not.toContain("workspace_plugins.delete");
   });
 });

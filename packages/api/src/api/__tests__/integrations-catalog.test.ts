@@ -464,7 +464,31 @@ describe("GET /api/v1/integrations/catalog", () => {
       expect(entry.installed).toBe(false);
       expect(entry.installedAt).toBeNull();
       expect(entry.installedBy).toBeNull();
+      expect(entry.installStatus).toBeNull();
       expect(entry.upsellOnly).toBe(false);
+    });
+
+    it("surfaces installStatus from workspace_plugins.config (e.g. reconnect_needed for Salesforce)", async () => {
+      // #2658 — the Salesforce refresh-token flow flips config.status to
+      // 'reconnect_needed' on permanent failure. The catalog response
+      // carries the flag so /admin/integrations can render the
+      // Reconnect affordance.
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("FROM plugin_catalog", [slackRow]);
+      setQueryResult("FROM workspace_plugins", [
+        {
+          catalog_id: "catalog:slack",
+          installed_at: now,
+          installed_by: "user-42",
+          install_status: "reconnect_needed",
+        },
+      ]);
+
+      const app = buildApp();
+      const res = await app.request("/integrations/catalog");
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect(body.catalog[0].installStatus).toBe("reconnect_needed");
     });
 
     it("only includes enabled rows (planner filter at SQL layer)", async () => {

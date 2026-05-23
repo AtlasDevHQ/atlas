@@ -100,8 +100,9 @@ describe("runMigrations", () => {
     // + 0085 (workspace_proactive_config.workspace_id <> '' CHECK, #2623 item 5)
     // + 0086 (consolidate slack installations onto chat_cache, #2634)
     // + 0087 (plugin_catalog.install_model + saas_eligible, #2650)
-    // + 0088 (backfill workspace_plugins from chat_cache, #2655) = 89.
-    expect(count).toBe(89);
+    // + 0088 (backfill workspace_plugins from chat_cache, #2655)
+    // + 0089 (integration_credentials table, #2658) = 90.
+    expect(count).toBe(90);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -219,6 +220,7 @@ describe("runMigrations", () => {
         "0086_consolidate_slack_installations.sql",
         "0087_plugin_catalog_install_model.sql",
         "0088_backfill_workspace_plugins.sql",
+        "0089_integration_credentials.sql",
       ],
     });
 

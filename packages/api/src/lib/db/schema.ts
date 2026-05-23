@@ -1626,6 +1626,28 @@ export const workspacePlugins = pgTable(
   ],
 );
 
+// integration_credentials (0089) — dedicated credential store for lazy
+// OAuth integrations (Salesforce, future Jira / etc.). The dual-store
+// teardown order is documented in ADR-0003: credentials first, install
+// record second. FK cascade is the defensive backstop, not the primary
+// cleanup path.
+export const integrationCredentials = pgTable(
+  "integration_credentials",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: text("workspace_id").notNull(),
+    catalogId: text("catalog_id").notNull().references(() => pluginCatalog.id, { onDelete: "cascade" }),
+    credentialsEncrypted: text("credentials_encrypted").notNull(),
+    credentialsKeyVersion: integer("credentials_key_version"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("idx_integration_credentials_unique").on(t.workspaceId, t.catalogId),
+    index("idx_integration_credentials_workspace").on(t.workspaceId),
+  ],
+);
+
 // ---------------------------------------------------------------------------
 // Dashboards
 // ---------------------------------------------------------------------------

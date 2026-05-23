@@ -637,6 +637,50 @@ describe("GET /api/v1/integrations/catalog", () => {
       const salesforce = body.catalog.find((e: { slug: string }) => e.slug === "salesforce");
       expect(salesforce.upsellOnly).toBe(false);
     });
+
+    it("emits `accessible` and `upgradeRequired` per entry — accessible=true → upgradeRequired=null", async () => {
+      // Pin the 1.5.2 four-layer-entitlement contract: the admin UI's
+      // catalog-section reads BOTH fields, so a regression that drops
+      // either (or inverts the invariant) would silently break the
+      // three-state card render. Asserting at the route level keeps
+      // the contract pinned without round-tripping through the UI.
+      setQueryResult("FROM organization WHERE id", [{ plan_tier: "business" }]);
+      setQueryResult("FROM plugin_catalog", [slackRow, teamRow]);
+      setQueryResult("FROM workspace_plugins", []);
+
+      const app = buildApp();
+      const res = await app.request("/integrations/catalog");
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      const slack = body.catalog.find((e: { slug: string }) => e.slug === "slack");
+      const salesforce = body.catalog.find((e: { slug: string }) => e.slug === "salesforce");
+      expect(slack.accessible).toBe(true);
+      expect(slack.upgradeRequired).toBeNull();
+      expect(salesforce.accessible).toBe(true);
+      expect(salesforce.upgradeRequired).toBeNull();
+    });
+
+    it("emits `accessible=false` + `upgradeRequired=<min_plan>` for above-plan entries", async () => {
+      // The other half of the invariant — when accessible=false,
+      // upgradeRequired carries the catalog row's min_plan so the
+      // locked card can render the "Premium — requires <plan>" badge.
+      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
+      setQueryResult("FROM plugin_catalog", [slackRow, teamRow]);
+      setQueryResult("FROM workspace_plugins", []);
+
+      const app = buildApp();
+      const res = await app.request("/integrations/catalog");
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      const slack = body.catalog.find((e: { slug: string }) => e.slug === "slack");
+      const salesforce = body.catalog.find((e: { slug: string }) => e.slug === "salesforce");
+      // Slack admits starter — accessible
+      expect(slack.accessible).toBe(true);
+      expect(slack.upgradeRequired).toBeNull();
+      // Salesforce requires business — upgrade required
+      expect(salesforce.accessible).toBe(false);
+      expect(salesforce.upgradeRequired).toBe("business");
+    });
   });
 
   describe("deploy-mode filter", () => {

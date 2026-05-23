@@ -64592,6 +64592,15 @@
                           },
                           "upsellOnly": {
                             "type": "boolean"
+                          },
+                          "accessible": {
+                            "type": "boolean"
+                          },
+                          "upgradeRequired": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           }
                         },
                         "required": [
@@ -64607,7 +64616,9 @@
                           "installedAt",
                           "installedBy",
                           "installStatus",
-                          "upsellOnly"
+                          "upsellOnly",
+                          "accessible",
+                          "upgradeRequired"
                         ]
                       }
                     }
@@ -72058,7 +72069,7 @@
         ],
         "responses": {
           "302": {
-            "description": "Redirect to Platform OAuth authorization page"
+            "description": "Redirect to Platform OAuth authorization page on success, or to `/admin/integrations?error=<platform>&reason=plan_upgrade_required` when the workspace's plan does not admit the install (browser callers)."
           },
           "400": {
             "description": "Platform is not OAuth-installable, or unknown",
@@ -72097,7 +72108,7 @@
             }
           },
           "403": {
-            "description": "Caller is not a workspace admin",
+            "description": "Caller is not a workspace admin, or the workspace's plan tier does not admit this integration (JSON callers; browsers see a 302 to the admin UI).",
             "content": {
               "application/json": {
                 "schema": {
@@ -72284,7 +72295,7 @@
             }
           },
           "403": {
-            "description": "Caller is not a workspace admin",
+            "description": "Caller is not a workspace admin, or the workspace's plan tier does not admit this integration.",
             "content": {
               "application/json": {
                 "schema": {
@@ -72423,6 +72434,17 @@
                     "error",
                     "message"
                   ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Workspace plan changed mid-OAuth and no longer admits this integration (JSON callers; browsers see a 302 to the admin UI).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
                 }
               }
             }

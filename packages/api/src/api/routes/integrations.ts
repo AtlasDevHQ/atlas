@@ -578,25 +578,14 @@ integrations.openapi(installFormRoute, async (c) =>
       );
     }
 
-    let handler: ReturnType<typeof getInstallHandler>;
-    try {
-      handler = getInstallHandler(row);
-    } catch (err) {
-      log.warn(
-        { platform, err: err instanceof Error ? err.message : String(err) },
-        "No form install handler registered for platform — operator must wire the handler",
-      );
-      return c.json(
-        { error: "handler_unavailable", message: `Form handler for "${platform}" is not registered on this deploy.`, requestId },
-        501,
-      );
-    }
-    if (handler.kind !== "form") {
-      log.error({ platform, kind: handler.kind }, "Catalog install_model='form' but dispatch returned non-form handler");
-      return c.json({ error: "handler_unavailable", message: "Install handler misconfigured.", requestId }, 501);
-    }
-
     // ── Plan-tier gate (#2701) ────────────────────────────────────
+    // Ordered BEFORE handler dispatch to match the /install branch — a
+    // workspace below the catalog row's plan should see 403
+    // plan_upgrade_required even when the operator hasn't wired the
+    // form handler (which would otherwise 501). Avoids the "501 on
+    // Pro plan, 403 on Free plan, for the same unconfigured platform"
+    // contract divergence the /install branch already avoids.
+    //
     // POST callers (admin UI form submit) get the structured 403
     // body — no redirect path because the UI's `useAdminMutation`
     // already routes 403 responses to the upgrade toast.
@@ -624,6 +613,24 @@ integrations.openapi(installFormRoute, async (c) =>
           403,
         );
       }
+    }
+
+    let handler: ReturnType<typeof getInstallHandler>;
+    try {
+      handler = getInstallHandler(row);
+    } catch (err) {
+      log.warn(
+        { platform, err: err instanceof Error ? err.message : String(err) },
+        "No form install handler registered for platform — operator must wire the handler",
+      );
+      return c.json(
+        { error: "handler_unavailable", message: `Form handler for "${platform}" is not registered on this deploy.`, requestId },
+        501,
+      );
+    }
+    if (handler.kind !== "form") {
+      log.error({ platform, kind: handler.kind }, "Catalog install_model='form' but dispatch returned non-form handler");
+      return c.json({ error: "handler_unavailable", message: "Install handler misconfigured.", requestId }, 501);
     }
 
     // ── Validate + persist ────────────────────────────────────────
@@ -710,8 +717,34 @@ integrations.openapi(callbackRoute, async (c) =>
     // a structured 403.
     const verifiedState = verifyOAuthStateToken(state);
     if (verifiedState !== null) {
-      const entitlement = await getWorkspaceEntitlement(verifiedState.workspaceId);
-      const planMismatch = checkPlanEligibility(entitlement, row.min_plan);
+      // DB-blip handling here is asymmetric vs `/install` and
+      // `/install-form`: if the entitlement read throws on those
+      // routes, a 500 is fine — the user hasn't burned anything yet
+      // and a retry is free. On `/callback` the upstream OAuth code
+      // is single-use; a 500 here means the user retries OAuth with
+      // an expired code and gets a confusing 502. Better to log the
+      // DB error, skip the mid-OAuth defensive plan re-check, and
+      // let the install land — the original `/install` already
+      // plan-checked, so we're only exposed to the narrow race
+      // window of "workspace downgraded between install and
+      // callback". Treat that case the same as the broader
+      // "downgraded after install" case the DELETE path explicitly
+      // supports (#2701 — downgraded customers must still be able
+      // to clean up).
+      let entitlement: Awaited<ReturnType<typeof getWorkspaceEntitlement>> | undefined;
+      try {
+        entitlement = await getWorkspaceEntitlement(verifiedState.workspaceId);
+      } catch (err) {
+        log.warn(
+          {
+            workspaceId: verifiedState.workspaceId,
+            platform,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "OAuth callback plan re-check failed — skipping defensive check and letting install land (original /install already plan-checked)",
+        );
+      }
+      const planMismatch = entitlement === undefined ? null : checkPlanEligibility(entitlement, row.min_plan);
       if (planMismatch !== null) {
         log.info(
           {
@@ -914,6 +947,15 @@ async function deleteCredentialStore(
 }
 
 integrations.openapi(disconnectRoute, async (c) =>
+  // No plan-tier gate here (#2701). A downgraded customer whose plan
+  // no longer admits installing this integration must always retain
+  // the ability to clean up credentials — the admin UI surfaces this
+  // case as the "Configured but inactive — plan downgrade" banner +
+  // working Disconnect button. Adding a plan check here would strand
+  // credentials in `integration_credentials` / `chat_cache` with no
+  // user-reachable cleanup path. Mirrors the install carve-out
+  // documented in `apps/docs/content/docs/guides/integrations.mdx`
+  // §"Plan tiers and integrations".
   runHandler(c, "platform disconnect", async () => {
     const { platform } = c.req.valid("param");
     const requestId = crypto.randomUUID();

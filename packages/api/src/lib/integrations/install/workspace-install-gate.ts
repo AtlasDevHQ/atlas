@@ -266,7 +266,21 @@ export async function describeInstallGateState(
        LIMIT 1`,
       [workspaceId, catalogId],
     );
-  } catch {
+  } catch (err) {
+    // Diagnostic-only path — the listener calls this on the deny path
+    // inside an open throttle window. Log so an operator can correlate
+    // the rate-limited deny line with the underlying pg failure (transient
+    // outage, schema drift after a botched 0090 deploy, etc.). Mirrors the
+    // log shape `isWorkspaceInstallActive` already uses for the sibling
+    // boolean call site.
+    log.warn(
+      {
+        workspaceId,
+        catalogId,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "describeInstallGateState query failed — falling back to db_error verdict",
+    );
     return { ...NEUTRAL, active: false, reason: "db_error" };
   }
 

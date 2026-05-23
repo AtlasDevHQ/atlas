@@ -25,11 +25,20 @@
 -- itself works without paying for itself", which is invisible to
 -- customers.
 --
--- Cap of 3 operator rows is enforced by partial unique index — we'd
--- dogfood per-region at most (US, EU, APAC). Adding a fourth surfaces
--- as a unique-violation rather than silently allowing N free
--- workspaces, which protects against an attacker who somehow gains a
--- direct UPDATE on `organization`.
+-- Operator-row count is NOT capped in SQL today — see the longer
+-- comment block above the index DDL below for why Postgres can't
+-- express a hard "max N rows where flag = true" without a trigger.
+-- The partial expression index speeds up the operator-count SELECT
+-- that ops uses to monitor the flag manually. Adding a fourth row
+-- is therefore an operator-procedure failure, not a constraint
+-- failure — if that becomes a real risk we can layer a trigger or
+-- a `BEFORE INSERT/UPDATE` event in a follow-up.
+--
+-- In addition to adding the flag, this migration also UNDOES tonight's
+-- manual `plan_tier='business'` bump on the operator org row (lines
+-- 81-85). With `is_operator_workspace = true` the gate ignores
+-- `plan_tier` entirely, so the right resting state for the operator
+-- org is the default (`trial`).
 
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'organization') THEN

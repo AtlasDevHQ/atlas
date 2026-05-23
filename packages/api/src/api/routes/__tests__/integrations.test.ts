@@ -14,7 +14,7 @@
  * the workspace_plugins INSERT.
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";
 import { Context, Effect, Layer } from "effect";
 import { PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
 import {
@@ -227,6 +227,19 @@ let mockStrictRouting = false;
 mock.module("@atlas/api/lib/residency/misrouting", () => ({
   detectMisrouting: () => Promise.resolve(mockMisrouted),
   isStrictRoutingEnabled: () => mockStrictRouting,
+}));
+
+// `verifyOAuthStateToken` needs an encryption key to round-trip a real
+// token, but the test env doesn't configure one. Stub the module so
+// tests can drive the route's `verifiedState` branch (used by the
+// /callback mid-OAuth plan re-check) without standing up the keyset.
+// CLAUDE.md: mock ALL named exports — partial mocks break other
+// test files. `mintOAuthStateToken` is mocked too even though no
+// test below calls it directly.
+let stubVerifiedState: { workspaceId: string; catalogId: string } | null = null;
+mock.module("@atlas/api/lib/integrations/install/oauth-state-token", () => ({
+  mintOAuthStateToken: () => "stub",
+  verifyOAuthStateToken: () => stubVerifiedState,
 }));
 
 // ---------------------------------------------------------------------------
@@ -857,6 +870,95 @@ describe("plan-tier gating", () => {
       expect(res.status).toBe(200);
       const body = (await res.json()) as { installed: boolean };
       expect(body.installed).toBe(true);
+    });
+  });
+
+  describe("GET /:platform/callback — defensive mid-OAuth plan re-check", () => {
+    afterEach(() => {
+      stubVerifiedState = null;
+    });
+
+    it("denies when the workspace plan dropped below min_plan between /install and /callback", async () => {
+      // Mid-OAuth downgrade: a workspace clicks Connect on Salesforce
+      // (passes plan check at /install), then somewhere between the
+      // Salesforce redirect and the callback the plan drops (billing
+      // event, admin downgrade, whatever). The defensive re-check
+      // at /callback must catch this — otherwise we'd write
+      // workspace_plugins + integration_credentials for a workspace
+      // the catalog won't admit, leaving the user with a card that
+      // can't be reconnected and a credential that won't refresh.
+      stubVerifiedState = { workspaceId: "ws-down", catalogId: "catalog:slack" };
+      callbackImpl = async () => happyResult();
+      mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("FROM organization")) {
+          return [{ plan_tier: "free", is_operator_workspace: false }];
+        }
+        return [{ slug: "slack", install_model: "oauth", enabled: true, min_plan: "starter" }];
+      });
+
+      // JSON caller — structured 403 body
+      const res = await request(
+        "/api/v1/integrations/slack/callback?code=auth-abc&state=stub",
+        { headers: { Accept: "application/json" } },
+      );
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as {
+        error: string;
+        required_plan: string;
+        current_plan: string;
+      };
+      expect(body.error).toBe("plan_upgrade_required");
+      expect(body.required_plan).toBe("starter");
+      expect(body.current_plan).toBe("free");
+    });
+
+    it("redirects browser callers to /admin/integrations?error=<platform>&reason=plan_upgrade_required on mid-OAuth downgrade", async () => {
+      stubVerifiedState = { workspaceId: "ws-down", catalogId: "catalog:slack" };
+      callbackImpl = async () => happyResult();
+      mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("FROM organization")) {
+          return [{ plan_tier: "free", is_operator_workspace: false }];
+        }
+        return [{ slug: "slack", install_model: "oauth", enabled: true, min_plan: "starter" }];
+      });
+
+      const res = await request(
+        "/api/v1/integrations/slack/callback?code=auth-abc&state=stub",
+        { headers: { Accept: "text/html" } },
+      );
+      expect(res.status).toBe(302);
+      const location = res.headers.get("location") ?? "";
+      expect(location).toContain("error=slack");
+      expect(location).toContain("reason=plan_upgrade_required");
+      expect(location).toContain("required_plan=starter");
+    });
+
+    it("falls through to the handler when the entitlement read throws — does not burn the OAuth code", async () => {
+      // DB-blip handling: if the mid-OAuth plan re-check fails
+      // (transient pg outage between /install and /callback), the
+      // upstream OAuth code is single-use — 500ing here means the
+      // user retries with an expired code and gets a confusing
+      // 502 from the provider. Log + fall through to the handler;
+      // the original /install already plan-checked.
+      stubVerifiedState = { workspaceId: "ws-blip", catalogId: "catalog:slack" };
+      callbackImpl = async () => happyResult();
+      mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("FROM organization")) {
+          throw new Error("simulated transient pg outage");
+        }
+        return [{ slug: "slack", install_model: "oauth", enabled: true, min_plan: "starter" }];
+      });
+
+      const res = await request(
+        "/api/v1/integrations/slack/callback?code=auth-abc&state=stub",
+        { headers: { Accept: "text/html" } },
+      );
+      // Happy-path redirect — install lands despite the plan re-check
+      // failing. A 5xx here would be the regression to guard against.
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe(
+        "https://app.atlas.example/admin/integrations?installed=slack",
+      );
     });
   });
 

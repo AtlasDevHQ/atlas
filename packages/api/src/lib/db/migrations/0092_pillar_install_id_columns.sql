@@ -11,12 +11,13 @@
 -- yet — existing INSERT call sites under
 -- packages/api/src/lib/integrations/install/*-handler.ts continue to
 -- INSERT (id, workspace_id, catalog_id, config, enabled, installed_at)
--- without naming the new columns. A BEFORE INSERT trigger + the
--- temporarily-retained `idx_workspace_plugins_unique` index keep
--- those callers green; slice 4 (WorkspaceInstaller) pivots them onto
--- the composite PK and slice 5/6 drops the old unique + trigger.
+-- without naming the new columns. Two BEFORE INSERT triggers + the
+-- temporarily-retained (workspace_id, catalog_id) unique constraint
+-- keep those callers green; slice 4 (WorkspaceInstaller, #2742) pivots
+-- them onto the composite PK and slice 5/6 (#2743 / #2744) drops the
+-- old unique + triggers.
 --
--- Why the old (workspace_id, catalog_id) unique index lingers:
+-- Why the old (workspace_id, catalog_id) unique constraint lingers:
 --   * Existing handler INSERTs ON CONFLICT (workspace_id, catalog_id)
 --     target it explicitly. The new partial unique
 --     `workspace_plugins_singleton` only covers chat + action pillars;
@@ -25,8 +26,26 @@
 --     global unique avoids touching consumer SQL in this slice.
 --   * Pre-cutover the new partial is a strict subset of the global
 --     (every existing row is chat/action), so the two coexist
---     without conflict. Datasource multi-instance lands in slice 5/6
---     which drops the global at the same time it pivots handlers.
+--     without conflict. Datasource multi-instance lands in #2743 /
+--     #2744 which drops the global at the same time it pivots handlers.
+--
+-- A naming-drift note for slice 5/6: the 0014 baseline declared the
+-- constraint as inline `UNIQUE(workspace_id, catalog_id)`, which
+-- Postgres auto-names `workspace_plugins_workspace_id_catalog_id_key`.
+-- The Drizzle mirror's logical name `idx_workspace_plugins_unique` does
+-- NOT exist on disk in production PG — it's a pre-existing drift from
+-- 0014. The slice 5/6 cleanup should `ALTER TABLE workspace_plugins
+-- DROP CONSTRAINT workspace_plugins_workspace_id_catalog_id_key` (or
+-- the migration-managed equivalent), NOT `DROP INDEX
+-- idx_workspace_plugins_unique`. Aligning the Drizzle name with the
+-- on-disk name is out of scope for this slice.
+--
+-- Migration-runner transaction guarantee: `runMigrations` wraps every
+-- `.sql` file in a single `BEGIN` / `COMMIT` (see migrate.ts) under an
+-- advisory lock, and the `ALTER TABLE` statements below take
+-- `ACCESS EXCLUSIVE` — so the PK-swap window where neither the old `id`
+-- PK nor the new composite PK is in force is invisible to concurrent
+-- writers.
 
 -- ---------------------------------------------------------------------------
 -- plugin_catalog: pillar, implementation_status, auto_install
@@ -73,23 +92,38 @@ ALTER TABLE plugin_catalog
 
 -- BEFORE INSERT trigger fills pillar when callers omit it. Slice 1's
 -- acceptance criterion is "no production code reads or writes the new
--- columns yet" — admin-marketplace.ts:325 (admin catalog CRUD),
--- catalog-seeder.ts:513 (boot-time catalog upsert from atlas.config.ts),
+-- columns yet" — admin-marketplace.ts (admin catalog CRUD),
+-- catalog-seeder.ts (boot-time catalog upsert from atlas.config.ts),
 -- and migration 0088 all INSERT plugin_catalog rows without naming
 -- pillar. The trigger derives pillar from `type` using the same
 -- mapping as the backfill above so a stale call site stays valid.
--- Slice 3 (PillarCatalogQuery) and slice 5 (built-in Datasource
--- catalog rows) start naming pillar explicitly; this trigger can be
--- dropped when the seeder + admin route stop relying on it.
+-- Slice 3 (PillarCatalogQuery, #2741) and slice 5 (built-in Datasource
+-- catalog rows, #2743) start naming pillar explicitly; this trigger
+-- can be dropped when the seeder + admin route stop relying on it.
+-- TODO(#2743): drop this trigger once all writers name pillar.
+--
+-- The `ELSE 'action'` branch is intentional but conservative: every
+-- type value admitted by `chk_plugin_catalog_type` other than `chat`
+-- and `datasource` (i.e. `context`, `interaction`, `sandbox`, the
+-- pre-#2650 admin-UI grouping `integration`, and `action`) maps to
+-- the `action` pillar. The first four shouldn't appear in any
+-- production seed today; a `RAISE WARNING` surfaces the case in
+-- Postgres logs so a stale self-host seed or a future typo is
+-- visible without breaking the insert.
 CREATE OR REPLACE FUNCTION plugin_catalog_default_pillar()
 RETURNS TRIGGER AS $$
 BEGIN
   IF NEW.pillar IS NULL THEN
     NEW.pillar := CASE NEW.type
-      WHEN 'chat'       THEN 'chat'
-      WHEN 'datasource' THEN 'datasource'
-      ELSE                   'action'
+      WHEN 'chat'        THEN 'chat'
+      WHEN 'datasource'  THEN 'datasource'
+      WHEN 'integration' THEN 'action'
+      WHEN 'action'      THEN 'action'
+      ELSE                    'action'
     END;
+    IF NEW.type NOT IN ('chat', 'datasource', 'integration', 'action') THEN
+      RAISE WARNING 'plugin_catalog: pillar defaulted to ''action'' for unexpected type % on row id=%', NEW.type, NEW.id;
+    END IF;
   END IF;
   RETURN NEW;
 END;
@@ -149,11 +183,15 @@ ALTER TABLE workspace_plugins
 -- under packages/api/src/lib/integrations/install/*-handler.ts
 -- continue to INSERT (id, workspace_id, catalog_id, config, enabled,
 -- installed_at) without naming the new columns. The trigger looks up
--- pillar from the joined catalog row (FK guarantees the row exists)
+-- pillar from the joined catalog row (FK guarantees the row exists
+-- at end-of-statement; the BEFORE trigger fires earlier than the FK
+-- check, so we must surface a clear error here if the lookup misses)
 -- and defaults install_id to catalog_id (singleton sentinel). Slice 4
--- (WorkspaceInstaller) pivots callers to name the columns explicitly;
--- slice 5/6 can then drop this trigger along with the global unique
--- index it pairs with.
+-- (WorkspaceInstaller, #2742) pivots callers to name the columns
+-- explicitly; slice 5/6 (#2743 / #2744) can then drop this trigger
+-- along with the global unique index it pairs with.
+-- TODO(#2743): drop this trigger once all writers name install_id +
+-- pillar.
 CREATE OR REPLACE FUNCTION workspace_plugins_default_pillar_install_id()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -162,10 +200,16 @@ BEGIN
   END IF;
   IF NEW.pillar IS NULL THEN
     SELECT pc.pillar INTO NEW.pillar FROM plugin_catalog pc WHERE pc.id = NEW.catalog_id;
-    -- If catalog lookup fails (shouldn't happen — FK enforces
-    -- existence at constraint-check time), NEW.pillar stays NULL
-    -- and the NOT NULL constraint rejects the row with a clear
-    -- error rather than silently defaulting to an arbitrary pillar.
+    -- Postgres BEFORE INSERT triggers fire before FK enforcement, so
+    -- an orphan catalog_id surfaces here as an empty SELECT, not as
+    -- the more familiar FK-violation error. Raise an explicit 23503
+    -- (foreign_key_violation) so the message names the actual root
+    -- cause rather than the downstream "NULL value in column 'pillar'"
+    -- the NOT NULL constraint would otherwise produce.
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'workspace_plugins: catalog_id % not present in plugin_catalog', NEW.catalog_id
+        USING ERRCODE = 'foreign_key_violation';
+    END IF;
   END IF;
   RETURN NEW;
 END;

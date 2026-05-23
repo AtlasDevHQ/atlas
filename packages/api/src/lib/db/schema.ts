@@ -1627,15 +1627,17 @@ export const workspacePlugins = pgTable(
     // 0092 / #2739 — `id` lost its PK status when the composite PK
     // landed; it stays as a NOT NULL, uniquely-indexed column so
     // existing handler INSERTs that RETURNING id keep working until
-    // slice 4 (WorkspaceInstaller) pivots them onto the composite.
+    // WorkspaceInstaller (#2742) pivots them onto the composite.
+    // TODO(#2742): decide whether `id` is still needed once
+    // WorkspaceInstaller owns the writes.
     id: text("id").notNull(),
     workspaceId: text("workspace_id").notNull(),
     catalogId: text("catalog_id").notNull().references(() => pluginCatalog.id, { onDelete: "cascade" }),
     // 0092 / #2739 — per-instance install identifier.
     //  - chat/action installs: catalog_id sentinel (singleton enforced
     //    by `workspace_plugins_singleton` partial unique).
-    //  - datasource installs (slice 5+): user-facing id like `prod-us`,
-    //    multi-instance per (workspace, catalog).
+    //  - datasource installs (#2743 / #2744): user-facing id like
+    //    `prod-us`, multi-instance per (workspace, catalog).
     installId: text("install_id").notNull(),
     // 0092 / #2739 — three-pillar taxonomy. Denormalized from
     // plugin_catalog.pillar so the partial unique index can gate on
@@ -1653,10 +1655,14 @@ export const workspacePlugins = pgTable(
     // 0092 / #2739 — preserves the `id` uniqueness invariant that the
     // dropped single-column PK used to enforce.
     uniqueIndex("workspace_plugins_id_unique").on(t.id),
-    // Pre-existing global unique (0014). Kept until slice 5/6
+    // Pre-existing global unique (0014). Kept until #2743 / #2744
     // introduces multi-instance datasource installs and pivots
-    // handler ON CONFLICT clauses off this index — see migration
-    // 0092's header comment for the rationale.
+    // handler ON CONFLICT clauses off this constraint — see migration
+    // 0092's header comment for the rationale, including the
+    // Drizzle-vs-production naming drift (on disk this lives as
+    // `workspace_plugins_workspace_id_catalog_id_key`).
+    // TODO(#2743): drop and align the Drizzle name with the on-disk
+    // constraint when the cutover lands.
     uniqueIndex("idx_workspace_plugins_unique").on(t.workspaceId, t.catalogId),
     // 0092 / #2739 — post-1.5.3 invariant: singleton install per
     // (workspace, catalog) for chat + action pillars only. Datasource

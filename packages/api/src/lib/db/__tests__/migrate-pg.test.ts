@@ -4582,20 +4582,26 @@ describeIfPg("migrate-pg (real Postgres)", () => {
 
   // 0092 / #2739 — three-pillar taxonomy + install_id foundation.
   // Schema-only slice: callers under integrations/install/*-handler.ts
-  // continue to omit `pillar` and `install_id`; the BEFORE INSERT
-  // trigger fills them in. These tests pin the trigger behavior + the
-  // new constraints so a future "tidying" revision that drops them
-  // surfaces here rather than at the next handler INSERT.
+  // continue to omit `pillar` and `install_id`; two BEFORE INSERT
+  // triggers fill them in. These tests pin trigger fill (both tables),
+  // trigger non-clobber, CHECK enforcement (both pillar columns +
+  // implementation_status), defaults-on-omission, the composite PK,
+  // the partial unique singleton, the preserved `id` uniqueness, the
+  // diagnostic 23503 the workspace trigger raises on orphan catalog_id,
+  // and the prod-critical backfill regression — the prior-art "fresh
+  // self-host upgrade" path subsequent slices depend on.
   describe("0092: pillar + install_id columns (#2739, 1.5.3 slice 1)", () => {
-    it("plugin_catalog: pillar + implementation_status + auto_install columns exist and CHECK is enforced", async () => {
+    it("plugin_catalog: new columns + CHECK constraints are enforced (pillar, implementation_status)", async () => {
       const slug = `pg-0092-${Date.now()}`;
       const id = `cat-${slug}`;
 
-      // Happy path: insert an integration row, get backfilled `action` pillar
-      // and the documented defaults for the other two columns.
+      // Insert with all three new columns explicit — exercises that the
+      // columns exist with the documented types and that explicit values
+      // round-trip (no SELECT pillar/implementation_status/auto_install
+      // semantics happen in production code yet — slice 3+ wire reads).
       await pool.query(
-        `INSERT INTO plugin_catalog (id, name, slug, type, pillar)
-         VALUES ($1, '0092 Smoke', $2, 'integration', 'action')`,
+        `INSERT INTO plugin_catalog (id, name, slug, type, pillar, implementation_status, auto_install)
+         VALUES ($1, '0092 Smoke', $2, 'integration', 'action', 'available', false)`,
         [id, slug],
       );
 
@@ -4628,6 +4634,82 @@ describeIfPg("migrate-pg (real Postgres)", () => {
           [`${id}-bad-status`, `${slug}-bad-status`],
         ),
       ).rejects.toMatchObject({ code: "23514" });
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("plugin_catalog: trigger derives pillar from type (chat/datasource/integration) when caller omits pillar", async () => {
+      // Three call sites today (admin-marketplace.ts, catalog-seeder.ts,
+      // migration 0088) INSERT plugin_catalog rows without naming
+      // pillar. Trigger must map type → pillar correctly for each.
+      const slug = `pg-0092-cat-trig-${Date.now()}`;
+
+      type Row = { pillar: string };
+      const cases: Array<{ type: string; expected: string }> = [
+        { type: "chat", expected: "chat" },
+        { type: "datasource", expected: "datasource" },
+        { type: "integration", expected: "action" },
+        { type: "action", expected: "action" },
+      ];
+
+      for (const { type, expected } of cases) {
+        const id = `cat-${slug}-${type}`;
+        await pool.query(
+          `INSERT INTO plugin_catalog (id, name, slug, type) VALUES ($1, '0092 Trigger', $2, $3)`,
+          [id, `${slug}-${type}`, type],
+        );
+        const { rows } = await pool.query<Row>(
+          `SELECT pillar FROM plugin_catalog WHERE id = $1`,
+          [id],
+        );
+        expect(rows[0]?.pillar).toBe(expected);
+      }
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("plugin_catalog: trigger does NOT clobber caller-provided pillar", async () => {
+      // Load-bearing for slice 5 (#2743): once built-in Datasource
+      // catalog rows are seeded with explicit pillar, a future
+      // "simplification" that drops the `IF NEW.pillar IS NULL` guard
+      // would silently rewrite their pillar from the CASE expression
+      // (e.g. a `type='datasource', pillar='datasource'` row stays at
+      // datasource — but a future `type='custom', pillar='chat'` row
+      // would silently get rewritten to 'action').
+      const slug = `pg-0092-cat-noclobber-${Date.now()}`;
+      const id = `cat-${slug}`;
+      // type='datasource' would auto-derive pillar='datasource'; we
+      // pass pillar='chat' explicitly to prove the guard holds even
+      // when the CASE would produce a different value.
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type, pillar)
+         VALUES ($1, '0092 No-Clobber', $2, 'datasource', 'chat')`,
+        [id, slug],
+      );
+      const { rows } = await pool.query<{ pillar: string }>(
+        `SELECT pillar FROM plugin_catalog WHERE id = $1`,
+        [id],
+      );
+      expect(rows[0]?.pillar).toBe("chat");
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("plugin_catalog: implementation_status + auto_install defaults apply on omission", async () => {
+      // Pinned by silent-failure review on #2756 — guards the
+      // `DEFAULT 'available'` / `DEFAULT false` clauses against a
+      // future revision that drops them. Without defaults, a row that
+      // omits the columns lands NULL, which fails the
+      // implementation_status CHECK (23514).
+      const slug = `pg-0092-cat-defaults-${Date.now()}`;
+      const id = `cat-${slug}`;
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type) VALUES ($1, '0092 Defaults', $2, 'integration')`,
+        [id, slug],
+      );
+      const { rows } = await pool.query<{
+        implementation_status: string;
+        auto_install: boolean;
+      }>(
+        `SELECT implementation_status, auto_install FROM plugin_catalog WHERE id = $1`,
+        [id],
+      );
+      expect(rows[0]?.implementation_status).toBe("available");
+      expect(rows[0]?.auto_install).toBe(false);
     }, PG_TEST_TIMEOUT_MS);
 
     it("workspace_plugins: BEFORE INSERT trigger fills install_id + pillar when caller omits them", async () => {
@@ -4748,6 +4830,184 @@ describeIfPg("migrate-pg (real Postgres)", () => {
           [sharedId, `ws-${slug}`, catalogIdB],
         ),
       ).rejects.toMatchObject({ code: "23505" });
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("workspace_plugins: trigger does NOT clobber caller-provided install_id + pillar", async () => {
+      // Slice 4 (WorkspaceInstaller, #2742) will explicitly name both
+      // columns. The `IF NEW.x IS NULL` guards are load-bearing then —
+      // a "simplification" that drops them would silently rewrite the
+      // explicit values from the catalog lookup / sentinel.
+      const slug = `pg-0092-wp-noclobber-${Date.now()}`;
+      const catalogId = `cat-${slug}`;
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type, pillar)
+         VALUES ($1, '0092 No-Clobber', $2, 'integration', 'action')`,
+        [catalogId, slug],
+      );
+
+      const explicitInstallId = `prod-us-${slug}`;
+      const workspaceId = `ws-${slug}`;
+      // Caller passes pillar='datasource' even though catalog says
+      // 'action' — proves the trigger doesn't second-guess explicit
+      // values via its catalog SELECT.
+      await pool.query(
+        `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
+         VALUES ($1, $2, $3, $4, 'datasource', '{}'::jsonb, true, NOW())`,
+        [`wp-${slug}`, workspaceId, catalogId, explicitInstallId],
+      );
+
+      const { rows } = await pool.query<{ install_id: string; pillar: string }>(
+        `SELECT install_id, pillar FROM workspace_plugins WHERE workspace_id = $1 AND catalog_id = $2`,
+        [workspaceId, catalogId],
+      );
+      expect(rows[0]?.install_id).toBe(explicitInstallId);
+      expect(rows[0]?.pillar).toBe("datasource");
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("workspace_plugins: chk_workspace_plugins_pillar rejects unknown pillar with 23514", async () => {
+      // Separate constraint from `chk_plugin_catalog_pillar` — a
+      // missing `ADD CONSTRAINT chk_workspace_plugins_pillar` in the
+      // migration would only surface on the catalog side without this
+      // test.
+      const slug = `pg-0092-wp-check-${Date.now()}`;
+      const catalogId = `cat-${slug}`;
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type, pillar)
+         VALUES ($1, '0092 Pillar Check', $2, 'integration', 'action')`,
+        [catalogId, slug],
+      );
+      await expect(
+        pool.query(
+          `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
+           VALUES ($1, $2, $3, $4, 'something-else', '{}'::jsonb, true, NOW())`,
+          [`wp-${slug}`, `ws-${slug}`, catalogId, `inst-${slug}`],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("workspace_plugins: backfill UPDATEs assign sentinel install_id + joined pillar for pre-existing NULL rows", async () => {
+      // Prod-critical regression: a self-host upgrade with live rows
+      // walks through ADD COLUMN (NULL on existing rows) → UPDATE
+      // backfill → SET NOT NULL. The full migration has already run
+      // in beforeAll, so we simulate the pre-backfill state inside a
+      // transaction: drop the NOT NULLs, disable the trigger so we
+      // can insert NULLs, replay the migration's UPDATE statements,
+      // assert. Postgres DDL is transactional — ROLLBACK reverts every
+      // change so subsequent tests see the unchanged shape.
+      const slug = `pg-0092-backfill-${Date.now()}`;
+      const catalogId = `cat-${slug}`;
+      const workspaceId = `ws-${slug}`;
+      const installRowId = `wp-${slug}`;
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        // Mimic the post-ADD-COLUMN, pre-UPDATE state of the live
+        // migration:
+        //   1. Drop the composite PK so install_id can lose its
+        //      implicit NOT NULL (PK columns can't be nullable).
+        //   2. Drop the explicit NOT NULLs on pillar + install_id.
+        //   3. Disable the BEFORE INSERT triggers so we can stage
+        //      NULL rows.
+        // Postgres DDL is transactional — ROLLBACK reverts every
+        // change so subsequent tests see the unchanged shape.
+        await client.query(
+          `ALTER TABLE workspace_plugins DROP CONSTRAINT workspace_plugins_pkey`,
+        );
+        await client.query(
+          `ALTER TABLE plugin_catalog ALTER COLUMN pillar DROP NOT NULL`,
+        );
+        await client.query(
+          `ALTER TABLE workspace_plugins ALTER COLUMN pillar DROP NOT NULL`,
+        );
+        await client.query(
+          `ALTER TABLE workspace_plugins ALTER COLUMN install_id DROP NOT NULL`,
+        );
+        await client.query(
+          `ALTER TABLE plugin_catalog DISABLE TRIGGER trg_plugin_catalog_default_pillar`,
+        );
+        await client.query(
+          `ALTER TABLE workspace_plugins DISABLE TRIGGER trg_workspace_plugins_default_pillar_install_id`,
+        );
+
+        await client.query(
+          `INSERT INTO plugin_catalog (id, name, slug, type, pillar)
+           VALUES ($1, '0092 Backfill', $2, 'chat', NULL)`,
+          [catalogId, slug],
+        );
+        await client.query(
+          `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
+           VALUES ($1, $2, $3, NULL, NULL, '{}'::jsonb, true, NOW())`,
+          [installRowId, workspaceId, catalogId],
+        );
+
+        // Replay the migration's backfill — three plugin_catalog
+        // UPDATEs, then the workspace_plugins UPDATE that sets
+        // install_id = catalog_id sentinel, then the join that sets
+        // workspace_plugins.pillar from the now-populated catalog.
+        await client.query(
+          `UPDATE plugin_catalog SET pillar = 'chat'       WHERE pillar IS NULL AND type = 'chat'`,
+        );
+        await client.query(
+          `UPDATE plugin_catalog SET pillar = 'datasource' WHERE pillar IS NULL AND type = 'datasource'`,
+        );
+        await client.query(
+          `UPDATE plugin_catalog SET pillar = 'action'     WHERE pillar IS NULL`,
+        );
+        await client.query(
+          `UPDATE workspace_plugins SET install_id = catalog_id WHERE install_id IS NULL`,
+        );
+        await client.query(
+          `UPDATE workspace_plugins wp SET pillar = pc.pillar FROM plugin_catalog pc WHERE pc.id = wp.catalog_id AND wp.pillar IS NULL`,
+        );
+
+        const { rows } = await client.query<{
+          install_id: string;
+          pillar: string;
+        }>(
+          `SELECT install_id, pillar FROM workspace_plugins WHERE id = $1`,
+          [installRowId],
+        );
+        expect(rows[0]?.install_id).toBe(catalogId);
+        expect(rows[0]?.pillar).toBe("chat");
+
+        const { rows: catRows } = await client.query<{ pillar: string }>(
+          `SELECT pillar FROM plugin_catalog WHERE id = $1`,
+          [catalogId],
+        );
+        expect(catRows[0]?.pillar).toBe("chat");
+      } finally {
+        await client.query("ROLLBACK");
+        client.release();
+      }
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("workspace_plugins: orphan catalog_id surfaces 23503 from the trigger, not 23502 from NOT NULL", async () => {
+      // The trigger raises a FK-style 23503 with a diagnostic message
+      // naming the missing catalog_id, instead of letting the row fall
+      // through to a confusing `NULL value in column "pillar"` NOT NULL
+      // violation. The real FK normally prevents this path; the trigger
+      // is a belt-and-braces diagnostic. To exercise it we drop the FK
+      // inside a transaction and roll back — works without superuser
+      // (unlike SET session_replication_role).
+      const slug = `pg-0092-orphan-${Date.now()}`;
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          `ALTER TABLE workspace_plugins DROP CONSTRAINT workspace_plugins_catalog_id_fkey`,
+        );
+        await expect(
+          client.query(
+            `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, enabled, installed_at)
+             VALUES ($1, $2, $3, '{}'::jsonb, true, NOW())`,
+            [`wp-${slug}`, `ws-${slug}`, `does-not-exist-${slug}`],
+          ),
+        ).rejects.toMatchObject({ code: "23503" });
+      } finally {
+        await client.query("ROLLBACK");
+        client.release();
+      }
     }, PG_TEST_TIMEOUT_MS);
   });
 });

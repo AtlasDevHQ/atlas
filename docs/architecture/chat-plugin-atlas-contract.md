@@ -32,14 +32,22 @@ Status legend: **✓ verified** (write + read + fail-loud confirmed at PR-merge 
 
 ### `chat_cache.value` — Slack installation row (key `slack:installation:<teamId>`)
 
+Citations are `path/file.ts:fn()` so refactors that shift line numbers don't silently invalidate the row. A line number is included when the cited symbol is a specific statement inside a larger function.
+
 | Field | Owner | Legacy write site | New write site | Read sites | Fail-loud at read? | Status |
 |---|---|---|---|---|---|---|
-| `botToken` | chat-adapter | `packages/api/src/api/routes/slack.ts` (pre-#2682 OAuth callback → `saveInstallation`) | `lib/integrations/install/slack-oauth-handler.ts:258` (`saveInstallation`) + `@chat-adapter/slack:setInstallation` on every event (JSONB-merged) | `lib/slack/store.ts:200` (`getInstallation`), `lib/chat-plugin/executeQuery.ts:182`, `lib/scheduler/delivery.ts:156` | ✓ — `parseStoredInstallation` warns + returns null on missing/undecryptable token; `executeQuery` throws on missing installation | ✓ verified |
+| `botToken` | chat-adapter | `packages/api/src/api/routes/slack.ts` legacy OAuth callback (route file removed in #2689) | `lib/integrations/install/slack-oauth-handler.ts:SlackOAuthInstallHandler.handleCallback()` (calls `saveInstallation`) + `@chat-adapter/slack:setInstallation` on every event (JSONB-merged into the same row) | `lib/slack/store.ts:getInstallation()` (line 200) → `parseStoredInstallation()`; reached transitively from `lib/chat-plugin/executeQuery.ts` (interactive) and `lib/scheduler/delivery.ts` via `getBotToken()` (line 384) | ✓ — `parseStoredInstallation` warns + returns null on missing/undecryptable token; `executeQuery` throws on missing installation | ✓ verified |
 | `botUserId` | chat-adapter | adapter-only (never written by Atlas) | `@chat-adapter/slack:setInstallation` only — preserved across re-writes by the pg-adapter JSONB merge (#2676) | adapter-internal; Atlas does not read this field | n/a (adapter-internal) | ✓ verified |
-| `teamName` | shared | `slack.ts` legacy OAuth callback | `lib/slack/store.ts:310` (`saveInstallation` mirrors `workspaceName` into `teamName`); `@chat-adapter/slack:setInstallation` (adapter sets it from `auth.test`) | `parseStoredInstallation` (falls back to `workspaceName`) | partial — both fields fall back to each other, missing both yields `workspace_name: null` (acceptable for display) | ✓ verified |
-| `orgId` | **Atlas extension** | `slack.ts` legacy OAuth callback | `lib/slack/store.ts:311` (`saveInstallation`) — **sole writer**; preserved across `setInstallation` rewrites by the pg-adapter JSONB merge | `lib/slack/store.ts:268` (`getInstallationByOrg`), `lib/proactive/workspace-id-resolver.ts:102` (resolves `team_id` → `orgId`), `lib/chat-plugin/executeQuery.ts:192` (refuses on null), `lib/proactive/user-resolver.ts:202` (boolean `verifyWorkspace`) | ✓ — `executeQuery` throws; `workspace-id-resolver` warns on row-exists-but-missing (post-#2677); `getInstallationByOrg` returns null with the partial-expression index | ✓ verified |
-| `workspaceName` | **Atlas extension** | `slack.ts` legacy OAuth callback | `lib/slack/store.ts:310` (`saveInstallation`) — sole writer; preserved by pg-adapter JSONB merge | `parseStoredInstallation` (display only) | n/a (display-only; admin UI tolerates null) | ✓ verified |
-| `installedAt` | **Atlas extension** | `slack.ts` legacy OAuth callback | `lib/slack/store.ts:312` (`saveInstallation`) — sole writer; preserved by pg-adapter JSONB merge | `parseStoredInstallation` (falls back to row's `created_at`) | n/a (display-only) | ✓ verified |
+| `teamName` | shared | `slack.ts` legacy OAuth callback (removed in #2689) | `lib/slack/store.ts:saveInstallation()` mirrors `workspaceName` into `teamName`; `@chat-adapter/slack:setInstallation` (adapter sets it from `auth.test`) | `parseStoredInstallation()` (falls back to `workspaceName`) | lenient — both fields fall back to each other; missing both yields `workspace_name: null` (acceptable for display) | ✓ verified |
+| `orgId` | **Atlas extension** | `slack.ts` legacy OAuth callback (removed in #2689) | `lib/slack/store.ts:saveInstallation()` — **sole writer**; preserved across `setInstallation` rewrites by the pg-adapter JSONB merge | `lib/slack/store.ts:getInstallationByOrg()` (line 247); `lib/proactive/workspace-id-resolver.ts:createSlackWorkspaceIdResolver()` (resolves `team_id` → `orgId`); `lib/chat-plugin/executeQuery.ts:executeChatPluginQuery()` (refuses on null, line 192); `lib/proactive/user-resolver.ts:defaultVerifyWorkspace()` (boolean) | ✓ — `executeQuery` throws (interactive path); `workspace-id-resolver` warns on row-exists-but-missing with per-teamId dedup (post-#2677, proactive path); `getInstallationByOrg` returns null backed by the partial-expression index | ✓ verified |
+| `workspaceName` | **Atlas extension** | `slack.ts` legacy OAuth callback (removed in #2689) | `lib/slack/store.ts:saveInstallation()` — sole writer; preserved by pg-adapter JSONB merge | `parseStoredInstallation()` (display only) | n/a (display-only; admin UI tolerates null) | ✓ verified |
+| `installedAt` | **Atlas extension** | `slack.ts` legacy OAuth callback (removed in #2689) | `lib/slack/store.ts:saveInstallation()` — sole writer; preserved by pg-adapter JSONB merge | `parseStoredInstallation()` (falls back to row's `created_at`) | n/a (display-only) | ✓ verified |
+
+**Read-site responsibility split.** `parseStoredInstallation` is the structural parser — it warns on missing `botToken` (the field every consumer needs to decrypt) but coerces missing Atlas extensions to `null` so display-only callers tolerate legacy rows. The contextual fail-loud lives at each consumer:
+
+- **Interactive (`executeQuery.ts`)** — refuses with a user-safe error message when `installation.org_id` is null. F-55 actor binding requires a known tenant.
+- **Proactive (`workspace-id-resolver.ts`)** — warns with per-`teamId` dedup (5-minute window) when `installation.org_id` is null, then null-returns to silent-skip the event. Proactive can't refuse interactively because Slack already accepted the event; the warn is the only signal an operator gets.
+- **Scheduler (`delivery.ts`)** — relies on `getBotToken()`'s null return; a missing tenant yields a `DeliveryError` from the calling `Effect.tryPromise`.
 
 ### Atlas-owned tables read by the chat plugin via host callbacks
 
@@ -47,18 +55,18 @@ These don't ride on `chat_cache` — Atlas owns the schema and the writers. They
 
 | Table / column | Host callback wired in `chatPlugin({ proactive: { ... } })` | Atlas read site | Atlas write site(s) | Fail-loud? | Status |
 |---|---|---|---|---|---|
-| `workspace_proactive_config.enabled` | `isEnabled` (gate) | `lib/proactive/enabled-gate.ts:243` | `routes/admin-proactive.ts:338` / `:378` / `:431` | ✓ — warn on read failure, treat as disabled | ✓ verified |
-| `workspace_proactive_config` (full row) | `getWorkspaceConfig` | `lib/proactive/workspace-config-loader.ts:140` | `routes/admin-proactive.ts` (see above) | ✓ — warn + null return | ✓ verified |
-| `channel_proactive_config.allow` | `getChannelConfigs` → `channelAllowed` decision | `lib/proactive/workspace-config-loader.ts:189` | `routes/admin-proactive.ts:557` / `:607` | ✓ — warn + empty-array fallback (post-#2628; previously fell back to `ATLAS_PROACTIVE_CHANNELS` env var) | ✓ verified |
-| `workspace_proactive_config.monthly_classifier_cap` | `getQuotaStatus` | `lib/proactive/quota.ts:101` | `routes/admin-proactive.ts` (cap UPDATE) | ✓ — fail-open with `metadata.quotaReadFailed: true` meter tag | ✓ verified |
-| `workspace_proactive_config.announcement_*` | `announcementCoordinator` (host-only — not exposed to the plugin) | `lib/proactive/announcement-coordinator.ts:203` | `lib/proactive/announcement-coordinator.ts:167` | ✓ — re-throws on write failure | ✓ verified |
+| `workspace_proactive_config.enabled` | `isEnabled` (gate) | `lib/proactive/enabled-gate.ts:createProactiveEnabledGate()` | `routes/admin-proactive.ts` (`enable` / `disable` / `PATCH /admin/proactive` handlers) | ✓ — warn on read failure, treat as disabled | ✓ verified |
+| `workspace_proactive_config` (full row) | `getWorkspaceConfig` | `lib/proactive/workspace-config-loader.ts:getWorkspaceProactiveConfig()` | `routes/admin-proactive.ts` (see above) | ✓ — warn + null return | ✓ verified |
+| `channel_proactive_config.allow` | `getChannelConfigs` → `channelAllowed` decision | `lib/proactive/workspace-config-loader.ts:getChannelProactiveConfigs()` | `routes/admin-proactive.ts` (`PUT /admin/proactive/channels` / `DELETE`) | ✓ — warn + empty-array fallback (post-#2628; previously fell back to `ATLAS_PROACTIVE_CHANNELS` env var) | ✓ verified |
+| `workspace_proactive_config.monthly_classifier_cap` | `getQuotaStatus` | `lib/proactive/quota.ts:getWorkspaceQuotaStatus()` (wraps the lower-level `getMonthlyClassifierCap()` in a fail-open envelope) | `routes/admin-proactive.ts` (cap UPDATE) | ✓ — `getWorkspaceQuotaStatus` returns `{ readFailed: true }` on DB error; the listener emits a `classify` meter row with `metadata.quotaReadFailed: true` | ✓ verified |
+| `workspace_proactive_config.announcement_*` | `announcementCoordinator` (host-only — not exposed to the plugin) | `lib/proactive/announcement-coordinator.ts:announceActivation()` (probe block) | `lib/proactive/announcement-coordinator.ts:announceActivation()` (claim UPDATE) | ✓ — re-throws on write failure | ✓ verified |
 
 ### `workspace_plugins` — install metadata (Atlas-owned, no adapter writes)
 
 | Column | Writer | Reader | Fail-loud? | Status |
 |---|---|---|---|---|
-| `workspace_id` + `catalog_id` + `enabled` + `installed_at` | `lib/integrations/install/slack-oauth-handler.ts:227` | `lib/plugins/validation.ts:106` (boot validation); admin UI via `routes/admin-integrations.ts` | ✓ — unique index `idx_workspace_plugins_unique` plus the boot-time stale-config validator | ✓ verified |
-| `config` JSONB (`team_id`, `team_name`, `bot_user_id`, `scopes`, `app_id`) | `slack-oauth-handler.ts:227` (`ON CONFLICT … DO UPDATE SET config = EXCLUDED.config`) | admin UI; `lib/plugins/validation.ts` parses against catalog schema at boot | ✓ — schema validation runs at boot; mismatches surface as warn rows | ✓ verified |
+| `workspace_id` + `catalog_id` + `enabled` + `installed_at` | `lib/integrations/install/slack-oauth-handler.ts:SlackOAuthInstallHandler.handleCallback()` (INSERT … ON CONFLICT … DO UPDATE) | `lib/plugins/validation.ts:validateWorkspacePluginConfigs()` (boot validation); admin UI via `routes/admin-integrations.ts` | ✓ — unique index `idx_workspace_plugins_unique` plus the boot-time stale-config validator | ✓ verified |
+| `config` JSONB (`team_id`, `team_name`, `bot_user_id`, `scopes`, `app_id`) | same `handleCallback()` (`ON CONFLICT … DO UPDATE SET config = EXCLUDED.config`) | admin UI; `lib/plugins/validation.ts` parses against catalog schema at boot | ✓ — schema validation runs at boot; mismatches surface as warn rows | ✓ verified |
 
 ### Future platforms (post-1.5.2)
 
@@ -88,7 +96,7 @@ Three options were considered (issue #2677 §"Structural prevention candidates")
 
 **The chosen prevention is a refinement of A, already shipped in #2676 and audited here:**
 
-> The pg-adapter (`plugins/chat/src/state/pg-adapter.ts:163-203`) JSONB-merges every write to a `slack:installation:*` key. Atlas's `saveInstallation` writes the full extension set; the chat-adapter's `setInstallation` rewrites only its own fields; the merge preserves both. All other `chat_cache` keys (`oauth:slack:*`, `__queue:*`, etc.) keep the standard `EXCLUDED.value` overwrite — semantic split tested at `plugins/chat/src/state/pg-adapter.test.ts:343-383` (`#2676` regression tests).
+> The pg-adapter (`plugins/chat/src/state/pg-adapter.ts:PgStateAdapter.set()`) JSONB-merges every write to a `slack:installation:*` key. Atlas's `saveInstallation` writes the full extension set; the chat-adapter's `setInstallation` rewrites only its own fields; the merge preserves both. All other `chat_cache` keys (`oauth:slack:*`, `__queue:*`, etc.) keep the standard `EXCLUDED.value` overwrite — semantic split tested at `plugins/chat/src/state/pg-adapter.test.ts` (`#2676` regression tests covering both branches).
 
 A is the lightest prevention and lines up with [ADR-0003](../adr/0003-two-store-chat-install-metadata-credentials.md): Atlas owns the install-metadata writer (`workspace_plugins` + the credential write via `saveInstallation`); the adapter handles per-event credential reads/refreshes. The JSONB merge is the bridge that lets the adapter keep its existing state lifecycle without re-implementing Atlas extension awareness.
 
@@ -104,7 +112,7 @@ B and C are not implemented today. Reasons:
 1. **`installation === null`** — unknown tenant. Silent skip is correct.
 2. **`installation` exists but `org_id` is null** — contract violation. This was the #2676 outage and was indistinguishable from case (1) in logs.
 
-Post-#2677 the resolver distinguishes them: case (2) emits a `warn` with `teamId` so the audit catches a write-path that bypassed both `saveInstallation` AND the pg-adapter merge. The warn is bounded (one row per affected `team_id` per Slack event) and operator-actionable.
+Post-#2677 the resolver distinguishes them: case (2) emits a `warn` with `teamId` so the audit catches a write-path that bypassed both `saveInstallation` AND the pg-adapter merge. The warn is rate-limited via a module-scoped `Map<teamId, lastWarnAt>` with a 5-minute dedup window — a stuck-orgId tenant emits one warn per 5 minutes, not one per Slack event. Operator-actionable on first occurrence; bounded log volume thereafter.
 
 ## How to update this doc
 

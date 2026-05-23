@@ -81,7 +81,7 @@ mock.module("@atlas/api/lib/slack/store", () => ({
 // ── Module under test (loaded AFTER mocks via sync require) ──────────
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { createSlackWorkspaceIdResolver } = require(
+const { createSlackWorkspaceIdResolver, __resetContractWarnDedupForTests } = require(
   "../workspace-id-resolver",
 ) as typeof import("../workspace-id-resolver");
 
@@ -119,6 +119,7 @@ beforeEach(() => {
   mockHasInternalDB.mockClear();
   mockHasInternalDB.mockImplementation(() => true);
   mockLogWarn.mockClear();
+  __resetContractWarnDedupForTests();
 });
 
 afterEach(() => {
@@ -207,6 +208,42 @@ describe("createSlackWorkspaceIdResolver", () => {
     ];
     expect(payload.teamId).toBe("T-unbound");
     expect(message).toContain("orgId");
+    // No `err` field on the contract-violation warn — distinguishes it
+    // from the catch-block warn (which carries `err` + pg `code`). A
+    // future refactor that funnels the null-org_id case through the
+    // catch path would silently regress the operator-facing signal.
+    expect(payload.err).toBeUndefined();
+    expect(payload.code).toBeUndefined();
+  });
+
+  it("deduplicates the contract-violation warn for the same teamId within the dedup window", async () => {
+    // A stuck-orgId tenant emits Slack events continuously; a warn per
+    // event is unbounded log spend for a condition that's actionable
+    // from a single occurrence. The dedup keeps log volume bounded
+    // while preserving the "fail-loud once" guarantee.
+    mockGetInstallation.mockImplementation(async () => withOrg(null));
+    const resolver = createSlackWorkspaceIdResolver();
+    await resolver(makeEvent({ raw: { team_id: "T-stuck" } }));
+    await resolver(makeEvent({ raw: { team_id: "T-stuck" } }));
+    await resolver(makeEvent({ raw: { team_id: "T-stuck" } }));
+
+    // Only one warn for three back-to-back events from the same team.
+    expect(mockLogWarn).toHaveBeenCalledTimes(1);
+  });
+
+  it("warns separately for each distinct teamId in the contract-violation branch", async () => {
+    // Dedup is per-teamId — two different stuck tenants should each
+    // surface once, not be silenced by the first one's warn.
+    mockGetInstallation.mockImplementation(async () => withOrg(null));
+    const resolver = createSlackWorkspaceIdResolver();
+    await resolver(makeEvent({ raw: { team_id: "T-stuck-a" } }));
+    await resolver(makeEvent({ raw: { team_id: "T-stuck-b" } }));
+
+    expect(mockLogWarn).toHaveBeenCalledTimes(2);
+    const teamIds = mockLogWarn.mock.calls.map(
+      (c) => (c[0] as { teamId: string }).teamId,
+    );
+    expect(teamIds).toEqual(["T-stuck-a", "T-stuck-b"]);
   });
 
   it("returns null + logs warn when the store throws", async () => {

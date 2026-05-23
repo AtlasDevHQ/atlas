@@ -21,7 +21,7 @@
 import { z } from "zod";
 import { createPlugin } from "@useatlas/plugin-sdk";
 import type { AtlasActionPlugin, PluginAction } from "@useatlas/plugin-sdk";
-import { createObsidianTool } from "./tool";
+import { createObsidianTool, stripTrailingSlashes } from "./tool";
 import type { ObsidianReaderPluginConfig } from "./tool";
 
 export type { ObsidianReaderPluginConfig } from "./tool";
@@ -73,7 +73,7 @@ export const obsidianReaderPlugin = createPlugin<
 
       async healthCheck() {
         const start = performance.now();
-        const base = (config.api_url ?? "http://127.0.0.1:27123").replace(/\/+$/, "");
+        const base = stripTrailingSlashes(config.api_url ?? "http://127.0.0.1:27123");
         try {
           const response = await fetch(`${base}/`, {
             method: "GET",

@@ -30,6 +30,17 @@ export interface ObsidianReaderPluginConfig {
 
 const DEFAULT_API_URL = "http://127.0.0.1:27123";
 
+/**
+ * Non-regex trailing-slash strip — avoids the polynomial-regex
+ * pattern CodeQL flags on user-derived URL input (`/\/+$/`). Linear
+ * in input length, no backtracking, no surprise.
+ */
+export function stripTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 47 /* "/" */) end--;
+  return end === url.length ? url : url.slice(0, end);
+}
+
 // ---------------------------------------------------------------------------
 // Raw search call (config-driven)
 // ---------------------------------------------------------------------------
@@ -68,7 +79,7 @@ export async function executeObsidianSearch(
   config: ObsidianReaderPluginConfig,
   params: ObsidianSearchParams,
 ): Promise<ObsidianSearchResult> {
-  const base = (config.api_url ?? DEFAULT_API_URL).replace(/\/+$/, "");
+  const base = stripTrailingSlashes(config.api_url ?? DEFAULT_API_URL);
   // contextLength of 100 chars covers the typical match window without
   // pulling whole files into the agent context.
   const url = `${base}/search/simple/?query=${encodeURIComponent(params.query)}&contextLength=100`;

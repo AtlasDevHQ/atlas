@@ -709,6 +709,19 @@ describe("renderDataAsMarkdownTables (#2705)", () => {
     expect(rendered).not.toContain("developer view truncated");
     expect(rendered).toContain("US");
   });
+
+  it("escapes pre-existing backslashes before escaping pipes so cell values with '\\|' don't break the table", () => {
+    // Without escaping backslashes first, input "a\|b" → "a\\|b" which a
+    // markdown renderer reads as escaped-backslash + raw pipe, breaking
+    // the table. CodeQL flagged this as js/incomplete-sanitization.
+    const rendered = renderDataAsMarkdownTables([
+      { columns: ["raw"], rows: [{ raw: "a\\|b" }] },
+    ]);
+    // Expect the row line to contain "a\\\|b" — two chars to escape the
+    // backslash, two chars to escape the pipe — so the renderer sees a
+    // literal "\" then a literal "|" inside the cell.
+    expect(rendered).toContain("a\\\\\\|b");
+  });
 });
 
 describe("createProactiveAnswerAdapter — contract", () => {

@@ -657,7 +657,14 @@ function formatCell(value: unknown): string {
 }
 
 function escapeCell(value: string): string {
-  // Escape pipes (table delimiter) and collapse newlines so a single
-  // row stays on one line in the rendered markdown.
-  return value.replace(/\|/g, "\\|").replace(/\s*\n+\s*/g, " ");
+  // Escape backslashes first so a pre-existing "\" in the data doesn't
+  // collide with the pipe-escape we add next — otherwise input like
+  // "\|" would become "\\|" which the markdown renderer reads as an
+  // escaped backslash followed by a raw pipe, breaking the table.
+  // Then escape pipes (table delimiter) and collapse newlines so a
+  // single row stays on one line in the rendered markdown.
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/\|/g, "\\|")
+    .replace(/\s*\n+\s*/g, " ");
 }

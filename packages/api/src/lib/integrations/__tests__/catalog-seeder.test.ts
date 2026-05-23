@@ -57,6 +57,7 @@ function row(partial: Partial<CatalogDbRow> & Pick<CatalogDbRow, "slug">): Catal
     enabled: true,
     installModel: "oauth",
     saasEligible: true,
+    configSchema: null,
     ...partial,
   };
 }
@@ -104,6 +105,7 @@ function makeMockDb(seed: CatalogDbRow[] = []): {
           enabled,
           installModel,
           saasEligible,
+          configSchemaJson,
         ] = ps as [
           string,
           string,
@@ -115,6 +117,7 @@ function makeMockDb(seed: CatalogDbRow[] = []): {
           boolean,
           string,
           boolean,
+          string | null,
         ];
         const existing = rows.findIndex((r) => r.slug === slug);
         // Cast `type` and `installModel` to the narrow union — the
@@ -122,6 +125,10 @@ function makeMockDb(seed: CatalogDbRow[] = []): {
         // param shape doesn't carry the enum constraint, but the
         // upstream Zod validation + DB CHECK guarantee the value is
         // one of the canonical literals.
+        //
+        // `config_schema` is JSONB — `JSON.stringify` on write, parse
+        // back on read so the in-memory row matches what pg would
+        // emit on a fresh SELECT.
         const next: CatalogDbRow = {
           slug,
           name,
@@ -132,6 +139,7 @@ function makeMockDb(seed: CatalogDbRow[] = []): {
           enabled,
           installModel: installModel as CatalogDbRow["installModel"],
           saasEligible,
+          configSchema: configSchemaJson === null ? null : JSON.parse(configSchemaJson),
         };
         if (existing === -1) rows.push(next);
         else rows[existing] = next;
@@ -155,6 +163,7 @@ function snapshotRaw(rows: CatalogDbRow[]): Array<{
   enabled: boolean;
   install_model: string;
   saas_eligible: boolean;
+  config_schema: unknown | null;
 }> {
   return rows.map((r) => ({
     slug: r.slug,
@@ -166,6 +175,7 @@ function snapshotRaw(rows: CatalogDbRow[]): Array<{
     enabled: r.enabled,
     install_model: r.installModel,
     saas_eligible: r.saasEligible,
+    config_schema: r.configSchema,
   }));
 }
 
@@ -244,6 +254,52 @@ describe("planCatalogSeed", () => {
         [],
       ),
     ).toThrow(/duplicate slug "slack"/);
+  });
+
+  // #2660 — configSchema is the new field-list column the install
+  // route depends on for form-based entries (Email / Webhook /
+  // Obsidian). The seeder must diff it like the rest of the columns
+  // so an operator config edit propagates to plugin_catalog.config_schema.
+  it("flags configSchema as diff'd when the declared list differs from the DB row", () => {
+    const declaredSchema = [
+      { key: "host", type: "string" as const, required: true },
+      { key: "port", type: "number" as const },
+    ];
+    const plan = planCatalogSeed(
+      [
+        entry({ slug: "email", install_model: "form", type: "integration", configSchema: declaredSchema }),
+      ],
+      [
+        row({ slug: "email", installModel: "form", type: "integration", configSchema: null }),
+      ],
+    );
+    expect(plan.actions[0]?.action).toBe("update");
+    const action = plan.actions[0];
+    if (action.action === "update") {
+      expect(action.diff).toContain("configSchema");
+    }
+  });
+
+  it("treats matching configSchema arrays as no-op (key-order-independent compare)", () => {
+    const declaredSchema = [
+      { key: "host", type: "string" as const, required: true },
+      { key: "password", type: "string" as const, required: true, secret: true },
+    ];
+    // Pin the same `name` on both sides — the `row()` helper defaults
+    // to "Slack" while `entry()`'s undefined `name` derives "Email"
+    // from the slug, which would diff on the name column even when
+    // configSchema matches and obscure the configSchema-noop assertion.
+    const plan = planCatalogSeed(
+      [
+        entry({ slug: "email", install_model: "form", type: "integration", name: "Email", configSchema: declaredSchema }),
+      ],
+      [
+        // Same content — should round-trip to noop. JSON.stringify
+        // canonicalizes by insertion order, so this matches.
+        row({ slug: "email", installModel: "form", type: "integration", name: "Email", configSchema: declaredSchema }),
+      ],
+    );
+    expect(plan.actions[0]?.action).toBe("noop");
   });
 });
 

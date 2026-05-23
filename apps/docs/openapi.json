@@ -72165,6 +72165,193 @@
         "operationId": "getIntegrationsByPlatformInstall"
       }
     },
+    "/api/v1/integrations/{platform}/install-form": {
+      "post": {
+        "tags": [
+          "Integrations"
+        ],
+        "summary": "Submit form-based install (no OAuth)",
+        "description": "Persists the submitted credentials + install metadata for an `install_model: \"form\"` catalog entry (#2660 — Email, future Webhook / Obsidian). Validates the JSON body against the per-Platform schema, encrypts secret-marked fields at rest, and upserts the workspace_plugins row. 400 with field-level detail on validation failure; the route rejects requests pointed at non-form catalog entries with 400 (`wrong_install_model`).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Catalog slug (e.g. 'email')"
+            },
+            "required": true,
+            "description": "Catalog slug (e.g. 'email')",
+            "name": "platform",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": {},
+                "description": "Form data shaped to the catalog entry's `configSchema`. Validated server-side by the per-Platform handler — never trust the client."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Install record + credential persisted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "installed": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "platform": {
+                      "type": "string"
+                    },
+                    "installId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "installed",
+                    "platform",
+                    "installId"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure (per-field detail in `fieldErrors`, top-level issues in `formErrors`), missing org binding, or platform is not form-installable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    },
+                    "fieldErrors": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "formErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a workspace admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Platform not found in catalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Form handler not registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postIntegrationsByPlatformInstallForm"
+      }
+    },
     "/api/v1/integrations/{platform}/callback": {
       "get": {
         "tags": [

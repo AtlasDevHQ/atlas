@@ -23,9 +23,12 @@ import {
 } from "@atlas/api/testing/api-test-mocks";
 import {
   _resetInstallHandlerRegistries,
+  registerFormHandler,
   registerOAuthHandler,
+  type FormBasedInstallHandler,
   type OAuthPlatformInstallHandler,
 } from "@atlas/api/lib/integrations/install";
+import { FormInstallValidationError } from "@atlas/api/lib/integrations/install/email-form-handler";
 
 // ---------------------------------------------------------------------------
 // Auth — admin user with an org binding for the install route. The
@@ -34,18 +37,25 @@ import {
 // callback tests pass anonymous requests through fine.
 // ---------------------------------------------------------------------------
 
+// Swappable auth result so individual tests can drive the route's
+// auth-failure branches (F-04 SaaS mode=none, missing-org, 401, 403).
+// Defaults to the admin happy path; per-suite `beforeEach` blocks
+// override via `authResultImpl = …`.
+type AuthResult = {
+  authenticated: boolean;
+  mode: "managed" | "none";
+  user?: { id: string; role: string; activeOrganizationId?: string };
+  error?: string;
+  status?: 401 | 403 | 500;
+};
+let authResultImpl: () => Promise<AuthResult> = async () => ({
+  authenticated: true,
+  mode: "managed",
+  user: { id: "admin-1", role: "admin", activeOrganizationId: "ws-1" },
+});
+
 mock.module("@atlas/api/lib/auth/middleware", () => ({
-  authenticateRequest: mock(() =>
-    Promise.resolve({
-      authenticated: true,
-      mode: "managed",
-      user: {
-        id: "admin-1",
-        role: "admin",
-        activeOrganizationId: "ws-1",
-      },
-    }),
-  ),
+  authenticateRequest: mock(() => authResultImpl()),
   checkRateLimit: () => ({ allowed: true }),
   getClientIP: () => null,
   resetRateLimits: () => {},
@@ -66,6 +76,15 @@ mock.module("@atlas/api/lib/logger", () => {
 
 mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   checkIPAllowlist: () => Effect.succeed({ allowed: true }),
+}));
+
+// Swappable deploy mode so F-04 SaaS-mode=none tests can simulate the
+// SaaS posture without bleeding into the OAuth callback suites.
+let deployModeImpl: () => string | undefined = () => undefined;
+
+mock.module("@atlas/api/lib/config", () => ({
+  getConfig: () => ({ deployMode: deployModeImpl() }),
+  defineConfig: (c: unknown) => c,
 }));
 
 // ---------------------------------------------------------------------------
@@ -138,6 +157,7 @@ process.env.ATLAS_CORS_ORIGIN = "https://app.atlas.example";
 // ---------------------------------------------------------------------------
 
 type CallbackResult = Awaited<ReturnType<OAuthPlatformInstallHandler["handleCallback"]>>;
+type ValidateResult = Awaited<ReturnType<FormBasedInstallHandler["validateConfig"]>>;
 
 let callbackImpl: () => Promise<CallbackResult> = async () => null;
 
@@ -148,6 +168,21 @@ const fakeHandler: OAuthPlatformInstallHandler = {
     stateToken: "stub",
   }),
   handleCallback: async () => callbackImpl(),
+};
+
+// Stubbed form handler — slug "email". The form-install tests below
+// swap `validateImpl` per test so we can drive the validation /
+// happy-path branches without depending on Postgres or real
+// encryption. The real implementation is tested in
+// `email-form-handler.test.ts`.
+let validateImpl: (form: unknown) => Promise<ValidateResult> = async () => ({
+  installRecord: { id: "install-email-1", workspaceId: "ws-1" as never, catalogId: "email" },
+  credentialWritten: true,
+});
+
+const fakeFormHandler: FormBasedInstallHandler = {
+  kind: "form" as const,
+  validateConfig: async (_wsid, formData) => validateImpl(formData),
 };
 
 // ---------------------------------------------------------------------------
@@ -170,6 +205,7 @@ function request(path: string, init?: RequestInit) {
 
 beforeAll(() => {
   registerOAuthHandler("slack", fakeHandler);
+  registerFormHandler("email", fakeFormHandler);
 });
 
 afterAll(() => {
@@ -182,6 +218,12 @@ beforeEach(() => {
   mockInternalQuery.mockImplementation(async () => [
     { slug: "slack", install_model: "oauth", enabled: true },
   ]);
+  authResultImpl = async () => ({
+    authenticated: true,
+    mode: "managed",
+    user: { id: "admin-1", role: "admin", activeOrganizationId: "ws-1" },
+  });
+  deployModeImpl = () => undefined;
 });
 
 // ---------------------------------------------------------------------------
@@ -354,5 +396,236 @@ describe("GET /api/v1/integrations/slack/callback — non-OAuth-exchange failure
     // 500 responses always include a requestId for log correlation
     // (runHandler bridge invariant).
     expect(body.requestId).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /:platform/install-form — slice 7 (#2660)
+// ---------------------------------------------------------------------------
+
+describe("POST /api/v1/integrations/:platform/install-form — happy path", () => {
+  beforeEach(() => {
+    // Catalog lookup returns the Email row for the form-install
+    // branch; reset between tests since other suites pin "slack".
+    mockInternalQuery.mockImplementation(async () => [
+      { slug: "email", install_model: "form", enabled: true },
+    ]);
+    validateImpl = async () => ({
+      installRecord: {
+        id: "install-email-happy",
+        workspaceId: "ws-1" as never,
+        catalogId: "email",
+      },
+      credentialWritten: true,
+    });
+  });
+
+  it("dispatches to the form handler and returns the install id on success", async () => {
+    const res = await request("/api/v1/integrations/email/install-form", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        host: "smtp.example.com",
+        port: 587,
+        username: "u",
+        password: "p",
+        fromAddress: "atlas@example.com",
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { installed: boolean; installId: string; platform: string };
+    expect(body).toEqual({
+      installed: true,
+      platform: "email",
+      installId: "install-email-happy",
+    });
+  });
+});
+
+describe("POST /api/v1/integrations/:platform/install-form — validation failure", () => {
+  beforeEach(() => {
+    mockInternalQuery.mockImplementation(async () => [
+      { slug: "email", install_model: "form", enabled: true },
+    ]);
+    // Simulate the real EmailFormInstallHandler refusing the form
+    // for a missing password — the route must translate this to a
+    // 400 with field-level detail.
+    validateImpl = async () => {
+      throw new FormInstallValidationError({
+        fieldErrors: { password: ["password is required"] },
+      });
+    };
+  });
+
+  it("returns 400 with fieldErrors when the handler rejects the form", async () => {
+    const res = await request("/api/v1/integrations/email/install-form", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ host: "smtp.example.com" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as {
+      error: string;
+      message: string;
+      fieldErrors: Record<string, string[]>;
+      requestId: string;
+    };
+    expect(body.error).toBe("invalid_form_data");
+    expect(body.fieldErrors.password).toEqual(["password is required"]);
+    expect(body.requestId).toBeDefined();
+  });
+});
+
+describe("POST /api/v1/integrations/:platform/install-form — wrong install_model", () => {
+  beforeEach(() => {
+    // Catalog lookup returns the Slack row (oauth) but the caller
+    // hit the form-install endpoint for it — must reject with 400.
+    mockInternalQuery.mockImplementation(async () => [
+      { slug: "slack", install_model: "oauth", enabled: true },
+    ]);
+  });
+
+  it("refuses with 400 wrong_install_model when the catalog row is OAuth", async () => {
+    const res = await request("/api/v1/integrations/slack/install-form", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("wrong_install_model");
+  });
+});
+
+describe("POST /api/v1/integrations/:platform/install-form — unknown platform", () => {
+  beforeEach(() => {
+    mockInternalQuery.mockImplementation(async () => []);
+  });
+
+  it("returns 404 when the catalog row doesn't exist", async () => {
+    const res = await request("/api/v1/integrations/nope/install-form", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("not_found");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F-04 install-hijack — SaaS deploy + mode=none must refuse outright.
+// The OAuth route's mirror guard is exercised by slice 5 tests; here we
+// pin the same posture for the new /install-form route so a managed-auth
+// regression can't slip past both.
+// ---------------------------------------------------------------------------
+
+describe("POST /install-form — F-04 SaaS-mode-none guard", () => {
+  beforeEach(() => {
+    mockInternalQuery.mockImplementation(async () => [
+      { slug: "email", install_model: "form", enabled: true },
+    ]);
+    authResultImpl = async () => ({
+      authenticated: true,
+      mode: "none",
+      // Even with a user object present, mode=none under SaaS is a
+      // misconfig — the route refuses without consulting it.
+      user: { id: "anon", role: "admin", activeOrganizationId: undefined },
+    });
+  });
+
+  it("refuses with 400 missing_org_binding under SaaS deploy + mode=none", async () => {
+    deployModeImpl = () => "saas";
+    const res = await request("/api/v1/integrations/email/install-form", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ host: "smtp.example.com" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("missing_org_binding");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Missing org binding (managed mode, no activeOrganizationId) — pins
+// the second auth-side fail-closed branch.
+// ---------------------------------------------------------------------------
+
+describe("POST /install-form — managed mode missing activeOrganizationId", () => {
+  beforeEach(() => {
+    mockInternalQuery.mockImplementation(async () => [
+      { slug: "email", install_model: "form", enabled: true },
+    ]);
+    authResultImpl = async () => ({
+      authenticated: true,
+      mode: "managed",
+      user: { id: "admin-1", role: "admin", activeOrganizationId: undefined },
+    });
+  });
+
+  it("refuses with 400 missing_org_binding when the user has no active org", async () => {
+    const res = await request("/api/v1/integrations/email/install-form", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ host: "smtp.example.com" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("missing_org_binding");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dispatch failure modes — handler not registered (501) and kind
+// mismatch (501). The kind mismatch is the "catalog says form but
+// dispatch returns OAuth" canary — without it a registration typo
+// would silently call .startInstall() on a form handler.
+// ---------------------------------------------------------------------------
+
+describe("POST /install-form — dispatch failures", () => {
+  beforeEach(() => {
+    mockInternalQuery.mockImplementation(async () => [
+      { slug: "email", install_model: "form", enabled: true },
+    ]);
+  });
+
+  it("returns 501 handler_unavailable when no form handler is registered for the slug", async () => {
+    _resetInstallHandlerRegistries();
+    try {
+      const res = await request("/api/v1/integrations/email/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(501);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("handler_unavailable");
+    } finally {
+      // Restore both handlers used by the rest of the suite.
+      registerOAuthHandler("slack", fakeHandler);
+      registerFormHandler("email", fakeFormHandler);
+    }
+  });
+
+  it("returns 501 handler_unavailable when the registered handler's kind doesn't match the catalog row", async () => {
+    // Force the kind mismatch: a real misconfig would land here if an
+    // operator wired registerFormHandler against an OAuth handler.
+    _resetInstallHandlerRegistries();
+    registerFormHandler("email", fakeHandler as unknown as FormBasedInstallHandler);
+    try {
+      const res = await request("/api/v1/integrations/email/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(501);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("handler_unavailable");
+    } finally {
+      registerOAuthHandler("slack", fakeHandler);
+      registerFormHandler("email", fakeFormHandler);
+    }
   });
 });

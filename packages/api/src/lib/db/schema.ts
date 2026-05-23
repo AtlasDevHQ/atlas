@@ -1591,6 +1591,17 @@ export const pluginCatalog = pgTable(
     // #2650 — gate on per-deploy-mode visibility. SaaS hides `false`
     // rows from admin-UI listings; self-host always shows them.
     saasEligible: boolean("saas_eligible").notNull().default(true),
+    // 0092 / #2739 — three-pillar taxonomy. Backfilled from `type` on
+    // migration; required for every catalog row. ADR-0006 mapping:
+    // chat→chat, datasource→datasource, everything else→action.
+    pillar: text("pillar").notNull(),
+    // 0092 / #2739 — coming-soon affordance. `coming_soon` rows render
+    // as grey/inert cards in admin UI (slice 9 wires the rendering).
+    implementationStatus: text("implementation_status").notNull().default("available"),
+    // 0092 / #2739 — built-in Datasource catalog rows (slice 5) set
+    // this true so the cutover migrator backfills a workspace_plugins
+    // row per workspace (demo connection as auto_install).
+    autoInstall: boolean("auto_install").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1605,24 +1616,63 @@ export const pluginCatalog = pgTable(
       .where(sql`enabled = true`),
     check("chk_plugin_catalog_type", sql`type IN ('datasource', 'context', 'interaction', 'action', 'sandbox', 'chat', 'integration')`),
     check("chk_plugin_catalog_install_model", sql`install_model IN ('oauth', 'form', 'static-bot')`),
+    check("chk_plugin_catalog_pillar", sql`pillar IN ('datasource', 'chat', 'action')`),
+    check("chk_plugin_catalog_implementation_status", sql`implementation_status IN ('available', 'coming_soon')`),
   ],
 );
 
 export const workspacePlugins = pgTable(
   "workspace_plugins",
   {
-    id: text("id").primaryKey(),
+    // 0092 / #2739 — `id` lost its PK status when the composite PK
+    // landed; it stays as a NOT NULL, uniquely-indexed column so
+    // existing handler INSERTs that RETURNING id keep working until
+    // WorkspaceInstaller (#2742) pivots them onto the composite.
+    // TODO(#2742): decide whether `id` is still needed once
+    // WorkspaceInstaller owns the writes.
+    id: text("id").notNull(),
     workspaceId: text("workspace_id").notNull(),
     catalogId: text("catalog_id").notNull().references(() => pluginCatalog.id, { onDelete: "cascade" }),
+    // 0092 / #2739 — per-instance install identifier.
+    //  - chat/action installs: catalog_id sentinel (singleton enforced
+    //    by `workspace_plugins_singleton` partial unique).
+    //  - datasource installs (#2743 / #2744): user-facing id like
+    //    `prod-us`, multi-instance per (workspace, catalog).
+    installId: text("install_id").notNull(),
+    // 0092 / #2739 — three-pillar taxonomy. Denormalized from
+    // plugin_catalog.pillar so the partial unique index can gate on
+    // it without a join.
+    pillar: text("pillar").notNull(),
     config: jsonb("config").notNull().default(sql`'{}'`),
     enabled: boolean("enabled").notNull().default(true),
     installedAt: timestamp("installed_at", { withTimezone: true }).notNull().defaultNow(),
     installedBy: text("installed_by"),
   },
   (t) => [
+    // 0092 / #2739 — composite PK per ADR-0007. Replaces single-column
+    // `id` PK from 0014.
+    primaryKey({ columns: [t.workspaceId, t.catalogId, t.installId] }),
+    // 0092 / #2739 — preserves the `id` uniqueness invariant that the
+    // dropped single-column PK used to enforce.
+    uniqueIndex("workspace_plugins_id_unique").on(t.id),
+    // Pre-existing global unique (0014). Kept until #2743 / #2744
+    // introduces multi-instance datasource installs and pivots
+    // handler ON CONFLICT clauses off this constraint — see migration
+    // 0092's header comment for the rationale, including the
+    // Drizzle-vs-production naming drift (on disk this lives as
+    // `workspace_plugins_workspace_id_catalog_id_key`).
+    // TODO(#2743): drop and align the Drizzle name with the on-disk
+    // constraint when the cutover lands.
     uniqueIndex("idx_workspace_plugins_unique").on(t.workspaceId, t.catalogId),
+    // 0092 / #2739 — post-1.5.3 invariant: singleton install per
+    // (workspace, catalog) for chat + action pillars only. Datasource
+    // pillar is admitted multiple times.
+    uniqueIndex("workspace_plugins_singleton")
+      .on(t.workspaceId, t.catalogId)
+      .where(sql`pillar IN ('chat', 'action')`),
     index("idx_workspace_plugins_workspace").on(t.workspaceId),
     index("idx_workspace_plugins_catalog").on(t.catalogId),
+    check("chk_workspace_plugins_pillar", sql`pillar IN ('datasource', 'chat', 'action')`),
   ],
 );
 

@@ -343,7 +343,7 @@
     },
     "packages/types": {
       "name": "@useatlas/types",
-      "version": "0.1.5",
+      "version": "0.1.6",
     },
     "packages/web": {
       "name": "@atlas/web",
@@ -456,7 +456,7 @@
       },
       "peerDependencies": {
         "@useatlas/plugin-sdk": ">=0.0.1",
-        "@useatlas/types": ">=0.1.5",
+        "@useatlas/types": ">=0.1.6",
         "hono": "^4.0.0",
         "zod": "^4.0.0",
       },

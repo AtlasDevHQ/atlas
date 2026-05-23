@@ -1,14 +1,5 @@
 import { redirect } from "next/navigation";
 
-/**
- * Token Usage folded into `/admin/usage` (consolidation, May 2026). The
- * standalone Token Usage page was a slice of overall plan consumption; the
- * Usage dashboard now renders both as tabs.
- *
- * Forwards `?from=…&to=…` (and any other query) so a bookmarked date range
- * follows the user into the Tokens tab — Codex flagged the bare redirect as
- * losing legacy filter state.
- */
 export default async function TokenUsageRedirect({
   searchParams,
 }: {

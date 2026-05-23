@@ -20,22 +20,11 @@ import { useSettingsPaletteItems } from "./use-settings-palette-items";
 import type { PaletteAction, PaletteGroup, PaletteItem } from "./palette-types";
 
 /**
- * Global Cmd+K palette. Mounted in chat (`workspace-shell`) and admin
- * (`admin-layout`) — both surfaces share the same registry so a user can
- * jump from any conversation to any admin route or named setting with one
- * shortcut. The chat surface passes `extraGroups` for chat-only actions
- * (new conversation, prompt library, recent conversations). The admin
- * surface passes nothing extra; routes + settings come from the registry.
- *
- * Lazy-loaded data:
- *   - Settings catalog is fetched the first time the palette opens
- *     (admin only). The query is `enabled: open` so a member's chat session
- *     never hits the admin endpoint.
- *
- * Pending-amendment badge:
- *   - The "Improve Layer" sidebar badge is reused via `badges` prop. The
- *     sidebar already polls for it; we read its current count once when the
- *     palette opens rather than maintaining a second poller.
+ * Global Cmd+K palette. Pass `extraGroups` for surface-specific actions
+ * (e.g. recent conversations on chat). Admin routes and settings come
+ * from the shared registry. The settings catalog is lazy-fetched on the
+ * first open and gated on admin role so non-admin chat sessions never
+ * hit `/api/v1/admin/settings`.
  */
 export function GlobalCommandPalette({
   extraGroups = [],
@@ -101,9 +90,10 @@ export function GlobalCommandPalette({
   const adminGroups = buildAdminPaletteGroups({ userRole, isSaas, badges });
   const settingsGroups = useSettingsPaletteItems(open && userRole !== null);
 
-  // Defer-past-close so a follow-on dialog/sheet (or a router push that
+  // Defer past close so a follow-on dialog/sheet (or a router push that
   // triggers Suspense) doesn't collide with Radix's body-pointer-events
-  // cleanup. Inherited from the chat palette — same rationale, same fix.
+  // cleanup, which leaves `pointer-events: none` on `<body>` for a frame
+  // after close.
   const pendingTimers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
   useEffect(() => {
     const timers = pendingTimers.current;

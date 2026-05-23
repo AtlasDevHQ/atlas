@@ -192,13 +192,9 @@ function AdminLayoutInner({ children }: { children: ReactNode }) {
         onComplete={() => { /* Dialog handles its own state */ }}
       />
       <MfaEnrollmentDialog />
-      {/*
-        Cmd+K palette for admin surfaces. Chat surfaces mount their own
-        copy (via workspace-shell) so the shortcut works app-wide; admin
-        routes don't load workspace-shell, so we mount the palette here.
-        Routes/settings come from the registry; no extra groups needed
-        outside chat.
-      */}
+      {/* Admin routes don't share the chat shell, so mount the palette
+          here. Both surfaces use the same component; only `extraGroups`
+          differs by surface. */}
       <GlobalCommandPalette />
     </SidebarProvider>
   );

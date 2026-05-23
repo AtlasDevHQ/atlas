@@ -536,8 +536,16 @@ export default function SettingsPage() {
     function focusFromHash() {
       const hash = window.location.hash;
       if (!hash.startsWith("#setting-")) return;
-      const el = document.getElementById(hash.slice(1));
-      if (!el) return;
+      const id = hash.slice(1);
+      const el = document.getElementById(id);
+      if (!el) {
+        // Stale palette cache pointing at a renamed/removed setting key.
+        // Warn instead of silently no-op'ing so the symptom is debuggable
+        // when a user reports "Cmd+K sent me to settings but nothing
+        // highlighted."
+        console.debug(`[settings] palette hash target not found: #${id}`);
+        return;
+      }
       el.scrollIntoView({ behavior: "smooth", block: "center" });
       el.setAttribute("data-palette-highlight", "true");
       const t = setTimeout(() => {

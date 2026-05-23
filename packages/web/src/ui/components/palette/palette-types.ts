@@ -5,17 +5,22 @@ export type PaletteAction =
   | { kind: "run"; run: () => void | Promise<void> };
 
 export interface PaletteItem {
-  /** Stable id used as cmdk's `value` — make this unique across all groups. */
+  /**
+   * Stable id used as cmdk's `value`. Must be unique across all groups
+   * — duplicate ids collide silently in cmdk's selection model.
+   * Convention: prefix by source so collisions are impossible —
+   * `nav:<href>`, `setting:<key>`, `convo:<id>`, `chat:<action>`.
+   */
   id: string;
   /** What renders in the row. Keep short — keywords carry alt phrasing. */
   title: string;
   /** Optional second line of muted text. */
   hint?: string;
-  /** Extra search tokens that should match the input even when the title doesn't. */
+  /** Extra search tokens that match the input even when the title doesn't. */
   keywords?: string[];
   icon?: ComponentType<{ className?: string }>;
   action: PaletteAction;
-  /** Badge count rendered after the title — used for the "Improve Layer" pending count. */
+  /** Positive count rendered as a chip after the title. Falsy hides the chip. */
   badge?: number;
 }
 

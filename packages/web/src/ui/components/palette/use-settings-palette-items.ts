@@ -34,10 +34,8 @@ export function useSettingsPaletteItems(enabled: boolean): PaletteGroup[] {
     enabled,
   });
 
-  // Defensive null-walk: in production the zod schema rejects a non-conforming
-  // body before we get here, but test environments mock `useAdminFetch` with
-  // arbitrary shapes (e.g. `{ data: {} }`) — a hard-failing `.settings` would
-  // crash every test that mounts a tree containing this palette.
+  // Zod parses the body in production, but test mocks may return arbitrary
+  // shapes — guard explicitly so the palette never hard-crashes its host tree.
   const settings = data?.settings;
   if (!settings || !Array.isArray(settings)) return [];
 

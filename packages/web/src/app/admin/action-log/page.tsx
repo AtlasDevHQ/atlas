@@ -1,16 +1,9 @@
 import { redirect } from "next/navigation";
 
 /**
- * Admin Action Log folded into `/admin/audit` (consolidation, May 2026).
- * The Audit page now has two tabs — Queries (the original audit log) and
- * Admin actions (this page's content). Both sources live in the same
- * Monitoring surface; the split was a confusing artifact of historical growth.
- *
- * Forwards any query string on the legacy URL through to the new tab so
- * bookmarks that pin a filter (`?actor=…`, `?actionType=…`, `?page=…`,
- * `?from=…`, `?to=…`, `?search=…`) survive the redirect. Without this the
- * tab simply opened unfiltered — a regression noted in the Codex review of
- * the consolidation PR.
+ * Legacy URL for the Admin Action Log. Now renders as a tab on `/admin/audit`;
+ * search params are forwarded so a bookmarked filter (`?actor=…&from=…`)
+ * survives.
  */
 export default async function AdminActionLogRedirect({
   searchParams,

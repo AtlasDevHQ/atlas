@@ -1,12 +1,20 @@
 import { redirect } from "next/navigation";
 
-/**
- * MCP settings folded into the main settings page (consolidation, May 2026).
- * The single MCP knob (`ATLAS_MCP_EXPOSE_CANONICAL_PROMPTS`) renders in the
- * "MCP" section of `/admin/settings` alongside the rest of the workspace
- * settings. Old `/admin/settings/mcp` URL preserved as a redirect for any
- * bookmarks / docs that still link to it.
- */
-export default function McpSettingsRedirect() {
-  redirect("/admin/settings#setting-ATLAS_MCP_EXPOSE_CANONICAL_PROMPTS");
+export default async function McpSettingsRedirect({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = await searchParams;
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (typeof value === "string") {
+      qs.append(key, value);
+    } else if (Array.isArray(value)) {
+      for (const item of value) qs.append(key, item);
+    }
+  }
+  const query = qs.toString();
+  const suffix = query ? `?${query}` : "";
+  redirect(`/admin/settings${suffix}#setting-ATLAS_MCP_EXPOSE_CANONICAL_PROMPTS`);
 }

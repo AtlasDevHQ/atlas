@@ -16,14 +16,10 @@ import { GlobalCommandPalette, type PaletteGroup } from "../palette";
 const MAX_RECENT_CONVERSATIONS = 8;
 
 /**
- * Chat-surface entry point for the Cmd+K palette. The keyboard handling,
- * route registry, and settings index live in `GlobalCommandPalette`; this
- * wrapper supplies the chat-only groups (new conversation, prompt library,
- * schema explorer, recent conversations, replay tour). The same shortcut
- * works on /admin via the admin-layout mount with no extra groups.
- *
- * Props match the pre-refactor signature so workspace-shell and the
- * existing test keep working unchanged.
+ * Chat-surface wrapper around `GlobalCommandPalette`. Supplies chat-only
+ * groups (new conversation, prompt library, schema explorer, recent
+ * conversations, replay tour); routes and settings come from the shared
+ * registry.
  */
 export function CommandPalette({
   conversations,

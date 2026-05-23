@@ -2,18 +2,13 @@ import { navGroups, type NavSubItem } from "@/ui/components/admin/admin-nav";
 import type { PaletteGroup, PaletteItem } from "./palette-types";
 
 /**
- * Build palette groups from the canonical `admin-nav` registry so adding a
- * sidebar entry automatically surfaces it in Cmd+K. Filtering (platform-admin
- * gating, self-hosted-only, badge counts) is applied here in the same shape
- * the sidebar uses — keeping one source of truth (#2176 lesson: any
- * pathname/label rule that lives in two places will drift).
+ * Build palette groups from the canonical `admin-nav` registry. Filtering
+ * rules (platform-admin, self-hosted-only, badge counts) match the sidebar
+ * exactly — any pathname/label rule that lives in two places will drift.
  *
- * Returns `[]` for roles that lack admin access (`member`, `viewer`, or
- * unknown). The palette mounts on chat surfaces too, where exposing admin
- * routes to non-admins would surface privileged paths and route into
- * dead-end 403s on click. The previous filter only handled `requiredRole`
- * on individual groups (Platform), which left the other six admin groups
- * visible to everyone.
+ * Non-admin roles get `[]` because the palette mounts on chat surfaces
+ * too; exposing admin routes there would surface privileged paths and
+ * 403 on click.
  */
 export function buildAdminPaletteGroups(opts: {
   userRole: "admin" | "member" | "platform_admin" | "viewer" | null;

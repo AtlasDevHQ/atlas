@@ -651,7 +651,7 @@ See [API Key Management](/guides/api-keys) for the full guide.
 
 **Route:** `/admin/integrations`
 
-Connect and manage external platform integrations — Slack, Microsoft Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp, Salesforce, Jira, Email, Webhook, and Obsidian — from a single page. Each integration shows its connection status and provides connect/disconnect actions. Cards are rendered from `GET /api/v1/integrations/catalog`, which filters by deploy mode (`saas_eligible`) and plan tier (above-plan rows render as read-only upsell cards).
+Connect and manage external platform integrations — Slack, Microsoft Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp, Salesforce, Jira, Email, Webhook, and Obsidian — from a single page. Each integration shows its connection status and provides connect/disconnect actions. The page renders **catalog-driven cards** for the 11 platforms seeded into `plugin_catalog` (Slack, Teams, Discord, Telegram, Google Chat, WhatsApp, Salesforce, Jira, Email, Webhook, Obsidian) from `GET /api/v1/integrations/catalog`, which filters by deploy mode (`saas_eligible`) and plan tier (above-plan rows render as read-only upsell cards). **GitHub** and **Linear** still render via the legacy BYOT data path and aren't yet catalog-managed.
 
 See [Integrations Hub](/guides/integrations) for the full guide.
 

@@ -146,11 +146,16 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
 
 ## Active
 
-_None._
+- [ ] **1.5.3 — Multi-Platform Install Models** ([milestone #51](https://github.com/AtlasDevHQ/atlas/milestone/51), [PRD #2738](https://github.com/AtlasDevHQ/atlas/issues/2738) supersedes [#2662](https://github.com/AtlasDevHQ/atlas/issues/2662); [ADR-0006](../../docs/adr/0006-three-pillar-integration-taxonomy.md) + [ADR-0007](../../docs/adr/0007-unified-install-pipeline.md)) — Three-pillar taxonomy (Datasource / Chat / Action) + unified install pipeline. `workspace_plugins` becomes the universal install record; `connections` table drops in a one-shot migration. Folds in the 7 non-Slack chat install models from the original #2662 scope.
+  - [ ] Phase A — Foundation: schema + facades (#2739, #2740, #2741, #2742)
+  - [ ] Phase B — Cutover: DatasourcePoolResolver + drop `connections` (#2743, #2744)
+  - [ ] Phase C — UX consolidation: Salesforce → connections, integrations dedup, coming-soon state (#2745, #2746, #2747)
+  - [ ] Phase D — Chat install models from #2662: Telegram (#2748), Discord (#2749), Linear (#2750), GitHub (#2751), Teams (#2752), WhatsApp (#2753), gchat (#2754)
+  - [ ] Phase E — Closeout (#2755) + Email agent-loop tool carry-over (#2698)
 
 ## Planned
 
-_None queued. See `/next` for candidates._
+- [ ] **1.6.0 — CRM & Lead Capture** ([milestone #52](https://github.com/AtlasDevHQ/atlas/milestone/52), [PRD #2726](https://github.com/AtlasDevHQ/atlas/issues/2726)) — Demo lead → Twenty CRM person, signup hook, talk-to-sales form, durable outbox, admin override + retry surface. Twenty-as-Atlas-datasource slice deferred to a future "generic REST datasources" milestone (#2728 closed with reasoning).
 
 ## Parked
 

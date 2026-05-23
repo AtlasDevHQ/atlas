@@ -436,9 +436,6 @@ export interface ChatBridge {
 }
 
 /**
- * Create a Chat SDK bridge wired to Atlas callbacks.
- *
-/**
  * Structural subset of the chat-sdk `ActionEvent` that the approve/deny
  * dispatch path actually reads. Defined as a subset so tests can pass
  * plain objects without constructing real chat-sdk event types.

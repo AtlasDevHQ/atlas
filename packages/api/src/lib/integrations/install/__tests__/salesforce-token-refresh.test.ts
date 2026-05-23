@@ -197,8 +197,8 @@ describe("refreshSalesforceToken — permanent failure", () => {
     expect(markedCall).toBeDefined();
   });
 
-  it("treats invalid_client / inactive_user / org_locked / inactive_org as permanent failures", async () => {
-    for (const errorCode of ["invalid_client", "inactive_user", "org_locked", "inactive_org"]) {
+  it("treats inactive_user / org_locked / inactive_org as permanent failures", async () => {
+    for (const errorCode of ["inactive_user", "org_locked", "inactive_org"]) {
       mockReadCredentialBundle.mockResolvedValueOnce(STORED_BUNDLE);
       mockInternalQuery.mockClear();
       mockFetch.mockImplementationOnce(() =>
@@ -257,6 +257,37 @@ describe("refreshSalesforceToken — transient failure", () => {
         (call[0] as string).includes("'reconnect_needed'"),
     );
     expect(markedCall).toBeUndefined();
+  });
+
+  it("treats invalid_client / invalid_client_id as TRANSIENT (operator env-var misconfig, not tenant install break)", async () => {
+    // Codex P1 — `invalid_client` and `invalid_client_id` are
+    // operator-side failures (wrong SALESFORCE_CLIENT_ID/SECRET in the
+    // deploy). Flipping reconnect_needed for these would force every
+    // workspace admin to manually re-run OAuth after the operator
+    // fixes the env, even though their specific install is fine.
+    // Pin this so a future refactor that re-broadens the permanent
+    // codes list fails loudly.
+    for (const errorCode of ["invalid_client", "invalid_client_id"]) {
+      mockReadCredentialBundle.mockResolvedValueOnce(STORED_BUNDLE);
+      mockInternalQuery.mockClear();
+      mockFetch.mockImplementationOnce(() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ error: errorCode }), {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          }),
+        ),
+      );
+
+      await expect(refreshMod.refreshSalesforceToken(SF_ARGS)).rejects.toThrow(errorCode);
+
+      const markedCall = mockInternalQuery.mock.calls.find(
+        (call) =>
+          (call[0] as string).includes("UPDATE workspace_plugins") &&
+          (call[0] as string).includes("'reconnect_needed'"),
+      );
+      expect(markedCall).toBeUndefined();
+    }
   });
 
   it("treats rate_limit_exceeded as TRANSIENT (recoverable throttle, not reconnect_needed)", async () => {

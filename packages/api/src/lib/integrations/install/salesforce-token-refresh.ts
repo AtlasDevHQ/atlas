@@ -24,14 +24,17 @@
  *     marking reconnect-needed. The agent loop's next call retries.
  *
  * The classification "permanent vs. transient" is the key complexity:
- *   - Permanent → `invalid_grant`, `invalid_client`, `inactive_user`,
- *     `org_locked`, `inactive_org`. Treat HTTP 400 with any of these
- *     codes as permanent.
- *   - Transient → network failures, 5xx, unparseable bodies, and
- *     `rate_limit_exceeded` (Salesforce's OAuth token endpoint has a
- *     short-window per-org throttle that recovers automatically; if we
- *     flipped reconnect-needed on a rate limit the admin would re-run
- *     OAuth uselessly while the next refresh would have worked). No
+ *   - Permanent → tenant-install-broken errors: `invalid_grant`,
+ *     `inactive_user`, `org_locked`, `inactive_org`. These prove the
+ *     specific Workspace's install needs admin action; the admin re-runs
+ *     OAuth from the Reconnect CTA.
+ *   - Transient → network failures, 5xx, unparseable bodies,
+ *     `rate_limit_exceeded` (per-org throttle that recovers on its
+ *     own), AND `invalid_client` / `invalid_client_id` (these are
+ *     OPERATOR-side misconfig — wrong `SALESFORCE_CLIENT_ID`/`SECRET`
+ *     env vars affect every Workspace; flipping reconnect_needed would
+ *     force every workspace admin to re-run OAuth after the operator
+ *     fixes the env, even though the actual install is fine). No
  *     reconnect-needed marker; let the caller retry on next tool call.
  *
  * @see ./salesforce-oauth-handler.ts — the initial OAuth dance
@@ -69,8 +72,6 @@ const log = createLogger("integrations.install.salesforce-refresh");
  */
 const PERMANENT_REFRESH_FAILURE_CODES = new Set([
   "invalid_grant",
-  "invalid_client",
-  "invalid_client_id",
   "inactive_user",
   "org_locked",
   "inactive_org",

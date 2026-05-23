@@ -634,6 +634,20 @@
         "typescript": "^6.0.2",
       },
     },
+    "plugins/obsidian-reader": {
+      "name": "@useatlas/obsidian-reader",
+      "version": "0.0.1",
+      "devDependencies": {
+        "@useatlas/plugin-sdk": "workspace:*",
+        "ai": "^6.0.141",
+        "zod": "^4.3.6",
+      },
+      "peerDependencies": {
+        "@useatlas/plugin-sdk": ">=0.0.1",
+        "ai": "^6.0.0",
+        "zod": "^4.0.0",
+      },
+    },
     "plugins/salesforce": {
       "name": "@useatlas/salesforce",
       "version": "0.0.5",
@@ -726,6 +740,20 @@
       "peerDependencies": {
         "@useatlas/plugin-sdk": ">=0.0.1",
         "hono": "^4.0.0",
+        "zod": "^4.0.0",
+      },
+    },
+    "plugins/webhook-action": {
+      "name": "@useatlas/webhook-action",
+      "version": "0.0.1",
+      "devDependencies": {
+        "@useatlas/plugin-sdk": "workspace:*",
+        "ai": "^6.0.141",
+        "zod": "^4.3.6",
+      },
+      "peerDependencies": {
+        "@useatlas/plugin-sdk": ">=0.0.1",
+        "ai": "^6.0.0",
         "zod": "^4.0.0",
       },
     },
@@ -2140,6 +2168,8 @@
 
     "@useatlas/nsjail": ["@useatlas/nsjail@workspace:plugins/nsjail"],
 
+    "@useatlas/obsidian-reader": ["@useatlas/obsidian-reader@workspace:plugins/obsidian-reader"],
+
     "@useatlas/plugin-sdk": ["@useatlas/plugin-sdk@workspace:packages/plugin-sdk"],
 
     "@useatlas/react": ["@useatlas/react@workspace:packages/react"],
@@ -2161,6 +2191,8 @@
     "@useatlas/vercel-sandbox": ["@useatlas/vercel-sandbox@workspace:plugins/vercel-sandbox"],
 
     "@useatlas/webhook": ["@useatlas/webhook@workspace:plugins/webhook"],
+
+    "@useatlas/webhook-action": ["@useatlas/webhook-action@workspace:plugins/webhook-action"],
 
     "@useatlas/yaml-context": ["@useatlas/yaml-context@workspace:plugins/yaml-context"],
 

@@ -25,14 +25,13 @@
  *      credential is unreachable.
  *   2. `integration_credentials` row INSERT/UPDATE — credentials.
  *      Failure here returns the install record with
- *      `credentialResult.written: false` and the OAuth callback route
- *      redirects to `/admin/integrations?reconnect=salesforce`. The
- *      install row is left with `status: "ok"` — the persistent
- *      "Reconnect needed" badge on the admin card is reserved for the
- *      refresh-token failure path (see `./salesforce-token-refresh.ts`,
- *      which flips `status` to `"reconnect_needed"`). Re-running the
- *      dance retries step 2 (step 1 is an upsert under the unique
- *      index).
+ *      `credentialResult.written: false`, flips
+ *      `workspace_plugins.config.status` to `"reconnect_needed"` so the
+ *      admin card surfaces a persistent Reconnect CTA, and the OAuth
+ *      callback route redirects to
+ *      `/admin/integrations?reconnect=salesforce`. Re-running the dance
+ *      retries step 2 (step 1 is an upsert under the unique index) and
+ *      clears the status back to `"ok"` on success.
  *
  *   No roll-back of step 1 on step 2 failure — see ADR-0003.
  *
@@ -455,6 +454,30 @@ export class SalesforceOAuthInstallHandler implements OAuthPlatformInstallHandle
         { workspaceId, instanceUrl: tokens.instance_url, err: errMessage },
         "Salesforce install record written but integration_credentials write failed — Reconnect required",
       );
+      // Codex P1 — flip status to `reconnect_needed` so the admin card
+      // surfaces a persistent Reconnect CTA. Without this, the OAuth
+      // callback's `?reconnect=salesforce` query param shows once and
+      // then disappears on the next admin-page reload, leaving the card
+      // in the "Installed" state with no credentials behind it.
+      // Best-effort UPDATE — if it fails the install record is still
+      // present and the user lands on `?reconnect=` via the callback's
+      // partial-failure redirect; the warn log captures the divergence.
+      try {
+        await internalQuery(
+          `UPDATE workspace_plugins
+              SET config = config || jsonb_build_object('status', 'reconnect_needed')
+            WHERE workspace_id = $1 AND catalog_id = $2`,
+          [workspaceId, SALESFORCE_CATALOG_ID],
+        );
+      } catch (statusErr) {
+        log.warn(
+          {
+            workspaceId,
+            err: statusErr instanceof Error ? statusErr.message : String(statusErr),
+          },
+          "Failed to mark Salesforce install as reconnect_needed after credential write failure",
+        );
+      }
       return {
         workspaceId,
         catalogId: SALESFORCE_SLUG,

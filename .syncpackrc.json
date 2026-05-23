@@ -48,6 +48,8 @@
         "@useatlas/vercel-sandbox",
         "@useatlas/teams",
         "@useatlas/webhook",
+        "@useatlas/webhook-action",
+        "@useatlas/obsidian-reader",
         "@useatlas/email-digest",
         "@useatlas/mcp",
         "@useatlas/email",

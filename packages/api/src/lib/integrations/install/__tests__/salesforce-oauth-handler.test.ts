@@ -412,7 +412,7 @@ describe("SalesforceOAuthInstallHandler.handleCallback — Salesforce-side failu
 // ---------------------------------------------------------------------------
 
 describe("SalesforceOAuthInstallHandler.handleCallback — partial failure", () => {
-  it("returns credentialResult.written=false when workspace_plugins write succeeds but integration_credentials write throws", async () => {
+  it("returns credentialResult.written=false AND flips status to reconnect_needed when integration_credentials write throws", async () => {
     mockSaveCredentialBundle.mockImplementationOnce(() =>
       Promise.reject(new Error("transient db error")),
     );
@@ -427,7 +427,16 @@ describe("SalesforceOAuthInstallHandler.handleCallback — partial failure", () 
     expect(result!.credentialResult.written).toBe(false);
     expect(result!.credentialResult.reason).toContain("Reconnect");
 
-    expect(mockInternalQuery).toHaveBeenCalledTimes(1);
+    // Codex P1 — flipping `status: "reconnect_needed"` is what makes
+    // the admin card surface a persistent Reconnect CTA. Without this
+    // UPDATE the user lands on `?reconnect=salesforce` once then sees
+    // a normal "Installed" card on the next page load.
+    const reconnectUpdate = mockInternalQuery.mock.calls.find(
+      (call) =>
+        (call[0] as string).includes("UPDATE workspace_plugins") &&
+        (call[0] as string).includes("'reconnect_needed'"),
+    );
+    expect(reconnectUpdate).toBeDefined();
     expect(mockSaveCredentialBundle).toHaveBeenCalledTimes(1);
   });
 });

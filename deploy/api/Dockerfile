@@ -38,6 +38,7 @@ COPY plugins/jira/package.json plugins/jira/package.json
 COPY plugins/mysql/package.json plugins/mysql/package.json
 COPY plugins/nsjail/package.json plugins/nsjail/package.json
 COPY plugins/obsidian/package.json plugins/obsidian/package.json
+COPY plugins/obsidian-reader/package.json plugins/obsidian-reader/package.json
 COPY plugins/sidecar/package.json plugins/sidecar/package.json
 COPY plugins/snowflake/package.json plugins/snowflake/package.json
 COPY plugins/salesforce/package.json plugins/salesforce/package.json
@@ -45,6 +46,7 @@ COPY plugins/vercel-sandbox/package.json plugins/vercel-sandbox/package.json
 COPY plugins/bigquery/package.json plugins/bigquery/package.json
 COPY plugins/chat/package.json plugins/chat/package.json
 COPY plugins/webhook/package.json plugins/webhook/package.json
+COPY plugins/webhook-action/package.json plugins/webhook-action/package.json
 COPY plugins/teams/package.json plugins/teams/package.json
 COPY plugins/email-digest/package.json plugins/email-digest/package.json
 COPY create-atlas-plugin/package.json create-atlas-plugin/package.json

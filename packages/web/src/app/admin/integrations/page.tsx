@@ -21,9 +21,9 @@ import type {
 } from "@useatlas/types";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
-// 1.5.2 slice 3 (#2651) — catalog-driven card surface above the legacy
-// per-platform admin chrome. The legacy blocks below will be lifted out
-// in slice 6 (#2656) once Disconnect lands on the catalog flow.
+// Catalog-driven card surface, rendered above the legacy per-platform
+// admin chrome. The legacy blocks below stay until a follow-up lifts
+// install / disconnect onto the catalog flow.
 import { CatalogSection } from "./catalog-section";
 import {
   CompactRow,
@@ -50,12 +50,6 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import Link from "next/link";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -121,6 +115,17 @@ export default function IntegrationsPage() {
 
   const disconnectMutation = useAdminMutation<{ message: string }>({
     path: "/api/v1/admin/integrations/slack",
+    method: "DELETE",
+    invalidates: refetch,
+  });
+
+  // Slack OAuth-install disconnect. Distinct path from the BYOT
+  // mutation above because OAuth-installed workspaces own a
+  // `workspace_plugins` row that the BYOT teardown
+  // (`deleteInstallationByOrg`) wouldn't remove. The catalog-driven
+  // endpoint runs the two-store ADR-0003 teardown in the correct order.
+  const slackOAuthDisconnectMutation = useAdminMutation<{ message: string }>({
+    path: "/api/v1/integrations/slack",
     method: "DELETE",
     invalidates: refetch,
   });
@@ -244,6 +249,18 @@ export default function IntegrationsPage() {
 
   async function handleDisconnect() {
     await disconnectMutation.mutate({});
+  }
+
+  async function handleSlackOAuthDisconnect() {
+    const result = await slackOAuthDisconnectMutation.mutate({});
+    if (result.ok) {
+      toast.success("Slack disconnected");
+    } else {
+      // The error is also surfaced inline via `oauthDisconnectError` →
+      // `<InlineError>`, but firing a toast matches the rest of the page's
+      // mutation handlers so admins get parity feedback on failure.
+      toast.error(result.error.message || "Couldn't disconnect Slack");
+    }
   }
 
   async function handleSlackByot(botToken: string) {
@@ -419,9 +436,9 @@ export default function IntegrationsPage() {
       </header>
 
       <ErrorBoundary>
-        {/* Slice 3 (#2651) — read-only catalog cards. The legacy
-            per-platform admin chrome below stays put until slice 6
-            (#2656) lifts the install / disconnect flow onto the catalog. */}
+        {/* Read-only catalog cards. The legacy per-platform admin chrome
+            below stays until a follow-up lifts install / disconnect onto
+            the catalog flow. */}
         <CatalogSection />
         <AdminContentWrapper
           loading={loading}
@@ -446,6 +463,9 @@ export default function IntegrationsPage() {
                   onDisconnect={handleDisconnect}
                   disconnecting={disconnectMutation.saving}
                   disconnectError={friendlyErrorOrNull(disconnectMutation.error)}
+                  onOAuthDisconnect={handleSlackOAuthDisconnect}
+                  oauthDisconnecting={slackOAuthDisconnectMutation.saving}
+                  oauthDisconnectError={friendlyErrorOrNull(slackOAuthDisconnectMutation.error)}
                   onByotConnect={handleSlackByot}
                   byotConnecting={slackByotMutation.saving}
                   byotError={friendlyErrorOrNull(slackByotMutation.error)}
@@ -578,6 +598,9 @@ function SlackCard({
   onDisconnect,
   disconnecting,
   disconnectError,
+  onOAuthDisconnect,
+  oauthDisconnecting,
+  oauthDisconnectError,
   onByotConnect,
   byotConnecting,
   byotError,
@@ -589,6 +612,9 @@ function SlackCard({
   onDisconnect: () => void;
   disconnecting: boolean;
   disconnectError: string | null;
+  onOAuthDisconnect: () => void;
+  oauthDisconnecting: boolean;
+  oauthDisconnectError: string | null;
   onByotConnect: (botToken: string) => void;
   byotConnecting: boolean;
   byotError: string | null;
@@ -659,11 +685,18 @@ function SlackCard({
               vars are configured. `canConnect` (= slack.configurable)
               only reports that SLACK_CLIENT_ID/SECRET are set on this
               deploy — a workspace can have OAuth env vars available
-              and still be connected via BYOT. In that case the working
-              chat_cache-backed DisconnectDialog must stay, otherwise
-              the admin loses the ability to remove their token. */}
+              and still be connected via BYOT. In that case the
+              chat_cache-backed BYOT teardown must stay, otherwise the
+              admin loses the ability to remove their token.
+              OAuth installs hit the catalog-driven endpoint which runs
+              the ADR-0003 two-store teardown. */}
           {slack.connected && slack.hasOAuthInstall && (
-            <DisconnectPendingButton issue="#2655" />
+            <DisconnectDialog
+              name="Slack"
+              description="This will remove the Slack connection for this workspace. The /atlas command and thread follow-ups will stop working until you reconnect."
+              onConfirm={onOAuthDisconnect}
+              disconnecting={oauthDisconnecting}
+            />
           )}
           {slack.connected && !slack.hasOAuthInstall && (canConnect || canByot) && (
             <DisconnectDialog
@@ -719,7 +752,7 @@ function SlackCard({
         />
       )}
 
-      <InlineError>{disconnectError}</InlineError>
+      <InlineError>{disconnectError ?? oauthDisconnectError}</InlineError>
     </Shell>
   );
 }
@@ -2114,34 +2147,6 @@ function EmailCard({ email }: { email: EmailStatus }) {
         </Button>
       }
     />
-  );
-}
-
-// -- Disconnect Pending (slice 6 placeholder) --
-
-/**
- * Slice-6 placeholder for OAuth-installed platforms — the real
- * Disconnect handler ships in #2655. Renders a disabled button with a
- * tooltip that points to the follow-up issue so an admin clicking it
- * knows where the work is tracked.
- */
-function DisconnectPendingButton({ issue }: { issue: string }) {
-  return (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          {/* span wrapper so the disabled button still receives pointer events for the tooltip */}
-          <span tabIndex={0} aria-disabled="true" className="inline-flex">
-            <Button variant="outline" size="sm" disabled aria-disabled="true">
-              Disconnect
-            </Button>
-          </span>
-        </TooltipTrigger>
-        <TooltipContent side="top" align="end">
-          Disconnect ships in {issue}
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
   );
 }
 

@@ -4689,6 +4689,102 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       expect(rows[0]?.pillar).toBe("chat");
     }, PG_TEST_TIMEOUT_MS);
 
+    it("plugin_catalog: BEFORE UPDATE trigger re-derives pillar when type changes (UPDATE without naming pillar)", async () => {
+      // Codex P1 on PR #2756: catalog-seeder upsert (`SET type =
+      // EXCLUDED.type`) and admin marketplace PATCH both UPDATE type
+      // on existing rows. Without the UPDATE trigger, pillar drifts
+      // and the workspace_plugins INSERT trigger propagates the stale
+      // value.
+      const slug = `pg-0092-cat-update-${Date.now()}`;
+      const id = `cat-${slug}`;
+
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type) VALUES ($1, '0092 Update Trigger', $2, 'chat')`,
+        [id, slug],
+      );
+      // INSERT trigger derives pillar='chat' from type='chat'.
+      let { rows } = await pool.query<{ pillar: string }>(
+        `SELECT pillar FROM plugin_catalog WHERE id = $1`,
+        [id],
+      );
+      expect(rows[0]?.pillar).toBe("chat");
+
+      // Update type only — UPDATE trigger re-derives pillar.
+      await pool.query(
+        `UPDATE plugin_catalog SET type = 'datasource' WHERE id = $1`,
+        [id],
+      );
+      ({ rows } = await pool.query<{ pillar: string }>(
+        `SELECT pillar FROM plugin_catalog WHERE id = $1`,
+        [id],
+      ));
+      expect(rows[0]?.pillar).toBe("datasource");
+
+      // Update type from datasource → integration — pillar follows
+      // to 'action'.
+      await pool.query(
+        `UPDATE plugin_catalog SET type = 'integration' WHERE id = $1`,
+        [id],
+      );
+      ({ rows } = await pool.query<{ pillar: string }>(
+        `SELECT pillar FROM plugin_catalog WHERE id = $1`,
+        [id],
+      ));
+      expect(rows[0]?.pillar).toBe("action");
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("plugin_catalog: BEFORE UPDATE trigger does NOT clobber when caller updates both type AND pillar", async () => {
+      // Same UPDATE statement names both columns to different values:
+      // the explicit pillar wins. Locks the `IS NOT DISTINCT FROM`
+      // guard against a future revision that drops it.
+      const slug = `pg-0092-cat-update-noclobber-${Date.now()}`;
+      const id = `cat-${slug}`;
+
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type, pillar) VALUES ($1, '0092 Update No-Clobber', $2, 'chat', 'chat')`,
+        [id, slug],
+      );
+
+      // Update type='datasource' would normally derive pillar='datasource';
+      // caller explicitly says pillar='action' — explicit wins.
+      await pool.query(
+        `UPDATE plugin_catalog SET type = 'datasource', pillar = 'action' WHERE id = $1`,
+        [id],
+      );
+      const { rows } = await pool.query<{ type: string; pillar: string }>(
+        `SELECT type, pillar FROM plugin_catalog WHERE id = $1`,
+        [id],
+      );
+      expect(rows[0]?.type).toBe("datasource");
+      expect(rows[0]?.pillar).toBe("action");
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("plugin_catalog: BEFORE UPDATE trigger leaves pillar alone when only unrelated columns change", async () => {
+      // Updating description/enabled/etc. must not touch pillar — the
+      // trigger guard `NEW.type IS DISTINCT FROM OLD.type` short-
+      // circuits when type didn't change.
+      const slug = `pg-0092-cat-update-unrelated-${Date.now()}`;
+      const id = `cat-${slug}`;
+
+      // Insert with explicit non-trigger-mapped pillar (chat for a
+      // datasource-typed row) so a stray "re-derive on every update"
+      // would visibly rewrite to 'datasource'.
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type, pillar) VALUES ($1, '0092 Update Untouched', $2, 'datasource', 'chat')`,
+        [id, slug],
+      );
+
+      await pool.query(
+        `UPDATE plugin_catalog SET description = 'updated description' WHERE id = $1`,
+        [id],
+      );
+      const { rows } = await pool.query<{ pillar: string }>(
+        `SELECT pillar FROM plugin_catalog WHERE id = $1`,
+        [id],
+      );
+      expect(rows[0]?.pillar).toBe("chat");
+    }, PG_TEST_TIMEOUT_MS);
+
     it("plugin_catalog: implementation_status + auto_install defaults apply on omission", async () => {
       // Pinned by silent-failure review on #2756 — guards the
       // `DEFAULT 'available'` / `DEFAULT false` clauses against a

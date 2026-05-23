@@ -134,6 +134,43 @@ CREATE TRIGGER trg_plugin_catalog_default_pillar
 BEFORE INSERT ON plugin_catalog
 FOR EACH ROW EXECUTE FUNCTION plugin_catalog_default_pillar();
 
+-- Companion BEFORE UPDATE trigger keeps pillar in sync when `type`
+-- changes (the catalog-seeder upsert `SET type = EXCLUDED.type` and
+-- the admin marketplace PATCH both UPDATE type on existing rows;
+-- without this, pillar drifts and the workspace_plugins trigger
+-- propagates the stale value into new install rows). The
+-- `IS NOT DISTINCT FROM` guard preserves the no-clobber pattern:
+-- a caller that updates both type AND pillar in the same statement
+-- gets their explicit pillar; a caller that updates only type gets
+-- a re-derivation. RAISE WARNING again surfaces unexpected type
+-- values without aborting the update.
+-- TODO(#2743): drop alongside the INSERT trigger once writers name
+-- pillar explicitly.
+CREATE OR REPLACE FUNCTION plugin_catalog_sync_pillar_on_type_change()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.type IS DISTINCT FROM OLD.type
+     AND NEW.pillar IS NOT DISTINCT FROM OLD.pillar THEN
+    NEW.pillar := CASE NEW.type
+      WHEN 'chat'        THEN 'chat'
+      WHEN 'datasource'  THEN 'datasource'
+      WHEN 'integration' THEN 'action'
+      WHEN 'action'      THEN 'action'
+      ELSE                    'action'
+    END;
+    IF NEW.type NOT IN ('chat', 'datasource', 'integration', 'action') THEN
+      RAISE WARNING 'plugin_catalog: pillar re-derived to ''action'' for unexpected type % on row id=%', NEW.type, NEW.id;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_plugin_catalog_sync_pillar_on_type_change ON plugin_catalog;
+CREATE TRIGGER trg_plugin_catalog_sync_pillar_on_type_change
+BEFORE UPDATE ON plugin_catalog
+FOR EACH ROW EXECUTE FUNCTION plugin_catalog_sync_pillar_on_type_change();
+
 -- ---------------------------------------------------------------------------
 -- workspace_plugins: install_id, pillar, composite PK
 -- ---------------------------------------------------------------------------

@@ -36,6 +36,12 @@ import {
 
 // Auth shape per test — overridden in DELETE tests that exercise
 // non-admin / unauthenticated branches.
+// Default test admin has MFA enrolled via `claims.twoFactorEnabled` —
+// the disconnect endpoint runs `shouldRequireMfaForAuthResult` after
+// auth and 403s unenrolled managed admins. Without the claim every
+// disconnect test would 403 instead of exercising the branch under
+// test. The MFA-enforcement branch gets its own dedicated test that
+// strips the claim.
 let mockAuthResult: unknown = {
   authenticated: true,
   mode: "managed",
@@ -43,6 +49,7 @@ let mockAuthResult: unknown = {
     id: "admin-1",
     role: "admin",
     activeOrganizationId: "ws-1",
+    claims: { twoFactorEnabled: true },
   },
 };
 
@@ -77,6 +84,23 @@ let mockDeployMode: "saas" | "self-hosted" | undefined = "self-hosted";
 
 mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => ({ deployMode: mockDeployMode }),
+}));
+
+// Misrouting — disconnect calls `detectMisrouting` + `isStrictRoutingEnabled`
+// to refuse cross-region requests. Default to "not misrouted, strict off"
+// so the happy path runs; the 421 test flips both.
+let mockMisrouted:
+  | {
+      expectedRegion: string;
+      actualRegion: string;
+      correctApiUrl: string | undefined;
+    }
+  | null = null;
+let mockStrictRouting = false;
+
+mock.module("@atlas/api/lib/residency/misrouting", () => ({
+  detectMisrouting: () => Promise.resolve(mockMisrouted),
+  isStrictRoutingEnabled: () => mockStrictRouting,
 }));
 
 // ---------------------------------------------------------------------------
@@ -248,9 +272,12 @@ beforeEach(() => {
       id: "admin-1",
       role: "admin",
       activeOrganizationId: "ws-1",
+      claims: { twoFactorEnabled: true },
     },
   };
   mockDeployMode = "self-hosted";
+  mockMisrouted = null;
+  mockStrictRouting = false;
 });
 
 // ---------------------------------------------------------------------------
@@ -452,7 +479,12 @@ function stageSlackInstallLookup(teamId: string | null) {
       return [];
     }
     if (sql.includes("FROM plugin_catalog")) {
-      return [{ slug: "slack", install_model: "oauth", enabled: true }];
+      // Both the install-side helper (`getInstallableCatalogRowBySlug` —
+      // gated on `enabled = true`) and the disconnect-side helper
+      // (`getCatalogRowBySlugForDisconnect` — no gate) hit this branch.
+      // Return a row with both shapes' fields populated so a single mock
+      // serves both.
+      return [{ id: "catalog:slack", slug: "slack", install_model: "oauth", enabled: true }];
     }
     if (sql.includes("FROM workspace_plugins")) {
       callOrder.push("workspace_plugins.select");
@@ -513,6 +545,10 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
   });
 
   it("returns 404 when the platform slug is not in the catalog", async () => {
+    // Catalog SELECT returns no rows for the unknown slug. The
+    // disconnect-side helper doesn't filter on `enabled` (Codex P2),
+    // so this branch only fires for truly absent slugs — not for
+    // kill-switched real Platforms.
     mockInternalQuery.mockImplementation(async (sql: string): Promise<unknown[]> => {
       if (sql.includes("FROM plugin_catalog")) return [];
       return [];
@@ -544,7 +580,12 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
     mockAuthResult = {
       authenticated: true,
       mode: "managed",
-      user: { id: "user-1", role: "member", activeOrganizationId: "ws-1" },
+      user: {
+        id: "user-1",
+        role: "member",
+        activeOrganizationId: "ws-1",
+        claims: { twoFactorEnabled: true },
+      },
     };
 
     const res = await request("/api/v1/integrations/slack", { method: "DELETE" });
@@ -554,15 +595,15 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
     expect(callOrder).not.toContain("workspace_plugins.delete");
   });
 
-  it("returns 501 for a catalog-enabled platform whose disconnect path isn't wired", async () => {
-    // Future-Platform safety net: catalog returns an enabled `teams` row
-    // (a real Platform), but `deleteCredentialStore` only dispatches
-    // `slack` today. The 501 must short-circuit before either store
-    // is touched — silently 404-ing or falling into the slack branch
-    // would both be bugs.
+  it("returns 501 for a real catalog platform whose disconnect path isn't wired", async () => {
+    // Future-Platform safety net: catalog returns a `teams` row (a real
+    // Platform), but `deleteCredentialStore` only dispatches `slack`
+    // today. The 501 must short-circuit before either store is touched
+    // — silently 404-ing or falling into the slack branch would both
+    // be bugs.
     mockInternalQuery.mockImplementation(async (sql: string): Promise<unknown[]> => {
       if (sql.includes("FROM plugin_catalog")) {
-        return [{ slug: "teams", install_model: "oauth", enabled: true }];
+        return [{ id: "catalog:teams", slug: "teams", install_model: "oauth", enabled: true }];
       }
       return [];
     });
@@ -581,7 +622,12 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
     mockAuthResult = {
       authenticated: true,
       mode: "managed",
-      user: { id: "admin-1", role: "admin" }, // no activeOrganizationId
+      user: {
+        id: "admin-1",
+        role: "admin",
+        // no activeOrganizationId
+        claims: { twoFactorEnabled: true },
+      },
     };
 
     const res = await request("/api/v1/integrations/slack", { method: "DELETE" });
@@ -614,6 +660,104 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
     expect(mockDeleteInstallation).not.toHaveBeenCalled();
   });
 
+  it("returns 403 mfa_enrollment_required when a managed admin lacks an enrolled second factor", async () => {
+    // Codex P1 — DELETE is destructive; bypass the MFA gate and an admin
+    // who only knows a password could disconnect a tenant install. Keep
+    // parity with the `mfaRequired` middleware applied to every other
+    // admin write surface.
+    stageSlackInstallLookup("T-abc-123");
+    mockAuthResult = {
+      authenticated: true,
+      mode: "managed",
+      user: {
+        id: "admin-1",
+        role: "admin",
+        activeOrganizationId: "ws-1",
+        // No twoFactorEnabled / passkeyCount → not enrolled.
+        claims: {},
+      },
+    };
+
+    const res = await request("/api/v1/integrations/slack", { method: "DELETE" });
+
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("mfa_enrollment_required");
+    expect(mockDeleteInstallation).not.toHaveBeenCalled();
+    expect(callOrder).not.toContain("workspace_plugins.delete");
+  });
+
+  it("returns 421 misdirected_request when strict routing detects a cross-region miss", async () => {
+    // Codex P2 — `adminAuth`'s misrouting check is what every other
+    // admin write inherits via `createAdminRouter`. This handler isn't
+    // mounted under that router so the check is inlined; without it a
+    // request landing on the wrong cell would tear down the wrong
+    // region's install during a residency split-brain.
+    stageSlackInstallLookup("T-abc-123");
+    mockMisrouted = {
+      expectedRegion: "eu",
+      actualRegion: "us",
+      correctApiUrl: "https://api.eu.useatlas.dev",
+    };
+    mockStrictRouting = true;
+
+    const res = await request("/api/v1/integrations/slack", { method: "DELETE" });
+
+    expect(res.status).toBe(421);
+    const body = (await res.json()) as { error: string; expectedRegion: string };
+    expect(body.error).toBe("misdirected_request");
+    expect(body.expectedRegion).toBe("eu");
+    expect(mockDeleteInstallation).not.toHaveBeenCalled();
+    expect(callOrder).not.toContain("workspace_plugins.delete");
+  });
+
+  it("proceeds when misrouting is detected but strict routing is disabled (graceful mode)", async () => {
+    // Graceful mode mirrors `checkMisrouting`'s behavior in
+    // middleware.ts: log via `detectMisrouting`, return null, let the
+    // request through. The disconnect must honor this so a region-flag
+    // misconfiguration doesn't accidentally block real teardowns.
+    stageSlackInstallLookup("T-abc-123");
+    mockMisrouted = {
+      expectedRegion: "eu",
+      actualRegion: "us",
+      correctApiUrl: undefined,
+    };
+    mockStrictRouting = false;
+
+    const res = await request("/api/v1/integrations/slack", { method: "DELETE" });
+
+    expect(res.status).toBe(200);
+  });
+
+  it("succeeds even when the catalog row is kill-switched (enabled=false)", async () => {
+    // Codex P2 — ops disables a Platform via plugin_catalog.enabled=false
+    // as a kill switch. Existing installs MUST still be tearable down,
+    // otherwise the disable strands credentials in chat_cache. The
+    // install-side helper would 404 here; the disconnect-side helper
+    // ignores `enabled`.
+    mockInternalQuery.mockImplementation(async (sql: string): Promise<unknown[]> => {
+      if (sql.includes("DELETE FROM workspace_plugins")) {
+        callOrder.push("workspace_plugins.delete");
+        return [];
+      }
+      if (sql.includes("FROM plugin_catalog")) {
+        // enabled: false — the kill-switched state.
+        return [{ id: "catalog:slack", slug: "slack" }];
+      }
+      if (sql.includes("FROM workspace_plugins")) {
+        callOrder.push("workspace_plugins.select");
+        return [{ team_id: "T-kill-switched" }];
+      }
+      return [];
+    });
+
+    const res = await request("/api/v1/integrations/slack", { method: "DELETE" });
+
+    expect(res.status).toBe(200);
+    expect(mockDeleteInstallation).toHaveBeenCalledWith("T-kill-switched");
+    expect(callOrder).toContain("workspace_plugins.delete");
+  });
+
   it("self-hosted mode=none falls back to the 'self-hosted' sentinel workspaceId for the install lookup", async () => {
     // Single-tenant self-hosted dev: no real auth identity, but the
     // install was written under the same sentinel by the install
@@ -627,7 +771,7 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
         return [];
       }
       if (sql.includes("FROM plugin_catalog")) {
-        return [{ slug: "slack", install_model: "oauth", enabled: true }];
+        return [{ id: "catalog:slack", slug: "slack", install_model: "oauth", enabled: true }];
       }
       if (sql.includes("FROM workspace_plugins")) {
         callOrder.push("workspace_plugins.select");
@@ -635,6 +779,8 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
       }
       return [];
     });
+    // mode=none bypasses the MFA gate (managed-only) and the SaaS misconfig
+    // branch (deploy mode stays self-hosted via the beforeEach reset).
     mockAuthResult = { authenticated: true, mode: "none", user: undefined };
 
     const res = await request("/api/v1/integrations/slack", { method: "DELETE" });

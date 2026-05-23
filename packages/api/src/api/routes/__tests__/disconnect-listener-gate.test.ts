@@ -40,6 +40,9 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
         id: "admin-1",
         role: "admin",
         activeOrganizationId: "ws-disconnect-gate",
+        // MFA enrolled — disconnect's `shouldRequireMfaForAuthResult`
+        // gate would 403 a managed admin without this claim.
+        claims: { twoFactorEnabled: true },
       },
     }),
   ),
@@ -47,6 +50,13 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   getClientIP: () => null,
   resetRateLimits: () => {},
   rateLimitCleanupTick: () => {},
+}));
+
+// Misrouting — no-op for this end-to-end test; the dedicated 421
+// branch lives in `integrations.test.ts`.
+mock.module("@atlas/api/lib/residency/misrouting", () => ({
+  detectMisrouting: () => Promise.resolve(null),
+  isStrictRoutingEnabled: () => false,
 }));
 
 // ── Logger — capture warn calls so we can assert silent skip ─────────
@@ -85,10 +95,12 @@ const state: InstallState = {
 };
 
 const mockInternalQuery = mock(async (sql: string, _params?: unknown[]): Promise<unknown[]> => {
-  // Catalog row lookup (used by both the install route's catalog check
-  // and the disconnect's catalog check).
-  if (sql.includes("FROM plugin_catalog\n      WHERE slug = $1")) {
-    return [{ slug: "slack", install_model: "oauth", enabled: true }];
+  // Catalog row lookup. The disconnect-side helper uses a leaner SELECT
+  // (no `enabled = true` filter) than the install-side helper, so match
+  // both by checking for the SELECT column list rather than the WHERE
+  // suffix. Return a row that satisfies both shapes.
+  if (sql.includes("FROM plugin_catalog") && sql.includes("WHERE slug = $1")) {
+    return [{ id: "catalog:slack", slug: "slack", install_model: "oauth", enabled: true }];
   }
   // Install-row config lookup for teamId resolution (DELETE handler).
   // The substring is specific enough to avoid colliding with the gate

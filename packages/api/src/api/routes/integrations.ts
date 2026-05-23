@@ -45,7 +45,15 @@ import { getConfig } from "@atlas/api/lib/config";
 import { PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
 import { getInstallHandler } from "@atlas/api/lib/integrations/install";
 import { deleteInstallation as deleteSlackInstallation } from "@atlas/api/lib/slack/store";
+import {
+  detectMisrouting,
+  isStrictRoutingEnabled,
+} from "@atlas/api/lib/residency/misrouting";
 import { adminAuthPreamble } from "./admin-auth";
+import {
+  MFA_ENROLLMENT_REQUIRED,
+  shouldRequireMfaForAuthResult,
+} from "./admin-mfa-required";
 import { validationHook } from "./validation-hook";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import type { WorkspaceId } from "@useatlas/types";
@@ -106,8 +114,9 @@ const disconnectRoute = createRoute({
     },
     400: { description: "Caller has no workspace binding", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Not authenticated", content: { "application/json": { schema: AuthErrorSchema } } },
-    403: { description: "Caller is not a workspace admin", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Caller is not a workspace admin, or MFA enrollment required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Platform not found in catalog, or no install for this workspace", content: { "application/json": { schema: ErrorSchema } } },
+    421: { description: "Misdirected request (strict region routing)", content: { "application/json": { schema: AuthErrorSchema } } },
     429: { description: "Rate limited", content: { "application/json": { schema: AuthErrorSchema } } },
     // 500 covers both paths: explicit preamble auth-dispatch failure
     // (`{ error, message, requestId }`) AND runHandler's classifyError
@@ -222,6 +231,33 @@ async function getInstallableCatalogRowBySlug(slug: string): Promise<{
     return null;
   }
   return { slug: row.slug, install_model: row.install_model as CatalogInstallModel };
+}
+
+/**
+ * Disconnect-side variant of {@link getInstallableCatalogRowBySlug} — same
+ * shape minus the `enabled = true` predicate. Disconnect must succeed even
+ * when ops has kill-switched a Platform via `plugin_catalog.enabled = false`:
+ * existing installs still need to be tearable down, otherwise the kill
+ * switch strands credentials in `chat_cache` with no admin-visible UI.
+ *
+ * Returns the row's canonical `id` so callers can join against
+ * `workspace_plugins.catalog_id` directly rather than synthesizing
+ * `catalog:${slug}` (which is the seeder's convention but isn't a contract
+ * the DB enforces).
+ */
+async function getCatalogRowBySlugForDisconnect(slug: string): Promise<{
+  id: string;
+  slug: string;
+} | null> {
+  const rows = await internalQuery<{ id: string; slug: string } & Record<string, unknown>>(
+    `SELECT id, slug
+       FROM plugin_catalog
+      WHERE slug = $1
+      LIMIT 1`,
+    [slug],
+  );
+  if (rows.length === 0) return null;
+  return { id: rows[0]!.id, slug: rows[0]!.slug };
 }
 
 // ---------------------------------------------------------------------------
@@ -444,6 +480,29 @@ integrations.openapi(disconnectRoute, async (c) =>
       return c.json(preamble.error, preamble.status, preamble.headers);
     }
 
+    // ── MFA gate ──────────────────────────────────────────────────
+    // The install endpoint sits in a sub-router that uses the leaner
+    // `adminAuthPreamble` (which skips MFA), but DELETE is destructive
+    // and the action is privileged enough that an admin without an
+    // enrolled second factor shouldn't be able to tear down a tenant
+    // install — mirrors the `mfaRequired` middleware applied by
+    // `createAdminRouter` to every other admin write surface.
+    if (shouldRequireMfaForAuthResult(preamble.authResult)) {
+      log.info(
+        { requestId, userId: preamble.authResult.user?.id, path: c.req.path },
+        "mfa_gate.blocked",
+      );
+      return c.json(
+        {
+          error: MFA_ENROLLMENT_REQUIRED,
+          message:
+            "Two-factor authentication is required for admin accounts. Enroll an authenticator app or passkey to continue.",
+          requestId,
+        },
+        403,
+      );
+    }
+
     // The disconnect endpoint can't fall back to a sentinel
     // workspaceId the way install does — without a real binding there
     // is no install row to find. Self-hosted no-auth dev still works
@@ -462,8 +521,38 @@ integrations.openapi(disconnectRoute, async (c) =>
     }
     const workspaceId = (orgIdRaw ?? "self-hosted") as WorkspaceId;
 
-    // ── Catalog lookup — must be a real, enabled Platform ─────────
-    const catalog = await getInstallableCatalogRowBySlug(platform);
+    // ── Region misrouting check (strict-routing only) ─────────────
+    // Same defense `adminAuth` runs on every admin write — without it
+    // a request reaching the wrong region's API could tear down stores
+    // in the wrong cell during a residency split-brain. `detectMisrouting`
+    // is a no-op for unauthenticated requests, self-hosted (no region
+    // configured), and matched-region requests, so this only fires on
+    // a real cross-region miss.
+    if (orgIdRaw) {
+      const misrouted = await detectMisrouting(orgIdRaw, requestId);
+      if (misrouted && isStrictRoutingEnabled()) {
+        // Omit `correctApiUrl` when the region-config didn't supply one —
+        // Hono's JSON serializer rejects `undefined` values in typed
+        // response bodies. The expectedRegion + actualRegion still give
+        // the caller enough to act.
+        const body: Record<string, unknown> = {
+          error: "misdirected_request",
+          message: `This request should be directed to the ${misrouted.expectedRegion} region API.`,
+          expectedRegion: misrouted.expectedRegion,
+          actualRegion: misrouted.actualRegion,
+          requestId,
+        };
+        if (misrouted.correctApiUrl) body.correctApiUrl = misrouted.correctApiUrl;
+        return c.json(body, 421);
+      }
+    }
+
+    // ── Catalog lookup — accepts disabled platforms ───────────────
+    // Unlike install, disconnect must succeed even when ops has
+    // kill-switched a Platform via `plugin_catalog.enabled = false` —
+    // otherwise the kill switch strands existing installs with no
+    // admin-visible UI to clear their credentials.
+    const catalog = await getCatalogRowBySlugForDisconnect(platform);
     if (!catalog) {
       return c.json({ error: "not_found", message: `Unknown platform "${platform}"`, requestId }, 404);
     }
@@ -482,9 +571,10 @@ integrations.openapi(disconnectRoute, async (c) =>
     // ── Resolve teamId from the install row ───────────────────────
     // `workspace_plugins.config` is JSONB; the Slack OAuth install
     // handler writes `{ team_id, team_name, bot_user_id, scopes, app_id }`.
-    // Catalog id format is `catalog:<slug>` — matches `SLACK_CATALOG_ID`
-    // in the install handler.
-    const catalogId = `catalog:${platform}`;
+    // The install row's `catalog_id` matches `plugin_catalog.id` (read
+    // from the catalog lookup above) — synthesizing `catalog:${slug}`
+    // would be brittle if the seeder's id-derivation ever changes.
+    const catalogId = catalog.id;
     const installRows = await internalQuery<InstallRowFromDb>(
       `SELECT config->>'team_id' AS team_id
          FROM workspace_plugins

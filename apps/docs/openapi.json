@@ -72387,7 +72387,7 @@
             }
           },
           "403": {
-            "description": "Caller is not a workspace admin",
+            "description": "Caller is not a workspace admin, or MFA enrollment required",
             "content": {
               "application/json": {
                 "schema": {
@@ -72418,6 +72418,17 @@
                     "error",
                     "message"
                   ]
+                }
+              }
+            }
+          },
+          "421": {
+            "description": "Misdirected request (strict region routing)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
                 }
               }
             }

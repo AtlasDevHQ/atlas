@@ -1,20 +1,19 @@
 "use client";
 
 /**
- * `FormInstallModal` — slice 7 of #2649 (issue #2660).
+ * `FormInstallModal` — renders the install form for
+ * `install_model: "form"` catalog entries. Fields are driven by the
+ * catalog row's `configSchema` JSONB so a new form-based integration
+ * (Webhook, Obsidian per #2661) needs no UI change — only an operator
+ * config edit + a server-side handler.
  *
- * Renders the install form for `install_model: "form"` catalog entries.
- * Fields are driven by the catalog row's `configSchema` JSONB so a new
- * form-based integration (Webhook, Obsidian, etc.) needs no UI change
- * — only an operator config edit + a server-side handler.
- *
- * Server-side validation is the source of truth (see
- * `EmailFormInstallHandler` in `lib/integrations/install/`). The
- * client-side Zod schema built from `configSchema` here is the
- * minimum needed to keep submit-button disable + field highlight
- * responsive; mismatches fall through to the server, which returns
- * `{ fieldErrors: { <key>: [...] } }` that we map onto react-hook-form's
- * setError so the modal lights up the offending inputs.
+ * Server-side validation is the source of truth (the per-Platform
+ * handler under `lib/integrations/install/`). The client-side Zod
+ * schema built from `configSchema` here is the minimum needed to keep
+ * the submit button responsive; mismatches fall through to the server,
+ * which returns `{ fieldErrors, formErrors }`. The modal surfaces the
+ * first field error as a root-level error message — per-field
+ * inline highlighting via `form.setError` is a follow-up.
  */
 
 import { useMemo, useState } from "react";
@@ -30,6 +29,13 @@ import {
 } from "@/components/form-dialog";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { getApiUrl } from "@/lib/api-url";
 
 /**
@@ -52,25 +58,52 @@ export interface FormFieldDescriptor {
 
 /**
  * Best-effort coerce of the catalog row's `configSchema` (typed as
- * `unknown` on the wire) to {@link FormFieldDescriptor}[]. Drops any
- * entries that don't have at minimum a `key: string` and one of the
- * supported `type` values — anything malformed is silently filtered so
- * a single bad seed row doesn't black-hole the entire modal.
+ * `unknown` on the wire) to {@link FormFieldDescriptor}[]. Drops
+ * entries that lack `key: string` or a supported `type` so a single
+ * malformed seed row doesn't black-hole the entire modal — but emits
+ * `console.warn` for each drop, with the offending payload, so the
+ * operator can see in the browser console why an expected field is
+ * missing from the form.
  */
 export function parseConfigSchema(raw: unknown): FormFieldDescriptor[] {
-  if (!Array.isArray(raw)) return [];
+  if (raw === null || raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    console.warn("[FormInstallModal] configSchema is not an array — rendering empty form", { raw });
+    return [];
+  }
   const fields: FormFieldDescriptor[] = [];
   for (const entry of raw) {
-    if (!entry || typeof entry !== "object") continue;
+    if (!entry || typeof entry !== "object") {
+      console.warn("[FormInstallModal] dropping non-object configSchema entry", { entry });
+      continue;
+    }
     const e = entry as Record<string, unknown>;
-    if (typeof e.key !== "string" || e.key.length === 0) continue;
+    if (typeof e.key !== "string" || e.key.length === 0) {
+      console.warn("[FormInstallModal] dropping configSchema entry without a string `key`", { entry });
+      continue;
+    }
     if (
       e.type !== "string" &&
       e.type !== "number" &&
       e.type !== "boolean" &&
       e.type !== "select"
     ) {
+      console.warn("[FormInstallModal] dropping configSchema entry with unknown `type`", {
+        key: e.key,
+        type: e.type,
+      });
       continue;
+    }
+    let options: string[] | undefined;
+    if (Array.isArray(e.options)) {
+      const filtered = e.options.filter((o): o is string => typeof o === "string");
+      if (filtered.length !== e.options.length) {
+        console.warn("[FormInstallModal] dropping non-string entries from configSchema `options`", {
+          key: e.key,
+          options: e.options,
+        });
+      }
+      options = filtered;
     }
     fields.push({
       key: e.key,
@@ -79,7 +112,7 @@ export function parseConfigSchema(raw: unknown): FormFieldDescriptor[] {
       description: typeof e.description === "string" ? e.description : undefined,
       required: e.required === true,
       secret: e.secret === true,
-      options: Array.isArray(e.options) ? (e.options.filter((o) => typeof o === "string") as string[]) : undefined,
+      options,
       default: e.default,
     });
   }
@@ -210,13 +243,17 @@ export function FormInstallModal({
       });
       if (!res.ok) {
         let message = `Install failed (${res.status})`;
+        let requestId: string | undefined;
         try {
           const body = (await res.json()) as {
             message?: string;
             error?: string;
+            requestId?: string;
             fieldErrors?: Record<string, string[] | undefined>;
+            formErrors?: string[];
           };
-          if (body.fieldErrors) {
+          requestId = body.requestId;
+          if (body.fieldErrors && Object.keys(body.fieldErrors).length > 0) {
             // Surface the first field-level error as the message —
             // FormDialog renders the root error banner; future
             // iteration can route fieldErrors back into individual
@@ -228,11 +265,21 @@ export function FormInstallModal({
             } else if (body.message) {
               message = body.message;
             }
+          } else if (body.formErrors && body.formErrors.length > 0) {
+            message = body.formErrors[0];
           } else if (body.message) {
             message = body.message;
           }
         } catch {
-          // Ignore JSON parse failure; fall through to status-only message.
+          // intentionally ignored: a non-JSON response body just
+          // means we fall through to the status-only message.
+        }
+        // Append the requestId tail so an admin can quote it to
+        // support when chasing a 5xx in the logs. Trim to a short
+        // prefix — the full UUID is in the JSON body for clients
+        // that want the lot.
+        if (requestId) {
+          message = `${message} (ref: ${requestId.slice(0, 8)})`;
         }
         // Throw — FormDialog's onSubmit wrapper catches and surfaces
         // as root-level error.
@@ -277,6 +324,22 @@ export function FormInstallModal({
                         onCheckedChange={(checked) => rhf.onChange(Boolean(checked))}
                         aria-label={field.label ?? field.key}
                       />
+                    ) : field.type === "select" && field.options && field.options.length > 0 ? (
+                      <Select
+                        value={(rhf.value as string | undefined) ?? ""}
+                        onValueChange={(v) => rhf.onChange(v)}
+                      >
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder={`Select ${field.label ?? field.key}`} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {field.options.map((option) => (
+                            <SelectItem key={option} value={option}>
+                              {option}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     ) : (
                       <Input
                         type={

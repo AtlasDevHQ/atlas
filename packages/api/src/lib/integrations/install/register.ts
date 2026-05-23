@@ -53,13 +53,35 @@ function resolvePublicApiUrl(): string | null {
 let alreadyRegistered = false;
 
 /**
- * Register every built-in OAuth install handler that has the env wiring
- * to run. Idempotent — safe to call multiple times.
+ * Register every built-in install handler that has the env wiring to
+ * run. Idempotent — safe to call multiple times.
+ *
+ * Per-handler env gates are independent: Email (form-based, customer-
+ * supplied SMTP creds) registers regardless of Slack env state, and
+ * each OAuth handler short-circuits on its own missing env without
+ * affecting others. Don't introduce ordering coupling between
+ * handlers — a deploy that runs Email but not Slack must still get
+ * Email.
  */
 export function registerBuiltinInstallHandlers(): void {
   if (alreadyRegistered) return;
   alreadyRegistered = true;
 
+  // ── Email (form-based, #2660) ──────────────────────────────────────
+  // No env-var gate: the customer admin supplies their own SMTP
+  // credentials at install time, so the handler is always available
+  // whenever the Email catalog row is enabled. The handler still
+  // requires the internal DB (workspace_plugins write target); the
+  // route layer enforces that. Registered FIRST so a deploy without
+  // any OAuth integrations still gets Email.
+  registerFormHandler("email", new EmailFormInstallHandler());
+  log.info("Registered EmailFormInstallHandler");
+
+  // ── Slack OAuth ───────────────────────────────────────────────────
+  registerSlackOAuthHandler();
+}
+
+function registerSlackOAuthHandler(): void {
   const clientId = process.env.SLACK_CLIENT_ID;
   const clientSecret = process.env.SLACK_CLIENT_SECRET;
   const publicApiUrl = resolvePublicApiUrl();
@@ -86,15 +108,6 @@ export function registerBuiltinInstallHandlers(): void {
     }),
   );
   log.info({ publicApiUrl }, "Registered SlackOAuthInstallHandler");
-
-  // ── Email (form-based, #2660) ──────────────────────────────────────
-  // No env-var gate: the customer admin supplies their own SMTP
-  // credentials at install time, so the handler is always available
-  // whenever the Email catalog row is enabled. The handler still
-  // requires the internal DB (workspace_plugins write target); the
-  // route layer enforces that.
-  registerFormHandler("email", new EmailFormInstallHandler());
-  log.info("Registered EmailFormInstallHandler");
 }
 
 /** @internal Test-only — resets the idempotency latch. */

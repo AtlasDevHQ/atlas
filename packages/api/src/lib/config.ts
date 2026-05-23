@@ -387,7 +387,20 @@ const CatalogEntrySchema = z.object({
       default: z.unknown().optional(),
     }).strict(),
   ).optional(),
-}).strict();
+}).strict().refine(
+  // Form-based entries are useless without a field list — the install
+  // route validates submitted form data against the declared
+  // `configSchema`. A missing/empty schema would accept any payload at
+  // install time. Reject at config-load so the misconfig surfaces in
+  // the Zod parse, not at the first install attempt. OAuth / static-bot
+  // entries don't carry a schema (no admin-facing form), so
+  // `configSchema` stays optional for them.
+  (entry) => entry.install_model !== "form" || (Array.isArray(entry.configSchema) && entry.configSchema.length > 0),
+  {
+    message: "configSchema is required (and non-empty) for catalog entries with install_model='form'",
+    path: ["configSchema"],
+  },
+);
 
 export type CatalogEntry = z.infer<typeof CatalogEntrySchema>;
 /** Input shape (defaults not yet applied) — what `atlas.config.ts` authors. */

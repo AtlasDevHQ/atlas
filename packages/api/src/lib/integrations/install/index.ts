@@ -50,6 +50,7 @@ export {
   EmailFormInstallHandler,
   EmailFormDataSchema,
   EmailFormValidationError,
+  FormInstallValidationError,
   type EmailFormData,
   type EmailFormInstallHandlerOptions,
 } from "./email-form-handler";

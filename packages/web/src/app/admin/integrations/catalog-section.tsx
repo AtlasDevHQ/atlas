@@ -1,15 +1,16 @@
 "use client";
 
 /**
- * Catalog card section for /admin/integrations (1.5.2 slice 3 — #2651).
+ * Catalog card section for /admin/integrations.
  *
  * Reads the workspace-scoped catalog from `GET /api/v1/integrations/catalog`
  * and renders one card per entry, grouped by type (`chat` vs `integration`)
- * per CONTEXT.md.
+ * per CONTEXT.md. Card action branches on `installModel`:
+ *   - `oauth` — links to `GET /:slug/install` (Slack today; Salesforce / Jira / etc. as they land)
+ *   - `form` — opens the {@link FormInstallModal} (Email today; Webhook + Obsidian per #2661)
+ *   - `static-bot` — render-inert until the handler ships in 1.5.3
  *
- * Read-only at this slice: the Connect / Manage / Disconnect buttons render
- * but are inert. Slice 5 (#2654) wires Connect; slice 6 (#2656) wires
- * Manage / Disconnect and removes the legacy per-platform blocks below.
+ * Manage / Disconnect still ship in #2656; they render but are inert.
  */
 
 import { useState } from "react";

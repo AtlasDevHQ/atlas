@@ -44,7 +44,7 @@ import { runHandler } from "@atlas/api/lib/effect/hono";
 import { getConfig } from "@atlas/api/lib/config";
 import { PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
 import { getInstallHandler } from "@atlas/api/lib/integrations/install";
-import { EmailFormValidationError } from "@atlas/api/lib/integrations/install/email-form-handler";
+import { FormInstallValidationError } from "@atlas/api/lib/integrations/install/email-form-handler";
 import { adminAuthPreamble, requireAdminAuth } from "./admin-auth";
 import { validationHook } from "./validation-hook";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -126,9 +126,22 @@ const installFormRoute = createRoute({
     },
     400: {
       description:
-        "Validation failure (per-field detail in `fieldErrors`), missing org binding, or " +
-        "platform is not form-installable.",
-      content: { "application/json": { schema: ErrorSchema } },
+        "Validation failure (per-field detail in `fieldErrors`, top-level issues in " +
+        "`formErrors`), missing org binding, or platform is not form-installable.",
+      content: {
+        "application/json": {
+          schema: ErrorSchema.extend({
+            // Optional per-field detail emitted on `invalid_form_data`
+            // (FormInstallValidationError) — keys are the catalog
+            // `configSchema` field names. `formErrors` covers
+            // schema-level issues (`.strict()` unrecognized keys,
+            // top-level `.refine` rejections) that don't bind to one
+            // field.
+            fieldErrors: z.record(z.string(), z.array(z.string())).optional(),
+            formErrors: z.array(z.string()).optional(),
+          }),
+        },
+      },
     },
     401: { description: "Not authenticated", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Caller is not a workspace admin", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -372,6 +385,15 @@ integrations.openapi(installFormRoute, async (c) =>
       return c.json({ error: "not_found", message: `Unknown platform "${platform}"`, requestId }, 404);
     }
     if (row.install_model !== "form") {
+      // A caller hitting `/install-form` on an OAuth or static-bot
+      // catalog row is either a UI bug (modal opened for the wrong
+      // card) or an attacker probing endpoints. Logging the rejection
+      // surfaces both. Mirrors the install + callback handlers'
+      // similar `log.warn` patterns.
+      log.warn(
+        { platform, install_model: row.install_model },
+        "Refused form install: platform's install_model is not 'form'",
+      );
       return c.json(
         { error: "wrong_install_model", message: `Platform "${platform}" uses install_model "${row.install_model}" — not form-installable via this route.`, requestId },
         400,
@@ -392,9 +414,6 @@ integrations.openapi(installFormRoute, async (c) =>
       );
     }
     if (handler.kind !== "form") {
-      // Catalog said form, dispatch returned a non-form handler — a
-      // config drift. Surface as 501-equivalent for the route's
-      // invariants. Mirrors the OAuth branch's defensive check.
       log.error({ platform, kind: handler.kind }, "Catalog install_model='form' but dispatch returned non-form handler");
       return c.json({ error: "handler_unavailable", message: "Install handler misconfigured.", requestId }, 501);
     }
@@ -409,13 +428,20 @@ integrations.openapi(installFormRoute, async (c) =>
       // UI modal can highlight the wrong inputs. Every other throw
       // bubbles up to `runHandler`'s `classifyError` for the standard
       // 5xx-with-requestId path.
-      if (err instanceof EmailFormValidationError) {
+      if (err instanceof FormInstallValidationError) {
+        // `fieldErrors` is `Readonly<Record<string, readonly string[]>>`
+        // — Hono's JSON serializer accepts it, but cast back to plain
+        // arrays at the response boundary so OpenAPI schema clients
+        // see a regular `string[]`.
+        const fieldErrors: Record<string, string[]> = {};
+        for (const [k, v] of Object.entries(err.fieldErrors)) fieldErrors[k] = [...v];
         return c.json(
           {
             error: "invalid_form_data",
             message: "One or more fields failed validation.",
             requestId,
-            fieldErrors: err.fieldErrors,
+            fieldErrors,
+            ...(err.formErrors.length > 0 ? { formErrors: [...err.formErrors] } : {}),
           },
           400,
         );

@@ -214,13 +214,14 @@ function diffEntry(
   if (row.installModel !== entry.install_model) diff.push("installModel");
   if (row.saasEligible !== entry.saas_eligible) diff.push("saasEligible");
 
-  // Stable structural compare via JSON canonicalization. The DB stores
-  // `config_schema` as JSONB (key order not preserved), so `===` on
-  // object refs would always diff. Re-serializing both sides through
-  // `JSON.stringify` gives a deterministic compare modulo key order —
-  // the declared schema's authoring shape is by-key, and the seeded
-  // value flows through `JSON.stringify` on write so the round-trip
-  // canonicalizes consistently.
+  // Stable structural compare via canonical JSON. The DB stores
+  // `config_schema` as JSONB and PostgreSQL normalizes object keys
+  // (length-then-lex in the on-disk binary form), so a naive
+  // `JSON.stringify` compare against an operator-authored entry will
+  // diff every boot — the author's key order won't match the round-
+  // tripped order. `canonicalConfigSchemaJson` sorts object keys
+  // recursively so both sides serialize identically regardless of
+  // input order.
   const wantConfigSchema = entry.configSchema ?? null;
   if (!sameConfigSchema(row.configSchema, wantConfigSchema)) diff.push("configSchema");
 
@@ -230,7 +231,29 @@ function diffEntry(
 function sameConfigSchema(a: unknown, b: unknown): boolean {
   if (a === null && b === null) return true;
   if (a === null || b === null) return false;
-  return JSON.stringify(a) === JSON.stringify(b);
+  return canonicalConfigSchemaJson(a) === canonicalConfigSchemaJson(b);
+}
+
+/**
+ * Serialize `value` with sorted object keys recursively, so two
+ * structurally-equal objects always produce identical strings. Arrays
+ * preserve order (array order is semantically meaningful for a
+ * field-list schema).
+ *
+ * Exported for tests so the seeder-test mock DB can emit values that
+ * match what PG would return after a real round-trip.
+ */
+export function canonicalConfigSchemaJson(value: unknown): string {
+  return JSON.stringify(value, (_, v) => {
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      const sorted: Record<string, unknown> = {};
+      for (const k of Object.keys(v as Record<string, unknown>).sort()) {
+        sorted[k] = (v as Record<string, unknown>)[k];
+      }
+      return sorted;
+    }
+    return v;
+  });
 }
 
 /**

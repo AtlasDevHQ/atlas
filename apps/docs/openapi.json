@@ -72434,7 +72434,7 @@
             }
           },
           "500": {
-            "description": "Auth dispatch error",
+            "description": "Internal error (auth dispatch or teardown)",
             "content": {
               "application/json": {
                 "schema": {

@@ -70,18 +70,27 @@ mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   checkIPAllowlist: () => Effect.succeed({ allowed: true }),
 }));
 
+// Config — only `deployMode` matters for these tests (the SaaS-misconfig
+// 400 branch reads it). Default to self-hosted; individual tests flip
+// to "saas" via `mockDeployMode`.
+let mockDeployMode: "saas" | "self-hosted" | undefined = "self-hosted";
+
+mock.module("@atlas/api/lib/config", () => ({
+  getConfig: () => ({ deployMode: mockDeployMode }),
+}));
+
 // ---------------------------------------------------------------------------
 // Internal DB — the catalog row lookup hits `internalQuery`. Default
 // response is the Slack OAuth row; individual tests override via
 // `mockInternalQuery.mockImplementationOnce` for the "platform not
 // found" path.
 //
-// The DELETE handler (slice 7, #2656) makes additional `internalQuery`
-// calls — a workspace_plugins SELECT to resolve teamId, then a
-// workspace_plugins DELETE. Per-test setup overrides the default impl
-// to keep those paths separable; `callOrder` records each call's
-// "kind" (catalog SELECT / install SELECT / install DELETE) so the
-// ADR-0003 teardown-order assertion is robust.
+// The DELETE handler makes additional `internalQuery` calls — a
+// workspace_plugins SELECT to resolve teamId, then a workspace_plugins
+// DELETE. Per-test setup overrides the default impl to keep those
+// paths separable; `callOrder` records each call's "kind" (catalog
+// SELECT / install SELECT / install DELETE) so the ADR-0003
+// teardown-order assertion is robust.
 // ---------------------------------------------------------------------------
 
 const mockInternalQuery = mock(async (_sql: string, _params?: unknown[]): Promise<unknown[]> => [
@@ -241,6 +250,7 @@ beforeEach(() => {
       activeOrganizationId: "ws-1",
     },
   };
+  mockDeployMode = "self-hosted";
 });
 
 // ---------------------------------------------------------------------------
@@ -417,7 +427,7 @@ describe("GET /api/v1/integrations/slack/callback — non-OAuth-exchange failure
 });
 
 // ---------------------------------------------------------------------------
-// DELETE /api/v1/integrations/:platform — slice 7 (#2656) disconnect.
+// DELETE /api/v1/integrations/:platform — disconnect flow.
 //
 // Two-store teardown per ADR-0003: `chat_cache:<platform>:installation:<teamId>`
 // is dropped BEFORE the `workspace_plugins` row, so credentials never
@@ -459,15 +469,19 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
     const res = await request("/api/v1/integrations/slack", { method: "DELETE" });
 
     expect(res.status).toBe(200);
-    // Two-store teardown order: install lookup, then chat_cache, then
-    // workspace_plugins DELETE. The SELECT can interleave with the
-    // catalog SELECT, so we only assert relative ordering between the
-    // two writes.
-    const cacheIdx = callOrder.indexOf("chat_cache.delete");
-    const installIdx = callOrder.indexOf("workspace_plugins.delete");
-    expect(cacheIdx).toBeGreaterThanOrEqual(0);
-    expect(installIdx).toBeGreaterThanOrEqual(0);
-    expect(cacheIdx).toBeLessThan(installIdx);
+    // Two-store teardown: chat_cache MUST happen before workspace_plugins.
+    // The SELECTs can interleave with the catalog lookup, so filter the
+    // spool down to just the teardown writes and assert the exact
+    // sequence. A future refactor that swapped the two would fail this
+    // even if both calls still succeeded — that's the ADR-0003
+    // load-bearing invariant the comment in `integrations.ts` claims.
+    const teardownSequence = callOrder.filter(
+      (c) => c === "chat_cache.delete" || c === "workspace_plugins.delete",
+    );
+    expect(teardownSequence).toEqual([
+      "chat_cache.delete",
+      "workspace_plugins.delete",
+    ]);
     expect(mockDeleteInstallation).toHaveBeenCalledWith("T-abc-123");
   });
 
@@ -538,5 +552,99 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
     expect(res.status).toBe(403);
     expect(mockDeleteInstallation).not.toHaveBeenCalled();
     expect(callOrder).not.toContain("workspace_plugins.delete");
+  });
+
+  it("returns 501 for a catalog-enabled platform whose disconnect path isn't wired", async () => {
+    // Future-Platform safety net: catalog returns an enabled `teams` row
+    // (a real Platform), but `deleteCredentialStore` only dispatches
+    // `slack` today. The 501 must short-circuit before either store
+    // is touched — silently 404-ing or falling into the slack branch
+    // would both be bugs.
+    mockInternalQuery.mockImplementation(async (sql: string): Promise<unknown[]> => {
+      if (sql.includes("FROM plugin_catalog")) {
+        return [{ slug: "teams", install_model: "oauth", enabled: true }];
+      }
+      return [];
+    });
+
+    const res = await request("/api/v1/integrations/teams", { method: "DELETE" });
+
+    expect(res.status).toBe(501);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("disconnect_unavailable");
+    expect(mockDeleteInstallation).not.toHaveBeenCalled();
+    expect(callOrder).not.toContain("workspace_plugins.delete");
+  });
+
+  it("returns 400 missing_org_binding when managed-auth user has no active org", async () => {
+    stageSlackInstallLookup("T-abc-123");
+    mockAuthResult = {
+      authenticated: true,
+      mode: "managed",
+      user: { id: "admin-1", role: "admin" }, // no activeOrganizationId
+    };
+
+    const res = await request("/api/v1/integrations/slack", { method: "DELETE" });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("missing_org_binding");
+    expect(mockDeleteInstallation).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 missing_org_binding when SaaS deploy lands a mode=none request (misconfig)", async () => {
+    // SaaS pins managed auth in config, so a mode=none branch reaching
+    // this endpoint means auth middleware regressed. Fail closed —
+    // letting an unbound disconnect through would tear down a shared
+    // sentinel-workspace install. Mirrors the F-04 install-hijack
+    // defense on the install side.
+    stageSlackInstallLookup("T-abc-123");
+    mockDeployMode = "saas";
+    mockAuthResult = {
+      authenticated: true,
+      mode: "none",
+      user: undefined,
+    };
+
+    const res = await request("/api/v1/integrations/slack", { method: "DELETE" });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("missing_org_binding");
+    expect(mockDeleteInstallation).not.toHaveBeenCalled();
+  });
+
+  it("self-hosted mode=none falls back to the 'self-hosted' sentinel workspaceId for the install lookup", async () => {
+    // Single-tenant self-hosted dev: no real auth identity, but the
+    // install was written under the same sentinel by the install
+    // handler, so the SELECT must use it. If a future refactor flipped
+    // to e.g. an empty string here, the disconnect would silently 404.
+    const capturedParams: unknown[][] = [];
+    mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]): Promise<unknown[]> => {
+      if (params) capturedParams.push(params);
+      if (sql.includes("DELETE FROM workspace_plugins")) {
+        callOrder.push("workspace_plugins.delete");
+        return [];
+      }
+      if (sql.includes("FROM plugin_catalog")) {
+        return [{ slug: "slack", install_model: "oauth", enabled: true }];
+      }
+      if (sql.includes("FROM workspace_plugins")) {
+        callOrder.push("workspace_plugins.select");
+        return [{ team_id: "T-self-hosted" }];
+      }
+      return [];
+    });
+    mockAuthResult = { authenticated: true, mode: "none", user: undefined };
+
+    const res = await request("/api/v1/integrations/slack", { method: "DELETE" });
+
+    expect(res.status).toBe(200);
+    // Find the SELECT that resolved the install row and verify it was
+    // keyed on the sentinel workspaceId.
+    const selectParams = capturedParams.find(
+      (p) => Array.isArray(p) && p[0] === "self-hosted" && p[1] === "catalog:slack",
+    );
+    expect(selectParams).toBeDefined();
   });
 });

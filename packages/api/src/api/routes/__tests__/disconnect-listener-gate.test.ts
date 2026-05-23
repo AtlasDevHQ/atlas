@@ -1,5 +1,5 @@
 /**
- * End-to-end disconnect → listener-gate contract test (#2656).
+ * End-to-end disconnect → listener-gate contract test.
  *
  * The disconnect flow's load-bearing promise is:
  *
@@ -22,7 +22,7 @@
  * mocked.
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
 import { Context, Effect, Layer } from "effect";
 import {
   MockInternalDB,
@@ -199,8 +199,6 @@ app.route("/api/v1/integrations", integrations);
 function request(path: string, init?: RequestInit) {
   return app.request(`http://localhost${path}`, init);
 }
-
-beforeAll(() => {});
 
 afterAll(() => {
   process.env = { ...ORIGINAL_ENV };

@@ -21,9 +21,9 @@ import type {
 } from "@useatlas/types";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
-// 1.5.2 slice 3 (#2651) — catalog-driven card surface above the legacy
-// per-platform admin chrome. The legacy blocks below will be lifted out
-// in slice 6 (#2656) once Disconnect lands on the catalog flow.
+// Catalog-driven card surface, rendered above the legacy per-platform
+// admin chrome. The legacy blocks below stay until a follow-up lifts
+// install / disconnect onto the catalog flow.
 import { CatalogSection } from "./catalog-section";
 import {
   CompactRow,
@@ -119,9 +119,9 @@ export default function IntegrationsPage() {
     invalidates: refetch,
   });
 
-  // Slack OAuth-install disconnect — slice 7 (#2656). Distinct path
-  // from the BYOT mutation above because OAuth-installed workspaces
-  // own a `workspace_plugins` row that the BYOT teardown
+  // Slack OAuth-install disconnect. Distinct path from the BYOT
+  // mutation above because OAuth-installed workspaces own a
+  // `workspace_plugins` row that the BYOT teardown
   // (`deleteInstallationByOrg`) wouldn't remove. The catalog-driven
   // endpoint runs the two-store ADR-0003 teardown in the correct order.
   const slackOAuthDisconnectMutation = useAdminMutation<{ message: string }>({
@@ -255,6 +255,11 @@ export default function IntegrationsPage() {
     const result = await slackOAuthDisconnectMutation.mutate({});
     if (result.ok) {
       toast.success("Slack disconnected");
+    } else {
+      // The error is also surfaced inline via `oauthDisconnectError` →
+      // `<InlineError>`, but firing a toast matches the rest of the page's
+      // mutation handlers so admins get parity feedback on failure.
+      toast.error(result.error.message || "Couldn't disconnect Slack");
     }
   }
 
@@ -431,9 +436,9 @@ export default function IntegrationsPage() {
       </header>
 
       <ErrorBoundary>
-        {/* Slice 3 (#2651) — read-only catalog cards. The legacy
-            per-platform admin chrome below stays put until slice 6
-            (#2656) lifts the install / disconnect flow onto the catalog. */}
+        {/* Read-only catalog cards. The legacy per-platform admin chrome
+            below stays until a follow-up lifts install / disconnect onto
+            the catalog flow. */}
         <CatalogSection />
         <AdminContentWrapper
           loading={loading}

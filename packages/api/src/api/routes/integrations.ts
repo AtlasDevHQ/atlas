@@ -109,7 +109,12 @@ const disconnectRoute = createRoute({
     403: { description: "Caller is not a workspace admin", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Platform not found in catalog, or no install for this workspace", content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate limited", content: { "application/json": { schema: AuthErrorSchema } } },
-    500: { description: "Auth dispatch error", content: { "application/json": { schema: AuthErrorSchema } } },
+    // 500 covers both paths: explicit preamble auth-dispatch failure
+    // (`{ error, message, requestId }`) AND runHandler's classifyError
+    // mapping of an unexpected teardown error (same shape). AuthErrorSchema
+    // is permissive enough to cover both — ErrorSchema would force a TS
+    // mismatch on the preamble shape's wider Record<string, unknown>.
+    500: { description: "Internal error (auth dispatch or teardown)", content: { "application/json": { schema: AuthErrorSchema } } },
     501: { description: "Disconnect not implemented for this Platform", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -385,7 +390,7 @@ integrations.openapi(callbackRoute, async (c) =>
 );
 
 // ---------------------------------------------------------------------------
-// DELETE /:platform — slice 7 (#2656) disconnect
+// DELETE /:platform — disconnect a Platform install
 //
 // Tears down a Platform install in two stores in the order mandated by
 // ADR-0003:
@@ -395,16 +400,20 @@ integrations.openapi(callbackRoute, async (c) =>
 //
 // Order is load-bearing: the credential row MUST go first. If the
 // workspace_plugins delete then fails the install row dangles, but
-// the listener gate already returns false for an install whose
-// credentials can't be resolved downstream — the workspace is safe.
-// The reverse order opens the failure mode where the install row is
-// gone but a bot token is still resident in chat_cache with no
-// admin-visible UI to reach it.
+// the next event's downstream credential resolution misses on the
+// already-cleared chat_cache row and the listener short-circuits
+// silently (the WorkspaceInstallGate itself only joins the install +
+// catalog + organization tables — it does NOT check credentials, so
+// it returns true on the dangling row; the silent skip happens one
+// step later in the per-event handler). The workspace is safe either
+// way. The reverse order opens the failure mode where the install
+// row is gone but a bot token is still resident in chat_cache with
+// no admin-visible UI to reach it.
 //
 // Per-Platform credential teardown is dispatched by slug — currently
-// only `slack` is wired (slice 5 is the only Platform with an OAuth
-// install handler). Other slugs surface 501 rather than a no-op so
-// the admin sees a real error if they try.
+// only `slack` is wired (it's the only Platform with an OAuth install
+// handler today). Other slugs surface 501 rather than a no-op so the
+// admin sees a real error if they try.
 // ---------------------------------------------------------------------------
 
 interface InstallRowFromDb extends Record<string, unknown> {
@@ -471,10 +480,10 @@ integrations.openapi(disconnectRoute, async (c) =>
     }
 
     // ── Resolve teamId from the install row ───────────────────────
-    // `workspace_plugins.config` is JSONB; the seeder writes
-    // `{ team_id, team_name, bot_user_id, scopes, app_id }` for Slack
-    // installs (slice 5). Catalog id format is `catalog:<slug>` —
-    // matches `SLACK_CATALOG_ID` in the install handler.
+    // `workspace_plugins.config` is JSONB; the Slack OAuth install
+    // handler writes `{ team_id, team_name, bot_user_id, scopes, app_id }`.
+    // Catalog id format is `catalog:<slug>` — matches `SLACK_CATALOG_ID`
+    // in the install handler.
     const catalogId = `catalog:${platform}`;
     const installRows = await internalQuery<InstallRowFromDb>(
       `SELECT config->>'team_id' AS team_id
@@ -497,10 +506,12 @@ integrations.openapi(disconnectRoute, async (c) =>
     //    sees a 500 with a requestId and the install row is preserved
     //    so they can retry.
     // 2) workspace_plugins SECOND. A failure here leaves the install
-    //    row dangling but credentials are already gone — the listener
-    //    gate's downstream credential lookup fails on the next event,
-    //    so events from this team are silently skipped. Acceptable
-    //    failed state per ADR-0003 "Consequences > For uninstall."
+    //    row dangling but credentials are already gone — the listener's
+    //    per-event credential lookup misses on the cleared chat_cache
+    //    row and the event is silently skipped (the gate itself returns
+    //    true on the dangling row, but the downstream lookup fails one
+    //    step later). Acceptable failed state per ADR-0003
+    //    "Consequences > For uninstall."
     await deleteCredentialStore(platform, teamId);
 
     await internalQuery(

@@ -69,7 +69,8 @@ Rejected because:
 **For uninstall** — on disconnect:
 1. DELETE `chat_cache:<platform>:installation:<T>` for that team — credentials FIRST
 2. DELETE `workspace_plugins` row — install metadata SECOND
-3. Order is load-bearing: credentials must not outlive the install record. If `workspace_plugins` went first and the credential delete then failed, the bot token would still be sitting in `chat_cache` with no admin-visible UI to reach it. The reverse failure mode (install row dangles, credentials gone) is recoverable — the listener gate's downstream credential lookup fails on the next event and silently skips.
+3. Order is load-bearing: credentials must not outlive the install record. If `workspace_plugins` went first and the credential delete then failed, the bot token would still be sitting in `chat_cache` with no admin-visible UI to reach it. The reverse failure mode (install row dangles, credentials gone) is recoverable — the listener's per-event credential lookup misses on the cleared `chat_cache` row and the event is silently skipped (the gate itself returns true on the dangling row; the silent skip happens one step later in the per-event handler).
+4. **No transaction** — unlike install, where the two stores can race in either direction with the same atomicity caveat, uninstall deliberately runs the two deletes sequentially. The asymmetric failure mode (step 2 fails after step 1 succeeds → install row dangles, harmless) is acceptable; the symmetric one a transaction would enable (whole rollback restores the credentials) would re-create the credential-leak failure mode the order was chosen to prevent.
 
 ## References
 

@@ -40,7 +40,7 @@ export default function SecurityPage() {
     <div className="p-6">
       <div className="mx-auto mb-8 flex max-w-2xl items-end justify-between gap-4">
         <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight">Security</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">My Security</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Two-factor authentication for {user?.email ?? "your account"}.
           </p>

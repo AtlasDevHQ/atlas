@@ -1,6 +1,6 @@
 import { parseAsString, parseAsStringLiteral } from "nuqs"
 
-const auditTabs = ["log", "analytics", "retention"] as const
+const auditTabs = ["log", "actions", "analytics", "retention"] as const
 
 // `actorKind` is parsed as a string-literal union so an invalid
 // `?actorKind=robot` reverts to "" — the route also rejects invalid

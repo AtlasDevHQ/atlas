@@ -24,6 +24,7 @@ import { ChangePasswordDialog } from "./change-password-dialog";
 import { MfaGateProvider, useMfaGate } from "./mfa-gate-context";
 import { MfaEnrollmentDialog } from "./mfa-enrollment-dialog";
 import { usePasswordStatus } from "@/ui/hooks/use-password-status";
+import { GlobalCommandPalette } from "@/ui/components/palette";
 
 /**
  * Routes that must render normally even when the admin is not yet enrolled
@@ -191,6 +192,14 @@ function AdminLayoutInner({ children }: { children: ReactNode }) {
         onComplete={() => { /* Dialog handles its own state */ }}
       />
       <MfaEnrollmentDialog />
+      {/*
+        Cmd+K palette for admin surfaces. Chat surfaces mount their own
+        copy (via workspace-shell) so the shortcut works app-wide; admin
+        routes don't load workspace-shell, so we mount the palette here.
+        Routes/settings come from the registry; no extra groups needed
+        outside chat.
+      */}
+      <GlobalCommandPalette />
     </SidebarProvider>
   );
 }

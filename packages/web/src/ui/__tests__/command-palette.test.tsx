@@ -1,6 +1,34 @@
 import { describe, expect, test, afterEach, mock } from "bun:test";
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { CommandPalette } from "../components/chat/command-palette";
+
+// Module mocks must be set up before importing the component under test —
+// otherwise the real `next/navigation` runs at import time and the
+// `AppRouterContext` invariant throws during render.
+mock.module("next/navigation", () => ({
+  usePathname: () => "/",
+  useRouter: () => ({ push: () => {}, replace: () => {}, back: () => {} }),
+  useSearchParams: () => new URLSearchParams(),
+}));
+
+mock.module("@/ui/hooks/use-platform-admin-guard", () => ({
+  useUserRole: () => "admin",
+  usePlatformAdminGuard: () => ({ blocked: false }),
+}));
+
+mock.module("@/ui/hooks/use-deploy-mode", () => ({
+  useDeployMode: () => ({ deployMode: "self-hosted", loading: false }),
+}));
+
+mock.module("@/ui/hooks/use-admin-fetch", () => ({
+  useAdminFetch: () => ({ data: null, loading: false, error: null, refetch: () => {} }),
+  friendlyError: (e: unknown) => (e instanceof Error ? e.message : String(e)),
+}));
+
+mock.module("@/ui/components/tour/guided-tour", () => ({
+  useTourContext: () => null,
+}));
+
+const { CommandPalette } = await import("../components/chat/command-palette");
 
 function noop() {}
 
@@ -19,7 +47,6 @@ function renderPalette() {
 describe("CommandPalette keyboard contracts", () => {
   afterEach(() => {
     cleanup();
-    mock.restore();
   });
 
   test("⌘K toggles the dialog open and closed", async () => {
@@ -67,8 +94,6 @@ describe("CommandPalette keyboard contracts", () => {
   });
 
   test("? does NOT open the palette while typing in an input", async () => {
-    // Mount an input alongside the palette so the keydown event has a
-    // realistic field target — the chat input is the canonical case.
     const { container } = render(
       <div>
         <input data-testid="chat-input" />
@@ -89,7 +114,6 @@ describe("CommandPalette keyboard contracts", () => {
       fireEvent.keyDown(input, { key: "?" });
     });
 
-    // Give React a tick to render any state change, then assert nothing opened.
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });

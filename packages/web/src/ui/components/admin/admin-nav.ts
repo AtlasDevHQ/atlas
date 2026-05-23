@@ -67,7 +67,7 @@ export const navGroups: NavGroup[] = [
     title: "Security",
     icon: Shield,
     items: [
-      { href: "/admin/account-security", label: "MFA & Sessions" },
+      { href: "/admin/account-security", label: "My Security" },
       { href: "/admin/sso", label: "SSO" },
       { href: "/admin/scim", label: "SCIM" },
       { href: "/admin/ip-allowlist", label: "IP Allowlist" },
@@ -79,12 +79,9 @@ export const navGroups: NavGroup[] = [
     title: "Monitoring",
     icon: BarChart3,
     items: [
-      { href: "/admin/audit", label: "Audit Log" },
-      { href: "/admin/action-log", label: "Admin Action Log" },
-      { href: "/admin/token-usage", label: "Token Usage" },
+      { href: "/admin/audit", label: "Audit" },
       { href: "/admin/usage", label: "Usage" },
       { href: "/admin/scheduled-tasks", label: "Scheduled Tasks", prefixMatch: true },
-      { href: "/admin/scheduler/tasks", label: "Scheduler Tasks" },
     ],
   },
   {
@@ -98,8 +95,12 @@ export const navGroups: NavGroup[] = [
       { href: "/admin/custom-domain", label: "Custom Domain" },
       { href: "/admin/sandbox", label: "Sandbox" },
       { href: "/admin/residency", label: "Data Residency" },
+      // Moved out of Monitoring to break the "Scheduled Tasks" /
+      // "Scheduler Tasks" label collision. This page lists system-only
+      // jobs (e.g. BYOT catalog refresh), not user-created automations
+      // — Configuration is where it belongs.
+      { href: "/admin/scheduler/tasks", label: "Background Jobs" },
       { href: "/admin/settings", label: "Settings" },
-      { href: "/admin/settings/mcp", label: "MCP" },
     ],
   },
   {

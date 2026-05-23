@@ -24,7 +24,8 @@ import {
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
-import { ScrollText, Search, AlertTriangle, Database, BarChart3, Download, X, Shield } from "lucide-react";
+import { ScrollText, Search, AlertTriangle, Database, BarChart3, Download, X, Shield, ClipboardList } from "lucide-react";
+import { AdminActionsTab } from "../action-log/tab";
 import { RetentionPanel } from "./retention-panel";
 import { AdminActionRetentionPanel } from "./admin-action-retention-panel";
 import { Separator } from "@/components/ui/separator";
@@ -292,14 +293,14 @@ export default function AuditPage() {
       <ErrorBoundary>
       <Tabs
         value={tab}
-        onValueChange={(v) => setParams({ tab: v as "log" | "analytics" | "retention" })}
+        onValueChange={(v) => setParams({ tab: v as "log" | "actions" | "analytics" | "retention" })}
       >
         {/* Header */}
         <div className="mb-6">
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-2xl font-bold tracking-tight">Audit Log</h1>
-              <p className="text-sm text-muted-foreground">View query history and access logs</p>
+              <h1 className="text-2xl font-bold tracking-tight">Audit</h1>
+              <p className="text-sm text-muted-foreground">Query history and admin mutations across this workspace.</p>
             </div>
             <div className="flex items-center gap-2">
               {tab === "log" && (
@@ -317,7 +318,11 @@ export default function AuditPage() {
               <TabsList>
                 <TabsTrigger value="log">
                   <ScrollText className="mr-1.5 size-3.5" />
-                  Log
+                  Queries
+                </TabsTrigger>
+                <TabsTrigger value="actions">
+                  <ClipboardList className="mr-1.5 size-3.5" />
+                  Admin actions
                 </TabsTrigger>
                 <TabsTrigger value="analytics">
                   <BarChart3 className="mr-1.5 size-3.5" />
@@ -546,6 +551,10 @@ export default function AuditPage() {
               </DataTableToolbar>
             </DataTable>
           </AdminContentWrapper>
+        </TabsContent>
+
+        <TabsContent value="actions" className="space-y-6 pt-6">
+          <AdminActionsTab />
         </TabsContent>
 
         <TabsContent value="retention" className="space-y-8 pt-6">

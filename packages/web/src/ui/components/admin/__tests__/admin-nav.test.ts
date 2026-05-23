@@ -21,19 +21,21 @@ describe("resolveAdminBreadcrumb", () => {
     });
   });
 
-  test("#2176 regression — /admin/settings does not collapse /admin/settings/mcp", () => {
-    // /admin/settings and /admin/settings/mcp are sibling leaves; if the
-    // parent ever opts into prefixMatch this test fails — that's exactly
-    // the bug #2176 shipped.
+  test("#2176 regression — /admin/settings does not opt into prefixMatch", () => {
+    // The bug #2176 shipped came from a parent route collapsing its
+    // children's breadcrumbs when prefixMatch was enabled accidentally. The
+    // MCP child page that used to be the sibling has since been folded
+    // into /admin/settings as a section (May 2026 consolidation), so we
+    // assert the same invariant in sibling-agnostic form: an arbitrary
+    // child path under /admin/settings must NOT resolve to the Settings
+    // entry — only the exact path does.
     expect(resolveAdminBreadcrumb("/admin/settings")).toEqual({
       kind: "page",
       section: "Configuration",
       page: "Settings",
     });
-    expect(resolveAdminBreadcrumb("/admin/settings/mcp")).toEqual({
-      kind: "page",
-      section: "Configuration",
-      page: "MCP",
+    expect(resolveAdminBreadcrumb("/admin/settings/anything-else")).toEqual({
+      kind: "overview",
     });
   });
 

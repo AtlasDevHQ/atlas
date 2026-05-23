@@ -52,9 +52,9 @@ export default function SchedulerTasksPage() {
   return (
     <div className="p-6">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">Scheduler Tasks</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Background Jobs</h1>
         <p className="text-sm text-muted-foreground">
-          System-level background jobs. For user-created agent tasks, see{" "}
+          System-level recurring jobs. For user-created agent automations, see{" "}
           <a href="/admin/scheduled-tasks" className="underline">Scheduled Tasks</a>.
         </p>
       </div>

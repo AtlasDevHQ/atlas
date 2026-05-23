@@ -44,12 +44,13 @@ import { runHandler } from "@atlas/api/lib/effect/hono";
 import { getConfig } from "@atlas/api/lib/config";
 import { PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
 import { getInstallHandler } from "@atlas/api/lib/integrations/install";
+import { FormInstallValidationError } from "@atlas/api/lib/integrations/install/email-form-handler";
 import { deleteInstallation as deleteSlackInstallation } from "@atlas/api/lib/slack/store";
 import {
   detectMisrouting,
   isStrictRoutingEnabled,
 } from "@atlas/api/lib/residency/misrouting";
-import { adminAuthPreamble } from "./admin-auth";
+import { adminAuthPreamble, requireAdminAuth } from "./admin-auth";
 import {
   MFA_ENROLLMENT_REQUIRED,
   shouldRequireMfaForAuthResult,
@@ -92,6 +93,105 @@ const installRoute = createRoute({
   },
 });
 
+const installFormRoute = createRoute({
+  method: "post",
+  path: "/{platform}/install-form",
+  tags: ["Integrations"],
+  summary: "Submit form-based install (no OAuth)",
+  description:
+    "Persists the submitted credentials + install metadata for an `install_model: \"form\"` " +
+    "catalog entry (#2660 — Email, future Webhook / Obsidian). Validates the JSON body " +
+    "against the per-Platform schema, encrypts secret-marked fields at rest, and upserts the " +
+    "workspace_plugins row. 400 with field-level detail on validation failure; the route " +
+    "rejects requests pointed at non-form catalog entries with 400 (`wrong_install_model`).",
+  request: {
+    params: z.object({
+      platform: z.string().openapi({ description: "Catalog slug (e.g. 'email')" }),
+    }),
+    body: {
+      content: {
+        "application/json": {
+          schema: z.record(z.string(), z.unknown()).openapi({
+            description:
+              "Form data shaped to the catalog entry's `configSchema`. Validated " +
+              "server-side by the per-Platform handler — never trust the client.",
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Install record + credential persisted",
+      content: {
+        "application/json": {
+          schema: z.object({
+            installed: z.literal(true),
+            platform: z.string(),
+            installId: z.string(),
+          }),
+        },
+      },
+    },
+    400: {
+      description:
+        "Validation failure (per-field detail in `fieldErrors`, top-level issues in " +
+        "`formErrors`), missing org binding, or platform is not form-installable.",
+      content: {
+        "application/json": {
+          schema: ErrorSchema.extend({
+            // Optional per-field detail emitted on `invalid_form_data`
+            // (FormInstallValidationError) — keys are the catalog
+            // `configSchema` field names. `formErrors` covers
+            // schema-level issues (`.strict()` unrecognized keys,
+            // top-level `.refine` rejections) that don't bind to one
+            // field.
+            fieldErrors: z.record(z.string(), z.array(z.string())).optional(),
+            formErrors: z.array(z.string()).optional(),
+          }),
+        },
+      },
+    },
+    401: { description: "Not authenticated", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Caller is not a workspace admin", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Platform not found in catalog", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limited", content: { "application/json": { schema: AuthErrorSchema } } },
+    501: { description: "Form handler not registered", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const callbackRoute = createRoute({
+  method: "get",
+  path: "/{platform}/callback",
+  tags: ["Integrations"],
+  summary: "Platform OAuth callback",
+  description:
+    "Handles the OAuth callback from the Platform: verifies the state token, exchanges the " +
+    "code for credentials, and writes the install record + per-Platform credential. Returns " +
+    "a 302 to /admin/integrations on success.",
+  request: {
+    params: z.object({
+      platform: z.string().openapi({ description: "Catalog slug" }),
+    }),
+    query: z.object({
+      code: z.string().openapi({ description: "OAuth authorization code" }),
+      state: z.string().openapi({ description: "Signed state token from install" }),
+    }),
+  },
+  responses: {
+    302: {
+      description:
+        "Install complete or failed in a recoverable way — redirected to /admin/integrations. " +
+        "Success: `?installed=<platform>`. Credential write missed: `?reconnect=<platform>`. " +
+        "Hard failure (browser caller): `?error=<platform>&reason=<code>`. JSON callers receive 400/502 instead.",
+    },
+    400: { description: "Invalid or expired state, or unknown platform (JSON-Accept caller)", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "Platform not found in catalog", content: { "application/json": { schema: ErrorSchema } } },
+    501: { description: "OAuth handler not registered", content: { "application/json": { schema: ErrorSchema } } },
+    502: { description: "Upstream Platform rejected the OAuth exchange (JSON-Accept caller)", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
 const disconnectRoute = createRoute({
   method: "delete",
   path: "/{platform}",
@@ -125,38 +225,6 @@ const disconnectRoute = createRoute({
     // mismatch on the preamble shape's wider Record<string, unknown>.
     500: { description: "Internal error (auth dispatch or teardown)", content: { "application/json": { schema: AuthErrorSchema } } },
     501: { description: "Disconnect not implemented for this Platform", content: { "application/json": { schema: ErrorSchema } } },
-  },
-});
-
-const callbackRoute = createRoute({
-  method: "get",
-  path: "/{platform}/callback",
-  tags: ["Integrations"],
-  summary: "Platform OAuth callback",
-  description:
-    "Handles the OAuth callback from the Platform: verifies the state token, exchanges the " +
-    "code for credentials, and writes the install record + per-Platform credential. Returns " +
-    "a 302 to /admin/integrations on success.",
-  request: {
-    params: z.object({
-      platform: z.string().openapi({ description: "Catalog slug" }),
-    }),
-    query: z.object({
-      code: z.string().openapi({ description: "OAuth authorization code" }),
-      state: z.string().openapi({ description: "Signed state token from install" }),
-    }),
-  },
-  responses: {
-    302: {
-      description:
-        "Install complete or failed in a recoverable way — redirected to /admin/integrations. " +
-        "Success: `?installed=<platform>`. Credential write missed: `?reconnect=<platform>`. " +
-        "Hard failure (browser caller): `?error=<platform>&reason=<code>`. JSON callers receive 400/502 instead.",
-    },
-    400: { description: "Invalid or expired state, or unknown platform (JSON-Accept caller)", content: { "application/json": { schema: ErrorSchema } } },
-    404: { description: "Platform not found in catalog", content: { "application/json": { schema: ErrorSchema } } },
-    501: { description: "OAuth handler not registered", content: { "application/json": { schema: ErrorSchema } } },
-    502: { description: "Upstream Platform rejected the OAuth exchange (JSON-Accept caller)", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -231,33 +299,6 @@ async function getInstallableCatalogRowBySlug(slug: string): Promise<{
     return null;
   }
   return { slug: row.slug, install_model: row.install_model as CatalogInstallModel };
-}
-
-/**
- * Disconnect-side variant of {@link getInstallableCatalogRowBySlug} — same
- * shape minus the `enabled = true` predicate. Disconnect must succeed even
- * when ops has kill-switched a Platform via `plugin_catalog.enabled = false`:
- * existing installs still need to be tearable down, otherwise the kill
- * switch strands credentials in `chat_cache` with no admin-visible UI.
- *
- * Returns the row's canonical `id` so callers can join against
- * `workspace_plugins.catalog_id` directly rather than synthesizing
- * `catalog:${slug}` (which is the seeder's convention but isn't a contract
- * the DB enforces).
- */
-async function getCatalogRowBySlugForDisconnect(slug: string): Promise<{
-  id: string;
-  slug: string;
-} | null> {
-  const rows = await internalQuery<{ id: string; slug: string } & Record<string, unknown>>(
-    `SELECT id, slug
-       FROM plugin_catalog
-      WHERE slug = $1
-      LIMIT 1`,
-    [slug],
-  );
-  if (rows.length === 0) return null;
-  return { id: rows[0]!.id, slug: rows[0]!.slug };
 }
 
 // ---------------------------------------------------------------------------
@@ -339,6 +380,119 @@ integrations.openapi(installRoute, async (c) =>
 
     const { redirectUrl } = await handler.startInstall(workspaceId);
     return c.redirect(redirectUrl);
+  }),
+);
+
+integrations.openapi(installFormRoute, async (c) =>
+  runHandler(c, "platform install-form", async () => {
+    const { platform } = c.req.valid("param");
+    const formData = c.req.valid("json");
+
+    // ── Admin auth ────────────────────────────────────────────────
+    // `requireAdminAuth` throws an HTTPException carrying the
+    // pre-built JSON response on failure, so the four auth-preamble
+    // failure modes (401 unauthenticated / 403 forbidden / 429 rate
+    // limited / 500 auth system fault) flow out directly and don't
+    // pollute this handler's declared response union — without that
+    // narrowing, the @hono/zod-openapi route signature rejects the
+    // `c.json(preamble.error, preamble.status)` return because no
+    // single declared status matches the four-way union.
+    const requestId = crypto.randomUUID();
+    const preamble = await adminAuthPreamble(c.req.raw, requestId);
+    requireAdminAuth(preamble);
+
+    // F-04 same posture as the OAuth install branch: SaaS mode=none is
+    // refused outright because it would write the workspace_plugins
+    // row under a tenant-shared sentinel workspaceId — leaking creds
+    // across customers. Self-hosted no-auth still gets the sentinel
+    // (single-tenant dev). The OAuth branch's docblock covers the
+    // full rationale; this is the form-based mirror.
+    const deployMode = getConfig()?.deployMode;
+    const orgIdRaw = preamble.authResult.user?.activeOrganizationId ?? undefined;
+    if (preamble.authResult.mode === "none" && deployMode === "saas") {
+      log.warn({ deployMode }, "Refusing form install: SaaS deploy with mode=none is a misconfig");
+      return c.json(
+        { error: "missing_org_binding", message: "Install must be initiated by an authenticated workspace admin.", requestId },
+        400,
+      );
+    }
+    if (!orgIdRaw && preamble.authResult.mode !== "none") {
+      return c.json(
+        { error: "missing_org_binding", message: "Install must be initiated by an authenticated workspace admin.", requestId },
+        400,
+      );
+    }
+    const workspaceId = (orgIdRaw ?? "self-hosted") as WorkspaceId;
+
+    // ── Catalog lookup + dispatch ─────────────────────────────────
+    const row = await getInstallableCatalogRowBySlug(platform);
+    if (!row) {
+      return c.json({ error: "not_found", message: `Unknown platform "${platform}"`, requestId }, 404);
+    }
+    if (row.install_model !== "form") {
+      // A caller hitting `/install-form` on an OAuth or static-bot
+      // catalog row is either a UI bug (modal opened for the wrong
+      // card) or an attacker probing endpoints. Logging the rejection
+      // surfaces both. Mirrors the install + callback handlers'
+      // similar `log.warn` patterns.
+      log.warn(
+        { platform, install_model: row.install_model },
+        "Refused form install: platform's install_model is not 'form'",
+      );
+      return c.json(
+        { error: "wrong_install_model", message: `Platform "${platform}" uses install_model "${row.install_model}" — not form-installable via this route.`, requestId },
+        400,
+      );
+    }
+
+    let handler: ReturnType<typeof getInstallHandler>;
+    try {
+      handler = getInstallHandler(row);
+    } catch (err) {
+      log.warn(
+        { platform, err: err instanceof Error ? err.message : String(err) },
+        "No form install handler registered for platform — operator must wire the handler",
+      );
+      return c.json(
+        { error: "handler_unavailable", message: `Form handler for "${platform}" is not registered on this deploy.`, requestId },
+        501,
+      );
+    }
+    if (handler.kind !== "form") {
+      log.error({ platform, kind: handler.kind }, "Catalog install_model='form' but dispatch returned non-form handler");
+      return c.json({ error: "handler_unavailable", message: "Install handler misconfigured.", requestId }, 501);
+    }
+
+    // ── Validate + persist ────────────────────────────────────────
+    try {
+      const { installRecord } = await handler.validateConfig(workspaceId, formData);
+      log.info({ workspaceId, platform, installId: installRecord.id }, "Form-based install completed");
+      return c.json({ installed: true as const, platform, installId: installRecord.id }, 200);
+    } catch (err) {
+      // Tagged validation errors → 400 with field-level detail so the
+      // UI modal can highlight the wrong inputs. Every other throw
+      // bubbles up to `runHandler`'s `classifyError` for the standard
+      // 5xx-with-requestId path.
+      if (err instanceof FormInstallValidationError) {
+        // `fieldErrors` is `Readonly<Record<string, readonly string[]>>`
+        // — Hono's JSON serializer accepts it, but cast back to plain
+        // arrays at the response boundary so OpenAPI schema clients
+        // see a regular `string[]`.
+        const fieldErrors: Record<string, string[]> = {};
+        for (const [k, v] of Object.entries(err.fieldErrors)) fieldErrors[k] = [...v];
+        return c.json(
+          {
+            error: "invalid_form_data",
+            message: "One or more fields failed validation.",
+            requestId,
+            fieldErrors,
+            ...(err.formErrors.length > 0 ? { formErrors: [...err.formErrors] } : {}),
+          },
+          400,
+        );
+      }
+      throw err;
+    }
   }),
 );
 
@@ -456,6 +610,33 @@ interface InstallRowFromDb extends Record<string, unknown> {
   readonly team_id: string | null;
 }
 
+/**
+ * Disconnect-side variant of {@link getInstallableCatalogRowBySlug} — same
+ * shape minus the `enabled = true` predicate. Disconnect must succeed even
+ * when ops has kill-switched a Platform via `plugin_catalog.enabled = false`:
+ * existing installs still need to be tearable down, otherwise the kill
+ * switch strands credentials in `chat_cache` with no admin-visible UI.
+ *
+ * Returns the row's canonical `id` so callers can join against
+ * `workspace_plugins.catalog_id` directly rather than synthesizing
+ * `catalog:${slug}` (which is the seeder's convention but isn't a contract
+ * the DB enforces).
+ */
+async function getCatalogRowBySlugForDisconnect(slug: string): Promise<{
+  id: string;
+  slug: string;
+} | null> {
+  const rows = await internalQuery<{ id: string; slug: string } & Record<string, unknown>>(
+    `SELECT id, slug
+       FROM plugin_catalog
+      WHERE slug = $1
+      LIMIT 1`,
+    [slug],
+  );
+  if (rows.length === 0) return null;
+  return { id: rows[0]!.id, slug: rows[0]!.slug };
+}
+
 async function deleteCredentialStore(platform: string, teamId: string): Promise<void> {
   if (platform === "slack") {
     await deleteSlackInstallation(teamId);
@@ -524,10 +705,7 @@ integrations.openapi(disconnectRoute, async (c) =>
     // ── Region misrouting check (strict-routing only) ─────────────
     // Same defense `adminAuth` runs on every admin write — without it
     // a request reaching the wrong region's API could tear down stores
-    // in the wrong cell during a residency split-brain. `detectMisrouting`
-    // is a no-op for unauthenticated requests, self-hosted (no region
-    // configured), and matched-region requests, so this only fires on
-    // a real cross-region miss.
+    // in the wrong cell during a residency split-brain.
     if (orgIdRaw) {
       const misrouted = await detectMisrouting(orgIdRaw, requestId);
       if (misrouted && isStrictRoutingEnabled()) {
@@ -558,9 +736,6 @@ integrations.openapi(disconnectRoute, async (c) =>
     }
 
     // ── Per-Platform disconnect-handler check ─────────────────────
-    // Today only slug=slack has a wired credential teardown. The 501
-    // path surfaces a real error rather than silently 404-ing on an
-    // un-wired Platform.
     if (platform !== "slack") {
       return c.json(
         { error: "disconnect_unavailable", message: `Disconnect for "${platform}" is not yet implemented on this deploy.`, requestId },

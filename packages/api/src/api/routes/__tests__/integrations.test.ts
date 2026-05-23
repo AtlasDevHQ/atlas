@@ -23,9 +23,12 @@ import {
 } from "@atlas/api/testing/api-test-mocks";
 import {
   _resetInstallHandlerRegistries,
+  registerFormHandler,
   registerOAuthHandler,
+  type FormBasedInstallHandler,
   type OAuthPlatformInstallHandler,
 } from "@atlas/api/lib/integrations/install";
+import { FormInstallValidationError } from "@atlas/api/lib/integrations/install/email-form-handler";
 
 // ---------------------------------------------------------------------------
 // Auth — admin user with an org binding for the install route. The
@@ -34,27 +37,40 @@ import {
 // callback tests pass anonymous requests through fine.
 // ---------------------------------------------------------------------------
 
-// Auth shape per test — overridden in DELETE tests that exercise
-// non-admin / unauthenticated branches.
-// Default test admin has MFA enrolled via `claims.twoFactorEnabled` —
-// the disconnect endpoint runs `shouldRequireMfaForAuthResult` after
-// auth and 403s unenrolled managed admins. Without the claim every
-// disconnect test would 403 instead of exercising the branch under
-// test. The MFA-enforcement branch gets its own dedicated test that
-// strips the claim.
-let mockAuthResult: unknown = {
+// Swappable auth result so individual tests can drive the route's
+// auth-failure branches (F-04 SaaS mode=none, missing-org, 401, 403).
+// Defaults to the admin happy path; per-suite `beforeEach` blocks
+// override via `authResultImpl = …`.
+type AuthResult = {
+  authenticated: boolean;
+  mode: "managed" | "none";
+  user?: {
+    id: string;
+    role: string;
+    activeOrganizationId?: string;
+    // DELETE tests use `claims.twoFactorEnabled` to pass / fail the
+    // `shouldRequireMfaForAuthResult` gate. Install/callback tests
+    // can omit it — those branches don't reach the MFA check.
+    claims?: Record<string, unknown>;
+  };
+  error?: string;
+  status?: 401 | 403 | 500;
+};
+let authResultImpl: () => Promise<AuthResult> = async () => ({
   authenticated: true,
   mode: "managed",
   user: {
     id: "admin-1",
     role: "admin",
     activeOrganizationId: "ws-1",
+    // Default test admin has MFA enrolled so the DELETE handler's
+    // gate passes — the unenrolled branch gets its own test.
     claims: { twoFactorEnabled: true },
   },
-};
+});
 
 mock.module("@atlas/api/lib/auth/middleware", () => ({
-  authenticateRequest: mock(() => Promise.resolve(mockAuthResult)),
+  authenticateRequest: mock(() => authResultImpl()),
   checkRateLimit: () => ({ allowed: true }),
   getClientIP: () => null,
   resetRateLimits: () => {},
@@ -77,30 +93,13 @@ mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   checkIPAllowlist: () => Effect.succeed({ allowed: true }),
 }));
 
-// Config — only `deployMode` matters for these tests (the SaaS-misconfig
-// 400 branch reads it). Default to self-hosted; individual tests flip
-// to "saas" via `mockDeployMode`.
-let mockDeployMode: "saas" | "self-hosted" | undefined = "self-hosted";
+// Swappable deploy mode so F-04 SaaS-mode=none tests can simulate the
+// SaaS posture without bleeding into the OAuth callback suites.
+let deployModeImpl: () => string | undefined = () => undefined;
 
 mock.module("@atlas/api/lib/config", () => ({
-  getConfig: () => ({ deployMode: mockDeployMode }),
-}));
-
-// Misrouting — disconnect calls `detectMisrouting` + `isStrictRoutingEnabled`
-// to refuse cross-region requests. Default to "not misrouted, strict off"
-// so the happy path runs; the 421 test flips both.
-let mockMisrouted:
-  | {
-      expectedRegion: string;
-      actualRegion: string;
-      correctApiUrl: string | undefined;
-    }
-  | null = null;
-let mockStrictRouting = false;
-
-mock.module("@atlas/api/lib/residency/misrouting", () => ({
-  detectMisrouting: () => Promise.resolve(mockMisrouted),
-  isStrictRoutingEnabled: () => mockStrictRouting,
+  getConfig: () => ({ deployMode: deployModeImpl() }),
+  defineConfig: (c: unknown) => c,
 }));
 
 // ---------------------------------------------------------------------------
@@ -108,13 +107,6 @@ mock.module("@atlas/api/lib/residency/misrouting", () => ({
 // response is the Slack OAuth row; individual tests override via
 // `mockInternalQuery.mockImplementationOnce` for the "platform not
 // found" path.
-//
-// The DELETE handler makes additional `internalQuery` calls — a
-// workspace_plugins SELECT to resolve teamId, then a workspace_plugins
-// DELETE. Per-test setup overrides the default impl to keep those
-// paths separable; `callOrder` records each call's "kind" (catalog
-// SELECT / install SELECT / install DELETE) so the ADR-0003
-// teardown-order assertion is robust.
 // ---------------------------------------------------------------------------
 
 const mockInternalQuery = mock(async (_sql: string, _params?: unknown[]): Promise<unknown[]> => [
@@ -173,9 +165,9 @@ const mockDeleteInstallation = mock(async (_teamId: string): Promise<void> => {
 
 mock.module("@atlas/api/lib/slack/store", () => ({
   deleteInstallation: mockDeleteInstallation,
-  // Other named exports are unused by the DELETE handler but must be
-  // present — `mock.module()` requires every named export to be mocked
-  // (CLAUDE.md "Mock all exports").
+  // mock.module() requires every named export to be mocked (CLAUDE.md
+  // "Mock all exports"). The disconnect handler only calls
+  // `deleteInstallation`; the rest are no-op stubs.
   getInstallation: mock(() => Promise.resolve(null)),
   getInstallationByOrg: mock(() => Promise.resolve(null)),
   saveInstallation: mock(() => Promise.resolve()),
@@ -192,6 +184,23 @@ mock.module("@atlas/api/lib/slack/store", () => ({
     installedAt: "installedAt",
     botUserId: "botUserId",
   },
+}));
+
+// Misrouting — disconnect calls `detectMisrouting` + `isStrictRoutingEnabled`
+// to refuse cross-region requests. Default to "not misrouted, strict off"
+// so the happy path runs; the 421 test flips both.
+let mockMisrouted:
+  | {
+      expectedRegion: string;
+      actualRegion: string;
+      correctApiUrl: string | undefined;
+    }
+  | null = null;
+let mockStrictRouting = false;
+
+mock.module("@atlas/api/lib/residency/misrouting", () => ({
+  detectMisrouting: () => Promise.resolve(mockMisrouted),
+  isStrictRoutingEnabled: () => mockStrictRouting,
 }));
 
 // ---------------------------------------------------------------------------
@@ -216,6 +225,7 @@ process.env.ATLAS_CORS_ORIGIN = "https://app.atlas.example";
 // ---------------------------------------------------------------------------
 
 type CallbackResult = Awaited<ReturnType<OAuthPlatformInstallHandler["handleCallback"]>>;
+type ValidateResult = Awaited<ReturnType<FormBasedInstallHandler["validateConfig"]>>;
 
 let callbackImpl: () => Promise<CallbackResult> = async () => null;
 
@@ -226,6 +236,21 @@ const fakeHandler: OAuthPlatformInstallHandler = {
     stateToken: "stub",
   }),
   handleCallback: async () => callbackImpl(),
+};
+
+// Stubbed form handler — slug "email". The form-install tests below
+// swap `validateImpl` per test so we can drive the validation /
+// happy-path branches without depending on Postgres or real
+// encryption. The real implementation is tested in
+// `email-form-handler.test.ts`.
+let validateImpl: (form: unknown) => Promise<ValidateResult> = async () => ({
+  installRecord: { id: "install-email-1", workspaceId: "ws-1" as never, catalogId: "email" },
+  credentialWritten: true,
+});
+
+const fakeFormHandler: FormBasedInstallHandler = {
+  kind: "form" as const,
+  validateConfig: async (_wsid, formData) => validateImpl(formData),
 };
 
 // ---------------------------------------------------------------------------
@@ -248,6 +273,7 @@ function request(path: string, init?: RequestInit) {
 
 beforeAll(() => {
   registerOAuthHandler("slack", fakeHandler);
+  registerFormHandler("email", fakeFormHandler);
 });
 
 afterAll(() => {
@@ -260,12 +286,7 @@ beforeEach(() => {
   mockInternalQuery.mockImplementation(async () => [
     { slug: "slack", install_model: "oauth", enabled: true },
   ]);
-  callOrder.length = 0;
-  mockDeleteInstallation.mockClear();
-  mockDeleteInstallation.mockImplementation(async (_teamId: string) => {
-    callOrder.push("chat_cache.delete");
-  });
-  mockAuthResult = {
+  authResultImpl = async () => ({
     authenticated: true,
     mode: "managed",
     user: {
@@ -274,8 +295,13 @@ beforeEach(() => {
       activeOrganizationId: "ws-1",
       claims: { twoFactorEnabled: true },
     },
-  };
-  mockDeployMode = "self-hosted";
+  });
+  deployModeImpl = () => undefined;
+  callOrder.length = 0;
+  mockDeleteInstallation.mockClear();
+  mockDeleteInstallation.mockImplementation(async (_teamId: string) => {
+    callOrder.push("chat_cache.delete");
+  });
   mockMisrouted = null;
   mockStrictRouting = false;
 });
@@ -454,15 +480,245 @@ describe("GET /api/v1/integrations/slack/callback — non-OAuth-exchange failure
 });
 
 // ---------------------------------------------------------------------------
+// POST /:platform/install-form — slice 7 (#2660)
+// ---------------------------------------------------------------------------
+
+describe("POST /api/v1/integrations/:platform/install-form — happy path", () => {
+  beforeEach(() => {
+    // Catalog lookup returns the Email row for the form-install
+    // branch; reset between tests since other suites pin "slack".
+    mockInternalQuery.mockImplementation(async () => [
+      { slug: "email", install_model: "form", enabled: true },
+    ]);
+    validateImpl = async () => ({
+      installRecord: {
+        id: "install-email-happy",
+        workspaceId: "ws-1" as never,
+        catalogId: "email",
+      },
+      credentialWritten: true,
+    });
+  });
+
+  it("dispatches to the form handler and returns the install id on success", async () => {
+    const res = await request("/api/v1/integrations/email/install-form", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        host: "smtp.example.com",
+        port: 587,
+        username: "u",
+        password: "p",
+        fromAddress: "atlas@example.com",
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { installed: boolean; installId: string; platform: string };
+    expect(body).toEqual({
+      installed: true,
+      platform: "email",
+      installId: "install-email-happy",
+    });
+  });
+});
+
+describe("POST /api/v1/integrations/:platform/install-form — validation failure", () => {
+  beforeEach(() => {
+    mockInternalQuery.mockImplementation(async () => [
+      { slug: "email", install_model: "form", enabled: true },
+    ]);
+    // Simulate the real EmailFormInstallHandler refusing the form
+    // for a missing password — the route must translate this to a
+    // 400 with field-level detail.
+    validateImpl = async () => {
+      throw new FormInstallValidationError({
+        fieldErrors: { password: ["password is required"] },
+      });
+    };
+  });
+
+  it("returns 400 with fieldErrors when the handler rejects the form", async () => {
+    const res = await request("/api/v1/integrations/email/install-form", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ host: "smtp.example.com" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as {
+      error: string;
+      message: string;
+      fieldErrors: Record<string, string[]>;
+      requestId: string;
+    };
+    expect(body.error).toBe("invalid_form_data");
+    expect(body.fieldErrors.password).toEqual(["password is required"]);
+    expect(body.requestId).toBeDefined();
+  });
+});
+
+describe("POST /api/v1/integrations/:platform/install-form — wrong install_model", () => {
+  beforeEach(() => {
+    // Catalog lookup returns the Slack row (oauth) but the caller
+    // hit the form-install endpoint for it — must reject with 400.
+    mockInternalQuery.mockImplementation(async () => [
+      { slug: "slack", install_model: "oauth", enabled: true },
+    ]);
+  });
+
+  it("refuses with 400 wrong_install_model when the catalog row is OAuth", async () => {
+    const res = await request("/api/v1/integrations/slack/install-form", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("wrong_install_model");
+  });
+});
+
+describe("POST /api/v1/integrations/:platform/install-form — unknown platform", () => {
+  beforeEach(() => {
+    mockInternalQuery.mockImplementation(async () => []);
+  });
+
+  it("returns 404 when the catalog row doesn't exist", async () => {
+    const res = await request("/api/v1/integrations/nope/install-form", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("not_found");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F-04 install-hijack — SaaS deploy + mode=none must refuse outright.
+// The OAuth route's mirror guard is exercised by slice 5 tests; here we
+// pin the same posture for the new /install-form route so a managed-auth
+// regression can't slip past both.
+// ---------------------------------------------------------------------------
+
+describe("POST /install-form — F-04 SaaS-mode-none guard", () => {
+  beforeEach(() => {
+    mockInternalQuery.mockImplementation(async () => [
+      { slug: "email", install_model: "form", enabled: true },
+    ]);
+    authResultImpl = async () => ({
+      authenticated: true,
+      mode: "none",
+      // Even with a user object present, mode=none under SaaS is a
+      // misconfig — the route refuses without consulting it.
+      user: { id: "anon", role: "admin", activeOrganizationId: undefined },
+    });
+  });
+
+  it("refuses with 400 missing_org_binding under SaaS deploy + mode=none", async () => {
+    deployModeImpl = () => "saas";
+    const res = await request("/api/v1/integrations/email/install-form", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ host: "smtp.example.com" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("missing_org_binding");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Missing org binding (managed mode, no activeOrganizationId) — pins
+// the second auth-side fail-closed branch.
+// ---------------------------------------------------------------------------
+
+describe("POST /install-form — managed mode missing activeOrganizationId", () => {
+  beforeEach(() => {
+    mockInternalQuery.mockImplementation(async () => [
+      { slug: "email", install_model: "form", enabled: true },
+    ]);
+    authResultImpl = async () => ({
+      authenticated: true,
+      mode: "managed",
+      user: { id: "admin-1", role: "admin", activeOrganizationId: undefined },
+    });
+  });
+
+  it("refuses with 400 missing_org_binding when the user has no active org", async () => {
+    const res = await request("/api/v1/integrations/email/install-form", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ host: "smtp.example.com" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("missing_org_binding");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dispatch failure modes — handler not registered (501) and kind
+// mismatch (501). The kind mismatch is the "catalog says form but
+// dispatch returns OAuth" canary — without it a registration typo
+// would silently call .startInstall() on a form handler.
+// ---------------------------------------------------------------------------
+
+describe("POST /install-form — dispatch failures", () => {
+  beforeEach(() => {
+    mockInternalQuery.mockImplementation(async () => [
+      { slug: "email", install_model: "form", enabled: true },
+    ]);
+  });
+
+  it("returns 501 handler_unavailable when no form handler is registered for the slug", async () => {
+    _resetInstallHandlerRegistries();
+    try {
+      const res = await request("/api/v1/integrations/email/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(501);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("handler_unavailable");
+    } finally {
+      // Restore both handlers used by the rest of the suite.
+      registerOAuthHandler("slack", fakeHandler);
+      registerFormHandler("email", fakeFormHandler);
+    }
+  });
+
+  it("returns 501 handler_unavailable when the registered handler's kind doesn't match the catalog row", async () => {
+    // Force the kind mismatch: a real misconfig would land here if an
+    // operator wired registerFormHandler against an OAuth handler.
+    _resetInstallHandlerRegistries();
+    registerFormHandler("email", fakeHandler as unknown as FormBasedInstallHandler);
+    try {
+      const res = await request("/api/v1/integrations/email/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(501);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("handler_unavailable");
+    } finally {
+      registerOAuthHandler("slack", fakeHandler);
+      registerFormHandler("email", fakeFormHandler);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // DELETE /api/v1/integrations/:platform — disconnect flow.
 //
 // Two-store teardown per ADR-0003: `chat_cache:<platform>:installation:<teamId>`
 // is dropped BEFORE the `workspace_plugins` row, so credentials never
 // outlive the install record. The ordering is load-bearing — if the
 // install row went first and the chat_cache delete then failed, the
-// gate would return false on the next event but the bot token would
-// still be sitting in the credential store with no admin-visible way
-// to reach it.
+// bot token would still be sitting in the credential store with no
+// admin-visible UI to reach it.
 //
 // Helpers below stage the workspace_plugins SELECT (config → teamId)
 // and route the DELETE through `mockInternalQuery`'s SQL discrimination
@@ -539,16 +795,15 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
     const res = await request("/api/v1/integrations/slack", { method: "DELETE" });
 
     expect(res.status).toBe(404);
-    // Neither store should be touched when there's nothing to tear down.
     expect(mockDeleteInstallation).not.toHaveBeenCalled();
     expect(callOrder).not.toContain("workspace_plugins.delete");
   });
 
   it("returns 404 when the platform slug is not in the catalog", async () => {
     // Catalog SELECT returns no rows for the unknown slug. The
-    // disconnect-side helper doesn't filter on `enabled` (Codex P2),
-    // so this branch only fires for truly absent slugs — not for
-    // kill-switched real Platforms.
+    // disconnect-side helper doesn't filter on `enabled`, so this
+    // branch only fires for truly absent slugs — not for kill-switched
+    // real Platforms.
     mockInternalQuery.mockImplementation(async (sql: string): Promise<unknown[]> => {
       if (sql.includes("FROM plugin_catalog")) return [];
       return [];
@@ -562,11 +817,12 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
 
   it("returns 401 when the request is unauthenticated", async () => {
     stageSlackInstallLookup("T-abc-123");
-    mockAuthResult = {
+    authResultImpl = async () => ({
       authenticated: false,
+      mode: "managed",
       status: 401,
       error: "Authentication required",
-    };
+    });
 
     const res = await request("/api/v1/integrations/slack", { method: "DELETE" });
 
@@ -577,7 +833,7 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
 
   it("returns 403 when the caller is authenticated but not an admin", async () => {
     stageSlackInstallLookup("T-abc-123");
-    mockAuthResult = {
+    authResultImpl = async () => ({
       authenticated: true,
       mode: "managed",
       user: {
@@ -586,7 +842,7 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
         activeOrganizationId: "ws-1",
         claims: { twoFactorEnabled: true },
       },
-    };
+    });
 
     const res = await request("/api/v1/integrations/slack", { method: "DELETE" });
 
@@ -598,9 +854,7 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
   it("returns 501 for a real catalog platform whose disconnect path isn't wired", async () => {
     // Future-Platform safety net: catalog returns a `teams` row (a real
     // Platform), but `deleteCredentialStore` only dispatches `slack`
-    // today. The 501 must short-circuit before either store is touched
-    // — silently 404-ing or falling into the slack branch would both
-    // be bugs.
+    // today. The 501 must short-circuit before either store is touched.
     mockInternalQuery.mockImplementation(async (sql: string): Promise<unknown[]> => {
       if (sql.includes("FROM plugin_catalog")) {
         return [{ id: "catalog:teams", slug: "teams", install_model: "oauth", enabled: true }];
@@ -619,7 +873,7 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
 
   it("returns 400 missing_org_binding when managed-auth user has no active org", async () => {
     stageSlackInstallLookup("T-abc-123");
-    mockAuthResult = {
+    authResultImpl = async () => ({
       authenticated: true,
       mode: "managed",
       user: {
@@ -628,7 +882,7 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
         // no activeOrganizationId
         claims: { twoFactorEnabled: true },
       },
-    };
+    });
 
     const res = await request("/api/v1/integrations/slack", { method: "DELETE" });
 
@@ -640,17 +894,14 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
 
   it("returns 400 missing_org_binding when SaaS deploy lands a mode=none request (misconfig)", async () => {
     // SaaS pins managed auth in config, so a mode=none branch reaching
-    // this endpoint means auth middleware regressed. Fail closed —
-    // letting an unbound disconnect through would tear down a shared
-    // sentinel-workspace install. Mirrors the F-04 install-hijack
-    // defense on the install side.
+    // this endpoint means auth middleware regressed. Fail closed.
     stageSlackInstallLookup("T-abc-123");
-    mockDeployMode = "saas";
-    mockAuthResult = {
+    deployModeImpl = () => "saas";
+    authResultImpl = async () => ({
       authenticated: true,
       mode: "none",
       user: undefined,
-    };
+    });
 
     const res = await request("/api/v1/integrations/slack", { method: "DELETE" });
 
@@ -666,7 +917,7 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
     // parity with the `mfaRequired` middleware applied to every other
     // admin write surface.
     stageSlackInstallLookup("T-abc-123");
-    mockAuthResult = {
+    authResultImpl = async () => ({
       authenticated: true,
       mode: "managed",
       user: {
@@ -676,7 +927,7 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
         // No twoFactorEnabled / passkeyCount → not enrolled.
         claims: {},
       },
-    };
+    });
 
     const res = await request("/api/v1/integrations/slack", { method: "DELETE" });
 
@@ -690,9 +941,7 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
   it("returns 421 misdirected_request when strict routing detects a cross-region miss", async () => {
     // Codex P2 — `adminAuth`'s misrouting check is what every other
     // admin write inherits via `createAdminRouter`. This handler isn't
-    // mounted under that router so the check is inlined; without it a
-    // request landing on the wrong cell would tear down the wrong
-    // region's install during a residency split-brain.
+    // mounted under that router so the check is inlined.
     stageSlackInstallLookup("T-abc-123");
     mockMisrouted = {
       expectedRegion: "eu",
@@ -712,10 +961,6 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
   });
 
   it("proceeds when misrouting is detected but strict routing is disabled (graceful mode)", async () => {
-    // Graceful mode mirrors `checkMisrouting`'s behavior in
-    // middleware.ts: log via `detectMisrouting`, return null, let the
-    // request through. The disconnect must honor this so a region-flag
-    // misconfiguration doesn't accidentally block real teardowns.
     stageSlackInstallLookup("T-abc-123");
     mockMisrouted = {
       expectedRegion: "eu",
@@ -732,9 +977,7 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
   it("succeeds even when the catalog row is kill-switched (enabled=false)", async () => {
     // Codex P2 — ops disables a Platform via plugin_catalog.enabled=false
     // as a kill switch. Existing installs MUST still be tearable down,
-    // otherwise the disable strands credentials in chat_cache. The
-    // install-side helper would 404 here; the disconnect-side helper
-    // ignores `enabled`.
+    // otherwise the disable strands credentials in chat_cache.
     mockInternalQuery.mockImplementation(async (sql: string): Promise<unknown[]> => {
       if (sql.includes("DELETE FROM workspace_plugins")) {
         callOrder.push("workspace_plugins.delete");
@@ -761,8 +1004,7 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
   it("self-hosted mode=none falls back to the 'self-hosted' sentinel workspaceId for the install lookup", async () => {
     // Single-tenant self-hosted dev: no real auth identity, but the
     // install was written under the same sentinel by the install
-    // handler, so the SELECT must use it. If a future refactor flipped
-    // to e.g. an empty string here, the disconnect would silently 404.
+    // handler, so the SELECT must use it.
     const capturedParams: unknown[][] = [];
     mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]): Promise<unknown[]> => {
       if (params) capturedParams.push(params);
@@ -779,9 +1021,13 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
       }
       return [];
     });
-    // mode=none bypasses the MFA gate (managed-only) and the SaaS misconfig
-    // branch (deploy mode stays self-hosted via the beforeEach reset).
-    mockAuthResult = { authenticated: true, mode: "none", user: undefined };
+    // mode=none bypasses the MFA gate (managed-only) and the SaaS
+    // misconfig branch (deploy mode stays undefined → not "saas").
+    authResultImpl = async () => ({
+      authenticated: true,
+      mode: "none",
+      user: undefined,
+    });
 
     const res = await request("/api/v1/integrations/slack", { method: "DELETE" });
 

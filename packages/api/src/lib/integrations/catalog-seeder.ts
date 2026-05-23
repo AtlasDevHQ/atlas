@@ -70,6 +70,15 @@ export interface CatalogDbRow {
   readonly enabled: boolean;
   readonly installModel: CatalogInstallModel;
   readonly saasEligible: boolean;
+  /**
+   * Decoded `config_schema` JSONB. `null` when the column is JSON null —
+   * which is the legitimate state for OAuth / static-bot entries that
+   * don't carry a form-field declaration. Form-based entries (`form`)
+   * MUST have a declared schema; the planner doesn't enforce that here,
+   * but the install route rejects form-based catalog rows whose stored
+   * schema is null.
+   */
+  readonly configSchema: unknown | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -205,7 +214,46 @@ function diffEntry(
   if (row.installModel !== entry.install_model) diff.push("installModel");
   if (row.saasEligible !== entry.saas_eligible) diff.push("saasEligible");
 
+  // Stable structural compare via canonical JSON. The DB stores
+  // `config_schema` as JSONB and PostgreSQL normalizes object keys
+  // (length-then-lex in the on-disk binary form), so a naive
+  // `JSON.stringify` compare against an operator-authored entry will
+  // diff every boot — the author's key order won't match the round-
+  // tripped order. `canonicalConfigSchemaJson` sorts object keys
+  // recursively so both sides serialize identically regardless of
+  // input order.
+  const wantConfigSchema = entry.configSchema ?? null;
+  if (!sameConfigSchema(row.configSchema, wantConfigSchema)) diff.push("configSchema");
+
   return diff;
+}
+
+function sameConfigSchema(a: unknown, b: unknown): boolean {
+  if (a === null && b === null) return true;
+  if (a === null || b === null) return false;
+  return canonicalConfigSchemaJson(a) === canonicalConfigSchemaJson(b);
+}
+
+/**
+ * Serialize `value` with sorted object keys recursively, so two
+ * structurally-equal objects always produce identical strings. Arrays
+ * preserve order (array order is semantically meaningful for a
+ * field-list schema).
+ *
+ * Exported for tests so the seeder-test mock DB can emit values that
+ * match what PG would return after a real round-trip.
+ */
+export function canonicalConfigSchemaJson(value: unknown): string {
+  return JSON.stringify(value, (_, v) => {
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      const sorted: Record<string, unknown> = {};
+      for (const k of Object.keys(v as Record<string, unknown>).sort()) {
+        sorted[k] = (v as Record<string, unknown>)[k];
+      }
+      return sorted;
+    }
+    return v;
+  });
 }
 
 /**
@@ -372,12 +420,13 @@ interface CatalogDbRowRaw {
   enabled: boolean;
   install_model: string;
   saas_eligible: boolean;
+  config_schema: unknown | null;
 }
 
 async function readExistingCatalog(db: CatalogSeedDb): Promise<CatalogDbRow[]> {
   const { rows } = await db.query<CatalogDbRowRaw>(
     `SELECT slug, name, description, type, icon_url, min_plan, enabled,
-            install_model, saas_eligible
+            install_model, saas_eligible, config_schema
        FROM plugin_catalog`,
   );
   // Validate enum membership at read time so the planner can trust the
@@ -410,6 +459,7 @@ async function readExistingCatalog(db: CatalogSeedDb): Promise<CatalogDbRow[]> {
       enabled: r.enabled,
       installModel: r.install_model as CatalogInstallModel,
       saasEligible: r.saas_eligible,
+      configSchema: r.config_schema ?? null,
     });
   }
   return valid;
@@ -451,11 +501,19 @@ async function upsertEntry(db: CatalogSeedDb, entry: CatalogEntry): Promise<void
     );
   }
 
+  // `config_schema` is JSONB — serialize undefined → null so the column
+  // lands as JSON null instead of bombing the cast. Form-based entries
+  // declare a non-null schema; OAuth / static-bot entries leave it null.
+  const configSchemaJson =
+    entry.configSchema === undefined || entry.configSchema === null
+      ? null
+      : JSON.stringify(entry.configSchema);
+
   await db.query(
     `INSERT INTO plugin_catalog
        (id, name, slug, description, type, icon_url, min_plan, enabled,
-        install_model, saas_eligible, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
+        install_model, saas_eligible, config_schema, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, NOW(), NOW())
      ON CONFLICT (slug) DO UPDATE
        SET name           = EXCLUDED.name,
            description    = EXCLUDED.description,
@@ -465,6 +523,7 @@ async function upsertEntry(db: CatalogSeedDb, entry: CatalogEntry): Promise<void
            enabled        = EXCLUDED.enabled,
            install_model  = EXCLUDED.install_model,
            saas_eligible  = EXCLUDED.saas_eligible,
+           config_schema  = EXCLUDED.config_schema,
            updated_at     = NOW()`,
     [
       id,
@@ -477,6 +536,7 @@ async function upsertEntry(db: CatalogSeedDb, entry: CatalogEntry): Promise<void
       entry.enabled,
       entry.install_model,
       entry.saas_eligible,
+      configSchemaJson,
     ],
   );
 }

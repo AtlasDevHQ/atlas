@@ -17,6 +17,7 @@
 import { describe, it, expect } from "bun:test";
 import {
   buildChatAdapterRegistry,
+  hasInstantiationFailure,
   type ChatCatalogEntry,
   type RegistryLogger,
 } from "./adapter-registry";
@@ -34,18 +35,22 @@ function makeLogger(): {
   logger: RegistryLogger;
   infos: Array<{ payload: Record<string, unknown>; msg: string }>;
   warns: Array<{ payload: Record<string, unknown>; msg: string }>;
+  errors: Array<{ payload: Record<string, unknown>; msg: string }>;
   debugs: Array<{ payload: Record<string, unknown>; msg: string }>;
 } {
   const infos: Array<{ payload: Record<string, unknown>; msg: string }> = [];
   const warns: Array<{ payload: Record<string, unknown>; msg: string }> = [];
+  const errors: Array<{ payload: Record<string, unknown>; msg: string }> = [];
   const debugs: Array<{ payload: Record<string, unknown>; msg: string }> = [];
   return {
     infos,
     warns,
+    errors,
     debugs,
     logger: {
       info: (payload, msg) => infos.push({ payload, msg }),
       warn: (payload, msg) => warns.push({ payload, msg }),
+      error: (payload, msg) => errors.push({ payload, msg }),
       debug: (payload, msg) => debugs.push({ payload, msg }),
     },
   };
@@ -91,8 +96,13 @@ describe("buildChatAdapterRegistry — missing env vars", () => {
   ] as const;
 
   for (const missing of required) {
-    it(`skips Slack + logs warn when ${missing} is missing`, () => {
-      const { logger, warns } = makeLogger();
+    it(`skips Slack + logs error when ${missing} is missing (entry enabled)`, () => {
+      // #2673 — `enabled: true` + missing creds is a silent-degradation
+      // bug on SaaS; the registry's control flow guarantees we only
+      // reach the missing-creds branch when the entry was opted in, so
+      // bump the log level from `warn` (lost in routine boot noise) to
+      // `error` (catches operator log-stream alerts).
+      const { logger, errors, warns } = makeLogger();
       const env: NodeJS.ProcessEnv = { ...SLACK_FULL_ENV };
       delete env[missing];
 
@@ -102,9 +112,12 @@ describe("buildChatAdapterRegistry — missing env vars", () => {
         logger,
       });
       expect(result.adapters.slack).toBeUndefined();
-      expect(warns).toHaveLength(1);
-      expect(warns[0]?.msg).toContain("required env vars missing");
-      expect((warns[0]?.payload.requiredEnv as string[]).includes(missing)).toBe(true);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]?.msg).toContain("required env vars missing");
+      expect((errors[0]?.payload.requiredEnv as string[]).includes(missing)).toBe(true);
+      // No warn for this case — the missing-creds line is the only
+      // log emitted, and it MUST be at error level.
+      expect(warns.some((l) => l.msg.includes("required env vars missing"))).toBe(false);
     });
   }
 });
@@ -114,15 +127,23 @@ describe("buildChatAdapterRegistry — missing env vars", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildChatAdapterRegistry — catalog filters", () => {
-  it("does not register Slack when catalog entry is disabled", () => {
-    const { logger, debugs } = makeLogger();
+  it("does not register Slack when catalog entry is disabled — debug log only, never error", () => {
+    // #2673 — operator explicitly disabling an entry must not trigger
+    // the missing-env-vars error path even when env vars are also
+    // unset; the operator intent is clear and we should stay quiet.
+    const { logger, debugs, errors, warns } = makeLogger();
     const result = buildChatAdapterRegistry({
       catalog: [entry({ slug: "slack", enabled: false })],
-      env: SLACK_FULL_ENV,
+      env: {}, // env unset too — must NOT escalate
       logger,
     });
     expect(result.adapters.slack).toBeUndefined();
     expect(debugs.some((l) => l.msg.includes("enabled=false"))).toBe(true);
+    expect(errors).toEqual([]);
+    expect(warns).toEqual([]);
+    // Diagnostics also stay clean — disabled is not a failure mode.
+    expect(result.diagnostics.missingCredSlugs).toEqual([]);
+    expect(result.diagnostics.unrecognizedSlugs).toEqual([]);
   });
 
   it("does not register Slack when install_model is form (skipped, no instantiation)", () => {
@@ -250,5 +271,40 @@ describe("buildChatAdapterRegistry — diagnostics", () => {
     });
     expect(result.diagnostics.missingCredSlugs).toEqual([]);
     expect(result.diagnostics.unrecognizedSlugs).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hasInstantiationFailure — gates the post-init log severity in index.ts
+// (see #2673). Pinned as a unit test so a future refactor can't silently
+// flip the predicate.
+// ---------------------------------------------------------------------------
+
+describe("hasInstantiationFailure", () => {
+  it("returns false for empty diagnostics (intentionally-empty catalog)", () => {
+    expect(
+      hasInstantiationFailure({ missingCredSlugs: [], unrecognizedSlugs: [] }),
+    ).toBe(false);
+  });
+
+  it("returns true when at least one slug has missing creds", () => {
+    expect(
+      hasInstantiationFailure({ missingCredSlugs: ["slack"], unrecognizedSlugs: [] }),
+    ).toBe(true);
+  });
+
+  it("returns true when at least one slug is unrecognized", () => {
+    expect(
+      hasInstantiationFailure({ missingCredSlugs: [], unrecognizedSlugs: ["slcak"] }),
+    ).toBe(true);
+  });
+
+  it("returns true when both lists are populated", () => {
+    expect(
+      hasInstantiationFailure({
+        missingCredSlugs: ["slack"],
+        unrecognizedSlugs: ["unknown"],
+      }),
+    ).toBe(true);
   });
 });

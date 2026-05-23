@@ -47,7 +47,7 @@ import { ChatConfigSchema } from "./config";
 import type { ChatCatalogEntryInput, ChatPluginConfig } from "./config";
 import { createChatBridge } from "./bridge";
 import type { ChatBridge } from "./bridge";
-import { buildChatAdapterRegistry } from "./adapter-registry";
+import { buildChatAdapterRegistry, hasInstantiationFailure } from "./adapter-registry";
 import type { ChatCatalogEntry } from "./adapter-registry";
 import { createStateAdapter } from "./state";
 
@@ -390,12 +390,33 @@ function buildChatPlugin(
       if (slackAdapterInstance) enabledAdapters.push("slack");
 
       const backend = config.state?.backend ?? "memory";
-      ctx.logger.info(
-        { adapters: enabledAdapters, stateBackend: backend },
+      const initFailedSilently =
+        enabledAdapters.length === 0 &&
+        hasInstantiationFailure(adapterDiagnostics);
+
+      const msg =
         enabledAdapters.length > 0
           ? `Chat interaction plugin initialized (${enabledAdapters.join(", ")}, state: ${backend})`
-          : `Chat interaction plugin initialized (no chat adapters activated — see AdapterRegistry warns, state: ${backend})`,
-      );
+          : `Chat interaction plugin initialized (no chat adapters activated — see AdapterRegistry warns, state: ${backend})`;
+
+      if (initFailedSilently) {
+        // SaaS-eligible catalog entry failed to instantiate (missing
+        // env vars or unknown slug) — see #2673. Surface at `error` so
+        // operator log streams catch the silent-degradation case.
+        ctx.logger.error(
+          {
+            adapters: enabledAdapters,
+            stateBackend: backend,
+            diagnostics: adapterDiagnostics,
+          },
+          msg,
+        );
+      } else {
+        ctx.logger.info(
+          { adapters: enabledAdapters, stateBackend: backend },
+          msg,
+        );
+      }
       initialized = true;
     },
 

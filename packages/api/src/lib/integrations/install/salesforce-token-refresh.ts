@@ -25,18 +25,19 @@
  *
  * The classification "permanent vs. transient" is the key complexity:
  *   - Permanent → `invalid_grant`, `invalid_client`, `inactive_user`,
- *     `org_locked`, `inactive_org`, `rate_limit_exceeded` (rate limit
- *     stays "permanent" because re-issuing wouldn't help; admin should
- *     contact Salesforce). Treat HTTP 400 with any of these codes as
- *     permanent.
- *   - Transient → network failures, 5xx, unparseable bodies. No
+ *     `org_locked`, `inactive_org`. Treat HTTP 400 with any of these
+ *     codes as permanent.
+ *   - Transient → network failures, 5xx, unparseable bodies, and
+ *     `rate_limit_exceeded` (Salesforce's OAuth token endpoint has a
+ *     short-window per-org throttle that recovers automatically; if we
+ *     flipped reconnect-needed on a rate limit the admin would re-run
+ *     OAuth uselessly while the next refresh would have worked). No
  *     reconnect-needed marker; let the caller retry on next tool call.
  *
  * @see ./salesforce-oauth-handler.ts — the initial OAuth dance
  * @see ../credentials/store.ts — the credential bundle store
  */
 
-import { Data } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import {
@@ -44,7 +45,18 @@ import {
   saveCredentialBundle,
   type CredentialBundle,
 } from "@atlas/api/lib/integrations/credentials/store";
-import { SALESFORCE_CATALOG_ID, SALESFORCE_SLUG } from "./salesforce-oauth-handler";
+import { SalesforceReconnectRequiredError } from "@atlas/api/lib/effect/errors";
+import {
+  DEFAULT_ACCESS_TOKEN_LIFETIME_MS,
+  SALESFORCE_CATALOG_ID,
+  SALESFORCE_SLUG,
+} from "./salesforce-oauth-handler";
+
+// Re-export so the lazy-builder + callers that already pull from this
+// module keep working. Canonical definition lives in `effect/errors.ts`
+// so the error participates in the `AtlasError` union + `mapTaggedError`
+// exhaustive switch (409 Conflict + `reconnect_required` wire code).
+export { SalesforceReconnectRequiredError };
 
 const log = createLogger("integrations.install.salesforce-refresh");
 
@@ -62,18 +74,7 @@ const PERMANENT_REFRESH_FAILURE_CODES = new Set([
   "inactive_user",
   "org_locked",
   "inactive_org",
-  "rate_limit_exceeded",
 ]);
-
-/**
- * Marker thrown when the refresh exchange fails permanently. Callers
- * catch this to render "Reconnect needed" in the admin UI. Transient
- * failures throw a plain `Error` — the agent retries.
- */
-export class SalesforceReconnectRequiredError extends Data.TaggedError("SalesforceReconnectRequiredError")<{
-  readonly workspaceId: string;
-  readonly upstreamError: string;
-}> {}
 
 interface SalesforceRefreshSuccess {
   readonly access_token: string;
@@ -156,6 +157,7 @@ async function exchangeRefreshToken(
         "Salesforce refresh failed permanently — flagging reconnect_needed",
       );
       throw new SalesforceReconnectRequiredError({
+        message: "Salesforce install needs to be reconnected — refresh token rejected by upstream.",
         workspaceId,
         upstreamError: errorCode,
       });
@@ -206,6 +208,13 @@ async function clearReconnectNeeded(workspaceId: string): Promise<void> {
       [workspaceId, SALESFORCE_CATALOG_ID],
     );
   } catch (err) {
+    // Log + swallow — the refresh itself already succeeded and the new
+    // credentials are persisted. Worst case is a cosmetic stale
+    // "Reconnect needed" badge in the admin UI until the next refresh
+    // (which will retry this UPDATE). Don't propagate: surfacing this
+    // failure would falsely signal that the refresh itself failed, and
+    // the agent would unnecessarily evict the cached plugin instance
+    // built on the freshly-rotated token.
     log.warn(
       { workspaceId, err: err instanceof Error ? err.message : String(err) },
       "Failed to clear reconnect_needed flag after successful Salesforce refresh",
@@ -251,6 +260,7 @@ export async function refreshSalesforceToken(
     );
     await markReconnectNeeded(args.workspaceId);
     throw new SalesforceReconnectRequiredError({
+      message: "Salesforce install has no refresh token — Connected App must grant the refresh_token / offline_access scopes.",
       workspaceId: args.workspaceId,
       upstreamError: "no_refresh_token",
     });
@@ -281,7 +291,7 @@ export async function refreshSalesforceToken(
   // refresh response omits it.
   const nextRefreshToken = refreshed.refresh_token ?? bundle.refreshToken;
   const issuedMs = refreshed.issued_at ? Number.parseInt(refreshed.issued_at, 10) : NaN;
-  const expiresAt = Number.isFinite(issuedMs) ? issuedMs + 2 * 60 * 60 * 1000 : null;
+  const expiresAt = Number.isFinite(issuedMs) ? issuedMs + DEFAULT_ACCESS_TOKEN_LIFETIME_MS : null;
 
   const next: CredentialBundle = {
     accessToken: refreshed.access_token,

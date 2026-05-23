@@ -136,7 +136,24 @@ export async function readCredentialBundle(
   );
   if (rows.length === 0) return null;
   const plaintext = decryptSecret(rows[0].credentials_encrypted);
-  return JSON.parse(plaintext) as CredentialBundle;
+  try {
+    return JSON.parse(plaintext) as CredentialBundle;
+  } catch (err) {
+    // AES-GCM auth-tag verification makes "decrypted to garbage" highly
+    // unlikely, but a JSON.parse failure on a row that decrypted
+    // successfully is data corruption (or a key-version drift that
+    // produced wrong-but-plausible bytes). Surface workspace + catalog
+    // so log search can locate the row; let the caller propagate so the
+    // route returns a 500 with `requestId`.
+    log.error(
+      { workspaceId, catalogId, err: err instanceof Error ? err.message : String(err) },
+      "Decrypted integration_credentials payload did not parse as JSON",
+    );
+    throw new Error(
+      `integration_credentials JSON.parse failed for (workspace=${workspaceId}, catalog=${catalogId})`,
+      { cause: err },
+    );
+  }
 }
 
 /**

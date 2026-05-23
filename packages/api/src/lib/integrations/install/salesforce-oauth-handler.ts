@@ -25,9 +25,14 @@
  *      credential is unreachable.
  *   2. `integration_credentials` row INSERT/UPDATE — credentials.
  *      Failure here returns the install record with
- *      `credentialResult.written: false`. The admin UI shows
- *      "Reconnect needed"; re-running the dance retries step 2 (step 1
- *      is an upsert under the unique index).
+ *      `credentialResult.written: false` and the OAuth callback route
+ *      redirects to `/admin/integrations?reconnect=salesforce`. The
+ *      install row is left with `status: "ok"` — the persistent
+ *      "Reconnect needed" badge on the admin card is reserved for the
+ *      refresh-token failure path (see `./salesforce-token-refresh.ts`,
+ *      which flips `status` to `"reconnect_needed"`). Re-running the
+ *      dance retries step 2 (step 1 is an upsert under the unique
+ *      index).
  *
  *   No roll-back of step 1 on step 2 failure — see ADR-0003.
  *
@@ -81,6 +86,20 @@ export const SALESFORCE_CATALOG_ID = "catalog:salesforce";
 
 /** Catalog slug — the dispatch key, value bound into the state token. */
 export const SALESFORCE_SLUG: CatalogId = "salesforce";
+
+/**
+ * Default access-token lifetime (ms). Salesforce does NOT return
+ * `expires_in` in the token response — the operator configures session
+ * timeout per Connected App, and the value isn't surfaced over OAuth.
+ * 2h is conservative for the common case; the refresh flow doesn't
+ * trust this value — it only uses it as a "should I pre-emptively
+ * refresh?" hint. The actual session expiry is detected at query time
+ * via `INVALID_SESSION_ID` and triggers refresh + retry inline.
+ *
+ * Re-exported by `./salesforce-token-refresh.ts` so both the install
+ * handler and the refresh flow use the same constant.
+ */
+export const DEFAULT_ACCESS_TOKEN_LIFETIME_MS = 2 * 60 * 60 * 1000;
 
 /**
  * Scopes requested at install time:
@@ -199,9 +218,7 @@ function computeExpiresAt(issuedAt: string | undefined): number | null {
   if (!issuedAt) return null;
   const issuedMs = Number.parseInt(issuedAt, 10);
   if (!Number.isFinite(issuedMs)) return null;
-  // Default lifetime — 2h. Tunable per-Connected-App on Salesforce side;
-  // refresh logic doesn't trust this, only uses it as a hint.
-  return issuedMs + 2 * 60 * 60 * 1000;
+  return issuedMs + DEFAULT_ACCESS_TOKEN_LIFETIME_MS;
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +261,19 @@ export async function exchangeAuthCodeForTokens(
       body: body.toString(),
     });
   } catch (err) {
+    // `PlatformOAuthExchangeError` doesn't carry a `cause` field — log
+    // the raw error (stack + message) before throwing so the operator
+    // has enough to debug the network-level failure (DNS, TLS, etc.).
+    // The tagged error's `upstreamError` keeps the short signal for
+    // forensics; the warn log keeps the full context.
+    log.warn(
+      {
+        loginUrl: args.loginUrl,
+        err: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+      },
+      "Salesforce token endpoint unreachable — surfacing PlatformOAuthExchangeError",
+    );
     throw new PlatformOAuthExchangeError({
       message: "Failed to reach Salesforce token endpoint. Restart the install.",
       platform: SALESFORCE_SLUG,
@@ -254,7 +284,14 @@ export async function exchangeAuthCodeForTokens(
   let parsed: SalesforceTokenResponse;
   try {
     parsed = (await resp.json()) as SalesforceTokenResponse;
-  } catch {
+  } catch (err) {
+    log.warn(
+      {
+        status: resp.status,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "Salesforce token response body could not be parsed as JSON",
+    );
     throw new PlatformOAuthExchangeError({
       message: "Salesforce returned an unparseable token response. Restart the install.",
       platform: SALESFORCE_SLUG,

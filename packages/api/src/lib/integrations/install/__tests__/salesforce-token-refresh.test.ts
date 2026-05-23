@@ -197,8 +197,8 @@ describe("refreshSalesforceToken — permanent failure", () => {
     expect(markedCall).toBeDefined();
   });
 
-  it("treats invalid_client / inactive_user / org_locked as permanent failures", async () => {
-    for (const errorCode of ["invalid_client", "inactive_user", "org_locked"]) {
+  it("treats invalid_client / inactive_user / org_locked / inactive_org as permanent failures", async () => {
+    for (const errorCode of ["invalid_client", "inactive_user", "org_locked", "inactive_org"]) {
       mockReadCredentialBundle.mockResolvedValueOnce(STORED_BUNDLE);
       mockInternalQuery.mockClear();
       mockFetch.mockImplementationOnce(() =>
@@ -250,6 +250,36 @@ describe("refreshSalesforceToken — transient failure", () => {
     );
 
     await expect(refreshMod.refreshSalesforceToken(SF_ARGS)).rejects.toThrow();
+
+    const markedCall = mockInternalQuery.mock.calls.find(
+      (call) =>
+        (call[0] as string).includes("UPDATE workspace_plugins") &&
+        (call[0] as string).includes("'reconnect_needed'"),
+    );
+    expect(markedCall).toBeUndefined();
+  });
+
+  it("treats rate_limit_exceeded as TRANSIENT (recoverable throttle, not reconnect_needed)", async () => {
+    // Salesforce's OAuth token endpoint per-org rate limit is a short-
+    // window recoverable throttle, not a sign that the install is
+    // broken. Flagging reconnect_needed here would force admins to
+    // re-run OAuth uselessly while the next refresh would have
+    // worked. Pin this so a regression that "tidies up" the
+    // permanent-codes list and accidentally re-adds rate_limit_exceeded
+    // fails loudly.
+    mockReadCredentialBundle.mockResolvedValueOnce(STORED_BUNDLE);
+    mockFetch.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ error: "rate_limit_exceeded" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+
+    await expect(refreshMod.refreshSalesforceToken(SF_ARGS)).rejects.toThrow(
+      "rate_limit_exceeded",
+    );
 
     const markedCall = mockInternalQuery.mock.calls.find(
       (call) =>

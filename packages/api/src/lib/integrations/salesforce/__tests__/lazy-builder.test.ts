@@ -64,6 +64,26 @@ mock.module("jsforce", () => ({
   Connection: MockJsforceConnection,
 }));
 
+// Track lazyPluginLoader.evict calls so we can verify the
+// reconnect-needed cache eviction wire (the production code calls
+// evict in withRetry when the refresh permanently fails).
+const mockEvict: Mock<(workspaceId: string, catalogId: string) => Promise<boolean>> = mock(() =>
+  Promise.resolve(true),
+);
+mock.module("@atlas/api/lib/plugins/lazy-loader", () => ({
+  lazyPluginLoader: {
+    evict: mockEvict,
+    hasBuilder: mock(() => false),
+    registerBuilder: mock(() => undefined),
+    unregisterBuilder: mock(() => true),
+    size: mock(() => 0),
+    getOrInstantiate: mock(() => Promise.resolve({} as unknown)),
+  },
+  LazyPluginLoader: class {},
+  LazyPluginBuilderMissingError: class extends Error {},
+  LazyPluginInstallNotFoundError: class extends Error {},
+}));
+
 type BuilderMod = typeof import("../lazy-builder");
 type SalesforcePluginInstance = import("../lazy-builder").SalesforcePluginInstance;
 let builderMod!: BuilderMod;
@@ -219,7 +239,7 @@ describe("createSalesforceLazyBuilder — session retry", () => {
     });
   });
 
-  it("propagates SalesforceReconnectRequiredError when the refresh fails permanently", async () => {
+  it("propagates SalesforceReconnectRequiredError when the refresh fails permanently AND evicts the cached instance", async () => {
     mockReadCredentialBundle.mockResolvedValueOnce(HAPPY_BUNDLE);
     mockJsforceQuery.mockRejectedValueOnce(new Error("INVALID_SESSION_ID"));
     mockRefreshSalesforceToken.mockRejectedValueOnce(
@@ -228,6 +248,7 @@ describe("createSalesforceLazyBuilder — session retry", () => {
         upstreamError: "invalid_grant",
       }),
     );
+    mockEvict.mockClear();
 
     const build = builderMod.createSalesforceLazyBuilder(BUILDER_CONFIG);
     const instance = (await build({
@@ -240,5 +261,32 @@ describe("createSalesforceLazyBuilder — session retry", () => {
       _tag: "SalesforceReconnectRequiredError",
       upstreamError: "invalid_grant",
     });
+
+    // Critical wire: without the evict call, the cached instance with
+    // a stale access token would loop on every subsequent tool call
+    // until process restart. The docblock at the top of lazy-builder.ts
+    // promises this happens; this test pins it.
+    expect(mockEvict).toHaveBeenCalledWith(WSID, CATALOG_ID);
+    expect(mockEvict).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT evict the cache on a transient refresh failure (network blip, 5xx)", async () => {
+    // Symmetric to the above — a plain Error from refresh is treated as
+    // transient. Evicting on every transient failure would defeat the
+    // cache's purpose (a flaky network would force re-build per call).
+    mockReadCredentialBundle.mockResolvedValueOnce(HAPPY_BUNDLE);
+    mockJsforceQuery.mockRejectedValueOnce(new Error("INVALID_SESSION_ID"));
+    mockRefreshSalesforceToken.mockRejectedValueOnce(new Error("ECONNRESET"));
+    mockEvict.mockClear();
+
+    const build = builderMod.createSalesforceLazyBuilder(BUILDER_CONFIG);
+    const instance = (await build({
+      workspaceId: WSID,
+      catalogId: CATALOG_ID,
+      config: { instance_url: "https://na139.my.salesforce.com", status: "ok" },
+    })) as SalesforcePluginInstance;
+
+    await expect(instance.query("SELECT Id FROM Account")).rejects.toThrow("ECONNRESET");
+    expect(mockEvict).not.toHaveBeenCalled();
   });
 });

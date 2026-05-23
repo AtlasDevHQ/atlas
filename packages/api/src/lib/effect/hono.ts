@@ -193,6 +193,20 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
           entityType: error.entityType,
         },
       };
+    // #2658 — Salesforce install's refresh-token rotation failed
+    // permanently; the install is flagged `reconnect_needed` in
+    // `workspace_plugins.config` and the admin must re-run OAuth.
+    // 409 (not 502) because the request is well-formed but the
+    // resource is in a state the user controls. Reuses the
+    // `"conflict"` wire code rather than adding `"reconnect_required"`
+    // to the closed `HttpErrorCode` vocabulary — the message + the
+    // `_tag` in error logs disambiguate.
+    case "SalesforceReconnectRequiredError":
+      return {
+        status: 409,
+        code: "conflict",
+        message: error.message,
+      };
 
     // ── 422 Unprocessable Entity — plugin rejected ───────────────
     case "PluginRejectedError":

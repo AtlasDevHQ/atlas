@@ -343,6 +343,32 @@ export class PlatformOAuthExchangeError extends Data.TaggedError("PlatformOAuthE
   readonly upstreamError: string;
 }> {}
 
+/**
+ * Salesforce refresh-token rotation failed permanently — `invalid_grant`,
+ * `invalid_client`, `inactive_user`, `org_locked`, `inactive_org`. The
+ * install row's `workspace_plugins.config.status` has already been
+ * flipped to `"reconnect_needed"` by the refresh flow; this error is
+ * the signal to the route layer (or the agent loop) that the install
+ * needs admin attention.
+ *
+ * Maps to HTTP 409 Conflict — the request is well-formed but the
+ * install resource is in a state that prevents fulfilment. Defined
+ * here (not in `salesforce-token-refresh.ts`) so it participates in
+ * the `AtlasError` union and the `mapTaggedError` exhaustive switch
+ * — escaping to a Hono `runHandler` should produce a clean 409 with
+ * a request id, not an opaque 500.
+ *
+ * @see packages/api/src/lib/integrations/install/salesforce-token-refresh.ts
+ */
+export class SalesforceReconnectRequiredError extends Data.TaggedError(
+  "SalesforceReconnectRequiredError",
+)<{
+  readonly message: string;
+  readonly workspaceId: string;
+  /** Raw Salesforce error code (`invalid_grant`, etc.). Forensic-only. */
+  readonly upstreamError: string;
+}> {}
+
 // ── Scheduler ──────────────────────────────────────────────────────
 
 /** Scheduled task execution timed out. */
@@ -394,6 +420,7 @@ export type AtlasError =
   | UnsafeRegionMigrationResetError
   | AmbiguousEntityError
   | PlatformOAuthExchangeError
+  | SalesforceReconnectRequiredError
   | SchedulerTaskTimeoutError
   | SchedulerExecutionError
   | DeliveryError
@@ -446,6 +473,7 @@ export const ATLAS_ERROR_TAG_LIST = [
   "UnsafeRegionMigrationResetError",
   "AmbiguousEntityError",
   "PlatformOAuthExchangeError",
+  "SalesforceReconnectRequiredError",
   "SchedulerTaskTimeoutError",
   "SchedulerExecutionError",
   "DeliveryError",

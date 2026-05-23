@@ -37,8 +37,19 @@ import type { WorkspaceId } from "@useatlas/types";
 // Module mocks (must precede the SUT import)
 // ---------------------------------------------------------------------------
 
-const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(() =>
-  Promise.resolve([]),
+// Two-store ADR-0003/0005 ordering invariant — every install must write
+// the install row FIRST and the credential bundle SECOND. A `callOrder`
+// spool catches a refactor that swaps the order even when both writes
+// still succeed.
+const callOrder: string[] = [];
+
+const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
+  async (sql: string): Promise<unknown[]> => {
+    if (sql.includes("INSERT INTO workspace_plugins")) {
+      callOrder.push("workspace_plugins.insert");
+    }
+    return [];
+  },
 );
 
 mock.module("@atlas/api/lib/db/internal", () => ({
@@ -49,7 +60,9 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 
 const mockSaveCredentialBundle: Mock<
   (workspaceId: string, catalogId: string, bundle: unknown) => Promise<void>
-> = mock(() => Promise.resolve());
+> = mock(async () => {
+  callOrder.push("integration_credentials.save");
+});
 
 mock.module("@atlas/api/lib/integrations/credentials/store", () => ({
   saveCredentialBundle: mockSaveCredentialBundle,
@@ -109,8 +122,21 @@ beforeAll(async () => {
 
 beforeEach(() => {
   setKeys("v1:test-key-one");
+  callOrder.length = 0;
   mockInternalQuery.mockClear();
+  // Restore the default implementation that records call ordering;
+  // mockClear() preserves the implementation, but explicit per-test
+  // overrides may have replaced it.
+  mockInternalQuery.mockImplementation(async (sql: string): Promise<unknown[]> => {
+    if (sql.includes("INSERT INTO workspace_plugins")) {
+      callOrder.push("workspace_plugins.insert");
+    }
+    return [];
+  });
   mockSaveCredentialBundle.mockClear();
+  mockSaveCredentialBundle.mockImplementation(async () => {
+    callOrder.push("integration_credentials.save");
+  });
   mockFetch.mockClear();
   // Loose cast — see comment near mockFetch declaration.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -222,6 +248,13 @@ describe("SalesforceOAuthInstallHandler.handleCallback — happy path", () => {
     expect(sql).toContain("INSERT INTO workspace_plugins");
     expect((params as unknown[])[1]).toBe(WSID);
     expect((params as unknown[])[2]).toBe("catalog:salesforce");
+
+    // ADR-0003/0005 ordering invariant — install row FIRST, credential
+    // bundle SECOND. A refactor that flips the order would still pass
+    // the toHaveBeenCalled assertions above but fail this. Critical:
+    // a credential-first write means a step-1 failure could orphan a
+    // credential row, defeating the dual-store recovery semantics.
+    expect(callOrder).toEqual(["workspace_plugins.insert", "integration_credentials.save"]);
 
     // integration_credentials write via saveCredentialBundle.
     expect(mockSaveCredentialBundle).toHaveBeenCalledTimes(1);

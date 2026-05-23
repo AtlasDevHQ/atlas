@@ -584,27 +584,34 @@ integrations.openapi(callbackRoute, async (c) =>
 // DELETE /:platform — disconnect a Platform install
 //
 // Tears down a Platform install in two stores in the order mandated by
-// ADR-0003:
+// ADR-0003 / ADR-0005:
 //
-//   1. `chat_cache:<platform>:installation:<teamId>` — credentials
-//   2. `workspace_plugins` row — install metadata
+//   1. Credential row — `chat_cache:<platform>:installation:<teamId>`
+//      for Slack, or the `integration_credentials` row keyed by
+//      (workspace_id, catalog_id) for lazy OAuth integrations
+//      (Salesforce today; future Jira / etc.).
+//   2. `workspace_plugins` row — install metadata.
 //
 // Order is load-bearing: the credential row MUST go first. If the
 // workspace_plugins delete then fails the install row dangles, but
 // the next event's downstream credential resolution misses on the
-// already-cleared chat_cache row and the listener short-circuits
-// silently (the WorkspaceInstallGate itself only joins the install +
-// catalog + organization tables — it does NOT check credentials, so
-// it returns true on the dangling row; the silent skip happens one
-// step later in the per-event handler). The workspace is safe either
-// way. The reverse order opens the failure mode where the install
-// row is gone but a bot token is still resident in chat_cache with
-// no admin-visible UI to reach it.
+// already-cleared credential store and the listener / agent loop
+// short-circuits with a clear "credential missing" signal (the
+// WorkspaceInstallGate itself only joins the install + catalog +
+// organization tables — it does NOT check credentials; the silent skip
+// or explicit-error happens one step later in the per-event handler
+// or the LazyPluginLoader builder). The workspace is safe either way.
+// The reverse order opens the failure mode where the install row is
+// gone but a credential is still resident with no admin-visible UI to
+// reach it.
 //
-// Per-Platform credential teardown is dispatched by slug — currently
-// only `slack` is wired (it's the only Platform with an OAuth install
-// handler today). Other slugs surface 501 rather than a no-op so the
-// admin sees a real error if they try.
+// Per-Platform credential teardown is dispatched by slug:
+//   - `slack` → chat_cache (legacy two-store, ADR-0003)
+//   - Anything in `INTEGRATION_CREDENTIALS_SLUGS` →
+//     `integration_credentials` (lazy OAuth, ADR-0005)
+//
+// Other slugs surface 501 rather than a no-op so the admin sees a
+// real error if they try.
 // ---------------------------------------------------------------------------
 
 interface InstallRowFromDb extends Record<string, unknown> {
@@ -643,8 +650,18 @@ async function getCatalogRowBySlugForDisconnect(slug: string): Promise<{
  * (workspace_id, catalog_id). Salesforce ships first (#2658); future
  * lazy OAuth integrations (Jira, etc.) join the set as they land.
  *
+ * Adding a new lazy OAuth integration requires (per the "Consequences"
+ * section of ADR-0005):
+ *   1. One line here.
+ *   2. A `<slug>-oauth-handler.ts` + `<slug>-token-refresh.ts` pair.
+ *   3. Registration in `lib/integrations/install/register.ts`
+ *      (handler + LazyPluginLoader builder, env-gated together).
+ *   4. A catalog entry in `deploy/api/atlas.config.ts`.
+ *
  * Kept as a Set rather than a single `=== "salesforce"` check so the
  * one-line addition for the next integration is obvious.
+ *
+ * @see docs/adr/0005-integration-credentials-table.md
  */
 const INTEGRATION_CREDENTIALS_SLUGS = new Set<string>(["salesforce"]);
 

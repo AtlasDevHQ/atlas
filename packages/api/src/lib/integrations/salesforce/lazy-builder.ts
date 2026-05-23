@@ -25,12 +25,16 @@
  * timeout is operator-configurable and we don't trust the cached
  * value) doesn't trigger spurious refreshes.
  *
- * Cache eviction: on permanent refresh failure (`invalid_grant`), the
- * `SalesforceReconnectRequiredError` propagates. The agent's tool
- * wrapper should call `lazyPluginLoader.evict(workspaceId,
- * "catalog:salesforce")` so the next call rebuilds from the fresh
- * `workspace_plugins.config` (which now carries `status:
- * "reconnect_needed"` thanks to the refresh flow's UPDATE).
+ * Cache eviction: on permanent refresh failure (`invalid_grant` and
+ * friends), `withRetry` evicts THIS instance from `lazyPluginLoader`
+ * before re-throwing `SalesforceReconnectRequiredError`. The next
+ * tool-call rebuilds from the fresh `workspace_plugins.config`
+ * (which now carries `status: "reconnect_needed"` thanks to the
+ * refresh flow's UPDATE) and the build short-circuits to
+ * `SalesforceReconnectRequiredError` at the status check — the agent
+ * sees a specific "Reconnect" error instead of cycling through
+ * INVALID_SESSION_ID / refresh / fail on every call until process
+ * restart.
  *
  * @see packages/api/src/lib/plugins/lazy-loader.ts — generic loader
  * @see ./../install/salesforce-token-refresh.ts — refresh + reconnect surface
@@ -43,9 +47,10 @@ import {
   refreshSalesforceToken,
   SalesforceReconnectRequiredError,
 } from "@atlas/api/lib/integrations/install/salesforce-token-refresh";
-import type {
-  LazyPluginBuilder,
-  LazyPluginBuilderArgs,
+import {
+  lazyPluginLoader,
+  type LazyPluginBuilder,
+  type LazyPluginBuilderArgs,
 } from "@atlas/api/lib/plugins/lazy-loader";
 import type { PluginLike } from "@atlas/api/lib/plugins/registry";
 
@@ -135,6 +140,7 @@ export function createSalesforceLazyBuilder(
     const status = readInstallStatus(installConfig);
     if (status === "reconnect_needed") {
       throw new SalesforceReconnectRequiredError({
+        message: "Salesforce install needs to be reconnected — workspace_plugins.config.status is reconnect_needed.",
         workspaceId,
         upstreamError: "install_marked_reconnect_needed",
       });
@@ -182,8 +188,10 @@ export function createSalesforceLazyBuilder(
      * Run a callback against jsforce; on INVALID_SESSION_ID, refresh
      * the token (via {@link refreshSalesforceToken} — which writes to
      * `integration_credentials` and clears reconnect_needed) and
-     * retry once. On permanent refresh failure, propagate so the agent
-     * tool wrapper evicts the cached instance and surfaces "Reconnect".
+     * retry once. On permanent refresh failure, evict THIS cached
+     * instance before re-throwing so the next tool-call rebuilds
+     * from the fresh `workspace_plugins.config` and short-circuits
+     * to `SalesforceReconnectRequiredError` at the status check.
      */
     async function withRetry<T>(fn: (c: typeof conn) => Promise<T>): Promise<T> {
       try {
@@ -191,18 +199,34 @@ export function createSalesforceLazyBuilder(
       } catch (err) {
         if (!isSessionExpiredError(err)) throw err;
         log.info({ workspaceId }, "Salesforce session expired — refreshing token");
-        const refreshed = await refreshSalesforceToken({
-          workspaceId,
-          clientId: config.clientId,
-          clientSecret: config.clientSecret,
-          loginUrl: config.loginUrl,
-        });
-        activeAccessToken = refreshed.accessToken;
-        conn = new jsforce.Connection({
-          instanceUrl: refreshed.instanceUrl,
-          accessToken: activeAccessToken,
-        });
-        return await fn(conn);
+        try {
+          const refreshed = await refreshSalesforceToken({
+            workspaceId,
+            clientId: config.clientId,
+            clientSecret: config.clientSecret,
+            loginUrl: config.loginUrl,
+          });
+          activeAccessToken = refreshed.accessToken;
+          conn = new jsforce.Connection({
+            instanceUrl: refreshed.instanceUrl,
+            accessToken: activeAccessToken,
+          });
+          return await fn(conn);
+        } catch (refreshErr) {
+          // Permanent failure (revoked Connected App, deleted user, etc.)
+          // must NOT keep the cached instance alive — the next tool call
+          // would loop forever on stale credentials. Evict so the next
+          // call rebuilds, reads the fresh `status: "reconnect_needed"`,
+          // and surfaces the specific error to the agent.
+          if (refreshErr instanceof SalesforceReconnectRequiredError) {
+            // Fire-and-forget evict — `evict` only logs on teardown
+            // failure; we don't want a logger glitch to mask the
+            // underlying refresh error. Tagged as void to silence the
+            // floating-promise check.
+            void lazyPluginLoader.evict(workspaceId, catalogId);
+          }
+          throw refreshErr;
+        }
       }
     }
 

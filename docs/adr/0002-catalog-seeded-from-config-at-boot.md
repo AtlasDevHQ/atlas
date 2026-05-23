@@ -1,9 +1,10 @@
 # ADR-0002: Plugin Catalog is seeded from `atlas.config.ts` at boot (S3)
 
-**Status:** Accepted
+**Status:** Accepted (partially superseded by [ADR-0007](./0007-unified-install-pipeline.md))
 **Date:** 2026-05-19
 **Context milestone:** Multi-Adapter SaaS Readiness (forthcoming)
 **Depends on:** [ADR-0001](./0001-saas-uses-one-app-registration-per-platform.md)
+**Partially superseded by:** [ADR-0007](./0007-unified-install-pipeline.md) — built-in Datasource catalog rows (Postgres, MySQL, Snowflake, …) are seeded by Atlas code at boot, not declared in `atlas.config.ts`. The "config is the canonical authoring surface" principle below remains accurate for eager plugins (chat) and operator-specific catalog entries, but is narrowed to exclude built-in Atlas datasources.
 
 ## Context
 

@@ -4,20 +4,49 @@ Canonical terminology for Atlas. This document is a glossary, not a spec — imp
 
 When you find yourself reaching for one of these words, use the canonical form. When you see a term used loosely in conversation or code, sharpen it back to one of these.
 
-## Chat-platform integration
+## Pillars
+
+Atlas reaches the outside world in three distinct ways. A given **catalog row** fits in exactly one pillar; the split matters because the install lifecycle, credential storage, and admin UX differ across them. Some third-party *systems* span pillars by carrying multiple catalog rows — see "Multi-pillar systems" below.
+
+- **Datasource** — a third-party system Atlas *reads* tabular data from to answer questions. Configured in `/admin/connections`, queried by the agent via the `executeSQL` tool, backed by `semantic/entities/*.yml`. Examples: Postgres, MySQL, Snowflake, ClickHouse, BigQuery, DuckDB, Salesforce (SOQL).
+  _Avoid_: Connector, "data source" (two words), "DB connection" (means the pool, not the third-party system).
+
+- **Chat Platform** — a third-party chat service through which customers *talk to* Atlas. Atlas listens for messages and replies. Examples: Slack, Microsoft Teams, Discord, Google Chat, Telegram, WhatsApp.
+  _Avoid_: bare "Platform" (overloaded historically — always say "Chat Platform" when you mean the chat surface), "chat integration", "chat service".
+
+- **Action Target** — a third-party system Atlas *writes to or acts on* (creates issues, sends emails, fires webhooks). The customer doesn't talk to Atlas through these; Atlas reaches out. Examples: GitHub, Linear, Email (SMTP), Webhooks.
+  _Avoid_: "Outbound integration", "Action Integration". Bare "Integration" is ambiguous — it can mean a Chat Platform, an Action Target, or the umbrella over the latter two.
+
+### One user-facing surface per pillar
+
+A given third-party system appears on **exactly one** admin page, determined by its pillar:
+
+- Datasource → `/admin/connections`
+- Chat Platform → `/admin/integrations` (chat section)
+- Action Target → `/admin/integrations` (actions section)
+
+The install **handler** it uses (OAuth, Form, Static-bot per "Install models" below) is orthogonal to the pillar. A Datasource can use OAuth (Salesforce), a Chat Platform can use Static-bot (Telegram), an Action Target can use Form (Webhook). Pillar determines *where it appears*; install handler determines *how credentials are obtained*. Conflating the two would put OAuth-installed Datasources on the integrations page just because OAuth is "where catalog cards live today" — that's an install-mechanism leak into user-facing taxonomy.
+
+### Anti-confusions across pillars
+
+- "Salesforce integration" is ambiguous — Salesforce is a **Datasource** (read via SOQL), not an Action Target, even though it has an OAuth install dance that looks superficially like GitHub's. Its UI home is `/admin/connections`.
+- "GitHub integration" is ambiguous — GitHub is an **Action Target** (Atlas creates issues, comments). It is *not* a Chat Platform, even though CONTEXT.md historically lumped it in alongside Slack.
+- "Connection" is overloaded — say **Datasource** (the third-party system) or **Workspace Connection** (the chat OAuth handshake, defined below). Never just "connection" in glossary-relevant prose.
+
+## Chat Platform mechanics
 
 These four terms are distinct and frequently confused. Pin them.
 
-- **Platform** — the third-party chat service (Slack, Microsoft Teams, Discord, Google Chat, Telegram, GitHub, Linear, WhatsApp). Atlas does not own this; we integrate with it.
-- **Adapter** — the Atlas-side code under `plugins/chat/src/adapters/<platform>.ts` that translates Platform events into the chat-SDK's neutral shape. One adapter per Platform. Lives in the `@useatlas/chat` plugin.
-- **App Registration** — the operator's developer-portal record with a Platform vendor (e.g. "Atlas" as a Slack App in the Slack API console). Carries the `client_id` / `client_secret` / redirect URIs / event-subscription endpoints. **One per Platform per Atlas deployment.** A SaaS operator runs one App Registration per supported Platform; a self-host operator can run their own.
-- **Workspace Connection** — the OAuth-completed link between a single customer Workspace and a single Platform, holding the customer's per-workspace bot token in the chat-SDK's state store (`chat_cache:slack:installation:<teamId>` and equivalents). One per (Workspace × Platform) pair.
+- **Chat Platform** — see Pillars above. Slack-shaped surfaces only (Slack, Teams, Discord, Google Chat, Telegram, WhatsApp).
+- **Adapter** — the Atlas-side code under `plugins/chat/src/adapters/<platform>.ts` that translates Chat Platform events into the chat-SDK's neutral shape. One adapter per Chat Platform. Lives in the `@useatlas/chat` plugin.
+- **App Registration** — the operator's developer-portal record with a Chat Platform vendor (e.g. "Atlas" as a Slack App in the Slack API console). Carries the `client_id` / `client_secret` / redirect URIs / event-subscription endpoints. **One per Chat Platform per Atlas deployment.** A SaaS operator runs one App Registration per supported Chat Platform; a self-host operator can run their own. Action Targets may also have App Registrations (e.g. a GitHub App), but the term originated and is most load-bearing for the chat pillar.
+- **Workspace Connection** — the OAuth-completed link between a single customer Workspace and a single Chat Platform, holding the customer's per-workspace bot token in the chat-SDK's state store (`chat_cache:slack:installation:<teamId>` and equivalents). One per (Workspace × Chat Platform) pair. **Chat-pillar specific** — Action Target installs persist credentials elsewhere (see `db/secret-encryption.ts`) and are described as **Workspace Installs**, not Workspace Connections.
 
 ### Cardinality
 
-- App Registrations: `Platform → 1` per deployment (operator-owned)
-- Workspace Connections: `(Workspace, Platform) → 1` (customer-owned, OAuth-completed)
-- Adapters in code: `Platform → 1` per Atlas codebase (always present, conditionally activated)
+- App Registrations: `Chat Platform → 1` per deployment (operator-owned)
+- Workspace Connections: `(Workspace, Chat Platform) → 1` (customer-owned, OAuth-completed)
+- Adapters in code: `Chat Platform → 1` per Atlas codebase (always present, conditionally activated)
 
 ### Anti-confusions
 
@@ -41,9 +70,22 @@ A Workspace Connection (per above) is established differently depending on the P
 
 The handlers share the workspace-install shape (a `workspace_plugins` row gets created in all three cases) but differ in what gets persisted as credentials. `StaticBotInstallHandler` is essentially a degenerate form-install where the "credentials" are routing identifiers, not secrets.
 
-### Multi-mode Platforms
+### Multi-pillar systems
 
-Some Platforms support multiple install models. Linear has both OAuth-app and API-key modes; GitHub has App-multi-tenant, App-single-tenant, and PAT modes. Treat each `(Platform, install_mode)` pair as a **separate catalog row** rather than one row with a mode toggle. The catalog query stays simple (`SELECT … WHERE install_model = 'oauth'` for handler dispatch); the admin UI renders distinct cards ("Linear (OAuth)" and "Linear (API Key)") so the customer admin sees the real trade-off. Naming convention: catalog slug is `<platform>-<mode>` for non-default modes (e.g. `linear` for OAuth as default, `linear-apikey` for the API-key alternative).
+Some third-party systems are useful in more than one pillar. GitHub is the canonical example: it's an **Action Target** (Atlas creates issues, comments, opens PRs) *and* a **Datasource** (Atlas queries issues, PRs, commits for analytics). Linear is similar.
+
+The pattern: one **catalog row per (system, pillar)**, not one row that spans pillars. So GitHub-as-Action-Target ships as catalog slug `github` (Action Target) and a future GitHub-as-Datasource ships as catalog slug `github-data` (Datasource, lives on `/admin/connections`). Each row has its own install (likely different OAuth scopes), its own credentials, its own disconnect.
+
+Why split rather than one-row-many-pillars:
+- **Least privilege.** A customer who wants Atlas to query GitHub data is not necessarily the same customer who wants Atlas to write to GitHub. Bundling forces a permission superset.
+- **Disconnect semantics stay obvious.** Removing the Datasource row doesn't remove the Action Target row; each pillar's surface owns its own lifecycle.
+- **The one-surface-per-pillar rule survives.** Each row appears on exactly one admin page.
+
+The UX cost — "I already connected GitHub, why am I being asked again?" — is mitigated by the second install detecting existing credentials and offering "Extend scopes" instead of a fresh "Connect."
+
+### Multi-mode integrations
+
+Some integrations support multiple install models *within the same pillar*. Linear-as-Action-Target has both OAuth-app and API-key modes; GitHub-as-Action-Target has App-multi-tenant, App-single-tenant, and PAT modes. Treat each `(integration, install_mode)` pair as a **separate catalog row** rather than one row with a mode toggle. (Combined with the multi-pillar rule above: total catalog rows for a system = pillars × install_modes-per-pillar.) The catalog query stays simple (`SELECT … WHERE install_model = 'oauth'` for handler dispatch); the admin UI renders distinct cards ("Linear (OAuth)" and "Linear (API Key)") so the customer admin sees the real trade-off. Naming convention: catalog slug is `<platform>-<mode>` for non-default modes (e.g. `linear` for OAuth as default, `linear-apikey` for the API-key alternative).
 
 ### SaaS-vs-self-host eligibility
 

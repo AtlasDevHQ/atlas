@@ -188,13 +188,25 @@ describe("createSlackWorkspaceIdResolver", () => {
     expect(mockLogWarn).not.toHaveBeenCalled();
   });
 
-  it("returns null when the installation exists but org_id is null", async () => {
-    // Slack installations can exist without an org binding (e.g. an
-    // install that hasn't completed onboarding). Treat as unknown.
+  it("returns null + logs warn when the installation exists but org_id is null (contract violation)", async () => {
+    // Post-#2677: distinguish "unknown tenant" (row absent) from
+    // "contract violation" (row exists, Atlas-extension orgId missing).
+    // The latter is the #2676 outage mode — the chat-adapter wrote the
+    // row without orgId. The pg-adapter JSONB merge fixes the write
+    // side; this warn catches any write path that still bypasses it
+    // (e.g. a future state backend, or a direct INSERT).
     mockGetInstallation.mockImplementation(async () => withOrg(null));
     const resolver = createSlackWorkspaceIdResolver();
     const out = await resolver(makeEvent({ raw: { team_id: "T-unbound" } }));
     expect(out).toBeNull();
+
+    expect(mockLogWarn).toHaveBeenCalledTimes(1);
+    const [payload, message] = mockLogWarn.mock.calls[0] as [
+      Record<string, unknown>,
+      string,
+    ];
+    expect(payload.teamId).toBe("T-unbound");
+    expect(message).toContain("orgId");
   });
 
   it("returns null + logs warn when the store throws", async () => {

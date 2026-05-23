@@ -100,7 +100,27 @@ export function createSlackWorkspaceIdResolver(): (
 
     try {
       const installation = await getInstallation(teamId);
-      return installation?.org_id ?? null;
+      if (!installation) return null;
+      if (!installation.org_id) {
+        // Contract violation, not "unknown tenant": the row exists in
+        // `chat_cache` (so an OAuth install completed for this team) but
+        // the `orgId` Atlas extension is missing. Was the silent failure
+        // mode in #2676 — the chat-adapter's `setInstallation` rewrote
+        // the row without orgId on every event, so this resolver
+        // null-returned without leaving a trace and every event got
+        // silently dropped as "unknown tenant." Post-#2676 the
+        // pg-adapter JSONB-merges installation keys, so reaching this
+        // branch means a write site bypassed `lib/slack/store` AND the
+        // pg-adapter merge (e.g. a direct INSERT, or a future adapter
+        // backend that doesn't merge). Log so the audit catches it.
+        // See docs/architecture/chat-plugin-atlas-contract.md.
+        log.warn(
+          { teamId },
+          "Proactive workspace resolver: chat_cache row missing orgId Atlas extension — treating as unknown tenant",
+        );
+        return null;
+      }
+      return installation.org_id;
     } catch (err) {
       // `pg`-shaped errors carry a `.code` (e.g. `57P01` admin shutdown,
       // `42P01` undefined-table); spread onto the warn payload so an

@@ -29,19 +29,70 @@ A **Delivery Channels** card at the bottom summarizes all available notification
 
 ---
 
+## Install models
+
+Each catalog entry advertises one **install model** that drives how the Connect button behaves. The 1.5.2 install router (`/api/v1/integrations/:platform/{install,callback,install-form}`) dispatches by `plugin_catalog.install_model`:
+
+| Install model | Endpoint pair | Catalog entries today | What customer admins do |
+|---|---|---|---|
+| `oauth` | `GET /:platform/install` → 302 to provider → `GET /:platform/callback` | Slack, Salesforce, Jira | Click **Connect**, complete the provider OAuth dance, return to `/admin/integrations` |
+| `form` | `POST /:platform/install-form` with JSON body | Email, Webhook, Obsidian | Fill in the per-platform fields the catalog declares (`configSchema`), submit |
+| `static-bot` | _placeholder_ | _(none in the install router today — Discord / Telegram / WhatsApp will move here in a future release; they currently install via the legacy BYOT path below)_ | Capture a per-Workspace routing identifier against an operator-shared bot |
+
+A request to the wrong endpoint for a catalog entry's model returns `400 wrong_install_model` — the UI picks the right surface from the catalog response, so this only fires for direct API callers.
+
+---
+
+## Operator vs customer admin
+
+1.5.2 split the install responsibilities between two roles. This separation is what makes the SaaS deploy at `app.useatlas.dev` self-serve without per-tenant operator work.
+
+**Operator (you, once per Platform — at deploy time)**
+
+- Create the Platform App Registration (Slack App / Atlassian Connected App / Salesforce Connected App / Azure Bot / etc.) under your own provider account.
+- Configure each App's Callback URL to your API's `/api/v1/integrations/<slug>/callback`.
+- Set the per-Platform `<PLATFORM>_CLIENT_ID` / `<PLATFORM>_CLIENT_SECRET` env vars on the API service. Without these, the install handler logs an `"<Platform> OAuth handler not registered"` warning at boot (e.g. `"Slack OAuth handler not registered — SLACK_CLIENT_ID / SLACK_CLIENT_SECRET unset"`) and `GET /api/v1/integrations/<slug>/install` returns `501`.
+- Set `ATLAS_PUBLIC_API_URL` to your API's public origin — install handlers use it to construct the OAuth callback URL, and **Slack registration is skipped entirely** if it is unset.
+- Form-based integrations (Email, Webhook, Obsidian) have no operator-side App Registration — the form handler ships in core.
+
+**Customer admin (workspace admin, every time — at install time)**
+
+- Open `/admin/integrations` and click **Connect** on the platform card.
+- For OAuth: complete the redirect to the provider, approve scopes, return to `/admin/integrations?installed=<platform>`.
+- For form: enter credentials in the modal that pops up, submit.
+- Disconnect from the same card whenever.
+
+The install record (`workspace_plugins`) is keyed by `(workspace_id, catalog_id)` so one customer's install never collides with another's, even though every customer goes through the operator's shared App Registration. The credential row lives in a per-Platform store — see the Architecture callout below.
+
+---
+
+## Architecture
+
+The design space for this surface is recorded in five ADRs under `docs/adr/`:
+
+- [**ADR-0001** — SaaS uses one operator-owned App Registration per Platform](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0001-saas-uses-one-app-registration-per-platform.md). Why the operator config is once-per-deploy, not once-per-tenant.
+- [**ADR-0002** — Plugin Catalog is seeded from `atlas.config.ts` at boot](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0002-catalog-seeded-from-config-at-boot.md). How catalog entries get into `plugin_catalog` and why DB-side `enabled=false` is the operator's kill switch.
+- [**ADR-0003** — Chat Workspace Connections use two stores by concern](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0003-two-store-chat-install-metadata-credentials.md). Why install metadata (`workspace_plugins`) and credentials (chat-adapter store / `integration_credentials`) split — and the load-bearing teardown order at disconnect.
+- [**ADR-0004** — Platform integration OAuth is separate from User OAuth (Better Auth)](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0004-platform-oauth-is-not-better-auth.md). Why `/api/v1/integrations/*` is its own router and doesn't reuse Better Auth's social-login plumbing.
+- [**ADR-0005** — Lazy OAuth integrations use a dedicated credentials table](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0005-integration-credentials-table.md). Why Salesforce + Jira credentials live in `integration_credentials` and not in `chat_cache`.
+
+---
+
 ## Slack
 
-Connect Slack to enable the `/atlas` slash command and thread follow-ups in Slack channels.
+Connect Slack to enable the `/atlas` slash command, `@atlas` mentions in channels, and proactive responses to data questions.
 
-### Self-Hosted Setup
+### Setup (canonical install router)
 
-There are three ways to connect Slack:
+1. **Operator** — Create a [Slack app](https://api.slack.com/apps), configure its OAuth Redirect URL to `https://<your-api>/api/v1/integrations/slack/callback`, and set `SLACK_CLIENT_ID` + `SLACK_CLIENT_SECRET` on the API service. (`ATLAS_PUBLIC_API_URL` should be set so the callback URL is constructed correctly.)
+2. **Customer admin** — Click **Connect to Slack** on the Slack card in `/admin/integrations`. Atlas redirects to Slack's OAuth flow; on return the bot token is persisted via the chat-adapter store and the install metadata lands in `workspace_plugins` keyed to the caller's workspace.
 
-1. **OAuth (recommended)** — Set `SLACK_CLIENT_ID` and `SLACK_CLIENT_SECRET`, then click **Connect to Slack** in the admin UI. This opens Slack's OAuth flow and stores the token per-workspace.
+### Self-hosted fallbacks
 
-2. **Bot token (BYOT)** — If OAuth is not configured but an internal database is available (`DATABASE_URL`), the card shows a bot token form. Create a [Slack app](https://api.slack.com/apps), copy the Bot User OAuth Token (`xoxb-...`), and enter it on the Integrations page. The token is validated via `auth.test` and stored per-workspace.
+Self-hosted deployments without `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET` configured still have two fallback paths:
 
-3. **Environment variable** — Set `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET` directly. The integration shows as connected, but cannot be managed from the UI.
+- **Bot token (BYOT)** — When an internal database is available (`DATABASE_URL`), the card shows a bot token form. Create a [Slack app](https://api.slack.com/apps), copy the Bot User OAuth Token (`xoxb-...`), and enter it. The token is validated via `auth.test` and stored per-workspace via `POST /api/v1/admin/integrations/slack/byot`.
+- **Environment variable** — Set `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET` directly. The integration shows as connected, but cannot be managed from the UI.
 
 <Callout type="info">
 When using environment variables, the Slack card shows "Using environment variable (SLACK_BOT_TOKEN)" and the Disconnect button is hidden. To enable self-serve management, configure OAuth credentials or use the BYOT token form.
@@ -49,7 +100,7 @@ When using environment variables, the Slack card shows "Using environment variab
 
 ### SaaS Mode
 
-In SaaS deployments, workspace admins see a **Connect to Slack** button if the platform has OAuth configured. If OAuth is not configured, the card falls back to the BYOT token form (since SaaS always has an internal database). The card only shows **Not Available** when neither OAuth nor BYOT is possible.
+In SaaS deployments, workspace admins see a **Connect to Slack** button — OAuth is always the path. If for some reason OAuth isn't configured on the deploy, the card falls back to the BYOT token form (SaaS always has an internal database). The card only shows **Not Available** when neither OAuth nor BYOT is possible.
 
 ### Disconnecting
 
@@ -256,6 +307,8 @@ Click **Disconnect** and confirm. WhatsApp messaging stops working until you rec
 
 Configure email delivery for digests and notifications. Email supports multiple providers: **SMTP**, **SendGrid**, **Postmark**, and **Amazon SES**.
 
+Email uses the **form-based install model** (`POST /api/v1/integrations/email/install-form`) — there is no operator-side App Registration. The catalog entry declares the provider-specific fields and the install handler validates + persists them. Secret fields (passwords, API keys) are encrypted at rest via the same `encryptSecretFields` path the other form-based integrations use.
+
 ### Setup
 
 Email integration requires an internal database (`DATABASE_URL`). Each workspace admin configures their own email delivery provider.
@@ -307,7 +360,7 @@ In SaaS mode with webhook support enabled, a **Create Webhook** link navigates t
 
 ### Outbound Webhook (HMAC-signed)
 
-The `webhook` integration card lets the agent POST analysis output to a customer-managed HTTPS endpoint with HMAC-SHA256 signing.
+The `webhook` integration card lets the agent POST analysis output to a customer-managed HTTPS endpoint with HMAC-SHA256 signing. Uses the **form-based install model** (`POST /api/v1/integrations/webhook/install-form`) — no operator-side App Registration needed.
 
 Install via **Integrations → Webhook → Connect**. The form captures:
 
@@ -332,7 +385,7 @@ function verify(signingSecret: string, body: string, signature: string): boolean
 
 ## Obsidian
 
-The `obsidian` integration card lets the agent search the user's connected Obsidian vault.
+The `obsidian` integration card lets the agent search the user's connected Obsidian vault. Uses the **form-based install model** (`POST /api/v1/integrations/obsidian/install-form`) — no operator-side App Registration needed.
 
 ### Prerequisites
 
@@ -372,30 +425,46 @@ The integration is read-only — the agent can search the vault but never writes
 
 ## API Endpoints
 
-All endpoints require admin authentication.
+The 1.5.2 install surface lives under `/api/v1/integrations/*` and is what the `/admin/integrations` card UI calls. All endpoints require an authenticated workspace admin (per [ADR-0004](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0004-platform-oauth-is-not-better-auth.md) — this is _Platform_ OAuth, separate from User OAuth via Better Auth) **except** `GET /:platform/callback`, which is the OAuth provider redirect and is authenticated by the signed state token bound at install time.
+
+### Install + manage (canonical, 1.5.2)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/v1/admin/integrations/status` | Get all integration statuses |
-| `POST` | `/api/v1/admin/integrations/slack/byot` | Connect Slack via bot token (BYOT) |
-| `DELETE` | `/api/v1/admin/integrations/slack` | Disconnect Slack |
-| `POST` | `/api/v1/admin/integrations/teams/byot` | Connect Teams via app credentials (BYOT) |
-| `DELETE` | `/api/v1/admin/integrations/teams` | Disconnect Teams |
-| `POST` | `/api/v1/admin/integrations/discord/byot` | Connect Discord via bot credentials (BYOT) |
-| `DELETE` | `/api/v1/admin/integrations/discord` | Disconnect Discord |
-| `POST` | `/api/v1/admin/integrations/telegram` | Connect Telegram (validates bot token) |
-| `DELETE` | `/api/v1/admin/integrations/telegram` | Disconnect Telegram |
-| `POST` | `/api/v1/admin/integrations/gchat` | Connect Google Chat (validates service account JSON) |
-| `DELETE` | `/api/v1/admin/integrations/gchat` | Disconnect Google Chat |
-| `POST` | `/api/v1/admin/integrations/github` | Connect GitHub (validates PAT via GitHub API) |
-| `DELETE` | `/api/v1/admin/integrations/github` | Disconnect GitHub |
-| `POST` | `/api/v1/admin/integrations/linear` | Connect Linear (validates API key) |
-| `DELETE` | `/api/v1/admin/integrations/linear` | Disconnect Linear |
-| `POST` | `/api/v1/admin/integrations/whatsapp` | Connect WhatsApp (validates Cloud API credentials) |
-| `DELETE` | `/api/v1/admin/integrations/whatsapp` | Disconnect WhatsApp |
-| `POST` | `/api/v1/admin/integrations/email` | Connect email provider (SMTP, SendGrid, Postmark, SES) |
-| `POST` | `/api/v1/admin/integrations/email/test` | Send test email using saved config |
-| `DELETE` | `/api/v1/admin/integrations/email` | Disconnect email provider |
+| `GET` | `/api/v1/integrations/catalog` | List installable platforms for the current workspace, with `installStatus` per row. Above-plan rows are returned with `upsellOnly: true` so the UI renders a read-only upsell card. SaaS deploys also filter to `saas_eligible = true` rows. |
+| `GET` | `/api/v1/integrations/:platform/install` | Start the OAuth dance — 302 to the provider's authorize URL. The state token binds the resulting install to the caller's workspace. `400 wrong_install_model` if the platform isn't OAuth; `501 handler_unavailable` if the operator didn't wire `<PLATFORM>_CLIENT_ID` / `<PLATFORM>_CLIENT_SECRET`. |
+| `GET` | `/api/v1/integrations/:platform/callback` | OAuth return path — exchanges the `code` + persists install metadata (`workspace_plugins`) and credentials (Slack writes to `chat_cache`; Salesforce/Jira write to `integration_credentials`). 302s to `/admin/integrations?installed=<platform>` on success, `?reconnect=<platform>` when the OAuth exchange succeeded but the credential write missed, `?error=<platform>&reason=<code>` on hard failure (for browser callers; JSON callers get 400/502). |
+| `POST` | `/api/v1/integrations/:platform/install-form` | Submit form-based install (no OAuth) — JSON body shaped to the catalog entry's `configSchema`. Validates server-side; returns `400 invalid_form_data` with `fieldErrors` for per-field detail. Used by Email, Webhook, Obsidian. |
+| `DELETE` | `/api/v1/integrations/:platform` | Disconnect — tears down both stores in the ADR-0003 order (credential row FIRST, install record SECOND). For Slack the credential row lives in `chat_cache`; for Salesforce / Jira it lives in `integration_credentials`. Succeeds even when ops has kill-switched the catalog entry via `enabled=false` so credentials aren't stranded. **MFA required** for any managed-auth admin session (both SaaS and self-hosted with managed auth — `shouldRequireMfaForAuthResult` does not branch on deploy mode). **Coverage today:** Slack, Salesforce, Jira. Form-based platforms (Email, Webhook, Obsidian) return `501 disconnect_unavailable` from this route — disconnect them via the platform-specific legacy paths listed below until the form-handler teardown lands. |
+
+### Status + legacy admin (BYOT, pre-1.5.2)
+
+The admin `status` endpoint is still consumed by the integrations page header for the aggregated counts. The BYOT POST endpoints predate the install router and remain available whenever the operator hasn't (or won't) configure Platform OAuth — `Connect` falls through to the platform-specific BYOT form when OAuth isn't wired (`canByot = !canConnect && hasInternalDB` in `packages/web/src/app/admin/integrations/page.tsx`). SaaS deploys always have an internal DB, so a BYOT card surfaces in SaaS too when its Platform OAuth is unconfigured — keep this in mind during OAuth misconfiguration triage.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/admin/integrations/status` | Aggregated status for every integration on the current workspace. |
+| `POST` | `/api/v1/admin/integrations/slack/byot` | Connect Slack via bot token (validates via `auth.test`). |
+| `POST` | `/api/v1/admin/integrations/teams/byot` | Connect Teams via app credentials (validates via Azure AD client credentials). |
+| `POST` | `/api/v1/admin/integrations/discord/byot` | Connect Discord via bot credentials (validates via Discord API). |
+| `POST` | `/api/v1/admin/integrations/telegram` | Connect Telegram (validates bot token). |
+| `POST` | `/api/v1/admin/integrations/gchat` | Connect Google Chat (validates service account JSON). |
+| `POST` | `/api/v1/admin/integrations/github` | Connect GitHub (validates PAT via GitHub API). |
+| `POST` | `/api/v1/admin/integrations/linear` | Connect Linear (validates API key). |
+| `POST` | `/api/v1/admin/integrations/whatsapp` | Connect WhatsApp (validates Cloud API credentials). |
+| `POST` | `/api/v1/admin/integrations/email` | Connect email provider (SMTP, SendGrid, Postmark, SES). |
+| `POST` | `/api/v1/admin/integrations/email/test` | Send test email using saved config. |
+| `DELETE` | `/api/v1/admin/integrations/slack` | Legacy Slack disconnect — pre-1.5.2 path. Prefer `DELETE /api/v1/integrations/slack` (above) for new clients. |
+| `DELETE` | `/api/v1/admin/integrations/teams` | Legacy Teams disconnect. |
+| `DELETE` | `/api/v1/admin/integrations/discord` | Legacy Discord disconnect. |
+| `DELETE` | `/api/v1/admin/integrations/telegram` | Legacy Telegram disconnect. |
+| `DELETE` | `/api/v1/admin/integrations/gchat` | Legacy Google Chat disconnect. |
+| `DELETE` | `/api/v1/admin/integrations/github` | Legacy GitHub disconnect. |
+| `DELETE` | `/api/v1/admin/integrations/linear` | Legacy Linear disconnect. |
+| `DELETE` | `/api/v1/admin/integrations/whatsapp` | Legacy WhatsApp disconnect. |
+| `DELETE` | `/api/v1/admin/integrations/email` | Legacy email-provider disconnect. |
+
+The legacy admin router exposes explicit per-platform DELETE routes (no wildcard `/:slug` handler) — list above is exhaustive. For Slack / Salesforce / Jira prefer the canonical `DELETE /api/v1/integrations/:platform` (above) — it owns the dual-store teardown order.
 
 ---
 

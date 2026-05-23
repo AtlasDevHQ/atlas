@@ -18,13 +18,13 @@ import { z } from "zod";
 
 export interface WebhookActionPluginConfig {
   /** Destination URL — must be https. */
-  url: string;
+  readonly url: string;
   /** HMAC-SHA256 signing secret. */
-  signing_secret: string;
+  readonly signing_secret: string;
   /** Retry behavior on 5xx / network failure. Defaults to "exponential". */
-  retry_policy?: "none" | "exponential";
+  readonly retry_policy?: "none" | "exponential";
   /** Optional approval mode. Defaults to "admin-only" for safety. */
-  approvalMode?: "auto" | "manual" | "admin-only";
+  readonly approvalMode?: "auto" | "manual" | "admin-only";
 }
 
 // ---------------------------------------------------------------------------
@@ -55,6 +55,12 @@ export interface WebhookPostResult {
   signature: string;
 }
 
+/**
+ * Exponential ramp for transient 5xx / network failures. Total budget
+ * ~5.25s across 4 attempts — short enough that the agent loop's
+ * tool-call timeout doesn't fire mid-retry, long enough that a brief
+ * destination blip recovers without surfacing as a tool failure.
+ */
 const RETRY_DELAYS_MS = [250, 1_000, 4_000] as const;
 
 export async function executeWebhookPost(
@@ -87,6 +93,13 @@ export async function executeWebhookPost(
       // Network / timeout error — retryable under exponential, not under none.
       lastError = err;
       if (retryPolicy === "none") throw err;
+      // Plugins have no logger context handle here (initialize ctx is
+      // not threaded into the tool execute closure); console.warn is the
+      // only breadcrumb path. Visible in the agent loop's stderr so an
+      // operator can correlate retries with destination outages.
+      console.warn(
+        `[webhook-action] attempt ${i + 1}/${maxAttempts} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
 
     if (response) {
@@ -102,6 +115,9 @@ export async function executeWebhookPost(
         );
       }
       lastError = new Error(`Webhook POST failed: HTTP ${response.status}`);
+      console.warn(
+        `[webhook-action] attempt ${i + 1}/${maxAttempts} returned HTTP ${response.status}`,
+      );
     }
 
     if (i < maxAttempts - 1) {
@@ -119,6 +135,9 @@ async function safeErrorDetail(response: Response): Promise<string> {
     const text = await response.text();
     return text.length > 200 ? `${text.slice(0, 200)}…` : text;
   } catch {
+    // intentionally ignored: response body is unreadable (already consumed
+    // or stream closed) — status code on the thrown error still carries
+    // the signal; the body excerpt was a best-effort breadcrumb.
     return "";
   }
 }

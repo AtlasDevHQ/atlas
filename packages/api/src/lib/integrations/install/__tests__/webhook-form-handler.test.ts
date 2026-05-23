@@ -239,3 +239,21 @@ describe("WebhookFormInstallHandler — SaaS keyset gate", () => {
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cross-schema agreement — pins that the Zod schema, the secret-fields
+// schema (encryptSecretFields routing), and the catalog `configSchema`
+// in `deploy/api/atlas.config.ts` stay in lockstep. Mirrors the Email
+// test at email-form-handler.test.ts:275-287.
+// ---------------------------------------------------------------------------
+
+describe("WebhookFormInstallHandler — cross-schema agreement", () => {
+  it("WebhookFormDataSchema accepts exactly the canonical webhook field set", async () => {
+    const mod = await import("../webhook-form-handler");
+    const zodKeys = Object.keys(
+      (mod.WebhookFormDataSchema as unknown as { shape: Record<string, unknown> }).shape,
+    ).sort();
+    const expected = ["retry_policy", "signing_secret", "url"];
+    expect(zodKeys).toEqual(expected);
+  });
+});

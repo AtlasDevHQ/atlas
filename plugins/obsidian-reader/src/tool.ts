@@ -23,9 +23,9 @@ import { z } from "zod";
 
 export interface ObsidianReaderPluginConfig {
   /** Base URL of the Obsidian Local REST API. Defaults to `http://127.0.0.1:27123`. */
-  api_url?: string;
+  readonly api_url?: string;
   /** Bearer API key issued by the REST API plugin's settings tab. */
-  api_key: string;
+  readonly api_key: string;
 }
 
 const DEFAULT_API_URL = "http://127.0.0.1:27123";
@@ -41,15 +41,15 @@ export interface ObsidianSearchParams {
 
 export interface ObsidianSearchHit {
   /** Vault-relative path of the matching note. */
-  filename: string;
+  readonly filename: string;
   /** Excerpt(s) around the match, joined with newlines. */
-  excerpt: string;
+  readonly excerpt: string;
   /** REST API match score — higher is more relevant. */
-  score: number;
+  readonly score: number;
 }
 
 export interface ObsidianSearchResult {
-  hits: ObsidianSearchHit[];
+  readonly hits: ReadonlyArray<ObsidianSearchHit>;
 }
 
 /**
@@ -109,7 +109,9 @@ export async function executeObsidianSearch(
   }
 
   if (!Array.isArray(items)) {
-    throw new Error("Obsidian REST API returned non-array search result");
+    throw new Error(
+      `Obsidian REST API returned non-array search result (got ${items === null ? "null" : typeof items})`,
+    );
   }
 
   return {

@@ -1,7 +1,6 @@
 /**
  * Obsidian Reader Plugin — read-only access to an Obsidian vault via
- * the Obsidian Local REST API plugin. Third form-based action plugin
- * shipped under #2661.
+ * the Obsidian Local REST API plugin.
  *
  * @example
  * ```typescript
@@ -51,7 +50,8 @@ export const obsidianReaderPlugin = createPlugin<
       description: PLUGIN_DESCRIPTION,
       tool: obsidianTool,
       actionType: "obsidian:read",
-      // Read-only — no mutation to reverse.
+      // Read-only — nothing to undo, so trivially reversible (matches
+      // the Jira ticket-read convention).
       reversible: true,
       // Read-only — safe to invoke without approval (mirrors executeSQL).
       defaultApproval: "auto",
@@ -86,6 +86,11 @@ export const obsidianReaderPlugin = createPlugin<
             // a "reachable" signal. The agent will surface the auth error
             // on a real call. A flat fail here would block install retries
             // on transient TLS / proxy weirdness in the wider network.
+            if (!response.ok) {
+              // No logger context in healthCheck — emit to stderr so an
+              // operator scanning logs sees the specific misconfig.
+              console.warn("[obsidian-reader] healthCheck: REST API rejected the API key (401)");
+            }
             return response.ok
               ? { healthy: true, latencyMs }
               : { healthy: false, message: "Obsidian REST API rejected the API key", latencyMs };

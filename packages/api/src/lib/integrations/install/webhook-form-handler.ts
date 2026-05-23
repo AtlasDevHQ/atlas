@@ -1,7 +1,5 @@
 /**
- * `WebhookFormInstallHandler` — second {@link FormBasedInstallHandler}
- * implementation (Email shipped in #2697; this handler lands under
- * #2661 alongside Obsidian).
+ * `WebhookFormInstallHandler` — outbound webhook form-based install.
  *
  * Mirrors the Email shape exactly: an admin submits a destination
  * URL + HMAC signing secret + retry policy, the handler validates,

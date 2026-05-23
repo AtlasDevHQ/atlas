@@ -220,3 +220,21 @@ describe("ObsidianFormInstallHandler — SaaS keyset gate", () => {
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cross-schema agreement — mirrors email-form-handler.test.ts:275-287.
+// Drift between the Zod schema, the secret-fields schema, and the
+// catalog configSchema is the easy bug to introduce on a refactor;
+// this pin catches it at test time instead of at first install.
+// ---------------------------------------------------------------------------
+
+describe("ObsidianFormInstallHandler — cross-schema agreement", () => {
+  it("ObsidianFormDataSchema accepts exactly the canonical obsidian field set", async () => {
+    const mod = await import("../obsidian-form-handler");
+    const zodKeys = Object.keys(
+      (mod.ObsidianFormDataSchema as unknown as { shape: Record<string, unknown> }).shape,
+    ).sort();
+    const expected = ["api_key", "api_url"];
+    expect(zodKeys).toEqual(expected);
+  });
+});

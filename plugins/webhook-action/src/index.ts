@@ -1,7 +1,6 @@
 /**
  * Webhook Action Plugin — outbound HTTPS POST with HMAC-SHA256
- * signing. Mirrors the Email plugin's shape — second
- * form-based-install action plugin under #2661.
+ * signing. Mirrors the Email plugin's shape.
  *
  * @example
  * ```typescript

@@ -1,7 +1,5 @@
 /**
- * `ObsidianFormInstallHandler` — third {@link FormBasedInstallHandler}
- * implementation (Email shipped in #2697; Webhook + Obsidian land
- * under #2661).
+ * `ObsidianFormInstallHandler` — Obsidian vault form-based install.
  *
  * Backs an admin form that captures the Obsidian Local REST API
  * endpoint and the per-vault API key. The defaults target the plugin
@@ -17,7 +15,7 @@
  *
  * @see ./types.ts — {@link FormBasedInstallHandler}
  * @see ./email-form-handler.ts — first form handler, shape canon
- * @see ./webhook-form-handler.ts — sibling form handler under #2661
+ * @see ./webhook-form-handler.ts — sibling form handler
  */
 
 import crypto from "crypto";

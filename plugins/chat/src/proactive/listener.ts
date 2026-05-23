@@ -1137,8 +1137,12 @@ export async function registerProactiveListener(
           // Slack code fences render `sql` syntax-highlighting when the
           // info string is set. Multiple queries are concatenated with
           // a blank line between them; the agent typically issues 1-2.
+          // Defensive: replace any triple-backtick sequences inside the
+          // query with a zero-width-joiner-broken form so a malicious
+          // entity name or string literal can't terminate our fence
+          // and inject markdown that renders outside the code block.
           content = payload.sql
-            .map((q) => "```sql\n" + q.trim() + "\n```")
+            .map((q) => "```sql\n" + q.trim().replace(/```/g, "`​``") + "\n```")
             .join("\n\n");
         } else {
           // PROACTIVE_SHOW_DETAILS_ACTION_ID

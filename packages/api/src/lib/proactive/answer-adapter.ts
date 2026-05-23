@@ -600,11 +600,19 @@ export function toProactiveQueryResult(
  * 40k-char block limit even on chatty answers.
  *
  * Caps are applied per-table — a single 10k-row result is summarized;
- * three small results render in full. Truncation is intentionally
- * lossy: the developer view is a convenience disclosure, not the
- * authoritative answer (the actual CSV / dashboard lives in Atlas).
+ * three small results render in full. After per-table truncation, an
+ * overall byte-cap ({@link DEVELOPER_VIEW_MAX_CHARS}) is enforced —
+ * wide columns can push a 50-row table well past Slack's limit even
+ * with the row cap. Truncation is intentionally lossy: the developer
+ * view is a convenience disclosure, not the authoritative answer (the
+ * actual CSV / dashboard lives in Atlas).
  */
 const DEVELOPER_VIEW_ROW_CAP = 50;
+// Slack's max block_kit `text` length is 3000 chars; max post message
+// length is ~40000. We cap well below 40000 so the "```" code fence
+// wrapping the disclosure post (and Slack's own envelope overhead)
+// leaves headroom.
+const DEVELOPER_VIEW_MAX_CHARS = 30_000;
 
 export function renderDataAsMarkdownTables(
   data: ReadonlyArray<{ columns: string[]; rows: Record<string, unknown>[] }>,
@@ -625,11 +633,25 @@ export function renderDataAsMarkdownTables(
       truncatedCount > 0 ? `\n_… ${truncatedCount} more row${truncatedCount === 1 ? "" : "s"} omitted_` : "";
     parts.push([headerLine, separatorLine, ...bodyLines].join("\n") + truncationLine);
   }
-  return parts.join("\n\n");
+  const rendered = parts.join("\n\n");
+  if (rendered.length <= DEVELOPER_VIEW_MAX_CHARS) return rendered;
+  // Overflow: hard-truncate to the byte cap and append a marker so the
+  // reader knows they're seeing a tail-clipped view. Slicing on chars
+  // rather than rows is intentional — a single very-wide row blows the
+  // budget on its own and per-row truncation wouldn't help.
+  return (
+    rendered.slice(0, DEVELOPER_VIEW_MAX_CHARS) +
+    "\n\n_… developer view truncated (exceeded character budget — see Atlas for the full result)_"
+  );
 }
 
 function formatCell(value: unknown): string {
   if (value === null || value === undefined) return "—";
+  // Date arrives as a real Date object from pg's type parser; default
+  // `String(date)` produces a locale-dependent string with no timezone
+  // ("Mon May 23 2026 …") which is ambiguous in a chat post. ISO is
+  // canonical and shorter.
+  if (value instanceof Date) return value.toISOString();
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
 }

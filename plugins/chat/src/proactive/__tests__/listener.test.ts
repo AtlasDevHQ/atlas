@@ -164,7 +164,7 @@ function makeThread(
   // between `thread.id` and `thread.channelId` is preserved in tests.
   const threadTs = opts.threadTs ?? "1700000000.000100";
   const id = `${channelId}:${threadTs}`;
-  const post = mock(async () => ({ id: "P1" }));
+  const post = mock(async (_content?: unknown) => ({ id: "P1" }));
   // adapter.postMessage forwards the content to `post` so the existing
   // `expect(thread.post).toHaveBeenCalled()` pattern stays meaningful
   // even after #2704 routed every proactive reply through
@@ -797,6 +797,45 @@ describe("registerProactiveListener — in-thread reply primitive (#2704)", () =
     expect(thread.adapter.postMessage).toHaveBeenCalledTimes(1);
     const [answerReplyThreadId] = recordedReplyThreadIds(thread);
     expect(answerReplyThreadId).toContain("1700000000.111000");
+  });
+
+  it("preserves a production-shape 3-part thread.id verbatim (happy path)", async () => {
+    // The production chat-sdk produces 3-part thread ids of the form
+    // `${platform}:${channel}:${threadTs}`. The existing fixture's
+    // 2-part `channelId:threadTs` ids trip `parts.length < 3` and land
+    // in the synthesized-fallback branch — so without this assertion
+    // the happy-path "return thread.id verbatim" branch is uncovered.
+    // We override `thread.id` directly to inject the production shape
+    // while leaving `channelId` at the 2-part default so the fallback
+    // would produce a DIFFERENT string. The assertion that the post
+    // landed on the 3-part id proves the happy branch ran.
+    const executeQueryProactive: ProactiveExecuteQuery = mock(echoExecute);
+    const { invokeMessage, invokeReaction } = await bootListenerForReactionFlow(
+      linkedOnlyFlow(executeQueryProactive),
+    );
+    const thread = makeThread("C-allowed", { threadTs: "1700000000.222000" });
+    const productionShapeId = `slack:C-allowed:1700000000.222000`;
+    thread.id = productionShapeId;
+    await invokeMessage(thread, makeMessage({ id: "1700000000.222000" }));
+    await invokeReaction({
+      added: true,
+      messageId: "1700000000.222000",
+      threadId: thread.id,
+      thread,
+      user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
+      emoji: PROACTIVE_REACTION,
+      rawEmoji: "robot_face",
+      adapter: { name: "slack" },
+      raw: {},
+    });
+
+    expect(thread.adapter.postMessage).toHaveBeenCalledTimes(1);
+    const [replyThreadId] = recordedReplyThreadIds(thread);
+    // Strict equality, not `.toContain` — the helper must return the
+    // 3-part id verbatim, NOT the synthesized 2-part fallback
+    // (`C-allowed:1700000000.222000`) which would still "contain" the
+    // ts and silently mask a regression.
+    expect(replyThreadId).toBe(productionShapeId);
   });
 });
 
@@ -3445,6 +3484,53 @@ describe("registerProactiveListener — disclosure buttons (#2705)", () => {
     ];
     expect(replyThreadId).toContain("M-ask-1");
     expect(content).toBe(developerView);
+  });
+
+  it("breaks embedded triple-backticks in SQL so they cannot escape the code fence", async () => {
+    // A malicious entity name (or string literal) carrying ``` would
+    // terminate our markdown fence and let the rest of the SQL render
+    // outside the code block — potentially as injected markdown.
+    const sqlWithFenceBreaker = "SELECT * FROM `weird```table`";
+    const executeQueryProactive: ProactiveExecuteQuery = mock(async () => ({
+      answer: "Done.",
+      sql: [sqlWithFenceBreaker],
+      developerView: "",
+    }));
+    const { invokeMessage, invokeReaction, invokeAction } = await bootListenerWithDisclosure(
+      executeQueryProactive,
+    );
+    const thread = makeThread("C-allowed");
+    const answerMessageId = await postConversationalAnswer(
+      thread,
+      invokeMessage,
+      invokeReaction,
+    );
+
+    await invokeAction(PROACTIVE_SHOW_SQL_ACTION_ID, {
+      actionId: PROACTIVE_SHOW_SQL_ACTION_ID,
+      adapter: { name: "slack" },
+      messageId: answerMessageId,
+      thread,
+      threadId: thread.id,
+      user: { isMe: false, isBot: false, userId: "U-other", userName: "bob" },
+      value: answerMessageId,
+      raw: {},
+    });
+
+    const postCalls = (
+      thread.adapter.postMessage as unknown as { mock: { calls: unknown[][] } }
+    ).mock.calls;
+    const [, content] = postCalls[postCalls.length - 1] as [string, string];
+    // The opening + closing fences are present; the embedded sequence
+    // is no longer the literal three-backtick run. We assert the
+    // BODY contains only TWO triple-backtick fences (start + end) —
+    // never three or more.
+    const fenceCount = (content.match(/```/g) ?? []).length;
+    expect(fenceCount).toBe(2);
+    // The original entity name's textual content survives in some
+    // form (we only inserted a zero-width-joiner inside the run).
+    expect(content).toContain("weird");
+    expect(content).toContain("table");
   });
 
   it("silently skips when the disclosure payload is missing (expired or pre-#2705 answer)", async () => {

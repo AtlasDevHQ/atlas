@@ -103,9 +103,11 @@ export function buildProactiveAnswerCard(
    * a conversational `answer` alongside `sql` / `developerView`, the
    * proactive listener passes these flags so the card renders the
    * "Show SQL" / "Show details" buttons. The action handlers look the
-   * expanded content up by `answerId` (button `value`) at click time —
-   * Slack's `value` field is bounded (~2000 chars) so we keep the
-   * payload server-side rather than encoding SQL on the button.
+   * expanded content up by `event.messageId` — the message containing
+   * the button — at click time (NOT by the button `value`, which is
+   * unused for disclosure routing). Keeping the payload server-side
+   * sidesteps Slack's ~2000-char button-value cap and the chicken-and-
+   * egg where the card's own message id isn't known until AFTER post.
    */
   disclosures: { showSql?: boolean; showDetails?: boolean } = {},
 ): {

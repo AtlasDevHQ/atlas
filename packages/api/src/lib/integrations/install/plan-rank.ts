@@ -70,11 +70,17 @@ PLAN_TIERS satisfies readonly PlanTier[];
  * `null`, `undefined`, or non-string values). Callers decide the
  * fail-closed default per call site — see {@link planRank} and
  * {@link isPlanEligible}.
+ *
+ * Membership is tested with `PLAN_TIERS.includes` rather than `in
+ * PLAN_RANK` — the `in` operator also matches inherited keys like
+ * `"toString"` and `"constructor"`, which would falsely admit those
+ * strings as a PlanTier.
  */
 export function parsePlanTier(value: unknown): PlanTier | null {
   if (typeof value !== "string") return null;
-  if (!(value in PLAN_RANK)) return null;
-  return value as PlanTier;
+  return (PLAN_TIERS as readonly string[]).includes(value)
+    ? (value as PlanTier)
+    : null;
 }
 
 /**
@@ -91,7 +97,7 @@ export function parsePlanTier(value: unknown): PlanTier | null {
  * `parsePlanTier` first.
  */
 export function planRank(name: PlanTier | null | undefined): number | null {
-  if (typeof name !== "string") return null;
+  if (name == null) return null;
   return PLAN_RANK[name];
 }
 

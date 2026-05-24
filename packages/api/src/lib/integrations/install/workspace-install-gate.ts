@@ -146,9 +146,9 @@ export async function isWorkspaceInstallActive(
   if (row.catalog_enabled !== true) return false;
 
   // Narrow at the SQL boundary: `min_plan` / `plan_tier` come off the
-  // DB as `string` (post-#2715: still string in CatalogRow because the
-  // CHECK constraint is the runtime guarantee, not the type). Trust
-  // them only after parsePlanTier confirms membership in PLAN_TIERS.
+  // DB as `string` (the CHECK constraint is the runtime guarantee, not
+  // the type). Trust them only after parsePlanTier confirms membership
+  // in PLAN_TIERS.
   const minPlan = parsePlanTier(row.min_plan);
   const minRank = planRank(minPlan);
   if (minRank === null) {
@@ -197,11 +197,13 @@ export type WorkspaceInstallGateFn = (
 ) => Promise<boolean>;
 
 /**
- * Reason codes the deny branch of {@link InstallGateVerdict} can carry
- * (#2715). Pre-#2715 this was `reason: string` with the legal values
- * documented only in the JSDoc; promoting to a literal union gives
- * consumers exhaustive `switch` and prevents drift between the
- * structured log keys and the gate's emitted values.
+ * Reason codes the deny branch of {@link InstallGateVerdict} can carry.
+ * Literal union (not `string`) so consumers gain an exhaustive `switch`
+ * and the structured log keys can't drift from what the gate emits.
+ *
+ * Mirrored in `plugins/chat/src/proactive/types.ts` because the chat
+ * plugin can't import the API package; keep both copies in lockstep
+ * per the chat-plugin↔Atlas contract.
  */
 export type InstallGateDenyReason =
   | "no_install_row"
@@ -219,14 +221,13 @@ export type InstallGateDenyReason =
  * hand. Not used inside the per-event gate hot path — the boolean
  * verdict is enough there.
  *
- * Discriminated union on `active` (#2715): the `active: true` branch
- * carries only `operatorBypass`, because the four supporting facts
- * (installFound / installEnabled / catalogEnabled / a non-null
- * minPlan) are all implied by `active: true`. The `active: false`
- * branch carries the structured `reason` plus every fact field the
- * caller might need to debug WHY the gate closed. The pre-#2715
- * shape had eight readonly fields where states like `active: true
- * + installFound: false` were representable but illegal.
+ * Discriminated union on `active`: the `active: true` branch carries
+ * only `operatorBypass`, because the supporting facts (installFound /
+ * installEnabled / catalogEnabled / a non-null minPlan) are all
+ * implied by `active: true`. The `active: false` branch carries the
+ * structured `reason` plus every fact field the caller might need to
+ * debug WHY the gate closed — states like `active: true + installFound:
+ * false` are not representable.
  */
 export type InstallGateVerdict =
   | { readonly active: true; readonly operatorBypass: boolean }

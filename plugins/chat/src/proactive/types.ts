@@ -266,12 +266,13 @@ export type InstallGateFn = (
 ) => Promise<boolean>;
 
 /**
- * Reason codes the deny branch of {@link InstallGateVerdict} can carry
- * (#2715). Pre-#2715 this was `reason: string` with the legal values
- * documented only in the JSDoc; the literal union gives consumers
- * exhaustive `switch` and prevents drift between the structured log
- * keys and what hosts emit. The plugin-side mirror of
- * `lib/integrations/install/workspace-install-gate.ts:InstallGateDenyReason`.
+ * Reason codes the deny branch of {@link InstallGateVerdict} can carry.
+ * Literal union (not `string`) so consumers gain an exhaustive `switch`
+ * and the structured log keys can't drift from what hosts emit. The
+ * plugin-side mirror of
+ * `lib/integrations/install/workspace-install-gate.ts:InstallGateDenyReason`
+ * — drift between the two copies is a chat-plugin↔Atlas contract issue
+ * (see `docs/architecture/chat-plugin-atlas-contract.md`).
  */
 export type InstallGateDenyReason =
   | "no_install_row"
@@ -289,12 +290,11 @@ export type InstallGateDenyReason =
  * log instead of running the rank table by hand.
  *
  * The shape is host-facing (this types.ts file is shared with the
- * chat plugin SDK). Discriminated union on `active` (#2715): the
- * `active: true` branch carries only `operatorBypass`; the
- * `active: false` branch carries the structured `reason` plus every
- * fact field the caller might want to surface. Pre-#2715 the shape
- * had eight readonly fields where `active: true + installFound: false`
- * was representable but illegal.
+ * chat plugin SDK). Discriminated union on `active`: the `active: true`
+ * branch carries only `operatorBypass`; the `active: false` branch
+ * carries the structured `reason` plus every fact field the caller
+ * might want to surface. States like `active: true + installFound:
+ * false` are not representable.
  *
  * `planTier` / `minPlan` are `PlanTier | null` — both shared with the
  * host via `@useatlas/types`, so structural drift between plugin and

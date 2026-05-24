@@ -472,6 +472,21 @@ function buildPillarCatalogQueryService(
             // off the DB. parsePlanTier maps unknown / legacy values to
             // `null` so downstream callers can rely on `PlanTier | null`.
             const planTier = parsePlanTier(planRows[0]?.plan_tier);
+            // Surface the rare "row exists but plan_tier is unparseable"
+            // case at debug so the "why is this workspace upsell-only?"
+            // ticket investigation has a hit. The row-missing case
+            // (no org / self-hosted) intentionally stays quiet — it's
+            // the default for self-hosted dev.
+            if (
+              planRows[0] !== undefined &&
+              planRows[0].plan_tier !== null &&
+              planTier === null
+            ) {
+              log.debug(
+                { workspaceId, rawPlanTier: planRows[0].plan_tier },
+                "organization.plan_tier is not a recognized plan tier — treating as rank 0",
+              );
+            }
             const isOperator = planRows[0]?.is_operator_workspace === true;
             return projectCatalogWithInstalls({
               catalog: catalogRows.map(rowToCatalogEntry),

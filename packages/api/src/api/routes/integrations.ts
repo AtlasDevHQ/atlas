@@ -78,9 +78,9 @@ import type { CatalogInstallModel } from "@atlas/api/lib/config";
 const log = createLogger("integrations");
 
 /**
- * OpenAPI schema for the 403 {@link PlanUpgradeRequiredBody} (#2715).
- * Pins the wire shape — both plan fields are PlanTier (the same union
- * used everywhere else) — and the `z.ZodType<PlanUpgradeRequiredBody>`
+ * OpenAPI schema for the 403 {@link PlanUpgradeRequiredBody}. Pins the
+ * wire shape — both plan fields are PlanTier (the same union used
+ * everywhere else) — and the `z.ZodType<PlanUpgradeRequiredBody>`
  * `satisfies` clause makes adding a tier in `@useatlas/types` a
  * compile error here until the schema is updated.
  */
@@ -379,16 +379,17 @@ async function getInstallableCatalogRowBySlug(slug: string): Promise<{
 /**
  * Resolve `{ planTier, isOperator }` for a workspace from the
  * `organization` table. `planTier` is narrowed via {@link parsePlanTier}
- * at the SQL boundary (#2715) so downstream gates see `PlanTier | null`
- * rather than a raw string — a legacy `"team"` or NULL value maps to
- * `null` and callers treat `null` as "no plan / not an operator",
- * which by construction denies any `min_plan != 'free'` install
- * attempt without admitting the operator bypass.
+ * at the SQL boundary so downstream gates see `PlanTier | null` rather
+ * than a raw string — a legacy / unknown value maps to `null` and
+ * callers treat `null` as "no plan / not an operator", which by
+ * construction denies any `min_plan != 'free'` install attempt without
+ * admitting the operator bypass.
  *
  * On a self-hosted no-auth deploy (sentinel `workspaceId =
- * "self-hosted"`), there's no organization row at all. Return
- * `null` / `null` so the gate falls back to whichever default the
- * caller picked — today that's "free tier" plus "not operator".
+ * "self-hosted"`), there's no organization row at all. The function
+ * returns `{ planTier: null, isOperator: false }` and the same fail-
+ * closed default applies — `null` collapses to `"free"` in the
+ * response body only when the caller builds an upgrade prompt.
  */
 async function getWorkspaceEntitlement(orgId: string): Promise<{
   planTier: PlanTier | null;
@@ -425,20 +426,20 @@ type PlanCheckResult =
 /**
  * Plan-tier gate for the install endpoints. Returns a discriminated
  * result so the caller can route catalog drift (unknown `min_plan`)
- * to a structured 500 rather than masquerading as an upgrade prompt
- * with a bogus tier name (#2715).
+ * to a structured 501 rather than masquerading as an upgrade prompt
+ * with a bogus tier name.
  *
  *  - `admit`: workspace's plan admits the install (or operator bypass).
  *  - `deny`: plan ranks below `min_plan`; surface as 403
  *    {@link PlanUpgradeRequiredBody} — both plan fields are
  *    {@link PlanTier}.
  *  - `catalog_drift`: catalog row's `min_plan` is not a recognized
- *    plan tier (typo, legacy `"team"` / `"enterprise"` survivor of
- *    migration 0091). Caller propagates as a structured 500 with the
- *    raw value so an operator can fix the row. Pre-#2715 this branch
- *    surfaced a 403 with the bogus name in the body — that path
- *    confused customers (the bogus tier isn't buyable) and the
- *    operator only saw it via the 403 log line.
+ *    plan tier (legacy tier values dropped by an earlier migration,
+ *    operator typo in a seed). Caller propagates as a structured 501
+ *    `handler_unavailable` with the raw value logged so an operator
+ *    can fix the row. The earlier "403 with the bogus name in the
+ *    body" path confused customers (the bogus tier isn't buyable)
+ *    and the operator only saw it via the 403 log line.
  *
  * Unknown `planTier` values (legacy / NULL row) collapse to `"free"`
  * for the response body so the user sees an actionable current_plan.

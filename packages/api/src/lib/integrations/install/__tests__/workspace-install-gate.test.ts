@@ -428,7 +428,7 @@ describe("WorkspaceInstallGate namespace", () => {
 // ───────────────────────────────────────────────────────────────────
 
 describe("describeInstallGateState", () => {
-  it("returns active=true on the happy path (#2715 — discriminated union)", async () => {
+  it("returns active=true on the happy path", async () => {
     mockInternalQuery.mockImplementation(async () => [
       row({ min_plan: "starter", plan_tier: "business" }),
     ]);

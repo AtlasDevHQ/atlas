@@ -132,13 +132,13 @@ export interface NoisyNeighbor {
 
 /**
  * 403 body returned by the integrations install endpoints when the
- * workspace's plan tier ranks below the catalog row's `min_plan`
- * (#2701, type-tightened in #2715). Same shape on the OAuth start
- * (`/install`), OAuth callback (`/callback`), and form install
- * (`/install-form`) routes; consumed by the admin UI's upgrade toast.
+ * workspace's plan tier ranks below the catalog row's `min_plan`.
+ * Same shape on the OAuth start (`/install`), OAuth callback
+ * (`/callback`), and form install (`/install-form`) routes; consumed
+ * by the admin UI's upgrade toast.
  *
- * Adding new fields here is additive — both fields are required so
- * older SDK clients that destructure the body still type-check.
+ * Adding new fields here is additive — both plan fields are required
+ * so older SDK clients that destructure the body still type-check.
  */
 export interface PlanUpgradeRequiredBody {
   /** Discriminator — `"plan_upgrade_required"` only. */

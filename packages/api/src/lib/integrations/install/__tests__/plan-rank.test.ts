@@ -54,6 +54,17 @@ describe("parsePlanTier", () => {
     expect(parsePlanTier(42)).toBeNull();
     expect(parsePlanTier({})).toBeNull();
   });
+
+  it("rejects inherited Object.prototype keys (Codex P2 regression)", () => {
+    // The pre-fix implementation used `value in PLAN_RANK`, which
+    // matches inherited keys. `"toString"` / `"constructor"` / etc.
+    // would have falsely admitted as a PlanTier and downstream
+    // responses would emit those strings as `required_plan`.
+    expect(parsePlanTier("toString")).toBeNull();
+    expect(parsePlanTier("constructor")).toBeNull();
+    expect(parsePlanTier("hasOwnProperty")).toBeNull();
+    expect(parsePlanTier("__proto__")).toBeNull();
+  });
 });
 
 describe("planRank", () => {

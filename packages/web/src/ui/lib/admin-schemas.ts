@@ -356,11 +356,11 @@ const RawCatalogEntrySchema = z.object({
 });
 
 /**
- * Discriminated view of the catalog row's plan-access state (#2715).
- * The wire shape carries two independent fields (`accessible` +
- * `upgradeRequired`) for backward compatibility; only two of the
- * four `(accessible, upgradeRequired)` combinations are legal, and
- * the invariant is enforced at the producer only.
+ * Discriminated view of the catalog row's plan-access state. The wire
+ * shape carries two independent fields (`accessible` + `upgradeRequired`)
+ * for backward compatibility; only two of the four `(accessible,
+ * upgradeRequired)` combinations are legal, and the invariant is
+ * enforced at the producer only.
  *
  * Parsing into this union at the fetch boundary means consumers
  * (catalog-section.tsx) get an exhaustive switch instead of having
@@ -399,11 +399,15 @@ function deriveAccess(input: {
 }
 
 export const IntegrationsCatalogEntrySchema = RawCatalogEntrySchema.transform(
-  (entry) => ({
+  ({ accessible: _accessible, upgradeRequired: _upgradeRequired, ...entry }) => ({
+    // Drop the raw wire fields (`accessible`, `upgradeRequired`) on the
+    // way through so consumers can't bypass the `access` tagged union
+    // by reading them directly. `upsellOnly` stays because the admin
+    // UI still uses it as a fast-path boolean for layout decisions.
     ...entry,
     access: deriveAccess({
-      accessible: entry.accessible,
-      upgradeRequired: entry.upgradeRequired,
+      accessible: _accessible,
+      upgradeRequired: _upgradeRequired,
       upsellOnly: entry.upsellOnly,
       minPlan: entry.minPlan,
     }),

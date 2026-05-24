@@ -44,6 +44,11 @@ import {
   createAnswerMeterTestLayer,
   type AnswerMeterShape,
 } from "@atlas/api/lib/proactive/answer-meter";
+import {
+  PillarCatalogQuery,
+  createPillarCatalogQueryTestLayer,
+  type PillarCatalogQueryShape,
+} from "@atlas/api/lib/effect/pillar-catalog-query";
 import { createConnectionTestLayer } from "../__mocks__/connection";
 
 // ── Re-exports for convenience ──────────────────────────────────────
@@ -54,16 +59,19 @@ export {
   createAuthContextTestLayer,
   createPluginTestLayer,
   createAnswerMeterTestLayer,
+  createPillarCatalogQueryTestLayer,
   ConnectionRegistry,
   RequestContext,
   AuthContext,
   PluginRegistry,
   AnswerMeter,
+  PillarCatalogQuery,
   type ConnectionRegistryShape,
   type RequestContextShape,
   type AuthContextShape,
   type PluginRegistryShape,
   type AnswerMeterShape,
+  type PillarCatalogQueryShape,
 };
 
 // ── Default connection layer ────────────────────────────────────────

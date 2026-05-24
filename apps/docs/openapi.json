@@ -64601,6 +64601,21 @@
                               "string",
                               "null"
                             ]
+                          },
+                          "pillar": {
+                            "type": "string",
+                            "enum": [
+                              "datasource",
+                              "chat",
+                              "action"
+                            ]
+                          },
+                          "implementationStatus": {
+                            "type": "string",
+                            "enum": [
+                              "available",
+                              "coming_soon"
+                            ]
                           }
                         },
                         "required": [
@@ -64618,7 +64633,9 @@
                           "installStatus",
                           "upsellOnly",
                           "accessible",
-                          "upgradeRequired"
+                          "upgradeRequired",
+                          "pillar",
+                          "implementationStatus"
                         ]
                       }
                     }

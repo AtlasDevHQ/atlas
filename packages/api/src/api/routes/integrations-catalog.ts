@@ -2,72 +2,36 @@
  * GET /api/v1/integrations/catalog — read-only customer-facing surface over
  * `plugin_catalog`, seeded at boot by `CatalogSeeder` (#2650).
  *
- * Slice 3 of 1.5.2 (#2651). Connect / Disconnect handlers land in #2654
- * and #2656 — this route ships only the read path so the `/admin/integrations`
- * card surface has data to render.
+ * Pivot to `PillarCatalogQuery` facade — #2741 (slice 3 of 1.5.3). The
+ * three SELECTs that used to live inline now live behind the facade Tag
+ * defined in `lib/effect/pillar-catalog-query.ts`. The facade collapses
+ * (plan + catalog + installs) → `CatalogEntryWithState[]` and applies the
+ * install-status state machine (`resolveInstallStatus` from
+ * `lib/integrations/install-status-machine.ts`) per row. This route stays
+ * a thin projection from the facade's rich row → the on-wire envelope.
  *
- * Filters:
- *   - `enabled = true` (SQL — narrowed by the partial index on the column).
- *   - SaaS deploy mode → also requires `saas_eligible = true` (SQL).
- *   - Plan tier: above-plan rows are returned with `upsellOnly: true` rather
- *     than filtered out, so the UI can render a read-only upsell card per
- *     #2651 AC. Below-or-equal rows return `upsellOnly: false`.
+ * Wire-shape additions (#2741): `pillar` and `implementationStatus`.
+ * Existing fields stay byte-identical so slice 8 (admin-UI section
+ * split by pillar) and slice 9 (coming-soon badge) can land additively
+ * without re-coordinating with this route.
  *
- * The workspace install join is computed in-process from
- * `workspace_plugins WHERE workspace_id = ?` so the catalog query is a single
- * SQL fragment per deploy-mode branch (no per-row LATERAL).
- *
- * Vocabulary note: both catalog `min_plan` and workspace `plan_tier`
- * use the same `PLAN_TIERS` union from `@useatlas/types`
- * (`free|trial|starter|pro|business`) after #2666. Comparator lives in
- * `lib/integrations/install/plan-rank.ts`.
+ * Filters: deploy-mode (saas narrows to `saas_eligible = true`) and the
+ * legacy-type exclusion (`type IN ('chat', 'integration')`) live inside
+ * the facade — the route doesn't re-derive them. Plan tier: above-plan
+ * rows are returned with `upsellOnly: true` so the UI renders a
+ * read-only upsell card per #2651.
  */
 
-import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { runEffect } from "@atlas/api/lib/effect/hono";
-import { RequestContext } from "@atlas/api/lib/effect/services";
-import { internalQuery } from "@atlas/api/lib/db/internal";
-import { getConfig } from "@atlas/api/lib/config";
-import { createLogger } from "@atlas/api/lib/logger";
+import { Effect, Layer } from "effect";
+import { runHandler } from "@atlas/api/lib/effect/hono";
+import { hasInternalDB, makeInternalDBShimLayer } from "@atlas/api/lib/db/internal";
 import {
-  isPlanEligible,
-  planRank,
-} from "@atlas/api/lib/integrations/install/plan-rank";
+  PillarCatalogQuery,
+  PillarCatalogQueryLive,
+} from "@atlas/api/lib/effect/pillar-catalog-query";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
-
-const log = createLogger("integrations-catalog");
-
-// ---------------------------------------------------------------------------
-// Eligibility helpers — wrap the shared comparator with logging.
-// ---------------------------------------------------------------------------
-
-/**
- * Whether the workspace can install a row at its current plan tier.
- * Operator workspaces (per the `is_operator_workspace` flag on
- * `organization`) bypass every check.
- *
- * Unknown `requiredPlan` values (catalog drift) are logged at warn
- * and treated as upsell-only so the card renders read-only — never
- * silently admit something the gate would later deny.
- */
-function isAccessible(
-  workspacePlan: string,
-  requiredPlan: string,
-  isOperator: boolean,
-  context?: { slug?: string; id?: string },
-): boolean {
-  if (isOperator) return true;
-  if (planRank(requiredPlan) === null) {
-    log.warn(
-      { requiredPlan, slug: context?.slug, id: context?.id },
-      "plugin_catalog.min_plan has unknown value — flagging entry as upsellOnly",
-    );
-    return false;
-  }
-  return isPlanEligible(workspacePlan, requiredPlan);
-}
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -78,8 +42,8 @@ const CatalogEntryResponseSchema = z.object({
   slug: z.string(),
   type: z.enum(["chat", "integration"]),
   // `installModel` (camelCase) — wire-side casing match for the rest of
-  // the response shape. The DB column is `install_model`; the mapper
-  // below at `entries.map(...)` does the translation.
+  // the response shape. The DB column is `install_model`; the facade
+  // does the translation.
   installModel: z.enum(["oauth", "form", "static-bot"]),
   name: z.string(),
   description: z.string().nullable(),
@@ -91,9 +55,8 @@ const CatalogEntryResponseSchema = z.object({
   installedBy: z.string().nullable(),
   // Per-install state derived from `workspace_plugins.config.status`.
   // `null` when the install row is absent OR the platform doesn't
-  // participate in the status taxonomy (Slack today — only lazy OAuth
-  // integrations flip status on refresh failure). `"reconnect_needed"`
-  // when the token refresh permanently failed (#2658).
+  // participate in the status taxonomy. `"reconnect_needed"` when the
+  // token refresh permanently failed (#2658).
   installStatus: z.string().nullable(),
   upsellOnly: z.boolean(),
   /**
@@ -112,39 +75,24 @@ const CatalogEntryResponseSchema = z.object({
    * the comparison.
    */
   upgradeRequired: z.string().nullable(),
+  // ── New in #2741 (slice 3 of 1.5.3) ───────────────────────────────
+  /**
+   * Three-pillar taxonomy per [ADR-0006]. `datasource` rows live on
+   * `/admin/connections`; `chat` and `action` rows live on
+   * `/admin/integrations`. Slice 8 wires the UI section split.
+   */
+  pillar: z.enum(["datasource", "chat", "action"]),
+  /**
+   * Whether Atlas has shipped a working install path. `coming_soon`
+   * rows render as inert grey cards in admin UI (slice 9 wires the
+   * rendering).
+   */
+  implementationStatus: z.enum(["available", "coming_soon"]),
 });
 
 const CatalogResponseSchema = z.object({
   catalog: z.array(CatalogEntryResponseSchema),
 });
-
-// ---------------------------------------------------------------------------
-// Row types
-// ---------------------------------------------------------------------------
-
-interface CatalogRow extends Record<string, unknown> {
-  id: string;
-  slug: string;
-  name: string;
-  description: string | null;
-  type: string;
-  install_model: string;
-  icon_url: string | null;
-  config_schema: unknown;
-  min_plan: string;
-  saas_eligible: boolean;
-}
-
-interface InstallationRow extends Record<string, unknown> {
-  catalog_id: string;
-  installed_at: string | Date;
-  installed_by: string | null;
-  install_status: string | null;
-}
-
-function asIsoString(value: string | Date): string {
-  return value instanceof Date ? value.toISOString() : String(value);
-}
 
 // ---------------------------------------------------------------------------
 // Route
@@ -193,110 +141,62 @@ const listCatalogRoute = createRoute({
 /**
  * Catalog read endpoint mounted under `/api/v1/integrations`. Uses
  * {@link createAdminRouter} so the same admin-role + MFA gate as the rest
- * of the admin surface applies — slice 3 of #2651 keeps this read-only;
- * install / disconnect mutations land in #2654 / #2656.
+ * of the admin surface applies.
  */
 export const integrationsCatalog = createAdminRouter();
 integrationsCatalog.use(requireOrgContext());
 
 integrationsCatalog.openapi(listCatalogRoute, async (c) => {
-  return runEffect(
-    c,
-    Effect.gen(function* () {
-      yield* RequestContext;
-      const { orgId } = c.var.orgContext;
+  return runHandler(c, "list integrations catalog", async () => {
+    const { orgId, requestId } = c.var.orgContext;
 
-      const isSaas = getConfig()?.deployMode === "saas";
-
-      // Independent queries — plan lookup, catalog read, install lookup all
-      // resolve from the same internal DB. Run in parallel to keep latency
-      // bounded by the slowest, not the sum.
-      //
-      // `type IN ('chat', 'integration')` excludes legacy marketplace rows
-      // (`datasource|context|interaction|action|sandbox`) — the DB CHECK
-      // still admits them (migration 0014 + 0087) and `admin-marketplace`'s
-      // platform-admin write path can insert them. Letting them through
-      // would fail the client-side Zod parse on `type` (which enums
-      // `chat | integration`) and render the page as a schema-mismatch
-      // banner. See `admin-schemas.ts:IntegrationsCatalogEntrySchema`.
-      const catalogSql = isSaas
-        ? `SELECT id, slug, name, description, type, install_model, icon_url,
-                  config_schema, min_plan, saas_eligible
-             FROM plugin_catalog
-            WHERE enabled = true AND saas_eligible = true
-              AND type IN ('chat', 'integration')
-            ORDER BY type ASC, name ASC`
-        : `SELECT id, slug, name, description, type, install_model, icon_url,
-                  config_schema, min_plan, saas_eligible
-             FROM plugin_catalog
-            WHERE enabled = true
-              AND type IN ('chat', 'integration')
-            ORDER BY type ASC, name ASC`;
-
-      // `Effect.tryPromise` (not `Effect.promise`) — DB rejections must
-      // flow through Effect's typed-failure channel so `runEffect` /
-      // `classifyError` map them to a clean 500 with `requestId`. The
-      // `Effect.promise` constructor declares "never rejects" and would
-      // turn DB failures into defects.
-      const [planRows, catalog, installations] = yield* Effect.tryPromise({
-        try: () =>
-          Promise.all([
-            internalQuery<{ plan_tier: string; is_operator_workspace: boolean | null }>(
-              "SELECT plan_tier, is_operator_workspace FROM organization WHERE id = $1",
-              [orgId],
-            ),
-            internalQuery<CatalogRow>(catalogSql),
-            internalQuery<InstallationRow>(
-              `SELECT catalog_id, installed_at, installed_by,
-                      config->>'status' AS install_status
-                 FROM workspace_plugins
-                WHERE workspace_id = $1`,
-              [orgId],
-            ),
-          ]),
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      });
-
-      // Fallback to "free" matches the `organization.plan_tier` column
-      // default. `requireOrgContext` already 400'd if the active org is
-      // missing — this empty-row case is the rare "org exists but
-      // plan_tier is null" path; fail closed to the most restrictive
-      // tier so upsell flagging stays conservative.
-      const workspacePlan = planRows[0]?.plan_tier ?? "free";
-      const isOperator = planRows[0]?.is_operator_workspace === true;
-
-      const installedByCatalogId = new Map<string, InstallationRow>(
-        installations.map((row) => [row.catalog_id, row]),
+    if (!hasInternalDB()) {
+      return c.json(
+        { error: "not_available", message: "No internal database configured.", requestId },
+        404,
       );
+    }
 
-      const entries = catalog.map((row) => {
-        const installation = installedByCatalogId.get(row.id);
-        const accessible = isAccessible(workspacePlan, row.min_plan, isOperator, {
-          slug: row.slug,
-          id: row.id,
-        });
-        return {
-          id: row.id,
-          slug: row.slug,
-          type: row.type as "chat" | "integration",
-          installModel: row.install_model as "oauth" | "form" | "static-bot",
-          name: row.name,
-          description: row.description,
-          iconUrl: row.icon_url,
-          minPlan: row.min_plan,
-          configSchema: row.config_schema ?? null,
-          installed: installation !== undefined,
-          installedAt: installation ? asIsoString(installation.installed_at) : null,
-          installedBy: installation?.installed_by ?? null,
-          installStatus: installation?.install_status ?? null,
-          upsellOnly: !accessible,
-          accessible,
-          upgradeRequired: accessible ? null : row.min_plan,
-        };
-      });
+    // The facade lives behind an Effect Tag — provide its Live Layer
+    // with the InternalDB shim so the route can call into it without
+    // pulling the AppLayer's ManagedRuntime down here. Same pattern as
+    // `admin-proactive-analytics.ts` (#2622) for `AnswerMeterLive`.
+    const rows = await Effect.runPromise(
+      Effect.gen(function* () {
+        const facade = yield* PillarCatalogQuery;
+        return yield* facade.withInstallStatusFor(orgId);
+      }).pipe(
+        Effect.provide(
+          PillarCatalogQueryLive.pipe(Layer.provide(makeInternalDBShimLayer())),
+        ),
+      ),
+    );
 
-      return c.json({ catalog: entries }, 200);
-    }),
-    { label: "list integrations catalog" },
-  );
+    const catalog = rows.map((row) => ({
+      id: row.id,
+      slug: row.slug,
+      // The facade's `type` is the raw DB string; the route narrows
+      // back to the wire union. The legacy-type SQL exclusion in the
+      // facade keeps this safe — any other value would mean a CHECK
+      // constraint regression.
+      type: row.type as "chat" | "integration",
+      installModel: row.installModel as "oauth" | "form" | "static-bot",
+      name: row.name,
+      description: row.description,
+      iconUrl: row.iconUrl,
+      minPlan: row.minPlan,
+      configSchema: row.configSchema ?? null,
+      installed: row.install !== null,
+      installedAt: row.install?.installedAt ?? null,
+      installedBy: row.install?.installedBy ?? null,
+      installStatus: row.install?.status ?? null,
+      upsellOnly: !row.planAccessible,
+      accessible: row.planAccessible,
+      upgradeRequired: row.planAccessible ? null : row.minPlan,
+      pillar: row.pillar,
+      implementationStatus: row.implementationStatus,
+    }));
+
+    return c.json({ catalog }, 200);
+  });
 });

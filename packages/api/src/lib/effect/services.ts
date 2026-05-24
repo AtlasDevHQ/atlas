@@ -2469,3 +2469,33 @@ export {
   type InstallResult,
   type InstallError,
 } from "./workspace-installer";
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  PillarCatalogQuery (#2741 — slice 3 of 1.5.3)
+// ══════════════════════════════════════════════════════════════════════
+//
+// Read-side facade over `plugin_catalog` × `workspace_plugins` that
+// applies the install-status state machine per row. The Tag, Shape,
+// Live Layer, and test-layer factory live in `./pillar-catalog-query`
+// because the file carries enough surface (SQL projection helpers,
+// state-machine bridge, two row mapper functions) that inlining would
+// crowd this services barrel. Re-exported here so consumers can keep
+// reaching for "@atlas/api/lib/effect/services" as the discovery seam
+// for every backend service Tag.
+//
+// New rows on the catalog wire shape land in #2741 (`pillar`,
+// `implementation_status`). Slice 8 consumes `pillar` for the
+// admin-UI section split; slice 9 consumes `implementation_status` for
+// the coming-soon badge.
+
+export {
+  PillarCatalogQuery,
+  PillarCatalogQueryLive,
+  createPillarCatalogQueryTestLayer,
+  projectCatalogWithInstalls,
+  type PillarCatalogQueryShape,
+  type CatalogEntry,
+  type CatalogEntryWithState,
+  type WorkspaceInstall,
+  type WorkspacePlanContext,
+} from "./pillar-catalog-query";

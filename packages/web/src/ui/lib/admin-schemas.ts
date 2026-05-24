@@ -330,6 +330,15 @@ export const IntegrationsCatalogEntrySchema = z.object({
   // `minPlan` when they're absent.
   accessible: z.boolean().optional(),
   upgradeRequired: z.string().nullable().optional(),
+  // ── New in #2741 (slice 3 of 1.5.3 — three-pillar taxonomy) ──────
+  // Optional + nullable so older API responses (pre-#2741) parse via
+  // the same schema. Slice 8 reads `pillar` for section splitting on
+  // the admin UI; slice 9 reads `implementationStatus` for the
+  // coming-soon badge. Until those slices land the fields are present
+  // but not rendered — the UI continues to derive its sections from
+  // the legacy `type` field.
+  pillar: z.enum(["datasource", "chat", "action"]).optional(),
+  implementationStatus: z.enum(["available", "coming_soon"]).optional(),
 });
 
 export type IntegrationsCatalogEntry = z.infer<typeof IntegrationsCatalogEntrySchema>;

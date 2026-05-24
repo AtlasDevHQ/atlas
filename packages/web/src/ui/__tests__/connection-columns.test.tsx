@@ -83,7 +83,7 @@ describe("connection columns — environment cell", () => {
     expect(container.querySelector("a")).toBeNull();
   });
 
-  test("renders a badge deep-linking to the embedded Environments view when groupName is present", () => {
+  test("renders a badge when groupName is present", () => {
     const { container } = renderEnvironmentCell({
       id: "warehouse",
       dbType: "postgres",
@@ -95,12 +95,10 @@ describe("connection columns — environment cell", () => {
     // artifacts so the chip reads naturally.
     expect(container.textContent).toContain("prod");
     expect(container.textContent).not.toContain("g_prod");
-    const link = container.querySelector("a");
-    expect(link).not.toBeNull();
-    // Chips deep-link straight to `?groupBy=environment` rather than the
-    // legacy `/admin/connections/groups` URL — the latter still works as
-    // a server-side redirect, but going direct avoids a one-frame flash.
-    expect(link?.getAttribute("href")).toBe("/admin/connections?groupBy=environment");
+    // Post-0096 cutover (#2744 / ADR-0007): the embedded Environments
+    // view is gone — env management collapses into the per-connection
+    // edit dialog. The badge is now non-interactive.
+    expect(container.querySelector("a")).toBeNull();
   });
 
   test("does not strip non-prefix names", () => {

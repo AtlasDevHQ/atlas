@@ -395,6 +395,68 @@ export class JiraReconnectRequiredError extends Data.TaggedError(
   readonly upstreamError: string;
 }> {}
 
+// ── Workspace Installer (#2742) ────────────────────────────────────
+
+/**
+ * Pillar-singleton violation — a `chat` / `action` install already
+ * exists for `(workspaceId, catalogSlug)`. Maps to HTTP 409.
+ *
+ * Backed by `workspace_plugins_singleton` partial unique index (slice 1,
+ * #2739); the facade pre-checks for a friendlier error and the index
+ * remains the defensive backstop against races. Defined here rather
+ * than in `lib/effect/workspace-installer.ts` so it participates in
+ * the `AtlasError` union and the `mapTaggedError` exhaustive switch.
+ *
+ * @see packages/api/src/lib/effect/workspace-installer.ts
+ */
+export class AlreadyInstalledError extends Data.TaggedError("AlreadyInstalledError")<{
+  readonly message: string;
+  readonly workspaceId: string;
+  readonly catalogSlug: string;
+  readonly pillar: "chat" | "action";
+}> {}
+
+/**
+ * `config` failed validation against `plugin_catalog.config_schema`.
+ * Maps to HTTP 400 with `fieldErrors` / `formErrors` in the response
+ * body so the admin UI form can render per-field messages.
+ *
+ * Per-handler Zod validation layers richer checks on top — this error
+ * is the catalog-level contract violation (missing required field,
+ * wrong type) the facade enforces before the handler runs.
+ *
+ * @see packages/api/src/lib/effect/workspace-installer.ts
+ */
+export class ConfigSchemaError extends Data.TaggedError("ConfigSchemaError")<{
+  readonly message: string;
+  readonly catalogSlug: string;
+  readonly fieldErrors: Readonly<Record<string, readonly string[]>>;
+  readonly formErrors: readonly string[];
+}> {}
+
+/**
+ * Catalog row not found or kill-switched. Maps to HTTP 404.
+ *
+ * @see packages/api/src/lib/effect/workspace-installer.ts
+ */
+export class CatalogNotFoundError extends Data.TaggedError("CatalogNotFoundError")<{
+  readonly message: string;
+  readonly catalogSlug: string;
+}> {}
+
+/**
+ * Install row not found for `(workspaceId, catalogSlug)`. Surfaces from
+ * `uninstall` and `updateConfig` when the target row is gone. Maps to
+ * HTTP 404.
+ *
+ * @see packages/api/src/lib/effect/workspace-installer.ts
+ */
+export class InstallNotFoundError extends Data.TaggedError("InstallNotFoundError")<{
+  readonly message: string;
+  readonly workspaceId: string;
+  readonly catalogSlug: string;
+}> {}
+
 // ── Scheduler ──────────────────────────────────────────────────────
 
 /** Scheduled task execution timed out. */
@@ -448,6 +510,10 @@ export type AtlasError =
   | PlatformOAuthExchangeError
   | SalesforceReconnectRequiredError
   | JiraReconnectRequiredError
+  | AlreadyInstalledError
+  | ConfigSchemaError
+  | CatalogNotFoundError
+  | InstallNotFoundError
   | SchedulerTaskTimeoutError
   | SchedulerExecutionError
   | DeliveryError
@@ -502,6 +568,10 @@ export const ATLAS_ERROR_TAG_LIST = [
   "PlatformOAuthExchangeError",
   "SalesforceReconnectRequiredError",
   "JiraReconnectRequiredError",
+  "AlreadyInstalledError",
+  "ConfigSchemaError",
+  "CatalogNotFoundError",
+  "InstallNotFoundError",
   "SchedulerTaskTimeoutError",
   "SchedulerExecutionError",
   "DeliveryError",

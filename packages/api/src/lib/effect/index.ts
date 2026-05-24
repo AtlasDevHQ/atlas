@@ -197,3 +197,24 @@ export {
   queryEffect,
   type InternalDBShape,
 } from "@atlas/api/lib/db/internal";
+
+// ── WorkspaceInstaller (#2742 — slice 4 of 1.5.3) ───────────────────
+
+export {
+  WorkspaceInstaller,
+  WorkspaceInstallerLive,
+  createWorkspaceInstallerTestLayer,
+  INTEGRATION_CREDENTIALS_SLUGS,
+  type WorkspaceInstallerShape,
+  type WorkspaceInstallRow,
+  type InstallInput,
+  type InstallResult,
+  type InstallError,
+} from "./workspace-installer";
+
+export {
+  AlreadyInstalledError,
+  ConfigSchemaError,
+  CatalogNotFoundError,
+  InstallNotFoundError,
+} from "./errors";

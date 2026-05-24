@@ -166,6 +166,26 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
     case "EmptyQueryError":
     case "ParseError":
       return { status: 400, code: "bad_request", message: error.message };
+    // #2742 — catalog `config_schema` violation. Surface per-field
+    // detail in the response body so the admin UI's form can highlight
+    // the wrong inputs without a follow-up roundtrip. Field names are
+    // catalog-declared keys; `formErrors` covers top-level issues that
+    // don't bind to one field.
+    case "ConfigSchemaError":
+      return {
+        status: 400,
+        code: "bad_request",
+        message: error.message,
+        body: {
+          catalogSlug: error.catalogSlug,
+          // Cast back to plain arrays at the response boundary so
+          // OpenAPI schema clients see regular `string[]`.
+          fieldErrors: Object.fromEntries(
+            Object.entries(error.fieldErrors).map(([k, v]) => [k, [...v]]),
+          ),
+          formErrors: [...error.formErrors],
+        },
+      };
 
     // ── 403 Forbidden — policy/permission violations ─────────────
     case "ForbiddenPatternError":
@@ -209,6 +229,37 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
         status: 409,
         code: "conflict",
         message: error.message,
+      };
+    // #2742 — pillar-singleton violation. Maps to 409 so the admin UI
+    // surfaces "already installed; disconnect first to reinstall"
+    // rather than the generic upstream-error toast.
+    case "AlreadyInstalledError":
+      return {
+        status: 409,
+        code: "conflict",
+        message: error.message,
+        body: {
+          catalogSlug: error.catalogSlug,
+          pillar: error.pillar,
+        },
+      };
+    // #2742 — install row missing for `(workspace, catalog)`. Distinct
+    // from `CatalogNotFoundError` (catalog itself is missing) — both
+    // map to 404 but the body fields differ so the admin UI can render
+    // the right toast.
+    case "InstallNotFoundError":
+      return {
+        status: 404,
+        code: "not_found",
+        message: error.message,
+        body: { catalogSlug: error.catalogSlug },
+      };
+    case "CatalogNotFoundError":
+      return {
+        status: 404,
+        code: "not_found",
+        message: error.message,
+        body: { catalogSlug: error.catalogSlug },
       };
 
     // ── 422 Unprocessable Entity — plugin rejected ───────────────

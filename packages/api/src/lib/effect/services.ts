@@ -2439,3 +2439,33 @@ export const NoopEnterpriseDefaultsLayer: Layer.Layer<
   NoopProactiveGateLayer,
   NoopDeployModeResolverLayer,
 );
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  WorkspaceInstaller (#2742 — slice 4 of 1.5.3)
+// ══════════════════════════════════════════════════════════════════════
+//
+// Write-side facade for integration install / uninstall / updateConfig
+// across the chat + action pillars. Per ADR-0007 the facade orchestrates
+// the existing per-Platform install handlers from
+// `lib/integrations/install/`; it does NOT unify credential stores
+// (deferred). Datasource installs (`pillar = 'datasource'`) pivot in
+// slice 6 (#2744) once the `connections` table cutover lands.
+//
+// The Tag, Shape, Live Layer, tagged errors, and test-layer factory live
+// in `./workspace-installer` because the file carries enough surface
+// (per-input-kind dispatch, catalog-schema validation, two-store teardown
+// sequencing) that inlining would crowd this services barrel. Re-exported
+// here so consumers can keep reaching for `@atlas/api/lib/effect/services`
+// as the discovery seam for every backend service Tag.
+
+export {
+  WorkspaceInstaller,
+  WorkspaceInstallerLive,
+  createWorkspaceInstallerTestLayer,
+  INTEGRATION_CREDENTIALS_SLUGS,
+  type WorkspaceInstallerShape,
+  type WorkspaceInstallRow,
+  type InstallInput,
+  type InstallResult,
+  type InstallError,
+} from "./workspace-installer";

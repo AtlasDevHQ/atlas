@@ -14,6 +14,7 @@ import * as os from "os";
 import * as path from "path";
 import {
   loadCanonicalPrompts,
+  getCanonicalQuestionsPath,
   CANONICAL_PROMPT_PREFIX,
   type CanonicalPrompt,
 } from "../../prompts/canonical.js";
@@ -30,6 +31,15 @@ function writeQuestions(yamlBody: string): string {
 beforeEach(() => {
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "canonical-prompts-"));
   originalEnv = process.env.ATLAS_CANONICAL_QUESTIONS_PATH;
+  // Defensive: explicitly clear the env var so the "default path"
+  // test in this file genuinely exercises the walk-up resolution
+  // from `prompts/canonical.ts`. Sibling test files
+  // (`listing.test.ts`, `registry.test.ts`) set this env at module
+  // top-level + inside individual tests without always restoring it.
+  // When bun runs the whole suite in one process and they execute
+  // first, the leaked value pointed at a stale 1-question fixture
+  // and `loadCanonicalPrompts()` returned 1 instead of 20 (#2757).
+  delete process.env.ATLAS_CANONICAL_QUESTIONS_PATH;
 });
 
 afterEach(() => {
@@ -206,6 +216,29 @@ questions:
     for (const p of result) {
       expect(p.name.startsWith(CANONICAL_PROMPT_PREFIX)).toBe(true);
     }
+  });
+
+  // #2757 regression — the default path must resolve to the real
+  // repo-root `eval/canonical-questions/questions.yml`, not a leaked
+  // override from a sibling test file. Pre-fix, `listing.test.ts` and
+  // `registry.test.ts` set `ATLAS_CANONICAL_QUESTIONS_PATH` at module
+  // top-level and inside individual tests without restoring, leaking
+  // a 1-question fixture into this file's process state and silently
+  // dropping the "20 prompts" assertion to "1 prompt". The
+  // `beforeEach` `delete` above prevents env leakage; this test pins
+  // the actual resolved path so a future change to the loader's
+  // walk-up strategy fails loudly here (not silently three test files
+  // later).
+  it("default path resolves to the real repo-root fixture (#2757 regression)", () => {
+    expect(process.env.ATLAS_CANONICAL_QUESTIONS_PATH).toBeUndefined();
+    const resolved = getCanonicalQuestionsPath();
+    expect(resolved.endsWith("/eval/canonical-questions/questions.yml")).toBe(
+      true,
+    );
+    expect(fs.existsSync(resolved)).toBe(true);
+    // And the file it resolves to has the 20-question shape.
+    const result = loadCanonicalPrompts({ path: resolved });
+    expect(result.length).toBe(20);
   });
 
   // #2185 — runtime invariant check that mirrors the type-level

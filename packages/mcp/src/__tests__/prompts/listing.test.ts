@@ -9,7 +9,7 @@
  * registry.test.ts continues to exercise the SDK-bound flow end-to-end.
  */
 
-import { describe, expect, it, mock, beforeEach } from "bun:test";
+import { describe, expect, it, mock, beforeEach, afterEach } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -53,14 +53,9 @@ mock.module("@atlas/api/lib/settings", () => ({
 const emptyCanonicalDir = fs.mkdtempSync(
   path.join(os.tmpdir(), "listing-canonical-empty-"),
 );
-fs.writeFileSync(
-  path.join(emptyCanonicalDir, "questions.yml"),
-  "questions: []\n",
-);
-process.env.ATLAS_CANONICAL_QUESTIONS_PATH = path.join(
-  emptyCanonicalDir,
-  "questions.yml",
-);
+const emptyCanonicalFixture = path.join(emptyCanonicalDir, "questions.yml");
+fs.writeFileSync(emptyCanonicalFixture, "questions: []\n");
+process.env.ATLAS_CANONICAL_QUESTIONS_PATH = emptyCanonicalFixture;
 
 const { listMcpPrompts } = await import("../../prompts/listing.js");
 
@@ -70,6 +65,20 @@ beforeEach(() => {
   mockInternalQueryError = null;
   mockScannedEntities = [];
   mockSettings = {};
+  // Re-pin every test to the empty fixture so a prior test that
+  // overrode the env var (the "ordering" / "producer ↔ schema
+  // contract" tests below set 1-question fixtures inline) can't
+  // bleed its fixture into the next test in this file.
+  process.env.ATLAS_CANONICAL_QUESTIONS_PATH = emptyCanonicalFixture;
+});
+
+afterEach(() => {
+  // Bound the worst-case leak across the file boundary to a known
+  // 0-question fixture rather than whatever the last test set
+  // (#2757 — `canonical.test.ts`'s default-path test failed because
+  // a 1-question fixture leaked from here). The next test file's
+  // own setup is responsible for snapshotting + clearing.
+  process.env.ATLAS_CANONICAL_QUESTIONS_PATH = emptyCanonicalFixture;
 });
 
 // ---------------------------------------------------------------------------

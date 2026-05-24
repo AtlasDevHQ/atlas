@@ -1,23 +1,10 @@
 /**
- * Tests for `resolveInstallStatus` — slice 2 of #2738 (issue #2740).
+ * Exhaustive table coverage for `resolveInstallStatus`. The 32 rows
+ * enumerate every combination of the 5 boolean-ish input axes; the
+ * `ALL_CARD_STATES` table at the bottom is the compile-time guard that
+ * forces a new `CardState` variant to extend the fixture.
  *
- * Pure function under test. Three orthogonal gates from ADR-0006 /
- * ADR-0007 layer in priority order:
- *
- *   1. coming_soon  (Atlas hasn't shipped it)        → trumps everything
- *   2. misconfigured (operator hasn't wired env vars / handler)
- *   3. plan-gate    (existing upsell logic)
- *
- * When all three gates pass the card resolves to `accessible` (no
- * install) or `connected` (install row exists). When the plan gate
- * fails but an install row exists the card resolves to
- * `configured_but_downgraded` so the user can still disconnect.
- *
- * The table below enumerates every combination of the five boolean-ish
- * input axes (2^5 = 32 rows). The final `assertNever` switch is the
- * compile-time exhaustiveness guard required by the slice's
- * acceptance criteria — adding a new CardState variant without
- * extending the switch breaks the build.
+ * See `install-status-machine.ts` for the gate contract.
  */
 
 import { describe, it, expect } from "bun:test";
@@ -27,10 +14,6 @@ import {
   type ResolveInstallStatusInput,
   type WorkspaceInstallInput,
 } from "../install-status-machine";
-
-// ---------------------------------------------------------------------------
-// Fixture builders
-// ---------------------------------------------------------------------------
 
 const SOME_INSTALL: WorkspaceInstallInput = { installId: "default" };
 
@@ -50,6 +33,16 @@ function caseInput(opts: {
   };
 }
 
+function inputKey(input: ResolveInstallStatusInput): string {
+  return [
+    input.catalogRow.implementationStatus,
+    input.workspaceInstall ? input.workspaceInstall.installId : "_none",
+    input.planAdmits ? "plan" : "noplan",
+    input.handlerRegistered ? "handler" : "nohandler",
+    input.deployConfigured ? "deploy" : "nodeploy",
+  ].join("|");
+}
+
 interface Case {
   name: string;
   input: ResolveInstallStatusInput;
@@ -58,10 +51,7 @@ interface Case {
 
 const cases: Case[] = [];
 
-// ---------------------------------------------------------------------------
-// Gate 1 — coming_soon dominates all other gates (16 rows)
-// ---------------------------------------------------------------------------
-
+// Gate 1 — coming_soon dominates regardless of any other gate (16 rows).
 for (const install of [null, SOME_INSTALL]) {
   for (const planAdmits of [false, true]) {
     for (const handlerRegistered of [false, true]) {
@@ -82,17 +72,12 @@ for (const install of [null, SOME_INSTALL]) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Gate 2 — misconfigured: status=available but handler/deploy unwired
-// (12 rows: 3 broken-combos × 2 install × 2 plan)
-// ---------------------------------------------------------------------------
-
+// Gate 2 — status=available but handler/deploy unwired (12 rows).
 const brokenDeployStates: Array<{ handlerRegistered: boolean; deployConfigured: boolean }> = [
   { handlerRegistered: false, deployConfigured: false },
   { handlerRegistered: false, deployConfigured: true },
   { handlerRegistered: true, deployConfigured: false },
 ];
-
 for (const install of [null, SOME_INSTALL]) {
   for (const planAdmits of [false, true]) {
     for (const broken of brokenDeployStates) {
@@ -111,10 +96,7 @@ for (const install of [null, SOME_INSTALL]) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Gates 3 + happy paths — status=available, handler+deploy ready (4 rows)
-// ---------------------------------------------------------------------------
-
+// Gate 3 + happy paths — status=available, handler+deploy ready (4 rows).
 cases.push({
   name: "upgrade_required: plan denies, no install",
   input: caseInput({
@@ -126,7 +108,6 @@ cases.push({
   }),
   expected: "upgrade_required",
 });
-
 cases.push({
   name: "configured_but_downgraded: plan denies, install present",
   input: caseInput({
@@ -138,7 +119,6 @@ cases.push({
   }),
   expected: "configured_but_downgraded",
 });
-
 cases.push({
   name: "accessible: plan admits, no install, deploy ready",
   input: caseInput({
@@ -150,7 +130,6 @@ cases.push({
   }),
   expected: "accessible",
 });
-
 cases.push({
   name: "connected: plan admits, install present, deploy ready",
   input: caseInput({
@@ -163,17 +142,25 @@ cases.push({
   expected: "connected",
 });
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// Compile-time exhaustiveness guard: `satisfies Record<CardState, true>`
+// forces a new variant in `CardState` to add a key here, and the for-of
+// loop below asserts the fixture reaches that key at least once.
+const ALL_CARD_STATES = {
+  connected: true,
+  accessible: true,
+  coming_soon: true,
+  misconfigured: true,
+  upgrade_required: true,
+  configured_but_downgraded: true,
+} as const satisfies Record<CardState, true>;
 
 describe("resolveInstallStatus", () => {
   it("covers every combination of the 5 input axes exactly once (32 rows)", () => {
     expect(cases.length).toBe(32);
     const seenInputs = new Set<string>();
     for (const c of cases) {
-      const key = JSON.stringify(c.input);
-      expect(seenInputs.has(key)).toBe(false);
+      const key = inputKey(c.input);
+      expect(seenInputs.has(key), `duplicate fixture row: ${key}`).toBe(false);
       seenInputs.add(key);
     }
   });
@@ -186,35 +173,8 @@ describe("resolveInstallStatus", () => {
 
   it("the fixture reaches every CardState branch (exhaustiveness)", () => {
     const seen = new Set<CardState>(cases.map((c) => c.expected));
-
-    // Listing every branch through a switch with an `assertNever`
-    // default is the compile-time guard. Adding a new CardState
-    // variant without adding an arm here breaks tsgo.
-    const all: CardState[] = [
-      "connected",
-      "accessible",
-      "coming_soon",
-      "misconfigured",
-      "upgrade_required",
-      "configured_but_downgraded",
-    ];
-    for (const s of all) {
-      switch (s) {
-        case "connected":
-        case "accessible":
-        case "coming_soon":
-        case "misconfigured":
-        case "upgrade_required":
-        case "configured_but_downgraded":
-          break;
-        default:
-          assertNever(s);
-      }
-      expect(seen.has(s)).toBe(true);
+    for (const s of Object.keys(ALL_CARD_STATES) as CardState[]) {
+      expect(seen.has(s), `no fixture row produces CardState=${s}`).toBe(true);
     }
   });
 });
-
-function assertNever(value: never): never {
-  throw new Error(`Unhandled CardState variant: ${String(value)}`);
-}

@@ -334,8 +334,18 @@ BEGIN
   SELECT COUNT(*) INTO demo_url_count
     FROM connections WHERE id = '__demo__' AND org_id = '__global__';
   IF demo_url_count = 0 THEN
-    RAISE EXCEPTION
-      'connections (__demo__, __global__) row not found — cannot backfill per-workspace demo installs. Seed the global demo before running this migration.';
+    -- No `__demo__` row to copy from. Two legitimate paths reach this:
+    --   • Fresh CI / managed-auth bootstrap where the global demo is
+    --     seeded by `runSeeds()` AFTER migrations apply (migration
+    --     order: 0000-0096 first, then seeds; the `__demo__` row only
+    --     exists post-seed).
+    --   • A self-hosted operator who never ran `bun run atlas -- init`
+    --     and is migrating directly into the new schema.
+    -- In both cases, existing organizations get demo installs via the
+    -- runtime `loadSavedConnections` auto_install path on first boot;
+    -- no migration backfill is required. Skip step 3 silently.
+    RAISE NOTICE '0096 step 3: no `__demo__` connection row to backfill from — skipping per-workspace demo backfill (runtime auto_install handles new orgs)';
+    RETURN;
   END IF;
   IF demo_url_count > 1 THEN
     RAISE EXCEPTION

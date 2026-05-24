@@ -35204,6 +35204,7 @@
                                   "scheduler",
                                   "slack",
                                   "teams",
+                                  "telegram",
                                   "webhook"
                                 ]
                               },
@@ -35266,6 +35267,7 @@
                                   "scheduler",
                                   "slack",
                                   "teams",
+                                  "telegram",
                                   "webhook"
                                 ]
                               },
@@ -35325,6 +35327,7 @@
                                   "scheduler",
                                   "slack",
                                   "teams",
+                                  "telegram",
                                   "webhook"
                                 ]
                               },
@@ -35527,6 +35530,7 @@
                           "scheduler",
                           "slack",
                           "teams",
+                          "telegram",
                           "webhook"
                         ],
                         "description": "Origin surface this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072.",
@@ -35582,6 +35586,7 @@
                           "scheduler",
                           "slack",
                           "teams",
+                          "telegram",
                           "webhook"
                         ],
                         "description": "Origin surface this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072.",
@@ -35633,6 +35638,7 @@
                                 "scheduler",
                                 "slack",
                                 "teams",
+                                "telegram",
                                 "webhook"
                               ]
                             },
@@ -35695,6 +35701,7 @@
                                 "scheduler",
                                 "slack",
                                 "teams",
+                                "telegram",
                                 "webhook"
                               ]
                             },
@@ -35754,6 +35761,7 @@
                                 "scheduler",
                                 "slack",
                                 "teams",
+                                "telegram",
                                 "webhook"
                               ]
                             },
@@ -35939,6 +35947,7 @@
                       "scheduler",
                       "slack",
                       "teams",
+                      "telegram",
                       "webhook"
                     ],
                     "description": "Origin surface this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072.",
@@ -35983,6 +35992,7 @@
                                 "scheduler",
                                 "slack",
                                 "teams",
+                                "telegram",
                                 "webhook"
                               ]
                             },
@@ -36045,6 +36055,7 @@
                                 "scheduler",
                                 "slack",
                                 "teams",
+                                "telegram",
                                 "webhook"
                               ]
                             },
@@ -36104,6 +36115,7 @@
                                 "scheduler",
                                 "slack",
                                 "teams",
+                                "telegram",
                                 "webhook"
                               ]
                             },
@@ -36475,6 +36487,7 @@
                                   "scheduler",
                                   "slack",
                                   "teams",
+                                  "telegram",
                                   "webhook",
                                   null
                                 ]
@@ -36588,6 +36601,7 @@
                                   "scheduler",
                                   "slack",
                                   "teams",
+                                  "telegram",
                                   "webhook",
                                   null
                                 ]
@@ -36707,6 +36721,7 @@
                                   "scheduler",
                                   "slack",
                                   "teams",
+                                  "telegram",
                                   "webhook",
                                   null
                                 ]
@@ -36826,6 +36841,7 @@
                                   "scheduler",
                                   "slack",
                                   "teams",
+                                  "telegram",
                                   "webhook",
                                   null
                                 ]
@@ -37093,6 +37109,7 @@
                                 "scheduler",
                                 "slack",
                                 "teams",
+                                "telegram",
                                 "webhook",
                                 null
                               ]
@@ -37206,6 +37223,7 @@
                                 "scheduler",
                                 "slack",
                                 "teams",
+                                "telegram",
                                 "webhook",
                                 null
                               ]
@@ -37325,6 +37343,7 @@
                                 "scheduler",
                                 "slack",
                                 "teams",
+                                "telegram",
                                 "webhook",
                                 null
                               ]
@@ -37444,6 +37463,7 @@
                                 "scheduler",
                                 "slack",
                                 "teams",
+                                "telegram",
                                 "webhook",
                                 null
                               ]
@@ -37712,6 +37732,7 @@
                                 "scheduler",
                                 "slack",
                                 "teams",
+                                "telegram",
                                 "webhook",
                                 null
                               ]
@@ -37825,6 +37846,7 @@
                                 "scheduler",
                                 "slack",
                                 "teams",
+                                "telegram",
                                 "webhook",
                                 null
                               ]
@@ -37944,6 +37966,7 @@
                                 "scheduler",
                                 "slack",
                                 "teams",
+                                "telegram",
                                 "webhook",
                                 null
                               ]
@@ -38063,6 +38086,7 @@
                                 "scheduler",
                                 "slack",
                                 "teams",
+                                "telegram",
                                 "webhook",
                                 null
                               ]

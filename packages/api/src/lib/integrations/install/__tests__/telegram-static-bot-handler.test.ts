@@ -244,14 +244,20 @@ describe("TelegramStaticBotInstallHandler.confirmInstall — persistence", () =>
     expect(result.installRecord.catalogId).toBe(TELEGRAM_SLUG);
   });
 
-  it("falls back to the candidate id when RETURNING comes back empty (driver bug guard)", async () => {
+  it("throws when RETURNING comes back empty — never ships a candidate id that doesn't match the persisted row", async () => {
+    // Postgres ≥9.5 guarantees `INSERT … ON CONFLICT … RETURNING`
+    // populates the row on both insert and update. Empty here means
+    // a driver regression — silently shipping the candidate id would
+    // strand re-install lookups (DB has the existing id, response says
+    // a fresh UUID). Fail loud instead.
     mockInternalQuery.mockImplementation(() => Promise.resolve([]));
     const handler = new TelegramStaticBotInstallHandler({
       botToken: "123:abc",
       idGenerator: () => "candidate-id-xyz",
     });
-    const result = await handler.confirmInstall(wsid, "12345");
-    expect(result.installRecord.id).toBe("candidate-id-xyz");
+    await expect(handler.confirmInstall(wsid, "12345")).rejects.toThrow(
+      /RETURNING must always populate/,
+    );
   });
 
   it("surfaces DB failure rather than half-installing — no return after a throw", async () => {

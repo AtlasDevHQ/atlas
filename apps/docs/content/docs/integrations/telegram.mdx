@@ -175,12 +175,14 @@ side egress (firewall, region routing, DNS) and retry. Atlas does not
 retry automatically — install attempts are user-initiated and a transient
 failure surfaces back to the admin to retry.
 
-### "TelegramStaticBotInstallHandler not registered" at install time
+### "No static-bot install handler registered for catalog slug 'telegram'"
 
 The operator hasn't set `TELEGRAM_BOT_TOKEN`, or the env var is empty
-on the API process handling the install. The install route returns 501
-with the actionable env-var name; ops sets the env var and restarts the
-API.
+on the API process handling the install. The error message names the
+env var explicitly. Ops sets `TELEGRAM_BOT_TOKEN` per-service and
+restarts the API. On the next boot, log streams should include
+`Registered TelegramStaticBotInstallHandler` (info) — if not, double
+check the env value isn't empty / whitespace-only.
 
 ### Webhook deliveries stop landing
 

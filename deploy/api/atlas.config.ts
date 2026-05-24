@@ -381,6 +381,17 @@ export default defineConfig({
           enabled: true,
           saas_eligible: true,
         },
+        // Telegram — 1.5.3 #2748 keystone. The chatPlugin's local
+        // catalog drives AdapterRegistry instantiation + webhook-route
+        // mount; keep this list in lockstep with the top-level
+        // `catalog` above for every chat-type row.
+        {
+          slug: "telegram",
+          type: "chat",
+          install_model: "static-bot",
+          enabled: true,
+          saas_eligible: true,
+        },
       ],
       state: { backend: "pg" },
       // Host-side executeQuery — preserves the F-55 actor binding,

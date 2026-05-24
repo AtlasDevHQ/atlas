@@ -1,33 +1,42 @@
 /**
- * Host-side `executeQuery` for the `@useatlas/chat` plugin (slice 3 of #2607).
+ * Host-side `executeQuery` for the `@useatlas/chat` plugin.
  *
  * Wires the chat plugin's `executeQuery` callback to Atlas's agent loop.
- * On SaaS the same Chat instance routes events from N tenants — this helper
- * resolves the inbound Slack `team_id` → `chat_cache:slack:installation` →
- * `org_id` → `botActorUser` before invoking {@link executeAgentQuery}.
- * Without that binding `checkApprovalRequired` short-circuits on a
- * missing `orgId` and the approval gate silently disables (F-55
- * regression). The store consolidated onto `chat_cache` in #2634.
+ * The dispatcher branches on `adapter.name` and routes each chat platform
+ * through its own per-tenant resolver + actor binding:
+ *
+ *   - **Slack** (slice 3 of #2607) — resolves `team_id` → `chat_cache`
+ *     installation → `org_id`. Mirrors the legacy `routes/slack.ts` paths.
+ *   - **Telegram** (1.5.3 slice 10 / #2748 — keystone for Phase D) —
+ *     resolves `message.chat.id` → `workspace_plugins.config->>'chat_id'`
+ *     → `workspace_id` via the static-bot install record. Future
+ *     static-bot platforms (Discord #2749, gchat #2754, WhatsApp #2753)
+ *     extend this branch as their slices land.
+ *
+ * Without a per-platform tenant binding, `checkApprovalRequired`
+ * short-circuits on a missing `orgId` and the approval gate silently
+ * disables (F-55 regression). Both branches MUST fail-closed on unknown
+ * tenant or DB outage before the agent runs.
  *
  * Mirrors what `packages/api/src/api/routes/slack.ts` does today for the
  * `app_mention` and `message + threadTs` branches:
  *
- *   - `getBotToken(teamId)` / `getInstallation(teamId)` for tenancy
- *   - `botActorUser({ platform: "slack", externalId: teamId, orgId, ... })`
- *     for the F-55 approval-gate identity
- *   - `executeAgentQuery(question, undefined, { actor, approvalSurface: "slack", priorMessages })`
+ *   - `getBotToken(teamId)` / `getInstallation(teamId)` for tenancy (Slack)
+ *   - `workspace_plugins.config->>'chat_id'` lookup (Telegram)
+ *   - `botActorUser({ platform, externalId, orgId, ... })` for F-55 identity
+ *   - `executeAgentQuery(question, undefined, { actor, approvalSurface, priorMessages })`
  *   - `getConversationId` / `setConversationId` for thread → conversation mapping
  *   - `createConversation` / `addMessage` for multi-turn persistence
- *   - `checkRateLimit("slack:${teamId}")` for per-tenant rate limiting
+ *   - `checkRateLimit("&lt;platform&gt;:${tenantKey}")` for per-tenant rate limiting
  *   - Error scrubbing: the bridge's `scrubErrorMessage` is the single
  *     point of redaction. This helper re-throws the original message so
  *     the bridge owns the user-safe transformation.
  *
  * Pending actions (`PendingAction[]`) are returned to the chat plugin bridge
- * so it can post per-action ephemeral approval prompts via Chat SDK's
- * native `postEphemeral`. The legacy `:lock:` pending-approval text is
- * surfaced via the returned `answer` field when the agent run hits an
- * approval rule (matches the slack.ts `pendingApproval` path).
+ * so it can post per-action ephemeral approval prompts. The legacy
+ * `:lock:` pending-approval text is surfaced via the returned `answer`
+ * field when the agent run hits an approval rule (matches the slack.ts
+ * `pendingApproval` path).
  *
  * Layer hygiene: this module lives under `lib/` and never imports from
  * `api/routes/` (CLAUDE.md layer rule).
@@ -43,11 +52,13 @@ import type {
   ChatQueryResult,
   ChatPluginConfig,
 } from "@useatlas/chat";
+import type { ApprovalRequestSurface } from "@useatlas/types";
 import { executeAgentQuery } from "@atlas/api/lib/agent-query";
 import { createLogger } from "@atlas/api/lib/logger";
 import { checkRateLimit } from "@atlas/api/lib/auth/middleware";
-import { botActorUser } from "@atlas/api/lib/auth/actor";
+import { botActorUser, type ChatBotPlatform } from "@atlas/api/lib/auth/actor";
 import { getInstallation } from "@atlas/api/lib/slack/store";
+import { internalQuery } from "@atlas/api/lib/db/internal";
 import { getConversationId, setConversationId } from "@atlas/api/lib/slack/threads";
 import {
   createConversation,
@@ -81,6 +92,25 @@ interface SlackRawEvent {
 }
 
 /**
+ * Minimum shape we read from a Telegram raw message envelope. The chat
+ * adapter passes `TelegramMessage` (= `TelegramRawMessage`) as the raw
+ * payload — see `@chat-adapter/telegram`'s `TelegramMessage` type.
+ *
+ * `chat.id` is a signed integer; we string-encode for parity with the
+ * value persisted into `workspace_plugins.config->>'chat_id'` by
+ * {@link TelegramStaticBotInstallHandler}. `message_thread_id` (Telegram
+ * forum-topic concept) anchors per-topic conversation continuity; when
+ * unset we fall back to `message_id` so a flat group still gets one
+ * conversation per top-level message thread.
+ */
+interface TelegramRawEvent {
+  message_id?: number;
+  message_thread_id?: number;
+  chat?: { id?: number; type?: string };
+  from?: { id?: number; username?: string };
+}
+
+/**
  * Normalize a Slack id field that may arrive as a bare string (events_api)
  * or as a `{ id, ... }` object (interactive `block_actions` payloads).
  */
@@ -101,13 +131,25 @@ function extractTeamId(raw: SlackRawEvent): string | undefined {
 }
 
 /**
+ * Extract the Telegram chat id and return it string-encoded. Returns
+ * undefined for envelopes missing the chat envelope — those should never
+ * reach the executeQuery path (the chat adapter would drop them earlier)
+ * but the defensive check keeps the failure mode an actionable 4xx
+ * rather than a misleading 500.
+ */
+function extractTelegramChatId(raw: TelegramRawEvent): string | undefined {
+  const id = raw.chat?.id;
+  if (typeof id !== "number" || !Number.isFinite(id)) return undefined;
+  return String(id);
+}
+
+/**
  * Build the chat plugin's `executeQuery` callback.
  *
- * Today only the Slack adapter is supported on SaaS. Other platforms
- * (Teams, Discord, ...) flow through the same callback when wired —
- * each gets its own tenant resolver branch as it comes online. The
- * `unsupported platform` branch returns a user-safe answer rather than
- * throwing so the plugin's `buildErrorCard` path stays graceful.
+ * Multi-platform dispatch lives inside `runExecuteQuery`. Each chat
+ * Platform gets its own tenant resolver, rate-limit key shape, and
+ * approval-surface stamp. The `unsupported platform` branch throws a
+ * user-safe error so the plugin's `buildErrorCard` path stays graceful.
  *
  * The returned callback is plain async — no `Effect` / `ManagedRuntime`
  * dependency. `executeAgentQuery` resolves its own context internally.
@@ -122,20 +164,36 @@ export async function runExecuteQuery(
   ctx: ChatExecuteQueryContext,
 ): Promise<ChatQueryResult> {
   const requestId = crypto.randomUUID();
-  const { threadId, priorMessages, adapter, rawMessage } = ctx;
+  const { adapter } = ctx;
 
-  // 1. Dispatch by platform. Slack-only on SaaS today.
-  if (adapter.name !== "slack") {
-    log.warn(
-      { adapterName: adapter.name, threadId, requestId },
-      "Chat plugin executeQuery received unsupported platform — refusing",
-    );
-    throw new Error(
-      `Chat platform '${adapter.name}' is not yet supported by this Atlas deployment.`,
-    );
+  if (adapter.name === "slack") {
+    return runSlackExecuteQuery(question, ctx, requestId);
+  }
+  if (adapter.name === "telegram") {
+    return runTelegramExecuteQuery(question, ctx, requestId);
   }
 
-  // 2. Resolve tenant from `rawMessage.team_id` (or `team.id` on
+  log.warn(
+    { adapterName: adapter.name, threadId: ctx.threadId, requestId },
+    "Chat plugin executeQuery received unsupported platform — refusing",
+  );
+  throw new Error(
+    `Chat platform '${adapter.name}' is not yet supported by this Atlas deployment.`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Slack branch — pre-existing #2607 path, unchanged behavior
+// ---------------------------------------------------------------------------
+
+async function runSlackExecuteQuery(
+  question: string,
+  ctx: ChatExecuteQueryContext,
+  requestId: string,
+): Promise<ChatQueryResult> {
+  const { threadId, priorMessages, rawMessage } = ctx;
+
+  // 1. Resolve tenant from `rawMessage.team_id` (or `team.id` on
   //    interactive `block_actions` payloads — see `extractTeamId`).
   //    Mirrors `lib/proactive/workspace-id-resolver.ts:createSlackWorkspaceIdResolver`.
   const raw = (rawMessage ?? {}) as SlackRawEvent;
@@ -154,7 +212,7 @@ export async function runExecuteQuery(
   const externalUserId = extractSlackId(raw.user);
   const channelId = extractSlackId(raw.channel) ?? "";
 
-  // 3. Rate limit. Top-level @mentions are keyed per-user so one noisy
+  // 2. Rate limit. Top-level @mentions are keyed per-user so one noisy
   //    user can't throttle the whole workspace (matches slack.ts:667).
   //    Thread follow-ups stay team-wide so a long-running conversation
   //    doesn't pile under one user's bucket (matches slack.ts:491).
@@ -171,7 +229,7 @@ export async function runExecuteQuery(
     throw new Error("Rate limit exceeded. Please wait before trying again.");
   }
 
-  // 4. F-55 actor — bind a workspace bot actor so approval rules apply.
+  // 3. F-55 actor — bind a workspace bot actor so approval rules apply.
   //    `getInstallation(teamId)` reads `chat_cache` (single store, #2634).
   //    Without an Atlas org id, `checkApprovalRequired` short-circuits
   //    and any rule-matching query runs ungated, so both failure modes
@@ -228,65 +286,298 @@ export async function runExecuteQuery(
     ...(externalUserId ? { externalUserId } : {}),
   });
 
-  // 5. Multi-turn conversation persistence. The chat plugin's bridge
+  // 4. Multi-turn conversation persistence. The chat plugin's bridge
   //    already maintains the bridge's StateAdapter-backed conversation
   //    list, but Atlas's internal `conversations` table is the source of
   //    truth for cross-surface history (admin console + web chat + Slack
   //    thread reads). Mirror what slack.ts does: look up by
   //    (channel, thread_ts) and persist the user/assistant turns.
   const slackThreadTs = raw.thread_ts ?? raw.ts ?? "";
-  let conversationId: string | null = null;
-  if (channelId && slackThreadTs) {
-    try {
-      conversationId = await getConversationId(channelId, slackThreadTs);
-    } catch (err) {
-      log.debug(
-        {
-          err: err instanceof Error ? err.message : String(err),
-          channelId,
-          slackThreadTs,
-          requestId,
-        },
-        "getConversationId failed — proceeding without persisted history",
-      );
-    }
-    if (!conversationId) {
-      conversationId = crypto.randomUUID();
-      try {
-        // Create the conversation row BEFORE stamping the thread →
-        // conversationId mapping so a failure can't leave the mapping
-        // pointing at a non-existent row. If `setConversationId` then
-        // fails, the next event in the same thread allocates a fresh
-        // conversation — worse for context continuity, harmless for
-        // correctness.
-        await createConversation({
-          id: conversationId,
-          title: generateTitle(question),
-          surface: "slack",
-        });
-        await setConversationId(channelId, slackThreadTs, conversationId);
-      } catch (err) {
-        // A DB write failure on the critical-path agent run is on-call
-        // signal — log at error so Sentry / alerts fire alongside the
-        // sibling tenant-resolution and agent-run failure paths.
-        log.error(
-          {
-            err: err instanceof Error ? err.message : String(err),
-            channelId,
-            slackThreadTs,
-            requestId,
-          },
-          "Failed to persist new conversation — proceeding with in-memory only",
-        );
-      }
-    }
+  const conversationId = await loadOrCreateConversation(
+    channelId,
+    slackThreadTs,
+    question,
+    "slack",
+    requestId,
+  );
+
+  // 5. Run the agent + persist messages + return.
+  return runAgentAndMap({
+    question,
+    requestId,
+    actor,
+    approvalSurface: "slack",
+    conversationId,
+    priorMessages: priorMessages ?? null,
+    presentationMode: ctx.presentationMode,
+    tenantLabel: { teamId, threadId },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Telegram branch — 1.5.3 #2748 keystone for Phase D
+// ---------------------------------------------------------------------------
+
+async function runTelegramExecuteQuery(
+  question: string,
+  ctx: ChatExecuteQueryContext,
+  requestId: string,
+): Promise<ChatQueryResult> {
+  const { threadId, priorMessages, rawMessage } = ctx;
+  const raw = (rawMessage ?? {}) as TelegramRawEvent;
+
+  // 1. Resolve tenant — chat_id is the routing identifier persisted by
+  //    `TelegramStaticBotInstallHandler` into `workspace_plugins.config`.
+  const chatId = extractTelegramChatId(raw);
+  if (!chatId) {
+    log.warn(
+      { threadId, requestId },
+      "Chat plugin executeQuery received Telegram event without chat.id — refusing",
+    );
+    throw new Error(
+      "This Telegram event is missing tenant context. Please try again.",
+    );
   }
 
-  // 6. If the bridge supplied `priorMessages`, prefer them (they come
-  //    from the bridge's StateAdapter-backed conversation list, which is
-  //    closer to the live thread state than a stale DB row). Otherwise
-  //    rehydrate from the Atlas `conversations` table — matches
-  //    slack.ts's thread-followup branch.
+  // 2. Rate limit. Per-chat — Telegram chats are the equivalent of
+  //    Slack workspaces here (one chat_id == one install row). A per-
+  //    user key is also reasonable but Telegram's `from.id` is optional
+  //    on channel posts, so keying on chat_id keeps the bucket simple.
+  const rateCheck = checkRateLimit(`telegram:${chatId}`);
+  if (!rateCheck.allowed) {
+    log.info(
+      { chatIdFingerprint: fingerprintChatId(chatId), threadId, requestId },
+      "Chat plugin executeQuery rate-limited",
+    );
+    throw new Error("Rate limit exceeded. Please wait before trying again.");
+  }
+
+  // 3. F-55 actor — resolve chat_id → workspace_id via the install row.
+  //    Same fail-closed contract as the Slack branch: unknown tenant or
+  //    DB outage MUST throw before the agent runs.
+  let orgId: string;
+  try {
+    orgId = await resolveTelegramWorkspaceId(chatId);
+  } catch (err) {
+    if (err instanceof TelegramUnknownTenantError) {
+      log.warn(
+        { chatIdFingerprint: fingerprintChatId(chatId), threadId, requestId },
+        "Unknown Telegram chat_id — refusing",
+      );
+      throw new Error(
+        "This Telegram chat is not connected to Atlas. Ask your admin to install Telegram in the Atlas integrations console.",
+        { cause: err },
+      );
+    }
+    log.error(
+      {
+        chatIdFingerprint: fingerprintChatId(chatId),
+        threadId,
+        requestId,
+        err,
+      },
+      "Failed to resolve Telegram chat_id → workspace — refusing query",
+    );
+    throw new Error(
+      "Atlas could not resolve the Telegram workspace right now. Please try again in a moment.",
+      { cause: err },
+    );
+  }
+
+  const externalUserId =
+    typeof raw.from?.id === "number" && Number.isFinite(raw.from.id)
+      ? String(raw.from.id)
+      : undefined;
+  const actor = botActorUser({
+    platform: "telegram",
+    externalId: chatId,
+    orgId,
+    ...(externalUserId ? { externalUserId } : {}),
+  });
+
+  // 4. Conversation persistence keyed on (chat_id, thread anchor). The
+  //    thread anchor prefers Telegram's `message_thread_id` (forum-topic
+  //    aware) and falls back to `message_id` so a flat group still gets
+  //    one conversation per message-thread root.
+  const threadAnchor = telegramThreadAnchor(raw);
+  const conversationId = await loadOrCreateConversation(
+    chatId,
+    threadAnchor,
+    question,
+    "telegram",
+    requestId,
+  );
+
+  return runAgentAndMap({
+    question,
+    requestId,
+    actor,
+    approvalSurface: "telegram",
+    conversationId,
+    priorMessages: priorMessages ?? null,
+    presentationMode: ctx.presentationMode,
+    tenantLabel: { chatIdFingerprint: fingerprintChatId(chatId), threadId },
+  });
+}
+
+/**
+ * Telegram thread anchor — prefer `message_thread_id` (the forum-topic
+ * concept Telegram introduced for supergroups), fall back to
+ * `message_id` so a flat group's top-level messages each anchor their
+ * own conversation. Returns "" when neither is present, which matches
+ * the Slack fallback that disables persistence for un-anchored events.
+ */
+function telegramThreadAnchor(raw: TelegramRawEvent): string {
+  if (typeof raw.message_thread_id === "number") return String(raw.message_thread_id);
+  if (typeof raw.message_id === "number") return String(raw.message_id);
+  return "";
+}
+
+/**
+ * Log-safe chat_id fingerprint — last 4 chars only. Mirrors the helper
+ * in `telegram-static-bot-handler.ts`; kept inline here to avoid a
+ * cross-module import for one 2-line helper.
+ */
+function fingerprintChatId(chatId: string): string {
+  return chatId.length <= 4 ? chatId : `…${chatId.slice(-4)}`;
+}
+
+/** Unknown-tenant marker for the Telegram branch's fail-closed path. */
+class TelegramUnknownTenantError extends Error {
+  constructor(chatIdFingerprint: string) {
+    super(`No Atlas workspace bound to Telegram chat …${chatIdFingerprint}`);
+    this.name = "TelegramUnknownTenantError";
+  }
+}
+
+/**
+ * Resolve a Telegram chat_id → Atlas workspace_id via the static-bot
+ * install record. Reads `workspace_plugins.config->>'chat_id'` for the
+ * catalog row `catalog:telegram`. Throws {@link TelegramUnknownTenantError}
+ * on no-row, propagates DB errors verbatim for caller-side logging.
+ *
+ * Why query the install row instead of a dedicated tenant table: the
+ * static-bot install model stores the routing identifier inside
+ * `workspace_plugins.config` JSONB (per ADR-0007's "form-based / static-
+ * bot installs collapse credential + metadata into one row"), so the
+ * install row IS the tenant lookup — no parallel store to keep in sync.
+ */
+async function resolveTelegramWorkspaceId(chatId: string): Promise<string> {
+  const rows = await internalQuery<{ workspace_id: string }>(
+    `SELECT workspace_id
+       FROM workspace_plugins
+      WHERE catalog_id = $1
+        AND enabled = true
+        AND config->>'chat_id' = $2
+      LIMIT 1`,
+    ["catalog:telegram", chatId],
+  );
+  if (rows.length === 0) {
+    throw new TelegramUnknownTenantError(fingerprintChatId(chatId));
+  }
+  return rows[0].workspace_id;
+}
+
+// ---------------------------------------------------------------------------
+// Shared conversation persistence + agent invocation
+// ---------------------------------------------------------------------------
+
+/**
+ * Look up the conversation row for a (channel, thread anchor) pair, or
+ * create a new one. Empty `channel` or `threadAnchor` disables
+ * persistence — the caller proceeds without a `conversationId`, agent
+ * still runs, just no cross-surface history.
+ */
+async function loadOrCreateConversation(
+  channel: string,
+  threadAnchor: string,
+  question: string,
+  surface: "slack" | "telegram",
+  requestId: string,
+): Promise<string | null> {
+  if (!channel || !threadAnchor) return null;
+
+  let conversationId: string | null = null;
+  try {
+    conversationId = await getConversationId(channel, threadAnchor);
+  } catch (err) {
+    log.debug(
+      {
+        err: err instanceof Error ? err.message : String(err),
+        channel,
+        threadAnchor,
+        requestId,
+      },
+      "getConversationId failed — proceeding without persisted history",
+    );
+  }
+  if (conversationId) return conversationId;
+
+  const fresh = crypto.randomUUID();
+  try {
+    // Create the conversation row BEFORE stamping the thread →
+    // conversationId mapping so a failure can't leave the mapping
+    // pointing at a non-existent row. If `setConversationId` then
+    // fails, the next event in the same thread allocates a fresh
+    // conversation — worse for context continuity, harmless for
+    // correctness.
+    await createConversation({
+      id: fresh,
+      title: generateTitle(question),
+      surface,
+    });
+    await setConversationId(channel, threadAnchor, fresh);
+    return fresh;
+  } catch (err) {
+    // A DB write failure on the critical-path agent run is on-call
+    // signal — log at error so Sentry / alerts fire alongside the
+    // sibling tenant-resolution and agent-run failure paths.
+    log.error(
+      {
+        err: err instanceof Error ? err.message : String(err),
+        channel,
+        threadAnchor,
+        requestId,
+      },
+      "Failed to persist new conversation — proceeding with in-memory only",
+    );
+    return null;
+  }
+}
+
+interface RunAgentArgs {
+  readonly question: string;
+  readonly requestId: string;
+  readonly actor: ReturnType<typeof botActorUser>;
+  readonly approvalSurface: ApprovalRequestSurface;
+  readonly conversationId: string | null;
+  readonly priorMessages: ChatExecuteQueryContext["priorMessages"] | null;
+  readonly presentationMode: ChatExecuteQueryContext["presentationMode"];
+  /** Free-form log context — e.g. `{ teamId }` for Slack, `{ chatIdFingerprint }` for Telegram. */
+  readonly tenantLabel: Record<string, unknown>;
+}
+
+/**
+ * Shared agent-loop invocation + result mapping. Both Slack and Telegram
+ * funnel through here once their per-platform tenant resolution + actor
+ * binding is done. The presentation-mode default ("conversational") is
+ * load-bearing for #2705; every chat-plugin path produces the
+ * conversational shape unless the bridge explicitly opts out.
+ */
+async function runAgentAndMap(args: RunAgentArgs): Promise<ChatQueryResult> {
+  const {
+    question,
+    requestId,
+    actor,
+    approvalSurface,
+    conversationId,
+    priorMessages,
+    presentationMode,
+    tenantLabel,
+  } = args;
+
+  // Rehydrate history from the Atlas `conversations` table when the
+  // bridge didn't supply it.
   let history = priorMessages;
   if (!history && conversationId) {
     try {
@@ -317,38 +608,35 @@ export async function runExecuteQuery(
     }
   }
 
-  // 7. Run the agent. Approval-surface stamp is the chat-platform tag
-  //    (#2072) — required for surface-scoped approval rules to fire.
   let queryResult;
   try {
     queryResult = await executeAgentQuery(question, requestId, {
       ...(history ? { priorMessages: history } : {}),
       actor,
-      approvalSurface: "slack",
+      approvalSurface,
       ...(conversationId ? { conversationId } : {}),
       // #2705 — propagate the bridge's presentation-mode signal so the
-      // Slack @mention path produces the conversational shape. Default
-      // to "conversational" because every call through this entrypoint
-      // originates from the chat plugin's bridge (Slack/Teams/etc.);
-      // if `ctx.presentationMode` is unset (older bridge versions),
-      // we still want the chat-platform shape rather than the web view.
-      presentationMode: ctx.presentationMode ?? "conversational",
+      // chat path produces the conversational shape. Default to
+      // "conversational" because every call through this entrypoint
+      // originates from the chat plugin's bridge (Slack/Telegram/etc.);
+      // if the bridge predates #2705, we still want the chat-platform
+      // shape rather than the web view.
+      presentationMode: presentationMode ?? "conversational",
     });
   } catch (err) {
     // Log the original `err` (with stack trace) so Sentry sees the
     // unscrubbed version. The re-thrown message stays unscrubbed too —
     // the bridge's `scrubErrorMessage` is the single source of truth
-    // for what leaves the process (avoids double-redaction with a
-    // different scrubber).
+    // for what leaves the process (avoids double-redaction).
     log.error(
-      { err, teamId, threadId, requestId },
+      { err, requestId, ...tenantLabel },
       "Chat plugin executeQuery agent run failed",
     );
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(message, { cause: err });
   }
 
-  // 8. Persist messages so future follow-ups can load history. Best-effort.
+  // Persist messages so future follow-ups can load history. Best-effort.
   if (conversationId) {
     try {
       addMessage({ conversationId, role: "user", content: question });
@@ -369,18 +657,17 @@ export async function runExecuteQuery(
     }
   }
 
-  // 9. Approval-required path: replace the agent's free-form text with
-  //    the canonical `:lock:` notice. The bridge renders this through
-  //    `buildQueryResultCard` which calls `formatQueryResponse` — keeping
-  //    the message on `answer` means it surfaces in-thread identically to
-  //    the legacy slack.ts path.
+  // Approval-required path: replace the agent's free-form text with
+  // the canonical `:lock:` notice. The bridge renders this through
+  // `buildQueryResultCard` which calls `formatQueryResponse` — keeping
+  // the message on `answer` means it surfaces in-thread identically to
+  // the legacy slack.ts path.
   if (queryResult.pendingApproval) {
     log.info(
       {
-        teamId,
-        threadId,
         approvalRequestId: queryResult.pendingApproval.requestId,
         requestId,
+        ...tenantLabel,
       },
       "Chat plugin executeQuery held for approval",
     );
@@ -396,9 +683,6 @@ export async function runExecuteQuery(
     };
   }
 
-  // 10. Map AgentQueryResult → ChatQueryResult. The two shapes already
-  //     line up almost 1:1; `pendingActions` flows through so the bridge
-  //     posts per-action ephemeral approval prompts.
   return {
     answer: queryResult.answer,
     sql: queryResult.sql,
@@ -410,3 +694,9 @@ export async function runExecuteQuery(
       : {}),
   };
 }
+
+// Compile-time guard that the platforms wired here all exist in
+// `CHAT_BOT_PLATFORMS`. Adding a new branch above without extending the
+// actor enum surfaces here as a TS error.
+const _platformGuard: ChatBotPlatform = "telegram";
+void _platformGuard;

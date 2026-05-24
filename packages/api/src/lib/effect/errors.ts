@@ -395,6 +395,61 @@ export class JiraReconnectRequiredError extends Data.TaggedError(
   readonly upstreamError: string;
 }> {}
 
+// ── Telegram static-bot install (#2748 — 1.5.3 Phase D keystone) ────
+
+/**
+ * Telegram install rejected the supplied `chat_id` at the input-shape
+ * layer — not a numeric integer, empty, or pasted as `@username`. Maps
+ * to HTTP 400. The constructor message is admin-actionable verbatim;
+ * the route does not translate.
+ *
+ * Defined as a peer of {@link PlatformOAuthExchangeError} rather than a
+ * subclass because the static-bot install model has different failure
+ * surface from OAuth (no upstream OAuth code exchange; the routing-
+ * identifier validation is the equivalent gate).
+ *
+ * @see packages/api/src/lib/integrations/install/telegram-static-bot-handler.ts
+ */
+export class TelegramChatIdInvalidError extends Data.TaggedError(
+  "TelegramChatIdInvalidError",
+)<{
+  readonly message: string;
+}> {}
+
+/**
+ * Telegram Bot API returned a non-OK envelope when verifying chat
+ * reachability via `getChat`. Maps to HTTP 400 because the most common
+ * failure modes (chat not found, bot not a member, bad chat type) are
+ * admin-correctable: re-paste the id, add the bot to the chat. The
+ * `description` field carries Telegram's verbatim message so the admin
+ * sees the actionable text rather than a generic "install failed".
+ *
+ * Distinct from {@link TelegramApiUnavailableError} (502 — operator/
+ * upstream) because `400 chat not found` is user-side; auto-retry
+ * would be wrong.
+ */
+export class TelegramReachabilityError extends Data.TaggedError(
+  "TelegramReachabilityError",
+)<{
+  /** Admin-facing message — includes Telegram's `description` verbatim. */
+  readonly message: string;
+  /** Telegram-side numeric code (400, 403, etc.). Forensic-only. */
+  readonly errorCode: number;
+}> {}
+
+/**
+ * Telegram Bot API was unreachable at the network layer — DNS, TLS,
+ * timeout, or a malformed response. Maps to HTTP 502. The thrown
+ * message is admin-safe (no bot token, no internal hostnames); the
+ * underlying error is logged with the structured `requestId` for
+ * operator forensics.
+ */
+export class TelegramApiUnavailableError extends Data.TaggedError(
+  "TelegramApiUnavailableError",
+)<{
+  readonly message: string;
+}> {}
+
 // ── Workspace Installer (#2742) ────────────────────────────────────
 
 /**
@@ -510,6 +565,9 @@ export type AtlasError =
   | PlatformOAuthExchangeError
   | SalesforceReconnectRequiredError
   | JiraReconnectRequiredError
+  | TelegramChatIdInvalidError
+  | TelegramReachabilityError
+  | TelegramApiUnavailableError
   | AlreadyInstalledError
   | ConfigSchemaError
   | CatalogNotFoundError
@@ -568,6 +626,9 @@ export const ATLAS_ERROR_TAG_LIST = [
   "PlatformOAuthExchangeError",
   "SalesforceReconnectRequiredError",
   "JiraReconnectRequiredError",
+  "TelegramChatIdInvalidError",
+  "TelegramReachabilityError",
+  "TelegramApiUnavailableError",
   "AlreadyInstalledError",
   "ConfigSchemaError",
   "CatalogNotFoundError",

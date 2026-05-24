@@ -245,12 +245,36 @@ function registerSalesforceOAuthHandler(): void {
   log.info({ publicApiUrl }, "Registered SalesforceOAuthInstallHandler + LazyPluginLoader builder");
 }
 
+/**
+ * Register the Telegram static-bot install handler when the operator
+ * env is wired.
+ *
+ * **Severity escalation when the catalog disagrees with the env.**
+ * Per #2748 review (and #2673 silent-degradation precedent), the boot
+ * line is logged at `error` — not `info` — when the resolved catalog
+ * row says `enabled: true` for telegram but `TELEGRAM_BOT_TOKEN` is
+ * unset. That combination is always an operator misconfig: the
+ * AdapterRegistry will degrade chat to no-Telegram, the install route
+ * will 501, and the admin UI's Telegram card will look installable but
+ * fail at submit. The escalation surfaces the gap in operator log
+ * streams instead of blending into routine boot info noise.
+ *
+ * When the catalog has telegram disabled (or omitted), the env-unset
+ * branch stays at `info` — operator intentionally hasn't opted in.
+ */
 function registerTelegramStaticBotHandler(): void {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
   if (!botToken || botToken.length === 0) {
-    log.info(
-      "Telegram static-bot handler not registered — TELEGRAM_BOT_TOKEN unset. The 'telegram' catalog row should stay enabled=false (or the install route will return 501 with the actionable env-var name).",
-    );
+    if (isCatalogSlugEnabled("telegram")) {
+      log.error(
+        { slug: "telegram", requiredEnv: ["TELEGRAM_BOT_TOKEN"] },
+        "Telegram catalog row is enabled but TELEGRAM_BOT_TOKEN is unset — install route will return 501 and AdapterRegistry will skip the adapter. Set TELEGRAM_BOT_TOKEN per-service. See #2673 for the same-class silent-degradation precedent.",
+      );
+    } else {
+      log.info(
+        "Telegram static-bot handler not registered — TELEGRAM_BOT_TOKEN unset and the 'telegram' catalog row is not enabled (operator hasn't opted in).",
+      );
+    }
     return;
   }
   registerStaticBotHandler(
@@ -261,6 +285,30 @@ function registerTelegramStaticBotHandler(): void {
     { tokenFingerprint: fingerprintToken(botToken) },
     "Registered TelegramStaticBotInstallHandler",
   );
+}
+
+/**
+ * Read the resolved catalog (loaded at boot via `loadConfig`) and check
+ * whether a given slug is enabled. Used to escalate the env-unset log
+ * severity when the operator's intent is "telegram should work" but
+ * the env wiring is missing.
+ *
+ * Returns `false` when the config hasn't loaded yet — that's the
+ * pre-boot path where the handler-register file is imported during
+ * test setup; the catalog isn't authoritative then.
+ */
+function isCatalogSlugEnabled(slug: string): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getConfig } = require("@atlas/api/lib/config") as {
+      getConfig: () => { catalog?: ReadonlyArray<{ slug: string; enabled: boolean }> } | null;
+    };
+    const config = getConfig();
+    if (!config?.catalog) return false;
+    return config.catalog.some((e) => e.slug === slug && e.enabled === true);
+  } catch {
+    return false;
+  }
 }
 
 /**

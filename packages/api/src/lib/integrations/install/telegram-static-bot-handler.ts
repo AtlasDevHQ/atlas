@@ -11,22 +11,22 @@
  * `workspace_plugins.config` via UPSERT.
  *
  * Per-Workspace credential note: there isn't one. The bot's auth lives
- * with the operator (`TELEGRAM_BOT_TOKEN`). The catalog config_schema's
- * `chat_id` is a routing identifier, not a secret — it's a Telegram
- * integer (signed) that Bot API responses leak freely in `from.id` /
- * `chat.id` of every message. We store it plaintext inside
- * `workspace_plugins.config` JSONB; the `secret: true` flag is NOT set
- * in the catalog schema so `encryptSecretFields` doesn't touch it.
+ * with the operator (`TELEGRAM_BOT_TOKEN`). The catalog `chat_id` is a
+ * routing identifier, not a secret — Telegram leaks it in `from.id` /
+ * `chat.id` of every message envelope. This handler writes
+ * `workspace_plugins.config` directly via `internalQuery` (mirroring
+ * `slack-oauth-handler.ts`), so `encryptSecretFields` is not in the
+ * write path at all; the absence of `secret: true` on the catalog row
+ * is consistent but not the load-bearing reason.
  *
  * Reachability verification: rather than sending a real test message
  * (which would spam the channel on every install attempt), we call the
  * Bot API `getChat` endpoint with the supplied `chat_id`. `getChat`
- * succeeds iff (a) the chat exists and (b) the bot is a member, which
- * is exactly the install-time precondition. The error envelope from
- * Telegram (`description` field on 400/403) is propagated verbatim
- * into the thrown error message so the admin sees "Bad Request: chat
- * not found" / "Forbidden: bot is not a member of the channel chat"
- * instead of a generic "install failed".
+ * succeeds when the chat exists AND the bot is a member. Telegram
+ * collapses both failure cues into one `chat not found` error envelope;
+ * the `hintForTelegramError` helper appends an admin-actionable second
+ * sentence based on the status code so the surface message tells the
+ * admin which side to fix.
  *
  * @see ./types.ts — {@link StaticBotInstallHandler}
  * @see https://core.telegram.org/bots/api#getchat
@@ -35,6 +35,11 @@
 import crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
+import {
+  TelegramApiUnavailableError,
+  TelegramChatIdInvalidError,
+  TelegramReachabilityError,
+} from "@atlas/api/lib/effect/errors";
 import type { WorkspaceId } from "@useatlas/types";
 import type {
   CatalogId,
@@ -51,26 +56,32 @@ export const TELEGRAM_SLUG: CatalogId = "telegram";
  * Stable `plugin_catalog.id` for Telegram. The seeder derives row ids
  * as `catalog:${slug}` (see `catalog-seeder.ts::upsertEntry`), so the
  * FK target in `workspace_plugins.catalog_id` is `catalog:telegram`.
- * Hardcoded here rather than read from the DB at install time — the
- * handler is Telegram-specific by construction, so resolving the id
- * dynamically would be ceremony.
+ *
+ * Kept in lockstep with `catalog-seeder.ts::upsertEntry`'s id
+ * derivation — change both together. A seeder rename without updating
+ * this constant produces FK violations at first install.
  */
 export const TELEGRAM_CATALOG_ID = "catalog:telegram";
 
 /**
- * Telegram chat ids are integers (positive for users, negative for
- * groups/channels — supergroups start with `-100`). Admins typically
- * copy/paste them, and the only legal characters are an optional `-`
- * followed by digits. Reject anything else (e.g. `@channelname`,
- * which Telegram resolves on the server but isn't what the catalog
- * config_schema declares).
- *
- * Permissive on length: Telegram has crept ids over 13 digits (with
- * the `-100` prefix that's 16 chars), and there's no documented upper
- * bound. Cap at 32 chars defensively so a paste-mistake (full URL)
- * doesn't round-trip the Bot API only to fail.
+ * Telegram chat ids are 64-bit signed integers documented as ≤52
+ * significant bits ([Telegram bot ID spec](https://core.telegram.org/api/bots/ids)),
+ * so the longest legal value is ~16 chars (with the `-100` prefix for
+ * supergroups/channels). The 32-char cap here is defensive — accepts
+ * any structurally-valid id well above the published envelope so a
+ * spec change doesn't immediately reject valid input.
  */
 const TELEGRAM_CHAT_ID_RE = /^-?\d{1,32}$/;
+
+/**
+ * Reachability call timeout. Telegram's Bot API is normally sub-second;
+ * 10s gives ample headroom for transient latency while keeping the
+ * install POST bounded (Bun's default fetch has no timeout in
+ * serverless runtimes, so a hung upstream would otherwise hold the
+ * request open indefinitely). Mirrors the pattern in
+ * `jira-oauth-handler.ts`.
+ */
+const TELEGRAM_FETCH_TIMEOUT_MS = 10_000;
 
 /**
  * Per-deploy operator config. Read once from env by `register.ts` and
@@ -94,17 +105,22 @@ export interface TelegramInstallConfig {
 }
 
 /**
- * Telegram Bot API response envelope. `getChat` returns `{ ok: true,
- * result: { id, type, ... } }` on success; failures return `{ ok:
- * false, error_code, description }`. We narrow only the fields we
- * read.
+ * Telegram Bot API response envelope. `getChat` returns
+ * `{ ok: true, result: { id, type, ... } }` on success and
+ * `{ ok: false, error_code, description }` on failure. Modeled as a
+ * discriminated union so the success/failure branches narrow cleanly
+ * and a future `result.id` access can't crash on an undefined field.
  */
-interface TelegramBotApiResponse {
-  readonly ok: boolean;
-  readonly description?: string;
-  readonly error_code?: number;
-  readonly result?: { readonly id: number; readonly type: string };
-}
+type TelegramBotApiResponse =
+  | {
+      readonly ok: true;
+      readonly result?: { readonly id: number; readonly type: string };
+    }
+  | {
+      readonly ok: false;
+      readonly description?: string;
+      readonly error_code?: number;
+    };
 
 export class TelegramStaticBotInstallHandler implements StaticBotInstallHandler {
   readonly kind = "static-bot" as const;
@@ -130,14 +146,15 @@ export class TelegramStaticBotInstallHandler implements StaticBotInstallHandler 
   ): Promise<{ readonly installRecord: InstallRecord }> {
     // ── 1. Validate the routing identifier ─────────────────────────
     if (!routingIdentifier || routingIdentifier.length === 0) {
-      throw new Error(
-        "Telegram install requires a non-empty chat_id (numeric — copy from the chat's URL or use a bot like @userinfobot).",
-      );
+      throw new TelegramChatIdInvalidError({
+        message:
+          "Telegram install requires a non-empty chat_id (numeric — copy from the chat's URL or use a bot like @userinfobot).",
+      });
     }
     if (!TELEGRAM_CHAT_ID_RE.test(routingIdentifier)) {
-      throw new Error(
-        `Telegram chat_id "${routingIdentifier}" is not a valid integer id. Public usernames (@channel) aren't accepted — use the numeric id (negative for groups/channels, e.g. -1001234567890).`,
-      );
+      throw new TelegramChatIdInvalidError({
+        message: `Telegram chat_id "${routingIdentifier}" is not a valid integer id. Public usernames (@channel) aren't accepted — use the numeric id (negative for groups/channels, e.g. -1001234567890).`,
+      });
     }
 
     // ── 2. Reachability via Bot API getChat ─────────────────────────
@@ -152,7 +169,7 @@ export class TelegramStaticBotInstallHandler implements StaticBotInstallHandler 
     const candidateId = this.newId();
     const configPayload: TelegramInstallConfig = {
       chat_id: routingIdentifier,
-      ...extractDisplayName(extras),
+      ...extractDisplayName(extras, workspaceId),
     };
 
     let persistedId: string;
@@ -168,17 +185,23 @@ export class TelegramStaticBotInstallHandler implements StaticBotInstallHandler 
       );
       const returned = rows[0]?.id;
       if (typeof returned !== "string" || returned.length === 0) {
-        log.warn(
-          { workspaceId, candidateId },
-          "workspace_plugins UPSERT returned no id for Telegram install — falling back to candidate",
+        // Postgres ≥9.5 guarantees `INSERT … ON CONFLICT … RETURNING`
+        // returns the row on both insert and update. Empty here means a
+        // driver / wrapper regression — fail loudly rather than ship a
+        // stale id back to the user (on re-install the DB row has the
+        // existing id; falling back to the fresh candidateId would
+        // strand subsequent lookups).
+        throw new Error(
+          `workspace_plugins UPSERT returned no id for Telegram install (workspaceId=${workspaceId}). RETURNING must always populate on PG ≥9.5; this indicates a driver regression. Aborting install.`,
         );
-        persistedId = candidateId;
-      } else {
-        persistedId = returned;
       }
+      persistedId = returned;
     } catch (err) {
       log.error(
-        { workspaceId, err: err instanceof Error ? err.message : String(err) },
+        {
+          workspaceId,
+          err: err instanceof Error ? err : new Error(String(err)),
+        },
         "Failed to persist Telegram install record — aborting install",
       );
       throw err;
@@ -207,40 +230,67 @@ export class TelegramStaticBotInstallHandler implements StaticBotInstallHandler 
    * member. The thrown errors carry Telegram's `description` verbatim
    * — admins routinely re-paste the wrong id (or forget to add the bot
    * to the channel), and the upstream message is the actionable cue.
+   *
+   * Token redaction: `fetch` errors from `undici` may stringify the
+   * request URL (which contains the bot token in the path). The
+   * sanitization step strips any `/bot<id>:<secret>/` substring from
+   * the surface message; we also intentionally do NOT attach
+   * `cause: err` so downstream `pino`-style serializers can't walk
+   * through to a raw error object carrying the URL.
    */
   private async verifyReachability(chatId: string): Promise<void> {
     const url = `https://api.telegram.org/bot${this.botToken}/getChat?chat_id=${encodeURIComponent(chatId)}`;
     let response: Response;
     try {
-      response = await fetch(url);
+      response = await fetchWithTimeout(url, TELEGRAM_FETCH_TIMEOUT_MS);
     } catch (err) {
-      // Network-layer failure — DNS, timeout, etc. Surface Telegram in
-      // the message so the admin knows which upstream to retry; attach
-      // the original via `cause` so log scrapers keep the full stack.
-      throw new Error(
-        `Telegram Bot API unreachable when verifying chat_id (${err instanceof Error ? err.message : String(err)}). Retry, or check operator-side TELEGRAM_BOT_TOKEN wiring.`,
-        { cause: err },
+      const message = redactBotTokens(
+        err instanceof Error ? err.message : String(err),
       );
+      // Network-layer failure — DNS, timeout, etc. Pino captures the
+      // sanitized message via the explicit field below; we intentionally
+      // do NOT attach `cause: err` because the raw cause may include
+      // the bot-token URL in its message / Symbol(captured-data) fields.
+      log.warn(
+        {
+          chatIdFingerprint: fingerprintChatId(chatId),
+          fetchError: message,
+        },
+        "Telegram Bot API unreachable when verifying chat_id",
+      );
+      throw new TelegramApiUnavailableError({
+        message: `Telegram Bot API unreachable when verifying chat_id (${message}). Retry, or check operator-side TELEGRAM_BOT_TOKEN wiring.`,
+      });
     }
 
     let parsed: TelegramBotApiResponse;
     try {
       parsed = (await response.json()) as TelegramBotApiResponse;
     } catch (err) {
-      throw new Error(
-        `Telegram Bot API returned a non-JSON response when verifying chat_id "${chatId}" (status ${response.status}): ${err instanceof Error ? err.message : String(err)}`,
-        { cause: err },
+      const message = redactBotTokens(
+        err instanceof Error ? err.message : String(err),
       );
+      log.warn(
+        {
+          chatIdFingerprint: fingerprintChatId(chatId),
+          status: response.status,
+          parseError: message,
+        },
+        "Telegram Bot API returned non-JSON response",
+      );
+      throw new TelegramApiUnavailableError({
+        message: `Telegram Bot API returned a non-JSON response when verifying chat_id "${chatId}" (status ${response.status}).`,
+      });
     }
 
     if (!parsed.ok) {
       const desc = parsed.description ?? "unknown error";
-      // Common cases get a friendlier hint appended. The error_code +
-      // description carry the upstream truth for ops triage.
-      const hint = hintForTelegramError(parsed.error_code, desc);
-      throw new Error(
-        `Telegram rejected chat_id "${chatId}": ${desc}${hint ? ` — ${hint}` : ""}`,
-      );
+      const code = parsed.error_code ?? response.status;
+      const hint = hintForTelegramError(code, desc);
+      throw new TelegramReachabilityError({
+        message: `Telegram rejected chat_id "${chatId}": ${desc}${hint ? ` — ${hint}` : ""}`,
+        errorCode: code,
+      });
     }
   }
 }
@@ -250,13 +300,27 @@ export class TelegramStaticBotInstallHandler implements StaticBotInstallHandler 
  * blob. Drops any other keys silently — the catalog `config_schema`
  * declares the contract; new fields land via a new schema row, not via
  * arbitrary extras injection.
+ *
+ * When `display_name` is present but the wrong type (number, null,
+ * etc.), we log at warn so the silent drop is at least observable in
+ * server logs — the admin UI's form validation should never let this
+ * through, so a warn here is operator signal that a non-UI caller
+ * passed a malformed payload.
  */
 function extractDisplayName(
   extras: Record<string, unknown> | undefined,
+  workspaceId: WorkspaceId,
 ): { display_name?: string } {
   if (!extras) return {};
   const raw = extras.display_name;
-  if (typeof raw !== "string") return {};
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== "string") {
+    log.warn(
+      { workspaceId, rawType: typeof raw },
+      "Telegram extras.display_name is not a string — dropping",
+    );
+    return {};
+  }
   const trimmed = raw.trim();
   if (trimmed.length === 0) return {};
   return { display_name: trimmed };
@@ -264,8 +328,11 @@ function extractDisplayName(
 
 /**
  * Per-status-code follow-up text appended to the upstream description.
- * Keeps the thrown error actionable without leaking the bot token or
- * any other operator-scoped detail.
+ * Logs a warn when the code is novel (none of the known buckets match)
+ * so operators see observability gaps before users do — the verbatim
+ * description still propagates in the thrown error, so the user does
+ * get *some* info, but a recurring null-return signals a new failure
+ * mode worth a follow-up entry here.
  */
 function hintForTelegramError(code: number | undefined, description: string): string | null {
   const desc = description.toLowerCase();
@@ -278,6 +345,10 @@ function hintForTelegramError(code: number | undefined, description: string): st
   if (desc.includes("chat not found")) {
     return "double-check the numeric chat_id — for groups/channels it starts with -100";
   }
+  log.warn(
+    { errorCode: code, description },
+    "Telegram error code not mapped in hintForTelegramError — consider adding a hint branch",
+  );
   return null;
 }
 
@@ -289,4 +360,31 @@ function hintForTelegramError(code: number | undefined, description: string): st
  */
 function fingerprintChatId(chatId: string): string {
   return chatId.length <= 4 ? chatId : `…${chatId.slice(-4)}`;
+}
+
+/**
+ * Strip any bot-token path segment from a message. Telegram bot tokens
+ * have the documented shape `<bot_id>:<35-chars>` and ride in the URL
+ * path; `undici` and similar HTTP errors sometimes surface the full
+ * URL in their `.message`. This is the last-mile redaction before the
+ * message reaches a log line or a thrown error.
+ */
+function redactBotTokens(message: string): string {
+  return message.replace(/bot\d+:[A-Za-z0-9_-]+/g, "bot<redacted>");
+}
+
+/**
+ * `fetch` with a timeout. Bun's fetch has no built-in timeout in
+ * serverless runtimes; without an AbortController-driven cap a hung
+ * Telegram upstream would hold the install POST open indefinitely.
+ * Mirrors `jira-oauth-handler.ts`'s `fetchWithTimeout`.
+ */
+async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
 }

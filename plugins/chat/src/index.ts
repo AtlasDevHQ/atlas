@@ -3,11 +3,20 @@
  *
  * Bridges vercel/chat (Chat SDK) into the Atlas plugin system as a unified
  * interaction layer. Adapter activation is driven by `atlas.config.ts:catalog`
- * + per-Platform env vars (slice 2 of #2649 — issue #2650). Slack is the
- * only OAuth chat Platform that instantiates in 1.5.2; the other adapters
- * (Teams, Discord, gchat, Telegram, GitHub, Linear, WhatsApp) ride along
- * as catalog placeholders and wire up in 1.5.3 once `StaticBotInstallHandler`
- * lands.
+ * + per-Platform env vars (slice 2 of #2649 — issue #2650).
+ *
+ * Wired adapters:
+ *   - Slack — OAuth install model (1.5.2, #2650). Bot token lives in
+ *     `chat_cache` keyed by `team_id`.
+ *   - Telegram — static-bot install model (1.5.3, #2748 — keystone slice
+ *     for Phase D). Operator-shared `TELEGRAM_BOT_TOKEN`; per-Workspace
+ *     `chat_id` routing in `workspace_plugins.config`.
+ *
+ * The remaining Phase D adapters (Discord #2749, Linear #2750, GitHub
+ * #2751, Teams #2752, WhatsApp #2753, gchat #2754) ride the static-bot
+ * (or OAuth) interface this plugin already exposes — they slot in by
+ * adding a per-slug `ChatAdapterBuilder` to `adapter-registry.ts` and
+ * mounting a `/webhooks/<slug>` route here.
  *
  * Replaces the standalone `@useatlas/slack` and `@useatlas/teams` plugins
  * with a unified Chat SDK adapter approach. See the migration guide in README.md.
@@ -353,14 +362,26 @@ function buildChatPlugin(
       // WhatsApp #2753) ride the same pattern.
       if (telegramStaticBotDeclared) {
         app.post("/webhooks/telegram", async (c) => {
+          const requestId = crypto.randomUUID();
           if (!bridge) {
-            return c.json({ error: "Chat plugin not yet initialized" }, 503);
+            return c.json({ error: "Chat plugin not yet initialized", requestId }, 503);
           }
           const handler = bridge.webhooks.telegram;
           if (!handler) {
-            return c.json({ error: "Telegram adapter not configured" }, 404);
+            // Catalog declared telegram + enabled, but the AdapterRegistry
+            // didn't wire the adapter — almost always means
+            // `TELEGRAM_BOT_TOKEN` is unset. Operators staring at a 404
+            // in chat-plugin logs need this signal explicitly, not as
+            // background webhook noise (Telegram retries with backoff
+            // and disables the webhook after a long failure window —
+            // missing this log loses webhook delivery silently). See
+            // #2748 review + #2673 silent-degradation precedent.
+            (log ?? console).error(
+              { requestId, adapter: "telegram" },
+              "Telegram webhook received but adapter not configured — check TELEGRAM_BOT_TOKEN and AdapterRegistry boot logs",
+            );
+            return c.json({ error: "Telegram adapter not configured", requestId }, 404);
           }
-          const requestId = crypto.randomUUID();
           try {
             const response = await handler(c.req.raw, {
               waitUntil: (task: Promise<unknown>) => {

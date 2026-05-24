@@ -32,6 +32,10 @@ import type { ToolRegistry } from "./tools/registry";
 import { ACTION_APPROVAL_MODES, type ActionApprovalMode } from "@atlas/api/lib/action-types";
 import { ATLAS_ROLES } from "@atlas/api/lib/auth/types";
 import {
+  IMPLEMENTATION_STATUSES,
+  type ImplementationStatus,
+} from "@useatlas/types";
+import {
   DEFAULT_AUTO_PROMOTE_CLICKS,
   DEFAULT_COLD_WINDOW_DAYS,
 } from "@atlas/api/lib/suggestions/approval-service";
@@ -607,6 +611,22 @@ const AtlasConfigSchema = z.object({
     },
     "catalog entries must have unique slugs — duplicate found",
   ),
+
+  /**
+   * Per-deploy override for a catalog row's `implementation_status`.
+   * Map from catalog slug → `"available" | "coming_soon"`. Per ADR-0007
+   * (1.5.3 #2743), this hook lets a self-host operator who's shipped
+   * their own install handler for a row Atlas marks `coming_soon`
+   * promote it to `available` without forking the catalog.
+   *
+   * **Inert in slice 5 (#2743)** — the read path is wired through
+   * `getCatalogImplementationStatus()` but no UI consumer renders the
+   * override yet. Slice 9 (#2747) consumes it to flip a card's CTA
+   * from inert to active.
+   */
+  overrideImplementationStatus: z
+    .record(z.string(), z.enum(IMPLEMENTATION_STATUSES))
+    .optional(),
 });
 
 /** The output type after Zod parsing (defaults applied, all fields present). */
@@ -673,6 +693,13 @@ export interface ResolvedConfig {
    * should default to `[]` via `config.catalog ?? []`.
    */
   catalog?: CatalogEntry[];
+  /**
+   * Per-deploy override for a catalog row's `implementation_status`.
+   * Map from catalog slug → `"available" | "coming_soon"`. Read via
+   * {@link getCatalogImplementationStatus} (1.5.3 #2743). Inert until
+   * slice 9 (#2747) wires a UI consumer.
+   */
+  overrideImplementationStatus?: Record<string, ImplementationStatus>;
   /** Whether the config was loaded from a file or synthesized from env vars. */
   source: "file" | "env";
 }
@@ -708,6 +735,24 @@ let _resolved: ResolvedConfig | null = null;
  */
 export function getConfig(): ResolvedConfig | null {
   return _resolved;
+}
+
+/**
+ * Read the per-deploy operator override for a catalog row's
+ * `implementation_status`. Returns the override when set, otherwise
+ * `undefined` — callers fall back to the catalog row's stored value.
+ *
+ * Per ADR-0007 / 1.5.3 slice 5 (#2743): wired but inert. No UI consumer
+ * renders the override yet — slice 9 (#2747) is the first reader.
+ *
+ * @param slug catalog slug (e.g. `"discord"`, `"postgres"`)
+ * @param config optional injected config (defaults to {@link getConfig})
+ */
+export function getCatalogImplementationStatus(
+  slug: string,
+  config: ResolvedConfig | null = getConfig(),
+): ImplementationStatus | undefined {
+  return config?.overrideImplementationStatus?.[slug];
 }
 
 /**
@@ -1233,6 +1278,9 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     ...(config.residency ? { residency: config.residency } : {}),
     ...(config.catalog && config.catalog.length > 0
       ? { catalog: config.catalog }
+      : {}),
+    ...(config.overrideImplementationStatus
+      ? { overrideImplementationStatus: config.overrideImplementationStatus }
       : {}),
     source: "file",
   };

@@ -39,13 +39,17 @@ import {
   IMPLEMENTATION_STATUSES,
   PILLARS,
   type ImplementationStatus,
+  type PlanTier,
   type Pillar,
 } from "@useatlas/types";
 import {
   resolveInstallStatus,
   type CardState,
 } from "@atlas/api/lib/integrations/install-status-machine";
-import { isPlanEligible, planRank } from "@atlas/api/lib/integrations/install/plan-rank";
+import {
+  isPlanEligible,
+  parsePlanTier,
+} from "@atlas/api/lib/integrations/install/plan-rank";
 // Type-only — the Tag value is lazy-required inside `PillarCatalogQueryLive`
 // so partial `mock.module("@atlas/api/lib/db/internal", { hasInternalDB, … })`
 // stubs in unrelated tests don't surface a Bun static-link SyntaxError when
@@ -119,7 +123,8 @@ export interface CatalogEntryWithState extends CatalogEntry {
 
 /** Per-workspace plan context the facade needs to evaluate plan gating. */
 export interface WorkspacePlanContext {
-  readonly planTier: string;
+  /** Narrowed via {@link parsePlanTier} at the SQL boundary — `null` for legacy `team` / NULL plan_tier values. */
+  readonly planTier: PlanTier | null;
   readonly isOperator: boolean;
 }
 
@@ -260,20 +265,24 @@ function rowToWorkspaceInstall(row: InstallRow): WorkspaceInstall {
 // ---------------------------------------------------------------------------
 
 function isAccessible(
-  workspacePlan: string,
+  workspacePlan: PlanTier | null,
   requiredPlan: string,
   isOperator: boolean,
   context: { slug: string; id: string },
 ): boolean {
   if (isOperator) return true;
-  if (planRank(requiredPlan) === null) {
+  // `requiredPlan` arrives as a raw catalog string — narrow here so an
+  // unknown / drifted value (`"team"`, `""`) fails closed once instead
+  // of every consumer redoing the membership check.
+  const requiredTier = parsePlanTier(requiredPlan);
+  if (requiredTier === null) {
     log.warn(
       { requiredPlan, slug: context.slug, id: context.id },
       "plugin_catalog.min_plan has unknown value — flagging entry as upsellOnly",
     );
     return false;
   }
-  return isPlanEligible(workspacePlan, requiredPlan);
+  return isPlanEligible(workspacePlan, requiredTier);
 }
 
 // ---------------------------------------------------------------------------
@@ -459,7 +468,25 @@ function buildPillarCatalogQueryService(
                 [workspaceId],
               ),
             ]);
-            const planTier = planRows[0]?.plan_tier ?? "free";
+            // Narrow at the SQL boundary: `plan_tier` is a raw string
+            // off the DB. parsePlanTier maps unknown / legacy values to
+            // `null` so downstream callers can rely on `PlanTier | null`.
+            const planTier = parsePlanTier(planRows[0]?.plan_tier);
+            // Surface the rare "row exists but plan_tier is unparseable"
+            // case at debug so the "why is this workspace upsell-only?"
+            // ticket investigation has a hit. The row-missing case
+            // (no org / self-hosted) intentionally stays quiet — it's
+            // the default for self-hosted dev.
+            if (
+              planRows[0] !== undefined &&
+              planRows[0].plan_tier !== null &&
+              planTier === null
+            ) {
+              log.debug(
+                { workspaceId, rawPlanTier: planRows[0].plan_tier },
+                "organization.plan_tier is not a recognized plan tier — treating as rank 0",
+              );
+            }
             const isOperator = planRows[0]?.is_operator_workspace === true;
             return projectCatalogWithInstalls({
               catalog: catalogRows.map(rowToCatalogEntry),

@@ -57,18 +57,48 @@ export const PLAN_RANK: Readonly<Record<PlanTier, number>> = {
 PLAN_TIERS satisfies readonly PlanTier[];
 
 /**
- * Return the numeric rank for a plan name, or `null` when the value
- * is not a recognized plan tier. Callers decide the fail-closed
- * default per call site:
+ * Trust-boundary narrowing helper: take any string-shaped value off the
+ * wire / out of a SQL row and narrow it to {@link PlanTier} or `null`.
+ *
+ * Call this exactly once per trust boundary — DB row read, OpenAPI
+ * request, config import. After that point internal callers cannot
+ * pass a bogus tier like `"team"` or `"enterprise"` (both rejected by
+ * the rank table at runtime today) by accident; the type system
+ * refuses them at compile time.
+ *
+ * Returns `null` for any input outside {@link PLAN_TIERS} (including
+ * `null`, `undefined`, or non-string values). Callers decide the
+ * fail-closed default per call site — see {@link planRank} and
+ * {@link isPlanEligible}.
+ *
+ * Membership is tested with `PLAN_TIERS.includes` rather than `in
+ * PLAN_RANK` — the `in` operator also matches inherited keys like
+ * `"toString"` and `"constructor"`, which would falsely admit those
+ * strings as a PlanTier.
+ */
+export function parsePlanTier(value: unknown): PlanTier | null {
+  if (typeof value !== "string") return null;
+  return (PLAN_TIERS as readonly string[]).includes(value)
+    ? (value as PlanTier)
+    : null;
+}
+
+/**
+ * Return the numeric rank for a plan tier, or `null` when the value
+ * is missing. Callers decide the fail-closed default per call site:
  *
  *   - For `plan_tier`: treat `null` as rank 0 (most restrictive).
  *   - For `min_plan`:  refuse the row outright (a typo shouldn't
  *     widen access).
+ *
+ * Accepts `PlanTier | null` because the trust-boundary narrowing
+ * already happened via {@link parsePlanTier}. Callers reading raw
+ * strings off a SQL row or HTTP body must pipe through
+ * `parsePlanTier` first.
  */
-export function planRank(name: string | null | undefined): number | null {
-  if (typeof name !== "string") return null;
-  if (!(name in PLAN_RANK)) return null;
-  return PLAN_RANK[name as PlanTier];
+export function planRank(name: PlanTier | null | undefined): number | null {
+  if (name == null) return null;
+  return PLAN_RANK[name];
 }
 
 /**
@@ -76,17 +106,20 @@ export function planRank(name: string | null | undefined): number | null {
  * `min_plan`. Returns `true` when the workspace's rank is `>=` the
  * required rank.
  *
- *   - Unknown `requiredPlan` → `false` (fail closed; catalog drift
+ *   - Missing `requiredPlan` → `false` (fail closed; catalog drift
  *     shouldn't admit anything).
- *   - Unknown `workspacePlan` → rank 0 (most restrictive); admits
+ *   - Missing `workspacePlan` → rank 0 (most restrictive); admits
  *     only rows whose `requiredPlan` is also rank 0 (`free`).
+ *
+ * Accepts `PlanTier | null` — the trust-boundary narrowing happens
+ * upstream via {@link parsePlanTier}.
  */
 export function isPlanEligible(
-  workspacePlan: string | null | undefined,
-  requiredPlan: string | null | undefined,
+  workspacePlan: PlanTier | null | undefined,
+  requiredPlan: PlanTier | null | undefined,
 ): boolean {
-  const requiredRank = planRank(requiredPlan);
+  const requiredRank = planRank(requiredPlan ?? null);
   if (requiredRank === null) return false;
-  const workspaceRank = planRank(workspacePlan) ?? 0;
+  const workspaceRank = planRank(workspacePlan ?? null) ?? 0;
   return workspaceRank >= requiredRank;
 }

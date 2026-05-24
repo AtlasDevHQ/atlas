@@ -14,7 +14,7 @@
  * `packages/schemas/README.md`.
  */
 import { z } from "zod";
-import type { AbuseRestoreStatus } from "@useatlas/types";
+import type { AbuseRestoreStatus, PlanTier } from "@useatlas/types";
 import {
   BackupEntrySchema,
   CustomDomainSchema,
@@ -304,7 +304,21 @@ export const PlatformCatalogResponseSchema = z.object({
 // `workspace_plugins` to compute per-card install state. Used by
 // the /admin/integrations catalog card section.
 
-export const IntegrationsCatalogEntrySchema = z.object({
+// Local literal tuple instead of importing the value-export tuple from
+// `@useatlas/types`. Same scaffold-publish rationale as
+// `ABUSE_RESTORE_STATUSES` above — the satisfies constraint pins this
+// to the canonical `PlanTier` union so adding a tier in
+// `@useatlas/types/platform.ts` fails compile here until both sides
+// match.
+const PLAN_TIERS_LITERAL = [
+  "free",
+  "trial",
+  "starter",
+  "pro",
+  "business",
+] as const satisfies readonly PlanTier[];
+
+const RawCatalogEntrySchema = z.object({
   id: z.string(),
   slug: z.string(),
   type: z.enum(["chat", "integration"]),
@@ -340,6 +354,65 @@ export const IntegrationsCatalogEntrySchema = z.object({
   pillar: z.enum(["datasource", "chat", "action"]).optional(),
   implementationStatus: z.enum(["available", "coming_soon"]).optional(),
 });
+
+/**
+ * Discriminated view of the catalog row's plan-access state. The wire
+ * shape carries two independent fields (`accessible` + `upgradeRequired`)
+ * for backward compatibility; only two of the four `(accessible,
+ * upgradeRequired)` combinations are legal, and the invariant is
+ * enforced at the producer only.
+ *
+ * Parsing into this union at the fetch boundary means consumers
+ * (catalog-section.tsx) get an exhaustive switch instead of having
+ * to re-check both fields. The `requiredPlan` field on the `upgrade`
+ * branch is a typed {@link PlanTier} — a legacy `"team"` value falls
+ * back to `null` so the UI hides the upgrade chip rather than
+ * rendering a non-buyable plan name.
+ */
+export type CatalogAccess =
+  | { readonly kind: "accessible" }
+  | { readonly kind: "upgrade"; readonly requiredPlan: PlanTier | null };
+
+/**
+ * Narrow a raw `(accessible, upgradeRequired, upsellOnly, minPlan)`
+ * tuple to {@link CatalogAccess}. Tolerates pre-#2701 API responses
+ * (no `accessible` field) by deriving from `upsellOnly` + `minPlan`.
+ */
+function deriveAccess(input: {
+  accessible?: boolean;
+  upgradeRequired?: string | null;
+  upsellOnly: boolean;
+  minPlan: string;
+}): CatalogAccess {
+  const isAccessible =
+    typeof input.accessible === "boolean" ? input.accessible : !input.upsellOnly;
+  if (isAccessible) return { kind: "accessible" };
+  const raw =
+    typeof input.upgradeRequired === "string" ? input.upgradeRequired : input.minPlan;
+  // Match the API's `parsePlanTier` — legacy / drifted values map to
+  // `null` so the UI's upgrade chip can hide rather than rendering an
+  // unbuyable plan name.
+  const requiredPlan = (PLAN_TIERS_LITERAL as readonly string[]).includes(raw)
+    ? (raw as PlanTier)
+    : null;
+  return { kind: "upgrade", requiredPlan };
+}
+
+export const IntegrationsCatalogEntrySchema = RawCatalogEntrySchema.transform(
+  ({ accessible: _accessible, upgradeRequired: _upgradeRequired, ...entry }) => ({
+    // Drop the raw wire fields (`accessible`, `upgradeRequired`) on the
+    // way through so consumers can't bypass the `access` tagged union
+    // by reading them directly. `upsellOnly` stays because the admin
+    // UI still uses it as a fast-path boolean for layout decisions.
+    ...entry,
+    access: deriveAccess({
+      accessible: _accessible,
+      upgradeRequired: _upgradeRequired,
+      upsellOnly: entry.upsellOnly,
+      minPlan: entry.minPlan,
+    }),
+  }),
+);
 
 export type IntegrationsCatalogEntry = z.infer<typeof IntegrationsCatalogEntrySchema>;
 

@@ -428,18 +428,16 @@ describe("WorkspaceInstallGate namespace", () => {
 // ───────────────────────────────────────────────────────────────────
 
 describe("describeInstallGateState", () => {
-  it("returns active=true + reason='active' on the happy path", async () => {
+  it("returns active=true on the happy path", async () => {
     mockInternalQuery.mockImplementation(async () => [
       row({ min_plan: "starter", plan_tier: "business" }),
     ]);
     const verdict = await describeInstallGateState("ws-1", "catalog:slack");
-    expect(verdict.active).toBe(true);
-    expect(verdict.reason).toBe("active");
-    expect(verdict.installEnabled).toBe(true);
-    expect(verdict.catalogEnabled).toBe(true);
-    expect(verdict.planTier).toBe("business");
-    expect(verdict.minPlan).toBe("starter");
+    if (verdict.active !== true) throw new Error(`expected active=true, got ${JSON.stringify(verdict)}`);
     expect(verdict.operatorBypass).toBe(false);
+    // installFound / installEnabled / catalogEnabled / non-null minPlan
+    // are implied by `active: true` — see InstallGateVerdict's true
+    // branch in workspace-install-gate.ts.
   });
 
   it("returns reason='plan_below_min' with the rank facts on plan mismatch", async () => {
@@ -447,19 +445,18 @@ describe("describeInstallGateState", () => {
       row({ min_plan: "business", plan_tier: "trial" }),
     ]);
     const verdict = await describeInstallGateState("ws-1", "catalog:slack");
-    expect(verdict.active).toBe(false);
+    if (verdict.active !== false) throw new Error(`expected active=false, got ${JSON.stringify(verdict)}`);
     expect(verdict.reason).toBe("plan_below_min");
     expect(verdict.planTier).toBe("trial");
     expect(verdict.minPlan).toBe("business");
   });
 
-  it("returns reason='operatorBypass active' for operator workspaces", async () => {
+  it("returns active=true + operatorBypass=true for operator workspaces", async () => {
     mockInternalQuery.mockImplementation(async () => [
       row({ min_plan: "business", plan_tier: "trial", is_operator_workspace: true }),
     ]);
     const verdict = await describeInstallGateState("ws-op", "catalog:slack");
-    expect(verdict.active).toBe(true);
-    expect(verdict.reason).toBe("active");
+    if (verdict.active !== true) throw new Error(`expected active=true, got ${JSON.stringify(verdict)}`);
     expect(verdict.operatorBypass).toBe(true);
   });
 
@@ -468,7 +465,7 @@ describe("describeInstallGateState", () => {
       row({ install_enabled: false }),
     ]);
     const verdict = await describeInstallGateState("ws-1", "catalog:slack");
-    expect(verdict.active).toBe(false);
+    if (verdict.active !== false) throw new Error(`expected active=false, got ${JSON.stringify(verdict)}`);
     expect(verdict.reason).toBe("install_disabled");
   });
 
@@ -477,7 +474,7 @@ describe("describeInstallGateState", () => {
       row({ catalog_enabled: false }),
     ]);
     const verdict = await describeInstallGateState("ws-1", "catalog:slack");
-    expect(verdict.active).toBe(false);
+    if (verdict.active !== false) throw new Error(`expected active=false, got ${JSON.stringify(verdict)}`);
     expect(verdict.reason).toBe("catalog_disabled");
   });
 
@@ -486,15 +483,18 @@ describe("describeInstallGateState", () => {
       row({ min_plan: "ultimate" }),
     ]);
     const verdict = await describeInstallGateState("ws-1", "catalog:slack");
-    expect(verdict.active).toBe(false);
+    if (verdict.active !== false) throw new Error(`expected active=false, got ${JSON.stringify(verdict)}`);
     expect(verdict.reason).toBe("unknown_min_plan");
-    expect(verdict.minPlan).toBe("ultimate");
+    // Post-#2715: the deny branch's minPlan is `PlanTier | null` —
+    // parsePlanTier maps the drifted `"ultimate"` to `null` so the
+    // structured log surface is honest about not recognizing it.
+    expect(verdict.minPlan).toBeNull();
   });
 
   it("returns reason='no_install_row' when the workspace has no install", async () => {
     mockInternalQuery.mockImplementation(async () => []);
     const verdict = await describeInstallGateState("ws-1", "catalog:slack");
-    expect(verdict.active).toBe(false);
+    if (verdict.active !== false) throw new Error(`expected active=false, got ${JSON.stringify(verdict)}`);
     expect(verdict.reason).toBe("no_install_row");
     expect(verdict.installFound).toBe(false);
   });
@@ -504,7 +504,7 @@ describe("describeInstallGateState", () => {
       throw new Error("connection terminated");
     });
     const verdict = await describeInstallGateState("ws-1", "catalog:slack");
-    expect(verdict.active).toBe(false);
+    if (verdict.active !== false) throw new Error(`expected active=false, got ${JSON.stringify(verdict)}`);
     expect(verdict.reason).toBe("db_error");
   });
 });

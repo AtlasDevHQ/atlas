@@ -872,6 +872,56 @@ describe("plan-tier gating", () => {
     });
   });
 
+  // Catalog-drift branch: `plugin_catalog.min_plan` is not a recognized
+  // plan tier. Pre-#2715 the gate emitted a 403 with the bogus tier name
+  // in the body — confusing because the tier isn't buyable, and the
+  // operator only saw it in the 403 log line. Post-#2715 the install /
+  // install-form routes surface a 501 `handler_unavailable` with a
+  // structured `log.error` so an operator can fix the row. The callback
+  // route is intentionally lenient (logs + admits — see route comment)
+  // so a single-use OAuth code isn't burned on a mid-OAuth catalog typo.
+  describe("catalog_drift — unrecognized min_plan surfaces 501", () => {
+    it("GET /:platform/install — returns 501 handler_unavailable for unknown min_plan", async () => {
+      mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("FROM organization")) {
+          return [{ plan_tier: "starter", is_operator_workspace: false }];
+        }
+        // `"team"` is the migration-0091 drop-survivor — exactly the
+        // pre-#2715 footgun the new branch is designed to surface.
+        return [{ slug: "slack", install_model: "oauth", enabled: true, min_plan: "team" }];
+      });
+
+      const res = await request("/api/v1/integrations/slack/install", {
+        headers: { Accept: "application/json" },
+      });
+      expect(res.status).toBe(501);
+      const body = (await res.json()) as { error: string; message: string; requestId: string };
+      expect(body.error).toBe("handler_unavailable");
+      expect(body.message).toContain("Internal configuration error");
+      expect(body.requestId).toBeTruthy();
+    });
+
+    it("POST /:platform/install-form — returns 501 handler_unavailable for unknown min_plan", async () => {
+      mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("FROM organization")) {
+          return [{ plan_tier: "pro", is_operator_workspace: false }];
+        }
+        return [{ slug: "email", install_model: "form", enabled: true, min_plan: "enterprise" }];
+      });
+
+      const res = await request("/api/v1/integrations/email/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ host: "smtp.example.com" }),
+      });
+      expect(res.status).toBe(501);
+      const body = (await res.json()) as { error: string; message: string; requestId: string };
+      expect(body.error).toBe("handler_unavailable");
+      expect(body.message).toContain("Internal configuration error");
+      expect(body.requestId).toBeTruthy();
+    });
+  });
+
   describe("GET /:platform/callback — defensive mid-OAuth plan re-check", () => {
     afterEach(() => {
       stubVerifiedState = null;

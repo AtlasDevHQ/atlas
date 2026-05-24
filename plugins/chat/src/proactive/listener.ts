@@ -654,15 +654,37 @@ export async function registerProactiveListener(
                   workspaceId,
                   installGateCfg.catalogId,
                 );
-                factState = {
-                  reason: verdict.reason,
-                  installFound: verdict.installFound,
-                  installEnabled: verdict.installEnabled,
-                  catalogEnabled: verdict.catalogEnabled,
-                  planTier: verdict.planTier,
-                  minPlan: verdict.minPlan,
-                  operatorBypass: verdict.operatorBypass,
-                };
+                // Discriminated union: we only reach this branch
+                // because the boolean gate said `active: false`, so the
+                // verdict should also be `active: false`. An `active:
+                // true` verdict here is a legitimate cache race — the
+                // cached promise from `installGateCacheForEvent` resolved
+                // to `false` just before the install was re-enabled, and
+                // describeState re-queried under the new state. Surface
+                // a distinct `reason: "gate_cache_race"` so an operator
+                // grepping the log can spot the race instead of seeing
+                // `reason: "active"` paired with "install gate closed".
+                if (verdict.active === false) {
+                  factState = {
+                    reason: verdict.reason,
+                    installFound: verdict.installFound,
+                    installEnabled: verdict.installEnabled,
+                    catalogEnabled: verdict.catalogEnabled,
+                    planTier: verdict.planTier,
+                    minPlan: verdict.minPlan,
+                    operatorBypass: verdict.operatorBypass,
+                  };
+                } else {
+                  factState = {
+                    reason: "gate_cache_race",
+                    installFound: true,
+                    installEnabled: true,
+                    catalogEnabled: true,
+                    planTier: null,
+                    minPlan: null,
+                    operatorBypass: verdict.operatorBypass,
+                  };
+                }
               } catch (err) {
                 log.warn(
                   {
@@ -674,6 +696,7 @@ export async function registerProactiveListener(
                 );
               }
             }
+            const isCacheRace = factState?.reason === "gate_cache_race";
             log.info(
               {
                 workspaceId,
@@ -682,7 +705,9 @@ export async function registerProactiveListener(
                 throttleWindowMs: DENY_LOG_THROTTLE_MS,
                 ...factState,
               },
-              "Proactive: install gate closed — skipping (no classify, no meter, no DB write)",
+              isCacheRace
+                ? "Proactive: install gate closed by boolean check but describeState reports active — likely cache race; skipping conservatively"
+                : "Proactive: install gate closed — skipping (no classify, no meter, no DB write)",
             );
           }
           return;

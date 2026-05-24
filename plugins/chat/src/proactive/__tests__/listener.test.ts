@@ -3376,6 +3376,10 @@ describe("registerProactiveListener — WorkspaceInstallGate (#2655)", () => {
 
   it("includes the fact-state verdict when describeState is wired", async () => {
     const gate = mock(async () => false);
+    // `as const` pins `active: false` so the mock satisfies the
+    // post-#2715 discriminated-union return type of
+    // `InstallGateDescribeFn`. The inferred type otherwise widens to
+    // `active: boolean` and TS rejects the assignment.
     const describeState = mock(async () => ({
       active: false,
       installFound: true,
@@ -3385,7 +3389,7 @@ describe("registerProactiveListener — WorkspaceInstallGate (#2655)", () => {
       minPlan: "starter",
       operatorBypass: false,
       reason: "plan_below_min",
-    }));
+    } as const));
     const logger = makeLogger();
     const { chat, invokeMessage } = makeChat();
     await registerProactiveListener(chat as any, logger, {

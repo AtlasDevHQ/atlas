@@ -53,10 +53,13 @@ function CatalogCard({ entry, onInstalled }: CatalogCardProps) {
   //                                  badge + warning "Configured but inactive — plan
   //                                  downgrade" + upgrade CTA (Disconnect still works)
   //
-  // We derive these from `upsellOnly` (true when plan < min_plan) and
-  // `installed` so the API stays the source of truth and the UI doesn't
-  // re-implement the rank table.
-  const isUpsell = entry.upsellOnly;
+  // Post-#2715: the admin-schemas zod transform parses (accessible,
+  // upgradeRequired) into a CatalogAccess tagged union — `entry.access`
+  // is `{ kind: "accessible" } | { kind: "upgrade"; requiredPlan: PlanTier | null }`.
+  // The UI branches on `kind` instead of re-deriving from booleans.
+  const isUpsell = entry.access.kind === "upgrade";
+  const requiredPlan =
+    entry.access.kind === "upgrade" ? entry.access.requiredPlan : null;
   const isInstalled = entry.installed;
   const isForm = entry.installModel === "form";
   const isOAuth = entry.installModel === "oauth";
@@ -116,7 +119,7 @@ function CatalogCard({ entry, onInstalled }: CatalogCardProps) {
                 data-testid={`catalog-card-${entry.slug}-plan-badge`}
               >
                 <Sparkles className="size-3" />
-                Premium — requires {entry.minPlan}
+                Premium — requires {requiredPlan ?? entry.minPlan}
               </Badge>
             )}
           </div>
@@ -136,8 +139,8 @@ function CatalogCard({ entry, onInstalled }: CatalogCardProps) {
             data-testid={`catalog-card-${entry.slug}-downgrade-banner`}
           >
             Configured but inactive — your plan was downgraded below{" "}
-            <span className="font-medium">{entry.minPlan}</span>. Upgrade to
-            re-enable this integration, or disconnect to clean up.
+            <span className="font-medium">{requiredPlan ?? entry.minPlan}</span>.
+            Upgrade to re-enable this integration, or disconnect to clean up.
           </p>
         )}
         <div className="flex items-center justify-between gap-2">
@@ -155,8 +158,8 @@ function CatalogCard({ entry, onInstalled }: CatalogCardProps) {
               size="sm"
               variant="outline"
               disabled
-              aria-label={`Available on ${entry.minPlan} plans and above`}
-              title={`Available on ${entry.minPlan} plans and above`}
+              aria-label={`Available on ${requiredPlan ?? entry.minPlan} plans and above`}
+              title={`Available on ${requiredPlan ?? entry.minPlan} plans and above`}
               data-testid={`catalog-card-${entry.slug}-locked-cta`}
             >
               <Lock className="mr-1 size-3" />

@@ -51,7 +51,10 @@ import {
 } from "@atlas/api/lib/effect/workspace-installer";
 import { getInstallHandler } from "@atlas/api/lib/integrations/install";
 import { FormInstallValidationError } from "@atlas/api/lib/integrations/install/email-form-handler";
-import { isPlanEligible } from "@atlas/api/lib/integrations/install/plan-rank";
+import {
+  isPlanEligible,
+  parsePlanTier,
+} from "@atlas/api/lib/integrations/install/plan-rank";
 import { verifyOAuthStateToken } from "@atlas/api/lib/integrations/install/oauth-state-token";
 import {
   detectMisrouting,
@@ -64,10 +67,30 @@ import {
 } from "./admin-mfa-required";
 import { validationHook } from "./validation-hook";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import type { WorkspaceId } from "@useatlas/types";
+import { PLAN_TIERS } from "@useatlas/types";
+import type {
+  PlanTier,
+  PlanUpgradeRequiredBody,
+  WorkspaceId,
+} from "@useatlas/types";
 import type { CatalogInstallModel } from "@atlas/api/lib/config";
 
 const log = createLogger("integrations");
+
+/**
+ * OpenAPI schema for the 403 {@link PlanUpgradeRequiredBody}. Pins the
+ * wire shape — both plan fields are PlanTier (the same union used
+ * everywhere else) — and the `z.ZodType<PlanUpgradeRequiredBody>`
+ * `satisfies` clause makes adding a tier in `@useatlas/types` a
+ * compile error here until the schema is updated.
+ */
+const PlanUpgradeRequiredBodySchema = z.object({
+  error: z.literal("plan_upgrade_required"),
+  message: z.string(),
+  required_plan: z.enum(PLAN_TIERS),
+  current_plan: z.enum(PLAN_TIERS),
+  requestId: z.string(),
+}) satisfies z.ZodType<PlanUpgradeRequiredBody>;
 
 const integrations = new OpenAPIHono({ defaultHook: validationHook });
 
@@ -101,8 +124,14 @@ const installRoute = createRoute({
     403: {
       description:
         "Caller is not a workspace admin, or the workspace's plan tier does not " +
-        "admit this integration (JSON callers; browsers see a 302 to the admin UI).",
-      content: { "application/json": { schema: AuthErrorSchema } },
+        "admit this integration (JSON callers; browsers see a 302 to the admin UI). " +
+        "Plan-upgrade responses follow the PlanUpgradeRequiredBody shape with " +
+        "PlanTier-typed `required_plan` + `current_plan` fields.",
+      content: {
+        "application/json": {
+          schema: z.union([PlanUpgradeRequiredBodySchema, AuthErrorSchema]),
+        },
+      },
     },
     404: { description: "Platform not found in catalog", content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate limited", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -173,8 +202,14 @@ const installFormRoute = createRoute({
     403: {
       description:
         "Caller is not a workspace admin, or the workspace's plan tier " +
-        "does not admit this integration.",
-      content: { "application/json": { schema: AuthErrorSchema } },
+        "does not admit this integration. Plan-upgrade responses follow " +
+        "the PlanUpgradeRequiredBody shape with PlanTier-typed " +
+        "`required_plan` + `current_plan` fields.",
+      content: {
+        "application/json": {
+          schema: z.union([PlanUpgradeRequiredBodySchema, AuthErrorSchema]),
+        },
+      },
     },
     404: { description: "Platform not found in catalog", content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate limited", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -211,8 +246,14 @@ const callbackRoute = createRoute({
     403: {
       description:
         "Workspace plan changed mid-OAuth and no longer admits this " +
-        "integration (JSON callers; browsers see a 302 to the admin UI).",
-      content: { "application/json": { schema: AuthErrorSchema } },
+        "integration (JSON callers; browsers see a 302 to the admin UI). " +
+        "Body follows the PlanUpgradeRequiredBody shape with PlanTier-typed " +
+        "`required_plan` + `current_plan` fields.",
+      content: {
+        "application/json": {
+          schema: z.union([PlanUpgradeRequiredBodySchema, AuthErrorSchema]),
+        },
+      },
     },
     404: { description: "Platform not found in catalog", content: { "application/json": { schema: ErrorSchema } } },
     501: { description: "OAuth handler not registered", content: { "application/json": { schema: ErrorSchema } } },
@@ -337,20 +378,21 @@ async function getInstallableCatalogRowBySlug(slug: string): Promise<{
 
 /**
  * Resolve `{ planTier, isOperator }` for a workspace from the
- * `organization` table. Both fields are optional in the DB shape
- * (NULL plan_tier on a pre-#1472 row; LEFT JOIN miss on a freshly
- * provisioned workspace) — callers should treat `null` as
- * "no plan / not an operator", which by construction denies any
- * `min_plan != 'free'` install attempt without admitting the
- * operator bypass.
+ * `organization` table. `planTier` is narrowed via {@link parsePlanTier}
+ * at the SQL boundary so downstream gates see `PlanTier | null` rather
+ * than a raw string — a legacy / unknown value maps to `null` and
+ * callers treat `null` as "no plan / not an operator", which by
+ * construction denies any `min_plan != 'free'` install attempt without
+ * admitting the operator bypass.
  *
  * On a self-hosted no-auth deploy (sentinel `workspaceId =
- * "self-hosted"`), there's no organization row at all. Return
- * `null` / `null` so the gate falls back to whichever default the
- * caller picked — today that's "free tier" plus "not operator".
+ * "self-hosted"`), there's no organization row at all. The function
+ * returns `{ planTier: null, isOperator: false }` and the same fail-
+ * closed default applies — `null` collapses to `"free"` in the
+ * response body only when the caller builds an upgrade prompt.
  */
 async function getWorkspaceEntitlement(orgId: string): Promise<{
-  planTier: string | null;
+  planTier: PlanTier | null;
   isOperator: boolean;
 }> {
   if (orgId === "self-hosted") return { planTier: null, isOperator: false };
@@ -366,34 +408,78 @@ async function getWorkspaceEntitlement(orgId: string): Promise<{
   );
   if (rows.length === 0) return { planTier: null, isOperator: false };
   return {
-    planTier: rows[0]?.plan_tier ?? null,
+    planTier: parsePlanTier(rows[0]?.plan_tier),
     isOperator: rows[0]?.is_operator_workspace === true,
   };
 }
 
+/** Discriminated result of {@link checkPlanEligibility}. */
+type PlanCheckResult =
+  | { readonly kind: "admit" }
+  | {
+      readonly kind: "deny";
+      readonly required_plan: PlanTier;
+      readonly current_plan: PlanTier;
+    }
+  | { readonly kind: "catalog_drift"; readonly rawMinPlan: string };
+
 /**
- * Plan-tier gate for the install endpoints. Returns `null` when the
- * workspace's plan admits installing this catalog row (operator
- * workspaces always do) and a `{ required_plan, current_plan }`
- * tuple otherwise. The tuple is the exact shape returned in the 403
- * body so the caller can drop it straight into `c.json(...)`.
+ * Plan-tier gate for the install endpoints. Returns a discriminated
+ * result so the caller can route catalog drift (unknown `min_plan`)
+ * to a structured 501 rather than masquerading as an upgrade prompt
+ * with a bogus tier name.
  *
- * Note: an unknown `min_plan` value (catalog drift) is treated as
- * "deny" with `required_plan: <whatever the catalog row carries>` so
- * the customer sees an upgrade prompt rather than a 500 — the
- * operator surface (catalog admin) is responsible for fixing the
- * row. Mirrors `lib/integrations/install/plan-rank.ts:isPlanEligible`
- * which fail-closes on unknown.
+ *  - `admit`: workspace's plan admits the install (or operator bypass).
+ *  - `deny`: plan ranks below `min_plan`; surface as 403
+ *    {@link PlanUpgradeRequiredBody} — both plan fields are
+ *    {@link PlanTier}.
+ *  - `catalog_drift`: catalog row's `min_plan` is not a recognized
+ *    plan tier (legacy tier values dropped by an earlier migration,
+ *    operator typo in a seed). Caller propagates as a structured 501
+ *    `handler_unavailable` with the raw value logged so an operator
+ *    can fix the row. The earlier "403 with the bogus name in the
+ *    body" path confused customers (the bogus tier isn't buyable)
+ *    and the operator only saw it via the 403 log line.
+ *
+ * Unknown `planTier` values (legacy / NULL row) collapse to `"free"`
+ * for the response body so the user sees an actionable current_plan.
+ * The gate itself fails closed via {@link isPlanEligible}.
  */
 function checkPlanEligibility(
-  entitlement: { planTier: string | null; isOperator: boolean },
+  entitlement: { planTier: PlanTier | null; isOperator: boolean },
   catalogMinPlan: string,
-): { required_plan: string; current_plan: string } | null {
-  if (entitlement.isOperator) return null;
-  if (isPlanEligible(entitlement.planTier ?? "free", catalogMinPlan)) return null;
+): PlanCheckResult {
+  if (entitlement.isOperator) return { kind: "admit" };
+  const requiredPlan = parsePlanTier(catalogMinPlan);
+  if (requiredPlan === null) {
+    return { kind: "catalog_drift", rawMinPlan: catalogMinPlan };
+  }
+  if (isPlanEligible(entitlement.planTier, requiredPlan)) {
+    return { kind: "admit" };
+  }
   return {
-    required_plan: catalogMinPlan,
+    kind: "deny",
+    required_plan: requiredPlan,
     current_plan: entitlement.planTier ?? "free",
+  };
+}
+
+/**
+ * Compose the 403 {@link PlanUpgradeRequiredBody} from a denied
+ * {@link checkPlanEligibility} result. Centralized here so every
+ * route emits the same message string and field ordering.
+ */
+function buildPlanUpgradeBody(
+  platform: string,
+  deny: Extract<PlanCheckResult, { kind: "deny" }>,
+  requestId: string,
+): PlanUpgradeRequiredBody {
+  return {
+    error: "plan_upgrade_required",
+    message: `Installing ${platform} requires the "${deny.required_plan}" plan. Your workspace is on the "${deny.current_plan}" plan.`,
+    required_plan: deny.required_plan,
+    current_plan: deny.current_plan,
+    requestId,
   };
 }
 
@@ -462,14 +548,28 @@ integrations.openapi(installRoute, async (c) =>
     // upsell banner reads. JSON callers receive the structured 403.
     if (orgIdRaw) {
       const entitlement = await getWorkspaceEntitlement(orgIdRaw);
-      const planMismatch = checkPlanEligibility(entitlement, row.min_plan);
-      if (planMismatch !== null) {
+      const planCheck = checkPlanEligibility(entitlement, row.min_plan);
+      if (planCheck.kind === "catalog_drift") {
+        log.error(
+          { workspaceId, platform, rawMinPlan: planCheck.rawMinPlan },
+          "Install denied: plugin_catalog.min_plan is not a recognized plan tier — operator must fix the catalog row",
+        );
+        return c.json(
+          {
+            error: "handler_unavailable",
+            message: `Internal configuration error for "${platform}". Contact your administrator.`,
+            requestId,
+          },
+          501,
+        );
+      }
+      if (planCheck.kind === "deny") {
         log.info(
           {
             workspaceId,
             platform,
-            requiredPlan: planMismatch.required_plan,
-            currentPlan: planMismatch.current_plan,
+            requiredPlan: planCheck.required_plan,
+            currentPlan: planCheck.current_plan,
           },
           "Install denied: workspace plan does not admit this integration",
         );
@@ -477,18 +577,12 @@ integrations.openapi(installRoute, async (c) =>
           return c.redirect(
             buildAdminIntegrationsUrl("error", platform, {
               reason: "plan_upgrade_required",
-              required_plan: planMismatch.required_plan,
+              required_plan: planCheck.required_plan,
             }),
           );
         }
         return c.json(
-          {
-            error: "plan_upgrade_required",
-            message: `Installing ${platform} requires the "${planMismatch.required_plan}" plan. Your workspace is on the "${planMismatch.current_plan}" plan.`,
-            required_plan: planMismatch.required_plan,
-            current_plan: planMismatch.current_plan,
-            requestId,
-          },
+          buildPlanUpgradeBody(platform, planCheck, requestId),
           403,
         );
       }
@@ -595,25 +689,33 @@ integrations.openapi(installFormRoute, async (c) =>
     // already routes 403 responses to the upgrade toast.
     if (orgIdRaw) {
       const entitlement = await getWorkspaceEntitlement(orgIdRaw);
-      const planMismatch = checkPlanEligibility(entitlement, row.min_plan);
-      if (planMismatch !== null) {
+      const planCheck = checkPlanEligibility(entitlement, row.min_plan);
+      if (planCheck.kind === "catalog_drift") {
+        log.error(
+          { workspaceId, platform, rawMinPlan: planCheck.rawMinPlan },
+          "Form install denied: plugin_catalog.min_plan is not a recognized plan tier — operator must fix the catalog row",
+        );
+        return c.json(
+          {
+            error: "handler_unavailable",
+            message: `Internal configuration error for "${platform}". Contact your administrator.`,
+            requestId,
+          },
+          501,
+        );
+      }
+      if (planCheck.kind === "deny") {
         log.info(
           {
             workspaceId,
             platform,
-            requiredPlan: planMismatch.required_plan,
-            currentPlan: planMismatch.current_plan,
+            requiredPlan: planCheck.required_plan,
+            currentPlan: planCheck.current_plan,
           },
           "Form install denied: workspace plan does not admit this integration",
         );
         return c.json(
-          {
-            error: "plan_upgrade_required",
-            message: `Installing ${platform} requires the "${planMismatch.required_plan}" plan. Your workspace is on the "${planMismatch.current_plan}" plan.`,
-            required_plan: planMismatch.required_plan,
-            current_plan: planMismatch.current_plan,
-            requestId,
-          },
+          buildPlanUpgradeBody(platform, planCheck, requestId),
           403,
         );
       }
@@ -748,14 +850,31 @@ integrations.openapi(callbackRoute, async (c) =>
           "OAuth callback plan re-check failed — skipping defensive check and letting install land (original /install already plan-checked)",
         );
       }
-      const planMismatch = entitlement === undefined ? null : checkPlanEligibility(entitlement, row.min_plan);
-      if (planMismatch !== null) {
+      const planCheck =
+        entitlement === undefined
+          ? ({ kind: "admit" } as const)
+          : checkPlanEligibility(entitlement, row.min_plan);
+      if (planCheck.kind === "catalog_drift") {
+        log.error(
+          {
+            workspaceId: verifiedState.workspaceId,
+            platform,
+            rawMinPlan: planCheck.rawMinPlan,
+          },
+          "OAuth callback: plugin_catalog.min_plan is not a recognized plan tier — letting install land (original /install already plan-checked)",
+        );
+        // Original /install already plan-checked successfully — a
+        // mid-OAuth catalog typo would be operator-introduced and must
+        // not strand the single-use OAuth code on the customer. Skip
+        // the defensive gate the same way the DB-blip path above does.
+      }
+      if (planCheck.kind === "deny") {
         log.info(
           {
             workspaceId: verifiedState.workspaceId,
             platform,
-            requiredPlan: planMismatch.required_plan,
-            currentPlan: planMismatch.current_plan,
+            requiredPlan: planCheck.required_plan,
+            currentPlan: planCheck.current_plan,
           },
           "OAuth callback denied: workspace plan changed mid-OAuth — install not written",
         );
@@ -763,18 +882,12 @@ integrations.openapi(callbackRoute, async (c) =>
           return c.redirect(
             buildAdminIntegrationsUrl("error", platform, {
               reason: "plan_upgrade_required",
-              required_plan: planMismatch.required_plan,
+              required_plan: planCheck.required_plan,
             }),
           );
         }
         return c.json(
-          {
-            error: "plan_upgrade_required",
-            message: `Installing ${platform} requires the "${planMismatch.required_plan}" plan. Your workspace is on the "${planMismatch.current_plan}" plan.`,
-            required_plan: planMismatch.required_plan,
-            current_plan: planMismatch.current_plan,
-            requestId,
-          },
+          buildPlanUpgradeBody(platform, planCheck, requestId),
           403,
         );
       }

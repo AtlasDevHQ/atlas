@@ -129,3 +129,26 @@ export interface NoisyNeighbor {
   /** value / median — always > 3 for flagged neighbors. */
   ratio: number;
 }
+
+/**
+ * 403 body returned by the integrations install endpoints when the
+ * workspace's plan tier ranks below the catalog row's `min_plan`.
+ * Same shape on the OAuth start (`/install`), OAuth callback
+ * (`/callback`), and form install (`/install-form`) routes; consumed
+ * by the admin UI's upgrade toast.
+ *
+ * Adding new fields here is additive — both plan fields are required
+ * so older SDK clients that destructure the body still type-check.
+ */
+export interface PlanUpgradeRequiredBody {
+  /** Discriminator — `"plan_upgrade_required"` only. */
+  error: "plan_upgrade_required";
+  /** Human-readable message including both plan names for fallback UIs. */
+  message: string;
+  /** The plan tier the workspace would need to upgrade to. */
+  required_plan: PlanTier;
+  /** The workspace's current tier (legacy / unknown values map to `"free"`). */
+  current_plan: PlanTier;
+  /** Echoed from the request for log correlation. */
+  requestId: string;
+}

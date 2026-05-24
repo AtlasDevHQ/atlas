@@ -7,7 +7,12 @@
 
 import { describe, expect, it } from "bun:test";
 import { PLAN_TIERS } from "@useatlas/types";
-import { PLAN_RANK, isPlanEligible, planRank } from "../plan-rank";
+import {
+  PLAN_RANK,
+  isPlanEligible,
+  parsePlanTier,
+  planRank,
+} from "../plan-rank";
 
 describe("PLAN_RANK", () => {
   it("has an entry for every PLAN_TIERS value", () => {
@@ -24,6 +29,44 @@ describe("PLAN_RANK", () => {
   });
 });
 
+describe("parsePlanTier", () => {
+  it("narrows known plan tiers to their PlanTier value", () => {
+    expect(parsePlanTier("free")).toBe("free");
+    expect(parsePlanTier("trial")).toBe("trial");
+    expect(parsePlanTier("starter")).toBe("starter");
+    expect(parsePlanTier("pro")).toBe("pro");
+    expect(parsePlanTier("business")).toBe("business");
+  });
+
+  it("returns null for legacy / unknown plan strings (post-#2666 vocabulary)", () => {
+    // The whole point of the narrowing helper: a bogus tier from a DB
+    // drift, OpenAPI request, or seed file fails closed here so internal
+    // callers can rely on the `PlanTier | null` shape.
+    expect(parsePlanTier("team")).toBeNull();
+    expect(parsePlanTier("enterprise")).toBeNull();
+    expect(parsePlanTier("ultimate")).toBeNull();
+    expect(parsePlanTier("")).toBeNull();
+  });
+
+  it("returns null for null / undefined / non-string inputs", () => {
+    expect(parsePlanTier(null)).toBeNull();
+    expect(parsePlanTier(undefined)).toBeNull();
+    expect(parsePlanTier(42)).toBeNull();
+    expect(parsePlanTier({})).toBeNull();
+  });
+
+  it("rejects inherited Object.prototype keys (Codex P2 regression)", () => {
+    // The pre-fix implementation used `value in PLAN_RANK`, which
+    // matches inherited keys. `"toString"` / `"constructor"` / etc.
+    // would have falsely admitted as a PlanTier and downstream
+    // responses would emit those strings as `required_plan`.
+    expect(parsePlanTier("toString")).toBeNull();
+    expect(parsePlanTier("constructor")).toBeNull();
+    expect(parsePlanTier("hasOwnProperty")).toBeNull();
+    expect(parsePlanTier("__proto__")).toBeNull();
+  });
+});
+
 describe("planRank", () => {
   it("returns a number for every known plan tier", () => {
     expect(planRank("free")).toBe(0);
@@ -33,18 +76,21 @@ describe("planRank", () => {
     expect(planRank("business")).toBe(4);
   });
 
-  it("returns null for legacy / unknown values (post-#2666 vocabulary)", () => {
-    expect(planRank("team")).toBeNull();
-    expect(planRank("enterprise")).toBeNull();
-    expect(planRank("ultimate")).toBeNull();
-    expect(planRank("")).toBeNull();
-  });
-
-  it("returns null for null / undefined / non-string inputs", () => {
+  it("returns null for null / undefined inputs", () => {
     expect(planRank(null)).toBeNull();
     expect(planRank(undefined)).toBeNull();
-    // @ts-expect-error — defensive runtime guard for non-string inputs
-    expect(planRank(42)).toBeNull();
+  });
+
+  // ── Negative-type tests (#2715 acceptance criterion) ──────────────
+  // Passing a non-PlanTier string is a compile error post-#2715. The
+  // directives below pin that contract — if the signature widens back
+  // to `string` these become unused-`@ts-expect-error` errors.
+  it("refuses untyped strings at compile time", () => {
+    // @ts-expect-error — "team" is not a PlanTier; callers must
+    // narrow via parsePlanTier() at the trust boundary first.
+    planRank("team");
+    // @ts-expect-error — same for any other untyped string.
+    planRank("enterprise");
   });
 });
 
@@ -61,18 +107,25 @@ describe("isPlanEligible", () => {
     expect(isPlanEligible("starter", "pro")).toBe(false);
   });
 
-  it("fails closed on unknown requiredPlan (catalog drift must not widen access)", () => {
-    expect(isPlanEligible("business", "ultimate")).toBe(false);
-    expect(isPlanEligible("business", "team")).toBe(false);
-    expect(isPlanEligible("business", "enterprise")).toBe(false);
-  });
-
-  it("treats unknown workspacePlan as rank 0 (most restrictive)", () => {
-    // free catalog row: rank 0 — even a rank-0 workspace admits.
-    expect(isPlanEligible("legacy-tier", "free")).toBe(true);
-    // anything stricter denies.
-    expect(isPlanEligible("legacy-tier", "starter")).toBe(false);
+  it("treats null / undefined workspace plan as rank 0 (most restrictive)", () => {
+    // Free catalog row: rank 0 — admits even a rank-0 workspace.
+    expect(isPlanEligible(null, "free")).toBe(true);
+    expect(isPlanEligible(undefined, "free")).toBe(true);
+    // Anything stricter denies.
     expect(isPlanEligible(null, "starter")).toBe(false);
     expect(isPlanEligible(undefined, "starter")).toBe(false);
+  });
+
+  it("fails closed on missing requiredPlan (catalog drift must not widen access)", () => {
+    expect(isPlanEligible("business", null)).toBe(false);
+    expect(isPlanEligible("business", undefined)).toBe(false);
+  });
+
+  // ── Negative-type tests (#2715 acceptance criterion) ──────────────
+  it("refuses untyped strings at compile time", () => {
+    // @ts-expect-error — workspacePlan must be a PlanTier or null.
+    isPlanEligible("legacy-tier", "starter");
+    // @ts-expect-error — requiredPlan must be a PlanTier or null.
+    isPlanEligible("business", "ultimate");
   });
 });

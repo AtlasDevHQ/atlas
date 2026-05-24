@@ -25,10 +25,10 @@ import {
   checkStrictPluginSecrets,
 } from "@atlas/api/lib/plugins/secrets";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
-import { PLAN_TIERS } from "@useatlas/types";
+import { PLAN_TIERS, type PlanTier } from "@useatlas/types";
 import {
   isPlanEligible as planRankEligible,
-  planRank,
+  parsePlanTier,
 } from "@atlas/api/lib/integrations/install/plan-rank";
 import {
   ErrorSchema,
@@ -48,16 +48,21 @@ type PluginType = (typeof PLUGIN_TYPES)[number];
 
 /**
  * Whether the workspace's tier admits installing a plugin requiring
- * `requiredPlan`. Logs at warn on unknown `requiredPlan` so catalog
- * drift surfaces — every other branching is identical to the shared
- * `isPlanEligible` from `lib/integrations/install/plan-rank.ts`.
+ * `requiredPlan`. Narrows the catalog string at this trust boundary
+ * via {@link parsePlanTier}; logs at warn on unknown values so
+ * catalog drift surfaces. `workspacePlan` arrives pre-narrowed from
+ * {@link getWorkspacePlan}.
  */
-function isPlanEligible(workspacePlan: string, requiredPlan: string): boolean {
-  if (planRank(requiredPlan) === null) {
+function isPlanEligible(
+  workspacePlan: PlanTier | null,
+  requiredPlan: string,
+): boolean {
+  const requiredTier = parsePlanTier(requiredPlan);
+  if (requiredTier === null) {
     log.warn({ requiredPlan }, "Unknown required plan tier — denying access");
     return false;
   }
-  return planRankEligible(workspacePlan, requiredPlan);
+  return planRankEligible(workspacePlan, requiredTier);
 }
 
 // ---------------------------------------------------------------------------
@@ -684,13 +689,23 @@ const updateConfigRoute = createRoute({
 const workspaceMarketplace = createAdminRouter();
 workspaceMarketplace.use(requireOrgContext());
 
-/** Get the plan tier for a workspace. Throws on DB errors (surfaces as 500 via runEffect). */
-async function getWorkspacePlan(orgId: string): Promise<string> {
+/**
+ * Get the workspace's plan tier, narrowed via {@link parsePlanTier}
+ * at the SQL boundary (#2715). Returns `null` for missing /
+ * unrecognized values; the downstream eligibility check fails closed
+ * on `null` for any non-`free` `min_plan`.
+ *
+ * Throws on DB errors (surfaces as 500 via runEffect).
+ */
+async function getWorkspacePlan(orgId: string): Promise<PlanTier | null> {
   const rows = await internalQuery<{ plan_tier: string; [key: string]: unknown }>(
     "SELECT plan_tier FROM organization WHERE id = $1",
     [orgId],
   );
-  return rows[0]?.plan_tier ?? "starter";
+  // Pre-#2715 the row default was `"starter"`. Preserve that here so
+  // workspaces with no row continue to admit `starter`-or-lower rows
+  // — the database default still seeds new orgs to `"starter"`.
+  return parsePlanTier(rows[0]?.plan_tier ?? "starter");
 }
 
 // GET /available — catalog entries available to this workspace
@@ -796,7 +811,7 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
       if (!isPlanEligible(plan, catalogEntry.min_plan)) {
         return c.json({
           error: "plan_ineligible",
-          message: `This plugin requires the "${catalogEntry.min_plan}" plan. Your workspace is on the "${plan}" plan.`,
+          message: `This plugin requires the "${catalogEntry.min_plan}" plan. Your workspace is on the "${plan ?? "free"}" plan.`,
           requestId,
         }, 400);
       }

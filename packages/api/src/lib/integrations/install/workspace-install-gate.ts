@@ -59,9 +59,10 @@
  * @module
  */
 
+import type { PlanTier } from "@useatlas/types";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
-import { planRank } from "./plan-rank";
+import { parsePlanTier, planRank } from "./plan-rank";
 
 const log = createLogger("integrations:workspace-install-gate");
 
@@ -144,7 +145,12 @@ export async function isWorkspaceInstallActive(
   if (row.install_enabled !== true) return false;
   if (row.catalog_enabled !== true) return false;
 
-  const minRank = planRank(row.min_plan);
+  // Narrow at the SQL boundary: `min_plan` / `plan_tier` come off the
+  // DB as `string` (the CHECK constraint is the runtime guarantee, not
+  // the type). Trust them only after parsePlanTier confirms membership
+  // in PLAN_TIERS.
+  const minPlan = parsePlanTier(row.min_plan);
+  const minRank = planRank(minPlan);
   if (minRank === null) {
     // Unknown min_plan value (typo in seed, schema drift). Fail closed
     // and log at warn — the catalog row needs operator attention.
@@ -175,7 +181,7 @@ export async function isWorkspaceInstallActive(
   }
 
   // LEFT JOIN miss / unknown value → rank 0 (see PLAN_RANK header note).
-  const workspaceRank = planRank(row.plan_tier) ?? 0;
+  const workspaceRank = planRank(parsePlanTier(row.plan_tier)) ?? 0;
   return workspaceRank >= minRank;
 }
 
@@ -191,30 +197,50 @@ export type WorkspaceInstallGateFn = (
 ) => Promise<boolean>;
 
 /**
+ * Reason codes the deny branch of {@link InstallGateVerdict} can carry.
+ * Literal union (not `string`) so consumers gain an exhaustive `switch`
+ * and the structured log keys can't drift from what the gate emits.
+ *
+ * Mirrored in `plugins/chat/src/proactive/types.ts` because the chat
+ * plugin can't import the API package; keep both copies in lockstep
+ * per the chat-plugin↔Atlas contract.
+ */
+export type InstallGateDenyReason =
+  | "no_install_row"
+  | "install_disabled"
+  | "catalog_disabled"
+  | "unknown_min_plan"
+  | "plan_below_min"
+  | "db_error";
+
+/**
  * Structured verdict returned by {@link describeInstallGateState}. Used
  * by the proactive listener's deny-path log (#2703) so operators
  * investigating "why doesn't proactive work for workspace X?" see the
  * answer in the structured log instead of running the rank table by
  * hand. Not used inside the per-event gate hot path — the boolean
  * verdict is enough there.
+ *
+ * Discriminated union on `active`: the `active: true` branch carries
+ * only `operatorBypass`, because the supporting facts (installFound /
+ * installEnabled / catalogEnabled / a non-null minPlan) are all
+ * implied by `active: true`. The `active: false` branch carries the
+ * structured `reason` plus every fact field the caller might need to
+ * debug WHY the gate closed — states like `active: true + installFound:
+ * false` are not representable.
  */
-export interface InstallGateVerdict {
-  readonly active: boolean;
-  readonly installFound: boolean;
-  readonly installEnabled: boolean;
-  readonly catalogEnabled: boolean;
-  readonly planTier: string | null;
-  readonly minPlan: string | null;
-  readonly operatorBypass: boolean;
-  readonly reason:
-    | "active"
-    | "no_install_row"
-    | "install_disabled"
-    | "catalog_disabled"
-    | "unknown_min_plan"
-    | "plan_below_min"
-    | "db_error";
-}
+export type InstallGateVerdict =
+  | { readonly active: true; readonly operatorBypass: boolean }
+  | {
+      readonly active: false;
+      readonly reason: InstallGateDenyReason;
+      readonly installFound: boolean;
+      readonly installEnabled: boolean;
+      readonly catalogEnabled: boolean;
+      readonly planTier: PlanTier | null;
+      readonly minPlan: PlanTier | null;
+      readonly operatorBypass: boolean;
+    };
 
 /**
  * Diagnostic variant of {@link isWorkspaceInstallActive} that returns
@@ -231,22 +257,22 @@ export async function describeInstallGateState(
   workspaceId: string,
   catalogId: string,
 ): Promise<InstallGateVerdict> {
-  const NEUTRAL: Omit<InstallGateVerdict, "active" | "reason"> = {
+  const NEUTRAL_FACTS = {
     installFound: false,
     installEnabled: false,
     catalogEnabled: false,
     planTier: null,
     minPlan: null,
     operatorBypass: false,
-  };
+  } as const;
   if (!hasInternalDB()) {
-    return { ...NEUTRAL, active: false, reason: "db_error" };
+    return { ...NEUTRAL_FACTS, active: false, reason: "db_error" };
   }
   if (typeof workspaceId !== "string" || workspaceId.length === 0) {
-    return { ...NEUTRAL, active: false, reason: "no_install_row" };
+    return { ...NEUTRAL_FACTS, active: false, reason: "no_install_row" };
   }
   if (typeof catalogId !== "string" || catalogId.length === 0) {
-    return { ...NEUTRAL, active: false, reason: "no_install_row" };
+    return { ...NEUTRAL_FACTS, active: false, reason: "no_install_row" };
   }
 
   let rows: GateRow[];
@@ -281,37 +307,42 @@ export async function describeInstallGateState(
       },
       "describeInstallGateState query failed — falling back to db_error verdict",
     );
-    return { ...NEUTRAL, active: false, reason: "db_error" };
+    return { ...NEUTRAL_FACTS, active: false, reason: "db_error" };
   }
 
   if (rows.length === 0) {
-    return { ...NEUTRAL, active: false, reason: "no_install_row" };
+    return { ...NEUTRAL_FACTS, active: false, reason: "no_install_row" };
   }
   const row = rows[0]!;
+  // Narrow at the SQL boundary — DB row columns come off as `string`;
+  // parsePlanTier maps unknown values to `null` so the deny-branch
+  // facts are `PlanTier | null` per the union.
+  const planTier = parsePlanTier(row.plan_tier);
+  const minPlan = parsePlanTier(row.min_plan);
   const facts = {
     installFound: true,
     installEnabled: row.install_enabled === true,
     catalogEnabled: row.catalog_enabled === true,
-    planTier: row.plan_tier ?? null,
-    minPlan: row.min_plan ?? null,
+    planTier,
+    minPlan,
     operatorBypass: row.is_operator_workspace === true,
   } as const;
 
   if (!facts.installEnabled) return { ...facts, active: false, reason: "install_disabled" };
   if (!facts.catalogEnabled) return { ...facts, active: false, reason: "catalog_disabled" };
 
-  const minRank = planRank(row.min_plan);
+  const minRank = planRank(minPlan);
   if (minRank === null) {
     return { ...facts, active: false, reason: "unknown_min_plan" };
   }
   if (facts.operatorBypass) {
-    return { ...facts, active: true, reason: "active" };
+    return { active: true, operatorBypass: true };
   }
-  const wsRank = planRank(row.plan_tier) ?? 0;
+  const wsRank = planRank(planTier) ?? 0;
   if (wsRank < minRank) {
     return { ...facts, active: false, reason: "plan_below_min" };
   }
-  return { ...facts, active: true, reason: "active" };
+  return { active: true, operatorBypass: false };
 }
 
 /**

@@ -7,8 +7,11 @@
  */
 
 import * as crypto from "crypto";
+import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { SaasCrm } from "@atlas/api/lib/effect/services";
+import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
 
 const log = createLogger("demo");
 
@@ -248,6 +251,11 @@ export interface DemoLeadResult {
   sessionCount: number;
 }
 
+/** Same pattern used in the /demo route to mask emails before logging. */
+function maskEmailForLog(email: string): string {
+  return email.replace(/(.{2}).*(@.*)/, "$1***$2");
+}
+
 /**
  * Capture or update a demo lead in the internal DB.
  * Returns whether this is a returning user and their session count.
@@ -256,14 +264,19 @@ export async function captureDemoLead(opts: {
   email: string;
   ip?: string | null;
   userAgent?: string | null;
+  /** Request correlation ID — included on every log emitted by this function. */
+  requestId?: string;
 }): Promise<DemoLeadResult> {
+  const email = opts.email.toLowerCase().trim();
+  const emailMasked = maskEmailForLog(email);
+  const { requestId } = opts;
+
   if (!hasInternalDB()) {
-    log.debug("No internal DB — demo lead not captured");
+    log.debug({ requestId, emailMasked }, "No internal DB — demo lead not captured");
     return { returning: false, sessionCount: 1 };
   }
 
-  const email = opts.email.toLowerCase().trim();
-
+  let result: DemoLeadResult;
   try {
     // Try to insert; on conflict update last_active_at and bump session_count
     const rows = await internalQuery(
@@ -279,14 +292,49 @@ export async function captureDemoLead(opts: {
     );
 
     const sessionCount = (rows[0] as { session_count: number } | undefined)?.session_count ?? 1;
-    return { returning: sessionCount > 1, sessionCount };
+    result = { returning: sessionCount > 1, sessionCount };
   } catch (err) {
     log.error(
-      { err: err instanceof Error ? err : new Error(String(err)) },
+      {
+        requestId,
+        emailMasked,
+        err: err instanceof Error ? err : new Error(String(err)),
+      },
       "Failed to capture demo lead — lead data lost. Check that demo_leads table exists (run migrations)",
     );
-    return { returning: false, sessionCount: 1 };
+    result = { returning: false, sessionCount: 1 };
   }
+
+  // SaaS CRM dispatch via the SaasCrm Tag. Self-hosted resolves to
+  // NoopSaasCrmLayer (no Twenty traffic). Atlas SaaS resolves to
+  // SaasCrmLive which dispatches via TwentyClient — failures are
+  // swallowed inside the layer so a Twenty outage never blocks the
+  // demo response.
+  try {
+    await runEnterprise(
+      Effect.gen(function* () {
+        const crm = yield* SaasCrm;
+        yield* crm.upsertLead({
+          source: "demo",
+          email,
+          ip: opts.ip,
+          userAgent: opts.userAgent,
+        });
+      }),
+    );
+  } catch (err) {
+    // SaasCrm.upsertLead has no error channel today; catch guards against future Tag-shape widening + runPromise defects.
+    log.warn(
+      {
+        requestId,
+        emailMasked,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "Unexpected SaasCrm dispatch error — swallowed to keep demo response unblocked",
+    );
+  }
+
+  return result;
 }
 
 /**

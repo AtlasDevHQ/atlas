@@ -2395,6 +2395,50 @@ export const NoopDeployModeResolverLayer: Layer.Layer<DeployModeResolver> =
     resolve: () => "self-hosted",
   } satisfies DeployModeResolverShape);
 
+// ── SaasCrm ──────────────────────────────────────────────────────────
+//
+// SaaS-only CRM dispatch (Twenty). Self-hosted gets the Noop layer.
+
+/**
+ * Inputs to `SaasCrm.upsertLead`. Inlined here (mirrors the same
+ * discriminated union in `@useatlas/twenty/lead-normalizer`) until a
+ * subsequent release promotes the shared types into `@useatlas/types`.
+ * Two-place duplication is intentional and accepted at this slice —
+ * the union has exactly one variant (`demo`) today; the next variant
+ * lands together with the type promotion.
+ */
+export type SaasCrmLeadInput = {
+  readonly source: "demo";
+  readonly email: string;
+  readonly ip?: string | null;
+  readonly userAgent?: string | null;
+};
+
+export interface SaasCrmShape {
+  /**
+   * Anticipatory — a future `POST /api/v1/contact` route will read this
+   * to return 404 `not_available` on self-hosted (or when the SaaS layer
+   * failed boot verification) rather than the standard 403 envelope.
+   * Until that route lands, no production caller branches on this flag.
+   */
+  readonly available: boolean;
+  /**
+   * Fire-and-forget upsert of a lead into the Atlas SaaS CRM. Errors
+   * are swallowed inside the layer — callers (notably `captureDemoLead`)
+   * must never block on or propagate CRM failures back to the HTTP
+   * response. Returns success even when `available === false` (no-op).
+   */
+  readonly upsertLead: (input: SaasCrmLeadInput) => Effect.Effect<void>;
+}
+
+export class SaasCrm extends Context.Tag("SaasCrm")<SaasCrm, SaasCrmShape>() {}
+
+/** No-op default: SaaS CRM dispatch unavailable; upsertLead is a noop. */
+export const NoopSaasCrmLayer: Layer.Layer<SaasCrm> = Layer.succeed(SaasCrm, {
+  available: false,
+  upsertLead: () => Effect.void,
+} satisfies SaasCrmShape);
+
 // ── Aggregate no-op default Layer ────────────────────────────────────
 //
 // Merged into `buildAppLayer()` so every enterprise Tag has a default
@@ -2420,6 +2464,7 @@ export const NoopEnterpriseDefaultsLayer: Layer.Layer<
   | Domains
   | ProactiveGate
   | DeployModeResolver
+  | SaasCrm
 > = Layer.mergeAll(
   NoopResidencyResolverLayer,
   NoopModelRouterLayer,
@@ -2438,6 +2483,7 @@ export const NoopEnterpriseDefaultsLayer: Layer.Layer<
   NoopDomainsLayer,
   NoopProactiveGateLayer,
   NoopDeployModeResolverLayer,
+  NoopSaasCrmLayer,
 );
 
 // ══════════════════════════════════════════════════════════════════════

@@ -35,6 +35,7 @@ import {
   type Domains,
   type ProactiveGate,
   type DeployModeResolver,
+  type SaasCrm,
 } from "./services";
 
 const log = createLogger("effect:enterprise-layer");
@@ -179,7 +180,8 @@ export type EnterpriseSubsystem =
   | Branding
   | Domains
   | ProactiveGate
-  | DeployModeResolver;
+  | DeployModeResolver
+  | SaasCrm;
 
 /**
  * Composed enterprise Layer — no-op defaults overlaid by the conditional

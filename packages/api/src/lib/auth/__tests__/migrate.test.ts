@@ -343,6 +343,7 @@ describe("migrateAuthTables", () => {
             { name: "0095_approval_surface_telegram.sql" },
             { name: "0096_drop_connections_table.sql" },
             { name: "0097_fix_0096_us_constraint_order.sql" },
+            { name: "0098_twenty_integrations.sql" },
           ],
         };
       }

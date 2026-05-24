@@ -3,6 +3,9 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   // Vercel uses its own build pipeline — no `output: "standalone"` needed
   serverExternalPackages: ["pg", "mysql2", "@clickhouse/client", "@duckdb/node-api", "snowflake-sdk", "jsforce", "just-bash", "nodemailer", "pino", "pino-pretty", "stripe"],
+  // Workspace-published TS plugins that are statically imported from ee/src/ —
+  // Turbopack would otherwise fail to compile their raw .ts source from node_modules.
+  transpilePackages: ["@useatlas/twenty"],
   // Type checking is handled by `bun run type` (tsgo); skip during Next.js build
   typescript: { ignoreBuildErrors: true },
   // Security headers — mirrors packages/web/next.config.ts so scaffolded

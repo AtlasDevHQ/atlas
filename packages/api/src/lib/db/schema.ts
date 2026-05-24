@@ -2210,3 +2210,27 @@ export const proactivePublicDataset = pgTable(
     index("idx_proactive_public_dataset_workspace").on(t.workspaceId),
   ],
 );
+
+// ---------------------------------------------------------------------------
+// twenty_integrations (0098) — per-workspace credentials for the Twenty CRM
+// plugin. Listed in `INTEGRATION_TABLES` (lib/db/integration-tables.ts) so
+// F-47 key rotation + F-42 residue audit walk the table generically. The
+// `api_key_encrypted` column uses the `db/secret-encryption.ts` pair
+// (CLAUDE.md guidance for new integration credential columns).
+// ---------------------------------------------------------------------------
+
+export const twentyIntegrations = pgTable(
+  "twenty_integrations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: text("workspace_id").notNull(),
+    baseUrl: text("base_url"),
+    apiKeyEncrypted: text("api_key_encrypted").notNull(),
+    apiKeyKeyVersion: integer("api_key_key_version"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("idx_twenty_integrations_workspace_unique").on(t.workspaceId),
+  ],
+);

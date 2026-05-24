@@ -1,36 +1,11 @@
 /**
- * Aggregator for EE-side `Layer.effect` implementations.
+ * Aggregator for EE-side `Layer.effect` implementations. Lazy-imported
+ * by `buildAppLayer()` in `@atlas/api/lib/effect/layers` (the sole
+ * permitted runtime `@atlas/ee` import from core) and merged on top of
+ * `NoopEnterpriseDefaultsLayer` when `isEnterpriseEnabled()` is true.
  *
- * `buildAppLayer()` in `@atlas/api/lib/effect/layers` lazy-imports this
- * module (the ONLY post-closeout `@atlas/ee` import permitted from core)
- * and merges `EELayer` on top of `NoopEnterpriseDefaultsLayer` when
- * `isEnterpriseEnabled()` is true. Layer.mergeAll resolves duplicate
- * Tags by "last wins", so EE's real implementations override core's
- * no-op defaults.
- *
- * Slice 2/11 (#2564) — added `ResidencyResolverLive`.
- * Slice 3/11 (#2565) — added `ModelRouterLive`.
- * Slice 4/11 (#2566) — added `MaskingPolicyLive` + `ComplianceReportsLive`.
- * Slice 5/11 (#2567) — added `ApprovalGateLive`.
- * Slice 6/11 (#2568) — added `SlaMetricsLive` + `BackupsManagerLive`.
- * Slice 7/11 (#2569) — added `AuditRetentionLive`.
- * Slice 8/11 (#2570) — added `IpAllowlistPolicyLive` + `SSOPolicyLive`
- *   + `SCIMProvenanceLive` (auth subsystem trio).
- * Slice 9/11 (#2571) — added `RolesPolicyLive` (custom-role CRUD +
- *   F-53 permission chokepoint).
- * Slice 10/11 (#2572) — added `BrandingLive` + `DomainsLive` +
- *                       `ProactiveGateLive` + `DeployModeResolverLive`
- *                       (bundled to avoid four PRs of Tag scaffolding
- *                       overhead for narrow-surface subsystems).
- *
- * Slice 11/11 (#2573 closeout) follows next: CI grep gate + symlink-stub
- * job + back-compat shim cleanup. See the parent issue (#2017) for the
- * rationale.
- *
- * Follow-up #2587 — split `AuditRetention` Tag into CRUD-only +
- * `AuditPurgeScheduler` lifecycle Tag (removes the `require()` circular
- * workaround in `audit/retention.ts` and lifts the scheduler `start*` /
- * `stop*` pair to Effect-returning so failures are observable in tests).
+ * Every Tag bound here must appear in the union type below — that's the
+ * only invariant.
  */
 
 import { Layer } from "effect";
@@ -49,6 +24,7 @@ import type {
   ProactiveGate,
   ResidencyResolver,
   RolesPolicy,
+  SaasCrm,
   SCIMProvenance,
   SSOPolicy,
   SlaMetrics,
@@ -70,6 +46,7 @@ import { BrandingLive } from "./branding/white-label";
 import { DomainsLive } from "./platform/domains";
 import { ProactiveGateLive } from "./proactive-gate";
 import { DeployModeResolverLive } from "./deploy-mode";
+import { SaasCrmLive } from "./saas-crm/index";
 
 /**
  * Aggregated EE Layer — typed by the union of every Tag this module
@@ -92,6 +69,7 @@ export const EELayer: Layer.Layer<
   | ProactiveGate
   | ResidencyResolver
   | RolesPolicy
+  | SaasCrm
   | SCIMProvenance
   | SSOPolicy
   | SlaMetrics
@@ -113,4 +91,5 @@ export const EELayer: Layer.Layer<
   DomainsLive,
   ProactiveGateLive,
   DeployModeResolverLive,
+  SaasCrmLive,
 );

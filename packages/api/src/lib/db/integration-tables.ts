@@ -61,6 +61,9 @@ export const INTEGRATION_TABLES: ReadonlyArray<IntegrationTable> = [
   // table still keys on a single uuid `id` column so the rotation /
   // audit scripts walk it generically (single-PK assumption preserved).
   { table: "integration_credentials", pk: "id",            encrypted: "credentials_encrypted",       keyVersionColumn: "credentials_key_version" },
+  // 0098 — Twenty CRM per-workspace credentials. `workspace_id` is
+  // unique on its own (one Twenty install per workspace).
+  { table: "twenty_integrations",   pk: "id",              encrypted: "api_key_encrypted",           keyVersionColumn: "api_key_key_version" },
 ] as const;
 
 /**

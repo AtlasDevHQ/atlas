@@ -345,7 +345,7 @@ demo.openapi(demoStartRoute, async (c) => {
     // Capture lead (best-effort)
     const userAgent = c.req.header("user-agent") ?? null;
     const [leadResult, conversationCount] = yield* Effect.promise(() => Promise.all([
-      captureDemoLead({ email, ip, userAgent }),
+      captureDemoLead({ email, ip, userAgent, requestId }),
       countDemoConversations(email),
     ]));
 

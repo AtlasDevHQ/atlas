@@ -79,6 +79,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@atlas/api": "workspace:*",
+        "@useatlas/twenty": "workspace:*",
         "@useatlas/types": "workspace:*",
         "effect": "^3.14.8",
         "ipaddr.js": "^2.3.0",
@@ -719,15 +720,17 @@
       "version": "0.0.1",
       "devDependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
+        "@useatlas/types": "workspace:*",
         "ai": "^6.0.141",
         "effect": "^3.21.0",
         "zod": "^4.3.6",
       },
       "peerDependencies": {
-        "@useatlas/plugin-sdk": ">=0.0.1",
-        "ai": "^6.0.0",
-        "effect": "^3.0.0",
-        "zod": "^4.0.0",
+        "@useatlas/plugin-sdk": "0.0.7",
+        "@useatlas/types": ">=0.1.7",
+        "ai": "^6.0.141",
+        "effect": "^3.21.0",
+        "zod": "^4.3.6",
       },
     },
     "plugins/vercel-sandbox": {

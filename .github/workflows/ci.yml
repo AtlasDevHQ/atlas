@@ -89,6 +89,9 @@ jobs:
       - name: Adversarial fixtures for the EE-imports gate
         run: bash scripts/__tests__/check-ee-imports.test.sh
 
+      - name: Check no legacy `connections` / `connection_groups` SQL outside migrations (#2744)
+        run: bash scripts/check-no-legacy-connections-sql.sh
+
   lint:
     name: lint
     runs-on: ubuntu-latest

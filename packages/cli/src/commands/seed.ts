@@ -229,11 +229,17 @@ export async function seedWorkspaceGroup(
   try {
     const orgId = await resolveWorkspaceId(client, opts.workspace);
 
-    // Wipe the auto-provisioned demo: its connection ('default') and any
-    // semantic entities not yet scoped to a real group. We replace those with
-    // the explicit group below.
+    // Post-0096 cutover (#2744 / ADR-0007): datasource installs live in
+    // `workspace_plugins (pillar='datasource')`; group membership is a
+    // free-form `config.group_id` JSONB string with no separate
+    // `connection_groups` row and no `primary_connection_id`.
+
+    // Wipe the auto-provisioned demo: its 'default' install and any
+    // semantic entities not yet scoped to a real group. We replace those
+    // with the explicit group below.
     await client.query(
-      "DELETE FROM connections WHERE org_id = $1 AND id = 'default'",
+      `DELETE FROM workspace_plugins
+        WHERE workspace_id = $1 AND pillar = 'datasource' AND install_id = 'default'`,
       [orgId],
     );
     await client.query(
@@ -243,53 +249,50 @@ export async function seedWorkspaceGroup(
       [orgId],
     );
 
-    // Idempotency: clear prior rows for THIS group. Entities first (FK to
-    // group), then connections (FK to group), then the group itself.
+    // Idempotency: clear prior rows for THIS group. Entities first,
+    // then installs.
     await client.query(
       "DELETE FROM semantic_entities WHERE org_id = $1 AND connection_group_id = $2",
       [orgId, opts.groupId],
     );
     await client.query(
-      "DELETE FROM connections WHERE org_id = $1 AND id = ANY($2::text[])",
+      `DELETE FROM workspace_plugins
+        WHERE workspace_id = $1 AND pillar = 'datasource' AND install_id = ANY($2::text[])`,
       [orgId, opts.connections.map((c) => c.id)],
     );
-    await client.query(
-      "DELETE FROM connection_groups WHERE org_id = $1 AND id = $2",
-      [orgId, opts.groupId],
-    );
 
-    // Create the group. primary_connection_id is filled in below once members
-    // exist (composite FK requires the connection row first).
-    await client.query(
-      `INSERT INTO connection_groups (id, org_id, name)
-       VALUES ($1, $2, $3)`,
-      [opts.groupId, orgId, opts.groupName],
-    );
-
-    // Insert each member connection.
+    // Insert each member install. Catalog row is looked up by slug =
+    // c.type (postgres / mysql / snowflake / …) from the built-in
+    // Datasource catalog seeded by migration 0093.
     for (const c of opts.connections) {
+      const catalogRows = await client.query<{ id: string }>(
+        `SELECT id FROM plugin_catalog WHERE slug = $1 AND pillar = 'datasource' LIMIT 1`,
+        [c.type],
+      );
+      if (catalogRows.rows.length === 0) {
+        throw new Error(`seedWorkspaceGroup: no built-in datasource catalog row for type '${c.type}'`);
+      }
+      const catalogId = catalogRows.rows[0].id;
+      const config = JSON.stringify({
+        url: c.encryptedUrl,
+        description: c.description ?? `${c.id} (${c.type})`,
+        db_type: c.type,
+        group_id: opts.groupId,
+      });
       await client.query(
-        `INSERT INTO connections (id, url, url_key_version, type, description, org_id, status, group_id)
-         VALUES ($1, $2, $3, $4, $5, $6, 'published', $7)`,
-        [
-          c.id,
-          c.encryptedUrl,
-          opts.keyVersion,
-          c.type,
-          c.description ?? `${c.id} (${c.type})`,
-          orgId,
-          opts.groupId,
-        ],
+        `INSERT INTO workspace_plugins
+           (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at, status)
+         VALUES ($1, $2, $3, $4, 'datasource', $5::jsonb, true, NOW(), 'published')`,
+        [`cn_${orgId}_${c.id}`, orgId, catalogId, c.id, config],
       );
     }
 
-    // Wire the primary so chat routes deterministically.
+    // No primary wire-up post pure-collapse — the resolver falls back
+    // to deterministic alphabetical-by-install_id ordering when no
+    // explicit primary is set. The legacy `primary_connection_id`
+    // column lived on `connection_groups`, which is gone.
     const primary = opts.connections.find((c) => c.isPrimary);
     if (!primary) throw new Error("seedWorkspaceGroup: no primary connection declared");
-    await client.query(
-      "UPDATE connection_groups SET primary_connection_id = $1, updated_at = NOW() WHERE id = $2 AND org_id = $3",
-      [primary.id, opts.groupId, orgId],
-    );
 
     // Insert semantic entities scoped to the group, if any were provided.
     const entities = opts.semanticEntities ?? [];

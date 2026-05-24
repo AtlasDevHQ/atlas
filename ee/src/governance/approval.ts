@@ -124,23 +124,13 @@ function isValidRequestSurface(surface: string): surface is ApprovalRequestSurfa
   return (APPROVAL_REQUEST_SURFACES as readonly string[]).includes(surface);
 }
 
-const mirrorGlobalConnectionGroupForTenantSql = `INSERT INTO connection_groups (id, org_id, name)
-SELECT g.id, $1, ('__global__:' || g.id) AS name
-  FROM connections c
-  JOIN connection_groups g
-    ON g.id = c.group_id
-   AND g.org_id = c.org_id
- WHERE c.id = $2
-   AND c.org_id = '__global__'
-   AND c.group_id IS NOT NULL
-ON CONFLICT (id, org_id) DO NOTHING`;
-
-const mirrorExplicitGlobalGroupForTenantSql = `INSERT INTO connection_groups (id, org_id, name)
-SELECT id, $1, ('__global__:' || id) AS name
-  FROM connection_groups
- WHERE id = $2
-   AND org_id = '__global__'
-ON CONFLICT (id, org_id) DO NOTHING`;
+// Post-0096 cutover (#2744 / ADR-0007 pure-collapse): the legacy
+// "mirror global connection group for tenant" SQL is gone — there is
+// no `connection_groups` table to mirror into, and `approval_queue.connection_group_id`
+// is now a free-form text identifier with no composite FK to maintain.
+// The function below writes the group_id directly without any tenant-mirror
+// step; cross-tenant protection lives at the application layer
+// (`verifyGroupBelongsToOrg` in `lib/conversations.ts`).
 
 function rowToRule(row: ApprovalRuleRow): ApprovalRule | null {
   if (!isValidRuleType(row.rule_type)) {
@@ -772,23 +762,27 @@ export const createApprovalRequest = (opts: {
     }
 
     // #2344 — branch on whether the caller passed a group id verbatim.
-    // Inline shape: when omitted but a connectionId is present, resolve
-    // the group via a scalar subquery against `connections` in the
-    // same INSERT — no SELECT-then-INSERT race with concurrent
-    // connection deletes. Matches the resolution rule in
+    // Post-0096 cutover (#2744 / ADR-0007): when no explicit
+    // connectionGroupId is provided, resolve it via a scalar subquery
+    // against `workspace_plugins` (pillar='datasource') in the same
+    // INSERT — no SELECT-then-INSERT race with concurrent install
+    // deletes. Matches the resolution rule in
     // `semantic/entities.ts: inlineConnectionGroupSql`: prefer the
-    // org's own connection row, fall back to `__global__` for demo /
-    // built-in connections.
+    // workspace's own install row, fall back to `__global__` for demo /
+    // built-in installs. The composite FK to `connection_groups` is
+    // gone — `approval_queue.connection_group_id` is a free-form text
+    // identifier, so no tenant-mirror step is needed.
     const hasExplicitGroup = opts.connectionGroupId !== undefined;
     const hasConnectionForResolve = !hasExplicitGroup && opts.connectionId !== null && opts.connectionId !== undefined;
     const groupExpression = hasExplicitGroup
       ? "$8"
       : hasConnectionForResolve
         ? `(
-            SELECT group_id FROM connections
-            WHERE id = $8
-              AND (org_id = $1 OR org_id = '__global__')
-            ORDER BY CASE WHEN org_id = $1 THEN 0 ELSE 1 END
+            SELECT config->>'group_id' FROM workspace_plugins
+            WHERE install_id = $8
+              AND pillar = 'datasource'
+              AND (workspace_id = $1 OR workspace_id = '__global__')
+            ORDER BY CASE WHEN workspace_id = $1 THEN 0 ELSE 1 END
             LIMIT 1
           )`
         : "NULL";
@@ -797,25 +791,6 @@ export const createApprovalRequest = (opts: {
       : hasConnectionForResolve
         ? (opts.connectionId as string)
         : null;
-
-    // Global/demo connections live under `__global__`, while approval
-    // rows are tenant-scoped. The composite FK on approval_queue requires
-    // `(connection_group_id, org_id)` to exist in `connection_groups`, so
-    // mirror the global group into the tenant before inserting the queue
-    // row. This is idempotent and preserves the same group id that lookup
-    // uses, without weakening cross-tenant FK protection.
-    if (opts.connectionId !== null && opts.connectionId !== undefined) {
-      yield* Effect.promise(() => internalQuery(
-        mirrorGlobalConnectionGroupForTenantSql,
-        [opts.orgId, opts.connectionId],
-      ));
-    }
-    if (hasExplicitGroup && opts.connectionGroupId != null) {
-      yield* Effect.promise(() => internalQuery(
-        mirrorExplicitGlobalGroupForTenantSql,
-        [opts.orgId, opts.connectionGroupId],
-      ));
-    }
 
     // Param ordering: $1..$7 stable; $8 carries either the explicit
     // group_id or (when resolving inline) the connection_id consumed by
@@ -1092,15 +1067,18 @@ export const hasApprovedRequest = (
       return legacyRows.length > 0;
     }
 
-    // #2344 — resolve the connection's group_id at lookup time.
+    // #2344 — resolve the install's group_id at lookup time.
     // Separate SELECT (not a joined CTE on `approval_queue`) so the
-    // archived-connection case is a clean signal: the resolver
-    // returning zero rows means the connection has been removed /
-    // archived and no connection-scoped approval can safely apply.
+    // archived-install case is a clean signal: the resolver returning
+    // zero rows means the install has been removed / archived and no
+    // connection-scoped approval can safely apply. Post-0096 cutover
+    // (#2744 / ADR-0007) reads from `workspace_plugins.config->>'group_id'`.
     const groupRows = yield* Effect.promise(() => internalQuery<{ group_id: string | null }>(
-      `SELECT group_id FROM connections
-       WHERE id = $1 AND (org_id = $2 OR org_id = '__global__')
-       ORDER BY CASE WHEN org_id = $2 THEN 0 ELSE 1 END
+      `SELECT config->>'group_id' AS group_id FROM workspace_plugins
+       WHERE install_id = $1
+         AND pillar = 'datasource'
+         AND (workspace_id = $2 OR workspace_id = '__global__')
+       ORDER BY CASE WHEN workspace_id = $2 THEN 0 ELSE 1 END
        LIMIT 1`,
       [connectionId, orgId],
     ));

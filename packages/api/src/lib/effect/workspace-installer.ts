@@ -1268,7 +1268,8 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
         try: () =>
           lazyInternalQuery()(
             `UPDATE workspace_plugins
-                SET config = $1::jsonb
+                SET config = $1::jsonb,
+                    updated_at = NOW()
               WHERE workspace_id = $2 AND catalog_id = $3 AND install_id = $4`,
             [JSON.stringify(encryptedConfig), workspaceId, catalog.id, installId],
           ),
@@ -1544,7 +1545,7 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
           try: () =>
             lazyInternalQuery()<{ id: string }>(
               `UPDATE workspace_plugins
-                  SET status = 'archived', enabled = false
+                  SET status = 'archived', enabled = false, updated_at = NOW()
                 WHERE workspace_id = $1 AND catalog_id = $2 AND install_id = $3
                 RETURNING id`,
               [workspaceId, catalog.id, installId],
@@ -1699,22 +1700,28 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
       yield* Effect.tryPromise({
         try: () =>
           lazyInternalQuery()(
+            // `updated_at` must be set explicitly — `simplePromoteSql` and
+            // `DRAFT_ACTIVITY_SQL` read `MAX(updated_at)` post-cutover to
+            // compute "last edited" recency in mode/publish UX; leaving it
+            // at the row's `installed_at` value would silently hide draft
+            // edits from the pending-changes pill (codex P2, #2784).
             `UPDATE workspace_plugins
                 SET config = $1::jsonb,
                     status = $2,
-                    enabled = ($2 != 'archived')
+                    enabled = ($2 != 'archived'),
+                    updated_at = NOW()
               WHERE workspace_id = $3 AND catalog_id = $4 AND install_id = $5`,
             [JSON.stringify(encryptedConfig), nextStatus, workspaceId, catalog.id, installId],
           ),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       }).pipe(Effect.catchAll((err) => Effect.die(err)));
 
-      // Evict the pool — the next query rebuilds from the new config.
-      // The route can re-register with the updated URL before the next
-      // query if it needs a synchronous health check; otherwise the
-      // bridge will lazily re-register on the next ConnectionRegistry
-      // lookup. Status='archived' leaves the install evicted; the next
-      // query against an archived install fails-closed.
+      // Evict the existing pool so its open connections drain. Then —
+      // unless the row is archived — re-register with the merged config
+      // so subsequent queries find a live pool. `ConnectionRegistry.getForOrg`
+      // does NOT lazy-load from `workspace_plugins`; a post-update query
+      // against an unregistered install throws `ConnectionNotRegisteredError`
+      // until next boot (codex P1, #2784).
       try {
         lazyDatasourceBridge().unregisterDatasourceInstall(installId);
       } catch (err) {
@@ -1727,6 +1734,30 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
           },
           "unregisterDatasourceInstall threw during updateDatasourceConfig — DB row updated anyway",
         );
+      }
+      if (nextStatus !== "archived") {
+        try {
+          lazyDatasourceBridge().registerDatasourceInstall(
+            {
+              workspaceId,
+              catalogId: catalog.id,
+              installId,
+              pillar: "datasource",
+              catalogSlug,
+            },
+            merged,
+          );
+        } catch (err) {
+          log.warn(
+            {
+              workspaceId,
+              installId,
+              catalogSlug,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "registerDatasourceInstall threw during updateDatasourceConfig — DB row updated; next query may surface ConnectionNotRegisteredError until restart",
+          );
+        }
       }
 
       log.info(

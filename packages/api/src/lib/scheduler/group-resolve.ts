@@ -74,6 +74,28 @@ export async function loadScheduledTaskGroupSnapshot(
     // stays in the snapshot shape for back-compat but is always null —
     // `selectScheduledTaskGroupMember` falls through to the deterministic
     // sort, which is the only ordering left.
+    //
+    // Two-stage lookup preserves the pre-cutover "group not found" vs
+    // "group has zero non-archived members" distinction (codex P2, #2784):
+    //   1. Probe `EXISTS` across ALL statuses for any install carrying
+    //      this group_id. Returning `null` only when truly absent
+    //      preserves the upstream "group not found" hard error.
+    //   2. Member query filters to non-archived rows. An empty result
+    //      surfaces upstream as `NoScheduledTaskGroupMembersError` so
+    //      the executor's empty-group handler (log + skip + actionable
+    //      "add/unarchive a member" guidance) fires, not the generic
+    //      "group not found" path.
+    const existsRows = await internalQuery<{ exists_flag: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM workspace_plugins
+          WHERE config->>'group_id' = $1
+            AND workspace_id = $2
+            AND pillar = 'datasource'
+       ) AS exists_flag`,
+      [groupId, orgId ?? "__global__"],
+    );
+    if (existsRows[0]?.exists_flag !== true) return null;
+
     const memberRows = await internalQuery<{ id: string; created_at: Date | string }>(
       `SELECT install_id AS id, installed_at AS created_at
          FROM workspace_plugins
@@ -84,7 +106,6 @@ export async function loadScheduledTaskGroupSnapshot(
         ORDER BY installed_at ASC, install_id ASC`,
       [groupId, orgId ?? "__global__"],
     );
-    if (memberRows.length === 0) return null;
     // #2416 — strictly in-org: no widening to '__global__'. An empty
     // member set surfaces upstream as NoScheduledTaskGroupMembersError
     // so the executor logs + skips the tick. The next admin action

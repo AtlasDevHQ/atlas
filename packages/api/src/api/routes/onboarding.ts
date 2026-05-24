@@ -530,13 +530,32 @@ onboarding.openapi(
         db_type: dbType,
       });
 
+      // Pre-delete any existing datasource install with the same
+      // (workspace_id, install_id) regardless of catalog so re-running
+      // onboarding with the same `connectionId` but a different dbType
+      // updates the logical connection in place instead of leaving a
+      // ghost row under the prior catalog (codex P2, #2784). The composite
+      // PK on workspace_plugins is `(workspace_id, catalog_id, install_id)`,
+      // so a plain ON CONFLICT can't span catalogs — delete-then-insert
+      // is the right shape. install_id is the user-facing unique key in
+      // every read path; this preserves that invariant on write.
+      yield* Effect.tryPromise({
+        try: () => internalQuery(
+          `DELETE FROM workspace_plugins
+            WHERE workspace_id = $1 AND pillar = 'datasource' AND install_id = $2`,
+          [orgId, id],
+        ),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(Effect.catchAll((err) => {
+        log.error({ err: err.message, requestId }, "Failed to clear prior datasource install during onboarding");
+        return Effect.succeed(null);
+      }));
+
       const upsertResult = yield* Effect.tryPromise({
         try: () => internalQuery<{ id: string }>(
           `INSERT INTO workspace_plugins
              (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at, status)
            VALUES ($1, $2, $3, $4, 'datasource', $5::jsonb, true, NOW(), 'published')
-           ON CONFLICT (workspace_id, catalog_id, install_id)
-             DO UPDATE SET config = EXCLUDED.config, status = 'published', updated_at = NOW()
            RETURNING install_id AS id`,
           [`cn_${orgId}_${id}`, orgId, catalogId, id, configJson],
         ),

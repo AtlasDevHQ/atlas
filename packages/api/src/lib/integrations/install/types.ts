@@ -165,18 +165,52 @@ export interface FormBasedInstallHandler {
  * routing identifier (Discord `guild_id`, Telegram `chat_id`, Teams
  * `tenant_id`, etc.) that the shared bot uses to scope messages.
  *
- * `verificationProof` is optional — a Platform-specific proof (e.g.
- * Telegram's `/start@AtlasBot` echo, Discord's bot-member presence
- * check) that the routing identifier really belongs to the requesting
- * Workspace. Required for Platforms where impersonation would let
- * Workspace B claim Workspace A's chat id.
+ * `verificationProof` is optional — a Platform-specific proof that the
+ * routing identifier really belongs to the requesting Workspace.
+ * Required for Platforms where impersonation would let Workspace B
+ * claim Workspace A's routing identifier. The semantics are
+ * Platform-defined: some Platforms verify server-side via an upstream
+ * round-trip (no caller proof needed), others require a signed
+ * handshake the caller supplies here.
+ *
+ * `extras` carries the optional config fields beyond the routing
+ * identifier — e.g. Telegram's `display_name` from the catalog
+ * `config_schema`. The customer admin submits these in the install
+ * modal; the WorkspaceInstaller forwards them as a plain object the
+ * handler interprets per its catalog schema. Keys missing from the
+ * handler's schema are silently dropped at persist time — this slot is
+ * a forward-compat extension point, not a free-form metadata store.
  *
  * Credential rotation semantics: there is no per-Workspace credential —
  * the bot's auth lives with the operator. Rotation is operator-side.
  *
- * **No implementation lands in 1.5.2.** The shape is pinned here so the
- * dispatch table in `./dispatch.ts` covers all three branches today;
- * 1.5.3 lands the real handler as an import-and-register change.
+ * **KEYSTONE pattern for Phase D implementers.** Telegram (1.5.3 #2748)
+ * is the first real implementation; Discord (#2749), gchat (#2754), and
+ * WhatsApp (#2753) inherit the shape. The contract each handler MUST
+ * honor:
+ *
+ *   1. Validate `routingIdentifier` format at entry — reject obvious
+ *      malformed input (wrong type, public-handle / username,
+ *      out-of-range length) BEFORE any upstream round-trip. Use a
+ *      Platform-specific tagged error (see `TelegramChatIdInvalidError`).
+ *   2. Verify reachability against the Platform BEFORE persisting the
+ *      install row — a failed verification must never leave a half-
+ *      installed row behind.
+ *   3. Persist via UPSERT keyed on `(workspace_id, catalog_id)` with
+ *      `RETURNING id`; use the returned id (not the candidate) so
+ *      re-install lookups land on the existing row.
+ *   4. Extract known fields from `extras` per the catalog
+ *      `config_schema`; drop unknown keys silently. Log at `warn` if a
+ *      known field arrives at the wrong type (admin UI form validation
+ *      should never let this through; warn = operator signal).
+ *   5. Use `Data.TaggedError` for failure surface (one tag per failure
+ *      class), wire them into `mapTaggedError` so the HTTP layer
+ *      produces actionable 400 / 502 envelopes instead of generic 500s.
+ *   6. Sanitize any operator-scoped credential (bot token) from error
+ *      messages and log payloads; never attach `cause: err` on a
+ *      `fetch`-error wrapper.
+ *
+ * See {@link TelegramStaticBotInstallHandler} for the reference shape.
  */
 export interface StaticBotInstallHandler {
   readonly kind: "static-bot";
@@ -185,6 +219,7 @@ export interface StaticBotInstallHandler {
     workspaceId: WorkspaceId,
     routingIdentifier: string,
     verificationProof?: string,
+    extras?: Record<string, unknown>,
   ): Promise<{
     readonly installRecord: InstallRecord;
   }>;

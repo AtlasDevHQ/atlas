@@ -3,11 +3,20 @@
  *
  * Bridges vercel/chat (Chat SDK) into the Atlas plugin system as a unified
  * interaction layer. Adapter activation is driven by `atlas.config.ts:catalog`
- * + per-Platform env vars (slice 2 of #2649 — issue #2650). Slack is the
- * only OAuth chat Platform that instantiates in 1.5.2; the other adapters
- * (Teams, Discord, gchat, Telegram, GitHub, Linear, WhatsApp) ride along
- * as catalog placeholders and wire up in 1.5.3 once `StaticBotInstallHandler`
- * lands.
+ * + per-Platform env vars (slice 2 of #2649 — issue #2650).
+ *
+ * Wired adapters:
+ *   - Slack — OAuth install model (1.5.2, #2650). Bot token lives in
+ *     `chat_cache` keyed by `team_id`.
+ *   - Telegram — static-bot install model (1.5.3, #2748 — keystone slice
+ *     for Phase D). Operator-shared `TELEGRAM_BOT_TOKEN`; per-Workspace
+ *     `chat_id` routing in `workspace_plugins.config`.
+ *
+ * The remaining Phase D adapters (Discord #2749, Linear #2750, GitHub
+ * #2751, Teams #2752, WhatsApp #2753, gchat #2754) ride the static-bot
+ * (or OAuth) interface this plugin already exposes — they slot in by
+ * adding a per-slug `ChatAdapterBuilder` to `adapter-registry.ts` and
+ * mounting a `/webhooks/<slug>` route here.
  *
  * Replaces the standalone `@useatlas/slack` and `@useatlas/teams` plugins
  * with a unified Chat SDK adapter approach. See the migration guide in README.md.
@@ -34,7 +43,7 @@
  * ```
  */
 
-import type { StateAdapter } from "chat";
+import type { Adapter, StateAdapter } from "chat";
 import type { SlackAdapter } from "@chat-adapter/slack";
 import { createPlugin } from "@useatlas/plugin-sdk";
 import type {
@@ -228,12 +237,34 @@ function catalogHasSlackOauth(
   );
 }
 
+/**
+ * Telegram is the first static-bot Platform that mounts a webhook here
+ * (1.5.3 #2748). The route gate mirrors {@link catalogHasSlackOauth}:
+ * declared + enabled in the catalog. Env-var presence (and therefore
+ * the actual adapter wiring) is checked inside `initialize()` by the
+ * `AdapterRegistry`; an enabled catalog row with no `TELEGRAM_BOT_TOKEN`
+ * mounts the route but the runtime handler-missing branch surfaces 404.
+ */
+function catalogHasTelegramStaticBot(
+  catalog: ReadonlyArray<ChatCatalogEntryInput> | undefined,
+): boolean {
+  if (!catalog) return false;
+  return catalog.some(
+    (e) =>
+      e.slug === "telegram" &&
+      e.type === "chat" &&
+      e.install_model === "static-bot" &&
+      e.enabled === true,
+  );
+}
+
 function buildChatPlugin(
   config: ChatPluginConfig,
 ): AtlasInteractionPlugin<ChatPluginConfig> {
   let bridge: ChatBridge | null = null;
   let stateAdapter: StateAdapter | null = null;
   let slackAdapterInstance: SlackAdapter | null = null;
+  let telegramAdapterInstance: Adapter | null = null;
   let log: PluginLogger | null = null;
   let initialized = false;
   /**
@@ -251,6 +282,7 @@ function buildChatPlugin(
   }
 
   const slackOauthDeclared = catalogHasSlackOauth(config.catalog);
+  const telegramStaticBotDeclared = catalogHasTelegramStaticBot(config.catalog);
 
   return {
     id: "chat-interaction",
@@ -321,12 +353,56 @@ function buildChatPlugin(
         // route above stays — only the OAuth dance moved.
       }
 
-      // Non-Slack chat Platform webhook routes are intentionally not
-      // mounted in 1.5.2 (#2650 AC). Their adapters don't instantiate
-      // until 1.5.3 when `StaticBotInstallHandler` lands; mounting their
-      // routes pre-handler would let webhooks accumulate without a
-      // bridge to consume them. The route paths themselves
-      // (/webhooks/teams etc.) are reserved for future activation.
+      // Telegram (1.5.3 #2748 — first static-bot webhook route here).
+      // The receive path verifies the optional
+      // `x-telegram-bot-api-secret-token` header internally via the
+      // Chat SDK adapter; the configure-secret token from BotFather's
+      // setWebhook call must match `TELEGRAM_WEBHOOK_SECRET` when set.
+      // Remaining static-bot platforms (Discord #2749, gchat #2754,
+      // WhatsApp #2753) ride the same pattern.
+      if (telegramStaticBotDeclared) {
+        app.post("/webhooks/telegram", async (c) => {
+          const requestId = crypto.randomUUID();
+          if (!bridge) {
+            return c.json({ error: "Chat plugin not yet initialized", requestId }, 503);
+          }
+          const handler = bridge.webhooks.telegram;
+          if (!handler) {
+            // Catalog declared telegram + enabled, but the AdapterRegistry
+            // didn't wire the adapter — almost always means
+            // `TELEGRAM_BOT_TOKEN` is unset. Operators staring at a 404
+            // in chat-plugin logs need this signal explicitly, not as
+            // background webhook noise (Telegram retries with backoff
+            // and disables the webhook after a long failure window —
+            // missing this log loses webhook delivery silently). See
+            // #2748 review + #2673 silent-degradation precedent.
+            (log ?? console).error(
+              { requestId, adapter: "telegram" },
+              "Telegram webhook received but adapter not configured — check TELEGRAM_BOT_TOKEN and AdapterRegistry boot logs",
+            );
+            return c.json({ error: "Telegram adapter not configured", requestId }, 404);
+          }
+          try {
+            const response = await handler(c.req.raw, {
+              waitUntil: (task: Promise<unknown>) => {
+                task.catch((err: unknown) => {
+                  (log ?? console).error(
+                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "telegram" },
+                    "Chat SDK Telegram webhook background task failed",
+                  );
+                });
+              },
+            });
+            return response;
+          } catch (err) {
+            (log ?? console).error(
+              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "telegram" },
+              "Telegram webhook handler threw unexpectedly",
+            );
+            return c.json({ error: "Webhook processing failed", requestId }, 500);
+          }
+        });
+      }
     },
 
     async initialize(ctx: AtlasPluginContext) {
@@ -358,14 +434,17 @@ function buildChatPlugin(
           logger: ctx.logger,
         });
         slackAdapterInstance = registry.adapters.slack ?? null;
+        // Telegram (1.5.3 #2748 — first static-bot adapter to wire here).
+        // Discord / gchat / WhatsApp follow as their Phase D slices land.
+        telegramAdapterInstance = (registry.adapters.telegram ?? null) as Adapter | null;
         adapterDiagnostics = registry.diagnostics;
 
-        // Bridge takes pre-built instances per-platform; non-Slack slots
+        // Bridge takes pre-built instances per-platform; unwired slots
         // are left `undefined` (the bridge tolerates this — see
-        // `createChatBridge`). When 1.5.3 lands StaticBotInstallHandler,
-        // each new instantiated adapter slots in here.
+        // `createChatBridge`).
         bridge = createChatBridge(config, ctx.logger, stateAdapter, {
           slack: slackAdapterInstance,
+          telegram: telegramAdapterInstance,
         });
       } catch (err) {
         ctx.logger.error(
@@ -383,11 +462,13 @@ function buildChatPlugin(
         }
         stateAdapter = null;
         slackAdapterInstance = null;
+        telegramAdapterInstance = null;
         throw err;
       }
 
       const enabledAdapters: string[] = [];
       if (slackAdapterInstance) enabledAdapters.push("slack");
+      if (telegramAdapterInstance) enabledAdapters.push("telegram");
 
       const backend = config.state?.backend ?? "memory";
       const initFailedSilently =
@@ -433,6 +514,7 @@ function buildChatPlugin(
 
       const enabledAdapters: string[] = [];
       if (slackAdapterInstance) enabledAdapters.push("slack");
+      if (telegramAdapterInstance) enabledAdapters.push("telegram");
 
       if (enabledAdapters.length === 0) {
         // Use the diagnostics captured at init to point operators at the
@@ -456,7 +538,7 @@ function buildChatPlugin(
           adapterDiagnostics.unrecognizedSlugs.length === 0
         ) {
           parts.push(
-            "No chat-type catalog entries declared in atlas.config.ts (or all are disabled / non-OAuth).",
+            "No chat-type catalog entries declared in atlas.config.ts (or all are disabled / form-based).",
           );
         }
         return {
@@ -510,6 +592,7 @@ function buildChatPlugin(
         stateAdapter = null;
       }
       slackAdapterInstance = null;
+      telegramAdapterInstance = null;
       log = null;
       initialized = false;
     },

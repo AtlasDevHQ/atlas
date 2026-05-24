@@ -113,6 +113,7 @@ type DispatchHandler =
         workspaceId: WorkspaceId,
         routingIdentifier: string,
         verificationProof?: string,
+        extras?: Record<string, unknown>,
       ) => Promise<unknown>;
     };
 
@@ -133,6 +134,7 @@ mock.module("@atlas/api/lib/integrations/install/dispatch", () => ({
   getInstallHandler: mockGetInstallHandler,
   registerOAuthHandler: mock(() => {}),
   registerFormHandler: mock(() => {}),
+  registerStaticBotHandler: mock(() => {}),
   _resetInstallHandlerRegistries: mock(() => {}),
 }));
 
@@ -516,6 +518,136 @@ describe("WorkspaceInstaller.install", () => {
     if (result.kind === "oauth-callback") {
       expect(result.row).toBeNull();
       expect(result.credentialResult).toBeNull();
+    }
+  });
+
+  // ── static-bot dispatch (1.5.3 #2748 — Telegram keystone) ─────────
+  //
+  // These cases pin the facade-level static-bot install path the rest
+  // of Phase D (Discord, gchat, WhatsApp) will inherit. The handler
+  // itself is covered by `telegram-static-bot-handler.test.ts`; this
+  // suite asserts the facade's forwarding contract: routingIdentifier,
+  // verificationProof, AND the new `extras` field all reach the
+  // handler verbatim; the singleton check fires for the static-bot
+  // pillar; a `kind` mismatch dies as a defect.
+
+  it("forwards routingIdentifier + verificationProof + extras to the static-bot handler", async () => {
+    queueCatalogLookup("telegram", { pillar: "chat", install_model: "static-bot" });
+    queueInstallLookup(WSID, "catalog:telegram", null);
+    const calledWith: {
+      workspaceId?: string;
+      routingIdentifier?: string;
+      verificationProof?: string;
+      extras?: Record<string, unknown>;
+    } = {};
+    dispatchHandlers.set("telegram", {
+      kind: "static-bot",
+      confirmInstall: async (workspaceId, routingIdentifier, verificationProof, extras) => {
+        calledWith.workspaceId = workspaceId;
+        calledWith.routingIdentifier = routingIdentifier;
+        if (verificationProof !== undefined) calledWith.verificationProof = verificationProof;
+        if (extras !== undefined) calledWith.extras = extras;
+        return {
+          installRecord: {
+            id: "install-tg-1",
+            workspaceId: workspaceId,
+            catalogId: "telegram",
+          },
+        };
+      },
+    });
+    const installer = await getLiveService();
+    const result = await runEffect(
+      installer.install(WSID, "telegram", {
+        kind: "static-bot",
+        routingIdentifier: "-1001234567890",
+        verificationProof: "ignored-by-telegram-but-pinned-here",
+        extras: { display_name: "Team Standup" },
+      }),
+    );
+    expect(calledWith.workspaceId).toBe(WSID);
+    expect(calledWith.routingIdentifier).toBe("-1001234567890");
+    expect(calledWith.verificationProof).toBe("ignored-by-telegram-but-pinned-here");
+    expect(calledWith.extras).toEqual({ display_name: "Team Standup" });
+    expect(result.kind).toBe("static-bot");
+    if (result.kind === "static-bot") {
+      expect(result.row.catalogSlug).toBe("telegram");
+      expect(result.row.pillar).toBe("chat");
+      expect(result.row.installId).toBe("install-tg-1");
+    }
+  });
+
+  it("omits extras / verificationProof from the handler call when the input doesn't supply them", async () => {
+    queueCatalogLookup("telegram", { pillar: "chat", install_model: "static-bot" });
+    queueInstallLookup(WSID, "catalog:telegram", null);
+    let receivedExtras: Record<string, unknown> | undefined;
+    let receivedProof: string | undefined;
+    dispatchHandlers.set("telegram", {
+      kind: "static-bot",
+      confirmInstall: async (_w, _r, verificationProof, extras) => {
+        receivedExtras = extras;
+        receivedProof = verificationProof;
+        return {
+          installRecord: { id: "install-tg-2", workspaceId: WSID, catalogId: "telegram" },
+        };
+      },
+    });
+    const installer = await getLiveService();
+    await runEffect(
+      installer.install(WSID, "telegram", {
+        kind: "static-bot",
+        routingIdentifier: "12345",
+      }),
+    );
+    expect(receivedExtras).toBeUndefined();
+    expect(receivedProof).toBeUndefined();
+  });
+
+  it("rejects second static-bot install with AlreadyInstalledError → 409 (pillar singleton applies to chat pillar regardless of install_model)", async () => {
+    queueCatalogLookup("telegram", { pillar: "chat", install_model: "static-bot" });
+    queueInstallLookup(WSID, "catalog:telegram", {
+      id: "existing-tg",
+      install_id: "existing-tg",
+      team_id: null,
+    });
+    const installer = await getLiveService();
+    const exit = await Effect.runPromiseExit(
+      installer.install(WSID, "telegram", {
+        kind: "static-bot",
+        routingIdentifier: "-1001234567890",
+      }),
+    );
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      const json = JSON.stringify(exit.cause);
+      expect(json).toContain("AlreadyInstalledError");
+      expect(json).toContain("telegram");
+    }
+  });
+
+  it("dies as a defect when input.kind is static-bot but the dispatched handler is not", async () => {
+    queueCatalogLookup("telegram", { pillar: "chat", install_model: "oauth" });
+    queueInstallLookup(WSID, "catalog:telegram", null);
+    dispatchHandlers.set("telegram", {
+      kind: "oauth",
+      startInstall: async () => ({ redirectUrl: "x", stateToken: "y" }),
+      handleCallback: async () => null,
+    });
+    const installer = await getLiveService();
+    const exit = await Effect.runPromiseExit(
+      installer.install(WSID, "telegram", {
+        kind: "static-bot",
+        routingIdentifier: "12345",
+      }),
+    );
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      // Defect (not a tagged failure) — the dispatch contract violation
+      // is a 500-class regression, not a user-facing error. JSON-
+      // serialize doesn't pick up Error.message (it's on the prototype),
+      // so walk the cause directly.
+      const causeStr = String(exit.cause);
+      expect(causeStr).toContain("refusing static-bot install");
     }
   });
 });

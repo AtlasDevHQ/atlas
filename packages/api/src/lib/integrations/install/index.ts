@@ -28,10 +28,9 @@ export {
   getInstallHandler,
   registerFormHandler,
   registerOAuthHandler,
+  registerStaticBotHandler,
   _resetInstallHandlerRegistries,
 } from "./dispatch";
-
-export { staticBotInstallHandlerStub } from "./static-bot-stub";
 
 export {
   WorkspaceInstallGate,
@@ -46,6 +45,15 @@ export {
 // opt in selectively without the handler swallowing test env vars.
 export { SlackOAuthInstallHandler } from "./slack-oauth-handler";
 export type { SlackOAuthHandlerConfig } from "./slack-oauth-handler";
+export {
+  TelegramStaticBotInstallHandler,
+  TELEGRAM_CATALOG_ID,
+  TELEGRAM_SLUG,
+} from "./telegram-static-bot-handler";
+export type {
+  TelegramStaticBotHandlerConfig,
+  TelegramInstallConfig,
+} from "./telegram-static-bot-handler";
 export {
   EmailFormInstallHandler,
   EmailFormDataSchema,

@@ -127,13 +127,51 @@ export default defineConfig({
       saas_eligible: true,
       implementation_status: "coming_soon",
     },
+    // Telegram — first static-bot Platform to ship a real install
+    // handler (1.5.3 #2748 — keystone slice for Phase D). The operator
+    // wires a single shared `TELEGRAM_BOT_TOKEN` (from @BotFather);
+    // each customer admin supplies the numeric `chat_id` of the chat
+    // they want Atlas to listen on. `TelegramStaticBotInstallHandler`
+    // verifies reachability via `getChat` before persisting.
+    //
+    // `chat_id` is NOT marked `secret: true` — Telegram chat ids are
+    // routing identifiers (signed integers) that the Bot API leaks
+    // freely in every message envelope. Marking them secret would
+    // round-trip through `encryptSecretFields` for no security gain
+    // and would block the admin UI from rendering the value on read.
     {
       slug: "telegram",
       type: "chat",
       install_model: "static-bot",
       enabled: true,
       saas_eligible: true,
-      implementation_status: "coming_soon",
+      // #2748 has shipped the handler; promote out of the slice 9
+      // `coming_soon` default that #2747 set on every Phase D
+      // placeholder. Discord / Teams / gchat / WhatsApp stay
+      // `coming_soon` until their own slices flip them.
+      implementation_status: "available",
+      name: "Telegram",
+      description:
+        "Chat with Atlas inside a Telegram group, channel, or 1:1 conversation. The operator wires a shared bot (TELEGRAM_BOT_TOKEN); each workspace points the bot at one chat by id.",
+      min_plan: "starter",
+      configSchema: [
+        {
+          key: "chat_id",
+          type: "string",
+          label: "Chat ID",
+          description:
+            "Numeric Telegram chat id. Negative for groups/channels (e.g. -1001234567890), positive for private chats. Use a bot like @userinfobot to look it up.",
+          required: true,
+        },
+        {
+          key: "display_name",
+          type: "string",
+          label: "Display name",
+          description:
+            "Optional admin-friendly label for this chat. Shown on the integrations card.",
+          required: false,
+        },
+      ],
     },
     {
       slug: "whatsapp",
@@ -357,6 +395,17 @@ export default defineConfig({
           slug: "slack",
           type: "chat",
           install_model: "oauth",
+          enabled: true,
+          saas_eligible: true,
+        },
+        // Telegram — 1.5.3 #2748 keystone. The chatPlugin's local
+        // catalog drives AdapterRegistry instantiation + webhook-route
+        // mount; keep this list in lockstep with the top-level
+        // `catalog` above for every chat-type row.
+        {
+          slug: "telegram",
+          type: "chat",
+          install_model: "static-bot",
           enabled: true,
           saas_eligible: true,
         },

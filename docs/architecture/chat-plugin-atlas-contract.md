@@ -70,21 +70,21 @@ These don't ride on `chat_cache` — Atlas owns the schema and the writers. They
 
 ### Future platforms (post-1.5.2)
 
-`plugins/chat/src/adapter-registry.ts:74` keeps `enabled: false` catalog placeholders for Teams, Discord, gchat, Telegram, GitHub, Linear, WhatsApp. Their event-loop wiring lands in 1.5.3 alongside `StaticBotInstallHandler` (#2662). Each platform that gains an OAuth flow gets a new section in this table — one row per Atlas-extension field. Track:
+`plugins/chat/src/adapter-registry.ts` keeps catalog rows for Teams, Discord, gchat, Telegram, GitHub, Linear, WhatsApp. Telegram (#2748) is the first to ship a real `StaticBotInstallHandler` — the keystone slice for the remaining Phase D platforms. Each platform that gains an install flow gets a new section in this table — one row per Atlas-extension field. Track:
 
-- Does the platform have a per-tenant credential store equivalent to `chat_cache:slack:installation:<teamId>`?
+- Does the platform have a per-tenant credential store equivalent to `chat_cache:slack:installation:<teamId>`? (Static-bot platforms typically don't — the bot's auth lives operator-side and per-Workspace routing lives in `workspace_plugins.config` JSONB instead.)
 - Does Atlas need to stamp `orgId` onto it? (Always yes when an Atlas-side resolver needs `team_id → orgId`.)
 - Is the platform's state adapter doing a `SET value = EXCLUDED.value` overwrite, or a JSONB merge? (Must be merge if Atlas stamps extension fields.)
 
 | Platform | Slot reserved | Issue | Status |
 |---|---|---|---|
 | Teams | yes (catalog placeholder) | #2662 | ○ pending — 1.5.3 |
-| Discord | yes | #2662 | ○ pending — 1.5.3 |
-| gchat | yes | #2662 | ○ pending — 1.5.3 |
-| Telegram | yes | #2662 | ○ pending — 1.5.3 |
+| Discord | yes | #2749 | ○ pending — 1.5.3 (rides Telegram's StaticBotInstallHandler interface) |
+| gchat | yes | #2754 | ○ pending — 1.5.3 (rides Telegram's interface) |
+| Telegram | yes | #2748 | ✓ verified — static-bot install via `TelegramStaticBotInstallHandler`; per-Workspace `chat_id` in `workspace_plugins.config`; no per-Workspace credential store; reachability verified via Bot API `getChat` at install time |
 | GitHub | yes | #2662 | ○ pending — 1.5.3 |
 | Linear | yes | #2662 | ○ pending — 1.5.3 |
-| WhatsApp | yes | #2662 | ○ pending — 1.5.3 |
+| WhatsApp | yes | #2753 | ○ pending — 1.5.3 (rides Telegram's interface) |
 
 ## Structural prevention
 

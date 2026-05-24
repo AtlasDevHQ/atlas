@@ -46,6 +46,12 @@ export const APPROVAL_RULE_SURFACES = [
   "scheduler",
   "slack",
   "teams",
+  // #2748 — Telegram joined here in 1.5.3 Phase D. Discord / gchat /
+  // WhatsApp will follow as their slices land; landing per-platform vs.
+  // one big enum-bump keeps the PR scope honest. Mirrored in
+  // packages/api/src/lib/db/migrations/0094_approval_surface_telegram.sql
+  // and the matching schema.ts CHECK.
+  "telegram",
   "webhook",
 ] as const;
 export type ApprovalRuleSurface = (typeof APPROVAL_RULE_SURFACES)[number];

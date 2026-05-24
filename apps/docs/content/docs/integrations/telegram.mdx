@@ -1,0 +1,204 @@
+---
+title: Telegram
+description: Connect Atlas to a Telegram chat — group, channel, or 1:1 conversation. The operator wires a single shared bot from @BotFather; each workspace points the bot at one chat by id.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas's Telegram integration follows the **static-bot** install model:
+one operator-shared Telegram bot serves every workspace in your deploy,
+and each workspace admin tells Atlas which chat the bot should listen
+on by supplying that chat's numeric id. The bot itself authenticates
+once at deploy time; per-workspace routing is the only thing a customer
+admin configures.
+
+This is in contrast to Slack, where each workspace runs its own OAuth
+dance and gets its own bot token. Telegram's model is operator-shared
+because Telegram bots don't have a per-workspace install concept —
+adding the bot to a chat is the install.
+
+## Operator setup (one-time, per deploy)
+
+These steps wire your deploy to a Telegram bot. Self-hosted operators
+run them once during initial deployment; Atlas Cloud customers don't —
+the Atlas Cloud team has already done this on the hosted regions.
+
+### 1. Create a bot with @BotFather
+
+In Telegram, open a chat with [@BotFather](https://t.me/BotFather) and
+send `/newbot`. Follow the prompts to give the bot a display name and
+a username (the username must end in `bot`). BotFather replies with a
+**bot token** — a string that looks like `123456789:ABCdefGhIJKlmnOPQ…`.
+
+Treat the bot token as a secret. Anyone with the token can send and
+receive messages as your bot.
+
+### 2. Set the bot token env var
+
+Set `TELEGRAM_BOT_TOKEN` on every Atlas API service in your deploy.
+
+```bash
+TELEGRAM_BOT_TOKEN=123456789:ABCdefGhIJKlmnOPQ
+```
+
+Optionally also set `TELEGRAM_WEBHOOK_SECRET` to a random string. When
+present, Atlas verifies the `x-telegram-bot-api-secret-token` header
+on every incoming webhook, rejecting any request that doesn't match.
+You'll pass the same value to Telegram's `setWebhook` call in step 4.
+
+### 3. Enable the catalog row
+
+Atlas ships the Telegram catalog entry pre-declared in
+`deploy/api/atlas.config.ts`. If you've started from the deploy
+template, the row is already `enabled: true` — no change needed. For
+custom configs, mirror the shape:
+
+```ts
+{
+  slug: "telegram",
+  type: "chat",
+  install_model: "static-bot",
+  enabled: true,
+  saas_eligible: true,
+  // (configSchema omitted here — see atlas.config.ts for the full row)
+}
+```
+
+Once the env var is set and the catalog row is enabled, the boot log
+should include:
+
+```
+Registered TelegramStaticBotInstallHandler
+AdapterRegistry: chat adapter registered  { slug: 'telegram', platform: 'telegram' }
+```
+
+If either line is missing, see [troubleshooting](#troubleshooting) below.
+
+### 4. Register the webhook with Telegram
+
+Telegram delivers messages via webhook. Tell Telegram where to POST
+events by calling its `setWebhook` API once:
+
+```bash
+curl -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+  -d "url=https://api.your-atlas-deploy.example.com/api/plugins/chat-interaction/webhooks/telegram" \
+  -d "secret_token=${TELEGRAM_WEBHOOK_SECRET}"  # only if set in step 2
+```
+
+Verify with:
+
+```bash
+curl "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo"
+```
+
+The response should show `url` pointing at your Atlas API and
+`pending_update_count: 0`. If `last_error_message` is populated,
+Telegram couldn't reach your endpoint — check that the API host is
+publicly reachable and that the path matches above.
+
+## Customer install (per workspace)
+
+Once the operator has wired the bot, workspace admins can install
+Telegram from **Admin → Integrations**.
+
+### 1. Add the bot to your chat
+
+Before Atlas can listen on a chat, the bot has to be a member of it.
+
+- **Private chat (DM with one person):** open a chat with your bot's
+  username (e.g. `@MyAtlasBot`) and send `/start`.
+- **Group:** open the group, tap the group name → Add members → search
+  for the bot's username → Add. By default, Telegram restricts bot
+  visibility in groups — either grant the bot admin rights, or disable
+  privacy mode by sending `/setprivacy` to @BotFather and choosing
+  `Disable`.
+- **Channel:** open the channel, tap its name → Administrators → Add
+  Administrator → search for the bot. The bot needs at least the "Post
+  Messages" right; "Edit / Delete Messages" let it update the inline
+  card as the answer streams.
+
+### 2. Find the chat's numeric id
+
+Telegram chat ids are signed integers — positive for users, negative
+for groups, and start with `-100` for supergroups and channels. They
+aren't visible in the Telegram UI directly. The easiest ways to look
+one up:
+
+- **DM with the bot:** message the bot once, then visit
+  `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates` —
+  your user id is under `result[].message.from.id`.
+- **Group / channel:** add [@userinfobot](https://t.me/userinfobot)
+  to the chat, send any message, and it replies with the chat id.
+  Remove the bot afterwards.
+
+<Callout type="warn" title="Don't use @username">
+  Public Telegram aliases like `@my_channel` aren't accepted as a
+  chat id — the install will fail with `chat_id is not a valid
+  integer id`. Always use the numeric id (e.g. `-1001234567890`).
+</Callout>
+
+### 3. Submit the install form
+
+In **Admin → Integrations → Telegram**, paste the chat id into **Chat
+ID**. You can optionally add a **Display name** ("Team Standup",
+"#data-questions", etc.) — it's just a label rendered on the
+integration card and doesn't affect routing.
+
+When you click **Install**, Atlas immediately calls Telegram's `getChat`
+to confirm the chat exists and the bot is a member. If it succeeds, the
+install row is persisted and the card flips to "Installed". If it fails,
+Telegram's error description bubbles up verbatim — see the next section.
+
+## Troubleshooting
+
+### "Telegram rejected chat_id … chat not found"
+
+Atlas couldn't find a chat with that id. Common causes:
+
+- You pasted a `@username` or a URL instead of the numeric id. Use the
+  numeric id (see [step 2 above](#2-find-the-chats-numeric-id)).
+- The chat id includes a typo — group/channel ids start with `-100`
+  followed by 10+ digits; private chat ids are positive integers.
+- The chat was deleted, or the bot has been removed from a private
+  chat that was opened and then the conversation was deleted entirely.
+
+### "Telegram rejected chat_id … bot is not a member of the channel chat"
+
+The chat exists but the bot isn't in it. Add the bot as described in
+[step 1](#1-add-the-bot-to-your-chat) and retry. For channels, the bot
+must be an Administrator — being a regular subscriber isn't enough.
+
+### "Telegram Bot API unreachable"
+
+A network failure between Atlas and `api.telegram.org`. Check operator-
+side egress (firewall, region routing, DNS) and retry. Atlas does not
+retry automatically — install attempts are user-initiated and a transient
+failure surfaces back to the admin to retry.
+
+### "No static-bot install handler registered for catalog slug 'telegram'"
+
+The operator hasn't set `TELEGRAM_BOT_TOKEN`, or the env var is empty
+on the API process handling the install. The error message names the
+env var explicitly. Ops sets `TELEGRAM_BOT_TOKEN` per-service and
+restarts the API. On the next boot, log streams should include
+`Registered TelegramStaticBotInstallHandler` (info) — if not, double
+check the env value isn't empty / whitespace-only.
+
+### Webhook deliveries stop landing
+
+Atlas restarts can invalidate Telegram's webhook subscription if your
+deploy URL changes (e.g. a region rename). Re-run the `setWebhook`
+curl from [operator step 4](#4-register-the-webhook-with-telegram) any
+time the public API host changes, and call `getWebhookInfo` to confirm.
+
+## Disconnecting
+
+To disconnect a workspace from Telegram, open **Admin → Integrations
+→ Telegram** and click **Disconnect**. Atlas clears the
+`workspace_plugins` row via `WorkspaceInstaller.uninstall` — the bot
+stays in the chat (Atlas doesn't have permission to remove it), but
+incoming messages are no longer routed to the workspace.
+
+To remove the bot from the chat itself, do it through Telegram's UI:
+group members tap the bot's name and choose Remove; channel
+administrators do the same from the Administrators list.

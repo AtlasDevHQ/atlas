@@ -1052,7 +1052,7 @@ export const approvalRules = pgTable(
     check("chk_approval_rule_type", sql`rule_type IN ('table', 'column', 'cost')`),
     check(
       "chk_approval_rule_surface",
-      sql`surface IN ('any', 'chat', 'mcp', 'scheduler', 'slack', 'teams', 'webhook')`,
+      sql`surface IN ('any', 'chat', 'mcp', 'scheduler', 'slack', 'teams', 'telegram', 'webhook')`,
     ),
     index("idx_approval_rules_org").on(t.orgId),
     index("idx_approval_rules_org_enabled").on(t.orgId).where(sql`enabled = true`),
@@ -1096,7 +1096,7 @@ export const approvalQueue = pgTable(
     check("chk_approval_status", sql`status IN ('pending', 'approved', 'denied', 'expired')`),
     check(
       "chk_approval_request_surface",
-      sql`surface IS NULL OR surface IN ('chat', 'mcp', 'scheduler', 'slack', 'teams', 'webhook')`,
+      sql`surface IS NULL OR surface IN ('chat', 'mcp', 'scheduler', 'slack', 'teams', 'telegram', 'webhook')`,
     ),
     foreignKey({
       columns: [t.connectionGroupId, t.orgId],

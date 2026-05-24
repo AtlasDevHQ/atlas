@@ -1,18 +1,16 @@
 /**
- * Tests for `getInstallHandler` dispatch — slice 4 of #2649 (issue #2652).
+ * Tests for `getInstallHandler` dispatch — slice 4 of #2649 (issue #2652),
+ * updated in 1.5.3 #2748 (Telegram keystone) to swap the single static-bot
+ * stub for a per-slug registry parallel to oauth/form.
  *
- * Asserted invariants (per #2652 ACs):
+ * Asserted invariants:
  *
- *   - Each `install_model` value returns the correct handler shape
- *   - `static-bot` returns the stub
- *   - The stub's `confirmInstall` throws an actionable "not implemented
- *     until 1.5.3 — see milestone #51" error
+ *   - Each `install_model` value returns the correct handler shape via a
+ *     per-slug registry (oauth / form / static-bot all behave the same).
+ *   - Missing-handler throws an actionable error naming the slug + the
+ *     register helper to call (no silent dispatch into a no-op).
  *   - An unknown `install_model` value is a compile error at the
- *     dispatch switch (demonstrated via a `@ts-expect-error`)
- *
- * The dispatch shape is the load-bearing part of this slice: slice 5
- * (Slack) and #2660 (form-based) drop their handlers in by calling
- * `registerOAuthHandler` / `registerFormHandler` at module load.
+ *     dispatch switch (demonstrated via a `@ts-expect-error`).
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
@@ -21,14 +19,15 @@ import {
   getInstallHandler,
   registerFormHandler,
   registerOAuthHandler,
+  registerStaticBotHandler,
 } from "../dispatch";
 import type {
   CatalogRowForDispatch,
   FormBasedInstallHandler,
   InstallRecord,
   OAuthPlatformInstallHandler,
+  StaticBotInstallHandler,
 } from "../types";
-import { staticBotInstallHandlerStub } from "../static-bot-stub";
 import type { WorkspaceId } from "@useatlas/types";
 
 // ---------------------------------------------------------------------------
@@ -61,6 +60,16 @@ function makeFormHandler(slug: string): FormBasedInstallHandler {
     kind: "form",
     async validateConfig() {
       return { installRecord: record, credentialWritten: true };
+    },
+  };
+}
+
+function makeStaticBotHandler(slug: string): StaticBotInstallHandler {
+  const record: InstallRecord = { id: `install-${slug}`, workspaceId: wsid, catalogId: slug };
+  return {
+    kind: "static-bot",
+    async confirmInstall() {
+      return { installRecord: record };
     },
   };
 }
@@ -121,27 +130,48 @@ describe("getInstallHandler — install_model: 'form'", () => {
 });
 
 describe("getInstallHandler — install_model: 'static-bot'", () => {
-  it("always returns the operator-shared stub", () => {
+  it("returns the registered static-bot handler for a known slug", () => {
+    const handler = makeStaticBotHandler("telegram");
+    registerStaticBotHandler("telegram", handler);
+
     const row: CatalogRowForDispatch = { slug: "telegram", install_model: "static-bot" };
-    expect(getInstallHandler(row)).toBe(staticBotInstallHandlerStub);
+    const resolved = getInstallHandler(row);
+    expect(resolved.kind).toBe("static-bot");
+    expect(resolved).toBe(handler);
   });
 
-  it("returns the same stub regardless of slug — bot is operator-shared", () => {
-    const tg: CatalogRowForDispatch = { slug: "telegram", install_model: "static-bot" };
-    const discord: CatalogRowForDispatch = { slug: "discord", install_model: "static-bot" };
-    expect(getInstallHandler(tg)).toBe(getInstallHandler(discord));
-  });
-});
+  it("dispatches per-slug — telegram and discord are independent slots", () => {
+    const tg = makeStaticBotHandler("telegram");
+    const discord = makeStaticBotHandler("discord");
+    registerStaticBotHandler("telegram", tg);
+    registerStaticBotHandler("discord", discord);
 
-describe("StaticBotInstallHandler stub", () => {
-  it("throws the actionable 1.5.3 deferral when confirmInstall is called", async () => {
-    await expect(
-      staticBotInstallHandlerStub.confirmInstall(wsid, "guild-123"),
-    ).rejects.toThrow(/not implemented until 1\.5\.3.*milestone #51/);
+    expect(
+      getInstallHandler({ slug: "telegram", install_model: "static-bot" }),
+    ).toBe(tg);
+    expect(
+      getInstallHandler({ slug: "discord", install_model: "static-bot" }),
+    ).toBe(discord);
   });
 
-  it("identifies itself with kind: 'static-bot' for narrowing", () => {
-    expect(staticBotInstallHandlerStub.kind).toBe("static-bot");
+  it("throws an actionable error when no static-bot handler is registered for the slug", () => {
+    const row: CatalogRowForDispatch = { slug: "telegram", install_model: "static-bot" };
+    expect(() => getInstallHandler(row)).toThrow(
+      /No static-bot install handler registered for catalog slug "telegram"/,
+    );
+    // The error message names the env-gate guidance so operators don't
+    // have to grep the codebase to discover why a catalog row went dark.
+    expect(() => getInstallHandler(row)).toThrow(/TELEGRAM_BOT_TOKEN/);
+  });
+
+  it("treats re-registration as overwrite (test ergonomics)", () => {
+    registerStaticBotHandler("telegram", makeStaticBotHandler("telegram-v1"));
+    const replacement = makeStaticBotHandler("telegram-v2");
+    registerStaticBotHandler("telegram", replacement);
+
+    expect(
+      getInstallHandler({ slug: "telegram", install_model: "static-bot" }),
+    ).toBe(replacement);
   });
 });
 

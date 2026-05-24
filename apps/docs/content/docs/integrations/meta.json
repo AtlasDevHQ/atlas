@@ -1,10 +1,11 @@
 {
   "title": "Integrations",
-  "description": "External provider integrations — LLM BYOT setup, sub-processor feeds, webhooks",
+  "description": "External provider integrations — LLM BYOT setup, chat platforms, sub-processor feeds, webhooks",
   "icon": "Plug",
   "pages": [
     "admin-console",
     "llm-providers",
+    "telegram",
     "sub-processor-feed"
   ]
 }

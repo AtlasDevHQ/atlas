@@ -192,6 +192,13 @@ export type InstallInput =
       readonly kind: "static-bot";
       readonly routingIdentifier: string;
       readonly verificationProof?: string;
+      /**
+       * Optional extra config fields beyond the routing identifier.
+       * Maps to the per-Platform `config_schema` declared in the catalog
+       * row (e.g. Telegram's `display_name`). The handler interprets
+       * the shape; the facade just forwards.
+       */
+      readonly extras?: Record<string, unknown>;
     };
 
 export type InstallResult =
@@ -713,6 +720,7 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
                 workspaceId,
                 input.routingIdentifier,
                 input.verificationProof,
+                input.extras,
               ),
             catch: (err) => (err instanceof Error ? err : new Error(String(err))),
           }).pipe(Effect.catchAll((err) => Effect.die(err)));

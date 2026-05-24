@@ -2137,6 +2137,94 @@ describe("sendDirectMessage contract", () => {
 // which feed a synthetic Slack `app_mention` payload through the same
 // executeQuery callback and assert it sees `rawMessage.team_id`.
 
+// ---------------------------------------------------------------------------
+// Webhook route mounting (1.5.3 #2748 — Telegram keystone)
+// ---------------------------------------------------------------------------
+
+describe("chatPlugin webhook routes", () => {
+  const TELEGRAM_CATALOG: ReadonlyArray<ChatCatalogEntryInput> = [
+    {
+      slug: "telegram",
+      type: "chat",
+      install_model: "static-bot",
+      enabled: true,
+      saas_eligible: true,
+    },
+  ];
+
+  function withTelegramEnv(): void {
+    const snapshot = { TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN };
+    beforeEach(() => {
+      process.env.TELEGRAM_BOT_TOKEN = "987654:fake-telegram-token-for-bridge-test";
+    });
+    afterEach(() => {
+      if (snapshot.TELEGRAM_BOT_TOKEN === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+      else process.env.TELEGRAM_BOT_TOKEN = snapshot.TELEGRAM_BOT_TOKEN;
+    });
+  }
+
+  withTelegramEnv();
+
+  /** Build a minimal Hono app + mount the plugin's routes onto it. */
+  async function mountPlugin(catalog: ReadonlyArray<ChatCatalogEntryInput>) {
+    const { Hono } = await import("hono");
+    const { buildChatPlugin } = await import("./index");
+    const plugin = buildChatPlugin({
+      catalog,
+      executeQuery: async () => ({
+        answer: "n/a",
+        sql: [],
+        data: [],
+        steps: 0,
+        usage: { totalTokens: 0 },
+      }),
+    });
+    const app = new Hono();
+    plugin.routes?.(app);
+    return { app, plugin };
+  }
+
+  it("does NOT mount /webhooks/telegram when the catalog omits telegram", async () => {
+    const { app } = await mountPlugin([]);
+    const resp = await app.request("/webhooks/telegram", { method: "POST" });
+    // Hono's default 404 — the route wasn't registered.
+    expect(resp.status).toBe(404);
+  });
+
+  it("mounts /webhooks/telegram when the catalog declares telegram static-bot enabled, returns 503 pre-initialize", async () => {
+    const { app } = await mountPlugin(TELEGRAM_CATALOG);
+    const resp = await app.request("/webhooks/telegram", { method: "POST", body: "{}" });
+    expect(resp.status).toBe(503);
+    const body = (await resp.json()) as { error: string };
+    expect(body.error).toContain("not yet initialized");
+  });
+
+  it("returns 404 with a requestId when the bridge is initialized but the telegram adapter wasn't wired", async () => {
+    // Pretend the catalog declared telegram but the env was unset so
+    // the AdapterRegistry didn't instantiate the adapter. Drop the env
+    // here to exercise the runtime 404 branch.
+    delete process.env.TELEGRAM_BOT_TOKEN;
+    const { app, plugin } = await mountPlugin(TELEGRAM_CATALOG);
+    await plugin.initialize!({
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      config: {},
+    });
+    try {
+      const resp = await app.request("/webhooks/telegram", { method: "POST", body: "{}" });
+      expect(resp.status).toBe(404);
+      const body = (await resp.json()) as { error: string; requestId?: string };
+      expect(body.error).toContain("Telegram adapter not configured");
+      expect(typeof body.requestId).toBe("string");
+      expect(body.requestId!.length).toBeGreaterThan(0);
+    } finally {
+      await plugin.teardown!();
+    }
+  });
+});
+
 describe("executeQuery context contract", () => {
   it("ChatExecuteQueryContext exposes the fields the host needs", () => {
     // Compile-time assertion: a context object missing either `adapter`

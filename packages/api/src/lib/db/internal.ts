@@ -923,66 +923,139 @@ export async function migrateInternalDB(): Promise<void> {
 // seedPromptLibrary moved to migrate.ts → runSeeds() (#978)
 
 /**
- * Load admin-managed connections from the internal DB and register them
- * in the ConnectionRegistry. Idempotent — safe to call at startup.
- * Silently skips if no internal DB or the connections table doesn't exist yet.
+ * Load admin-managed datasource installs from `workspace_plugins` and
+ * register them in the ConnectionRegistry. Idempotent — safe to call at
+ * startup. Silently skips if no internal DB or `workspace_plugins`
+ * doesn't exist yet.
  *
- * With composite PK (id, org_id), multiple orgs can share the same connection
- * ID (e.g. "default"). DISTINCT ON (id) deduplicates so each base connection
- * ID is registered once — org-specific pools are created lazily by getForOrg().
+ * 0094 / #2744 — post-cutover this reads from
+ * `workspace_plugins WHERE pillar = 'datasource'` instead of the dropped
+ * `connections` table. Per ADR-0007 the URL lives inside `config` JSONB
+ * with selective-field encryption; `decryptSecretFields` (keyed off the
+ * catalog row's `config_schema`) unwraps it. `DatasourcePoolResolver`
+ * translates the resulting (row, decrypted config) pair into the typed
+ * `DatasourcePoolConfig` we hand to `ConnectionRegistry.register`.
+ *
+ * Multi-tenant note: today's pre-cutover registry has a long-standing
+ * bug where two workspaces sharing an `install_id` (e.g. both naming
+ * their warehouse `warehouse`) collapse onto a single base URL via
+ * `DISTINCT ON (id)`. The cleanest fix is per-(workspace, install_id)
+ * registration, but that's a deeper ConnectionRegistry refactor than
+ * this slice carries — slice 6 preserves today's behaviour (`DISTINCT
+ * ON (install_id)` picks the most-recently-installed row) and a
+ * follow-up issue (track #2744) lifts the bug. The `default`
+ * connection (auto-initialised from `ATLAS_DATASOURCE_URL`) continues
+ * to be runtime-only and is NOT touched here.
  */
 export async function loadSavedConnections(): Promise<number> {
   if (!hasInternalDB()) return 0;
 
-  // Lazy-import to avoid circular dependency at module level
+  // Lazy-imports to avoid circular dependency at module level + keep
+  // the static graph here narrow (admin-route tests partial-mock this
+  // module heavily and would otherwise need to declare extra no-op
+  // exports).
   const { connections } = await import("@atlas/api/lib/db/connection");
+  const { resolveDatasourcePoolConfig, BUILTIN_DATASOURCE_CATALOG_SLUGS } =
+    await import("@atlas/api/lib/db/datasource-pool-resolver");
+  const { decryptSecretFields, parseConfigSchema } =
+    await import("@atlas/api/lib/plugins/secrets");
 
   try {
-    type ConnRow = { id: string; url: string; type: string; description: string | null; schema_name: string | null };
-    // Exclude `status = 'archived'` so per-org tombstone rows (the shadow
-    // rows from the delete-as-hide flow in admin-connections.ts) never feed
-    // their empty-string `url` marker to `decryptSecret`. Without this filter
-    // a tombstone's newer `updated_at` would win the DISTINCT ON (id) race
-    // and silently knock the canonical global row out of the in-memory
-    // registry across every workspace on the next process restart.
-    const rows = await internalQuery<ConnRow>(
-      `SELECT DISTINCT ON (id) id, url, type, description, schema_name
-       FROM connections
-       WHERE status != 'archived'
-       ORDER BY id, updated_at DESC, org_id ASC`,
+    type WpRow = {
+      install_id: string;
+      catalog_slug: string;
+      config: Record<string, unknown> | null;
+      config_schema: unknown;
+    };
+    // Exclude `status = 'archived'` so per-workspace demo-hide rows
+    // (the post-cutover equivalent of the legacy archive tombstone)
+    // never feed their decrypted URL to the registry. `DISTINCT ON
+    // (install_id)` preserves today's pre-cutover behaviour where two
+    // workspaces sharing an install_id collapse onto the most-recently-
+    // installed row's URL — see the multi-tenant note above.
+    const rows = await internalQuery<WpRow>(
+      `SELECT DISTINCT ON (wp.install_id)
+              wp.install_id,
+              pc.slug AS catalog_slug,
+              wp.config,
+              pc.config_schema
+         FROM workspace_plugins wp
+         JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+        WHERE wp.pillar = 'datasource'
+          AND wp.status != 'archived'
+          AND pc.slug = ANY($1::text[])
+        ORDER BY wp.install_id, wp.installed_at DESC, wp.workspace_id ASC`,
+      [BUILTIN_DATASOURCE_CATALOG_SLUGS as readonly string[]],
     );
 
     let registered = 0;
     for (const row of rows) {
-      if (connections.has(row.id)) {
-        log.debug({ connectionId: row.id }, "Skipping already-registered connection — org-scoped pools resolve via getForOrg()");
+      if (connections.has(row.install_id)) {
+        log.debug(
+          { installId: row.install_id },
+          "Skipping already-registered install — org-scoped pools resolve via getForOrg()",
+        );
         continue;
       }
       try {
-        const url = decryptSecret(row.url);
-        connections.register(row.id, {
-          url,
-          description: row.description ?? undefined,
-          schema: row.schema_name ?? undefined,
+        const schema = parseConfigSchema(row.config_schema);
+        const decryptedConfig = decryptSecretFields(row.config ?? {}, schema);
+        const poolConfig = resolveDatasourcePoolConfig(
+          {
+            workspaceId: "",
+            catalogId: "",
+            installId: row.install_id,
+            pillar: "datasource",
+            catalogSlug: row.catalog_slug,
+          },
+          decryptedConfig,
+        );
+
+        // The native Postgres + MySQL adapters live in `connection.ts`;
+        // every other dbType (clickhouse / snowflake / bigquery / duckdb /
+        // salesforce) is plugin-managed and registered via
+        // `registerDirect` from the plugin's own boot path — skip them
+        // here so the ConnectionRegistry's native-adapter create path
+        // doesn't reject an unsupported scheme.
+        if (poolConfig.dbType !== "postgres" && poolConfig.dbType !== "mysql") {
+          log.debug(
+            { installId: row.install_id, dbType: poolConfig.dbType, catalogSlug: row.catalog_slug },
+            "Skipping non-native datasource install — plugin owns registration",
+          );
+          continue;
+        }
+
+        connections.register(row.install_id, {
+          url: poolConfig.url,
+          description: poolConfig.description,
+          ...(poolConfig.dbType === "postgres" && poolConfig.schema
+            ? { schema: poolConfig.schema }
+            : {}),
         });
         registered++;
       } catch (err) {
         log.warn(
-          { connectionId: row.id, err: err instanceof Error ? err.message : String(err) },
-          "Failed to register saved connection — skipping",
+          {
+            installId: row.install_id,
+            catalogSlug: row.catalog_slug,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "Failed to register saved datasource install — skipping",
         );
       }
     }
 
     if (registered > 0) {
-      log.info({ count: registered }, "Loaded saved connections from internal DB");
+      log.info({ count: registered }, "Loaded datasource installs from workspace_plugins");
     }
     return registered;
   } catch (err) {
-    // Table may not exist yet (pre-migration) — that's expected on first boot
+    // Pre-migration: workspace_plugins.status column doesn't exist (or
+    // workspace_plugins itself doesn't). Same `expected on first boot`
+    // posture as the pre-cutover code path.
     log.warn(
       { err: err instanceof Error ? err.message : String(err) },
-      "Could not load saved connections (table may not exist yet)",
+      "Could not load datasource installs (workspace_plugins may not exist yet)",
     );
     return 0;
   }

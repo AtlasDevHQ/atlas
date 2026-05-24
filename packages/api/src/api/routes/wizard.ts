@@ -903,16 +903,17 @@ async function resolveConnectionUrl(
       // The describe() method masks the URL, so we need the raw URL for profiling.
       // Check internal DB first (it has the encrypted URL).
       if (hasInternalDB()) {
-        // Exclude `status = 'archived'` so per-org tombstone rows (the
-        // shadow rows inserted by the delete-as-hide flow in
-        // admin-connections.ts) never reach `decryptSecret`. Their `url` is
-        // the empty-string marker and `decryptSecret('')` throws an
-        // unrecognized-format error. Status filter is the cheapest way to
-        // keep the tombstone invariant local to the visibility layer.
+        // Post-0096 cutover (#2744 / ADR-0007): datasource installs live
+        // in workspace_plugins; url + schema_name are JSONB keys in
+        // config. The two encryption modules produce identical
+        // AES-256-GCM `enc:v<N>:...` ciphertext, so `decryptSecret`
+        // unwraps the JSONB url field byte-for-byte. The `status !=
+        // 'archived'` filter preserves the per-workspace hide semantics.
         const rows = await internalQuery<{ url: string; schema_name: string | null }>(
-          `SELECT url, schema_name FROM connections
-           WHERE id = $1 AND status != 'archived' AND (org_id = $2 OR org_id = '__global__')
-           ORDER BY CASE WHEN org_id = $2 THEN 0 ELSE 1 END LIMIT 1`,
+          `SELECT config->>'url' AS url, config->>'schema' AS schema_name FROM workspace_plugins
+           WHERE install_id = $1 AND pillar = 'datasource'
+             AND status != 'archived' AND (workspace_id = $2 OR workspace_id = '__global__')
+           ORDER BY CASE WHEN workspace_id = $2 THEN 0 ELSE 1 END LIMIT 1`,
           [connectionId, orgId ?? "__global__"],
         );
         if (rows.length > 0) {
@@ -941,17 +942,20 @@ async function resolveConnectionUrl(
     }
   }
 
-  // Second try: internal DB only (connection not in runtime registry).
-  // Excludes archived rows so per-org delete-as-hide tombstones (whose
-  // `url = ''` placeholder would crash `decryptSecret` below) read as
-  // not-found here, mirroring the first-try filter at L907.
+  // Second try: internal DB only (install not in runtime registry).
+  // Excludes archived rows so per-workspace hide tombstones read as
+  // not-found here, mirroring the first-try filter above. Post-0096
+  // cutover (#2744 / ADR-0007) — pivoted to workspace_plugins.
   if (hasInternalDB()) {
-    const orgFilter = orgId ? " AND (org_id = $2 OR org_id = '__global__') ORDER BY CASE WHEN org_id = $2 THEN 0 ELSE 1 END LIMIT 1" : "";
+    const orgFilter = orgId
+      ? " AND (workspace_id = $2 OR workspace_id = '__global__') ORDER BY CASE WHEN workspace_id = $2 THEN 0 ELSE 1 END LIMIT 1"
+      : "";
     const params: unknown[] = [connectionId];
     if (orgId) params.push(orgId);
 
     const rows = await internalQuery<{ url: string; schema_name: string | null }>(
-      `SELECT url, schema_name FROM connections WHERE id = $1 AND status != 'archived'${orgFilter}`,
+      `SELECT config->>'url' AS url, config->>'schema' AS schema_name FROM workspace_plugins
+        WHERE install_id = $1 AND pillar = 'datasource' AND status != 'archived'${orgFilter}`,
       params,
     );
     if (rows.length > 0) {

@@ -104,10 +104,14 @@ export async function listConnectionGroupMembers(
   orgId: string,
 ): Promise<ReadonlyArray<{ group_id: string; id: string }>> {
   if (!hasInternalDB()) return [];
+  // Post-0096 cutover (#2744 / ADR-0007): groups live as JSONB strings
+  // in `workspace_plugins.config.group_id`; installs are identified by
+  // `install_id`.
   const rows = await internalQuery<{ group_id: string | null; id: string }>(
-    `SELECT group_id, id FROM connections
-     WHERE (org_id = $1 OR org_id = '__global__')
-       AND group_id IS NOT NULL`,
+    `SELECT config->>'group_id' AS group_id, install_id AS id FROM workspace_plugins
+     WHERE (workspace_id = $1 OR workspace_id = '__global__')
+       AND pillar = 'datasource'
+       AND config->>'group_id' IS NOT NULL`,
     [orgId],
   );
   return rows
@@ -136,19 +140,17 @@ async function resolveGroupIdForConnection(
 ): Promise<string | null> {
   if (!connectionId) return null;
   if (!hasInternalDB()) return null;
+  // Post-0096 cutover (#2744 / ADR-0007): the install's group_id lives
+  // in `workspace_plugins.config->>'group_id'`. The pre-cutover
+  // `connection_groups WHERE id = 'g_' || $1` fallback was a backfill-era
+  // singleton-group convention that's gone post pure-collapse.
   const rows = await internalQuery<{ group_id: string | null }>(
-    `SELECT group_id
-       FROM (
-         SELECT group_id, CASE WHEN org_id = $2 THEN 0 ELSE 1 END AS priority
-           FROM connections
-          WHERE id = $1 AND (org_id = $2 OR org_id = '__global__')
-         UNION ALL
-         SELECT id AS group_id, CASE WHEN org_id = $2 THEN 2 ELSE 3 END AS priority
-           FROM connection_groups
-          WHERE id = 'g_' || $1 AND (org_id = $2 OR org_id = '__global__')
-       ) scoped_groups
-      WHERE group_id IS NOT NULL
-      ORDER BY priority
+    `SELECT config->>'group_id' AS group_id
+       FROM workspace_plugins
+      WHERE install_id = $1
+        AND pillar = 'datasource'
+        AND (workspace_id = $2 OR workspace_id = '__global__')
+      ORDER BY CASE WHEN workspace_id = $2 THEN 0 ELSE 1 END
       LIMIT 1`,
     [connectionId, orgId],
   );
@@ -173,21 +175,18 @@ async function resolveGroupIdForConnection(
  * legacy NULL-scope semantics.
  */
 function inlineConnectionGroupSql(connParam: string, orgParam: string): string {
+  // Post-0096 cutover (#2744 / ADR-0007): the install's group_id lives
+  // in `workspace_plugins.config->>'group_id'`. The pre-cutover
+  // singleton-group fallback (`connection_groups.id = 'g_' || conn_id`)
+  // is gone post pure-collapse — own-workspace beats __global__ via the
+  // ORDER BY priority.
   return `(
-    SELECT group_id
-      FROM (
-        SELECT group_id, CASE WHEN org_id = ${orgParam} THEN 0 ELSE 1 END AS priority
-          FROM connections
-         WHERE id = ${connParam}
-           AND (org_id = ${orgParam} OR org_id = '__global__')
-        UNION ALL
-        SELECT id AS group_id, CASE WHEN org_id = ${orgParam} THEN 2 ELSE 3 END AS priority
-          FROM connection_groups
-         WHERE id = 'g_' || ${connParam}
-           AND (org_id = ${orgParam} OR org_id = '__global__')
-      ) scoped_groups
-     WHERE group_id IS NOT NULL
-     ORDER BY priority
+    SELECT config->>'group_id' AS group_id
+      FROM workspace_plugins
+     WHERE install_id = ${connParam}
+       AND pillar = 'datasource'
+       AND (workspace_id = ${orgParam} OR workspace_id = '__global__')
+     ORDER BY CASE WHEN workspace_id = ${orgParam} THEN 0 ELSE 1 END
      LIMIT 1
   )`;
 }
@@ -388,18 +387,28 @@ export async function listEntityRows(
   // Other call sites (admin reads at status='draft', count queries) keep
   // the simpler org-scoped query — they intentionally see archive/draft
   // state.
+  // Post-0096 cutover (#2744 / ADR-0007): connections live in
+  // workspace_plugins (pillar='datasource'), group_id is JSONB.
+  // OWN_OR_GLOBAL shadow rule preserved — install_id is the new key.
   const visibilityClause = statusFilter === "published"
     ? `AND (org_id = $1 OR org_id = '__global__')
        AND (
          connection_group_id IS NULL
          OR connection_group_id IN (
-           SELECT group_id FROM connections WHERE org_id = $1 AND status = 'published'
+           SELECT config->>'group_id' FROM workspace_plugins
+            WHERE workspace_id = $1 AND pillar = 'datasource' AND status = 'published'
+              AND config->>'group_id' IS NOT NULL
          )
          OR connection_group_id IN (
-           SELECT group_id FROM connections
-           WHERE org_id = '__global__'
-             AND status = 'published'
-             AND id NOT IN (SELECT id FROM connections WHERE org_id = $1)
+           SELECT config->>'group_id' FROM workspace_plugins
+            WHERE workspace_id = '__global__'
+              AND pillar = 'datasource'
+              AND status = 'published'
+              AND config->>'group_id' IS NOT NULL
+              AND install_id NOT IN (
+                SELECT install_id FROM workspace_plugins
+                 WHERE workspace_id = $1 AND pillar = 'datasource'
+              )
          )
        )`
     : "";
@@ -643,16 +652,27 @@ export async function listEntitiesWithOverlay(
   // Phrased without UNION / NOT EXISTS so pg-mem's overlay-queries
   // integration suite can execute it; logically equivalent to the
   // shadow-check pattern in `getVisibleConnectionIds`.
+  // Post-0096 cutover (#2744 / ADR-0007): same OWN_OR_GLOBAL shadow
+  // rule, pivoted to workspace_plugins (pillar='datasource') with
+  // group_id in JSONB.
   const connectionVisibilitySql = `
     connection_group_id IS NULL
     OR connection_group_id IN (
-      SELECT group_id FROM connections WHERE org_id = $1 AND status IN ('published', 'draft')
+      SELECT config->>'group_id' FROM workspace_plugins
+       WHERE workspace_id = $1 AND pillar = 'datasource'
+         AND status IN ('published', 'draft')
+         AND config->>'group_id' IS NOT NULL
     )
     OR connection_group_id IN (
-      SELECT group_id FROM connections
-      WHERE org_id = '__global__'
-        AND status IN ('published', 'draft')
-        AND id NOT IN (SELECT id FROM connections WHERE org_id = $1)
+      SELECT config->>'group_id' FROM workspace_plugins
+       WHERE workspace_id = '__global__'
+         AND pillar = 'datasource'
+         AND status IN ('published', 'draft')
+         AND config->>'group_id' IS NOT NULL
+         AND install_id NOT IN (
+           SELECT install_id FROM workspace_plugins
+            WHERE workspace_id = $1 AND pillar = 'datasource'
+         )
     )
   `;
 

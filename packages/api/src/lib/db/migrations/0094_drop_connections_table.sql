@@ -174,12 +174,14 @@ WHERE NOT (c.org_id = '__global__' AND c.id = '__demo__')
 ON CONFLICT (workspace_id, catalog_id, install_id) DO NOTHING;
 
 -- Fail-loud guard: every non-special connection row must have produced
--- a `workspace_plugins` row. If the JOIN dropped a row because
--- `connections.type` doesn't map to a known catalog slug, surface it
--- now rather than silently losing data.
+-- a `workspace_plugins` row AND landed on the catalog matching its
+-- `type` (`__demo__` → `demo-postgres`). The slug-match assertion
+-- catches a future drift where two catalogs claim the same slug or
+-- the JOIN matches the wrong row.
 DO $$
 DECLARE
   orphan_count INTEGER;
+  mismatch_count INTEGER;
 BEGIN
   SELECT COUNT(*) INTO orphan_count
     FROM connections c
@@ -194,6 +196,18 @@ BEGIN
     RAISE EXCEPTION
       'connections-to-workspace_plugins backfill incomplete: % rows did not migrate (unknown connections.type / missing catalog slug)',
       orphan_count;
+  END IF;
+
+  SELECT COUNT(*) INTO mismatch_count
+    FROM connections c
+    JOIN workspace_plugins wp ON wp.workspace_id = c.org_id AND wp.install_id = c.id AND wp.pillar = 'datasource'
+    JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+   WHERE NOT (c.org_id = '__global__' AND c.id = '__demo__')
+     AND pc.slug != CASE WHEN c.id = '__demo__' THEN 'demo-postgres' ELSE c.type END;
+  IF mismatch_count > 0 THEN
+    RAISE EXCEPTION
+      'connections-to-workspace_plugins catalog mismatch: % rows landed on the wrong catalog row',
+      mismatch_count;
   END IF;
 END $$;
 
@@ -212,6 +226,44 @@ END $$;
 -- that already migrated their own `__demo__` row in step 2 (because a
 -- per-org override existed) keep that override; this step's NOT EXISTS
 -- + ON CONFLICT keeps the operation idempotent.
+
+-- Pre-flight guards for step 3:
+--   • Demo URL must be present and unique. NULL would drop the `url`
+--     key via jsonb_strip_nulls and silently produce config-less
+--     demo installs; duplicates would mean LIMIT 1 picks arbitrarily.
+--   • No workspace already owns a `demo-postgres` install under a
+--     different install_id. Step 3 inserts with install_id='__demo__';
+--     a workspace that already has demo-postgres elsewhere would end
+--     up with two demo installs differing only by install_id.
+DO $$
+DECLARE
+  demo_url_count INTEGER;
+  conflicting_demo_count INTEGER;
+BEGIN
+  SELECT COUNT(*) INTO demo_url_count
+    FROM connections WHERE id = '__demo__' AND org_id = '__global__';
+  IF demo_url_count = 0 THEN
+    RAISE EXCEPTION
+      'connections (__demo__, __global__) row not found — cannot backfill per-workspace demo installs. Seed the global demo before running this migration.';
+  END IF;
+  IF demo_url_count > 1 THEN
+    RAISE EXCEPTION
+      'connections (__demo__, __global__) returned % rows — expected exactly 1. Resolve the duplicate before running this migration.',
+      demo_url_count;
+  END IF;
+
+  SELECT COUNT(*) INTO conflicting_demo_count
+    FROM workspace_plugins wp
+    JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+   WHERE wp.pillar = 'datasource'
+     AND pc.slug = 'demo-postgres'
+     AND wp.install_id != '__demo__';
+  IF conflicting_demo_count > 0 THEN
+    RAISE EXCEPTION
+      'Found % workspace_plugins row(s) of catalog demo-postgres with install_id != ''__demo__''. Step 3 would create duplicate demo installs — resolve manually before running.',
+      conflicting_demo_count;
+  END IF;
+END $$;
 
 INSERT INTO workspace_plugins
   (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at, status)
@@ -239,6 +291,45 @@ WHERE NOT EXISTS (
      AND wp.pillar = 'datasource'
 )
 ON CONFLICT (workspace_id, catalog_id, install_id) DO NOTHING;
+
+-- Post-flight guard: every organization must now own exactly one
+-- demo-postgres install. Catches the case where the `WHERE NOT EXISTS`
+-- + `ON CONFLICT` combination silently dropped a row.
+DO $$
+DECLARE
+  missing_demo_count INTEGER;
+  excess_demo_count INTEGER;
+BEGIN
+  SELECT COUNT(*) INTO missing_demo_count
+    FROM organization o
+   WHERE NOT EXISTS (
+     SELECT 1 FROM workspace_plugins wp
+      JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+     WHERE wp.workspace_id = o.id
+       AND wp.pillar = 'datasource'
+       AND pc.slug = 'demo-postgres'
+   );
+  IF missing_demo_count > 0 THEN
+    RAISE EXCEPTION
+      'Demo backfill incomplete: % organization(s) have no demo-postgres install',
+      missing_demo_count;
+  END IF;
+
+  SELECT COUNT(*) INTO excess_demo_count
+    FROM (
+      SELECT wp.workspace_id, COUNT(*) AS n
+        FROM workspace_plugins wp
+        JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+       WHERE wp.pillar = 'datasource' AND pc.slug = 'demo-postgres'
+       GROUP BY wp.workspace_id
+      HAVING COUNT(*) > 1
+    ) dup;
+  IF excess_demo_count > 0 THEN
+    RAISE EXCEPTION
+      'Found % organization(s) with more than one demo-postgres install — resolve manually',
+      excess_demo_count;
+  END IF;
+END $$;
 
 -- ---------------------------------------------------------------------------
 -- 4. Drop FK constraints

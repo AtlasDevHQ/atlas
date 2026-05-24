@@ -859,6 +859,10 @@ export const MANAGED_AUTH_MIGRATIONS = [
   // Adds is_operator_workspace column to Better Auth's "organization"
   // table (#2702).
   "0090_organization_is_operator_workspace.sql",
+  // Reads Better Auth's "organization" table to backfill a
+  // per-workspace `demo-postgres` install row during the 1.5.3 cutover.
+  // (#2744 / ADR-0007.)
+  "0094_drop_connections_table.sql",
 ];
 
 /**
@@ -938,12 +942,13 @@ export async function migrateInternalDB(): Promise<void> {
  *
  * Multi-tenant note: today's pre-cutover registry has a long-standing
  * bug where two workspaces sharing an `install_id` (e.g. both naming
- * their warehouse `warehouse`) collapse onto a single base URL via
+ * their warehouse `warehouse`, or both auto-owning the demo at
+ * `install_id='__demo__'`) collapse onto a single base URL via
  * `DISTINCT ON (id)`. The cleanest fix is per-(workspace, install_id)
  * registration, but that's a deeper ConnectionRegistry refactor than
  * this slice carries — slice 6 preserves today's behaviour (`DISTINCT
- * ON (install_id)` picks the most-recently-installed row) and a
- * follow-up issue (track #2744) lifts the bug. The `default`
+ * ON (install_id)` picks the most-recently-installed row) and #2783
+ * tracks the per-(workspace, install_id) refactor. The `default`
  * connection (auto-initialised from `ATLAS_DATASOURCE_URL`) continues
  * to be runtime-only and is NOT touched here.
  */
@@ -962,19 +967,20 @@ export async function loadSavedConnections(): Promise<number> {
 
   try {
     type WpRow = {
+      workspace_id: string;
       install_id: string;
       catalog_slug: string;
       config: Record<string, unknown> | null;
       config_schema: unknown;
     };
     // Exclude `status = 'archived'` so per-workspace demo-hide rows
-    // (the post-cutover equivalent of the legacy archive tombstone)
     // never feed their decrypted URL to the registry. `DISTINCT ON
     // (install_id)` preserves today's pre-cutover behaviour where two
     // workspaces sharing an install_id collapse onto the most-recently-
     // installed row's URL — see the multi-tenant note above.
     const rows = await internalQuery<WpRow>(
       `SELECT DISTINCT ON (wp.install_id)
+              wp.workspace_id,
               wp.install_id,
               pc.slug AS catalog_slug,
               wp.config,
@@ -997,12 +1003,18 @@ export async function loadSavedConnections(): Promise<number> {
         );
         continue;
       }
+      // `stage` lets log alerting differentiate between schema-parse,
+      // decrypt, resolve, and register failures without parsing the
+      // error message.
+      let stage: "parse" | "decrypt" | "resolve" | "register" = "parse";
       try {
         const schema = parseConfigSchema(row.config_schema);
+        stage = "decrypt";
         const decryptedConfig = decryptSecretFields(row.config ?? {}, schema);
+        stage = "resolve";
         const poolConfig = resolveDatasourcePoolConfig(
           {
-            workspaceId: "",
+            workspaceId: row.workspace_id,
             catalogId: "",
             installId: row.install_id,
             pillar: "datasource",
@@ -1025,6 +1037,7 @@ export async function loadSavedConnections(): Promise<number> {
           continue;
         }
 
+        stage = "register";
         connections.register(row.install_id, {
           url: poolConfig.url,
           description: poolConfig.description,
@@ -1036,6 +1049,8 @@ export async function loadSavedConnections(): Promise<number> {
       } catch (err) {
         log.warn(
           {
+            stage,
+            workspaceId: row.workspace_id,
             installId: row.install_id,
             catalogSlug: row.catalog_slug,
             err: err instanceof Error ? err.message : String(err),
@@ -1050,15 +1065,36 @@ export async function loadSavedConnections(): Promise<number> {
     }
     return registered;
   } catch (err) {
-    // Pre-migration: workspace_plugins.status column doesn't exist (or
-    // workspace_plugins itself doesn't). Same `expected on first boot`
-    // posture as the pre-cutover code path.
-    log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Could not load datasource installs (workspace_plugins may not exist yet)",
+    // Distinguish "table missing" (Postgres SQLSTATE 42P01 —
+    // `undefined_table`, expected on pre-migration first boot) from
+    // every other failure (connectivity loss, permissions change,
+    // dynamic-import failure, syntactic regression). The pre-cutover
+    // code swallowed everything as "first boot"; post-cutover that's
+    // misleading — `workspace_plugins` always exists in any working
+    // deploy, so a thrown error is real signal.
+    const sqlstate = isPgError(err) ? err.code : undefined;
+    if (sqlstate === "42P01") {
+      log.warn(
+        { sqlstate, err: err instanceof Error ? err.message : String(err) },
+        "workspace_plugins / plugin_catalog not present — skipping datasource load (expected on first boot)",
+      );
+      return 0;
+    }
+    log.error(
+      { sqlstate, err: err instanceof Error ? err.message : String(err) },
+      "Failed to load datasource installs from workspace_plugins — registry will be empty until next boot",
     );
     return 0;
   }
+}
+
+/** Postgres SQLSTATE error shape. `pg` driver attaches `.code` to thrown errors. */
+function isPgError(err: unknown): err is Error & { code: string } {
+  return (
+    err instanceof Error &&
+    "code" in err &&
+    typeof (err as { code: unknown }).code === "string"
+  );
 }
 
 // ── Learned pattern helpers ─────────────────────────────────────────

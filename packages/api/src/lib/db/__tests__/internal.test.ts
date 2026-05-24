@@ -30,6 +30,15 @@ import {
 } from "../internal";
 import { connections } from "../connection";
 
+/** Mirrors migration 0093's `postgres` catalog `config_schema`. Pinned
+ *  here so `loadSavedConnections` test fixtures stay close to the
+ *  production catalog — if 0093's seed changes, update this in lockstep. */
+const POSTGRES_CONFIG_SCHEMA = [
+  { key: "url", type: "string", label: "Connection URL", required: true, secret: true },
+  { key: "schema", type: "string", label: "Schema" },
+  { key: "description", type: "string", label: "Description" },
+] as const;
+
 /** Creates a mock pool that tracks query/end calls. */
 function createMockPool() {
   const calls = {
@@ -341,15 +350,6 @@ describe("internal DB module", () => {
     afterEach(() => {
       connections._reset();
     });
-
-    /** Shape of the catalog `config_schema` JSONB for Postgres-style
-     *  datasources (mirrors migration 0093's seed). Pinned here so the
-     *  test fixtures stay close to the production catalog. */
-    const POSTGRES_CONFIG_SCHEMA = [
-      { key: "url", type: "string", label: "Connection URL", required: true, secret: true },
-      { key: "schema", type: "string", label: "Schema" },
-      { key: "description", type: "string", label: "Description" },
-    ];
 
     it("returns 0 when DATABASE_URL is not set", async () => {
       delete process.env.DATABASE_URL;
@@ -1111,14 +1111,6 @@ describe("connection URL encryption", () => {
 
   describe("loadSavedConnections() with encryption", () => {
     const origDatabaseUrl = process.env.DATABASE_URL;
-
-    /** Mirrors migration 0093's `postgres` config_schema. Used so
-     *  `decryptSecretFields` knows `url` is `secret: true`. */
-    const POSTGRES_CONFIG_SCHEMA = [
-      { key: "url", type: "string", label: "Connection URL", required: true, secret: true },
-      { key: "schema", type: "string", label: "Schema" },
-      { key: "description", type: "string", label: "Description" },
-    ];
 
     beforeEach(() => {
       delete process.env.DATABASE_URL;

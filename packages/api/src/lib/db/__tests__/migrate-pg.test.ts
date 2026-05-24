@@ -5106,6 +5106,112 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       }
     }, PG_TEST_TIMEOUT_MS);
   });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // 0094: connections / connection_groups cutover (#2744, 1.5.3 slice 6)
+  // ─────────────────────────────────────────────────────────────────────
+  //
+  // Confirms that after the full migration set runs, both legacy tables
+  // are gone and `workspace_plugins` carries the new `status` column and
+  // the demo `auto_install` per-workspace backfill. Pins the SQL-level
+  // invariants the runtime ConnectionRegistry depends on.
+  //
+  // NOTE: the existing `connection_groups` + `connections` describe
+  // blocks earlier in this file (lines ~231–4000) reference tables that
+  // 0094 drops. They will be removed as part of the test sweep step of
+  // #2744 — until then, those describe blocks fail at SQL plan time
+  // against the migrated schema.
+  describe("0094: connections / connection_groups cutover (#2744, 1.5.3 slice 6)", () => {
+    it("drops both legacy tables", async () => {
+      const tables = await pool.query<{ table_name: string }>(
+        `SELECT table_name FROM information_schema.tables
+          WHERE table_schema = current_schema()
+            AND table_name IN ('connections', 'connection_groups')`,
+      );
+      expect(tables.rows.length).toBe(0);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("workspace_plugins.status column exists with the expected CHECK + index", async () => {
+      const cols = await pool.query<{ column_name: string; is_nullable: string; column_default: string | null }>(
+        `SELECT column_name, is_nullable, column_default
+           FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = 'workspace_plugins'
+            AND column_name = 'status'`,
+      );
+      expect(cols.rows).toHaveLength(1);
+      expect(cols.rows[0].is_nullable).toBe("NO");
+      expect(cols.rows[0].column_default).toContain("published");
+
+      const indexes = await pool.query<{ indexname: string }>(
+        `SELECT indexname FROM pg_indexes
+          WHERE schemaname = current_schema()
+            AND tablename = 'workspace_plugins'
+            AND indexname = 'idx_workspace_plugins_status'`,
+      );
+      expect(indexes.rows).toHaveLength(1);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("drops the legacy global unique on (workspace_id, catalog_id) — datasource installs are multi-instance", async () => {
+      const indexes = await pool.query<{ indexname: string }>(
+        `SELECT indexname FROM pg_indexes
+          WHERE schemaname = current_schema()
+            AND tablename = 'workspace_plugins'
+            AND indexname IN ('idx_workspace_plugins_unique', 'workspace_plugins_workspace_id_catalog_id_key')`,
+      );
+      expect(indexes.rows).toHaveLength(0);
+
+      // The pillar-aware partial unique survives.
+      const singleton = await pool.query<{ indexname: string }>(
+        `SELECT indexname FROM pg_indexes
+          WHERE schemaname = current_schema()
+            AND tablename = 'workspace_plugins'
+            AND indexname = 'workspace_plugins_singleton'`,
+      );
+      expect(singleton.rows).toHaveLength(1);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("drops the 0092 back-compat triggers + functions", async () => {
+      const triggers = await pool.query<{ trigger_name: string }>(
+        `SELECT trigger_name FROM information_schema.triggers
+          WHERE event_object_schema = current_schema()
+            AND trigger_name IN (
+              'trg_workspace_plugins_default_pillar_install_id',
+              'trg_plugin_catalog_default_pillar',
+              'trg_plugin_catalog_sync_pillar_on_type_change'
+            )`,
+      );
+      expect(triggers.rows).toHaveLength(0);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("drops the scheduled_tasks + approval_queue FKs to connection_groups", async () => {
+      const fks = await pool.query<{ constraint_name: string }>(
+        `SELECT constraint_name FROM information_schema.table_constraints
+          WHERE table_schema = current_schema()
+            AND constraint_name IN ('fk_scheduled_tasks_group', 'fk_approval_queue_group')`,
+      );
+      expect(fks.rows).toHaveLength(0);
+
+      // The columns themselves remain as free-form text identifiers
+      // (no DB FK) per the pure-(a) connection_groups disposition.
+      const cols = await pool.query<{ column_name: string }>(
+        `SELECT column_name FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND ((table_name = 'scheduled_tasks' AND column_name = 'connection_group_id')
+              OR (table_name = 'approval_queue' AND column_name = 'connection_group_id'))`,
+      );
+      expect(cols.rows).toHaveLength(2);
+    }, PG_TEST_TIMEOUT_MS);
+
+    // The end-to-end backfill assertion (real `connections` row → matching
+    // `workspace_plugins` config blob with bit-exact URL ciphertext)
+    // can't run here because by the time the migration set replays, the
+    // `connections` table is already gone — so the source data is
+    // unobservable. The fail-loud `DO $$` guard inside 0094.sql is the
+    // in-migration assertion of "every row produced an output"; an
+    // additional integration test against a pre-0094 snapshot DB is
+    // tracked as a follow-up.
+  });
 });
 
 // #2606 — source-level revert guard for the integration-store SQL formatter.

@@ -347,6 +347,26 @@ const CatalogEntrySchema = z.object({
    */
   saas_eligible: z.boolean().optional().default(true),
   /**
+   * Whether Atlas has shipped a working install handler for this entry
+   * (#2747 / ADR-0007). `coming_soon` renders the row inert in the
+   * admin UI — grey "Coming soon" badge, no CTA — regardless of plan
+   * tier or install presence. The state-machine in
+   * `lib/integrations/install-status-machine.ts` treats this as the
+   * highest-priority gate.
+   *
+   * Defaults to `available` to preserve the pre-#2747 wire shape (every
+   * declared entry was implicitly shippable). Mark a row `coming_soon`
+   * when the catalog entry exists for visibility but the install path
+   * (handler, env vars, OAuth app, manifest) isn't ready — Teams,
+   * Discord, gchat, Telegram, WhatsApp in the 1.5.3 placeholder set.
+   *
+   * Self-host operators who've shipped their own handler for a row
+   * Atlas marks `coming_soon` can promote it via
+   * {@link AtlasConfig.overrideImplementationStatus} without forking
+   * the catalog.
+   */
+  implementation_status: z.enum(IMPLEMENTATION_STATUSES).optional().default("available"),
+  /**
    * Form-field declaration for `install_model: "form"` entries (#2660 —
    * Email, Webhook, Obsidian). Each entry describes a field rendered by
    * `/admin/integrations`' install modal and validated server-side at

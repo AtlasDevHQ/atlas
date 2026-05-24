@@ -17,6 +17,10 @@ import {
   buildAppLayer,
   DpaGuardLive,
   MigrationGuardLive,
+  ImplementationStatusOverride,
+  ImplementationStatusOverrideLive,
+  CatalogSeed,
+  BuiltinDatasourceCatalogSeed,
   type ConfigShape,
   type MigrationShape,
   type SettingsShape,
@@ -658,4 +662,68 @@ describe("buildAppLayer", () => {
   // to it. Per-#1988-guard end-to-end tests would force the same
   // real-DB-URL workaround for marginal additional coverage beyond the
   // existing unit-level guard tests.
+});
+
+// ── ImplementationStatusOverrideLive (#2747 — 1.5.3 slice 9) ──────────
+
+describe("ImplementationStatusOverrideLive", () => {
+  // The Tag dependencies on `CatalogSeed` + `BuiltinDatasourceCatalogSeed`
+  // encode the "override-runs-after-both-seeds" ordering. The two stubs
+  // below are accepted by the Layer's Effect.gen even though their
+  // values are never read — the `yield* CatalogSeed; yield*
+  // BuiltinDatasourceCatalogSeed` lines in the Live impl are
+  // load-bearing for ordering, not for value, and removing them would
+  // race the catalog-seeder's `EXCLUDED.implementation_status` upsert
+  // against our UPDATEs.
+  const seedStubLayer = Layer.merge(
+    Layer.succeed(CatalogSeed, {
+      insertedCount: 0,
+      updatedCount: 0,
+      preservedCount: 0,
+      orphanSlugs: [],
+      outcome: "seeded" as const,
+    }),
+    Layer.succeed(BuiltinDatasourceCatalogSeed, {
+      insertedSlugs: [],
+      preservedSlugs: [],
+      outcome: "seeded" as const,
+    }),
+  );
+
+  function runOverride(gates: { available: boolean; migrated: boolean }) {
+    const layer = ImplementationStatusOverrideLive.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          createInternalDBTestLayer({ available: gates.available }),
+          makeTestMigrationLayer({ migrated: gates.migrated }),
+          seedStubLayer,
+        ),
+      ),
+    );
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        return yield* ImplementationStatusOverride;
+      }).pipe(Effect.provide(layer)),
+    );
+  }
+
+  test("outcome 'skipped-gate' when InternalDB is unavailable (gate path)", async () => {
+    const result = await runOverride({ available: false, migrated: true });
+    expect(result.outcome).toBe("skipped-gate");
+    expect(result.updatedCount).toBe(0);
+    expect(result.error).toBeUndefined();
+  });
+
+  test("outcome 'skipped-gate' when Migration has not run", async () => {
+    const result = await runOverride({ available: true, migrated: false });
+    expect(result.outcome).toBe("skipped-gate");
+    expect(result.updatedCount).toBe(0);
+  });
+
+  // Note: gates-pass paths (`skipped-empty` / `applied` / `error`) are
+  // covered by `runImplementationStatusOverrideBoot (discriminated
+  // outcomes)` in `lib/integrations/__tests__/implementation-status-override.test.ts`.
+  // The wrapper covers the boot-time side of the contract; this Layer
+  // test covers only the upstream-gate branch that can't be reached
+  // from the wrapper alone.
 });

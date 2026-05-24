@@ -42,6 +42,10 @@ import {
   CATALOG_INSTALL_MODELS,
   CATALOG_ENTRY_TYPES,
 } from "@atlas/api/lib/config";
+import {
+  IMPLEMENTATION_STATUSES,
+  type ImplementationStatus,
+} from "@useatlas/types";
 
 const log = createLogger("integrations.catalog-seeder");
 
@@ -70,6 +74,15 @@ export interface CatalogDbRow {
   readonly enabled: boolean;
   readonly installModel: CatalogInstallModel;
   readonly saasEligible: boolean;
+  /**
+   * Whether Atlas has shipped a working install handler. Mirrors the
+   * `plugin_catalog.implementation_status` column (#2747). When a row
+   * lands here as `coming_soon`, the admin UI renders it inert; the
+   * operator override consumer (`applyImplementationStatusOverride`)
+   * can flip it to `available` post-seed on self-host. Reads that
+   * encounter an unknown value drop the row — same fail-safe as `type`.
+   */
+  readonly implementationStatus: ImplementationStatus;
   /**
    * Decoded `config_schema` JSONB. `null` when the column is JSON null —
    * which is the legitimate state for OAuth / static-bot entries that
@@ -213,6 +226,13 @@ function diffEntry(
   if (row.enabled !== entry.enabled) diff.push("enabled");
   if (row.installModel !== entry.install_model) diff.push("installModel");
   if (row.saasEligible !== entry.saas_eligible) diff.push("saasEligible");
+  // implementation_status (#2747): re-seed overwrites operator overrides
+  // applied via `applyImplementationStatusOverride` (separate boot pass).
+  // That's intentional — the catalog declaration is the source of
+  // truth for the *shipped* state; the override post-applies on every
+  // boot. If you reverse the order, an operator override and a config
+  // edit can race; running override-after-seed makes the override win.
+  if (row.implementationStatus !== entry.implementation_status) diff.push("implementationStatus");
 
   // Stable structural compare via canonical JSON. The DB stores
   // `config_schema` as JSONB and PostgreSQL normalizes object keys
@@ -420,13 +440,14 @@ interface CatalogDbRowRaw {
   enabled: boolean;
   install_model: string;
   saas_eligible: boolean;
+  implementation_status: string;
   config_schema: unknown | null;
 }
 
 async function readExistingCatalog(db: CatalogSeedDb): Promise<CatalogDbRow[]> {
   const { rows } = await db.query<CatalogDbRowRaw>(
     `SELECT slug, name, description, type, icon_url, min_plan, enabled,
-            install_model, saas_eligible, config_schema
+            install_model, saas_eligible, implementation_status, config_schema
        FROM plugin_catalog`,
   );
   // Validate enum membership at read time so the planner can trust the
@@ -449,6 +470,17 @@ async function readExistingCatalog(db: CatalogSeedDb): Promise<CatalogDbRow[]> {
       );
       continue;
     }
+    if (
+      !IMPLEMENTATION_STATUSES.includes(
+        r.implementation_status as ImplementationStatus,
+      )
+    ) {
+      log.warn(
+        { slug: r.slug, implementation_status: r.implementation_status },
+        "Catalog seed: plugin_catalog row has unknown `implementation_status` — dropping from planner input",
+      );
+      continue;
+    }
     valid.push({
       slug: r.slug,
       name: r.name,
@@ -459,6 +491,7 @@ async function readExistingCatalog(db: CatalogSeedDb): Promise<CatalogDbRow[]> {
       enabled: r.enabled,
       installModel: r.install_model as CatalogInstallModel,
       saasEligible: r.saas_eligible,
+      implementationStatus: r.implementation_status as ImplementationStatus,
       configSchema: r.config_schema ?? null,
     });
   }
@@ -500,6 +533,11 @@ async function upsertEntry(db: CatalogSeedDb, entry: CatalogEntry): Promise<void
       `Catalog seed: unknown type "${entry.type}" for slug "${entry.slug}"`,
     );
   }
+  if (!IMPLEMENTATION_STATUSES.includes(entry.implementation_status)) {
+    throw new Error(
+      `Catalog seed: unknown implementation_status "${entry.implementation_status}" for slug "${entry.slug}"`,
+    );
+  }
 
   // `config_schema` is JSONB — serialize undefined → null so the column
   // lands as JSON null instead of bombing the cast. Form-based entries
@@ -512,19 +550,21 @@ async function upsertEntry(db: CatalogSeedDb, entry: CatalogEntry): Promise<void
   await db.query(
     `INSERT INTO plugin_catalog
        (id, name, slug, description, type, icon_url, min_plan, enabled,
-        install_model, saas_eligible, config_schema, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, NOW(), NOW())
+        install_model, saas_eligible, implementation_status, config_schema,
+        created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, NOW(), NOW())
      ON CONFLICT (slug) DO UPDATE
-       SET name           = EXCLUDED.name,
-           description    = EXCLUDED.description,
-           type           = EXCLUDED.type,
-           icon_url       = EXCLUDED.icon_url,
-           min_plan       = EXCLUDED.min_plan,
-           enabled        = EXCLUDED.enabled,
-           install_model  = EXCLUDED.install_model,
-           saas_eligible  = EXCLUDED.saas_eligible,
-           config_schema  = EXCLUDED.config_schema,
-           updated_at     = NOW()`,
+       SET name                  = EXCLUDED.name,
+           description           = EXCLUDED.description,
+           type                  = EXCLUDED.type,
+           icon_url              = EXCLUDED.icon_url,
+           min_plan              = EXCLUDED.min_plan,
+           enabled               = EXCLUDED.enabled,
+           install_model         = EXCLUDED.install_model,
+           saas_eligible         = EXCLUDED.saas_eligible,
+           implementation_status = EXCLUDED.implementation_status,
+           config_schema         = EXCLUDED.config_schema,
+           updated_at            = NOW()`,
     [
       id,
       name,
@@ -536,6 +576,7 @@ async function upsertEntry(db: CatalogSeedDb, entry: CatalogEntry): Promise<void
       entry.enabled,
       entry.install_model,
       entry.saas_eligible,
+      entry.implementation_status,
       configSchemaJson,
     ],
   );

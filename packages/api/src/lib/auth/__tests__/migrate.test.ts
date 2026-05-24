@@ -339,6 +339,7 @@ describe("migrateAuthTables", () => {
             { name: "0091_unify_catalog_min_plan.sql" },
             { name: "0092_pillar_install_id_columns.sql" },
             { name: "0093_builtin_datasource_catalog.sql" },
+            { name: "0094_placeholder_chat_coming_soon.sql" },
           ],
         };
       }

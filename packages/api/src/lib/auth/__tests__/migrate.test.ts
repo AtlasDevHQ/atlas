@@ -342,6 +342,7 @@ describe("migrateAuthTables", () => {
             { name: "0094_placeholder_chat_coming_soon.sql" },
             { name: "0095_approval_surface_telegram.sql" },
             { name: "0096_drop_connections_table.sql" },
+            { name: "0097_fix_0096_us_constraint_order.sql" },
           ],
         };
       }

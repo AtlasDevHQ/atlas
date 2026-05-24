@@ -93,7 +93,7 @@ async function verify(): Promise<VerificationStats> {
     }
     if (present.has("connections") || present.has("connection_groups")) {
       throw new Error(
-        "Migration 0094 has not run — `connections` and/or `connection_groups` still exist. " +
+        "Migration 0096 has not run — `connections` and/or `connection_groups` still exist. " +
           "Run `bun run db:migrate` first, then re-run this script.",
       );
     }
@@ -215,16 +215,16 @@ async function verify(): Promise<VerificationStats> {
 
 async function main(): Promise<void> {
   const mode = DRY_RUN ? "DRY_RUN" : "VERIFY";
-  console.log(`[0094-verify] running in ${mode} mode`);
+  console.log(`[0096-verify] running in ${mode} mode`);
   const stats = await verify();
-  console.log(`[0094-verify] datasource installs:       ${stats.datasourceInstalls}`);
-  console.log(`[0094-verify] demo installs:             ${stats.demoInstalls}`);
-  console.log(`[0094-verify] organizations:             ${stats.orgs}`);
-  console.log(`[0094-verify] decrypt failures:          ${stats.decryptFailures}`);
-  console.log(`[0094-verify] scheme mismatches:         ${stats.schemeMismatches}`);
-  console.log(`[0094-verify] empty decrypted URLs:      ${stats.emptyUrls}`);
-  console.log(`[0094-verify] unknown db_types:          ${stats.unknownDbType}`);
-  console.log(`[0094-verify] orgs missing demo install: ${stats.orgsMissingDemo}`);
+  console.log(`[0096-verify] datasource installs:       ${stats.datasourceInstalls}`);
+  console.log(`[0096-verify] demo installs:             ${stats.demoInstalls}`);
+  console.log(`[0096-verify] organizations:             ${stats.orgs}`);
+  console.log(`[0096-verify] decrypt failures:          ${stats.decryptFailures}`);
+  console.log(`[0096-verify] scheme mismatches:         ${stats.schemeMismatches}`);
+  console.log(`[0096-verify] empty decrypted URLs:      ${stats.emptyUrls}`);
+  console.log(`[0096-verify] unknown db_types:          ${stats.unknownDbType}`);
+  console.log(`[0096-verify] orgs missing demo install: ${stats.orgsMissingDemo}`);
 
   // Positive lower bound — "wrong cluster, 0 rows, all green" is a real
   // failure mode the operator should never get past. If the deploy
@@ -232,7 +232,7 @@ async function main(): Promise<void> {
   // `ALLOW_EMPTY=1` to override.
   if (stats.orgs === 0 && process.env.ALLOW_EMPTY !== "1") {
     console.error(
-      `[0094-verify] FAILED — found 0 organizations. ` +
+      `[0096-verify] FAILED — found 0 organizations. ` +
         `Either DATABASE_URL points at the wrong cluster, or this DB is genuinely empty (pass ALLOW_EMPTY=1 to confirm).`,
     );
     process.exit(1);
@@ -242,8 +242,8 @@ async function main(): Promise<void> {
     process.env.ALLOW_EMPTY !== "1"
   ) {
     console.error(
-      `[0094-verify] FAILED — found 0 datasource installs across ${stats.orgs} org(s). ` +
-        `Migration 0094 likely hasn't run on this DB (pass ALLOW_EMPTY=1 to confirm).`,
+      `[0096-verify] FAILED — found 0 datasource installs across ${stats.orgs} org(s). ` +
+        `Migration 0096 likely hasn't run on this DB (pass ALLOW_EMPTY=1 to confirm).`,
     );
     process.exit(1);
   }
@@ -255,13 +255,13 @@ async function main(): Promise<void> {
     stats.unknownDbType > 0 ||
     stats.orgsMissingDemo > 0;
   if (failed) {
-    console.error(`[0094-verify] FAILED — migration produced unreadable or incomplete state`);
+    console.error(`[0096-verify] FAILED — migration produced unreadable or incomplete state`);
     process.exit(1);
   }
-  console.log(`[0094-verify] OK`);
+  console.log(`[0096-verify] OK`);
 }
 
 main().catch((err) => {
-  console.error("[0094-verify] script crashed:", err);
+  console.error("[0096-verify] script crashed:", err);
   process.exit(1);
 });

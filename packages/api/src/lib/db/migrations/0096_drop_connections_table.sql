@@ -295,7 +295,17 @@ END $$;
 -- per-org override existed) keep that override; this step's NOT EXISTS
 -- + ON CONFLICT keeps the operation idempotent.
 
--- Pre-flight guards for step 3:
+-- The per-workspace demo backfill reads Better Auth's `organization`
+-- table. In non-managed-auth deployments (self-hosted single-org, CI
+-- smoke) that table doesn't exist — and per-workspace demos make no
+-- sense without multi-tenancy. Wrap the entire step in an
+-- `IF EXISTS organization` guard so the cutover itself (steps 1, 2,
+-- 4, 5, 6, 7) runs in every environment, and the demo backfill
+-- self-defers when there's nothing to backfill against. This is what
+-- lets 0096 stay OUT of MANAGED_AUTH_MIGRATIONS — CI smoke tests can
+-- verify the cutover end-to-end.
+--
+-- Pre-flight guards (run inside the same conditional):
 --   • Demo URL must be present and unique. NULL would drop the `url`
 --     key via jsonb_strip_nulls and silently produce config-less
 --     demo installs; duplicates would mean LIMIT 1 picks arbitrarily.
@@ -307,7 +317,20 @@ DO $$
 DECLARE
   demo_url_count INTEGER;
   conflicting_demo_count INTEGER;
+  missing_demo_count INTEGER;
+  excess_demo_count INTEGER;
 BEGIN
+  -- Self-defer when Better Auth's `organization` table isn't present
+  -- (non-managed-auth deploys + CI smoke). No multi-tenancy → no
+  -- per-workspace backfill needed.
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.tables
+     WHERE table_schema = current_schema() AND table_name = 'organization'
+  ) THEN
+    RAISE NOTICE '0096 step 3: organization table absent — skipping per-workspace demo backfill';
+    RETURN;
+  END IF;
+
   SELECT COUNT(*) INTO demo_url_count
     FROM connections WHERE id = '__demo__' AND org_id = '__global__';
   IF demo_url_count = 0 THEN
@@ -331,43 +354,37 @@ BEGIN
       'Found % workspace_plugins row(s) of catalog demo-postgres with install_id != ''__demo__''. Step 3 would create duplicate demo installs — resolve manually before running.',
       conflicting_demo_count;
   END IF;
-END $$;
 
-INSERT INTO workspace_plugins
-  (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at, status)
-SELECT
-  'cn_demo_' || o.id                                       AS id,
-  o.id                                                     AS workspace_id,
-  (SELECT id FROM plugin_catalog WHERE slug = 'demo-postgres' LIMIT 1) AS catalog_id,
-  '__demo__'                                               AS install_id,
-  'datasource'                                             AS pillar,
-  jsonb_strip_nulls(
-    jsonb_build_object(
-      'url',         (SELECT url FROM connections WHERE id = '__demo__' AND org_id = '__global__' LIMIT 1),
-      'description', 'Atlas-managed demo Postgres dataset',
-      'db_type',     'postgres'
-    )
-  )                                                        AS config,
-  true                                                     AS enabled,
-  NOW()                                                    AS installed_at,
-  'published'                                              AS status
-FROM organization o
-WHERE NOT EXISTS (
-  SELECT 1 FROM workspace_plugins wp
-   WHERE wp.workspace_id = o.id
-     AND wp.install_id = '__demo__'
-     AND wp.pillar = 'datasource'
-)
-ON CONFLICT (workspace_id, catalog_id, install_id) DO NOTHING;
+  INSERT INTO workspace_plugins
+    (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at, status)
+  SELECT
+    'cn_demo_' || o.id                                       AS id,
+    o.id                                                     AS workspace_id,
+    (SELECT id FROM plugin_catalog WHERE slug = 'demo-postgres' LIMIT 1) AS catalog_id,
+    '__demo__'                                               AS install_id,
+    'datasource'                                             AS pillar,
+    jsonb_strip_nulls(
+      jsonb_build_object(
+        'url',         (SELECT url FROM connections WHERE id = '__demo__' AND org_id = '__global__' LIMIT 1),
+        'description', 'Atlas-managed demo Postgres dataset',
+        'db_type',     'postgres'
+      )
+    )                                                        AS config,
+    true                                                     AS enabled,
+    NOW()                                                    AS installed_at,
+    'published'                                              AS status
+  FROM organization o
+  WHERE NOT EXISTS (
+    SELECT 1 FROM workspace_plugins wp
+     WHERE wp.workspace_id = o.id
+       AND wp.install_id = '__demo__'
+       AND wp.pillar = 'datasource'
+  )
+  ON CONFLICT (workspace_id, catalog_id, install_id) DO NOTHING;
 
--- Post-flight guard: every organization must now own exactly one
--- demo-postgres install. Catches the case where the `WHERE NOT EXISTS`
--- + `ON CONFLICT` combination silently dropped a row.
-DO $$
-DECLARE
-  missing_demo_count INTEGER;
-  excess_demo_count INTEGER;
-BEGIN
+  -- Post-flight: every organization must now own exactly one
+  -- demo-postgres install. Catches the case where the `WHERE NOT EXISTS`
+  -- + `ON CONFLICT` combination silently dropped a row.
   SELECT COUNT(*) INTO missing_demo_count
     FROM organization o
    WHERE NOT EXISTS (

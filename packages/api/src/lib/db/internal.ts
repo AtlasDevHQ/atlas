@@ -859,10 +859,6 @@ export const MANAGED_AUTH_MIGRATIONS = [
   // Adds is_operator_workspace column to Better Auth's "organization"
   // table (#2702).
   "0090_organization_is_operator_workspace.sql",
-  // Reads Better Auth's "organization" table to backfill a
-  // per-workspace `demo-postgres` install row during the 1.5.3 cutover.
-  // (#2744 / ADR-0007.)
-  "0096_drop_connections_table.sql",
 ];
 
 /**

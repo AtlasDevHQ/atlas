@@ -341,6 +341,7 @@ describe("migrateAuthTables", () => {
             { name: "0093_builtin_datasource_catalog.sql" },
             { name: "0094_placeholder_chat_coming_soon.sql" },
             { name: "0095_approval_surface_telegram.sql" },
+            { name: "0096_drop_connections_table.sql" },
           ],
         };
       }

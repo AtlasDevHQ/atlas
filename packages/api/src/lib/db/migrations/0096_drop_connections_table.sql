@@ -150,6 +150,47 @@ CREATE INDEX IF NOT EXISTS idx_workspace_plugins_status
   ON workspace_plugins (workspace_id, status);
 
 -- ---------------------------------------------------------------------------
+-- 1b. Fix demo-postgres catalog config_schema (#2744 review finding)
+-- ---------------------------------------------------------------------------
+--
+-- 0093 seeded `demo-postgres` with `config_schema = '[]'`. Empty schemas
+-- cause `encryptSecretFields` / `decryptSecretFields` to short-circuit
+-- (see `db/secret-encryption.ts`) — meaning step 3 below would copy demo
+-- URL ciphertext into `workspace_plugins.config.url`, and `loadSavedConnections`
+-- on boot would try to register that ciphertext as a Postgres URL. Every
+-- demo install would be unreachable, and a future admin PUT through
+-- `updateDatasourceConfig` would write the new URL as plaintext.
+--
+-- Patch the catalog row to declare `url` as a secret field, matching the
+-- `postgres` row's shape. Reads after this point round-trip ciphertext
+-- through `decryptSecret` correctly; future writes encrypt.
+UPDATE plugin_catalog
+   SET config_schema = '[
+         {"key": "url", "type": "string", "label": "Connection URL", "required": true, "secret": true, "description": "postgresql://user:pass@host:5432/database"},
+         {"key": "description", "type": "string", "label": "Description", "description": "Optional. Shown in the agent system prompt."}
+       ]'::jsonb,
+       updated_at = NOW()
+ WHERE slug = 'demo-postgres' AND pillar = 'datasource';
+
+-- Post-flight: the UPDATE must have flipped exactly one row. Zero means
+-- 0093 never ran (impossible in the migration runner's linear order);
+-- more than one means a duplicate snuck in.
+DO $$
+DECLARE
+  fixed_count INTEGER;
+BEGIN
+  SELECT COUNT(*) INTO fixed_count
+    FROM plugin_catalog
+   WHERE slug = 'demo-postgres'
+     AND pillar = 'datasource'
+     AND config_schema @> '[{"key": "url", "secret": true}]'::jsonb;
+  IF fixed_count != 1 THEN
+    RAISE EXCEPTION
+      'demo-postgres catalog config_schema fix expected exactly 1 row with secret-url field, got %', fixed_count;
+  END IF;
+END $$;
+
+-- ---------------------------------------------------------------------------
 -- 2. Backfill workspace_plugins from connections
 -- ---------------------------------------------------------------------------
 --

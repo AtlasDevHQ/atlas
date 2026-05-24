@@ -27,13 +27,20 @@ export const CONTENT_MODE_TABLES = [
   // #2744 / ADR-0007 — `connections` segment key preserved for wire
   // compatibility (`/api/v1/mode` `draftCounts.connections` keeps its
   // contract) but the physical table is now `workspace_plugins` with
-  // `org_id` widened to `workspace_id`. The default COUNT SQL counts
-  // *every* draft row regardless of pillar; in practice this matches
-  // datasource drafts because the chat/action install handlers always
-  // write `status='published'` directly. If a future feature stages
-  // chat/action installs, add a `where: "pillar='datasource'"` extension
-  // to the SimpleModeTable port and apply it here.
-  { kind: "simple", key: "connections", table: "workspace_plugins", orgColumn: "workspace_id" },
+  // `org_id` widened to `workspace_id`. The `where` filter scopes
+  // count + promote to `pillar='datasource'` rows so a future bug or
+  // manual fix-up that leaves a chat/action `workspace_plugins` row in
+  // `status='draft'` doesn't (a) inflate `draftCounts.connections` in the
+  // admin banner or (b) get silently promoted by the publish endpoint.
+  // Chat/action handlers currently always write `status='published'` —
+  // this filter is a defense-in-depth.
+  {
+    kind: "simple",
+    key: "connections",
+    table: "workspace_plugins",
+    orgColumn: "workspace_id",
+    where: "pillar = 'datasource'",
+  },
   { kind: "simple", key: "prompts", table: "prompt_collections" },
   { kind: "simple", key: "starterPrompts", table: "query_suggestions" },
   {

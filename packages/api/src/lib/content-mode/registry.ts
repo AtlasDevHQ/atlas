@@ -100,25 +100,29 @@ function resolveSimple(entry: SimpleModeTable): {
   readonly table: string;
   readonly orgCol: string;
   readonly statusCol: string;
+  readonly where: string | undefined;
 } {
   return {
     table: entry.table ?? entry.key,
     orgCol: entry.orgColumn ?? "org_id",
     statusCol: entry.statusColumn ?? "status",
+    where: entry.where,
   };
 }
 
 /** SELECT branch that counts drafts for a simple status-lifecycle table. */
 function simpleCountSql(entry: SimpleModeTable, orgParam: string): string {
-  const { table, orgCol, statusCol } = resolveSimple(entry);
-  return `SELECT '${entry.key}' AS key, COUNT(*)::int AS n FROM ${table} WHERE ${orgCol} = ${orgParam} AND ${statusCol} = 'draft'`;
+  const { table, orgCol, statusCol, where } = resolveSimple(entry);
+  const whereExtra = where ? ` AND ${where}` : "";
+  return `SELECT '${entry.key}' AS key, COUNT(*)::int AS n FROM ${table} WHERE ${orgCol} = ${orgParam} AND ${statusCol} = 'draft'${whereExtra}`;
 }
 
 /** Default promote UPDATE for a simple status-lifecycle table. */
 function simplePromoteSql(entry: SimpleModeTable): string {
-  const { table, orgCol, statusCol } = resolveSimple(entry);
+  const { table, orgCol, statusCol, where } = resolveSimple(entry);
+  const whereExtra = where ? ` AND ${where}` : "";
   return `UPDATE ${table} SET ${statusCol} = 'published', updated_at = now()
-          WHERE ${orgCol} = $1 AND ${statusCol} = 'draft'`;
+          WHERE ${orgCol} = $1 AND ${statusCol} = 'draft'${whereExtra}`;
 }
 
 /** Promote a single simple table inside the caller's tx, wrapping errors. */

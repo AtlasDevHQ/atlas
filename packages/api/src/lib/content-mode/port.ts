@@ -32,6 +32,13 @@ import { CONTENT_MODE_TABLES } from "./tables";
  * the common case where the physical table name matches; override only when
  * the segment key diverges from the physical table name — e.g.
  * `prompts` → `prompt_collections`, or `starterPrompts` → `query_suggestions`.
+ *
+ * `where` is an extra SQL fragment ANDed into the count + promote queries
+ * (no leading `AND`, no alias prefix — both queries reference the table
+ * unaliased). Used when one physical table holds rows for multiple
+ * unrelated content keys and a key-specific filter must scope the operation
+ * — e.g. `connections` → `workspace_plugins` where only `pillar='datasource'`
+ * rows are counted/promoted under the `connections` segment.
  */
 export type SimpleModeTable = {
   readonly kind: "simple";
@@ -39,6 +46,7 @@ export type SimpleModeTable = {
   readonly table?: string;
   readonly orgColumn?: string;
   readonly statusColumn?: string;
+  readonly where?: string;
 };
 
 /**

@@ -981,7 +981,14 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
             },
           ),
       );
-      if (result.kind === "error") return c.json({ ...result.body, requestId }, result.status);
+      if (result.kind === "error") {
+        // Reviving an archived row: the pool already existed from the
+        // pre-archive era; the test-connect dance above re-registered it
+        // against the same URL the user just supplied. Leave it in place
+        // so the next list/agent query sees a live pool matching the
+        // (still-archived) DB row.
+        return c.json({ ...result.body, requestId }, result.status);
+      }
     } else {
       const result = await runInstaller(
         c,
@@ -1001,7 +1008,24 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
             },
           ),
       );
-      if (result.kind === "error") return c.json({ ...result.body, requestId }, result.status);
+      if (result.kind === "error") {
+        // Installer returned a typed error (e.g. ConfigSchemaError,
+        // CatalogNotFoundError, AlreadyInstalledError from a race). The
+        // pre-install test-connect dance above already registered a live
+        // pool against the user-supplied URL — leaving it would produce
+        // a phantom 409 on retry from `connections.has(id)` and would
+        // also hand future code paths a pool with no DB row. Tear it
+        // down before returning.
+        try {
+          connections.unregister(id);
+        } catch (cleanupErr) {
+          log.error(
+            { err: errorMessage(cleanupErr), connectionId: id, requestId },
+            "Failed to unregister pre-registered pool after installer error — pool may need a server restart to clear",
+          );
+        }
+        return c.json({ ...result.body, requestId }, result.status);
+      }
     }
   } catch (err) {
     connections.unregister(id);
@@ -1271,7 +1295,20 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
       connections.unregister(id);
     }
     if (rollbackFailed) {
-      log.warn({ connectionId: id, requestId }, "Installer error + rollback failure — caller will see the installer error, but the connection may need a server restart");
+      // Rollback failed AND the installer rejected the change: the in-memory
+      // registry is now empty for this id, agent queries will fail until
+      // restart. Escalate to 500 so the caller knows the state is degraded
+      // — surfacing the original 4xx alone would let the admin think they
+      // just need to fix their input.
+      log.error({ connectionId: id, requestId }, "Installer error + rollback failure — registry is empty, surface as 500 to caller");
+      return c.json(
+        {
+          error: "internal_error",
+          message: `${result.body.message ?? "Connection update failed"} — the previous connection could not be restored either. The connection may need a server restart.`,
+          requestId,
+        },
+        500,
+      );
     }
     return c.json({ ...result.body, requestId }, result.status);
   }

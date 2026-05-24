@@ -468,7 +468,14 @@ export class AlreadyInstalledError extends Data.TaggedError("AlreadyInstalledErr
   readonly message: string;
   readonly workspaceId: string;
   readonly catalogSlug: string;
-  readonly pillar: "chat" | "action";
+  /**
+   * `datasource` was added with #2744 — singleton is enforced per
+   * `(workspaceId, catalogSlug, installId)` rather than per `(workspaceId,
+   * catalogSlug)` like the chat/action pillars, but the same tag carries
+   * the violation (response body widens implicitly — `hono.ts` spreads
+   * `error.pillar` rather than narrowing).
+   */
+  readonly pillar: "chat" | "action" | "datasource";
 }> {}
 
 /**
@@ -510,6 +517,24 @@ export class InstallNotFoundError extends Data.TaggedError("InstallNotFoundError
   readonly message: string;
   readonly workspaceId: string;
   readonly catalogSlug: string;
+}> {}
+
+/**
+ * Caller-provided `installId` failed validation. Maps to HTTP 400.
+ *
+ * Datasource installs (added in #2744 per ADR-0007) carry a user-facing
+ * `installId` slug like `prod-us` or `warehouse`. The facade enforces the
+ * pattern `^[a-z][a-z0-9_-]*$` and rejects reserved sentinels (`default`).
+ * `__demo__` is the one historical sentinel preserved by migration 0094 —
+ * it bypasses the pattern check because the migration backfilled it
+ * verbatim from the pre-cutover `connections` table.
+ *
+ * @see packages/api/src/lib/effect/workspace-installer.ts
+ */
+export class InvalidInstallIdError extends Data.TaggedError("InvalidInstallIdError")<{
+  readonly message: string;
+  readonly installId: string;
+  readonly reason: "pattern" | "reserved";
 }> {}
 
 // ── Scheduler ──────────────────────────────────────────────────────
@@ -572,6 +597,7 @@ export type AtlasError =
   | ConfigSchemaError
   | CatalogNotFoundError
   | InstallNotFoundError
+  | InvalidInstallIdError
   | SchedulerTaskTimeoutError
   | SchedulerExecutionError
   | DeliveryError
@@ -633,6 +659,7 @@ export const ATLAS_ERROR_TAG_LIST = [
   "ConfigSchemaError",
   "CatalogNotFoundError",
   "InstallNotFoundError",
+  "InvalidInstallIdError",
   "SchedulerTaskTimeoutError",
   "SchedulerExecutionError",
   "DeliveryError",

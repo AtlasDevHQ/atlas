@@ -138,6 +138,32 @@ mock.module("@atlas/api/lib/integrations/install/dispatch", () => ({
   _resetInstallHandlerRegistries: mock(() => {}),
 }));
 
+// Datasource registry bridge (#2744) — the facade's installDatasource /
+// uninstallDatasource / updateDatasourceConfig methods call through the
+// bridge to mutate the ConnectionRegistry. The bridge transitively
+// imports the live registry; mocking it lets the tests assert
+// register / unregister calls without spinning up real pg pools.
+const bridgeRegisterCalls: Array<{ workspaceId: string; installId: string; catalogSlug: string }> = [];
+const bridgeUnregisterCalls: string[] = [];
+const mockBridgeRegister = mock(
+  (row: { workspaceId: string; installId: string; catalogSlug: string }, _cfg: unknown) => {
+    bridgeRegisterCalls.push({
+      workspaceId: row.workspaceId,
+      installId: row.installId,
+      catalogSlug: row.catalogSlug,
+    });
+    return true;
+  },
+);
+const mockBridgeUnregister = mock((installId: string) => {
+  bridgeUnregisterCalls.push(installId);
+  return true;
+});
+mock.module("@atlas/api/lib/db/datasource-registry-bridge", () => ({
+  registerDatasourceInstall: mockBridgeRegister,
+  unregisterDatasourceInstall: mockBridgeUnregister,
+}));
+
 // ---------------------------------------------------------------------------
 // Lazy import of the facade after mocks are in place
 // ---------------------------------------------------------------------------
@@ -160,11 +186,32 @@ function resetState() {
   internalQueryCalls.length = 0;
   slackDeleteCalls.length = 0;
   credentialDeleteCalls.length = 0;
+  bridgeRegisterCalls.length = 0;
+  bridgeUnregisterCalls.length = 0;
   dispatchHandlers.clear();
   mockInternalQuery.mockClear();
   mockDeleteSlackInstallation.mockClear();
   mockDeleteCredentialBundle.mockClear();
   mockGetInstallHandler.mockClear();
+  mockBridgeRegister.mockClear();
+  mockBridgeUnregister.mockClear();
+  // Default the bridge mocks back to no-op success so tests that don't
+  // override them get the happy path. Individual tests can swap via
+  // mockImplementation(() => { throw new Error(...) }).
+  mockBridgeRegister.mockImplementation(
+    (row: { workspaceId: string; installId: string; catalogSlug: string }, _cfg: unknown) => {
+      bridgeRegisterCalls.push({
+        workspaceId: row.workspaceId,
+        installId: row.installId,
+        catalogSlug: row.catalogSlug,
+      });
+      return true;
+    },
+  );
+  mockBridgeUnregister.mockImplementation((installId: string) => {
+    bridgeUnregisterCalls.push(installId);
+    return true;
+  });
 }
 
 beforeEach(() => {
@@ -841,6 +888,516 @@ describe("WorkspaceInstaller.updateConfig", () => {
 // ---------------------------------------------------------------------------
 // 5. Test-layer factory
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 5. Datasource pillar (#2744 / ADR-0007)
+// ---------------------------------------------------------------------------
+
+describe("validateInstallId", () => {
+  it("allows valid lowercase slugs with letters, digits, underscores, hyphens", () => {
+    expect(mod._testing.validateInstallId("prod-us")).toBeNull();
+    expect(mod._testing.validateInstallId("warehouse")).toBeNull();
+    expect(mod._testing.validateInstallId("a")).toBeNull();
+    expect(mod._testing.validateInstallId("eu_west_1")).toBeNull();
+  });
+
+  it("allows the historical __demo__ sentinel (migration 0094 backfill)", () => {
+    expect(mod._testing.validateInstallId("__demo__")).toBeNull();
+  });
+
+  it("rejects empty string with pattern error", () => {
+    const err = mod._testing.validateInstallId("");
+    expect(err?._tag).toBe("InvalidInstallIdError");
+    expect(err?.reason).toBe("pattern");
+  });
+
+  it("rejects uppercase and leading digit with pattern error", () => {
+    expect(mod._testing.validateInstallId("PROD")?.reason).toBe("pattern");
+    expect(mod._testing.validateInstallId("1prod")?.reason).toBe("pattern");
+  });
+
+  it("rejects 'default' as reserved", () => {
+    const err = mod._testing.validateInstallId("default");
+    expect(err?._tag).toBe("InvalidInstallIdError");
+    expect(err?.reason).toBe("reserved");
+  });
+});
+
+describe("resolverErrorToConfigSchemaError", () => {
+  it("extracts a backticked field name into fieldErrors", () => {
+    const err = mod._testing.resolverErrorToConfigSchemaError(
+      "postgres",
+      new Error("DatasourcePoolResolver(postgres): missing required field `url`"),
+    );
+    expect(err._tag).toBe("ConfigSchemaError");
+    expect(err.fieldErrors.url).toBeDefined();
+    expect(err.fieldErrors.url?.[0]).toContain("url");
+  });
+
+  it("dumps to formErrors when no field can be extracted", () => {
+    const err = mod._testing.resolverErrorToConfigSchemaError(
+      "duckdb",
+      new Error("DatasourcePoolResolver(duckdb): something opaque"),
+    );
+    expect(err.formErrors.length).toBe(1);
+    expect(Object.keys(err.fieldErrors).length).toBe(0);
+  });
+});
+
+describe("shapeDatasourceRow", () => {
+  it("masks the URL for native dbTypes", () => {
+    const row = mod._testing.shapeDatasourceRow({
+      rowId: "cn_ws_test_1_prod",
+      workspaceId: WSID,
+      catalogId: "cat:postgres",
+      catalogSlug: "postgres",
+      installId: "prod",
+      status: "published",
+      decryptedConfig: {
+        url: "postgresql://user:pass@host:5432/db",
+        schema: "analytics",
+        description: "Prod warehouse",
+      },
+    });
+    expect(row.dbType).toBe("postgres");
+    expect(row.maskedUrl).not.toBeNull();
+    expect(row.maskedUrl).not.toContain("pass");
+    expect(row.schema).toBe("analytics");
+    expect(row.description).toBe("Prod warehouse");
+    expect(row.pillar).toBe("datasource");
+  });
+
+  it("returns maskedUrl=null for dbTypes without a URL (bigquery)", () => {
+    const row = mod._testing.shapeDatasourceRow({
+      rowId: "cn_ws_test_1_bq",
+      workspaceId: WSID,
+      catalogId: "cat:bigquery",
+      catalogSlug: "bigquery",
+      installId: "bq",
+      status: "draft",
+      decryptedConfig: {},
+    });
+    expect(row.dbType).toBe("bigquery");
+    expect(row.maskedUrl).toBeNull();
+    expect(row.status).toBe("draft");
+  });
+
+  it("returns group_id when set", () => {
+    const row = mod._testing.shapeDatasourceRow({
+      rowId: "cn_ws_test_1_x",
+      workspaceId: WSID,
+      catalogId: "cat:postgres",
+      catalogSlug: "postgres",
+      installId: "x",
+      status: "published",
+      decryptedConfig: { url: "postgresql://u@h/d", group_id: "prod" },
+    });
+    expect(row.groupId).toBe("prod");
+  });
+});
+
+describe("WorkspaceInstaller.installDatasource", () => {
+  it("rejects invalid install_id pattern with InvalidInstallIdError → 400", async () => {
+    const installer = await getLiveService();
+    const exit = await Effect.runPromiseExit(
+      installer.installDatasource(WSID, "postgres", {
+        installId: "BAD-UPPER",
+        formData: { url: "postgresql://u@h/d" },
+        atlasMode: "published",
+      }),
+    );
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      expect(JSON.stringify(exit.cause)).toContain("InvalidInstallIdError");
+    }
+  });
+
+  it("rejects 'default' as reserved", async () => {
+    const installer = await getLiveService();
+    const exit = await Effect.runPromiseExit(
+      installer.installDatasource(WSID, "postgres", {
+        installId: "default",
+        formData: { url: "postgresql://u@h/d" },
+        atlasMode: "published",
+      }),
+    );
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      const s = JSON.stringify(exit.cause);
+      expect(s).toContain("InvalidInstallIdError");
+      expect(s).toContain("reserved");
+    }
+  });
+
+  it("rejects unknown catalog with CatalogNotFoundError → 404", async () => {
+    internalQueryResponses.push({
+      match: (sql, params) =>
+        sql.includes("FROM plugin_catalog") && params?.[0] === "unknown-db",
+      rows: [],
+    });
+    const installer = await getLiveService();
+    const exit = await Effect.runPromiseExit(
+      installer.installDatasource(WSID, "unknown-db", {
+        installId: "x",
+        formData: { url: "postgresql://u@h/d" },
+        atlasMode: "published",
+      }),
+    );
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      expect(JSON.stringify(exit.cause)).toContain("CatalogNotFoundError");
+    }
+  });
+
+  it("rejects when catalog pillar is chat/action (route through .install)", async () => {
+    queueCatalogLookup("slack", { pillar: "chat", install_model: "oauth" });
+    const installer = await getLiveService();
+    const exit = await Effect.runPromiseExit(
+      installer.installDatasource(WSID, "slack", {
+        installId: "x",
+        formData: {},
+        atlasMode: "published",
+      }),
+    );
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      expect(JSON.stringify(exit.cause)).toContain("CatalogNotFoundError");
+    }
+  });
+
+  it("rejects missing url with ConfigSchemaError extracted from resolver", async () => {
+    queueCatalogLookup("postgres", { pillar: "datasource", install_model: "form" });
+    const installer = await getLiveService();
+    const exit = await Effect.runPromiseExit(
+      installer.installDatasource(WSID, "postgres", {
+        installId: "prod",
+        formData: { schema: "public" },
+        atlasMode: "published",
+      }),
+    );
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      const s = JSON.stringify(exit.cause);
+      expect(s).toContain("ConfigSchemaError");
+      expect(s).toContain("url");
+    }
+  });
+
+  it("rejects duplicate install_id with AlreadyInstalledError → 409", async () => {
+    queueCatalogLookup("postgres", {
+      pillar: "datasource",
+      install_model: "form",
+      id: "cat:postgres",
+    });
+    // Singleton pre-check returns an existing row.
+    internalQueryResponses.push({
+      match: (sql, params) =>
+        sql.includes("FROM workspace_plugins") &&
+        sql.includes("install_id") &&
+        params?.[2] === "prod" &&
+        !sql.includes("DELETE") &&
+        !sql.includes("UPDATE") &&
+        !sql.includes("INSERT"),
+      rows: [{ install_id: "prod" }],
+    });
+    const installer = await getLiveService();
+    const exit = await Effect.runPromiseExit(
+      installer.installDatasource(WSID, "postgres", {
+        installId: "prod",
+        formData: { url: "postgresql://u@h/d" },
+        atlasMode: "published",
+      }),
+    );
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      const s = JSON.stringify(exit.cause);
+      expect(s).toContain("AlreadyInstalledError");
+      expect(s).toContain("datasource");
+    }
+  });
+
+  it("inserts the row, registers the pool, and returns a masked row on success", async () => {
+    queueCatalogLookup("postgres", {
+      pillar: "datasource",
+      install_model: "form",
+      id: "cat:postgres",
+    });
+    // Singleton lookup — no existing row.
+    internalQueryResponses.push({
+      match: (sql, params) =>
+        sql.includes("FROM workspace_plugins") &&
+        sql.includes("install_id") &&
+        params?.[2] === "prod" &&
+        !sql.includes("DELETE") &&
+        !sql.includes("UPDATE") &&
+        !sql.includes("INSERT"),
+      rows: [],
+    });
+    const installer = await getLiveService();
+    const row = await runEffect(
+      installer.installDatasource(WSID, "postgres", {
+        installId: "prod",
+        formData: {
+          url: "postgresql://user:pw@host:5432/db",
+          schema: "analytics",
+          description: "Prod warehouse",
+        },
+        groupId: "prod-cluster",
+        atlasMode: "published",
+      }),
+    );
+    expect(row.installId).toBe("prod");
+    expect(row.dbType).toBe("postgres");
+    expect(row.status).toBe("published");
+    expect(row.maskedUrl).not.toBeNull();
+    expect(row.maskedUrl).not.toContain("pw");
+    expect(row.groupId).toBe("prod-cluster");
+    expect(row.schema).toBe("analytics");
+    expect(bridgeRegisterCalls.length).toBe(1);
+    expect(bridgeRegisterCalls[0].installId).toBe("prod");
+    // Verify the INSERT actually went through.
+    const insertCall = internalQueryCalls.find((c) =>
+      c.sql.includes("INSERT INTO workspace_plugins"),
+    );
+    expect(insertCall).toBeDefined();
+  });
+
+  it("writes status='draft' when atlasMode is 'draft'", async () => {
+    queueCatalogLookup("postgres", {
+      pillar: "datasource",
+      install_model: "form",
+      id: "cat:postgres",
+    });
+    internalQueryResponses.push({
+      match: (sql, params) =>
+        sql.includes("FROM workspace_plugins") &&
+        sql.includes("install_id") &&
+        params?.[2] === "draft-x" &&
+        !sql.includes("DELETE") &&
+        !sql.includes("UPDATE") &&
+        !sql.includes("INSERT"),
+      rows: [],
+    });
+    const installer = await getLiveService();
+    const row = await runEffect(
+      installer.installDatasource(WSID, "postgres", {
+        installId: "draft-x",
+        formData: { url: "postgresql://u@h/d" },
+        atlasMode: "draft",
+      }),
+    );
+    expect(row.status).toBe("draft");
+  });
+
+  it("still completes when registerDatasourceInstall throws (best-effort)", async () => {
+    queueCatalogLookup("postgres", {
+      pillar: "datasource",
+      install_model: "form",
+      id: "cat:postgres",
+    });
+    internalQueryResponses.push({
+      match: (sql, params) =>
+        sql.includes("FROM workspace_plugins") &&
+        sql.includes("install_id") &&
+        params?.[2] === "y" &&
+        !sql.includes("DELETE") &&
+        !sql.includes("UPDATE") &&
+        !sql.includes("INSERT"),
+      rows: [],
+    });
+    mockBridgeRegister.mockImplementation(() => {
+      throw new Error("simulated registry rejection");
+    });
+    const installer = await getLiveService();
+    const row = await runEffect(
+      installer.installDatasource(WSID, "postgres", {
+        installId: "y",
+        formData: { url: "postgresql://u@h/d" },
+        atlasMode: "published",
+      }),
+    );
+    // Row is persisted; the registry failure is logged-not-thrown.
+    expect(row.installId).toBe("y");
+  });
+});
+
+describe("WorkspaceInstaller.uninstallDatasource", () => {
+  it("rejects when row is missing with InstallNotFoundError → 404", async () => {
+    queueCatalogLookup("postgres", {
+      pillar: "datasource",
+      install_model: "form",
+      id: "cat:postgres",
+    });
+    // UPDATE returns no rows.
+    internalQueryResponses.push({
+      match: (sql) => sql.includes("UPDATE workspace_plugins"),
+      rows: [],
+    });
+    const installer = await getLiveService();
+    const exit = await Effect.runPromiseExit(
+      installer.uninstallDatasource(WSID, "postgres", "missing"),
+    );
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      expect(JSON.stringify(exit.cause)).toContain("InstallNotFoundError");
+    }
+  });
+
+  it("soft archives by default and unregisters the pool", async () => {
+    queueCatalogLookup("postgres", {
+      pillar: "datasource",
+      install_model: "form",
+      id: "cat:postgres",
+    });
+    internalQueryResponses.push({
+      match: (sql) =>
+        sql.includes("UPDATE workspace_plugins") && sql.includes("'archived'"),
+      rows: [{ id: "row-1" }],
+    });
+    const installer = await getLiveService();
+    await runEffect(installer.uninstallDatasource(WSID, "postgres", "prod"));
+    expect(bridgeUnregisterCalls).toContain("prod");
+    const updateCall = internalQueryCalls.find((c) =>
+      c.sql.includes("UPDATE workspace_plugins") && c.sql.includes("'archived'"),
+    );
+    expect(updateCall).toBeDefined();
+  });
+
+  it("hard-deletes when options.hard=true", async () => {
+    queueCatalogLookup("postgres", {
+      pillar: "datasource",
+      install_model: "form",
+      id: "cat:postgres",
+    });
+    internalQueryResponses.push({
+      match: (sql) => sql.startsWith("DELETE FROM workspace_plugins") || sql.includes("DELETE FROM workspace_plugins"),
+      rows: [{ id: "row-1" }],
+    });
+    const installer = await getLiveService();
+    await runEffect(
+      installer.uninstallDatasource(WSID, "postgres", "prod", { hard: true }),
+    );
+    const deleteCall = internalQueryCalls.find((c) =>
+      c.sql.includes("DELETE FROM workspace_plugins"),
+    );
+    expect(deleteCall).toBeDefined();
+    expect(bridgeUnregisterCalls).toContain("prod");
+  });
+});
+
+describe("WorkspaceInstaller.updateDatasourceConfig", () => {
+  function queueExistingRowLookup(
+    workspaceId: string,
+    catalogId: string,
+    installId: string,
+    existing: {
+      id: string;
+      config: Record<string, unknown> | null;
+      status: string;
+    } | null,
+  ): void {
+    internalQueryResponses.push({
+      match: (sql, params) =>
+        sql.includes("FROM workspace_plugins") &&
+        sql.includes("install_id") &&
+        sql.includes("status") &&
+        params?.[0] === workspaceId &&
+        params?.[1] === catalogId &&
+        params?.[2] === installId &&
+        !sql.includes("UPDATE") &&
+        !sql.includes("DELETE") &&
+        !sql.includes("INSERT"),
+      rows: existing
+        ? [{ id: existing.id, install_id: installId, config: existing.config, status: existing.status }]
+        : [],
+    });
+  }
+
+  it("rejects when no install row exists for installId", async () => {
+    queueCatalogLookup("postgres", {
+      pillar: "datasource",
+      install_model: "form",
+      id: "cat:postgres",
+    });
+    queueExistingRowLookup(WSID, "cat:postgres", "missing", null);
+    const installer = await getLiveService();
+    const exit = await Effect.runPromiseExit(
+      installer.updateDatasourceConfig(WSID, "postgres", "missing", {
+        partialConfig: { description: "x" },
+      }),
+    );
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      expect(JSON.stringify(exit.cause)).toContain("InstallNotFoundError");
+    }
+  });
+
+  it("merges partialConfig and writes UPDATE with new status when atlasMode='draft'", async () => {
+    queueCatalogLookup("postgres", {
+      pillar: "datasource",
+      install_model: "form",
+      id: "cat:postgres",
+    });
+    queueExistingRowLookup(WSID, "cat:postgres", "prod", {
+      id: "row-1",
+      config: { url: "postgresql://u@h/d", description: "old" },
+      status: "published",
+    });
+    const installer = await getLiveService();
+    const row = await runEffect(
+      installer.updateDatasourceConfig(WSID, "postgres", "prod", {
+        partialConfig: { description: "new" },
+        atlasMode: "draft",
+      }),
+    );
+    expect(row.status).toBe("draft");
+    expect(row.description).toBe("new");
+    expect(bridgeUnregisterCalls).toContain("prod");
+    const updateCall = internalQueryCalls.find((c) =>
+      c.sql.includes("UPDATE workspace_plugins") && c.sql.includes("SET config"),
+    );
+    expect(updateCall).toBeDefined();
+  });
+
+  it("status patch alone (demo hide) preserves config + sets archived", async () => {
+    queueCatalogLookup("demo-postgres", {
+      pillar: "datasource",
+      install_model: "form",
+      id: "cat:demo",
+    });
+    queueExistingRowLookup(WSID, "cat:demo", "__demo__", {
+      id: "row-demo",
+      config: { url: "postgresql://u@h/demo", description: "Demo" },
+      status: "published",
+    });
+    const installer = await getLiveService();
+    const row = await runEffect(
+      installer.updateDatasourceConfig(WSID, "demo-postgres", "__demo__", {
+        status: "archived",
+      }),
+    );
+    expect(row.status).toBe("archived");
+    expect(bridgeUnregisterCalls).toContain("__demo__");
+  });
+
+  it("groupId=null removes the group_id key from config", async () => {
+    queueCatalogLookup("postgres", {
+      pillar: "datasource",
+      install_model: "form",
+      id: "cat:postgres",
+    });
+    queueExistingRowLookup(WSID, "cat:postgres", "prod", {
+      id: "row-1",
+      config: { url: "postgresql://u@h/d", group_id: "old-group" },
+      status: "published",
+    });
+    const installer = await getLiveService();
+    const row = await runEffect(
+      installer.updateDatasourceConfig(WSID, "postgres", "prod", { groupId: null }),
+    );
+    expect(row.groupId).toBeNull();
+  });
+});
 
 describe("createWorkspaceInstallerTestLayer", () => {
   it("provides the partial methods and throws for unspecified ones", async () => {

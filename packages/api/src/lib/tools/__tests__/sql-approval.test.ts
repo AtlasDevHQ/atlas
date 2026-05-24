@@ -58,6 +58,10 @@ mock.module("@atlas/api/lib/auth/audit", () => ({
 
 mock.module("@atlas/api/lib/security", () => ({
   SENSITIVE_PATTERNS: /password|secret/i,
+  // No-op stub; sql-approval doesn't exercise the masker but `workspace-
+  // installer.ts` (transitively imported via the Effect bridge) needs
+  // the name to resolve. Per CLAUDE.md: "Mock all exports."
+  maskConnectionUrl: (url: string) => url,
 }));
 
 mock.module("@atlas/api/lib/tracing", () => ({

@@ -1,4 +1,4 @@
--- 0094_drop_connections_table.sql
+-- 0096_drop_connections_table.sql
 --
 -- 1.5.3 slice 6 (#2744 / PRD #2738 / ADR-0007) — THE CUTOVER.
 --
@@ -22,7 +22,7 @@
 --      `enc:v<N>:iv:authTag:ciphertext`**, so re-encryption is a no-op —
 --      `decryptSecretFields` reads what `db/internal.ts::encryptSecret`
 --      wrote. The companion sanity-check in
---      `migrations/scripts/0094_connections_to_workspace_plugins.ts`
+--      `migrations/scripts/0096_connections_to_workspace_plugins.ts`
 --      verifies round-trip decryption on every migrated row.
 --   3. Backfills a `demo-postgres` install for every organization that
 --      doesn't already own one (the `auto_install: true` catalog row's

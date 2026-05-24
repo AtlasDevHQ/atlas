@@ -862,7 +862,7 @@ export const MANAGED_AUTH_MIGRATIONS = [
   // Reads Better Auth's "organization" table to backfill a
   // per-workspace `demo-postgres` install row during the 1.5.3 cutover.
   // (#2744 / ADR-0007.)
-  "0094_drop_connections_table.sql",
+  "0096_drop_connections_table.sql",
 ];
 
 /**
@@ -959,9 +959,12 @@ export async function loadSavedConnections(): Promise<number> {
   // the static graph here narrow (admin-route tests partial-mock this
   // module heavily and would otherwise need to declare extra no-op
   // exports).
-  const { connections } = await import("@atlas/api/lib/db/connection");
-  const { resolveDatasourcePoolConfig, BUILTIN_DATASOURCE_CATALOG_SLUGS } =
-    await import("@atlas/api/lib/db/datasource-pool-resolver");
+  const { BUILTIN_DATASOURCE_CATALOG_SLUGS } = await import(
+    "@atlas/api/lib/db/datasource-pool-resolver"
+  );
+  const { registerDatasourceInstall } = await import(
+    "@atlas/api/lib/db/datasource-registry-bridge"
+  );
   const { decryptSecretFields, parseConfigSchema } =
     await import("@atlas/api/lib/plugins/secrets");
 
@@ -996,23 +999,21 @@ export async function loadSavedConnections(): Promise<number> {
 
     let registered = 0;
     for (const row of rows) {
-      if (connections.has(row.install_id)) {
-        log.debug(
-          { installId: row.install_id },
-          "Skipping already-registered install — org-scoped pools resolve via getForOrg()",
-        );
-        continue;
-      }
       // `stage` lets log alerting differentiate between schema-parse,
       // decrypt, resolve, and register failures without parsing the
       // error message.
-      let stage: "parse" | "decrypt" | "resolve" | "register" = "parse";
+      let stage: "parse" | "decrypt" | "register" = "parse";
       try {
         const schema = parseConfigSchema(row.config_schema);
         stage = "decrypt";
         const decryptedConfig = decryptSecretFields(row.config ?? {}, schema);
-        stage = "resolve";
-        const poolConfig = resolveDatasourcePoolConfig(
+        stage = "register";
+        // Shared bridge (`db/datasource-registry-bridge.ts`) — same path
+        // `WorkspaceInstaller.installDatasource` uses post-#2744. The
+        // bridge owns the native-vs-plugin dbType filter, the resolver
+        // call, and the already-registered idempotency guard, so the
+        // boot loop and the runtime install path stay in lockstep.
+        const didRegister = registerDatasourceInstall(
           {
             workspaceId: row.workspace_id,
             catalogId: "",
@@ -1022,30 +1023,7 @@ export async function loadSavedConnections(): Promise<number> {
           },
           decryptedConfig,
         );
-
-        // The native Postgres + MySQL adapters live in `connection.ts`;
-        // every other dbType (clickhouse / snowflake / bigquery / duckdb /
-        // salesforce) is plugin-managed and registered via
-        // `registerDirect` from the plugin's own boot path — skip them
-        // here so the ConnectionRegistry's native-adapter create path
-        // doesn't reject an unsupported scheme.
-        if (poolConfig.dbType !== "postgres" && poolConfig.dbType !== "mysql") {
-          log.debug(
-            { installId: row.install_id, dbType: poolConfig.dbType, catalogSlug: row.catalog_slug },
-            "Skipping non-native datasource install — plugin owns registration",
-          );
-          continue;
-        }
-
-        stage = "register";
-        connections.register(row.install_id, {
-          url: poolConfig.url,
-          description: poolConfig.description,
-          ...(poolConfig.dbType === "postgres" && poolConfig.schema
-            ? { schema: poolConfig.schema }
-            : {}),
-        });
-        registered++;
+        if (didRegister) registered++;
       } catch (err) {
         log.warn(
           {

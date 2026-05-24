@@ -476,4 +476,103 @@ describe("PillarCatalogQueryLive", () => {
     expect(result?.pillar).toBe("chat");
     expect(result?.implementationStatus).toBe("available");
   });
+
+  // ── Regression guards (post-review) ──────────────────────────────────
+  //
+  // The generic readers (`getByPillar`, `getBySlug`) are advertised in
+  // the Shape as pillar-agnostic. They must NOT carry the customer-
+  // facing legacy-type filter that `withInstallStatusFor` applies —
+  // doing so silently returns the empty set for a datasource-pillar
+  // caller (slice 5 / #2746).
+  it("getByPillar: does not narrow by legacy type (allows datasource rows)", async () => {
+    const { layer: dbLayer, calls } = makeFakeInternalDBLayer([
+      { matcher: (sql) => sql.includes("FROM plugin_catalog"), rows: [] },
+    ]);
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const facade = yield* PillarCatalogQuery;
+        return yield* facade.getByPillar("datasource");
+      }).pipe(Effect.provide(PillarCatalogQueryLive.pipe(Layer.provide(dbLayer)))),
+    );
+    const sql = calls[0]!.sql;
+    expect(sql).not.toContain("type IN");
+  });
+
+  it("getBySlug: does not narrow by legacy type", async () => {
+    const { layer: dbLayer, calls } = makeFakeInternalDBLayer([
+      { matcher: (sql) => sql.includes("FROM plugin_catalog"), rows: [] },
+    ]);
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const facade = yield* PillarCatalogQuery;
+        return yield* facade.getBySlug("postgres");
+      }).pipe(Effect.provide(PillarCatalogQueryLive.pipe(Layer.provide(dbLayer)))),
+    );
+    expect(calls[0]!.sql).not.toContain("type IN");
+  });
+
+  it("withInstallStatusFor: still narrows by legacy type for byte-identical wire output", async () => {
+    const { layer: dbLayer, calls } = makeFakeInternalDBLayer([
+      {
+        matcher: (sql) => sql.includes("FROM organization"),
+        rows: [{ plan_tier: "starter", is_operator_workspace: false }],
+      },
+      {
+        matcher: (sql) => sql.includes("FROM plugin_catalog"),
+        rows: [SLACK_ROW],
+      },
+      { matcher: (sql) => sql.includes("FROM workspace_plugins"), rows: [] },
+    ]);
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const facade = yield* PillarCatalogQuery;
+        return yield* facade.withInstallStatusFor("org-1");
+      }).pipe(Effect.provide(PillarCatalogQueryLive.pipe(Layer.provide(dbLayer)))),
+    );
+    const catalogCall = calls.find((c) =>
+      c.sql.includes("FROM plugin_catalog"),
+    )!;
+    expect(catalogCall.sql).toContain("type IN ('chat', 'integration')");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. Row-mapper fallback semantics — fail-closed defaults
+// ---------------------------------------------------------------------------
+
+describe("row mapper fallback semantics", () => {
+  // `asImplementationStatus` MUST default unknown values to `coming_soon`
+  // (fail closed). Defaulting to `available` would make a corrupt-seed /
+  // catalog-drift row surface as installable in the admin UI.
+  it("unknown implementation_status maps to coming_soon (fail closed)", async () => {
+    const { layer: dbLayer } = makeFakeInternalDBLayer([
+      {
+        matcher: (sql) => sql.includes("FROM plugin_catalog"),
+        rows: [{ ...SLACK_ROW, implementation_status: "totally-bogus-value" }],
+      },
+    ]);
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const facade = yield* PillarCatalogQuery;
+        return yield* facade.getBySlug("slack");
+      }).pipe(Effect.provide(PillarCatalogQueryLive.pipe(Layer.provide(dbLayer)))),
+    );
+    expect(result?.implementationStatus).toBe("coming_soon");
+  });
+
+  it("unknown pillar maps to 'action' (miscellaneous bucket per ADR-0006)", async () => {
+    const { layer: dbLayer } = makeFakeInternalDBLayer([
+      {
+        matcher: (sql) => sql.includes("FROM plugin_catalog"),
+        rows: [{ ...SLACK_ROW, pillar: "weird-new-pillar" }],
+      },
+    ]);
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const facade = yield* PillarCatalogQuery;
+        return yield* facade.getBySlug("slack");
+      }).pipe(Effect.provide(PillarCatalogQueryLive.pipe(Layer.provide(dbLayer)))),
+    );
+    expect(result?.pillar).toBe("action");
+  });
 });

@@ -35,7 +35,12 @@
  */
 
 import { Context, Effect, Layer } from "effect";
-import { type ImplementationStatus, type Pillar } from "@useatlas/types";
+import {
+  IMPLEMENTATION_STATUSES,
+  PILLARS,
+  type ImplementationStatus,
+  type Pillar,
+} from "@useatlas/types";
 import {
   resolveInstallStatus,
   type CardState,
@@ -123,7 +128,11 @@ export interface PillarCatalogQueryShape {
   readonly getByPillar: (
     pillar: Pillar,
   ) => Effect.Effect<readonly CatalogEntry[], Error>;
-  /** Read a single catalog row by slug. Returns null when not found / not enabled. */
+  /**
+   * Read a single catalog row by slug. Returns null when not found / not
+   * enabled. Pillar-agnostic — works for `datasource`, `chat`, and
+   * `action` rows alike.
+   */
   readonly getBySlug: (
     slug: string,
   ) => Effect.Effect<CatalogEntry | null, Error>;
@@ -148,9 +157,8 @@ export class PillarCatalogQuery extends Context.Tag("PillarCatalogQuery")<
 // Pillar validation
 // ---------------------------------------------------------------------------
 
-const PILLAR_VALUES: readonly Pillar[] = ["datasource", "chat", "action"];
 function asPillar(value: unknown): Pillar {
-  if (typeof value === "string" && (PILLAR_VALUES as readonly string[]).includes(value)) {
+  if (typeof value === "string" && (PILLARS as readonly string[]).includes(value)) {
     return value as Pillar;
   }
   // Catalog drift — log loudly. The DB CHECK constraint should prevent
@@ -161,9 +169,18 @@ function asPillar(value: unknown): Pillar {
 }
 
 function asImplementationStatus(value: unknown): ImplementationStatus {
-  if (value === "available" || value === "coming_soon") return value;
-  log.warn({ value }, "Unknown implementation_status in plugin_catalog; defaulting to 'available'");
-  return "available";
+  if (
+    typeof value === "string" &&
+    (IMPLEMENTATION_STATUSES as readonly string[]).includes(value)
+  ) {
+    return value as ImplementationStatus;
+  }
+  // Fail closed — an unknown status from catalog drift / corrupt seed
+  // must NOT render as an installable card. `coming_soon` keeps the
+  // row inert until an operator fixes the data; defaulting to
+  // `available` would surface an unshipped integration as installable.
+  log.warn({ value }, "Unknown implementation_status in plugin_catalog; defaulting to 'coming_soon'");
+  return "coming_soon";
 }
 
 // ---------------------------------------------------------------------------
@@ -325,21 +342,21 @@ const CATALOG_COLUMNS = `
 `.trim();
 
 /**
- * Build the `WHERE` clause for catalog reads. Deploy-mode filter (saas
- * narrows to `saas_eligible = true`) plus the legacy-type exclusion
- * (`type IN ('chat', 'integration')`) match the pre-slice-3 route's
- * predicates so the wire output for slice 3 stays byte-identical.
+ * Build the `WHERE` clause for catalog reads. Always applies the
+ * `enabled = true` + deploy-mode (`saas_eligible = true` on SaaS) gates.
+ * The legacy-type narrowing (`type IN ('chat', 'integration')`) is
+ * caller-controlled via `restrictToLegacyTypes` — `withInstallStatusFor`
+ * keeps the pre-slice-3 byte-identical wire output by passing `true`,
+ * while generic readers (`getByPillar`, `getBySlug`) pass `false` so a
+ * `datasource`-pillar caller in slice 5 (#2746) doesn't get an empty
+ * result set from the customer-facing-only filter.
  */
-function buildCatalogWhere(extra: string): string {
+function buildCatalogWhere(extra: string, restrictToLegacyTypes: boolean): string {
   const isSaas = getConfig()?.deployMode === "saas";
   const clauses = [
     "enabled = true",
     ...(isSaas ? ["saas_eligible = true"] : []),
-    // Pillar slice 3 stays scoped to the customer-facing surface — legacy
-    // marketplace types stay excluded until slice 5 lifts the connections
-    // pillar onto the catalog. Order matches the pre-slice-3 route so a
-    // diff of captured SQL between old/new code is the empty set.
-    "type IN ('chat', 'integration')",
+    ...(restrictToLegacyTypes ? ["type IN ('chat', 'integration')"] : []),
     extra,
   ].filter((c) => c.length > 0);
   return clauses.join(" AND ");
@@ -391,7 +408,7 @@ function buildPillarCatalogQueryService(
           const rows = await db.query<CatalogRow>(
             `SELECT ${CATALOG_COLUMNS}
                FROM plugin_catalog
-              WHERE ${buildCatalogWhere("pillar = $1")}
+              WHERE ${buildCatalogWhere("pillar = $1", false)}
               ORDER BY name ASC`,
             [pillar],
           );
@@ -406,7 +423,7 @@ function buildPillarCatalogQueryService(
           const rows = await db.query<CatalogRow>(
             `SELECT ${CATALOG_COLUMNS}
                FROM plugin_catalog
-              WHERE ${buildCatalogWhere("slug = $1")}
+              WHERE ${buildCatalogWhere("slug = $1", false)}
               LIMIT 1`,
             [slug],
           );
@@ -430,7 +447,7 @@ function buildPillarCatalogQueryService(
               db.query<CatalogRow>(
                 `SELECT ${CATALOG_COLUMNS}
                    FROM plugin_catalog
-                  WHERE ${buildCatalogWhere("")}
+                  WHERE ${buildCatalogWhere("", true)}
                   ORDER BY type ASC, name ASC`,
               ),
               db.query<InstallRow>(

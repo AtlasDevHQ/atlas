@@ -1,5 +1,5 @@
 /**
- * Sanity-check harness for migration `0094_drop_connections_table.sql`.
+ * Sanity-check harness for migration `0096_drop_connections_table.sql`.
  *
  * Accompanies the 1.5.3 cutover (#2744 / PRD #2738 / ADR-0007). The
  * migration itself does all structural work + the SQL-only backfill —
@@ -26,7 +26,7 @@
  * "Dogfood ✅" section).
  *
  * Invocation:
- *   DATABASE_URL=... bun run packages/api/src/lib/db/migrations/scripts/0094_connections_to_workspace_plugins.ts
+ *   DATABASE_URL=... bun run packages/api/src/lib/db/migrations/scripts/0096_connections_to_workspace_plugins.ts
  *   DRY_RUN=1 ...  (print counts only; default behaviour is identical because the script never writes)
  */
 

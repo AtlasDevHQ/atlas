@@ -5118,10 +5118,10 @@ describeIfPg("migrate-pg (real Postgres)", () => {
   //
   // NOTE: the existing `connection_groups` + `connections` describe
   // blocks earlier in this file (lines ~231–4000) reference tables that
-  // 0094 drops. They will be removed as part of the test sweep step of
+  // 0096 drops. They will be removed as part of the test sweep step of
   // #2744 — until then, those describe blocks fail at SQL plan time
   // against the migrated schema.
-  describe("0094: connections / connection_groups cutover (#2744, 1.5.3 slice 6)", () => {
+  describe("0096: connections / connection_groups cutover (#2744, 1.5.3 slice 6)", () => {
     it("drops both legacy tables", async () => {
       const tables = await pool.query<{ table_name: string }>(
         `SELECT table_name FROM information_schema.tables

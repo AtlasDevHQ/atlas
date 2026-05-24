@@ -269,8 +269,12 @@ describe("POST /api/v1/admin/publish — atomic promotion", () => {
         // 2 drafts promoted
         return { rows: [{ id: "ent-draft-1" }, { id: "ent-draft-2" }] };
       }
-      // Step 3b: UPDATE connections draft -> published
-      if (/UPDATE\s+connections\s+SET\s+status\s*=\s*'published'/i.test(sql)) {
+      // Step 3b: UPDATE workspace_plugins draft -> published. Post-#2744
+      // the content-mode "connections" segment key points at the
+      // `workspace_plugins` physical table — the wire `body.promoted.connections`
+      // count comes from this UPDATE's `rowCount`. (See
+      // CONTENT_MODE_TABLES in `lib/content-mode/tables.ts`.)
+      if (/UPDATE\s+workspace_plugins\s+SET\s+status\s*=\s*'published'/i.test(sql)) {
         return { rows: [{ id: "conn-draft-1" }] };
       }
       // Step 3c: UPDATE prompt_collections draft -> published

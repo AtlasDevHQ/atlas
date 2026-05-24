@@ -433,8 +433,14 @@ describe("ContentModeRegistry.runPublishPhases", () => {
       }).pipe(Effect.provide(ContentModeRegistryLive)),
     );
 
+    // #2744 — `connections` segment key now points at the
+    // `workspace_plugins` physical table per the CONTENT_MODE_TABLES
+    // pivot (ADR-0007). The PromotionReport's `table` field reflects
+    // the physical table name, so `connections` becomes `workspace_plugins`
+    // in the report; the wire-side draft-count key stays `connections`
+    // (see runPublishPhases + the /api/v1/mode tests).
     expect(reports.map((r: PromotionReport) => r.table)).toEqual([
-      "connections",
+      "workspace_plugins",
       "prompt_collections",
       "query_suggestions",
       "semantic_entities",
@@ -447,7 +453,7 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     expect(reports[3].tombstonesApplied).toBe(2);
 
     expect(calls).toHaveLength(7);
-    expect(calls[0].sql).toContain("UPDATE connections");
+    expect(calls[0].sql).toContain("UPDATE workspace_plugins");
     expect(calls[1].sql).toContain("UPDATE prompt_collections");
     expect(calls[2].sql).toContain("UPDATE query_suggestions");
     // Tombstones before promote.

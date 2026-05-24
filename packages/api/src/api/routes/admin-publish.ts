@@ -230,7 +230,11 @@ adminPublish.openapi(publishRoute, async (c) =>
         ),
       );
 
-      promotedConnectionCount = findReport(reports, "connections")?.promoted ?? 0;
+      // #2744 — `connections` segment key now points at the `workspace_plugins`
+      // physical table per CONTENT_MODE_TABLES. PromotionReport.table reflects
+      // the physical name, so look up by `"workspace_plugins"` post-cutover.
+      // Wire-side `body.promoted.connections` stays unchanged.
+      promotedConnectionCount = findReport(reports, "workspace_plugins")?.promoted ?? 0;
       promotedPromptCount = findReport(reports, "prompt_collections")?.promoted ?? 0;
       promotedStarterPromptCount =
         findReport(reports, "query_suggestions")?.promoted ?? 0;

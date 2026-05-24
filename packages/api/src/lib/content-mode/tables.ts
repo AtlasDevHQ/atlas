@@ -24,7 +24,16 @@ import { promoteSemanticEntities } from "./adapters/semantic-entities";
 // InferDraftCounts; `satisfies` enforces the port shape without widening.
 // Do not collapse to one or the other.
 export const CONTENT_MODE_TABLES = [
-  { kind: "simple", key: "connections" },
+  // #2744 / ADR-0007 — `connections` segment key preserved for wire
+  // compatibility (`/api/v1/mode` `draftCounts.connections` keeps its
+  // contract) but the physical table is now `workspace_plugins` with
+  // `org_id` widened to `workspace_id`. The default COUNT SQL counts
+  // *every* draft row regardless of pillar; in practice this matches
+  // datasource drafts because the chat/action install handlers always
+  // write `status='published'` directly. If a future feature stages
+  // chat/action installs, add a `where: "pillar='datasource'"` extension
+  // to the SimpleModeTable port and apply it here.
+  { kind: "simple", key: "connections", table: "workspace_plugins", orgColumn: "workspace_id" },
   { kind: "simple", key: "prompts", table: "prompt_collections" },
   { kind: "simple", key: "starterPrompts", table: "query_suggestions" },
   {

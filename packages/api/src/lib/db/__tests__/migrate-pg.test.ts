@@ -5131,6 +5131,18 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       expect(tables.rows.length).toBe(0);
     }, PG_TEST_TIMEOUT_MS);
 
+    it("workspace_plugins.updated_at column exists for content-mode promote SQL", async () => {
+      const cols = await pool.query<{ column_name: string; is_nullable: string; column_default: string | null }>(
+        `SELECT column_name, is_nullable, column_default
+           FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = 'workspace_plugins'
+            AND column_name = 'updated_at'`,
+      );
+      expect(cols.rows).toHaveLength(1);
+      expect(cols.rows[0].is_nullable).toBe("NO");
+    }, PG_TEST_TIMEOUT_MS);
+
     it("workspace_plugins.status column exists with the expected CHECK + index", async () => {
       const cols = await pool.query<{ column_name: string; is_nullable: string; column_default: string | null }>(
         `SELECT column_name, is_nullable, column_default

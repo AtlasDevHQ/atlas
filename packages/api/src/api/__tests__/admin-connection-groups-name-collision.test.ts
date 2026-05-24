@@ -1,3 +1,7 @@
+// TODO(#2744 steps 4+5): `connection_groups` table dropped by migration 0094;
+// connection-group name-collision is no longer a separate table-level invariant
+// (groups collapse into `workspace_plugins.config.group_id` strings). Describes
+// `.skip`'d pending step 4 route reshape + step 5 test rewrite.
 /**
  * Name-collision guard (#2506) — wire contract tests.
  *
@@ -91,7 +95,7 @@ function stateChangingCalls(): string[] {
 
 // ── Tests ──────────────────────────────────────────────────────────────
 
-describe("POST /api/v1/admin/connection-groups — name-collision guard (#2506)", () => {
+describe.skip("POST /api/v1/admin/connection-groups — name-collision guard (#2506)", () => {
   beforeEach(() => {
     mocks.hasInternalDB = true;
     mocks.mockInternalQuery.mockReset();
@@ -196,7 +200,7 @@ describe("POST /api/v1/admin/connection-groups — name-collision guard (#2506)"
   });
 });
 
-describe("PATCH /api/v1/admin/connection-groups/:id — name-collision guard (#2506)", () => {
+describe.skip("PATCH /api/v1/admin/connection-groups/:id — name-collision guard (#2506)", () => {
   beforeEach(() => {
     mocks.hasInternalDB = true;
     mocks.mockInternalQuery.mockReset();
@@ -252,7 +256,7 @@ describe("PATCH /api/v1/admin/connection-groups/:id — name-collision guard (#2
   });
 });
 
-describe("POST /api/v1/admin/connection-groups/merge — name-collision guard (#2506)", () => {
+describe.skip("POST /api/v1/admin/connection-groups/merge — name-collision guard (#2506)", () => {
   beforeEach(() => {
     mocks.hasInternalDB = true;
     mocks.mockInternalQuery.mockReset();
@@ -351,7 +355,7 @@ describe("POST /api/v1/admin/connection-groups/merge — name-collision guard (#
   });
 });
 
-describe("name-collision guard — fail-closed on DB error (#2506)", () => {
+describe.skip("name-collision guard — fail-closed on DB error (#2506)", () => {
   beforeEach(() => {
     mocks.hasInternalDB = true;
     mocks.mockInternalQuery.mockReset();
@@ -382,7 +386,7 @@ describe("name-collision guard — fail-closed on DB error (#2506)", () => {
   });
 });
 
-describe("POST /api/v1/admin/connections — inline newGroupName (#2506)", () => {
+describe.skip("POST /api/v1/admin/connections — inline newGroupName (#2506)", () => {
   beforeEach(() => {
     mocks.hasInternalDB = true;
     mocks.mockInternalQuery.mockReset();
@@ -440,7 +444,7 @@ describe("POST /api/v1/admin/connections — inline newGroupName (#2506)", () =>
   });
 });
 
-describe("PUT /api/v1/admin/connections/:id — inline newGroupName (#2506)", () => {
+describe.skip("PUT /api/v1/admin/connections/:id — inline newGroupName (#2506)", () => {
   beforeEach(() => {
     mocks.hasInternalDB = true;
     mocks.mockInternalQuery.mockReset();

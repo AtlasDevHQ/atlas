@@ -107,11 +107,38 @@
 -- the source data intact.
 
 -- ---------------------------------------------------------------------------
--- 1. workspace_plugins.status — content-mode column
+-- 1. workspace_plugins.status + updated_at — content-mode columns
 -- ---------------------------------------------------------------------------
+--
+-- `status` is the content-mode column (draft / published / archived). The
+-- existing `enabled` boolean stays for back-compat; admin-connections.ts
+-- post-cutover treats `enabled = (status != 'archived')` (the legacy
+-- writer of `enabled` is the chat/action handler chain, which always
+-- writes `enabled = true`).
+--
+-- `updated_at` is required by the content-mode registry's `simplePromoteSql`
+-- (`UPDATE … SET status='published', updated_at = now()`). The other
+-- content-mode tables (`connections`, `prompt_collections`,
+-- `query_suggestions`, `semantic_entities`) all carry one; workspace_plugins
+-- is the outlier and inherits the column now that it participates in the
+-- mode system as the post-cutover `connections` substitute. Default
+-- `installed_at` so backfilled rows have a sensible value before any
+-- write happens.
 
 ALTER TABLE workspace_plugins
   ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'published';
+
+ALTER TABLE workspace_plugins
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+-- Backfill `updated_at` from `installed_at` for any row created before
+-- this migration (the DEFAULT clause only applies to future inserts).
+-- Idempotent: if the column already existed (theoretical re-run), the
+-- WHERE clause matches no rows because the seed paths now write both
+-- columns explicitly.
+UPDATE workspace_plugins
+   SET updated_at = installed_at
+ WHERE updated_at IS NULL OR updated_at < installed_at;
 
 ALTER TABLE workspace_plugins
   DROP CONSTRAINT IF EXISTS chk_workspace_plugins_status;

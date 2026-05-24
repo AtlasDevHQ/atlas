@@ -1584,6 +1584,12 @@ export const workspacePlugins = pgTable(
     // to filter draft/archived installs; the content-mode middleware
     // overlays `status IN ('published', 'draft')` in developer mode.
     status: text("status").notNull().default("published"),
+    // 0094 / #2744 — required by `ContentModeRegistry`'s simple promote
+    // SQL (`UPDATE workspace_plugins SET status='published', updated_at = now()`).
+    // Every other content-mode table carries one; workspace_plugins
+    // inherits the column now that it participates in the mode system
+    // as the post-cutover `connections` substitute.
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     // 0092 / #2739 — composite PK per ADR-0007. Replaces single-column

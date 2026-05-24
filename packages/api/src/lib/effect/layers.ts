@@ -423,6 +423,135 @@ export const CatalogSeedLive: Layer.Layer<
 );
 
 // ══════════════════════════════════════════════════════════════════════
+// ██  Built-in Datasource Catalog Seed Layer (#2743 — 1.5.3 slice 5)
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * Discriminated outcome of the boot-time built-in Datasource catalog
+ * seed. Distinct from {@link CatalogSeedOutcome} because the built-in
+ * seed is code-driven (eight fixed rows) while the atlas.config.ts
+ * seed is operator-driven. Per ADR-0007, the built-in seed runs in
+ * addition to the atlas.config.ts seed, not instead of it.
+ *
+ * - `skipped-gate`  — InternalDB or Migration upstream not satisfied
+ * - `seeded`        — seed ran (preservedSlugs may include all eight on re-boot)
+ * - `error`         — the boot wrapper or its dynamic import threw;
+ *                     pre-existing rows answer admin-UI reads
+ */
+export type BuiltinDatasourceCatalogSeedOutcome =
+  | "skipped-gate"
+  | "seeded"
+  | "error";
+
+export interface BuiltinDatasourceCatalogSeedShape {
+  /** Slugs whose row was newly inserted this boot. */
+  readonly insertedSlugs: ReadonlyArray<string>;
+  /**
+   * Slugs whose row already existed and was preserved (ON CONFLICT DO
+   * NOTHING). Re-boots on a healthy DB land every built-in slug here.
+   */
+  readonly preservedSlugs: ReadonlyArray<string>;
+  readonly outcome: BuiltinDatasourceCatalogSeedOutcome;
+  /** Scrubbed error message when `outcome === "error"`. */
+  readonly error?: string;
+}
+
+export class BuiltinDatasourceCatalogSeed extends Context.Tag(
+  "BuiltinDatasourceCatalogSeed",
+)<BuiltinDatasourceCatalogSeed, BuiltinDatasourceCatalogSeedShape>() {}
+
+/**
+ * Idempotent boot-time seed of the eight built-in Datasource catalog
+ * rows. Per ADR-0007 these are code-seeded (not declared in
+ * `atlas.config.ts`) and re-asserted on every boot via
+ * `ON CONFLICT (slug) DO NOTHING`.
+ *
+ * Depends on `Migration` so the `pillar` / `implementation_status` /
+ * `auto_install` columns added by migration 0092 exist before the
+ * INSERT; depends on `InternalDB` for the pool.
+ *
+ * **Inert in slice 5 (#2743)** — `ConnectionRegistry` still reads from
+ * the `connections` table; nothing consumes these rows yet. Slice 6
+ * (#2744) pivots `ConnectionRegistry` to read from
+ * `workspace_plugins WHERE pillar = 'datasource'`, at which point the
+ * eight rows seeded here become live install targets.
+ *
+ * Non-fatal: the boot wrapper swallows errors and logs at error so a
+ * failed seed leaves pre-existing rows authoritative.
+ */
+export const BuiltinDatasourceCatalogSeedLive: Layer.Layer<
+  BuiltinDatasourceCatalogSeed,
+  never,
+  InternalDB | Migration
+> = Layer.effect(
+  BuiltinDatasourceCatalogSeed,
+  Effect.gen(function* () {
+    const db = yield* InternalDB;
+    const migration = yield* Migration;
+    const zeroCounts = {
+      insertedSlugs: [] as ReadonlyArray<string>,
+      preservedSlugs: [] as ReadonlyArray<string>,
+    };
+
+    if (!db.available || !migration.migrated) {
+      log.info(
+        { available: db.available, migrated: migration.migrated },
+        "Built-in Datasource catalog seed skipped — upstream gate not satisfied",
+      );
+      return {
+        ...zeroCounts,
+        outcome: "skipped-gate",
+      } satisfies BuiltinDatasourceCatalogSeedShape;
+    }
+
+    return yield* Effect.tryPromise({
+      try: async () => {
+        const { runBuiltinDatasourceCatalogSeedBoot } = await import(
+          "@atlas/api/lib/db/seed-builtin-datasource-catalog"
+        );
+        const result = await runBuiltinDatasourceCatalogSeedBoot();
+        switch (result.kind) {
+          case "skipped":
+            return {
+              ...zeroCounts,
+              outcome: "skipped-gate",
+            } satisfies BuiltinDatasourceCatalogSeedShape;
+          case "seeded":
+            return {
+              insertedSlugs: result.insertedSlugs,
+              preservedSlugs: result.preservedSlugs,
+              outcome: "seeded",
+            } satisfies BuiltinDatasourceCatalogSeedShape;
+          case "error":
+            // `runBuiltinDatasourceCatalogSeedBoot` already logged at
+            // error; surface the message to health consumers via the
+            // documented `outcome: "error"` contract.
+            return {
+              ...zeroCounts,
+              outcome: "error",
+              error: result.message,
+            } satisfies BuiltinDatasourceCatalogSeedShape;
+        }
+      },
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(
+      Effect.catchAll((err) => {
+        // Reachable when the dynamic import itself rejects — the
+        // `runBuiltinDatasourceCatalogSeedBoot` wrapper catches its own
+        // SQL/DB errors. We still surface the failure via
+        // `outcome: "error"` so healthCheck consumers can degrade.
+        log.error({ err }, "Built-in Datasource catalog seed boot wrapper threw");
+        return Effect.succeed({
+          ...zeroCounts,
+          outcome: "error",
+          error: errorMessage(err),
+        } satisfies BuiltinDatasourceCatalogSeedShape);
+      }),
+    );
+  }),
+);
+
+// ══════════════════════════════════════════════════════════════════════
 // ██  Connections Hydrate Layer
 // ══════════════════════════════════════════════════════════════════════
 
@@ -1279,6 +1408,7 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
   | Migration
   | BackfillSaasTrial
   | CatalogSeed
+  | BuiltinDatasourceCatalogSeed
   | ConnectionsHydrate
   | SemanticSync
   | Settings
@@ -1304,6 +1434,15 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
   // saas_eligible columns added by 0087 exist) and InternalDB. Same
   // shape as BackfillSaasTrialLive — independent peer otherwise.
   const catalogSeedLayer = CatalogSeedLive.pipe(
+    Layer.provide(Layer.merge(internalDBLayer, migrationLayer)),
+  );
+
+  // BuiltinDatasourceCatalogSeedLive (#2743, slice 5) — depends on
+  // Migration so 0092's pillar / implementation_status / auto_install
+  // columns + 0093's INSERTs are guaranteed before the boot re-assert.
+  // Independent peer of catalogSeedLayer; the two seeds touch disjoint
+  // slug sets so ordering between them doesn't matter.
+  const builtinDatasourceCatalogSeedLayer = BuiltinDatasourceCatalogSeedLive.pipe(
     Layer.provide(Layer.merge(internalDBLayer, migrationLayer)),
   );
 
@@ -1368,6 +1507,7 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     migrationLayer,
     backfillSaasTrialLayer,
     catalogSeedLayer,
+    builtinDatasourceCatalogSeedLayer,
     connectionsHydrateLayer,
     semanticSyncLayer,
     settingsLayer,

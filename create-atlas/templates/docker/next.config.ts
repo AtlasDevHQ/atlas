@@ -4,6 +4,9 @@ const nextConfig: NextConfig = {
   // standalone is for self-hosted deployments (Docker, Railway, etc.); Vercel uses its own build pipeline
   ...(process.env.VERCEL ? {} : { output: "standalone" }),
   serverExternalPackages: ["pg", "mysql2", "@clickhouse/client", "@duckdb/node-api", "snowflake-sdk", "jsforce", "just-bash", "nodemailer", "pino", "pino-pretty", "stripe"],
+  // Workspace-published TS plugins that are statically imported from ee/src/ —
+  // Turbopack would otherwise fail to compile their raw .ts source from node_modules.
+  transpilePackages: ["@useatlas/twenty"],
   // Type checking is handled by `bun run type` — skip during next build to avoid
   // false positives from @ts-expect-error directives that differ between monorepo and standalone
   typescript: { ignoreBuildErrors: true },

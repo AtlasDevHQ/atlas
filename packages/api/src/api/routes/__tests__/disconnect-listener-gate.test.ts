@@ -100,13 +100,17 @@ const mockInternalQuery = mock(async (sql: string, _params?: unknown[]): Promise
   // both by checking for the SELECT column list rather than the WHERE
   // suffix. Return a row that satisfies both shapes.
   if (sql.includes("FROM plugin_catalog") && sql.includes("WHERE slug = $1")) {
-    return [{ id: "catalog:slack", slug: "slack", install_model: "oauth", enabled: true }];
+    // #2742 — WorkspaceInstaller.uninstall SELECTs `pillar` +
+    // `config_schema` from plugin_catalog; supply them so the row
+    // passes `isValidPillar` and reaches the credential teardown.
+    return [{ id: "catalog:slack", slug: "slack", install_model: "oauth", enabled: true, pillar: "chat", config_schema: null }];
   }
   // Install-row config lookup for teamId resolution (DELETE handler).
   // The substring is specific enough to avoid colliding with the gate
-  // JOIN query below.
-  if (sql.includes("SELECT config->>'team_id'")) {
-    return state.installPresent ? [{ team_id: "T-listener-gate-1" }] : [];
+  // JOIN query below. WorkspaceInstaller's row lookup SELECTs `id,
+  // install_id, config->>'team_id'` so supply all three.
+  if (sql.includes("SELECT id, install_id, config->>'team_id'")) {
+    return state.installPresent ? [{ id: "install-1", install_id: "install-1", team_id: "T-listener-gate-1" }] : [];
   }
   // Install-row DELETE (DELETE handler step 2). Flips the in-memory
   // flag so the next gate read sees the missing row.

@@ -973,10 +973,10 @@ describe("plan-tier gating", () => {
           return [];
         }
         if (sql.includes("FROM plugin_catalog")) {
-          return [{ id: "catalog:slack", slug: "slack", install_model: "oauth", enabled: true, min_plan: "business" }];
+          return [{ id: "catalog:slack", slug: "slack", install_model: "oauth", enabled: true, min_plan: "business", pillar: "chat", config_schema: null }];
         }
         if (sql.includes("FROM workspace_plugins")) {
-          return [{ team_id: "T-downgraded" }];
+          return [{ id: "install-1", install_id: "install-1", team_id: "T-downgraded" }];
         }
         if (sql.includes("FROM organization")) {
           return [{ plan_tier: "free", is_operator_workspace: false }];
@@ -1020,11 +1020,13 @@ function stageSlackInstallLookup(teamId: string | null) {
       // (`getCatalogRowBySlugForDisconnect` — no gate) hit this branch.
       // Return a row with both shapes' fields populated so a single mock
       // serves both.
-      return [{ id: "catalog:slack", slug: "slack", install_model: "oauth", enabled: true }];
+      return [{ id: "catalog:slack", slug: "slack", install_model: "oauth", enabled: true, pillar: "chat", config_schema: null }];
     }
     if (sql.includes("FROM workspace_plugins")) {
       callOrder.push("workspace_plugins.select");
-      return teamId === null ? [] : [{ team_id: teamId }];
+      // #2742 — WorkspaceInstaller.uninstall SELECTs `id, install_id, team_id`
+      // for the row lookup; older route SELECTed `team_id` only.
+      return teamId === null ? [] : [{ id: "install-1", install_id: "install-1", team_id: teamId }];
     }
     return [];
   });
@@ -1133,11 +1135,12 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
 
   it("returns 501 for a real catalog platform whose disconnect path isn't wired", async () => {
     // Future-Platform safety net: catalog returns a `teams` row (a real
-    // Platform), but `deleteCredentialStore` only dispatches `slack`
-    // today. The 501 must short-circuit before either store is touched.
+    // Platform), but the WorkspaceInstaller credential dispatch only
+    // covers `slack` + INTEGRATION_CREDENTIALS_SLUGS today. The 501
+    // must short-circuit before either store is touched.
     mockInternalQuery.mockImplementation(async (sql: string): Promise<unknown[]> => {
       if (sql.includes("FROM plugin_catalog")) {
-        return [{ id: "catalog:teams", slug: "teams", install_model: "oauth", enabled: true }];
+        return [{ id: "catalog:teams", slug: "teams", install_model: "oauth", enabled: true, pillar: "chat", config_schema: null }];
       }
       return [];
     });
@@ -1264,12 +1267,16 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
         return [];
       }
       if (sql.includes("FROM plugin_catalog")) {
-        // enabled: false — the kill-switched state.
-        return [{ id: "catalog:slack", slug: "slack" }];
+        // enabled: false — the kill-switched state. WorkspaceInstaller's
+        // disconnect-side loader SELECTs `install_model, pillar,
+        // config_schema` as well as `id, slug, enabled` so the row needs
+        // every column (or the loader returns null → 404). Min-plan stays
+        // off because disconnect doesn't plan-gate.
+        return [{ id: "catalog:slack", slug: "slack", install_model: "oauth", enabled: false, pillar: "chat", config_schema: null }];
       }
       if (sql.includes("FROM workspace_plugins")) {
         callOrder.push("workspace_plugins.select");
-        return [{ team_id: "T-kill-switched" }];
+        return [{ id: "install-1", install_id: "install-1", team_id: "T-kill-switched" }];
       }
       return [];
     });
@@ -1293,11 +1300,11 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
         return [];
       }
       if (sql.includes("FROM plugin_catalog")) {
-        return [{ id: "catalog:slack", slug: "slack", install_model: "oauth", enabled: true }];
+        return [{ id: "catalog:slack", slug: "slack", install_model: "oauth", enabled: true, pillar: "chat", config_schema: null }];
       }
       if (sql.includes("FROM workspace_plugins")) {
         callOrder.push("workspace_plugins.select");
-        return [{ team_id: "T-self-hosted" }];
+        return [{ id: "install-1", install_id: "install-1", team_id: "T-self-hosted" }];
       }
       return [];
     });
@@ -1337,14 +1344,17 @@ function stageSalesforceInstallLookup(present: boolean) {
       return [];
     }
     if (sql.includes("FROM plugin_catalog")) {
-      return [{ id: "catalog:salesforce", slug: "salesforce", install_model: "oauth", enabled: true }];
+      // #2742 — WorkspaceInstaller's catalog loader SELECTs `pillar` +
+      // `config_schema` too; supply them so the row passes the
+      // `isValidPillar` gate.
+      return [{ id: "catalog:salesforce", slug: "salesforce", install_model: "oauth", enabled: true, pillar: "action", config_schema: null }];
     }
     if (sql.includes("FROM workspace_plugins")) {
       callOrder.push("workspace_plugins.select");
       // Salesforce installs don't carry team_id — `team_id` resolves to NULL
       // through the JSONB extraction. The disconnect path tolerates a null
       // teamId for non-Slack platforms.
-      return present ? [{ team_id: null }] : [];
+      return present ? [{ id: "install-sf", install_id: "install-sf", team_id: null }] : [];
     }
     return [];
   });

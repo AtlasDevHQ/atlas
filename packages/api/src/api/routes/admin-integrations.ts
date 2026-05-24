@@ -12,6 +12,11 @@ import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
+import {
+  WorkspaceInstaller,
+  WorkspaceInstallerLive,
+} from "@atlas/api/lib/effect/workspace-installer";
+import type { WorkspaceId } from "@useatlas/types";
 import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { getInstallationByOrg, saveInstallation, deleteInstallationByOrg } from "@atlas/api/lib/slack/store";
 import {
@@ -424,7 +429,17 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
   );
 });
 
-// DELETE /slack — disconnect Slack for current org
+// DELETE /slack — disconnect Slack for current org.
+//
+// #2742 — consolidated through `WorkspaceInstaller.uninstall` so the
+// ADR-0003 two-store teardown sequencing (chat_cache before
+// workspace_plugins) lives in one place. For OAuth installs this
+// clears both stores; for BYOT installs (which write to chat_cache
+// only via `connectSlackByotRoute` and never produce a
+// workspace_plugins row) the facade returns `InstallNotFoundError`
+// and we fall back to the legacy `deleteInstallationByOrg` — keeping
+// the BYOT disconnect path working without forcing every BYOT user
+// to first migrate to OAuth.
 adminIntegrations.openapi(disconnectSlackRoute, async (c) => {
   return runEffect(
     c,
@@ -438,16 +453,38 @@ adminIntegrations.openapi(disconnectSlackRoute, async (c) => {
         );
       }
 
-      const deleted = yield* Effect.tryPromise({
-        try: () => deleteInstallationByOrg(orgId),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
+      // Try the facade first — drains both stores when the install was
+      // created via OAuth (slice 5+ flow). Catch `InstallNotFoundError`
+      // so we can fall back to the BYOT-only path.
+      const facadeOutcome = yield* Effect.gen(function* () {
+        const installer = yield* WorkspaceInstaller;
+        yield* installer.uninstall(orgId as WorkspaceId, "slack");
+        return "ok" as const;
+      }).pipe(
+        Effect.provide(WorkspaceInstallerLive),
+        Effect.catchTag("InstallNotFoundError", () =>
+          Effect.succeed("not_found" as const),
+        ),
+        Effect.catchTag("CatalogNotFoundError", () =>
+          // No catalog row → no OAuth install possible; treat as BYOT
+          // fallback so an environment without the `slack` catalog row
+          // can still clean up legacy BYOT credentials.
+          Effect.succeed("not_found" as const),
+        ),
+      );
 
-      if (!deleted) {
-        return c.json(
-          { error: "not_found", message: "No Slack installation found for this workspace." },
-          404,
-        );
+      if (facadeOutcome === "not_found") {
+        // BYOT fallback — legacy single-store delete keyed by orgId.
+        const deleted = yield* Effect.tryPromise({
+          try: () => deleteInstallationByOrg(orgId),
+          catch: (err) => err instanceof Error ? err : new Error(String(err)),
+        });
+        if (!deleted) {
+          return c.json(
+            { error: "not_found", message: "No Slack installation found for this workspace." },
+            404,
+          );
+        }
       }
 
       log.info({ orgId }, "Slack installation disconnected by admin");

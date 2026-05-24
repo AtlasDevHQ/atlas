@@ -1430,6 +1430,142 @@ describe("createWorkspaceInstallerTestLayer", () => {
 });
 
 // ---------------------------------------------------------------------------
+// mapInstallError — typed (status: 400 | 404 | 409) switch (#2744)
+// ---------------------------------------------------------------------------
+//
+// `mapInstallError` replaces the `as InstallerErrorStatus` runtime cast
+// that `runInstaller` previously used. Adding a new `InstallError` tag
+// must fail the exhaustive switch at compile time; these tests pin the
+// status + body shape per tag so the admin UI's per-tag rendering
+// contract stays stable.
+
+describe("mapInstallError", () => {
+  it("maps InvalidInstallIdError(pattern) to 400 with reason + installId", () => {
+    const result = mod.mapInstallError(
+      new mod.InvalidInstallIdError({
+        message: "Install id must match ^[a-z][a-z0-9_-]*$",
+        installId: "Warehouse",
+        reason: "pattern",
+      }),
+    );
+    expect(result.status).toBe(400);
+    expect(result.code).toBe("bad_request");
+    expect(result.body).toEqual({ installId: "Warehouse", reason: "pattern" });
+  });
+
+  it("maps InvalidInstallIdError(reserved) to 400", () => {
+    const result = mod.mapInstallError(
+      new mod.InvalidInstallIdError({
+        message: "Reserved",
+        installId: "default",
+        reason: "reserved",
+      }),
+    );
+    expect(result.status).toBe(400);
+    expect(result.body).toEqual({ installId: "default", reason: "reserved" });
+  });
+
+  it("maps ConfigSchemaError to 400 with fieldErrors + formErrors", () => {
+    const result = mod.mapInstallError(
+      new mod.ConfigSchemaError({
+        message: "url required",
+        catalogSlug: "postgres",
+        fieldErrors: { url: ["Required"] },
+        formErrors: ["Top-level"],
+      }),
+    );
+    expect(result.status).toBe(400);
+    expect(result.code).toBe("bad_request");
+    expect(result.body).toEqual({
+      catalogSlug: "postgres",
+      fieldErrors: { url: ["Required"] },
+      formErrors: ["Top-level"],
+    });
+  });
+
+  it("maps CatalogNotFoundError to 404 with catalogSlug in body", () => {
+    const result = mod.mapInstallError(
+      new mod.CatalogNotFoundError({ message: "no catalog", catalogSlug: "made-up" }),
+    );
+    expect(result.status).toBe(404);
+    expect(result.code).toBe("not_found");
+    expect(result.body).toEqual({ catalogSlug: "made-up" });
+  });
+
+  it("maps InstallNotFoundError to 404 with workspaceId + catalogSlug in body", () => {
+    const result = mod.mapInstallError(
+      new mod.InstallNotFoundError({
+        message: "no install",
+        workspaceId: "org-1",
+        catalogSlug: "postgres",
+      }),
+    );
+    expect(result.status).toBe(404);
+    expect(result.code).toBe("not_found");
+    expect(result.body).toEqual({ workspaceId: "org-1", catalogSlug: "postgres" });
+  });
+
+  it("maps AlreadyInstalledError(datasource) to 409 with pillar in body", () => {
+    const result = mod.mapInstallError(
+      new mod.AlreadyInstalledError({
+        message: "Already installed",
+        workspaceId: "org-1",
+        catalogSlug: "postgres",
+        pillar: "datasource",
+      }),
+    );
+    expect(result.status).toBe(409);
+    expect(result.code).toBe("conflict");
+    expect(result.body).toEqual({
+      catalogSlug: "postgres",
+      pillar: "datasource",
+    });
+  });
+
+  it("maps AlreadyInstalledError(chat) to 409 — pillar widening preserved", () => {
+    const result = mod.mapInstallError(
+      new mod.AlreadyInstalledError({
+        message: "Already installed",
+        workspaceId: "org-1",
+        catalogSlug: "slack",
+        pillar: "chat",
+      }),
+    );
+    expect(result.status).toBe(409);
+    expect((result.body as { pillar: string }).pillar).toBe("chat");
+  });
+
+  it("body field carries every tag-specific discriminator the route needs", () => {
+    // Property check: every mapping that we'd render in the response
+    // includes a body object so the admin UI never needs to parse the
+    // message string. This guards against a future tag added with
+    // status+message but no programmatic discriminator.
+    const samples = [
+      new mod.InvalidInstallIdError({ message: "m", installId: "i", reason: "pattern" }),
+      new mod.ConfigSchemaError({
+        message: "m",
+        catalogSlug: "postgres",
+        fieldErrors: {},
+        formErrors: [],
+      }),
+      new mod.CatalogNotFoundError({ message: "m", catalogSlug: "x" }),
+      new mod.InstallNotFoundError({ message: "m", workspaceId: "w", catalogSlug: "x" }),
+      new mod.AlreadyInstalledError({
+        message: "m",
+        workspaceId: "w",
+        catalogSlug: "x",
+        pillar: "datasource",
+      }),
+    ];
+    for (const e of samples) {
+      const result = mod.mapInstallError(e);
+      expect(result.body).toBeDefined();
+      expect(typeof result.body).toBe("object");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Helper: build the live service for the tests above.
 // ---------------------------------------------------------------------------
 

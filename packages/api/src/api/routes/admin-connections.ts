@@ -918,19 +918,16 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
     }, 400);
   }
 
-  // Build the formData the installer expects. We map the route's
-  // legacy field names to the resolver's: `schema` → `schema`, `url` →
-  // `url`, `description` → `description`. The installer encrypts
-  // `secret: true` fields (i.e. `url`) per the catalog's config_schema.
+  // `encryptSecretFields` will encrypt the `url` field at the installer
+  // boundary per the catalog's config_schema (where `secret: true`).
   const formData: Record<string, unknown> = {
     url,
     ...(typeof description === "string" ? { description } : {}),
     ...(typeof schema === "string" && schema.length > 0 ? { schema } : {}),
   };
 
-  // Resolve catalog slug from dbType — postgres → "postgres", etc.
-  // `default-postgres` (the demo catalog) is reserved for the migration
-  // backfill; admins always land on the bare dbType catalog row.
+  // Admin POSTs always land on the bare `dbType` catalog row; the
+  // `demo-postgres` slug is reserved for the migration backfill.
   const catalogSlug = dbType;
 
   try {
@@ -1345,11 +1342,10 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => runHandler(c, "dele
     return c.json({ error: "not_found", message: `Connection "${id}" not found or is not admin-managed.`, requestId }, 404);
   }
 
-  // Scheduled-task reference check: the JSONB column makes the join
-  // verbose but the semantics are the same — refuse delete when any
-  // scheduled_task points at a group_id this install belongs to.
-  // The `42P01` carve-out stays in case scheduled_tasks doesn't exist
-  // (it's an optional table in self-hosted dev environments).
+  // Scheduled-task reference check: refuse delete when any scheduled_task
+  // points at a group_id this install belongs to. The catch below carves
+  // out PostgreSQL SQLSTATE 42P01 (relation does not exist) — see comment
+  // at the catch site.
   try {
     const groupRefs = await internalQuery<{ count: string }>(
       `SELECT COUNT(*) AS count

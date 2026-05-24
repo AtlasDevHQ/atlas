@@ -170,20 +170,30 @@ export interface InstallErrorMapping {
  * render per-tag UX without parsing strings.
  */
 export function mapInstallError(e: InstallError): InstallErrorMapping {
+  // Body shapes mirror the corresponding `case` branches in
+  // `lib/effect/hono.ts:mapTaggedError` so the wire payload stays
+  // identical regardless of whether the route reached this map via
+  // `runHandler` (full-Effect) or `runInstaller` (this PR's bridge).
   switch (e._tag) {
     case "InvalidInstallIdError":
       return {
         status: 400,
-        code: "invalid_request",
+        code: "bad_request",
         message: e.message,
         body: { installId: e.installId, reason: e.reason },
       };
     case "ConfigSchemaError":
       return {
         status: 400,
-        code: "invalid_request",
+        code: "bad_request",
         message: e.message,
-        body: { fieldErrors: e.fieldErrors, formErrors: e.formErrors },
+        body: {
+          catalogSlug: e.catalogSlug,
+          fieldErrors: Object.fromEntries(
+            Object.entries(e.fieldErrors).map(([k, v]) => [k, [...v]]),
+          ),
+          formErrors: [...e.formErrors],
+        },
       };
     case "CatalogNotFoundError":
       return {
@@ -204,11 +214,7 @@ export function mapInstallError(e: InstallError): InstallErrorMapping {
         status: 409,
         code: "conflict",
         message: e.message,
-        body: {
-          workspaceId: e.workspaceId,
-          catalogSlug: e.catalogSlug,
-          pillar: e.pillar,
-        },
+        body: { catalogSlug: e.catalogSlug, pillar: e.pillar },
       };
     default: {
       // Compile-time exhaustiveness check — a new `InstallError` tag must

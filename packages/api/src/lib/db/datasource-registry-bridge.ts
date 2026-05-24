@@ -13,14 +13,13 @@
  * new dbType ships (or a tunable like `maxConnections` becomes
  * catalog-declared), only this file needs to change.
  *
- * Native dbTypes only — the helper intentionally skips
- * `clickhouse` / `snowflake` / `bigquery` / `duckdb` / `salesforce`,
- * which are plugin-managed and register through their own boot path
- * via `connections.registerDirect`. The skip matches the pre-cutover
- * `loadSavedConnections` branch at the line that filters on `dbType !==
- * 'postgres' && dbType !== 'mysql'`. Calling code is responsible for
- * not asking the bridge to register a plugin-managed dbType — the helper
- * returns `false` rather than throwing so the boot loop can keep going.
+ * Resolver runs unconditionally; native-dbType filter runs after. This
+ * means a plugin-managed row (`clickhouse` / `snowflake` / `bigquery` /
+ * `duckdb` / `salesforce`) missing a required catalog field will throw
+ * from the resolver BEFORE reaching the native filter — only well-formed
+ * plugin rows reach the filter and return `false`. The trade-off is
+ * intentional: surfacing config violations loud at boot beats silently
+ * skipping rows that the catalog declared as required.
  *
  * Pure-ish: the only side effect is the registry mutation. No DB I/O,
  * no logging — callers handle errors and emit the appropriate breadcrumb.
@@ -37,10 +36,17 @@ import {
 
 /**
  * Resolve `(row, decryptedConfig)` and register the resulting native pool
- * with the `ConnectionRegistry`. Returns `true` when a registration was
- * performed, `false` when the dbType is plugin-managed (caller's no-op),
- * and throws on any resolver violation (missing required field, invalid
- * schema identifier, unknown catalog slug).
+ * with the `ConnectionRegistry`.
+ *
+ * Returns:
+ *   - `true`  — a fresh registration was performed
+ *   - `false` — either the dbType is plugin-managed (filter short-circuit)
+ *               or the install_id was already registered (idempotent re-register)
+ *
+ * Throws on any resolver violation (missing required field, invalid
+ * schema identifier, unknown catalog slug). Resolver runs before the
+ * native filter — a plugin-managed row with malformed config throws
+ * here, never reaching the short-circuit branch.
  *
  * The native-only filter matches the prior in-line check in
  * `loadSavedConnections` — without it, `connections.register` would

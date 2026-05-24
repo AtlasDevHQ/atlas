@@ -80,14 +80,14 @@
 --
 -- ## connection_groups disposition
 --
--- Per the user's grilling choice (pure (a)): the table goes entirely.
--- The named-group abstraction (with active/archived lifecycle, primary
--- pin, per-org unique name index) collapses into denormalised JSONB
--- inside each `workspace_plugins.config`. A "group" becomes implicit:
--- any N rows sharing `config->>'group_id'` belong to the same group.
--- Existing per-org unique-name enforcement is lost (the user accepted
--- this); app code MAY enforce it on the admin route, but the DB no
--- longer does.
+-- Per ADR-0007 § "connection_groups disposition" (pure-collapse option):
+-- the table goes entirely. The named-group abstraction (with
+-- active/archived lifecycle, primary pin, per-org unique name index)
+-- collapses into denormalised JSONB inside each `workspace_plugins.config`.
+-- A "group" becomes implicit: any N rows sharing `config->>'group_id'`
+-- belong to the same group. Existing per-org unique-name enforcement
+-- moves out of the DB; app code MAY enforce it on the admin route, but
+-- the DB no longer does.
 --
 -- This minimises call-site churn: every existing `connection_group_id`
 -- column (`scheduled_tasks`, `approval_queue`, `conversations`,

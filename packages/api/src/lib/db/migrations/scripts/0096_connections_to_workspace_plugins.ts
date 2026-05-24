@@ -22,15 +22,12 @@
  * backfill produced an unreadable row — surface as a release-blocker.
  *
  * The script is named after the migration it accompanies; the prod-run
- * date is recorded in the deploy runbook (see #2744 PR description).
+ * date is recorded in the deploy runbook (see the #2744 PR description's
+ * "Dogfood ✅" section).
  *
  * Invocation:
  *   DATABASE_URL=... bun run packages/api/src/lib/db/migrations/scripts/0094_connections_to_workspace_plugins.ts
  *   DRY_RUN=1 ...  (print counts only; default behaviour is identical because the script never writes)
- *
- * Prod-run dates:
- *   - dogfood:   <pending — record on PR merge>
- *   - atlas-prod: <pending — record on PR merge>
  */
 
 import { Client } from "pg";

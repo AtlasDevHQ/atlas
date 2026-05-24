@@ -1000,19 +1000,19 @@ export async function loadSavedConnections(): Promise<number> {
     let registered = 0;
     for (const row of rows) {
       // `stage` lets log alerting differentiate between schema-parse,
-      // decrypt, resolve, and register failures without parsing the
-      // error message.
-      let stage: "parse" | "decrypt" | "register" = "parse";
+      // decrypt, and bridge failures without parsing the error message.
+      // `bridge` is coarse-grained on purpose: it covers both resolver
+      // violations (missing required field, invalid schema identifier)
+      // and registry-side failures (`connections.register` rejecting a
+      // URL scheme). They share a stage because the bridge fuses them
+      // into one call. Run the migration sanity-check script
+      // (`db/migrations/scripts/0094_*`) to disambiguate.
+      let stage: "parse" | "decrypt" | "bridge" = "parse";
       try {
         const schema = parseConfigSchema(row.config_schema);
         stage = "decrypt";
         const decryptedConfig = decryptSecretFields(row.config ?? {}, schema);
-        stage = "register";
-        // Shared bridge (`db/datasource-registry-bridge.ts`) — same path
-        // `WorkspaceInstaller.installDatasource` uses post-#2744. The
-        // bridge owns the native-vs-plugin dbType filter, the resolver
-        // call, and the already-registered idempotency guard, so the
-        // boot loop and the runtime install path stay in lockstep.
+        stage = "bridge";
         const didRegister = registerDatasourceInstall(
           {
             workspaceId: row.workspace_id,

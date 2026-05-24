@@ -510,17 +510,28 @@ export const BuiltinDatasourceCatalogSeedLive: Layer.Layer<
           "@atlas/api/lib/db/seed-builtin-datasource-catalog"
         );
         const result = await runBuiltinDatasourceCatalogSeedBoot();
-        if (result === null) {
-          return {
-            ...zeroCounts,
-            outcome: "skipped-gate",
-          } satisfies BuiltinDatasourceCatalogSeedShape;
+        switch (result.kind) {
+          case "skipped":
+            return {
+              ...zeroCounts,
+              outcome: "skipped-gate",
+            } satisfies BuiltinDatasourceCatalogSeedShape;
+          case "seeded":
+            return {
+              insertedSlugs: result.insertedSlugs,
+              preservedSlugs: result.preservedSlugs,
+              outcome: "seeded",
+            } satisfies BuiltinDatasourceCatalogSeedShape;
+          case "error":
+            // `runBuiltinDatasourceCatalogSeedBoot` already logged at
+            // error; surface the message to health consumers via the
+            // documented `outcome: "error"` contract.
+            return {
+              ...zeroCounts,
+              outcome: "error",
+              error: result.message,
+            } satisfies BuiltinDatasourceCatalogSeedShape;
         }
-        return {
-          insertedSlugs: result.insertedSlugs,
-          preservedSlugs: result.preservedSlugs,
-          outcome: "seeded",
-        } satisfies BuiltinDatasourceCatalogSeedShape;
       },
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     }).pipe(

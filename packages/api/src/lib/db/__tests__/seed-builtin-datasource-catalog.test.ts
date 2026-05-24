@@ -18,7 +18,7 @@
  * in-memory mock pool.
  */
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, mock } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -248,6 +248,96 @@ describe("migration 0093 and seed module stay aligned", () => {
       // must NOT contain `true,\n    'starter'` immediately before the
       // min_plan position.
       expect(stanza).toContain("false,\n    'starter'");
+    }
+  });
+});
+
+describe("runBuiltinDatasourceCatalogSeedBoot (discriminated outcomes)", () => {
+  // The boot wrapper sits between the Effect layer and the pure
+  // seed function. Each of its three outcomes (`skipped` / `seeded` /
+  // `error`) must be distinguishable — `BuiltinDatasourceCatalogSeedLive`
+  // maps them onto the user-visible `outcome` field; conflating skip
+  // and error was the bug that the discriminated return shape fixes.
+
+  // Mock pg pool — captures the same shape `getInternalDB()` returns.
+  const mockQuery = mock<
+    (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>
+  >(() => Promise.resolve({ rows: [] }));
+
+  // Track which `db/internal` shape we want for the current test.
+  let hasInternalDBReturns = true;
+
+  mock.module("@atlas/api/lib/db/internal", () => ({
+    hasInternalDB: () => hasInternalDBReturns,
+    getInternalDB: () => ({ query: mockQuery }),
+    // Re-export the encryption-key reset so the resolver test file's
+    // `mock.module` companions don't blow up on partial mocks if both
+    // suites end up in the same isolated worker. Defensive.
+    _resetEncryptionKeyCache: () => {},
+  }));
+
+  afterEach(() => {
+    mockQuery.mockClear();
+    hasInternalDBReturns = true;
+  });
+
+  it("returns `{ kind: 'skipped' }` when no internal DB is configured", async () => {
+    hasInternalDBReturns = false;
+    const { runBuiltinDatasourceCatalogSeedBoot } = await import(
+      "@atlas/api/lib/db/seed-builtin-datasource-catalog"
+    );
+    const result = await runBuiltinDatasourceCatalogSeedBoot();
+    expect(result.kind).toBe("skipped");
+    if (result.kind === "skipped") expect(result.reason).toBe("no-internal-db");
+    // Pool must not be queried in the skip path.
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it("returns `{ kind: 'seeded' }` on a successful seed", async () => {
+    hasInternalDBReturns = true;
+    // Simulate every row inserted (no conflicts) — match the bulk INSERT
+    // RETURNING contract.
+    mockQuery.mockImplementation(() =>
+      Promise.resolve({
+        rows: BUILTIN_DATASOURCE_CATALOG_ROWS.map((r) => ({ slug: r.slug })),
+      }),
+    );
+    const { runBuiltinDatasourceCatalogSeedBoot } = await import(
+      "@atlas/api/lib/db/seed-builtin-datasource-catalog"
+    );
+    const result = await runBuiltinDatasourceCatalogSeedBoot();
+    expect(result.kind).toBe("seeded");
+    if (result.kind === "seeded") {
+      expect(result.insertedSlugs).toHaveLength(8);
+      expect(result.preservedSlugs).toHaveLength(0);
+    }
+  });
+
+  it("returns `{ kind: 'error' }` when the pool query throws", async () => {
+    hasInternalDBReturns = true;
+    mockQuery.mockImplementation(() =>
+      Promise.reject(new Error("simulated pg failure")),
+    );
+    const { runBuiltinDatasourceCatalogSeedBoot } = await import(
+      "@atlas/api/lib/db/seed-builtin-datasource-catalog"
+    );
+    const result = await runBuiltinDatasourceCatalogSeedBoot();
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("simulated pg failure");
+    }
+  });
+
+  it("normalizes a non-Error throw to a string message", async () => {
+    hasInternalDBReturns = true;
+    mockQuery.mockImplementation(() => Promise.reject("just a string"));
+    const { runBuiltinDatasourceCatalogSeedBoot } = await import(
+      "@atlas/api/lib/db/seed-builtin-datasource-catalog"
+    );
+    const result = await runBuiltinDatasourceCatalogSeedBoot();
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") {
+      expect(result.message).toContain("just a string");
     }
   });
 });

@@ -35,6 +35,7 @@ import {
   BUILTIN_DATASOURCE_CATALOG_SLUGS,
   type BuiltinDatasourceCatalogSlug,
 } from "@atlas/api/lib/db/datasource-pool-resolver";
+import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 
 const log = createLogger("db.seed-builtin-datasource-catalog");
 
@@ -44,6 +45,12 @@ const log = createLogger("db.seed-builtin-datasource-catalog");
  * `min_plan`, `enabled`, `saas_eligible` are pinned to the row's
  * canonical values; `created_at` / `updated_at` are written as `NOW()`
  * in the SQL — no field here.
+ *
+ * `configSchema` reuses {@link ConfigSchemaField} (the same shape the
+ * rest of the codebase reads back from `plugin_catalog.config_schema`
+ * JSONB) so a future field addition there (e.g. a new option key)
+ * propagates here at compile time instead of silently drifting between
+ * the seed-time write shape and the runtime read shape.
  */
 export interface BuiltinDatasourceCatalogRow {
   readonly id: string;
@@ -52,14 +59,7 @@ export interface BuiltinDatasourceCatalogRow {
   readonly description: string;
   readonly installModel: "form" | "oauth";
   readonly autoInstall: boolean;
-  readonly configSchema: ReadonlyArray<{
-    readonly key: string;
-    readonly type: "string" | "number" | "boolean" | "select";
-    readonly label?: string;
-    readonly description?: string;
-    readonly required?: boolean;
-    readonly secret?: boolean;
-  }>;
+  readonly configSchema: ReadonlyArray<ConfigSchemaField>;
 }
 
 /**
@@ -297,8 +297,15 @@ export async function seedBuiltinDatasourceCatalog(
     }
   }
 
-  // Parameterised bulk INSERT — each row contributes 13 placeholders.
-  // Column order matches migration 0093's VALUES block.
+  // Parameterised bulk INSERT — each row contributes 7 placeholders
+  // (id, name, slug, description, install_model, auto_install,
+  // config_schema). The remaining 8 columns are SQL literals
+  // (`'datasource'` for type and pillar, `'available'` for status,
+  // `'starter'` for min_plan, two `true`s for enabled + saas_eligible,
+  // and two `NOW()` timestamps). Column order matches migration 0093's
+  // VALUES block — drift is checked by
+  // `__tests__/seed-builtin-datasource-catalog.test.ts`'s
+  // `migration-and-seed-stay-aligned` suite.
   const placeholders: string[] = [];
   const params: unknown[] = [];
   let p = 0;
@@ -346,14 +353,33 @@ export async function seedBuiltinDatasourceCatalog(
 }
 
 /**
+ * Discriminated outcome of {@link runBuiltinDatasourceCatalogSeedBoot}.
+ *
+ * `kind: "skipped"` is a legitimate skip (no `InternalDB` — typically a
+ * test runner or a dev process without a DB configured). `kind: "error"`
+ * means the seed actually threw; rows from the prior boot remain
+ * authoritative. The two cases were previously collapsed to `null`,
+ * which forced {@link BuiltinDatasourceCatalogSeedLive} to mislabel a
+ * real failure as `outcome: "skipped-gate"`.
+ */
+export type BuiltinDatasourceCatalogSeedBootResult =
+  | { readonly kind: "skipped"; readonly reason: "no-internal-db" }
+  | {
+      readonly kind: "seeded";
+      readonly insertedSlugs: ReadonlyArray<BuiltinDatasourceCatalogSlug>;
+      readonly preservedSlugs: ReadonlyArray<BuiltinDatasourceCatalogSlug>;
+    }
+  | { readonly kind: "error"; readonly message: string };
+
+/**
  * Boot-pass wrapper. Mirrors `runCatalogSeedBoot` from
  * `integrations/catalog-seeder.ts` — log-and-continue posture so a seed
  * failure leaves pre-existing rows authoritative for the boot rather
- * than crashing the API. Failures still surface in logs.
+ * than crashing the API. Returns a discriminated result so the Effect
+ * Layer can surface skip vs error to health consumers without
+ * conflating them. Failures still surface in logs.
  */
-export async function runBuiltinDatasourceCatalogSeedBoot(): Promise<
-  BuiltinDatasourceCatalogSeedResult | null
-> {
+export async function runBuiltinDatasourceCatalogSeedBoot(): Promise<BuiltinDatasourceCatalogSeedBootResult> {
   const { hasInternalDB, getInternalDB } = await import(
     "@atlas/api/lib/db/internal"
   );
@@ -362,7 +388,7 @@ export async function runBuiltinDatasourceCatalogSeedBoot(): Promise<
     log.info(
       "Built-in Datasource catalog seed: no internal DB configured, skipping",
     );
-    return null;
+    return { kind: "skipped", reason: "no-internal-db" };
   }
 
   const pool = getInternalDB();
@@ -374,12 +400,18 @@ export async function runBuiltinDatasourceCatalogSeedBoot(): Promise<
   };
 
   try {
-    return await seedBuiltinDatasourceCatalog(db);
+    const result = await seedBuiltinDatasourceCatalog(db);
+    return {
+      kind: "seeded",
+      insertedSlugs: result.insertedSlugs,
+      preservedSlugs: result.preservedSlugs,
+    };
   } catch (err) {
+    const normalized = err instanceof Error ? err : new Error(String(err));
     log.error(
-      { err: err instanceof Error ? err : new Error(String(err)) },
+      { err: normalized, rowCount: BUILTIN_DATASOURCE_CATALOG_ROWS.length },
       "Built-in Datasource catalog seed failed — plugin_catalog rows from prior boot remain authoritative",
     );
-    return null;
+    return { kind: "error", message: normalized.message };
   }
 }

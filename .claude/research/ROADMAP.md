@@ -147,7 +147,7 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
 ## Active
 
 - [ ] **1.5.3 — Multi-Platform Install Models** ([milestone #51](https://github.com/AtlasDevHQ/atlas/milestone/51), [PRD #2738](https://github.com/AtlasDevHQ/atlas/issues/2738) supersedes [#2662](https://github.com/AtlasDevHQ/atlas/issues/2662); [ADR-0006](../../docs/adr/0006-three-pillar-integration-taxonomy.md) + [ADR-0007](../../docs/adr/0007-unified-install-pipeline.md)) — Three-pillar taxonomy (Datasource / Chat / Action) + unified install pipeline. `workspace_plugins` becomes the universal install record; `connections` table drops in a one-shot migration. Folds in the 7 non-Slack chat install models from the original #2662 scope.
-  - [ ] Phase A — Foundation: schema + facades (#2739, #2740, #2741, #2742)
+  - [x] Phase A — Foundation: schema + facades (#2739/#2756, #2740/#2758+#2759, #2741/#2763, #2742/#2764)
   - [ ] Phase B — Cutover: DatasourcePoolResolver + drop `connections` (#2743, #2744)
   - [ ] Phase C — UX consolidation: Salesforce → connections, integrations dedup, coming-soon state (#2745, #2746, #2747)
   - [ ] Phase D — Chat install models from #2662: Telegram (#2748), Discord (#2749), Linear (#2750), GitHub (#2751), Teams (#2752), WhatsApp (#2753), gchat (#2754)

@@ -54,19 +54,23 @@ export async function loadGroupRoutingContext(
   }
 
   try {
-    // Step 1 — find the connection's group_id (NULL means ungrouped).
+    // Post-0096 cutover (#2744 / ADR-0007 pure-collapse): groups are
+    // free-form JSONB strings in `workspace_plugins.config.group_id` with
+    // no separate `connection_groups` row and no `primary_connection_id`.
+    // Step 1 — find the install's group_id (NULL means ungrouped).
     const connRows = await internalQuery<{ group_id: string | null }>(
-      `SELECT group_id FROM connections
-        WHERE id = $1
-          AND (org_id = $2 OR org_id = '__global__')
+      `SELECT config->>'group_id' AS group_id FROM workspace_plugins
+        WHERE install_id = $1
+          AND (workspace_id = $2 OR workspace_id = '__global__')
+          AND pillar = 'datasource'
           AND status != 'archived'
         LIMIT 1`,
       [currentConnectionId, orgId],
     );
     const groupId = connRows[0]?.group_id ?? null;
     if (!groupId) {
-      // Distinguish "connection ungrouped" (expected for legacy 1×1
-      // installs) from "connection not found / archived" (suspect — the
+      // Distinguish "install ungrouped" (expected for legacy 1×1
+      // installs) from "install not found / archived" (suspect — the
       // agent rendered a multi-member prompt but the runtime sees no
       // matching row, so the agent's `scope: "all"` is silently
       // downgraded to single-env). Log loudly per CLAUDE.md "Never
@@ -79,32 +83,21 @@ export async function loadGroupRoutingContext(
       return fallback;
     }
 
-    // Step 2 — load every sibling connection in the same group + the
-    // group's primary. Two cheap queries are simpler than one join
-    // (and the connection_groups composite PK already includes org_id).
-    const [memberRows, groupRows] = await Promise.all([
-      internalQuery<{ id: string }>(
-        `SELECT id FROM connections
-          WHERE group_id = $1
-            AND (org_id = $2 OR org_id = '__global__')
-            AND status != 'archived'
-          ORDER BY id`,
-        [groupId, orgId],
-      ),
-      internalQuery<{ primary_connection_id: string | null }>(
-        `SELECT primary_connection_id FROM connection_groups
-          WHERE id = $1
-            AND org_id = $2
-          LIMIT 1`,
-        [groupId, orgId],
-      ),
-    ]);
+    // Step 2 — load every sibling install sharing the same JSONB
+    // group_id. No primary lookup post-cutover; deterministic
+    // alphabetical sort by install_id picks the fallback primary.
+    const memberRows = await internalQuery<{ id: string }>(
+      `SELECT install_id AS id FROM workspace_plugins
+        WHERE config->>'group_id' = $1
+          AND (workspace_id = $2 OR workspace_id = '__global__')
+          AND pillar = 'datasource'
+          AND status != 'archived'
+        ORDER BY install_id`,
+      [groupId, orgId],
+    );
 
     const members = memberRows.map((r) => r.id);
-    const primaryFromGroup = groupRows[0]?.primary_connection_id ?? null;
-    const primaryMember = primaryFromGroup && members.includes(primaryFromGroup)
-      ? primaryFromGroup
-      : (members[0] ?? currentConnectionId);
+    const primaryMember = members[0] ?? currentConnectionId;
 
     return {
       groupId,

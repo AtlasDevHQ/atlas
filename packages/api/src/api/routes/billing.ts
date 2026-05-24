@@ -296,16 +296,18 @@ billing.openapi(getBillingStatusRoute, async (c) => {
         );
         return [{ count: 1 }] as Array<{ count: number }>;
       }),
-      // Connection count for this workspace. Exclude per-org archive
-      // tombstones so hidden `__global__` connections (e.g. the demo a
-      // workspace hid) don't inflate the billing-page count.
+      // Connection count for this workspace. Exclude per-workspace
+      // archive tombstones so a hidden demo install doesn't inflate the
+      // billing-page count. Datasource installs live in workspace_plugins
+      // post-0096 cutover (#2744 / ADR-0007).
       internalQuery<{ count: number }>(
-        `SELECT COUNT(*)::int AS count FROM connections WHERE org_id = $1 AND status != 'archived'`,
+        `SELECT COUNT(*)::int AS count FROM workspace_plugins
+          WHERE workspace_id = $1 AND pillar = 'datasource' AND status != 'archived'`,
         [orgId],
       ).catch((err) => {
         log.warn(
           { err: err instanceof Error ? err.message : String(err), orgId },
-          "Failed to query connections table — defaulting to 0",
+          "Failed to query workspace_plugins for connection count — defaulting to 0",
         );
         return [{ count: 0 }] as Array<{ count: number }>;
       }),

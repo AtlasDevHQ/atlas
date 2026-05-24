@@ -91,10 +91,11 @@ export async function connectionNameCollidesWithGroup(
   orgId: string,
   name: string,
 ): Promise<boolean> {
-  const rows = await internalQuery<{ id: string }>(
-    `SELECT id FROM connections
-      WHERE org_id = $1
-        AND id = $2
+  const rows = await internalQuery<{ install_id: string }>(
+    `SELECT install_id FROM workspace_plugins
+      WHERE workspace_id = $1
+        AND install_id = $2
+        AND pillar = 'datasource'
         AND status != 'archived'
       LIMIT 1`,
     [orgId, name],

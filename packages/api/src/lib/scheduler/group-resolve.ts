@@ -66,37 +66,34 @@ export async function loadScheduledTaskGroupSnapshot(
   if (!hasInternalDB()) return null;
 
   try {
-    const groupRows = await internalQuery<{ primary_connection_id: string | null }>(
-      `SELECT primary_connection_id
-         FROM connection_groups
-        WHERE id = $1 AND org_id = $2`,
-      [groupId, orgId ?? "__global__"],
-    );
-    if (groupRows.length === 0) return null;
-    const primaryConnectionId = groupRows[0]?.primary_connection_id ?? null;
-
+    // Post-0096 cutover (#2744 / ADR-0007 pure-collapse): groups are
+    // free-form JSONB strings in `workspace_plugins.config.group_id`,
+    // with no separate `connection_groups` row and no `primary_connection_id`.
+    // "Membership" is an aggregation over datasource installs sharing the
+    // same `config->>'group_id'` in the workspace. `primaryConnectionId`
+    // stays in the snapshot shape for back-compat but is always null —
+    // `selectScheduledTaskGroupMember` falls through to the deterministic
+    // sort, which is the only ordering left.
     const memberRows = await internalQuery<{ id: string; created_at: Date | string }>(
-      `SELECT id, created_at
-         FROM connections
-        WHERE group_id = $1
-          AND org_id = $2
+      `SELECT install_id AS id, installed_at AS created_at
+         FROM workspace_plugins
+        WHERE config->>'group_id' = $1
+          AND workspace_id = $2
+          AND pillar = 'datasource'
           AND status != 'archived'
-        ORDER BY created_at ASC, id ASC`,
+        ORDER BY installed_at ASC, install_id ASC`,
       [groupId, orgId ?? "__global__"],
     );
-    // #2416 — previously this point widened the org filter to '__global__'
-    // when a tenant's group had zero non-archived members. That silently
-    // crossed a tenant→__global__ boundary and could fire the next scheduler
-    // tick against a connection the tenant doesn't own. The contract is
-    // strictly in-org: an empty member set surfaces upstream as
-    // NoScheduledTaskGroupMembersError so the executor can log + skip the
-    // tick. The next admin action (add a member, archive the task, or
-    // unarchive a member) recovers.
+    if (memberRows.length === 0) return null;
+    // #2416 — strictly in-org: no widening to '__global__'. An empty
+    // member set surfaces upstream as NoScheduledTaskGroupMembersError
+    // so the executor logs + skips the tick. The next admin action
+    // (add a member, archive the task, unarchive a member) recovers.
 
     return {
       groupId,
       orgId,
-      primaryConnectionId,
+      primaryConnectionId: null,
       members: memberRows.map((row) => ({ id: row.id, createdAt: timestampToSortable(row.created_at) })),
     };
   } catch (err) {

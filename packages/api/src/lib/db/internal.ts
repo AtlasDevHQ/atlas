@@ -1933,7 +1933,11 @@ export async function getWorkspaceHealthSummary(orgId: string): Promise<{
       // Exclude archive tombstones for the same reason as the plan-limit
       // and billing counts — hidden `__global__` connections shouldn't
       // inflate workspace health summaries.
-      countQuery(`SELECT COUNT(*)::int as count FROM connections WHERE org_id = $1 AND status != 'archived'`, [orgId]),
+      countQuery(
+        `SELECT COUNT(*)::int as count FROM workspace_plugins
+          WHERE workspace_id = $1 AND pillar = 'datasource' AND status != 'archived'`,
+        [orgId],
+      ),
       countQuery(`SELECT COUNT(*)::int as count FROM scheduled_tasks WHERE org_id = $1 AND enabled = true`, [orgId]),
     ], { concurrency: "unbounded" }).pipe(
       Effect.timeoutFail({
@@ -2015,7 +2019,6 @@ export interface HardDeleteResult {
   actionLog: number;
   scheduledTaskRuns: number;
   scheduledTasks: number;
-  connections: number;
   tokenUsage: number;
   invitations: number;
   pluginSettings: number;
@@ -2168,7 +2171,9 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     );
     const actionLog = await del(`DELETE FROM action_log WHERE org_id = $1`);
     const scheduledTasks = await del(`DELETE FROM scheduled_tasks WHERE org_id = $1`);
-    const connections = await del(`DELETE FROM connections WHERE org_id = $1`);
+    // `connections` table dropped by 0096 cutover — datasource installs
+    // live in `workspace_plugins` (pillar='datasource') and are wiped
+    // alongside other installs in Phase 3 below.
     const tokenUsage = await del(`DELETE FROM token_usage WHERE org_id = $1`);
     const invitations = await del(`DELETE FROM invitations WHERE org_id = $1`);
     const pluginSettings = await del(`DELETE FROM plugin_settings WHERE org_id = $1`);
@@ -2277,7 +2282,6 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
       actionLog,
       scheduledTaskRuns,
       scheduledTasks,
-      connections,
       tokenUsage,
       invitations,
       pluginSettings,

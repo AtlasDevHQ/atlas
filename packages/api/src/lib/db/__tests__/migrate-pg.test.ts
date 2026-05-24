@@ -5,14 +5,6 @@ import { Pool } from "pg";
 import { z } from "zod";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
-import {
-  DELETE_GROUP_AND_ARCHIVED_CONNECTIONS_SQL,
-  MERGE_CONNECTIONS_INTO_GROUP_SQL,
-  CASCADE_ARCHIVE_GROUP_ENTITIES_SQL,
-  CASCADE_ARCHIVE_GROUP_TASKS_SQL,
-  CASCADE_ARCHIVE_GROUP_APPROVALS_SQL,
-  ARCHIVE_GROUP_SQL,
-} from "@atlas/api/lib/db/connection-groups-sql";
 
 // Real-Postgres migration smoke. Skips cleanly when TEST_DATABASE_URL
 // is unset so local dev that hasn't run `bun run db:up` is unaffected.

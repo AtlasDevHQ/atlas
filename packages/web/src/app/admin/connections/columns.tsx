@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Badge } from "@/components/ui/badge";
 import { DataTableColumnHeader } from "@/components/data-table/data-table-column-header";
@@ -9,7 +8,6 @@ import { DemoBadge, DraftBadge } from "@/ui/components/admin/mode-badges";
 import { Fingerprint, Database, FileText, Activity, Clock, Layers } from "lucide-react";
 import type { ConnectionHealth, ConnectionInfo } from "@/ui/lib/types";
 import { stripGroupPrefix } from "@/ui/lib/strip-group-prefix";
-import { ENVIRONMENT_VIEW_HREF } from "./group-by";
 
 /** Reserved connection id for the onboarding demo dataset. */
 export const DEMO_CONNECTION_ID = "__demo__";
@@ -85,15 +83,7 @@ export function getConnectionColumns(): ColumnDef<ConnectionInfo>[] {
         if (groupName == null) {
           return <span className="text-sm text-muted-foreground">{"\u2014"}</span>;
         }
-        return (
-          <Link
-            href={ENVIRONMENT_VIEW_HREF}
-            className="inline-flex items-center"
-            aria-label={`View environment ${stripGroupPrefix(groupName)}`}
-          >
-            <Badge variant="outline">{stripGroupPrefix(groupName)}</Badge>
-          </Link>
-        );
+        return <Badge variant="outline">{stripGroupPrefix(groupName)}</Badge>;
       },
       meta: { label: "Environment", icon: Layers },
       enableSorting: false,

@@ -26,9 +26,7 @@ import {
 } from "@/components/ui/select";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import Link from "next/link";
 import { AlertTriangle, Loader2, Plus, X, Clock } from "lucide-react";
-import { ENVIRONMENT_VIEW_HREF } from "../connections/group-by";
 import {
   CRON_PRESETS,
   presetFromCron,
@@ -593,17 +591,11 @@ export function TaskFormDialog({
             ) : groups.length === 0 ? (
               <Alert>
                 <AlertTriangle />
-                <AlertTitle>Create an environment first</AlertTitle>
+                <AlertTitle>No environments yet</AlertTitle>
                 <AlertDescription>
                   Scheduled tasks run against an environment (a connection
-                  group). Add one before scheduling a task.
-                  {" "}
-                  <Link
-                    href={ENVIRONMENT_VIEW_HREF}
-                    className="font-medium underline underline-offset-2"
-                  >
-                    Go to Environments
-                  </Link>
+                  group). Edit any datasource on the Connections page and
+                  set its environment, then return here.
                 </AlertDescription>
               </Alert>
             ) : (

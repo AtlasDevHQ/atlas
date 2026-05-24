@@ -55,7 +55,8 @@
         "@useatlas/email",
         "@useatlas/jira",
         "@useatlas/yaml-context",
-        "@useatlas/chat"
+        "@useatlas/chat",
+        "@useatlas/twenty"
       ],
       "dependencyTypes": ["peer"],
       "isIgnored": true

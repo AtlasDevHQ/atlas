@@ -714,6 +714,22 @@
         "zod": "^4.0.0",
       },
     },
+    "plugins/twenty": {
+      "name": "@useatlas/twenty",
+      "version": "0.0.1",
+      "devDependencies": {
+        "@useatlas/plugin-sdk": "workspace:*",
+        "ai": "^6.0.141",
+        "effect": "^3.21.0",
+        "zod": "^4.3.6",
+      },
+      "peerDependencies": {
+        "@useatlas/plugin-sdk": "0.0.7",
+        "ai": "^6.0.141",
+        "effect": "^3.21.0",
+        "zod": "^4.3.6",
+      },
+    },
     "plugins/vercel-sandbox": {
       "name": "@useatlas/vercel-sandbox",
       "version": "0.0.5",
@@ -2189,6 +2205,8 @@
     "@useatlas/snowflake": ["@useatlas/snowflake@workspace:plugins/snowflake"],
 
     "@useatlas/teams": ["@useatlas/teams@workspace:plugins/teams"],
+
+    "@useatlas/twenty": ["@useatlas/twenty@workspace:plugins/twenty"],
 
     "@useatlas/types": ["@useatlas/types@workspace:packages/types"],
 

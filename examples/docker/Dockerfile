@@ -37,6 +37,7 @@ COPY plugins/chat/package.json plugins/chat/package.json
 COPY plugins/webhook/package.json plugins/webhook/package.json
 COPY plugins/teams/package.json plugins/teams/package.json
 COPY plugins/email-digest/package.json plugins/email-digest/package.json
+COPY plugins/twenty/package.json plugins/twenty/package.json
 COPY create-atlas-plugin/package.json create-atlas-plugin/package.json
 RUN bun ci --ignore-scripts
 

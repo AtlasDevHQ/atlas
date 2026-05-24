@@ -1,6 +1,5 @@
 /**
- * Tests for the Email LazyPluginLoader builder + `sendEmail` agent tool
- * (#2698).
+ * Tests for the Email LazyPluginLoader builder + `sendEmail` agent tool.
  *
  * Coverage:
  *   - Builder happy path: decrypts `password` via the shared secret
@@ -17,18 +16,21 @@
  *     stack trace.
  *   - Tool decrypt-failure path: `EmailDecryptFailureError` → status
  *     `decrypt_failure` with `requestId` echoed back.
+ *   - Tool misconfigured path: `LazyPluginBuilderMissingError` → status
+ *     `misconfigured` with `requestId`, distinct from `send_failure` so
+ *     the agent doesn't retry a deploy-side bug.
  *   - Tool install-present path: dispatches into the cached instance's
  *     `sendEmail`. Verifies the loader is hit exactly once (transport
  *     caching is the loader's responsibility, but the tool must not
  *     bypass it).
  *   - Tool send-failure path: the transport throws → status
- *     `send_failure` with `requestId` echoed back.
+ *     `send_failure` with `requestId` echoed back; underlying error
+ *     scrubbed via `errorMessage()`.
  *
- * Mock-all-exports note: the `lazyPluginLoader` mock provides the full
- * named-export surface (`LazyPluginLoader`, `LazyPluginBuilderMissingError`,
- * `LazyPluginInstallNotFoundError`, plus the singleton itself) so other
- * test files importing the loader don't `SyntaxError` on missing
- * exports. Same convention used by `salesforce/__tests__/lazy-builder.test.ts`.
+ * The unit test injects fakes via the `SendEmailToolDeps` constructor
+ * (no `mock.module()`); the integration test in `email-tool.integration.test.ts`
+ * mirrors the full `db/internal` named-export surface for the mock-all-exports
+ * rule.
  */
 
 import { beforeEach, describe, expect, it, mock, type Mock } from "bun:test";
@@ -39,7 +41,11 @@ import {
   EmailDecryptFailureError,
   type EmailPluginInstance,
 } from "../email-tool";
-import { LazyPluginInstallNotFoundError } from "@atlas/api/lib/plugins/lazy-loader";
+import {
+  LazyPluginBuilderMissingError,
+  LazyPluginInstallNotFoundError,
+} from "@atlas/api/lib/plugins/lazy-loader";
+import { EMAIL_CATALOG_ID } from "../install/email-secret-schema";
 import type { PluginLike } from "@atlas/api/lib/plugins/registry";
 
 // ---------------------------------------------------------------------------
@@ -47,7 +53,7 @@ import type { PluginLike } from "@atlas/api/lib/plugins/registry";
 // ---------------------------------------------------------------------------
 
 const WSID = "ws-email-test";
-const CATALOG_ID = "catalog:email";
+const CATALOG_ID = EMAIL_CATALOG_ID;
 
 const HAPPY_DECRYPTED_CONFIG = {
   host: "smtp.example.com",
@@ -297,9 +303,20 @@ describe("createSendEmailTool — execute paths", () => {
     expect(result.messageId).toBe("<sent@example.com>");
     expect(lastInstanceSendMail).toHaveBeenCalledTimes(1);
     expect(loader.getOrInstantiate).toHaveBeenCalledTimes(1);
+    // Pin the catalog id flowing through the tool to the shared
+    // constant — a drift between `EMAIL_CATALOG_ID` and what the tool
+    // requests would silently bypass the registered Email builder.
+    expect(loader.getOrInstantiate).toHaveBeenCalledWith(WSID, CATALOG_ID);
   });
 
-  it("second send re-uses the loader's cached instance — does NOT rebuild the transport", async () => {
+  it("second send defers to the loader rather than bypassing it (caching is the loader's contract)", async () => {
+    // The lazy loader's caching contract is what guarantees the
+    // transport survives across sends — pinned in
+    // `email-tool.integration.test.ts` via `internalQuery` call-count.
+    // This unit test ONLY verifies the tool path doesn't short-circuit
+    // around the loader after the first build; the mocked loader here
+    // returns the same fake instance on every call, so caching isn't
+    // exercised at this layer.
     const fakeInstance: EmailPluginInstance = {
       id: `email:${WSID}`,
       types: ["action"],
@@ -316,15 +333,40 @@ describe("createSendEmailTool — execute paths", () => {
     await runTool(tool, { to: ["a@example.com"], subject: "1", body: "1" });
     await runTool(tool, { to: ["b@example.com"], subject: "2", body: "2" });
 
-    // The lazy loader's caching contract is what guarantees the
-    // transport survives across sends. The tool path defers to it
-    // every time — caching happens *in* the loader. Both calls call
-    // getOrInstantiate; the loader returns the same cached instance.
     expect(loader.getOrInstantiate).toHaveBeenCalledTimes(2);
     expect(lastInstanceSendMail).toHaveBeenCalledTimes(2);
   });
 
-  it("returns status=send_failure with the requestId when transport.sendMail throws", async () => {
+  it("returns status=misconfigured with the requestId when the loader has no builder for catalog:email", async () => {
+    // Boot-DAG-misconfigured failure mode — `register.ts` pairs the
+    // form handler with the builder, so the only way this fires is if
+    // `registerBuiltinInstallHandlers` itself didn't run. Distinct
+    // from `send_failure` so the agent stops looping and surfaces an
+    // operator-actionable error.
+    const tool = createSendEmailTool({
+      loader: makeLoader(async () => {
+        throw new LazyPluginBuilderMissingError(CATALOG_ID);
+      }),
+      resolveWorkspaceId: () => WSID,
+      resolveRequestId: () => "req-misconfig",
+    });
+
+    const result = await runTool<{
+      status: string;
+      message: string;
+      requestId: string | undefined;
+    }>(tool, {
+      to: ["dest@example.com"],
+      subject: "Hi",
+      body: "Hi",
+    });
+    expect(result.status).toBe("misconfigured");
+    expect(result.requestId).toBe("req-misconfig");
+    expect(result.message).toContain("req-misconfig");
+    expect(result.message).toMatch(/operator/i);
+  });
+
+  it("returns status=send_failure with the scrubbed requestId when transport.sendMail throws", async () => {
     const failingSendMail = mock(() => Promise.reject(new Error("SMTP relay 5.7.0 rejected")));
     const fakeInstance: EmailPluginInstance = {
       id: `email:${WSID}`,
@@ -353,7 +395,39 @@ describe("createSendEmailTool — execute paths", () => {
     expect(result.requestId).toBe("req-send-fail");
   });
 
-  it("returns status=no_install when no active workspaceId is in the request context", async () => {
+  it("scrubs connection-string userinfo from send_failure messages", async () => {
+    // A nodemailer / outbound-proxy error that embeds `scheme://user:pass@host`
+    // would leak creds into the agent's tool output without
+    // `errorMessage()` scrubbing. Pin the redaction at the tool boundary.
+    const leakySendMail = mock(() =>
+      Promise.reject(new Error("Could not connect to socks5://leak:secret@proxy:1080")),
+    );
+    const fakeInstance: EmailPluginInstance = {
+      id: `email:${WSID}`,
+      types: ["action"],
+      version: "0.1.0",
+      name: "Email",
+      sendEmail: leakySendMail as unknown as EmailPluginInstance["sendEmail"],
+    };
+    const tool = createSendEmailTool({
+      loader: makeLoader(async () => fakeInstance),
+      resolveWorkspaceId: () => WSID,
+    });
+
+    const result = await runTool<{ status: string; message: string }>(tool, {
+      to: ["dest@example.com"],
+      subject: "Hi",
+      body: "Hi",
+    });
+    expect(result.status).toBe("send_failure");
+    expect(result.message).not.toContain("leak:secret");
+    expect(result.message).toContain("socks5://***@proxy:1080");
+  });
+
+  it("returns status=no_workspace with non-install copy when no active workspaceId is in the request context", async () => {
+    // Distinct from `no_install` so the agent doesn't tell a user
+    // who already installed Email to "go install Email" — the actual
+    // remediation here is "open a workspace-scoped session".
     const tool = createSendEmailTool({
       loader: makeLoader(async () => {
         throw new Error("should not be called");
@@ -366,7 +440,10 @@ describe("createSendEmailTool — execute paths", () => {
       subject: "Hi",
       body: "Hi",
     });
-    expect(result.status).toBe("no_install");
+    expect(result.status).toBe("no_workspace");
     expect(result.message).toMatch(/workspace/i);
+    // Must NOT recommend /admin/integrations — they already have it
+    // installed; the issue is request context, not the install state.
+    expect(result.message).not.toContain("/admin/integrations");
   });
 });

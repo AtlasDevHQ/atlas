@@ -1,5 +1,5 @@
 /**
- * Email LazyPluginLoader builder + agent-loop `sendEmail` tool (#2698).
+ * Email LazyPluginLoader builder + agent-loop `sendEmail` tool.
  *
  * First per-Workspace lazy-plugin tool. The wiring pattern this module
  * establishes is the seam Salesforce / Jira / future form-installed
@@ -13,19 +13,32 @@
  *   2. {@link sendEmailTool} (registered globally with `defaultRegistry`)
  *      resolves the active `workspaceId` at execute time from
  *      {@link getRequestContext}, dispatches through
- *      {@link lazyPluginLoader.getOrInstantiate}, and surfaces three
- *      distinct error shapes to the agent so the model can self-correct:
+ *      {@link lazyPluginLoader.getOrInstantiate}, and surfaces five
+ *      distinct status discriminants to the agent so the model can
+ *      self-correct or stop looping:
  *
+ *        - **`sent`** — happy path; carries `messageId`.
+ *        - **`no_workspace`** — request had no `activeOrganizationId`.
+ *          The user can't fix this by installing — they need to open a
+ *          workspace-scoped session. Distinct from `no_install` because
+ *          the remediation differs (workspace selection vs admin install).
  *        - **`no_install`** — actionable "install at /admin/integrations"
  *          message. Triggered when the Workspace has no `enabled` row in
  *          `workspace_plugins` for `catalog:email`.
  *        - **`decrypt_failure`** — surfaces `requestId` so ops can
  *          correlate. Triggered when {@link decryptSecretFields} throws
  *          (e.g. a dropped key version after a rotation that didn't
- *          cycle through this Workspace's stored config).
+ *          cycle through this Workspace's stored config). Terminal —
+ *          retry won't help until the keyset is fixed.
+ *        - **`misconfigured`** — `LazyPluginBuilderMissingError` from the
+ *          loader. The catalog row is installed but the boot DAG never
+ *          registered the builder — an operator-side bug. Distinct from
+ *          `send_failure` because retrying won't recover; an operator
+ *          must investigate.
  *        - **`send_failure`** — wraps the underlying nodemailer error
- *          with the original message. The agent can retry or surface
- *          the failure to the user.
+ *          (scrubbed via `errorMessage()` so connection strings or
+ *          credentials embedded in upstream error text don't leak to
+ *          the agent). The agent can retry or surface to the user.
  *
  * Workspace context resolution: read from {@link getRequestContext}'s
  * `user.activeOrganizationId`. Tool registration happens at boot;
@@ -69,9 +82,11 @@ import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { decryptSecretFields } from "@atlas/api/lib/plugins/secrets";
 import {
   lazyPluginLoader,
+  LazyPluginBuilderMissingError,
   LazyPluginInstallNotFoundError,
   type LazyPluginBuilder,
   type LazyPluginBuilderArgs,
+  type LazyPluginLoader,
 } from "@atlas/api/lib/plugins/lazy-loader";
 import type { PluginLike } from "@atlas/api/lib/plugins/registry";
 import {
@@ -91,9 +106,13 @@ export class EmailDecryptFailureError extends Error {
   readonly _tag = "EmailDecryptFailureError" as const;
   readonly workspaceId: string;
   constructor(workspaceId: string, cause: unknown) {
-    super(
-      `Email install decrypt failed for workspace ${workspaceId}: ${errorMessage(cause)}`,
-    );
+    // Plain narrow rather than `errorMessage()` — the audit scrubber's
+    // contract excludes `throw new Error(...)` constructors (see
+    // `audit/error-scrub.ts` JSDoc) so the original throw stays
+    // inspectable. The agent-visible surface in the tool path below
+    // does scrub via `errorMessage()` separately.
+    const causeMessage = cause instanceof Error ? cause.message : String(cause);
+    super(`Email install decrypt failed for workspace ${workspaceId}: ${causeMessage}`);
     this.name = "EmailDecryptFailureError";
     this.workspaceId = workspaceId;
     if (cause instanceof Error) this.cause = cause;
@@ -185,8 +204,8 @@ export interface EmailPluginInstance extends PluginLike {
 /**
  * Test seam — production wiring leaves this undefined and the builder
  * calls {@link nodemailer.createTransport} directly. Tests pass an
- * override that returns a `jsonTransport` or a recording stub so the
- * builder doesn't reach out to a real SMTP relay.
+ * override that returns a buffered transport (`streamTransport`) or a
+ * recording stub so the builder doesn't reach out to a real SMTP relay.
  */
 export interface EmailLazyBuilderOptions {
   readonly createTransport?: typeof nodemailer.createTransport;
@@ -302,7 +321,7 @@ Use sendEmail to deliver a message via the workspace's installed SMTP transport:
  * the loader.
  */
 export interface SendEmailToolDeps {
-  readonly loader?: Pick<typeof lazyPluginLoader, "getOrInstantiate">;
+  readonly loader?: Pick<LazyPluginLoader, "getOrInstantiate">;
   readonly resolveWorkspaceId?: () => string | undefined;
   readonly resolveRequestId?: () => string | undefined;
 }
@@ -322,11 +341,28 @@ type SendEmailExecuteResult =
       envelope: unknown;
     }
   | {
+      // Request had no `activeOrganizationId`. The user can't install
+      // their way out — they need a workspace-scoped session. Kept
+      // distinct from `no_install` so the agent's remediation copy
+      // doesn't mislead a user who already has the integration.
+      status: "no_workspace";
+      message: string;
+    }
+  | {
       status: "no_install";
       message: string;
     }
   | {
       status: "decrypt_failure";
+      message: string;
+      requestId: string | undefined;
+    }
+  | {
+      // Catalog row + workspace install both present, but the boot DAG
+      // didn't register a builder for `catalog:email`. Distinct from
+      // `send_failure` because retry won't help — operator-side fix
+      // (re-deploy, check `register.ts`).
+      status: "misconfigured";
       message: string;
       requestId: string | undefined;
     }
@@ -356,18 +392,20 @@ export function createSendEmailTool(deps: SendEmailToolDeps = {}) {
     execute: async ({ to, subject, body }): Promise<SendEmailExecuteResult> => {
       const workspaceId = resolveWorkspaceId();
       if (!workspaceId) {
-        // No active workspace — happens for unauthenticated chat or
-        // requests that didn't stamp `activeOrganizationId`. Surface
-        // the same actionable message as "not installed"; the agent
-        // would otherwise loop trying to retry.
+        // No active workspace — auth wiring problem or a request that
+        // never stamped `activeOrganizationId` (unauthenticated chat,
+        // pre-org-pick session). The user can't fix this by installing
+        // the integration; pointing them at /admin/integrations would
+        // be a dead end. Kept as a distinct status so the agent's
+        // remediation copy stays correct.
         log.warn(
           { requestId: resolveRequestId() },
           "sendEmail invoked with no active workspaceId",
         );
         return {
-          status: "no_install",
+          status: "no_workspace",
           message:
-            "No workspace is selected for this request. Install the Email integration at /admin/integrations and try again from a workspace-scoped session.",
+            "No workspace is selected for this request. Open a workspace-scoped session before sending email.",
         };
       }
 
@@ -399,10 +437,29 @@ export function createSendEmailTool(deps: SendEmailToolDeps = {}) {
             requestId,
           };
         }
-        // Anything else — config missing fields, lazy-loader builder
-        // missing, builder throwing on construction — bubbles up as a
-        // send_failure with the underlying message so the agent can
-        // see why instead of looping.
+        if (err instanceof LazyPluginBuilderMissingError) {
+          // Catalog + workspace install present, but no builder. This
+          // is the boot-DAG-misconfigured failure mode — `register.ts`
+          // pairs the form handler with the builder, so the only way
+          // this fires is if `registerBuiltinInstallHandlers` itself
+          // didn't run. Distinct status so the agent stops looping and
+          // surfaces an operator-actionable error.
+          const requestId = resolveRequestId();
+          log.error(
+            { workspaceId, requestId, err: err.message },
+            "sendEmail aborted — Email lazy builder not registered (boot DAG issue)",
+          );
+          return {
+            status: "misconfigured",
+            message: `Email integration is installed but no builder is registered for catalog:email. This is a deploy-side configuration issue; contact your operator. Request id ${requestId ?? "<unset>"}.`,
+            requestId,
+          };
+        }
+        // Anything else — config missing fields, builder throwing on
+        // construction. Surfaces as send_failure so the agent has
+        // something actionable. Messages are scrubbed via
+        // `errorMessage()` so a connection string embedded in an
+        // upstream error doesn't leak to the agent's tool-output.
         const requestId = resolveRequestId();
         log.error(
           { workspaceId, requestId, err: err instanceof Error ? err.message : String(err) },
@@ -410,7 +467,7 @@ export function createSendEmailTool(deps: SendEmailToolDeps = {}) {
         );
         return {
           status: "send_failure",
-          message: `Could not initialise the Email integration: ${err instanceof Error ? err.message : String(err)}`,
+          message: `Could not initialise the Email integration: ${errorMessage(err)}`,
           requestId,
         };
       }
@@ -430,7 +487,11 @@ export function createSendEmailTool(deps: SendEmailToolDeps = {}) {
         );
         return {
           status: "send_failure",
-          message: `Email send failed: ${err instanceof Error ? err.message : String(err)}`,
+          // `errorMessage()` scrubs connection-string-shaped substrings
+          // from the underlying error text (a stray SMTP proxy error
+          // like "Cannot connect to socks5://user:pass@proxy:1080"
+          // would leak creds otherwise) and truncates to 512 chars.
+          message: `Email send failed: ${errorMessage(err)}`,
           requestId,
         };
       }

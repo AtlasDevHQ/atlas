@@ -1,5 +1,5 @@
 /**
- * Integration test for the Email agent-tool wire (#2698).
+ * Integration test for the Email agent-tool wire.
  *
  * Stands in for the browser e2e mentioned in the issue's acceptance
  * criteria. A true browser-driven test would have to drive the
@@ -35,18 +35,28 @@ import nodemailer from "nodemailer";
 
 import { withRequestContext } from "@atlas/api/lib/logger";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
+import { EMAIL_CATALOG_ID } from "../install/email-secret-schema";
 
 // `internalQuery` is the seam the real LazyPluginLoader uses to read
-// `workspace_plugins.config`. Mocking it (with all the named exports
-// the module declares) lets the real loader drive the real builder
-// without booting Postgres.
+// `workspace_plugins.config`. Mocking it lets the real loader drive
+// the real builder without booting Postgres.
+//
+// The other named exports below are mock-all-exports filler — this
+// test's transitive graph only reaches `internalQuery`, but partial
+// mocks `SyntaxError` other test files that import from this module.
+// The `encryptSecret` / `decryptSecret` stubs in particular are NOT
+// on the production decrypt path here: the Email builder reaches for
+// `db/secret-encryption.ts` via `decryptSecretFields`, not these
+// `db/internal.ts` re-exports. The test exercises the real decrypt
+// path via `decryptSecretFields`' un-prefixed-plaintext passthrough
+// (see the F-42 row at `plugins/secrets.ts:secrets-passthrough`). To
+// genuinely exercise ciphertext decrypt, set `ATLAS_ENCRYPTION_KEYS`
+// in the test env and store an `enc:v1:...` value in STORED_CONFIG.
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
   () => Promise.resolve([]),
 );
 mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
-  // Other named exports — partial mocks `SyntaxError` other test files
-  // that import from this module.
   getInternalDB: mock(() => null),
   getInternalPool: mock(() => null),
   initializeInternalDB: mock(() => Promise.resolve()),
@@ -110,7 +120,7 @@ describe("Email agent-tool — install-present path through the real lazy loader
     });
 
     loaderMod.lazyPluginLoader.registerBuilder(
-      "catalog:email",
+      EMAIL_CATALOG_ID,
       toolMod.createEmailLazyBuilder({
         // `createTransport` is overloaded across nodemailer's many transport
         // types — the test's streamTransport returns a different narrowed
@@ -173,7 +183,7 @@ describe("Email agent-tool — install-present path through the real lazy loader
 
   it("returns no_install with actionable copy when workspace_plugins has no enabled row for catalog:email", async () => {
     loaderMod.lazyPluginLoader.registerBuilder(
-      "catalog:email",
+      EMAIL_CATALOG_ID,
       toolMod.createEmailLazyBuilder({
         // No transport factory needed — the loader short-circuits
         // before the builder runs when the row is missing.

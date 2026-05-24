@@ -25,6 +25,7 @@ import crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { encryptSecretFields } from "@atlas/api/lib/plugins/secrets";
+import { lazyPluginLoader } from "@atlas/api/lib/plugins/lazy-loader";
 import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
 import type { WorkspaceId } from "@useatlas/types";
 import {
@@ -149,6 +150,21 @@ export class EmailFormInstallHandler implements FormBasedInstallHandler {
         "Failed to persist Email install record — aborting install",
       );
       throw err;
+    }
+
+    // Evict any cached PluginLike for this (workspace, catalog) so the
+    // next tool dispatch rebuilds the transport against the freshly-
+    // persisted config. Without this, a re-install that rotates SMTP
+    // credentials (host / port / user / password / fromAddress) keeps
+    // the stale in-memory transport from before the upsert. Fire-and-
+    // forget — `evict` swallows teardown errors internally.
+    try {
+      await lazyPluginLoader.evict(workspaceId, EMAIL_CATALOG_ID);
+    } catch (err) {
+      log.warn(
+        { workspaceId, err: err instanceof Error ? err.message : String(err) },
+        "LazyPluginLoader.evict threw after Email install upsert — DB row is persisted anyway",
+      );
     }
 
     log.info(

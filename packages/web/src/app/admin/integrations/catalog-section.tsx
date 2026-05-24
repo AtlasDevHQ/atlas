@@ -10,6 +10,12 @@
  *   - `form` — opens the {@link FormInstallModal} (Email today; Webhook + Obsidian per #2661)
  *   - `static-bot` — render-inert until the handler ships in 1.5.3
  *
+ * `implementationStatus: "coming_soon"` dominates every other gate per
+ * `InstallStatusMachine` (#2740 / ADR-0007). A coming-soon card renders
+ * a grey neutral badge + inert "Coming soon" CTA — visually distinct
+ * from the purple upsell lock so a customer doesn't read "upgrade to
+ * unlock" when the truth is "Atlas hasn't shipped it yet". Slice 9 (#2747).
+ *
  * Manage / Disconnect still ship in #2656; they render but are inert.
  */
 
@@ -25,7 +31,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { getApiUrl } from "@/lib/api-url";
-import { Cable, Lock, Sparkles } from "lucide-react";
+import { Cable, Clock, Lock, Sparkles } from "lucide-react";
 import { FormInstallModal } from "./form-install-modal";
 
 function groupByType(entries: IntegrationsCatalogEntry[]) {
@@ -44,8 +50,17 @@ interface CatalogCardProps {
   onInstalled: () => void;
 }
 
-function CatalogCard({ entry, onInstalled }: CatalogCardProps) {
-  // Three visual states a card can land in (#2701):
+/**
+ * Single catalog card. Exported only for unit tests — production code
+ * goes through {@link CatalogSection}. Branches state from
+ * `entry.access.kind`, `entry.installStatus`, `entry.installed`, and
+ * `entry.implementationStatus` per the comment block inside.
+ */
+export function CatalogCard({ entry, onInstalled }: CatalogCardProps) {
+  // Four visual states a card can land in:
+  //   0. coming-soon             — Atlas hasn't shipped the install handler →
+  //                                grey neutral badge + inert CTA. Dominates every
+  //                                other gate per `resolveInstallStatus` (#2740).
   //   1. accessible              — plan admits + not installed → Connect / Install CTA
   //   2. upgrade-required        — plan does NOT admit + not installed → locked card,
   //                                "Premium — requires <plan>" badge, disabled Upgrade CTA
@@ -57,6 +72,11 @@ function CatalogCard({ entry, onInstalled }: CatalogCardProps) {
   // upgradeRequired) into a CatalogAccess tagged union — `entry.access`
   // is `{ kind: "accessible" } | { kind: "upgrade"; requiredPlan: PlanTier | null }`.
   // The UI branches on `kind` instead of re-deriving from booleans.
+  //
+  // `implementationStatus` is optional on the wire (older API responses
+  // pre-#2741 omit it). Default to `"available"` so a missing field
+  // can never lock a working card to inert.
+  const isComingSoon = entry.implementationStatus === "coming_soon";
   const isUpsell = entry.access.kind === "upgrade";
   const requiredPlan =
     entry.access.kind === "upgrade" ? entry.access.requiredPlan : null;
@@ -76,51 +96,83 @@ function CatalogCard({ entry, onInstalled }: CatalogCardProps) {
   return (
     <Card
       data-testid={`catalog-card-${entry.slug}`}
+      data-card-state={
+        isComingSoon ? "coming-soon" : isUpsell && !isInstalled ? "upgrade-required" : "accessible"
+      }
       className={
-        isUpsell && !isInstalled
-          ? "relative transition-colors opacity-90 hover:border-primary/40"
-          : "relative transition-colors hover:border-primary/40"
+        isComingSoon
+          ? // Mute slightly more than the upsell card so the visual
+            // weight matches the inert CTA. No hover affordance — the
+            // card has no interaction; signalling hover would lie.
+            "relative transition-colors opacity-80"
+          : isUpsell && !isInstalled
+            ? "relative transition-colors opacity-90 hover:border-primary/40"
+            : "relative transition-colors hover:border-primary/40"
       }
     >
       <CardHeader>
         <div className="flex items-start justify-between gap-3">
           <CardTitle className="flex items-center gap-1.5 text-base">
-            {isUpsell && !isInstalled && (
+            {isComingSoon ? (
+              <Clock
+                className="size-3.5 text-muted-foreground"
+                aria-label="Coming soon"
+                data-testid={`catalog-card-${entry.slug}-coming-soon-icon`}
+              />
+            ) : isUpsell && !isInstalled ? (
               <Lock
                 className="size-3.5 text-muted-foreground"
                 aria-label="Premium integration"
                 data-testid={`catalog-card-${entry.slug}-lock-icon`}
               />
-            )}
+            ) : null}
             {entry.name}
           </CardTitle>
           <div className="flex shrink-0 items-center gap-1">
-            {isDowngraded ? (
+            {isComingSoon ? (
+              // Coming soon dominates — `resolveInstallStatus` (#2740)
+              // returns `coming_soon` regardless of plan / install / handler
+              // state. Render the neutral grey badge alone so a customer
+              // doesn't read the premium-lock copy when the truth is
+              // "Atlas hasn't shipped this yet".
               <Badge
-                variant="destructive"
-                className="text-[10px]"
-                data-testid={`catalog-card-${entry.slug}-downgrade-badge`}
-              >
-                Plan downgrade
-              </Badge>
-            ) : needsReconnect ? (
-              <Badge variant="destructive" className="text-[10px]" data-testid={`catalog-card-${entry.slug}-reconnect-badge`}>
-                Reconnect needed
-              </Badge>
-            ) : isInstalled ? (
-              <Badge variant="secondary" className="text-[10px]">
-                Installed
-              </Badge>
-            ) : null}
-            {isUpsell && (
-              <Badge
-                variant="outline"
+                variant="secondary"
                 className="gap-1 text-[10px]"
-                data-testid={`catalog-card-${entry.slug}-plan-badge`}
+                data-testid={`catalog-card-${entry.slug}-coming-soon-badge`}
               >
-                <Sparkles className="size-3" />
-                Premium — requires {requiredPlan ?? entry.minPlan}
+                <Clock className="size-3" />
+                Coming soon
               </Badge>
+            ) : (
+              <>
+                {isDowngraded ? (
+                  <Badge
+                    variant="destructive"
+                    className="text-[10px]"
+                    data-testid={`catalog-card-${entry.slug}-downgrade-badge`}
+                  >
+                    Plan downgrade
+                  </Badge>
+                ) : needsReconnect ? (
+                  <Badge variant="destructive" className="text-[10px]" data-testid={`catalog-card-${entry.slug}-reconnect-badge`}>
+                    Reconnect needed
+                  </Badge>
+                ) : isInstalled ? (
+                  <Badge variant="secondary" className="text-[10px]">
+                    Installed
+                  </Badge>
+                ) : null}
+                {isUpsell && (
+                  <Badge
+                    variant="outline"
+                    className="gap-1 text-[10px]"
+                    data-testid={`catalog-card-${entry.slug}-plan-badge`}
+                  >
+                    <Sparkles className="size-3" />
+                    Premium — requires {requiredPlan ?? entry.minPlan}
+                  </Badge>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -152,8 +204,23 @@ function CatalogCard({ entry, onInstalled }: CatalogCardProps) {
                 (slice 5, #2653 — wired here in slice 7 so OAuth
                 catalog cards stop being inert).
               - "form" opens the FormInstallModal (slice 7, #2660).
-                Disconnect / Manage still ship in #2656. */}
-          {isUpsell && !isInstalled ? (
+                Disconnect / Manage still ship in #2656.
+              Coming-soon short-circuits ahead of every install-model
+              branch — the row has no handler, so the CTA is inert
+              regardless of plan or install presence. */}
+          {isComingSoon ? (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled
+              aria-label={`${entry.name} is coming soon`}
+              title="Atlas hasn't shipped this integration yet"
+              data-testid={`catalog-card-${entry.slug}-coming-soon-cta`}
+            >
+              <Clock className="mr-1 size-3" />
+              Coming soon
+            </Button>
+          ) : isUpsell && !isInstalled ? (
             <Button
               size="sm"
               variant="outline"

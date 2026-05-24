@@ -106,8 +106,9 @@ describe("runMigrations", () => {
     // + 0091 (unify catalog min_plan vocabulary, #2666)
     // + 0092 (pillar + install_id columns, #2739)
     // + 0093 (built-in datasource catalog rows, #2743)
-    // + 0094 (add 'telegram' to approval-surface CHECK enums, #2748) = 95.
-    expect(count).toBe(95);
+    // + 0094 (promote placeholder chat rows to coming_soon, #2747)
+    // + 0095 (add 'telegram' to approval-surface CHECK enums, #2748) = 96.
+    expect(count).toBe(96);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -230,7 +231,8 @@ describe("runMigrations", () => {
         "0091_unify_catalog_min_plan.sql",
         "0092_pillar_install_id_columns.sql",
         "0093_builtin_datasource_catalog.sql",
-        "0094_approval_surface_telegram.sql",
+        "0094_placeholder_chat_coming_soon.sql",
+        "0095_approval_surface_telegram.sql",
       ],
     });
 

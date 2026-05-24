@@ -89,32 +89,43 @@ export default defineConfig({
       saas_eligible: true,
       min_plan: "starter",
     },
-    // ── 1.5.3 placeholders — visible to ops, not customer-installable ─
+    // ── 1.5.3 placeholders — visible to customers as "Coming soon" ─────
     // Per CONTEXT.md, each of these has Platform-specific install
     // subtleties (Teams Azure-AD + manifest, Discord per-guild routing,
     // Telegram chat_id capture, WhatsApp Meta verification, gchat Google
     // Workspace Marketplace). They get `install_model: 'static-bot'`
-    // per the install-handler spectrum.
+    // per the install-handler spectrum and ride into the catalog as
+    // `implementation_status: 'coming_soon'` (#2747) so the admin UI
+    // renders them with a grey "Coming soon" badge and an inert CTA —
+    // distinct from the upsell-lock state, since the gate is "Atlas
+    // hasn't shipped this" rather than "your plan doesn't admit it".
+    // `enabled: true` keeps them surfaced; the install-status state
+    // machine short-circuits ahead of the install-handler dispatch.
+    // Each row flips to `implementation_status: 'available'` in its
+    // own slice (10–16) when the handler ships.
     {
       slug: "teams",
       type: "chat",
       install_model: "static-bot",
-      enabled: false,
+      enabled: true,
       saas_eligible: true,
+      implementation_status: "coming_soon",
     },
     {
       slug: "discord",
       type: "chat",
       install_model: "static-bot",
-      enabled: false,
+      enabled: true,
       saas_eligible: true,
+      implementation_status: "coming_soon",
     },
     {
       slug: "gchat",
       type: "chat",
       install_model: "static-bot",
-      enabled: false,
+      enabled: true,
       saas_eligible: true,
+      implementation_status: "coming_soon",
     },
     // Telegram — first static-bot Platform to ship a real install
     // handler (1.5.3 #2748 — keystone slice for Phase D). The operator
@@ -134,6 +145,11 @@ export default defineConfig({
       install_model: "static-bot",
       enabled: true,
       saas_eligible: true,
+      // #2748 has shipped the handler; promote out of the slice 9
+      // `coming_soon` default that #2747 set on every Phase D
+      // placeholder. Discord / Teams / gchat / WhatsApp stay
+      // `coming_soon` until their own slices flip them.
+      implementation_status: "available",
       name: "Telegram",
       description:
         "Chat with Atlas inside a Telegram group, channel, or 1:1 conversation. The operator wires a shared bot (TELEGRAM_BOT_TOKEN); each workspace points the bot at one chat by id.",
@@ -161,8 +177,9 @@ export default defineConfig({
       slug: "whatsapp",
       type: "chat",
       install_model: "static-bot",
-      enabled: false,
+      enabled: true,
       saas_eligible: true,
+      implementation_status: "coming_soon",
     },
     // ── Lazy OAuth integrations (1.5.2 slice 8 — #2658 / #2659) ─────
     // Salesforce (#2658) established the pattern; Jira (#2659) proves

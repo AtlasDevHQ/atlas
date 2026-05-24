@@ -7,8 +7,11 @@
  */
 
 import * as crypto from "crypto";
+import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { SaasCrm } from "@atlas/api/lib/effect/services";
+import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
 
 const log = createLogger("demo");
 
@@ -264,6 +267,7 @@ export async function captureDemoLead(opts: {
 
   const email = opts.email.toLowerCase().trim();
 
+  let result: DemoLeadResult;
   try {
     // Try to insert; on conflict update last_active_at and bump session_count
     const rows = await internalQuery(
@@ -279,14 +283,52 @@ export async function captureDemoLead(opts: {
     );
 
     const sessionCount = (rows[0] as { session_count: number } | undefined)?.session_count ?? 1;
-    return { returning: sessionCount > 1, sessionCount };
+    result = { returning: sessionCount > 1, sessionCount };
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err : new Error(String(err)) },
       "Failed to capture demo lead — lead data lost. Check that demo_leads table exists (run migrations)",
     );
-    return { returning: false, sessionCount: 1 };
+    result = { returning: false, sessionCount: 1 };
   }
+
+  // SaaS CRM dispatch (#2727 — slice 1 of #2726). Fire-and-forget.
+  //
+  // Self-hosted Atlas resolves to NoopSaasCrmLayer which yields
+  // `{ available: false }` and a no-op upsertLead — no Twenty traffic.
+  // Atlas SaaS resolves to SaasCrmLive (ee/src/saas-crm), which dispatches
+  // via TwentyClient. All errors are swallowed inside the layer, so even
+  // a Twenty outage never blocks the demo signup. The durable outbox +
+  // retry loop lands in slice 4 of #2726.
+  //
+  // We `await` the dispatch so Effect log lines bind to the same request
+  // context, but the dispatch itself is `Effect.void` on the failure
+  // path. The await never propagates an error.
+  try {
+    await runEnterprise(
+      Effect.gen(function* () {
+        const crm = yield* SaasCrm;
+        yield* crm.upsertLead({
+          source: "demo",
+          email,
+          ip: opts.ip,
+          userAgent: opts.userAgent,
+        });
+      }),
+    );
+  } catch (err) {
+    // Defensive — SaasCrm.upsertLead is typed as Effect<void> with no
+    // error channel, so this catch is unreachable in practice. We keep
+    // it so a future Tag-shape widening that adds an error channel
+    // doesn't silently regress the "never block the demo response"
+    // contract.
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Unexpected SaasCrm dispatch error — swallowed to keep demo response unblocked",
+    );
+  }
+
+  return result;
 }
 
 /**

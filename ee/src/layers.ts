@@ -23,6 +23,11 @@
  *                       (bundled to avoid four PRs of Tag scaffolding
  *                       overhead for narrow-surface subsystems).
  *
+ * #2727 (slice 1 of #2726) — added `SaasCrmLive`. First-touch CRM
+ *   dispatch for Atlas's own SaaS funnel (demo signup; signup hook +
+ *   contact form follow in later #2726 slices). Backed by the
+ *   `@useatlas/twenty` plugin; self-hosters get the Noop default.
+ *
  * Slice 11/11 (#2573 closeout) follows next: CI grep gate + symlink-stub
  * job + back-compat shim cleanup. See the parent issue (#2017) for the
  * rationale.
@@ -49,6 +54,7 @@ import type {
   ProactiveGate,
   ResidencyResolver,
   RolesPolicy,
+  SaasCrm,
   SCIMProvenance,
   SSOPolicy,
   SlaMetrics,
@@ -70,6 +76,7 @@ import { BrandingLive } from "./branding/white-label";
 import { DomainsLive } from "./platform/domains";
 import { ProactiveGateLive } from "./proactive-gate";
 import { DeployModeResolverLive } from "./deploy-mode";
+import { SaasCrmLive } from "./saas-crm/index";
 
 /**
  * Aggregated EE Layer — typed by the union of every Tag this module
@@ -92,6 +99,7 @@ export const EELayer: Layer.Layer<
   | ProactiveGate
   | ResidencyResolver
   | RolesPolicy
+  | SaasCrm
   | SCIMProvenance
   | SSOPolicy
   | SlaMetrics
@@ -113,4 +121,5 @@ export const EELayer: Layer.Layer<
   DomainsLive,
   ProactiveGateLive,
   DeployModeResolverLive,
+  SaasCrmLive,
 );

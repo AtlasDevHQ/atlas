@@ -109,8 +109,9 @@ describe("runMigrations", () => {
     // + 0094 (promote placeholder chat rows to coming_soon, #2747)
     // + 0095 (add 'telegram' to approval-surface CHECK enums, #2748)
     // + 0096 (drop connections + connection_groups, cutover, #2744)
-    // + 0097 (forward-fix for 0096 constraint-ordering bug on us-int-postgres, #2744) = 98.
-    expect(count).toBe(98);
+    // + 0097 (forward-fix for 0096 constraint-ordering bug on us-int-postgres, #2744)
+    // + 0098 (twenty_integrations table, #2727) = 99.
+    expect(count).toBe(99);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -237,6 +238,7 @@ describe("runMigrations", () => {
         "0095_approval_surface_telegram.sql",
         "0096_drop_connections_table.sql",
         "0097_fix_0096_us_constraint_order.sql",
+        "0098_twenty_integrations.sql",
       ],
     });
 

@@ -79,6 +79,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@atlas/api": "workspace:*",
+        "@useatlas/twenty": "workspace:*",
         "@useatlas/types": "workspace:*",
         "effect": "^3.14.8",
         "ipaddr.js": "^2.3.0",

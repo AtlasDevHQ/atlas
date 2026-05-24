@@ -17,7 +17,11 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
-import { registerFormHandler, registerOAuthHandler } from "./dispatch";
+import {
+  registerFormHandler,
+  registerOAuthHandler,
+  registerStaticBotHandler,
+} from "./dispatch";
 import { SlackOAuthInstallHandler } from "./slack-oauth-handler";
 import { EmailFormInstallHandler } from "./email-form-handler";
 import { ObsidianFormInstallHandler } from "./obsidian-form-handler";
@@ -30,6 +34,10 @@ import {
   SalesforceOAuthInstallHandler,
   SALESFORCE_CATALOG_ID,
 } from "./salesforce-oauth-handler";
+import {
+  TelegramStaticBotInstallHandler,
+  TELEGRAM_SLUG,
+} from "./telegram-static-bot-handler";
 import { lazyPluginLoader } from "@atlas/api/lib/plugins/lazy-loader";
 import { createJiraLazyBuilder } from "@atlas/api/lib/integrations/jira/lazy-builder";
 import { createSalesforceLazyBuilder } from "@atlas/api/lib/integrations/salesforce/lazy-builder";
@@ -114,6 +122,15 @@ export function registerBuiltinInstallHandlers(): void {
   // breaks on the first tool call.
   registerJiraOAuthHandler();
   registerSalesforceOAuthHandler();
+
+  // ── Static-bot platforms (1.5.3 — Phase D, #2748+) ────────────────
+  // Telegram is the keystone slice (#2748); Discord (#2749), gchat
+  // (#2754), and WhatsApp (#2753) register here too as their slices
+  // land. Each Platform's env-gate guards a single env var (the
+  // operator-shared bot token); the catalog row's `enabled` flag is
+  // the second gate (operator-side, DB-toggleable for emergency
+  // disable).
+  registerTelegramStaticBotHandler();
 }
 
 function registerSlackOAuthHandler(): void {
@@ -226,6 +243,34 @@ function registerSalesforceOAuthHandler(): void {
     );
   }
   log.info({ publicApiUrl }, "Registered SalesforceOAuthInstallHandler + LazyPluginLoader builder");
+}
+
+function registerTelegramStaticBotHandler(): void {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  if (!botToken || botToken.length === 0) {
+    log.info(
+      "Telegram static-bot handler not registered — TELEGRAM_BOT_TOKEN unset. The 'telegram' catalog row should stay enabled=false (or the install route will return 501 with the actionable env-var name).",
+    );
+    return;
+  }
+  registerStaticBotHandler(
+    TELEGRAM_SLUG,
+    new TelegramStaticBotInstallHandler({ botToken }),
+  );
+  log.info(
+    { tokenFingerprint: fingerprintToken(botToken) },
+    "Registered TelegramStaticBotInstallHandler",
+  );
+}
+
+/**
+ * Log-safe fingerprint of a bot token — last 4 chars only. Bot tokens
+ * have the form `<bot_id>:<35-char-secret>`. We never log the full
+ * value (it's an operator-scoped credential) but a 4-char tail lets
+ * ops correlate boot lines with the right env entry.
+ */
+function fingerprintToken(token: string): string {
+  return token.length <= 4 ? "****" : `…${token.slice(-4)}`;
 }
 
 /** @internal Test-only — resets the idempotency latch. */

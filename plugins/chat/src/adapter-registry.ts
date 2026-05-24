@@ -28,8 +28,10 @@ import type {
   CatalogInstallModel,
   ChatAdapterName,
 } from "@useatlas/types";
+import type { Adapter } from "chat";
 import { createSlackAdapter } from "./adapters/slack";
-import type { SlackAdapterConfig } from "./config";
+import { createTelegramAdapter } from "./adapters/telegram";
+import type { SlackAdapterConfig, TelegramAdapterConfig } from "./config";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -68,14 +70,18 @@ export type ChatAdapterSet = Partial<{
 }>;
 
 /**
- * Per-slug adapter instance type. Only Slack has a concrete type in
- * 1.5.2 — the other slugs map to a structural placeholder so the
- * `Partial<Record>` shape compiles without forcing every adapter class
- * to exist today. 1.5.3 narrows each placeholder to its real class.
+ * Per-slug adapter instance type. Slack has its concrete `SlackAdapter`
+ * class from `@chat-adapter/slack`; Telegram (1.5.3 #2748 — first
+ * static-bot Platform) narrows to the structural Chat SDK `Adapter` type
+ * because `@chat-adapter/telegram` doesn't export a public class
+ * symbol the way Slack does. The remaining slugs stay on the
+ * `{ name }` placeholder until their adapter class lands.
  */
 type ChatAdapterInstance<K extends ChatAdapterName> = K extends "slack"
   ? SlackAdapter
-  : { readonly name: K };
+  : K extends "telegram"
+    ? Adapter
+    : { readonly name: K };
 
 /**
  * Returned alongside `ChatAdapterSet` so `healthCheck` and admin
@@ -155,8 +161,38 @@ const SLACK_BUILDER: ChatAdapterBuilder<SlackAdapter> = {
   },
 };
 
+/**
+ * Telegram — first static-bot Platform to ship a real adapter (1.5.3
+ * #2748 — keystone of Phase D). Single required env var: the operator-
+ * shared bot token from @BotFather. Optional `TELEGRAM_WEBHOOK_SECRET`
+ * adds `x-telegram-bot-api-secret-token` verification on the webhook
+ * receive path; we don't gate the adapter on it (Telegram's webhook
+ * envelope already includes the bot id, and dropping the secret is
+ * Telegram's documented "I don't need extra verification" posture).
+ *
+ * Per-Workspace `chat_id` routing lives in `workspace_plugins.config`
+ * (written by `TelegramStaticBotInstallHandler`); the adapter itself
+ * is operator-shared and stateless across Workspaces, so the builder
+ * doesn't need to read it.
+ */
+const TELEGRAM_BUILDER: ChatAdapterBuilder<Adapter> = {
+  slug: "telegram",
+  platform: "telegram",
+  requiredEnv: ["TELEGRAM_BOT_TOKEN"],
+  build(env) {
+    const botToken = env.TELEGRAM_BOT_TOKEN;
+    if (!botToken) return null;
+    const config: TelegramAdapterConfig = {
+      botToken,
+      ...(env.TELEGRAM_WEBHOOK_SECRET ? { secretToken: env.TELEGRAM_WEBHOOK_SECRET } : {}),
+    };
+    return createTelegramAdapter(config);
+  },
+};
+
 const BUILDERS_BY_SLUG: Readonly<Record<string, ChatAdapterBuilder<unknown>>> = {
   slack: SLACK_BUILDER,
+  telegram: TELEGRAM_BUILDER,
 };
 
 /**
@@ -206,25 +242,26 @@ export interface BuildAdapterRegistryArgs {
 }
 
 /**
- * Build the chat adapter set from a catalog declaration + env. Slack is
- * the only adapter that can be activated in 1.5.2 — other slugs are
- * skipped with a `debug` log so ops can confirm the entry was seen but
- * intentionally not wired.
+ * Build the chat adapter set from a catalog declaration + env. In 1.5.2
+ * only Slack instantiated; 1.5.3 #2748 adds Telegram as the first
+ * static-bot Platform with a real adapter — the rest of Phase D
+ * (Discord #2749, gchat #2754, WhatsApp #2753) ride the same dispatch.
  *
  * Filter chain per slug:
  *
  *   1. `type === "chat"` — integration slugs (Salesforce, Email, …)
  *      are handled by the LazyPluginLoader path in slice 3, not here.
- *   2. `install_model === "oauth"` — form / static-bot install models
- *      don't instantiate an event-loop adapter at boot. Static-bot
- *      adapters land in 1.5.3.
+ *   2. `install_model in {"oauth", "static-bot"}` — form-based install
+ *      models don't instantiate an event-loop adapter (their tools
+ *      run via LazyPluginLoader instead).
  *   3. `enabled === true` — operator (or DB-side ops disable) can flip
  *      a row off without removing it from the catalog.
  *   4. Builder exists for the slug — a catalog entry for a chat Platform
  *      Atlas doesn't ship code for is a `warn` (operator typo or
  *      cross-version catalog row).
- *   5. All required env vars present — missing creds is a `warn` so the
- *      operator can fix env wiring without reading source.
+ *   5. All required env vars present — missing creds is an `error` so
+ *      the operator can fix env wiring without reading source. Telegram's
+ *      gate is `TELEGRAM_BOT_TOKEN`.
  */
 export function buildChatAdapterRegistry(
   args: BuildAdapterRegistryArgs,
@@ -237,10 +274,10 @@ export function buildChatAdapterRegistry(
   for (const entry of args.catalog) {
     if (entry.type !== "chat") continue;
 
-    if (entry.install_model !== "oauth") {
+    if (entry.install_model !== "oauth" && entry.install_model !== "static-bot") {
       logger.debug?.(
         { slug: entry.slug, installModel: entry.install_model },
-        "AdapterRegistry: catalog entry skipped — non-OAuth install model has no event-loop adapter to instantiate",
+        "AdapterRegistry: catalog entry skipped — install model has no event-loop adapter to instantiate",
       );
       continue;
     }
@@ -289,11 +326,16 @@ export function buildChatAdapterRegistry(
         { slug: entry.slug, platform: builder.platform },
         "AdapterRegistry: chat adapter registered",
       );
+    } else if (entry.slug === "telegram") {
+      adapters.telegram = adapter as Adapter;
+      logger.info(
+        { slug: entry.slug, platform: builder.platform },
+        "AdapterRegistry: chat adapter registered",
+      );
     }
-    // No other adapters wire today — the builder map has only `slack`.
-    // 1.5.3 work adds map entries for the static-bot platforms; the
-    // `Partial<Record>` shape of `ChatAdapterSet` admits them without
-    // a type change here.
+    // Other static-bot adapters (Discord #2749, gchat #2754, WhatsApp
+    // #2753) slot in here as their slices land. The `Partial<Record>`
+    // shape of `ChatAdapterSet` admits them without a type change.
   }
 
   return {

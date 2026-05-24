@@ -146,7 +146,11 @@ describe("buildChatAdapterRegistry — catalog filters", () => {
     expect(result.diagnostics.unrecognizedSlugs).toEqual([]);
   });
 
-  it("does not register Slack when install_model is form (skipped, no instantiation)", () => {
+  it("does not register a chat slug when install_model is form (skipped, no event-loop instantiation)", () => {
+    // Form-based entries (Email/Webhook/Obsidian) are integration
+    // pillar — but assert defensively here in case a future chat
+    // Platform ever rides install_model='form'. Either way the
+    // AdapterRegistry skips the row at debug log level.
     const { logger, debugs } = makeLogger();
     const result = buildChatAdapterRegistry({
       catalog: [entry({ slug: "slack", install_model: "form" })],
@@ -154,23 +158,42 @@ describe("buildChatAdapterRegistry — catalog filters", () => {
       logger,
     });
     expect(result.adapters.slack).toBeUndefined();
-    expect(debugs.some((l) => l.msg.includes("non-OAuth install model"))).toBe(true);
+    expect(debugs.some((l) => l.msg.includes("install model has no event-loop adapter"))).toBe(true);
   });
 
-  it("does not register a static-bot chat platform — defer to 1.5.3", () => {
-    // Pins the milestone scope: Teams/Discord/gchat/Telegram/WhatsApp
-    // are seeded with install_model='static-bot' enabled=false; even
-    // an accidentally-enabled static-bot row never instantiates an
-    // adapter in 1.5.2.
-    const { logger, debugs } = makeLogger();
+  it("registers Telegram when catalog has telegram static-bot + enabled AND TELEGRAM_BOT_TOKEN is set (1.5.3 #2748)", () => {
+    const { logger, infos } = makeLogger();
     const result = buildChatAdapterRegistry({
-      catalog: [
-        entry({ slug: "telegram", install_model: "static-bot", enabled: true }),
-        entry({ slug: "discord", install_model: "static-bot", enabled: true }),
-      ],
+      catalog: [entry({ slug: "telegram", install_model: "static-bot", enabled: true })],
+      env: { TELEGRAM_BOT_TOKEN: "1234:fake-telegram-token-for-test" },
+      logger,
+    });
+    expect(result.adapters.telegram).toBeDefined();
+    expect(
+      infos.some((l) => l.msg.includes("chat adapter registered")),
+    ).toBe(true);
+  });
+
+  it("skips Telegram + logs error when TELEGRAM_BOT_TOKEN is missing (entry enabled)", () => {
+    const { logger, errors } = makeLogger();
+    const result = buildChatAdapterRegistry({
+      catalog: [entry({ slug: "telegram", install_model: "static-bot", enabled: true })],
+      env: {},
+      logger,
+    });
+    expect(result.adapters.telegram).toBeUndefined();
+    expect(result.diagnostics.missingCredSlugs).toEqual(["telegram"]);
+    expect(errors.some((l) => l.msg.includes("required env vars missing"))).toBe(true);
+  });
+
+  it("does not register a static-bot Platform whose builder isn't shipped yet (Discord — #2749)", () => {
+    // Discord's install handler + adapter builder land in #2749. Until
+    // then, an enabled discord catalog row surfaces as an unrecognized
+    // slug warning, mirroring the operator-typo branch.
+    const { logger, warns } = makeLogger();
+    const result = buildChatAdapterRegistry({
+      catalog: [entry({ slug: "discord", install_model: "static-bot", enabled: true })],
       env: {
-        ...SLACK_FULL_ENV,
-        TELEGRAM_BOT_TOKEN: "1234:fake-telegram-token-for-test",
         DISCORD_BOT_TOKEN: "fake-discord-token",
         DISCORD_APPLICATION_ID: "fake",
         DISCORD_PUBLIC_KEY: "fake",
@@ -178,9 +201,8 @@ describe("buildChatAdapterRegistry — catalog filters", () => {
       logger,
     });
     expect(result.adapters.slack).toBeUndefined();
-    expect(
-      debugs.filter((l) => l.msg.includes("non-OAuth install model")),
-    ).toHaveLength(2);
+    expect(result.diagnostics.unrecognizedSlugs).toEqual(["discord"]);
+    expect(warns.some((l) => l.msg.includes("no builder registered"))).toBe(true);
   });
 
   it("ignores integration-type entries (slice 3 will own them)", () => {
@@ -260,11 +282,13 @@ describe("buildChatAdapterRegistry — diagnostics", () => {
     expect(result.diagnostics.unrecognizedSlugs).toEqual(["unknown-slug"]);
   });
 
-  it("does not list disabled / non-OAuth / non-chat entries (they're not failures)", () => {
+  it("does not list disabled / form-based / non-chat entries (they're not failures)", () => {
     const result = buildChatAdapterRegistry({
       catalog: [
         entry({ slug: "slack", enabled: false }),
-        entry({ slug: "telegram", install_model: "static-bot" }),
+        // form-based: no event-loop adapter to instantiate, so it's
+        // not a builder gap — handled by LazyPluginLoader instead.
+        entry({ slug: "email", type: "integration", install_model: "form" }),
         entry({ slug: "salesforce", type: "integration", install_model: "oauth" }),
       ],
       env: {},

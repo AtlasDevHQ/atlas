@@ -150,7 +150,7 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
   - [x] Phase A — Foundation: schema + facades (#2739/#2756, #2740/#2758+#2759, #2741/#2763, #2742/#2764)
   - [ ] Phase B — Cutover: ~~DatasourcePoolResolver (#2743/#2778)~~ + drop `connections` (#2744)
   - [ ] Phase C — UX consolidation: Salesforce → connections, integrations dedup, coming-soon state (#2745, #2746, #2747)
-  - [ ] Phase D — Chat install models from #2662: Telegram (#2748), Discord (#2749), Linear (#2750), GitHub (#2751), Teams (#2752), WhatsApp (#2753), gchat (#2754)
+  - [ ] Phase D — Chat install models from #2662: ~~Telegram (#2748 — keystone slice, `StaticBotInstallHandler` shipped)~~, Discord (#2749), Linear (#2750), GitHub (#2751), Teams (#2752), WhatsApp (#2753), gchat (#2754)
   - [ ] Phase E — Closeout (#2755) + ~~Email agent-loop tool carry-over (#2698/#2779)~~
 
 ## Planned

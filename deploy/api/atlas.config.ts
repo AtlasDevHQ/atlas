@@ -116,12 +116,46 @@ export default defineConfig({
       enabled: false,
       saas_eligible: true,
     },
+    // Telegram — first static-bot Platform to ship a real install
+    // handler (1.5.3 #2748 — keystone slice for Phase D). The operator
+    // wires a single shared `TELEGRAM_BOT_TOKEN` (from @BotFather);
+    // each customer admin supplies the numeric `chat_id` of the chat
+    // they want Atlas to listen on. `TelegramStaticBotInstallHandler`
+    // verifies reachability via `getChat` before persisting.
+    //
+    // `chat_id` is NOT marked `secret: true` — Telegram chat ids are
+    // routing identifiers (signed integers) that the Bot API leaks
+    // freely in every message envelope. Marking them secret would
+    // round-trip through `encryptSecretFields` for no security gain
+    // and would block the admin UI from rendering the value on read.
     {
       slug: "telegram",
       type: "chat",
       install_model: "static-bot",
-      enabled: false,
+      enabled: true,
       saas_eligible: true,
+      name: "Telegram",
+      description:
+        "Chat with Atlas inside a Telegram group, channel, or 1:1 conversation. The operator wires a shared bot (TELEGRAM_BOT_TOKEN); each workspace points the bot at one chat by id.",
+      min_plan: "starter",
+      configSchema: [
+        {
+          key: "chat_id",
+          type: "string",
+          label: "Chat ID",
+          description:
+            "Numeric Telegram chat id. Negative for groups/channels (e.g. -1001234567890), positive for private chats. Use a bot like @userinfobot to look it up.",
+          required: true,
+        },
+        {
+          key: "display_name",
+          type: "string",
+          label: "Display name",
+          description:
+            "Optional admin-friendly label for this chat. Shown on the integrations card.",
+          required: false,
+        },
+      ],
     },
     {
       slug: "whatsapp",

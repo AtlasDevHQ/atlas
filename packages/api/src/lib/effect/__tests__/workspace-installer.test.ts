@@ -113,6 +113,7 @@ type DispatchHandler =
         workspaceId: WorkspaceId,
         routingIdentifier: string,
         verificationProof?: string,
+        extras?: Record<string, unknown>,
       ) => Promise<unknown>;
     };
 
@@ -133,6 +134,7 @@ mock.module("@atlas/api/lib/integrations/install/dispatch", () => ({
   getInstallHandler: mockGetInstallHandler,
   registerOAuthHandler: mock(() => {}),
   registerFormHandler: mock(() => {}),
+  registerStaticBotHandler: mock(() => {}),
   _resetInstallHandlerRegistries: mock(() => {}),
 }));
 

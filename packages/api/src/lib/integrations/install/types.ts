@@ -169,14 +169,26 @@ export interface FormBasedInstallHandler {
  * Telegram's `/start@AtlasBot` echo, Discord's bot-member presence
  * check) that the routing identifier really belongs to the requesting
  * Workspace. Required for Platforms where impersonation would let
- * Workspace B claim Workspace A's chat id.
+ * Workspace B claim Workspace A's chat id. Telegram (1.5.3 #2748)
+ * verifies reachability server-side via the Bot API `getChat` round-
+ * trip and ignores the proof field; Platforms that need a stronger
+ * binding use this slot.
+ *
+ * `extras` carries the optional config fields beyond the routing
+ * identifier — e.g. Telegram's `display_name` from the catalog
+ * `config_schema`. The customer admin submits these in the install
+ * modal; the WorkspaceInstaller forwards them as a plain object the
+ * handler interprets per its catalog schema. Keys missing from the
+ * handler's schema are silently dropped at persist time — this slot is
+ * a forward-compat extension point, not a free-form metadata store.
  *
  * Credential rotation semantics: there is no per-Workspace credential —
  * the bot's auth lives with the operator. Rotation is operator-side.
  *
- * **No implementation lands in 1.5.2.** The shape is pinned here so the
- * dispatch table in `./dispatch.ts` covers all three branches today;
- * 1.5.3 lands the real handler as an import-and-register change.
+ * Telegram (1.5.3 #2748) is the first real implementation — see
+ * {@link TelegramStaticBotInstallHandler}. The remaining static-bot
+ * platforms (Discord #2749, gchat #2754, WhatsApp #2753) ride the same
+ * interface and dispatch.
  */
 export interface StaticBotInstallHandler {
   readonly kind: "static-bot";
@@ -185,6 +197,7 @@ export interface StaticBotInstallHandler {
     workspaceId: WorkspaceId,
     routingIdentifier: string,
     verificationProof?: string,
+    extras?: Record<string, unknown>,
   ): Promise<{
     readonly installRecord: InstallRecord;
   }>;

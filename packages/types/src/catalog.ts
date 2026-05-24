@@ -52,6 +52,54 @@ export const CATALOG_ENTRY_TYPES = ["chat", "integration"] as const;
 export type CatalogEntryType = (typeof CATALOG_ENTRY_TYPES)[number];
 
 // ---------------------------------------------------------------------------
+// pillar — three-pillar taxonomy (ADR-0006)
+// ---------------------------------------------------------------------------
+
+/**
+ * The three orthogonal ways Atlas reaches the outside world, per ADR-0006:
+ *
+ * - `datasource` — Atlas reads tabular data from it (SQL / SOQL / equivalent).
+ *   Lives on `/admin/connections`. Examples: Postgres, MySQL, Snowflake,
+ *   ClickHouse, BigQuery, DuckDB, Salesforce.
+ * - `chat` — Customer talks to Atlas through it. Lives on
+ *   `/admin/integrations` (Chat section). Examples: Slack, Teams, Discord,
+ *   Google Chat, Telegram, WhatsApp.
+ * - `action` — Atlas writes to / acts on it. Lives on `/admin/integrations`
+ *   (Actions section). Examples: GitHub, Linear, Email, Webhooks.
+ *
+ * Multi-pillar systems (e.g. GitHub-as-Action-Target + future
+ * GitHub-as-Datasource) carry one catalog row per pillar, not one row
+ * with a pillar array — see ADR-0006 for the least-privilege rationale.
+ *
+ * Mirrors the `chk_plugin_catalog_pillar` and `chk_workspace_plugins_pillar`
+ * CHECK constraints on the DB (migration 0092).
+ */
+export const PILLARS = ["datasource", "chat", "action"] as const;
+export type Pillar = (typeof PILLARS)[number];
+
+// ---------------------------------------------------------------------------
+// implementation_status — coming-soon affordance (ADR-0007)
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether Atlas has shipped a working install path for a catalog row.
+ *
+ * - `available` — install handler is wired; the card renders a working
+ *   Connect / Configure CTA (gated by plan + deploy-config).
+ * - `coming_soon` — Atlas hasn't shipped it yet; the card renders an
+ *   inert grey badge with no CTA. Operators can override per deploy via
+ *   `atlas.config.ts:overrideImplementationStatus`.
+ *
+ * `coming_soon` dominates every other gate in the install-status state
+ * machine (`@atlas/api/lib/integrations/install-status-machine`).
+ *
+ * Mirrors the `chk_plugin_catalog_implementation_status` CHECK constraint
+ * on the DB (migration 0092).
+ */
+export const IMPLEMENTATION_STATUSES = ["available", "coming_soon"] as const;
+export type ImplementationStatus = (typeof IMPLEMENTATION_STATUSES)[number];
+
+// ---------------------------------------------------------------------------
 // Chat adapter names
 // ---------------------------------------------------------------------------
 

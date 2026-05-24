@@ -50,10 +50,10 @@
   },
   "license": "MIT",
   "peerDependencies": {
-    "ai": "^6.0.141",
-    "effect": "^3.21.0",
-    "zod": "^4.3.6",
-    "@useatlas/plugin-sdk": "0.0.7"
+    "ai": "^6.0.0",
+    "effect": "^3.0.0",
+    "zod": "^4.0.0",
+    "@useatlas/plugin-sdk": ">=0.0.1"
   },
   "devDependencies": {
     "ai": "^6.0.141",

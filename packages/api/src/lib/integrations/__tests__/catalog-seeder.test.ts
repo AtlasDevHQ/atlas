@@ -43,6 +43,7 @@ function entry(partial: Partial<CatalogEntry> & Pick<CatalogEntry, "slug">): Cat
     min_plan: "starter",
     enabled: true,
     saas_eligible: true,
+    implementation_status: "available",
     ...partial,
   };
 }
@@ -57,6 +58,7 @@ function row(partial: Partial<CatalogDbRow> & Pick<CatalogDbRow, "slug">): Catal
     enabled: true,
     installModel: "oauth",
     saasEligible: true,
+    implementationStatus: "available",
     configSchema: null,
     ...partial,
   };
@@ -105,6 +107,7 @@ function makeMockDb(seed: CatalogDbRow[] = []): {
           enabled,
           installModel,
           saasEligible,
+          implementationStatus,
           configSchemaJson,
         ] = ps as [
           string,
@@ -117,6 +120,7 @@ function makeMockDb(seed: CatalogDbRow[] = []): {
           boolean,
           string,
           boolean,
+          string,
           string | null,
         ];
         const existing = rows.findIndex((r) => r.slug === slug);
@@ -139,6 +143,7 @@ function makeMockDb(seed: CatalogDbRow[] = []): {
           enabled,
           installModel: installModel as CatalogDbRow["installModel"],
           saasEligible,
+          implementationStatus: implementationStatus as CatalogDbRow["implementationStatus"],
           configSchema: configSchemaJson === null ? null : JSON.parse(configSchemaJson),
         };
         if (existing === -1) rows.push(next);
@@ -163,6 +168,7 @@ function snapshotRaw(rows: CatalogDbRow[]): Array<{
   enabled: boolean;
   install_model: string;
   saas_eligible: boolean;
+  implementation_status: string;
   config_schema: unknown | null;
 }> {
   return rows.map((r) => ({
@@ -175,6 +181,7 @@ function snapshotRaw(rows: CatalogDbRow[]): Array<{
     enabled: r.enabled,
     install_model: r.installModel,
     saas_eligible: r.saasEligible,
+    implementation_status: r.implementationStatus,
     config_schema: r.configSchema,
   }));
 }
@@ -278,6 +285,53 @@ describe("planCatalogSeed", () => {
     if (action.action === "update") {
       expect(action.diff).toContain("configSchema");
     }
+  });
+
+  // #2747 — implementation_status is a new diff axis. The diff must
+  // catch a config change (so a slice 10–16 flip from `coming_soon` to
+  // `available` propagates) AND treat matching values as noop (so a
+  // re-boot with unchanged config doesn't bump every row's updated_at).
+  it("flags implementation_status as diff'd when config promotes coming_soon → available", () => {
+    const plan = planCatalogSeed(
+      [
+        entry({
+          slug: "discord",
+          install_model: "static-bot",
+          implementation_status: "available",
+        }),
+      ],
+      [row({ slug: "discord", installModel: "static-bot", implementationStatus: "coming_soon" })],
+    );
+    expect(plan.actions[0]?.action).toBe("update");
+    const action = plan.actions[0];
+    if (action.action === "update") {
+      expect(action.diff).toContain("implementationStatus");
+    }
+  });
+
+  it("treats matching implementation_status as noop", () => {
+    // Pin matching `name` on both sides — `entry()`'s undefined `name`
+    // derives "Discord" from the slug while `row()` defaults to "Slack",
+    // which would diff on the name column and obscure the assertion.
+    const plan = planCatalogSeed(
+      [
+        entry({
+          slug: "discord",
+          name: "Discord",
+          install_model: "static-bot",
+          implementation_status: "coming_soon",
+        }),
+      ],
+      [
+        row({
+          slug: "discord",
+          name: "Discord",
+          installModel: "static-bot",
+          implementationStatus: "coming_soon",
+        }),
+      ],
+    );
+    expect(plan.actions[0]?.action).toBe("noop");
   });
 
   it("treats matching configSchema arrays as no-op (key-order-independent compare)", () => {
@@ -384,6 +438,24 @@ describe("seedCatalog", () => {
     ]);
     expect(rows.find((r) => r.slug === "slack")?.saasEligible).toBe(true);
     expect(rows.find((r) => r.slug === "github-pat")?.saasEligible).toBe(false);
+  });
+
+  // #2747 — slice 9's "Default catalog values" acceptance criterion:
+  // unimplemented platforms declared with `implementation_status:
+  // 'coming_soon'` land in `plugin_catalog.implementation_status`
+  // as `'coming_soon'`, while shipped rows default to `'available'`.
+  it("propagates implementation_status from config to DB row (slice 9 #2747)", async () => {
+    const { db, rows } = makeMockDb([]);
+    await seedCatalog(db, [
+      entry({ slug: "slack" }), // default: implementation_status='available'
+      entry({
+        slug: "discord",
+        install_model: "static-bot",
+        implementation_status: "coming_soon",
+      }),
+    ]);
+    expect(rows.find((r) => r.slug === "slack")?.implementationStatus).toBe("available");
+    expect(rows.find((r) => r.slug === "discord")?.implementationStatus).toBe("coming_soon");
   });
 
   it("preserves ops-disabled state on re-seed (config drift logged at warn)", async () => {

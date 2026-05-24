@@ -552,6 +552,126 @@ export const BuiltinDatasourceCatalogSeedLive: Layer.Layer<
 );
 
 // ══════════════════════════════════════════════════════════════════════
+// ██  Implementation-Status Override Layer (#2747 — 1.5.3 slice 9)
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * Discriminated outcome of the boot-time
+ * `overrideImplementationStatus` consumer. Mirrors the two seed
+ * Layers' shapes so a future `/health` consumer can treat the three
+ * post-seed outcomes (skipped, applied, error) uniformly.
+ */
+export type ImplementationStatusOverrideOutcome =
+  | "skipped-gate"
+  | "skipped-empty"
+  | "applied"
+  | "error";
+
+export interface ImplementationStatusOverrideShape {
+  /** UPDATEs issued this boot. */
+  readonly updatedCount: number;
+  /** Slugs in the override that didn't match a catalog row. */
+  readonly unmatchedSlugs: ReadonlyArray<string>;
+  readonly outcome: ImplementationStatusOverrideOutcome;
+  /** Scrubbed error message when `outcome === "error"`. */
+  readonly error?: string;
+}
+
+export class ImplementationStatusOverride extends Context.Tag(
+  "ImplementationStatusOverride",
+)<ImplementationStatusOverride, ImplementationStatusOverrideShape>() {}
+
+/**
+ * Apply `atlas.config.ts:overrideImplementationStatus` against
+ * `plugin_catalog`. Runs after BOTH seed Layers complete so the
+ * override is the final word for `implementation_status` on the
+ * boot — a re-asserting `EXCLUDED.implementation_status` from the
+ * catalog seeder cannot land afterward. The Tag dependencies on
+ * `CatalogSeed` + `BuiltinDatasourceCatalogSeed` encode the
+ * ordering at the type level.
+ *
+ * Non-fatal: the boot wrapper swallows errors and logs at error so
+ * a failed override leaves the seed output authoritative. The
+ * failure is observable via `outcome: "error"` for health surfaces.
+ *
+ * **SaaS:** every catalog row's `implementation_status` is declared
+ * directly in `deploy/api/atlas.config.ts:catalog`; the override
+ * field stays empty and this Layer logs `skipped-empty`. Slice 9's
+ * primary user is the self-host operator who shipped their own
+ * handler for a Platform Atlas marks `coming_soon`.
+ */
+export const ImplementationStatusOverrideLive: Layer.Layer<
+  ImplementationStatusOverride,
+  never,
+  InternalDB | Migration | CatalogSeed | BuiltinDatasourceCatalogSeed
+> = Layer.effect(
+  ImplementationStatusOverride,
+  Effect.gen(function* () {
+    const db = yield* InternalDB;
+    const migration = yield* Migration;
+    // Yielding the two seed Tags is the load-bearing line — Effect
+    // memoizes the same-Tag layers, so adding them here doesn't
+    // re-run the seeds. The dependency *ordering* is what we need.
+    yield* CatalogSeed;
+    yield* BuiltinDatasourceCatalogSeed;
+
+    const zeroCounts = {
+      updatedCount: 0,
+      unmatchedSlugs: [] as ReadonlyArray<string>,
+    };
+
+    if (!db.available || !migration.migrated) {
+      log.info(
+        { available: db.available, migrated: migration.migrated },
+        "Implementation-status override skipped — upstream gate not satisfied",
+      );
+      return {
+        ...zeroCounts,
+        outcome: "skipped-gate",
+      } satisfies ImplementationStatusOverrideShape;
+    }
+
+    return yield* Effect.tryPromise({
+      try: async () => {
+        const { runImplementationStatusOverrideBoot } = await import(
+          "@atlas/api/lib/integrations/implementation-status-override"
+        );
+        const result = await runImplementationStatusOverrideBoot();
+        switch (result.kind) {
+          case "skipped":
+            return {
+              ...zeroCounts,
+              outcome: "skipped-empty",
+            } satisfies ImplementationStatusOverrideShape;
+          case "applied":
+            return {
+              updatedCount: result.updatedCount,
+              unmatchedSlugs: result.unmatchedSlugs,
+              outcome: "applied",
+            } satisfies ImplementationStatusOverrideShape;
+          case "error":
+            return {
+              ...zeroCounts,
+              outcome: "error",
+              error: result.message,
+            } satisfies ImplementationStatusOverrideShape;
+        }
+      },
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(
+      Effect.catchAll((err) => {
+        log.error({ err }, "Implementation-status override boot wrapper threw");
+        return Effect.succeed({
+          ...zeroCounts,
+          outcome: "error",
+          error: errorMessage(err),
+        } satisfies ImplementationStatusOverrideShape);
+      }),
+    );
+  }),
+);
+
+// ══════════════════════════════════════════════════════════════════════
 // ██  Connections Hydrate Layer
 // ══════════════════════════════════════════════════════════════════════
 
@@ -1409,6 +1529,7 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
   | BackfillSaasTrial
   | CatalogSeed
   | BuiltinDatasourceCatalogSeed
+  | ImplementationStatusOverride
   | ConnectionsHydrate
   | SemanticSync
   | Settings
@@ -1444,6 +1565,22 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
   // slug sets so ordering between them doesn't matter.
   const builtinDatasourceCatalogSeedLayer = BuiltinDatasourceCatalogSeedLive.pipe(
     Layer.provide(Layer.merge(internalDBLayer, migrationLayer)),
+  );
+
+  // ImplementationStatusOverrideLive (#2747, slice 9) — depends on
+  // BOTH seed Layers so the override is applied AFTER both finish
+  // (the catalog seeder's upsert would otherwise clobber it). The
+  // dependency edge enforces ordering at the type level; Effect's
+  // memoization keeps the seed Layers from running twice.
+  const implementationStatusOverrideLayer = ImplementationStatusOverrideLive.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        internalDBLayer,
+        migrationLayer,
+        catalogSeedLayer,
+        builtinDatasourceCatalogSeedLayer,
+      ),
+    ),
   );
 
   const connectionsHydrateLayer = ConnectionsHydrateLive.pipe(
@@ -1508,6 +1645,7 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     backfillSaasTrialLayer,
     catalogSeedLayer,
     builtinDatasourceCatalogSeedLayer,
+    implementationStatusOverrideLayer,
     connectionsHydrateLayer,
     semanticSyncLayer,
     settingsLayer,

@@ -1,24 +1,19 @@
 -- 0098_twenty_integrations.sql
 --
--- Atlas issue #2727 — `twenty_integrations` schema for the Twenty CRM
--- plugin. Slice 1 of #2726 only creates the table; the admin UI flow
--- that populates it lands in slice 9. The env-var path
--- (`TWENTY_API_KEY`) in `TwentyCredentialResolver` ships first so the
--- demo → Twenty pipe (this slice) can be smoke-tested without any
--- per-workspace row.
+-- `twenty_integrations` — per-workspace credentials for the Twenty CRM
+-- plugin. Until the admin-UI install flow lands, dispatch resolves
+-- credentials from `TWENTY_API_KEY` env via `TwentyCredentialResolver`;
+-- this table is the destination for per-workspace overrides.
 --
 -- Shape:
 --   * `id` — uuid PK. Single-column PK so the F-47 rotation tooling and
 --     F-42 residue audit (both walk `INTEGRATION_TABLES` with one PK
 --     identifier) work unchanged.
---   * `workspace_id` — composite uniqueness with this column; matches
---     the `integration_credentials` shape from 0089. One Twenty
---     install per workspace, full stop.
+--   * `workspace_id` — unique on its own; one Twenty install per
+--     workspace.
 --   * `base_url` — Twenty REST base URL, plaintext (operator-visible
---     hostnames aren't secret on their own; the API key is the secret).
---     Defaults to https://crm.useatlas.dev in the application code,
---     not at the SQL layer — `NULL` here means "fall back to the
---     default the resolver picks."
+--     hostnames aren't secret; the API key is). NULL here means
+--     "no override" — the application code picks its known fallback.
 --   * `api_key_encrypted` — AES-256-GCM ciphertext (versioned
 --     `enc:v<N>:iv:authTag:ciphertext`) from `db/secret-encryption.ts`,
 --     per the CLAUDE.md guidance for new integration credential
@@ -45,6 +40,6 @@ CREATE TABLE IF NOT EXISTS twenty_integrations (
   updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Composite uniqueness — one Twenty install per workspace.
+-- One Twenty install per workspace.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_twenty_integrations_workspace_unique
   ON twenty_integrations (workspace_id);

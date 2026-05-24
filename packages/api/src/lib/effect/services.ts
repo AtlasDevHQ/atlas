@@ -2395,46 +2395,31 @@ export const NoopDeployModeResolverLayer: Layer.Layer<DeployModeResolver> =
     resolve: () => "self-hosted",
   } satisfies DeployModeResolverShape);
 
-// ── SaasCrm (#2727 — slice 1 of #2726) ───────────────────────────────
+// ── SaasCrm ──────────────────────────────────────────────────────────
 //
-// First-touch CRM dispatch for Atlas's own SaaS funnel (demo signup,
-// app.useatlas.dev signup hook, contact form). Backed by the
-// `@useatlas/twenty` plugin from `ee/src/saas-crm/`. Self-hosted Atlas
-// stays on the no-op default below — installing `@useatlas/twenty` and
-// wiring it into atlas.config.ts is the supported path for self-hosters
-// who want their own demo / signup flows pushed into their own Twenty.
-//
-// `available` flag rationale (load-bearing per CLAUDE.md): slice 3 of
-// #2726 (#2729) introduces `POST /api/v1/contact`, which must return
-// 404 `not_available` on self-hosted instead of an EnterpriseError-mapped
-// 403. The 404-vs-403 distinction matters here because the contact
-// form is a marketing surface, not an admin feature — surfacing 403
-// would imply "upgrade to enterprise" to anyone who clicked the form
-// from useatlas.dev, which would be confusing for self-hosters who
-// landed on a marketing page tied to their own deployment. The 404
-// branch keeps the route shape clean.
-//
-// Future `/api/v1/contact` 404 branch (slice 3) reads `available`
-// directly; route never sees the dispatch path otherwise.
+// SaaS-only CRM dispatch (Twenty). Self-hosted gets the Noop layer.
 
-/** Inputs to `SaasCrm.upsertLead` — discriminated by source. */
-export type SaasCrmLeadInput =
-  | {
-      readonly source: "demo";
-      readonly email: string;
-      readonly ip?: string | null;
-      readonly userAgent?: string | null;
-    };
-// Later slices add `signup` and `sales-form` variants on this union.
+/**
+ * Inputs to `SaasCrm.upsertLead`. Inlined here (mirrors the same
+ * discriminated union in `@useatlas/twenty/lead-normalizer`) until a
+ * subsequent release promotes the shared types into `@useatlas/types`.
+ * Two-place duplication is intentional and accepted at this slice —
+ * the union has exactly one variant (`demo`) today; the next variant
+ * lands together with the type promotion.
+ */
+export type SaasCrmLeadInput = {
+  readonly source: "demo";
+  readonly email: string;
+  readonly ip?: string | null;
+  readonly userAgent?: string | null;
+};
 
 export interface SaasCrmShape {
   /**
-   * False when the SaaS CRM wiring is not loaded (self-hosted, or
-   * enterprise enabled but Twenty creds + custom-field verification
-   * failed at boot). Consumer: future `POST /api/v1/contact` returns
-   * 404 `not_available` when `available === false` instead of the
-   * standard 403 envelope (marketing surfaces shouldn't imply an
-   * enterprise-gate upsell).
+   * Anticipatory — a future `POST /api/v1/contact` route will read this
+   * to return 404 `not_available` on self-hosted (or when the SaaS layer
+   * failed boot verification) rather than the standard 403 envelope.
+   * Until that route lands, no production caller branches on this flag.
    */
   readonly available: boolean;
   /**
@@ -2448,12 +2433,7 @@ export interface SaasCrmShape {
 
 export class SaasCrm extends Context.Tag("SaasCrm")<SaasCrm, SaasCrmShape>() {}
 
-/**
- * No-op default: SaaS CRM dispatch unavailable. Self-hosted Atlas (and
- * Atlas SaaS instances where Twenty creds / custom-field verification
- * failed) sees this layer. `upsertLead` returns success without
- * dispatching anywhere.
- */
+/** No-op default: SaaS CRM dispatch unavailable; upsertLead is a noop. */
 export const NoopSaasCrmLayer: Layer.Layer<SaasCrm> = Layer.succeed(SaasCrm, {
   available: false,
   upsertLead: () => Effect.void,

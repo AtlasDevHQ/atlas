@@ -251,6 +251,11 @@ export interface DemoLeadResult {
   sessionCount: number;
 }
 
+/** Same pattern used in the /demo route to mask emails before logging. */
+function maskEmailForLog(email: string): string {
+  return email.replace(/(.{2}).*(@.*)/, "$1***$2");
+}
+
 /**
  * Capture or update a demo lead in the internal DB.
  * Returns whether this is a returning user and their session count.
@@ -259,13 +264,17 @@ export async function captureDemoLead(opts: {
   email: string;
   ip?: string | null;
   userAgent?: string | null;
+  /** Request correlation ID — included on every log emitted by this function. */
+  requestId?: string;
 }): Promise<DemoLeadResult> {
+  const email = opts.email.toLowerCase().trim();
+  const emailMasked = maskEmailForLog(email);
+  const { requestId } = opts;
+
   if (!hasInternalDB()) {
-    log.debug("No internal DB — demo lead not captured");
+    log.debug({ requestId, emailMasked }, "No internal DB — demo lead not captured");
     return { returning: false, sessionCount: 1 };
   }
-
-  const email = opts.email.toLowerCase().trim();
 
   let result: DemoLeadResult;
   try {
@@ -286,24 +295,21 @@ export async function captureDemoLead(opts: {
     result = { returning: sessionCount > 1, sessionCount };
   } catch (err) {
     log.error(
-      { err: err instanceof Error ? err : new Error(String(err)) },
+      {
+        requestId,
+        emailMasked,
+        err: err instanceof Error ? err : new Error(String(err)),
+      },
       "Failed to capture demo lead — lead data lost. Check that demo_leads table exists (run migrations)",
     );
     result = { returning: false, sessionCount: 1 };
   }
 
-  // SaaS CRM dispatch (#2727 — slice 1 of #2726). Fire-and-forget.
-  //
-  // Self-hosted Atlas resolves to NoopSaasCrmLayer which yields
-  // `{ available: false }` and a no-op upsertLead — no Twenty traffic.
-  // Atlas SaaS resolves to SaasCrmLive (ee/src/saas-crm), which dispatches
-  // via TwentyClient. All errors are swallowed inside the layer, so even
-  // a Twenty outage never blocks the demo signup. The durable outbox +
-  // retry loop lands in slice 4 of #2726.
-  //
-  // We `await` the dispatch so Effect log lines bind to the same request
-  // context, but the dispatch itself is `Effect.void` on the failure
-  // path. The await never propagates an error.
+  // SaaS CRM dispatch via the SaasCrm Tag. Self-hosted resolves to
+  // NoopSaasCrmLayer (no Twenty traffic). Atlas SaaS resolves to
+  // SaasCrmLive which dispatches via TwentyClient — failures are
+  // swallowed inside the layer so a Twenty outage never blocks the
+  // demo response.
   try {
     await runEnterprise(
       Effect.gen(function* () {
@@ -317,13 +323,13 @@ export async function captureDemoLead(opts: {
       }),
     );
   } catch (err) {
-    // Defensive — SaasCrm.upsertLead is typed as Effect<void> with no
-    // error channel, so this catch is unreachable in practice. We keep
-    // it so a future Tag-shape widening that adds an error channel
-    // doesn't silently regress the "never block the demo response"
-    // contract.
+    // SaasCrm.upsertLead has no error channel today; catch guards against future Tag-shape widening + runPromise defects.
     log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
+      {
+        requestId,
+        emailMasked,
+        err: err instanceof Error ? err.message : String(err),
+      },
       "Unexpected SaasCrm dispatch error — swallowed to keep demo response unblocked",
     );
   }

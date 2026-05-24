@@ -2213,12 +2213,8 @@ export const proactivePublicDataset = pgTable(
 
 // ---------------------------------------------------------------------------
 // twenty_integrations (0098) — per-workspace credentials for the Twenty CRM
-// plugin. Slice 1 of #2726 only creates the table; the admin-UI install
-// flow that populates it lands in slice 9. Until then, dispatch resolves
-// credentials from `TWENTY_API_KEY` env via `TwentyCredentialResolver`.
-//
-// Listed in `INTEGRATION_TABLES` (lib/db/integration-tables.ts) so F-47
-// key rotation + F-42 residue audit walk the table generically. The
+// plugin. Listed in `INTEGRATION_TABLES` (lib/db/integration-tables.ts) so
+// F-47 key rotation + F-42 residue audit walk the table generically. The
 // `api_key_encrypted` column uses the `db/secret-encryption.ts` pair
 // (CLAUDE.md guidance for new integration credential columns).
 // ---------------------------------------------------------------------------

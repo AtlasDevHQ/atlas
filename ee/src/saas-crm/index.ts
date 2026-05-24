@@ -1,34 +1,13 @@
 /**
- * SaaS CRM wiring — slice 1 of #2726 (#2727).
- *
- * Connects Atlas SaaS demo / (future) signup / (future) contact flows
- * into the Twenty CRM instance at crm.useatlas.dev via the
- * `@useatlas/twenty` plugin. Gated by `isEnterpriseEnabled()` —
- * self-hosters get the Noop layer from
+ * SaaS CRM wiring — connects Atlas SaaS lead-capture flows into the
+ * Twenty CRM instance at `crm.useatlas.dev` via the `@useatlas/twenty`
+ * plugin. Self-hosted Atlas gets the Noop layer from
  * `lib/effect/services.ts:NoopSaasCrmLayer`.
  *
- * Boot behavior:
- *  1. If enterprise is DISABLED → return `{ available: false }`.
- *  2. If `TWENTY_API_KEY` is unset → log warn, return `{ available: false }`.
- *  3. Verify that `atlasFirstSource` AND `atlasLastSource` custom fields
- *     exist on the Twenty Person object via the metadata endpoint.
- *     - Both present → `available: true`.
- *     - Either missing → `log.error` with exact creation instructions;
- *       `available: false`.
- *     - Metadata endpoint errors (transient network) → log warn,
- *       leave `available: true` so dispatches still attempt; a
- *       missing-field response will surface as the upstream 422 on
- *       the upsert call.
- *
- * Dispatch path (`upsertLead`):
- *  - Normalize the event via `LeadNormalizer` (slice 1: demo only).
- *  - Invoke `TwentyClient.upsertPerson` with credentials from
- *    `TwentyCredentialResolver.resolveCredentialsFromEnv()`.
- *  - On any failure: log a warning and swallow the error (return success).
- *    Atlas's demo-gate path must never block on Twenty.
- *
- * The durable outbox + retry loop arrives in slice 4 of #2726. Until
- * then, this is fire-and-forget — Twenty being down loses the lead.
+ * Transient metadata-probe failures deliberately leave `available: true`
+ * — a real schema mismatch surfaces as a 422 on the first upsert call.
+ * Deterministic misconfigurations (401/403/404) flip to permanent so
+ * leads aren't lost silently against a clearly-broken endpoint.
  */
 
 import { Effect, Layer } from "effect";
@@ -54,11 +33,25 @@ const log = createLogger("ee:saas-crm");
 const REQUIRED_PERSON_FIELDS = ["atlasFirstSource", "atlasLastSource"] as const;
 
 /**
- * Build the create-instructions string for a missing custom field. The
- * exact text is part of the slice-1 acceptance criteria — when an
- * operator sees this, they should be able to follow it without
- * cross-referencing the README.
+ * Atlas's known Twenty CRM hostname. Used as the fallback when
+ * `TWENTY_BASE_URL` is unset in the SaaS deployment — self-hosters
+ * never hit this code path (Noop layer is the default; if they were
+ * to install `@useatlas/twenty`, they go through the plugin's
+ * `atlas.config.ts` which requires `baseUrl` explicitly).
  */
+const ATLAS_SAAS_TWENTY_BASE_URL = "https://crm.useatlas.dev";
+
+/**
+ * Per-request timeout for the SaaS CRM client. Tight on purpose: every
+ * lead dispatch sits inside the demo response path, and even though
+ * the dispatch is fire-and-forget at the catch-and-swallow layer
+ * inside `dispatchLead`, the `await` in `captureDemoLead` would still
+ * add latency-on-failure. 3s caps each leg (find + create/patch),
+ * keeping worst-case Twenty-outage latency in the demo response under
+ * ~6s rather than the 10s default.
+ */
+const SAAS_TIMEOUT_MS = 3_000;
+
 function missingFieldInstructions(missing: ReadonlyArray<string>): string {
   return (
     `Twenty Person object is missing required Atlas custom field(s): ${missing.join(", ")}. ` +
@@ -68,25 +61,52 @@ function missingFieldInstructions(missing: ReadonlyArray<string>): string {
   );
 }
 
+function misconfigurationInstructions(status: number, baseUrl: string): string {
+  return (
+    `Twenty metadata probe returned HTTP ${status} from ${baseUrl}/metadata — ` +
+    `this is a deterministic misconfiguration that will NEVER succeed without ` +
+    `operator intervention. Check TWENTY_API_KEY (bearer token from Twenty → ` +
+    `Settings → API & Webhooks) and TWENTY_BASE_URL (must point at a Twenty ` +
+    `instance whose /metadata GraphQL endpoint is reachable). SaaS CRM dispatch ` +
+    `is disabled until this is fixed.`
+  );
+}
+
+/**
+ * Build the TwentyClient config with the SaaS defaults applied. The
+ * Atlas-internal base URL fallback lives here, NOT in the plugin's
+ * schema default — self-hosters who install `@useatlas/twenty`
+ * directly must point at their own Twenty.
+ */
+function buildSaasClientConfig(creds: ResolvedTwentyCredentials): TwentyClientConfig {
+  return {
+    apiKey: creds.apiKey,
+    baseUrl: creds.baseUrl ?? ATLAS_SAAS_TWENTY_BASE_URL,
+    timeoutMs: SAAS_TIMEOUT_MS,
+  };
+}
+
 /**
  * Run startup verification against the Twenty metadata endpoint.
  *
  * Returns:
- *  - { ok: true } when both required fields are present.
- *  - { ok: false } when one or both fields are missing (a structured
- *    log.error has already been emitted).
- *  - { ok: "transient" } when the metadata endpoint itself errored
- *    (network blip / 5xx / parse failure). Per spec we leave the
- *    layer available — the upsert call will surface any real schema
- *    drift as a 422 upstream error.
+ *  - `ok: true` — both required fields are present.
+ *  - `ok: false` — fields missing OR upstream returned a deterministic
+ *    misconfiguration code (401/403/404). A structured `log.error` has
+ *    already been emitted.
+ *  - `ok: "transient"` — network / 5xx / parse failure. Layer stays
+ *    available; a real schema mismatch will surface as a 422 on the
+ *    first upsertPerson call.
  */
 async function verifyCustomFields(
   creds: ResolvedTwentyCredentials,
 ): Promise<{ ok: true } | { ok: false } | { ok: "transient"; reason: string }> {
+  const baseUrl = creds.baseUrl ?? ATLAS_SAAS_TWENTY_BASE_URL;
   try {
     const meta = await getPersonMetadata({
       apiKey: creds.apiKey,
-      baseUrl: creds.baseUrl,
+      baseUrl,
+      timeoutMs: SAAS_TIMEOUT_MS,
     });
     const present = new Set(meta.fields.map((f) => f.name));
     const missing = REQUIRED_PERSON_FIELDS.filter((f) => !present.has(f));
@@ -97,6 +117,25 @@ async function verifyCustomFields(
     );
     return { ok: false };
   } catch (err) {
+    // 401/403/404 are deterministic misconfigurations — silently
+    // marking them transient would leave `available: true` and every
+    // subsequent dispatch would fail identically forever, losing leads.
+    if (
+      err instanceof TwentyClientError &&
+      (err.status === 401 || err.status === 403 || err.status === 404)
+    ) {
+      log.error(
+        {
+          status: err.status,
+          upstreamCode: err.upstreamCode,
+          err: err.message,
+          baseUrl,
+          event: "saas_crm.metadata_misconfigured",
+        },
+        misconfigurationInstructions(err.status, baseUrl),
+      );
+      return { ok: false };
+    }
     const reason = err instanceof Error ? err.message : String(err);
     return { ok: "transient", reason };
   }
@@ -104,9 +143,9 @@ async function verifyCustomFields(
 
 /**
  * Dispatch a normalized lead via TwentyClient. Errors are caught and
- * logged inside this function so the SaasCrmShape Effect channel can
- * stay typed as `Effect<void>` (no error channel) — that contract is
- * what makes the call-site short (`yield* SaasCrm` then
+ * logged inside this function so the SaasCrmShape Effect channel stays
+ * typed as `Effect<void>` (no error channel) — that contract is what
+ * keeps the call-site short (`yield* SaasCrm` then
  * `yield* upsertLead(input)` with nothing to catch).
  */
 async function dispatchLead(
@@ -122,18 +161,19 @@ async function dispatchLead(
     );
   } catch (err) {
     // Twenty being down (or a missing custom field, or a bad key)
-    // MUST NOT block the caller. We log loudly enough that an operator
-    // can correlate but never re-throw.
+    // MUST NOT block the caller. Log loudly so an operator can
+    // correlate, but never re-throw.
     if (err instanceof TwentyClientError) {
       log.warn(
         {
           source: input.source,
           status: err.status,
           upstreamCode: err.upstreamCode,
+          operation: err.operation,
           err: err.message,
           event: "saas_crm.dispatch_failed",
         },
-        "Twenty upsertPerson failed — lead lost (durable outbox lands in slice 4)",
+        "Twenty upsertPerson failed — lead lost (durable outbox not yet implemented)",
       );
     } else {
       log.warn(
@@ -148,11 +188,7 @@ async function dispatchLead(
   }
 }
 
-/**
- * Build the live SaasCrm service. Runs the boot-time verification once
- * inside `Layer.effect` — `available` is the result of that check; it
- * does NOT re-verify on every `upsertLead` call.
- */
+// Boot-time verification runs once inside Layer.effect; available reflects that one check.
 export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
   SaasCrm,
   Effect.gen(function* () {
@@ -179,8 +215,9 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
 
     const verifyResult = yield* Effect.promise(() => verifyCustomFields(creds));
     if (verifyResult.ok === false) {
-      // Already logged inside verifyCustomFields. Surface as unavailable
-      // so subsequent demo signups are no-ops rather than dead-letter
+      // Already logged inside verifyCustomFields (missing fields OR
+      // deterministic misconfiguration). Surface unavailable so
+      // subsequent demo signups are no-ops rather than dead-letter
       // rows in the (future) outbox.
       return {
         available: false,
@@ -195,15 +232,15 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
       );
     } else {
       log.info(
-        { baseUrl: creds.baseUrl, event: "saas_crm.ready" },
+        {
+          baseUrl: creds.baseUrl ?? ATLAS_SAAS_TWENTY_BASE_URL,
+          event: "saas_crm.ready",
+        },
         "SaasCrm wired up — atlasFirstSource + atlasLastSource verified on Twenty Person",
       );
     }
 
-    const clientConfig: TwentyClientConfig = {
-      apiKey: creds.apiKey,
-      baseUrl: creds.baseUrl,
-    };
+    const clientConfig = buildSaasClientConfig(creds);
 
     return {
       available: true,
@@ -214,4 +251,4 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
 );
 
 // Re-exported for direct testing of the verification / dispatch logic.
-export { verifyCustomFields, dispatchLead };
+export { verifyCustomFields, dispatchLead, buildSaasClientConfig, ATLAS_SAAS_TWENTY_BASE_URL };

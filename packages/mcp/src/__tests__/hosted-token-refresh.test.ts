@@ -150,6 +150,7 @@ mock.module("@atlas/api/lib/db/internal", () => {
     assignWorkspaceRegion: notUsed("assignWorkspaceRegion"),
     isWorkspaceMigrating: async () => false,
     closeInternalDB: async () => undefined,
+    isInternalCircuitOpen: () => false,
   };
 });
 

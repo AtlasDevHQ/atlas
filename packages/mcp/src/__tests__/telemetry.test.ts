@@ -68,6 +68,10 @@ mock.module("@atlas/api/lib/metrics", () => ({
       counterCalls.push({ metric: "atlas.mcp.activations", value, attributes });
     },
   },
+  rateLimitAuditDropped: { add: () => {} },
+  rateLimitLoaderFailures: { add: () => {} },
+  oauthTokenRefresh: { add: () => {} },
+  mcpPromptCalls: { add: () => {} },
 }));
 
 // --- Mocks for AI SDK tool execute functions ------------------------------

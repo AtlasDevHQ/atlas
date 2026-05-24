@@ -174,15 +174,13 @@ describe("TaskFormDialog — zero-environment guard (#2418)", () => {
     );
 
     await waitFor(() => {
-      expect(container.textContent).toContain("Create an environment first");
+      // Post-0096 cutover (#2744 / ADR-0007): the environments admin
+      // surface is gone — env management collapses into the per-connection
+      // edit dialog. The empty-state banner directs admins there instead
+      // of linking to the deleted Environments view.
+      expect(container.textContent).toContain("No environments yet");
+      expect(container.textContent).toContain("Edit any datasource on the Connections page");
     });
-    // The CTA must point at the env grouping directly, not the bare
-    // `/admin/connections` URL — otherwise a first-time admin lands on
-    // the default Type tab and still can't see where to add an env.
-    const link = container.querySelector<HTMLAnchorElement>(
-      'a[href="/admin/connections?groupBy=environment"]',
-    );
-    expect(link).not.toBeNull();
   });
 
   test("Save is enabled (subject to the rest of validation) when at least one environment exists", async () => {

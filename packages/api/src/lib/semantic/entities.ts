@@ -104,10 +104,14 @@ export async function listConnectionGroupMembers(
   orgId: string,
 ): Promise<ReadonlyArray<{ group_id: string; id: string }>> {
   if (!hasInternalDB()) return [];
+  // Post-0096 cutover (#2744 / ADR-0007): groups live as JSONB strings
+  // in `workspace_plugins.config.group_id`; installs are identified by
+  // `install_id`.
   const rows = await internalQuery<{ group_id: string | null; id: string }>(
-    `SELECT group_id, id FROM connections
-     WHERE (org_id = $1 OR org_id = '__global__')
-       AND group_id IS NOT NULL`,
+    `SELECT config->>'group_id' AS group_id, install_id AS id FROM workspace_plugins
+     WHERE (workspace_id = $1 OR workspace_id = '__global__')
+       AND pillar = 'datasource'
+       AND config->>'group_id' IS NOT NULL`,
     [orgId],
   );
   return rows
@@ -136,19 +140,17 @@ async function resolveGroupIdForConnection(
 ): Promise<string | null> {
   if (!connectionId) return null;
   if (!hasInternalDB()) return null;
+  // Post-0096 cutover (#2744 / ADR-0007): the install's group_id lives
+  // in `workspace_plugins.config->>'group_id'`. The pre-cutover
+  // `connection_groups WHERE id = 'g_' || $1` fallback was a backfill-era
+  // singleton-group convention that's gone post pure-collapse.
   const rows = await internalQuery<{ group_id: string | null }>(
-    `SELECT group_id
-       FROM (
-         SELECT group_id, CASE WHEN org_id = $2 THEN 0 ELSE 1 END AS priority
-           FROM connections
-          WHERE id = $1 AND (org_id = $2 OR org_id = '__global__')
-         UNION ALL
-         SELECT id AS group_id, CASE WHEN org_id = $2 THEN 2 ELSE 3 END AS priority
-           FROM connection_groups
-          WHERE id = 'g_' || $1 AND (org_id = $2 OR org_id = '__global__')
-       ) scoped_groups
-      WHERE group_id IS NOT NULL
-      ORDER BY priority
+    `SELECT config->>'group_id' AS group_id
+       FROM workspace_plugins
+      WHERE install_id = $1
+        AND pillar = 'datasource'
+        AND (workspace_id = $2 OR workspace_id = '__global__')
+      ORDER BY CASE WHEN workspace_id = $2 THEN 0 ELSE 1 END
       LIMIT 1`,
     [connectionId, orgId],
   );
@@ -173,21 +175,18 @@ async function resolveGroupIdForConnection(
  * legacy NULL-scope semantics.
  */
 function inlineConnectionGroupSql(connParam: string, orgParam: string): string {
+  // Post-0096 cutover (#2744 / ADR-0007): the install's group_id lives
+  // in `workspace_plugins.config->>'group_id'`. The pre-cutover
+  // singleton-group fallback (`connection_groups.id = 'g_' || conn_id`)
+  // is gone post pure-collapse — own-workspace beats __global__ via the
+  // ORDER BY priority.
   return `(
-    SELECT group_id
-      FROM (
-        SELECT group_id, CASE WHEN org_id = ${orgParam} THEN 0 ELSE 1 END AS priority
-          FROM connections
-         WHERE id = ${connParam}
-           AND (org_id = ${orgParam} OR org_id = '__global__')
-        UNION ALL
-        SELECT id AS group_id, CASE WHEN org_id = ${orgParam} THEN 2 ELSE 3 END AS priority
-          FROM connection_groups
-         WHERE id = 'g_' || ${connParam}
-           AND (org_id = ${orgParam} OR org_id = '__global__')
-      ) scoped_groups
-     WHERE group_id IS NOT NULL
-     ORDER BY priority
+    SELECT config->>'group_id' AS group_id
+      FROM workspace_plugins
+     WHERE install_id = ${connParam}
+       AND pillar = 'datasource'
+       AND (workspace_id = ${orgParam} OR workspace_id = '__global__')
+     ORDER BY CASE WHEN workspace_id = ${orgParam} THEN 0 ELSE 1 END
      LIMIT 1
   )`;
 }
@@ -388,18 +387,28 @@ export async function listEntityRows(
   // Other call sites (admin reads at status='draft', count queries) keep
   // the simpler org-scoped query — they intentionally see archive/draft
   // state.
+  // Post-0096 cutover (#2744 / ADR-0007): connections live in
+  // workspace_plugins (pillar='datasource'), group_id is JSONB.
+  // OWN_OR_GLOBAL shadow rule preserved — install_id is the new key.
   const visibilityClause = statusFilter === "published"
     ? `AND (org_id = $1 OR org_id = '__global__')
        AND (
          connection_group_id IS NULL
          OR connection_group_id IN (
-           SELECT group_id FROM connections WHERE org_id = $1 AND status = 'published'
+           SELECT config->>'group_id' FROM workspace_plugins
+            WHERE workspace_id = $1 AND pillar = 'datasource' AND status = 'published'
+              AND config->>'group_id' IS NOT NULL
          )
          OR connection_group_id IN (
-           SELECT group_id FROM connections
-           WHERE org_id = '__global__'
-             AND status = 'published'
-             AND id NOT IN (SELECT id FROM connections WHERE org_id = $1)
+           SELECT config->>'group_id' FROM workspace_plugins
+            WHERE workspace_id = '__global__'
+              AND pillar = 'datasource'
+              AND status = 'published'
+              AND config->>'group_id' IS NOT NULL
+              AND install_id NOT IN (
+                SELECT install_id FROM workspace_plugins
+                 WHERE workspace_id = $1 AND pillar = 'datasource'
+              )
          )
        )`
     : "";
@@ -643,16 +652,27 @@ export async function listEntitiesWithOverlay(
   // Phrased without UNION / NOT EXISTS so pg-mem's overlay-queries
   // integration suite can execute it; logically equivalent to the
   // shadow-check pattern in `getVisibleConnectionIds`.
+  // Post-0096 cutover (#2744 / ADR-0007): same OWN_OR_GLOBAL shadow
+  // rule, pivoted to workspace_plugins (pillar='datasource') with
+  // group_id in JSONB.
   const connectionVisibilitySql = `
     connection_group_id IS NULL
     OR connection_group_id IN (
-      SELECT group_id FROM connections WHERE org_id = $1 AND status IN ('published', 'draft')
+      SELECT config->>'group_id' FROM workspace_plugins
+       WHERE workspace_id = $1 AND pillar = 'datasource'
+         AND status IN ('published', 'draft')
+         AND config->>'group_id' IS NOT NULL
     )
     OR connection_group_id IN (
-      SELECT group_id FROM connections
-      WHERE org_id = '__global__'
-        AND status IN ('published', 'draft')
-        AND id NOT IN (SELECT id FROM connections WHERE org_id = $1)
+      SELECT config->>'group_id' FROM workspace_plugins
+       WHERE workspace_id = '__global__'
+         AND pillar = 'datasource'
+         AND status IN ('published', 'draft')
+         AND config->>'group_id' IS NOT NULL
+         AND install_id NOT IN (
+           SELECT install_id FROM workspace_plugins
+            WHERE workspace_id = $1 AND pillar = 'datasource'
+         )
     )
   `;
 
@@ -1250,8 +1270,16 @@ export async function archiveSingleConnection(
   connectionId: string,
   opts?: { demoIndustry?: string | null },
 ): Promise<ArchiveConnectionResult> {
+  // Post-#2744: pivoted from `connections` to `workspace_plugins (pillar = 'datasource')`.
+  // `connectionId` from the caller is `install_id` (the user-facing slug).
+  // The CTE-driven group-aware entity cascade pulls `group_id` out of
+  // `config->>'group_id'` JSONB. Tombstone rows are gone — every workspace
+  // owns its demo row outright per the 0094 backfill, so the legacy
+  // empty-URL marker is not produced anymore.
   const current = await client.query(
-    `SELECT status FROM connections WHERE org_id = $1 AND id = $2 FOR UPDATE`,
+    `SELECT status FROM workspace_plugins
+      WHERE workspace_id = $1 AND install_id = $2 AND pillar = 'datasource'
+      FOR UPDATE`,
     [orgId, connectionId],
   );
   if (current.rows.length === 0) {
@@ -1260,41 +1288,41 @@ export async function archiveSingleConnection(
   const row = current.rows[0] as { status: string };
   const wasAlreadyArchived = row.status === "archived";
 
-  // Flip the connection row only if it isn't already archived. The
-  // cascade UPDATEs below run in either case so stragglers get cleaned up.
+  // Flip the install row only if it isn't already archived. The cascade
+  // UPDATEs below run in either case so stragglers get cleaned up.
   if (!wasAlreadyArchived) {
     await client.query(
-      `UPDATE connections SET status = 'archived', updated_at = now()
-       WHERE org_id = $1 AND id = $2`,
+      `UPDATE workspace_plugins
+          SET status = 'archived', enabled = false, updated_at = now()
+        WHERE workspace_id = $1 AND install_id = $2 AND pillar = 'datasource'`,
       [orgId, connectionId],
     );
   }
 
   // Entity cascade is group-aware (#2340 / PRD #2336 §"Phase 4 archive
-  // cascade"). The semantic of "archive one connection" diverges from
-  // "archive one environment":
+  // cascade"). The semantics from the pre-cutover code carry over verbatim;
+  // only the table changes:
   //
-  //   - Single-member group (1:1 legacy / #2339 backfill): cascade
+  //   - Single-member group (one install carries the group_id): cascade
   //     entities. Archiving the only member is structurally equivalent
   //     to archiving the group.
   //   - Multi-member group: skip cascade. Entities live on the group,
   //     not on the connection — other members are still active and
   //     would lose their semantic layer if we cascaded here.
   //
-  // The CTE counts members in the same group and rejects the UPDATE
-  // when count != 1. Net result: backwards-compat for single-connection
-  // orgs, correct multi-environment behavior for groups, all in one
-  // round-trip.
-  // Unqualified column names below refer to `semantic_entities` — the
-  // `conn` CTE only projects `group_id` / `member_count`, so there's no
-  // ambiguity.
+  // The CTE counts members in the same workspace whose
+  // `config->>'group_id'` matches, and rejects the UPDATE when
+  // count != 1. Unqualified column names below refer to `semantic_entities`.
   const archivedEntities = await client.query(
     `WITH conn AS (
-       SELECT group_id,
-              (SELECT COUNT(*)::int FROM connections m
-                 WHERE m.org_id = c.org_id AND m.group_id = c.group_id) AS member_count
-       FROM connections c
-       WHERE c.org_id = $1 AND c.id = $2
+       SELECT wp.config->>'group_id' AS group_id,
+              (SELECT COUNT(*)::int
+                 FROM workspace_plugins m
+                WHERE m.workspace_id = wp.workspace_id
+                  AND m.pillar = 'datasource'
+                  AND m.config->>'group_id' = wp.config->>'group_id') AS member_count
+       FROM workspace_plugins wp
+       WHERE wp.workspace_id = $1 AND wp.install_id = $2 AND wp.pillar = 'datasource'
      )
      UPDATE semantic_entities SET status = 'archived', updated_at = now()
         FROM conn
@@ -1351,55 +1379,47 @@ export async function restoreSingleConnection(
   connectionId: string,
   opts?: { demoIndustry?: string | null },
 ): Promise<RestoreConnectionResult> {
+  // Post-#2744: pivoted from `connections` to `workspace_plugins`.
+  // The legacy tombstone branch (empty-URL marker for hiding a
+  // `__global__` row) is gone — migration 0094 backfilled per-workspace
+  // demo rows, so "restore" is always a status flip back to 'published'.
   const current = await client.query(
-    `SELECT status, url FROM connections WHERE org_id = $1 AND id = $2 FOR UPDATE`,
+    `SELECT status FROM workspace_plugins
+      WHERE workspace_id = $1 AND install_id = $2 AND pillar = 'datasource'
+      FOR UPDATE`,
     [orgId, connectionId],
   );
   if (current.rows.length === 0) {
     return { status: "not_found" };
   }
-  const row = current.rows[0] as { status: string; url: string };
+  const row = current.rows[0] as { status: string };
   if (row.status !== "archived") {
     return { status: "not_archived" };
   }
 
-  // Tombstone rows (the per-org delete-as-hide shadow inserted by
-  // admin-connections.ts when an org hides a `__global__` connection
-  // from its workspace) carry `url = ''` as a marker — they're not real
-  // archived connections. Restoring them by flipping status='published'
-  // would expose the empty-string url to every read path that doesn't
-  // pre-filter `status='archived'`, and `decryptSecret('')` then crashes.
-  // The user-visible "restore" semantic on a tombstone is "un-hide" —
-  // delete the per-org row so the global connection becomes visible
-  // again via the connection-visibility fallback. No entity/prompt
-  // cascade because the tombstone never owned any.
-  if (row.url === "") {
-    await client.query(
-      `DELETE FROM connections WHERE org_id = $1 AND id = $2 AND status = 'archived' AND url = ''`,
-      [orgId, connectionId],
-    );
-    return { status: "restored", entities: 0, prompts: 0 };
-  }
-
   await client.query(
-    `UPDATE connections SET status = 'published', updated_at = now()
-     WHERE org_id = $1 AND id = $2 AND status = 'archived'`,
+    `UPDATE workspace_plugins
+        SET status = 'published', enabled = true, updated_at = now()
+      WHERE workspace_id = $1 AND install_id = $2 AND pillar = 'datasource' AND status = 'archived'`,
     [orgId, connectionId],
   );
 
   // Restore cascade is the symmetric inverse of `archiveSingleConnection`:
-  // restore entities only when the connection's group has exactly one
+  // restore entities only when the install's group has exactly one
   // member (1:1 backfill or last-member-restored case). Multi-member
   // groups keep their entity rows owned by the group and unaffected by
   // a single-member restore. Unqualified column names below refer to
   // `semantic_entities` — see the matching note in archiveSingleConnection.
   const restoredEntities = await client.query(
     `WITH conn AS (
-       SELECT group_id,
-              (SELECT COUNT(*)::int FROM connections m
-                 WHERE m.org_id = c.org_id AND m.group_id = c.group_id) AS member_count
-       FROM connections c
-       WHERE c.org_id = $1 AND c.id = $2
+       SELECT wp.config->>'group_id' AS group_id,
+              (SELECT COUNT(*)::int
+                 FROM workspace_plugins m
+                WHERE m.workspace_id = wp.workspace_id
+                  AND m.pillar = 'datasource'
+                  AND m.config->>'group_id' = wp.config->>'group_id') AS member_count
+       FROM workspace_plugins wp
+       WHERE wp.workspace_id = $1 AND wp.install_id = $2 AND wp.pillar = 'datasource'
      )
      UPDATE semantic_entities SET status = 'published', updated_at = now()
         FROM conn

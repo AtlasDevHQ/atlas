@@ -1,16 +1,12 @@
 "use client";
 
 import { toast } from "sonner";
-import { useQueryStates } from "nuqs";
 import { z } from "zod";
 import { useAtlasConfig } from "@/ui/context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { GROUP_BY_VALUES, connectionsSearchParams, isGroupByDimension } from "./search-params";
-import { ENVIRONMENT_VIEW_HREF, bucketizeConnections } from "./group-by";
-import { ConnectionGroupsSection } from "./connection-groups-section";
+import { bucketizeConnections } from "./group-by";
 import {
   Select,
   SelectContent,
@@ -41,7 +37,6 @@ import { useDemoReadonly } from "@/ui/hooks/use-demo-readonly";
 import { DemoBadge, DraftBadge } from "@/ui/components/admin/mode-badges";
 import { DEMO_CONNECTION_ID } from "./columns";
 import { stripGroupPrefix, isAutoBackfilledSingleton, isEmptyBackfillOrphan } from "@/ui/lib/strip-group-prefix";
-import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -62,7 +57,6 @@ import {
   Snowflake,
   Cloud,
   HardDrive,
-  Layers,
   RefreshCw,
 } from "lucide-react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
@@ -185,21 +179,17 @@ const connectionEditSchema = z
   });
 
 /** Wire shape for `/api/v1/admin/connection-groups` — subset of the
- * `ConnectionGroup` interface that the dialog actually needs. Mirrors the
- * decode in `connection-groups-section.tsx`; kept inline rather than
- * extracted to a shared module to avoid a new import cycle for two
- * fields. */
-const EnvGroupSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  status: z.enum(["active", "archived"]).default("active"),
-  memberCount: z.number().int().nonnegative(),
-  primaryConnectionId: z.string().nullable().optional(),
-});
-const EnvGroupListSchema = z.object({
-  groups: z.array(EnvGroupSchema),
-});
-type EnvGroup = z.infer<typeof EnvGroupSchema>;
+ * `ConnectionGroup` shape the dialog uses. Post-0096 cutover (#2744)
+ * this is derived inline from the connections list rather than fetched
+ * from the deleted `/admin/connection-groups` route; the shape stays
+ * to keep the dialog prop contract unchanged. */
+type EnvGroup = {
+  id: string;
+  name: string;
+  status: "active" | "archived";
+  memberCount: number;
+  primaryConnectionId: string | null;
+};
 
 interface ConnectionFormProps {
   open: boolean;
@@ -1036,8 +1026,11 @@ export default function ConnectionsPage() {
   // `useQueryStates` so the segmented control reflects whichever value
   // the URL ships with on first paint — keeps the legacy
   // `/admin/connections/groups` redirect landing on the right view and
-  // makes `?groupBy=environment` deep-linkable.
-  const [{ groupBy }, setParams] = useQueryStates(connectionsSearchParams);
+  // Post-0096 cutover (#2744): the `?groupBy=environment` toggle and
+  // the environments view it routed to are gone — group membership is
+  // now visible per-connection in the edit dialog (`newGroupName` on
+  // POST/PUT). The remaining `bucketizeConnections(..., "type")` call
+  // still powers the type-grouped provider blocks.
 
   const testMutation = useAdminMutation<ConnectionHealth>({ method: "POST" });
   const [mutationError, setMutationError] = useState<string | null>(null);
@@ -1058,15 +1051,10 @@ export default function ConnectionsPage() {
     { schema: ConnectionsResponseSchema },
   );
 
-  // Envs are fetched here (not inside the dialog) so the singleton-preselect
-  // logic runs against fresh data on first open. TanStack Query dedups
-  // with the same path used by `ConnectionGroupsSection`, so this is one
-  // network call shared across the page.
-  const { data: envGroupsData } = useAdminFetch(
-    "/api/v1/admin/connection-groups",
-    { schema: EnvGroupListSchema },
-  );
-  const envGroups = envGroupsData?.groups ?? [];
+  // Post-0096 cutover (#2744 / ADR-0007): `/api/v1/admin/connection-groups`
+  // is gone (collapsed into JSONB strings on each install). Derive the
+  // env dropdown choices inline from the same connections list the page
+  // already fetched — one entry per distinct non-null group_id.
 
   const [localConnections, setLocalConnections] = useState<ConnectionInfo[] | null>(null);
   // `useAdminFetch` is typed as `ConnectionInfo[]` but defense-in-depth
@@ -1163,11 +1151,9 @@ export default function ConnectionsPage() {
     refetch();
   }
 
-  // Always bucketize by type, even when the user picked Environment:
-  // the provider rendering walks DB_TYPES so disconnected providers can
-  // show a "Connect" CTA, and that loop needs a `dbType → connections`
-  // map shape regardless of the active grouping. The environment view
-  // is rendered by a separate component below.
+  // Bucketize by dbType — the provider rendering walks DB_TYPES so
+  // disconnected providers can show a "Connect" CTA, and that loop
+  // needs a `dbType → connections` map shape.
   const typeBuckets = bucketizeConnections(displayConnections, "type");
   const byType = new Map<string, ConnectionInfo[]>(
     typeBuckets.map((b) => [b.key, b.connections]),
@@ -1176,6 +1162,28 @@ export default function ConnectionsPage() {
     ...DB_TYPES.map((t) => t.value),
     ...Array.from(byType.keys()).filter((k) => !DB_TYPES.some((t) => t.value === k)),
   ];
+
+  // Derive env-dropdown choices from the connections list — one entry
+  // per distinct non-null group_id. Post-cutover (#2744 / ADR-0007)
+  // there's no separate group lifecycle (status/primary/memberCount
+  // are vestigial), so the dialog's singleton-preselect just counts
+  // members and surfaces the group_id verbatim as the name. The shape
+  // mirrors the legacy `/admin/connection-groups` wire response so the
+  // dialog props stay unchanged.
+  const envGroups: ReadonlyArray<EnvGroup> = (() => {
+    const counts = new Map<string, number>();
+    for (const conn of displayConnections) {
+      if (!conn.groupId) continue;
+      counts.set(conn.groupId, (counts.get(conn.groupId) ?? 0) + 1);
+    }
+    return Array.from(counts.entries()).map(([id, memberCount]) => ({
+      id,
+      name: id,
+      status: "active" as const,
+      memberCount,
+      primaryConnectionId: null,
+    }));
+  })();
 
   // Header "X / Y live" mirrors the /admin/billing usage panel — the
   // lazy `default` fallback on self-hosted demo deploys reports
@@ -1211,31 +1219,6 @@ export default function ConnectionsPage() {
             ready to connect.
           </p>
           <div className="flex items-center gap-3">
-            <ToggleGroup
-              type="single"
-              size="sm"
-              value={groupBy}
-              // Radix emits "" when the active toggle is clicked to
-              // deselect; the type-predicate narrow drops that (and any
-              // future stray value) without an unchecked cast.
-              onValueChange={(v) => {
-                if (isGroupByDimension(v)) void setParams({ groupBy: v });
-              }}
-              aria-label="Group connections by"
-              data-testid="connections-group-by"
-            >
-              {GROUP_BY_VALUES.map((value) => (
-                <ToggleGroupItem
-                  key={value}
-                  value={value}
-                  className="gap-1.5 text-xs"
-                  data-testid={`connections-group-by-${value}`}
-                >
-                  {value === "type" ? <Database className="size-3" /> : <Layers className="size-3" />}
-                  {value === "type" ? "Type" : "Environment"}
-                </ToggleGroupItem>
-              ))}
-            </ToggleGroup>
           {demoReadOnly ? (
             <TooltipProvider>
               <Tooltip>
@@ -1273,19 +1256,7 @@ export default function ConnectionsPage() {
 
           <PoolStatsSection onError={setMutationError} />
 
-          {groupBy === "environment" ? (
-            // The environments view reuses the parent's connections fetch
-            // — sharing one request avoids a React Query cache-key
-            // collision on `[path]` between two callers passing different
-            // schemas (transformed array vs `{ connections: [...] }`),
-            // which would otherwise read the wrong shape from cache and
-            // render empty member rosters.
-            <ConnectionGroupsSection
-              connections={displayConnections}
-              refetchConnections={refetch}
-            />
-          ) : (
-            <AdminContentWrapper
+          <AdminContentWrapper
               loading={loading}
               error={error}
               feature="Connections"
@@ -1331,7 +1302,6 @@ export default function ConnectionsPage() {
                 </div>
               </section>
             </AdminContentWrapper>
-          )}
         </div>
       </ErrorBoundary>
 
@@ -1611,15 +1581,7 @@ function ConnectionCard({
         {conn.groupName != null ? (
           <DetailRow
             label="Environment"
-            value={
-              <Link
-                href={ENVIRONMENT_VIEW_HREF}
-                className="inline-flex items-center"
-                aria-label={`View environment ${stripGroupPrefix(conn.groupName)}`}
-              >
-                <Badge variant="outline">{stripGroupPrefix(conn.groupName)}</Badge>
-              </Link>
-            }
+            value={<Badge variant="outline">{stripGroupPrefix(conn.groupName)}</Badge>}
           />
         ) : null}
         {conn.description ? (

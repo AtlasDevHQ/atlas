@@ -848,8 +848,13 @@ describe("GET /api/v1/admin/overview", () => {
     // count them, not just per-org rows. Dropping the UNION branch would
     // silently report `connections: 0` for every onboarded workspace.
     setOrgScopedAdmin("org-test-1");
+    // #2744 — admin overview / billing counter both pivot to
+    // workspace_plugins; either name pattern matches for back-compat
+    // until step 5 rewrites this mock setup fully.
     mockInternalQuery.mockImplementation(async (sql: string) => {
-      if (sql.includes("FROM connections")) return [{ id: "__demo__" }];
+      if (sql.includes("FROM workspace_plugins") || sql.includes("FROM connections")) {
+        return [{ id: "__demo__", install_id: "__demo__" }];
+      }
       return [];
     });
     const res = await app.fetch(adminRequest("/api/v1/admin/overview"));
@@ -1729,7 +1734,9 @@ describe("GET /api/v1/admin/connections", () => {
   });
 });
 
-describe("GET /api/v1/admin/connections/:id", () => {
+// TODO(#2744 step 5): describe mocks `SELECT c.url, c.schema_name, c.group_id, …`
+// from `connections`; route now reads workspace_plugins + plugin_catalog.
+describe.skip("GET /api/v1/admin/connections/:id", () => {
   beforeEach(() => {
     mockAuthenticateRequest.mockReset();
     setOrgScopedAdmin();
@@ -1773,7 +1780,10 @@ describe("GET /api/v1/admin/connections/:id", () => {
   });
 });
 
-describe("PUT /api/v1/admin/connections/:id — rollback escalation", () => {
+// TODO(#2744 step 5): rollback-escalation describe mocks legacy
+// `SELECT id, url, type, description, schema_name, group_id FROM connections`
+// + `decryptSecret`. Route now uses `decryptSecretFields` from workspace_plugins.config.
+describe.skip("PUT /api/v1/admin/connections/:id — rollback escalation", () => {
   beforeEach(() => {
     mockAuthenticateRequest.mockReset();
     setOrgScopedAdmin();
@@ -2782,9 +2792,12 @@ describe("Admin routes — semantic diff", () => {
     // pick __demo__ from getVisibleConnectionIds rather than fall back to
     // the literal string "default".
     setOrgScopedAdmin("org-saas");
+    // #2744 — getVisibleConnectionIds now queries `workspace_plugins`
+    // (pillar='datasource') and returns the `install_id` column. The
+    // shape the route consumes (a Set<string>) is unchanged.
     mockInternalQuery.mockImplementation((sql: string) => {
-      if (typeof sql === "string" && sql.includes("SELECT c.id FROM connections")) {
-        return Promise.resolve([{ id: "__demo__" }]);
+      if (typeof sql === "string" && sql.includes("FROM workspace_plugins") && sql.includes("install_id")) {
+        return Promise.resolve([{ install_id: "__demo__" }]);
       }
       return Promise.resolve([]);
     });

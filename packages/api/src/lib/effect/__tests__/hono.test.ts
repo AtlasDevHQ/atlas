@@ -56,6 +56,12 @@ const {
   ReportError,
   ModelConfigError,
   ModelConfigDecryptError,
+  // ── Installer-domain errors (#2744) ───────────────────────────────
+  AlreadyInstalledError,
+  CatalogNotFoundError,
+  ConfigSchemaError,
+  InstallNotFoundError,
+  InvalidInstallIdError,
 } = await import("../errors");
 
 // ---------------------------------------------------------------------------
@@ -355,6 +361,94 @@ describe("mapTaggedError", () => {
     // Message stays generic — `configId` and `cause` are forensic-only.
     expect(result.message).not.toContain("cfg-1");
     expect(result.message).not.toContain("key rotated");
+  });
+
+  // ── Installer-domain errors (#2744) ─────────────────────────────────
+  //
+  // Routes that go through `runHandler` (full-Effect handlers) hit these
+  // via `mapTaggedError`; the `runInstaller` bridge uses the narrower
+  // typed `mapInstallError` in `workspace-installer.ts`. Both must
+  // produce equivalent status + code for the same error tag — these
+  // tests pin the `mapTaggedError` side of that contract.
+
+  it("maps InvalidInstallIdError(pattern) to 400 with reason in body", () => {
+    const result = mapTaggedError(
+      new InvalidInstallIdError({
+        message: "Install id must match ^[a-z][a-z0-9_-]*$",
+        installId: "Warehouse",
+        reason: "pattern",
+      }),
+    );
+    expect(result.status).toBe(400);
+    expect(result.code).toBe("bad_request");
+    expect(result.body).toEqual({ installId: "Warehouse", reason: "pattern" });
+  });
+
+  it("maps InvalidInstallIdError(reserved) to 400", () => {
+    const result = mapTaggedError(
+      new InvalidInstallIdError({
+        message: "Install id 'default' is reserved",
+        installId: "default",
+        reason: "reserved",
+      }),
+    );
+    expect(result.status).toBe(400);
+    expect(result.body).toEqual({ installId: "default", reason: "reserved" });
+  });
+
+  it("maps ConfigSchemaError to 400 with fieldErrors / formErrors", () => {
+    const result = mapTaggedError(
+      new ConfigSchemaError({
+        message: "url is required",
+        catalogSlug: "postgres",
+        fieldErrors: { url: ["Required"] },
+        formErrors: [],
+      }),
+    );
+    expect(result.status).toBe(400);
+    expect(result.code).toBe("bad_request");
+    expect(result.body).toEqual({
+      catalogSlug: "postgres",
+      fieldErrors: { url: ["Required"] },
+      formErrors: [],
+    });
+  });
+
+  it("maps CatalogNotFoundError to 404", () => {
+    const result = mapTaggedError(
+      new CatalogNotFoundError({ message: "no catalog", catalogSlug: "made-up" }),
+    );
+    expect(result.status).toBe(404);
+    expect(result.code).toBe("not_found");
+  });
+
+  it("maps InstallNotFoundError to 404", () => {
+    const result = mapTaggedError(
+      new InstallNotFoundError({
+        message: "no install",
+        workspaceId: "org-1",
+        catalogSlug: "postgres",
+      }),
+    );
+    expect(result.status).toBe(404);
+    expect(result.code).toBe("not_found");
+  });
+
+  it("maps AlreadyInstalledError(datasource) to 409 with pillar in body", () => {
+    const result = mapTaggedError(
+      new AlreadyInstalledError({
+        message: "Already installed",
+        workspaceId: "org-1",
+        catalogSlug: "postgres",
+        pillar: "datasource",
+      }),
+    );
+    expect(result.status).toBe(409);
+    expect(result.code).toBe("conflict");
+    expect(result.body).toEqual({
+      catalogSlug: "postgres",
+      pillar: "datasource",
+    });
   });
 });
 

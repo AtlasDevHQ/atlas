@@ -194,6 +194,17 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
           formErrors: [...error.formErrors],
         },
       };
+    // #2744 — caller-provided `installId` failed validation (datasource
+    // installs only). Body carries `installId` + `reason` so the admin
+    // UI can render "id contains invalid characters" vs "id is reserved"
+    // without parsing the message.
+    case "InvalidInstallIdError":
+      return {
+        status: 400,
+        code: "bad_request",
+        message: error.message,
+        body: { installId: error.installId, reason: error.reason },
+      };
 
     // ── 403 Forbidden — policy/permission violations ─────────────
     case "ForbiddenPatternError":

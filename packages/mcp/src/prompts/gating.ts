@@ -99,17 +99,25 @@ async function probeDemoConnection(
 ): Promise<DemoConnectionProbe> {
   if (!hasInternalDB()) return "inactive";
   try {
+    // Post-0096 cutover (#2744 / ADR-0007): every workspace owns its
+    // own `__demo__` install row in workspace_plugins; the legacy
+    // shared `__global__` row is gone. Probe the workspace-scoped row.
     const rows = await internalQuery<{ active: boolean }>(
       `SELECT EXISTS (
-         SELECT 1 FROM connections
-         WHERE id = '__demo__' AND org_id = $1 AND status = 'published'
+         SELECT 1 FROM workspace_plugins wp
+           JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+          WHERE wp.workspace_id = $1
+            AND wp.pillar = 'datasource'
+            AND wp.install_id = '__demo__'
+            AND pc.slug = 'demo-postgres'
+            AND wp.status = 'published'
        ) AS active`,
       [workspaceId],
     );
     return rows[0]?.active === true ? "active" : "inactive";
   } catch (err) {
     process.stderr.write(
-      `[atlas-mcp] canonical gating: connections query failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      `[atlas-mcp] canonical gating: workspace_plugins query failed: ${err instanceof Error ? err.message : String(err)}\n`,
     );
     return "error";
   }

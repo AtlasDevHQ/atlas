@@ -269,8 +269,12 @@ describe("POST /api/v1/admin/publish — atomic promotion", () => {
         // 2 drafts promoted
         return { rows: [{ id: "ent-draft-1" }, { id: "ent-draft-2" }] };
       }
-      // Step 3b: UPDATE connections draft -> published
-      if (/UPDATE\s+connections\s+SET\s+status\s*=\s*'published'/i.test(sql)) {
+      // Step 3b: UPDATE workspace_plugins draft -> published. Post-#2744
+      // the content-mode "connections" segment key points at the
+      // `workspace_plugins` physical table — the wire `body.promoted.connections`
+      // count comes from this UPDATE's `rowCount`. (See
+      // CONTENT_MODE_TABLES in `lib/content-mode/tables.ts`.)
+      if (/UPDATE\s+workspace_plugins\s+SET\s+status\s*=\s*'published'/i.test(sql)) {
         return { rows: [{ id: "conn-draft-1" }] };
       }
       // Step 3c: UPDATE prompt_collections draft -> published
@@ -363,10 +367,10 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
     queryHandler = async (sql) => {
       // Single-connection helper locks the row first — report "published"
       // so the cascade actually runs.
-      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+      if (/SELECT\s+status\s+FROM\s+workspace_plugins/i.test(sql)) {
         return { rows: [{ status: "published" }] };
       }
-      if (/UPDATE\s+connections\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
+      if (/UPDATE\s+workspace_plugins\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
         return { rows: [{ id: "__demo__" }] };
       }
       // Cascade archives 3 entities for the archived connection
@@ -404,7 +408,7 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
 
     // Assert three archive statements fired in the transaction
     const archiveConnSql = clientQueries.find(
-      (q) => /UPDATE\s+connections\s+SET\s+status\s*=\s*'archived'/i.test(q.sql),
+      (q) => /UPDATE\s+workspace_plugins\s+SET\s+status\s*=\s*'archived'/i.test(q.sql),
     );
     expect(archiveConnSql).toBeDefined();
     expect((archiveConnSql!.params as unknown[])).toContain("org-alpha");
@@ -447,7 +451,7 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
     expect(body.archived.prompts).toBe(0);
 
     const archiveConnSql = clientQueries.find(
-      (q) => /UPDATE\s+connections\s+SET\s+status\s*=\s*'archived'/i.test(q.sql),
+      (q) => /UPDATE\s+workspace_plugins\s+SET\s+status\s*=\s*'archived'/i.test(q.sql),
     );
     expect(archiveConnSql).toBeUndefined();
   });
@@ -459,10 +463,10 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
     // UPDATE pair fire.
     mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
     queryHandler = async (sql) => {
-      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+      if (/SELECT\s+status\s+FROM\s+workspace_plugins/i.test(sql)) {
         return { rows: [{ status: "published" }] };
       }
-      if (/UPDATE\s+connections\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
+      if (/UPDATE\s+workspace_plugins\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
         return { rows: [{ id: "x" }] };
       }
       return { rows: [] };
@@ -478,7 +482,7 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
     expect(body.archived.connections).toBe(2);
 
     const locks = clientQueries.filter((q) =>
-      /SELECT\s+status\s+FROM\s+connections[\s\S]*FOR\s+UPDATE/i.test(q.sql),
+      /SELECT\s+status\s+FROM\s+workspace_plugins[\s\S]*FOR\s+UPDATE/i.test(q.sql),
     );
     expect(locks.length).toBe(2);
     const lockedIds = locks.map((q) => (q.params as unknown[])[1]);
@@ -493,7 +497,7 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
     mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
     let lockCalls = 0;
     queryHandler = async (sql) => {
-      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+      if (/SELECT\s+status\s+FROM\s+workspace_plugins/i.test(sql)) {
         lockCalls++;
         return { rows: [{ status: "published" }] };
       }
@@ -527,7 +531,7 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
     demoIndustryFixture = "cybersecurity";
 
     queryHandler = async (sql) => {
-      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+      if (/SELECT\s+status\s+FROM\s+workspace_plugins/i.test(sql)) {
         // Already archived — helper will NOT run the connection UPDATE
         return { rows: [{ status: "archived" }] };
       }
@@ -553,7 +557,7 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
 
     // No connection UPDATE (the helper skips it when already archived)
     const connUpdate = clientQueries.find((q) =>
-      /UPDATE\s+connections\s+SET\s+status\s*=\s*'archived'/i.test(q.sql),
+      /UPDATE\s+workspace_plugins\s+SET\s+status\s*=\s*'archived'/i.test(q.sql),
     );
     expect(connUpdate).toBeUndefined();
     // Transaction still commits cleanly
@@ -567,12 +571,12 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
     // archive. The `not_found` branch must continue, not short-circuit.
     let lockCalls = 0;
     queryHandler = async (sql) => {
-      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+      if (/SELECT\s+status\s+FROM\s+workspace_plugins/i.test(sql)) {
         lockCalls++;
         // First id: missing; second id: published
         return lockCalls === 1 ? { rows: [] } : { rows: [{ status: "published" }] };
       }
-      if (/UPDATE\s+connections\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
+      if (/UPDATE\s+workspace_plugins\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
         return { rows: [{ id: "real-id" }] };
       }
       return { rows: [] };
@@ -591,7 +595,7 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
     // Both ids got locked (loop didn't early-exit)
     const lockParams = clientQueries
       .filter((q) =>
-        /SELECT\s+status\s+FROM\s+connections[\s\S]*FOR\s+UPDATE/i.test(q.sql),
+        /SELECT\s+status\s+FROM\s+workspace_plugins[\s\S]*FOR\s+UPDATE/i.test(q.sql),
       )
       .map((q) => (q.params as unknown[])[1]);
     expect(lockParams).toEqual(["typo-id", "real-id"]);
@@ -619,10 +623,10 @@ describe("POST /api/v1/admin/publish — demo industry read", () => {
     demoIndustryFixture = "cybersecurity";
 
     queryHandler = async (sql) => {
-      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+      if (/SELECT\s+status\s+FROM\s+workspace_plugins/i.test(sql)) {
         return { rows: [{ status: "published" }] };
       }
-      if (/UPDATE\s+connections\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
+      if (/UPDATE\s+workspace_plugins\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
         return { rows: [{ id: "__demo__" }] };
       }
       if (/UPDATE\s+prompt_collections\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
@@ -874,7 +878,7 @@ describe("POST /api/v1/admin/publish — starter prompts phase (#1478)", () => {
       if (/UPDATE\s+semantic_entities\s+SET\s+status\s*=\s*'published'/i.test(sql)) {
         return { rows: [{ id: "ent-1" }] };
       }
-      if (/UPDATE\s+connections\s+SET\s+status\s*=\s*'published'/i.test(sql)) {
+      if (/UPDATE\s+workspace_plugins\s+SET\s+status\s*=\s*'published'/i.test(sql)) {
         return { rows: [{ id: "conn-1" }] };
       }
       if (/UPDATE\s+prompt_collections\s+SET\s+status\s*=\s*'published'/i.test(sql)) {

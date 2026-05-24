@@ -30,6 +30,15 @@ import {
 } from "../internal";
 import { connections } from "../connection";
 
+/** Mirrors migration 0093's `postgres` catalog `config_schema`. Pinned
+ *  here so `loadSavedConnections` test fixtures stay close to the
+ *  production catalog — if 0093's seed changes, update this in lockstep. */
+const POSTGRES_CONFIG_SCHEMA = [
+  { key: "url", type: "string", label: "Connection URL", required: true, secret: true },
+  { key: "schema", type: "string", label: "Schema" },
+  { key: "description", type: "string", label: "Description" },
+] as const;
+
 /** Creates a mock pool that tracks query/end calls. */
 function createMockPool() {
   const calls = {
@@ -332,6 +341,12 @@ describe("internal DB module", () => {
   });
 
   describe("loadSavedConnections()", () => {
+    // Post-#2744 / ADR-0007: reads from `workspace_plugins WHERE
+    // pillar = 'datasource'`. Row shape mirrors the JOIN onto
+    // `plugin_catalog`: `{ install_id, catalog_slug, config, config_schema }`.
+    // `config` carries the URL as a string field (selective-field
+    // encryption via `db/secret-encryption.ts`); `config_schema`
+    // declares which fields are `secret: true`.
     afterEach(() => {
       connections._reset();
     });
@@ -341,13 +356,23 @@ describe("internal DB module", () => {
       expect(await loadSavedConnections()).toBe(0);
     });
 
-    it("loads connections from the DB and registers them", async () => {
+    it("loads datasource installs from workspace_plugins and registers them", async () => {
       process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
       const { pool } = createMockPool();
       pool._setResult({
         rows: [
-          { id: "warehouse", url: "postgresql://host/wh", type: "postgres", description: "Warehouse", schema_name: "analytics" },
-          { id: "reporting", url: "postgresql://host/rp", type: "postgres", description: null, schema_name: null },
+          {
+            install_id: "warehouse",
+            catalog_slug: "postgres",
+            config: { url: "postgresql://host/wh", description: "Warehouse", schema: "analytics" },
+            config_schema: POSTGRES_CONFIG_SCHEMA,
+          },
+          {
+            install_id: "reporting",
+            catalog_slug: "postgres",
+            config: { url: "postgresql://host/rp" },
+            config_schema: POSTGRES_CONFIG_SCHEMA,
+          },
         ],
       });
       _resetPool(pool);
@@ -358,14 +383,24 @@ describe("internal DB module", () => {
       expect(connections.has("reporting")).toBe(true);
     });
 
-    it("skips individual connection failures without aborting", async () => {
+    it("skips individual install failures without aborting", async () => {
       process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
       const { pool } = createMockPool();
       // Second row has an invalid URL scheme which will throw in register
       pool._setResult({
         rows: [
-          { id: "good", url: "postgresql://host/db", type: "postgres", description: null, schema_name: null },
-          { id: "bad", url: "badscheme://host/db", type: "unknown", description: null, schema_name: null },
+          {
+            install_id: "good",
+            catalog_slug: "postgres",
+            config: { url: "postgresql://host/db" },
+            config_schema: POSTGRES_CONFIG_SCHEMA,
+          },
+          {
+            install_id: "bad",
+            catalog_slug: "postgres",
+            config: { url: "badscheme://host/db" },
+            config_schema: POSTGRES_CONFIG_SCHEMA,
+          },
         ],
       });
       _resetPool(pool);
@@ -376,10 +411,33 @@ describe("internal DB module", () => {
       expect(connections.has("bad")).toBe(false);
     });
 
-    it("returns 0 when query throws (table not exist)", async () => {
+    it("skips non-native datasource installs (plugin-managed)", async () => {
       process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
       const { pool } = createMockPool();
-      pool._setError(new Error("relation \"connections\" does not exist"));
+      // Snowflake / ClickHouse / etc. are plugin-managed; their installs
+      // surface here but the registry's native-adapter path can't create
+      // them — the plugin's boot path calls `registerDirect` instead.
+      pool._setResult({
+        rows: [
+          {
+            install_id: "warehouse",
+            catalog_slug: "snowflake",
+            config: { url: "snowflake://user:pass@account/db" },
+            config_schema: [{ key: "url", type: "string", required: true, secret: true }],
+          },
+        ],
+      });
+      _resetPool(pool);
+
+      const count = await loadSavedConnections();
+      expect(count).toBe(0);
+      expect(connections.has("warehouse")).toBe(false);
+    });
+
+    it("returns 0 when query throws (workspace_plugins not exist)", async () => {
+      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+      const { pool } = createMockPool();
+      pool._setError(new Error("relation \"workspace_plugins\" does not exist"));
       _resetPool(pool);
 
       const count = await loadSavedConnections();
@@ -1066,17 +1124,26 @@ describe("connection URL encryption", () => {
       connections._reset();
     });
 
-    it("decrypts encrypted URLs when loading connections", async () => {
+    it("decrypts encrypted URLs from config JSONB when loading datasource installs", async () => {
       process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
       process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-load-connections!!!";
 
       const realUrl = "postgresql://admin:secret@warehouse.example.com:5432/wh";
+      // Encrypt via the same module the post-cutover code reads from
+      // (`db/secret-encryption.ts`). The two encryption modules produce
+      // identical ciphertext, so this matches what migration 0094
+      // copies verbatim from the legacy `connections.url` column.
       const encryptedUrl = encryptSecret(realUrl);
 
       const { pool } = createMockPool();
       pool._setResult({
         rows: [
-          { id: "warehouse", url: encryptedUrl, type: "postgres", description: "Warehouse", schema_name: null },
+          {
+            install_id: "warehouse",
+            catalog_slug: "postgres",
+            config: { url: encryptedUrl, description: "Warehouse" },
+            config_schema: POSTGRES_CONFIG_SCHEMA,
+          },
         ],
       });
       _resetPool(pool);
@@ -1086,7 +1153,7 @@ describe("connection URL encryption", () => {
       expect(connections.has("warehouse")).toBe(true);
     });
 
-    it("skips connections with undecryptable URLs without blocking others", async () => {
+    it("skips installs with undecryptable URLs without blocking others", async () => {
       process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
       process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-load-connections!!!";
 
@@ -1105,8 +1172,18 @@ describe("connection URL encryption", () => {
       const { pool } = createMockPool();
       pool._setResult({
         rows: [
-          { id: "good-conn", url: goodEncrypted, type: "postgres", description: null, schema_name: null },
-          { id: "bad-conn", url: badEncrypted, type: "postgres", description: null, schema_name: null },
+          {
+            install_id: "good-conn",
+            catalog_slug: "postgres",
+            config: { url: goodEncrypted },
+            config_schema: POSTGRES_CONFIG_SCHEMA,
+          },
+          {
+            install_id: "bad-conn",
+            catalog_slug: "postgres",
+            config: { url: badEncrypted },
+            config_schema: POSTGRES_CONFIG_SCHEMA,
+          },
         ],
       });
       _resetPool(pool);
@@ -1117,14 +1194,22 @@ describe("connection URL encryption", () => {
       expect(connections.has("bad-conn")).toBe(false);
     });
 
-    it("handles plaintext URLs (migration path) during load", async () => {
+    it("handles plaintext URLs (migration drift path) during load", async () => {
       process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
       process.env.ATLAS_ENCRYPTION_KEY = "test-key-for-load-connections!!!";
 
       const { pool } = createMockPool();
       pool._setResult({
         rows: [
-          { id: "legacy", url: "postgresql://host/db", type: "postgres", description: null, schema_name: null },
+          {
+            install_id: "legacy",
+            catalog_slug: "postgres",
+            // Bare plaintext URL — `decryptSecretFields` short-circuits
+            // on the missing `enc:v<N>:` prefix and surfaces a drift
+            // warning but doesn't fail.
+            config: { url: "postgresql://host/db" },
+            config_schema: POSTGRES_CONFIG_SCHEMA,
+          },
         ],
       });
       _resetPool(pool);

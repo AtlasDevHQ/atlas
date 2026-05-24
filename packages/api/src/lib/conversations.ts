@@ -286,10 +286,14 @@ export async function resolveGroupForConnection(
 ): Promise<string | null> {
   if (!hasInternalDB()) return null;
   try {
+    // Post-0096 cutover (#2744 / ADR-0007): the install's group_id
+    // lives in `workspace_plugins.config->>'group_id'`. The OR clause
+    // preserves the legacy `__global__` fallback the agent loop depends on.
     const rows = await internalQuery<{ group_id: string | null }>(
-      `SELECT group_id FROM connections
-        WHERE id = $1
-          AND (org_id IS NOT DISTINCT FROM $2 OR org_id = '__global__')
+      `SELECT config->>'group_id' AS group_id FROM workspace_plugins
+        WHERE install_id = $1
+          AND pillar = 'datasource'
+          AND (workspace_id IS NOT DISTINCT FROM $2 OR workspace_id = '__global__')
         LIMIT 1`,
       [connectionId, orgId ?? null],
     );
@@ -338,10 +342,16 @@ export async function verifyGroupBelongsToOrg(
 ): Promise<GroupOwnershipResult> {
   if (!hasInternalDB()) return "no_db";
   try {
-    const rows = await internalQuery<{ id: string }>(
-      `SELECT id FROM connection_groups
-        WHERE id = $1
-          AND (org_id IS NOT DISTINCT FROM $2 OR org_id = '__global__')
+    // Post-0096 cutover (#2744 / ADR-0007 pure-collapse): there is no
+    // `connection_groups` row — a group is implicit, defined by any
+    // datasource install whose `config->>'group_id'` matches. The group
+    // "belongs to" the caller's org if at least one such install lives
+    // in the caller's workspace (or `__global__`).
+    const rows = await internalQuery<{ install_id: string }>(
+      `SELECT install_id FROM workspace_plugins
+        WHERE config->>'group_id' = $1
+          AND pillar = 'datasource'
+          AND (workspace_id IS NOT DISTINCT FROM $2 OR workspace_id = '__global__')
         LIMIT 1`,
       [connectionGroupId, orgId ?? null],
     );

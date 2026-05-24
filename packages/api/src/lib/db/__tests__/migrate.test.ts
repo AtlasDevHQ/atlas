@@ -107,8 +107,9 @@ describe("runMigrations", () => {
     // + 0092 (pillar + install_id columns, #2739)
     // + 0093 (built-in datasource catalog rows, #2743)
     // + 0094 (promote placeholder chat rows to coming_soon, #2747)
-    // + 0095 (add 'telegram' to approval-surface CHECK enums, #2748) = 96.
-    expect(count).toBe(96);
+    // + 0095 (add 'telegram' to approval-surface CHECK enums, #2748)
+    // + 0096 (drop connections + connection_groups, cutover, #2744) = 97.
+    expect(count).toBe(97);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -233,6 +234,7 @@ describe("runMigrations", () => {
         "0093_builtin_datasource_catalog.sql",
         "0094_placeholder_chat_coming_soon.sql",
         "0095_approval_surface_telegram.sql",
+        "0096_drop_connections_table.sql",
       ],
     });
 

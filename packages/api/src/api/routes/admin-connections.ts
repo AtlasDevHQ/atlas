@@ -9,27 +9,30 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
+import type { Context } from "hono";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { getConfig } from "@atlas/api/lib/config";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
-import { hasInternalDB, internalQuery, encryptSecret, decryptSecret, type URLSecret } from "@atlas/api/lib/db/internal";
-import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
+import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { runHandler } from "@atlas/api/lib/effect/hono";
+import { mapInstallError } from "@atlas/api/lib/effect/workspace-installer";
 import { checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
+import { GROUP_NAME_PATTERN } from "@atlas/api/lib/db/connection-groups-helpers";
 import {
-  GROUP_NAME_PATTERN,
-  UNIQUE_NAME_CONSTRAINT,
-  connectionNameCollidesWithGroup,
-  generateGroupId,
-  pgErrorMeta,
-} from "@atlas/api/lib/db/connection-groups-helpers";
+  WorkspaceInstaller,
+  WorkspaceInstallerLive,
+  type WorkspaceInstallerShape,
+  type InstallError,
+} from "@atlas/api/lib/effect/workspace-installer";
+import { decryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
+import type { WorkspaceId } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
-import { Effect } from "effect";
+import { Cause, Effect } from "effect";
 import {
   CONTENT_MODE_TABLES,
   makeService,
@@ -47,6 +50,92 @@ const log = createLogger("admin-connections");
 /** Read atlasMode from the Hono context. Defaults to "published" (most restrictive) when not set. */
 function getAtlasMode(c: { get(key: string): unknown }): import("@useatlas/types/auth").AtlasMode {
   return (c.get("atlasMode") as import("@useatlas/types/auth").AtlasMode | undefined) ?? "published";
+}
+
+// ---------------------------------------------------------------------------
+// WorkspaceInstaller bridge (#2744)
+// ---------------------------------------------------------------------------
+
+/**
+ * Discriminated result for `runInstaller`. On error, the route renders
+ * the body via `c.json(error.body, error.status)` — keeping `c.json` at
+ * the call site preserves the OpenAPI router's `RouteConfigToTypedResponse`
+ * narrowing (Hono refuses to widen a plain `Response` returned from a
+ * helper).
+ *
+ * `error` + `message` are required so OpenAPI route inference matches
+ * the response schemas; extra tag-specific fields from `mapInstallError`'s
+ * `body` (e.g. `fieldErrors`, `reason`, `pillar`) ride on the index
+ * signature.
+ */
+interface InstallerErrorBody {
+  readonly error: string;
+  readonly message: string;
+  readonly [key: string]: unknown;
+}
+
+type InstallerResult<A> =
+  | { readonly kind: "ok"; readonly value: A }
+  | {
+      readonly kind: "error";
+      readonly status: 400 | 404 | 409;
+      readonly body: InstallerErrorBody;
+    };
+
+/**
+ * Run a `WorkspaceInstaller`-using Effect from inside an async Hono
+ * handler. Provides the live installer Layer and maps tagged installer
+ * errors into a route-renderable `{ status, body }` pair via
+ * {@link mapInstallError}.
+ *
+ * `mapInstallError` is an exhaustive `switch (error._tag)` — adding a new
+ * `InstallError` variant fails at compile time inside `mapInstallError`
+ * (not via a runtime "unknown status" log line here). The result type
+ * narrows `status` to `400 | 404 | 409` directly so `c.json(body, status)`
+ * matches the OpenAPI route schema without a `ContentfulStatusCode` cast.
+ *
+ * Defects (non-tagged Effect failures) re-throw so `runHandler`'s outer
+ * try/catch produces a 500 with a request ID — same posture as a thrown
+ * Error in a normal async handler.
+ *
+ * Avoids the bigger refactor that would convert each `admin-connections`
+ * handler into a top-to-bottom Effect program (the pattern
+ * `admin-integrations.ts` uses). The route is mostly imperative — keeping
+ * the bridge narrow lets the legacy test-connect / audit / billing
+ * dances stay in place.
+ */
+async function runInstaller<A>(
+  _c: Context,
+  body: (installer: WorkspaceInstallerShape) => Effect.Effect<A, InstallError>,
+): Promise<InstallerResult<A>> {
+  const program = Effect.gen(function* () {
+    const installer = yield* WorkspaceInstaller;
+    return yield* body(installer);
+  });
+
+  const exit = await Effect.runPromiseExit(
+    program.pipe(Effect.provide(WorkspaceInstallerLive)),
+  );
+
+  if (exit._tag === "Success") return { kind: "ok", value: exit.value };
+
+  const failure = Cause.failureOption(exit.cause);
+  if (failure._tag === "Some") {
+    const mapping = mapInstallError(failure.value);
+    return {
+      kind: "error",
+      status: mapping.status,
+      body: {
+        error: mapping.code,
+        message: mapping.message,
+        ...(mapping.body ?? {}),
+      },
+    };
+  }
+  // Defect — let runHandler's outer catch surface it as a 500 with
+  // the standard requestId envelope. Throw with the raw Cause so the
+  // stack trace makes it into pino's error log.
+  throw new Error(`WorkspaceInstaller program died: ${Cause.pretty(exit.cause)}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -88,25 +177,31 @@ export async function getVisibleConnectionIds(
   const visible = new Set<string>();
 
   if (hasInternalDB()) {
+    // Content-mode filter — `readFilter("connections", …)` resolves
+    // through CONTENT_MODE_TABLES, which post-#2744 points the
+    // `connections` segment key at the `workspace_plugins` physical
+    // table. Alias `wp` matches the FROM clause below.
     const statusClause = Effect.runSync(
-      contentModeRegistry.readFilter("connections", mode ?? "published", "c"),
+      contentModeRegistry.readFilter("connections", mode ?? "published", "wp"),
     );
-    // Org's own rows + `__global__` fallback. A per-org row with the same
-    // id shadows the global row so onboarding-chosen demos (e.g. an
-    // industry-specific `__demo__`) override the canonical global one.
-    const rows = await internalQuery<{ id: string }>(
-      `SELECT c.id FROM connections c WHERE c.org_id = $1 AND ${statusClause}
-       UNION
-       SELECT c.id FROM connections c
-       WHERE c.org_id = '__global__' AND ${statusClause}
-         AND NOT EXISTS (
-           SELECT 1 FROM connections c2 WHERE c2.org_id = $1 AND c2.id = c.id
-         )
-       ORDER BY 1`,
+    // Migration 0094 backfilled a per-workspace `demo-postgres` install
+    // for every organization (`install_id='__demo__'`). The old
+    // `__global__` → per-org tombstone overlay is gone — each
+    // workspace owns its demo row outright, archiving hides it
+    // locally, so a flat WHERE clause replaces the prior UNION + NOT
+    // EXISTS pattern. `install_id` is the post-cutover user-facing
+    // identifier the admin UI calls "connection id".
+    const rows = await internalQuery<{ install_id: string }>(
+      `SELECT DISTINCT wp.install_id
+         FROM workspace_plugins wp
+        WHERE wp.workspace_id = $1
+          AND wp.pillar = 'datasource'
+          AND ${statusClause}
+        ORDER BY 1`,
       [orgId],
     );
     for (const row of rows) {
-      visible.add(row.id);
+      visible.add(row.install_id);
     }
   }
 
@@ -333,6 +428,10 @@ const deleteConnectionRoute = createRoute({
       description: "Connection deleted",
       content: { "application/json": { schema: z.object({ success: z.boolean() }) } },
     },
+    // #2744 — installer can surface an `InvalidInstallIdError` (400) on
+    // future tag widenings; documented here so the OpenAPI schema stays
+    // in lockstep with the typed status union from `runInstaller`.
+    400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "Connection not found", content: { "application/json": { schema: ErrorSchema } } },
@@ -386,38 +485,43 @@ adminConnections.openapi(listConnectionsRoute, async (c) => runHandler(c, "list 
   const visible = await getVisibleConnectionIds(orgId, isPlatformAdmin, getAtlasMode(c));
   const filtered = visible ? connList.filter((conn) => visible.has(conn.id)) : connList;
 
-  // Decorate with `group_id` + `group_name` from the internal DB. The
-  // in-memory registry tracks runtime metadata but not group membership;
-  // merging here keeps both surfaces in lockstep without a second
-  // round-trip from the admin UI. The LEFT JOIN preserves rows with
-  // `group_id = NULL` (ungrouped connections) and returns `group_name =
-  // NULL` for them. The (id, org_id) join condition mirrors the
-  // composite-FK org scoping on `connection_groups`. The no-internal-DB
-  // branch (self-hosted single-tenant) and the empty-result branch both
-  // fall through with `groupId/groupName: null` on every row. Transient
-  // DB errors propagate via runHandler's classifyError — a flaky pool
-  // surfaces as a 500 here, no silent-success fallback.
+  // Decorate with `group_id` from `workspace_plugins.config`. Per
+  // ADR-0007 the `connection_groups` table is gone; named groups
+  // collapse into the per-row JSONB key `config->>'group_id'`. The
+  // wire still carries both `groupId` and `groupName` for backwards
+  // compatibility with the admin UI — post-cutover `groupName` mirrors
+  // `groupId` verbatim (a string IS a name now). When the web page
+  // drops the group_name column (#2744 step 4), this can collapse.
   //
   // Presence in `groupInfoByConnection` doubles as the `billable` signal
-  // (#2490): the SELECT already matches the billing usage-panel SQL
-  // (`c.org_id = $1` on a non-archived row — archived rows are removed
-  // upstream by `getVisibleConnectionIds`'s content-mode read filter).
-  // `__global__`-sourced rows and the lazy `default` fallback are
-  // visible to the user but absent from this query, so they correctly
-  // report `billable: false`.
+  // (#2490): the SELECT matches the billing counter exactly (the same
+  // workspace_plugins WHERE clause used to enforce the plan limit on
+  // POST). The lazy `default` fallback and any future runtime-only
+  // registration are visible to the user but absent from the DB, so
+  // they correctly report `billable: false`. Archived rows are filtered
+  // upstream by `getVisibleConnectionIds`'s content-mode read filter so
+  // we don't need to repeat the `status != 'archived'` check here.
   let groupInfoByConnection = new Map<string, { groupId: string | null; groupName: string | null }>();
   if (hasInternalDB() && filtered.length > 0) {
     const ids = filtered.map((c) => c.id);
-    const rows = await internalQuery<{ id: string; group_id: string | null; group_name: string | null }>(
-      `SELECT c.id, c.group_id, g.name AS group_name
-         FROM connections c
-         LEFT JOIN connection_groups g
-           ON g.id = c.group_id AND g.org_id = c.org_id
-        WHERE c.org_id = $1 AND c.id = ANY($2::text[])`,
+    const rows = await internalQuery<{ install_id: string; group_id: string | null }>(
+      `SELECT wp.install_id, wp.config->>'group_id' AS group_id
+         FROM workspace_plugins wp
+        WHERE wp.workspace_id = $1
+          AND wp.pillar = 'datasource'
+          AND wp.install_id = ANY($2::text[])`,
       [orgId, ids],
     );
     groupInfoByConnection = new Map(
-      rows.map((r) => [r.id, { groupId: r.group_id, groupName: r.group_name }]),
+      rows.map((r) => [
+        r.install_id,
+        {
+          groupId: r.group_id,
+          // Wire-shape preservation: groupName mirrors groupId per the
+          // locked decision; the `connection_groups.name` join is gone.
+          groupName: r.group_id,
+        },
+      ]),
     );
   }
 
@@ -667,12 +771,16 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
     return c.json({ error: "not_available", message: "Connection management requires an internal database (DATABASE_URL).", requestId }, 404);
   }
 
-  // Enforce plan connection limit before proceeding. Exclude archived
-  // rows so per-org delete-as-hide tombstones (the shadow rows for
-  // hidden `__global__` connections) don't count against the org's plan
-  // limit. A workspace that hides the demo shouldn't lose a slot for it.
+  // Enforce plan connection limit before proceeding. Post-#2744 the
+  // counter scans `workspace_plugins WHERE pillar = 'datasource' AND
+  // status != 'archived'` — exclude archived rows so a workspace
+  // hiding the demo doesn't lose a billable slot for it.
   const connCountRows = await internalQuery<{ count: number }>(
-    `SELECT COUNT(*)::int as count FROM connections WHERE org_id = $1 AND status != 'archived'`,
+    `SELECT COUNT(*)::int as count
+       FROM workspace_plugins
+      WHERE workspace_id = $1
+        AND pillar = 'datasource'
+        AND status != 'archived'`,
     [orgId],
   );
   const connCount = connCountRows[0]?.count ?? 0;
@@ -692,6 +800,11 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
 
   const { id, url, description, schema, connectionGroupId, newGroupName } = body as Record<string, unknown>;
 
+  // installId / dbType / url shape validation. The installer also
+  // validates installId, but we pre-check so we can return the legacy
+  // copy. `default` is intercepted here for the same reason — the
+  // installer's reserved-error message is generic ("pick a different
+  // name"); the legacy 400 explicitly points the admin at ATLAS_DATASOURCE_URL.
   if (!id || typeof id !== "string" || !/^[a-z][a-z0-9_-]*$/.test(id)) {
     return c.json({ error: "invalid_request", message: "Connection ID must be lowercase alphanumeric with hyphens/underscores (e.g. 'warehouse').", requestId }, 400);
   }
@@ -702,12 +815,13 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
     return c.json({ error: "invalid_request", message: "Connection URL is required.", requestId }, 400);
   }
 
-  // Foreign-org connectionGroupId resolves to 404, not 403 — B2B
-  // isolation: a foreign-org id is indistinguishable from a missing id
-  // from the caller's perspective. The auto-`g_<id>` fallback preserves
-  // the migration-0062 invariant that every connection has a group.
-  // Both fields together is invalid_request: the dialog enforces
+  // Both group fields together is invalid_request — the dialog enforces
   // exclusivity client-side but a direct API caller could send both.
+  // `newGroupName` is accepted verbatim into `config.group_id` per the
+  // locked decision (#2744) — the `connection_groups` table is gone, so
+  // a "name" and an "id" are the same string now. We still pattern-validate
+  // newGroupName so admin clients see a 400 instead of an opaque
+  // ConfigSchemaError when they pass control characters.
   if (connectionGroupId !== undefined && newGroupName !== undefined) {
     return c.json(
       {
@@ -721,8 +835,10 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
   if (connectionGroupId !== undefined && typeof connectionGroupId !== "string") {
     return c.json({ error: "invalid_request", message: "connectionGroupId must be a string when provided.", requestId }, 400);
   }
-  let trimmedNewGroupName: string | null = null;
-  if (newGroupName !== undefined) {
+  let resolvedGroupId: string | null = null;
+  if (typeof connectionGroupId === "string") {
+    resolvedGroupId = connectionGroupId;
+  } else if (newGroupName !== undefined) {
     if (typeof newGroupName !== "string" || !GROUP_NAME_PATTERN.test(newGroupName.trim())) {
       return c.json(
         {
@@ -733,49 +849,25 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
         400,
       );
     }
-    trimmedNewGroupName = newGroupName.trim();
+    resolvedGroupId = newGroupName.trim();
   }
 
-  // Name-collision guard (#2506) on the inline-create path. Refuses a
-  // newGroupName that matches an existing connection id in this org.
-  // Skipped when `id === trimmedNewGroupName` because the connection
-  // doesn't exist yet — we're still creating it — and would otherwise
-  // double-count the in-flight create as its own collision.
-  if (
-    trimmedNewGroupName !== null &&
-    trimmedNewGroupName !== id &&
-    (await connectionNameCollidesWithGroup(orgId, trimmedNewGroupName))
-  ) {
-    return c.json(
-      {
-        error: "conflict",
-        message: `A connection named "${trimmedNewGroupName}" already exists in this workspace. Choose a different environment name.`,
-        requestId,
-      },
-      409,
-    );
-  }
-
-  // Pre-validate cross-org so a foreign-org id surfaces as 404 here
-  // rather than a 23503 FK violation inside the CTE. Mirrors the
-  // merge-route source-row pre-validation in admin-connection-groups.ts.
+  // Cross-org connectionGroupId validation: scan workspace_plugins for
+  // any row in this workspace whose config.group_id matches. The
+  // `connection_groups` archived check is gone — a group is now just a
+  // string referenced by N install rows, so "the group exists" means
+  // "at least one install in this workspace claims that group_id".
+  // Skipped on newGroupName (which is allowed to introduce a new group).
   if (typeof connectionGroupId === "string") {
-    const groupRows = await internalQuery<{ id: string; status: string }>(
-      `SELECT id, status FROM connection_groups WHERE id = $1 AND org_id = $2`,
-      [connectionGroupId, orgId],
+    const groupRows = await internalQuery<{ install_id: string }>(
+      `SELECT install_id FROM workspace_plugins
+        WHERE workspace_id = $1 AND pillar = 'datasource'
+          AND config->>'group_id' = $2
+        LIMIT 1`,
+      [orgId, connectionGroupId],
     );
     if (groupRows.length === 0) {
       return c.json({ error: "not_found", message: `Environment "${connectionGroupId}" not found.`, requestId }, 404);
-    }
-    if (groupRows[0].status === "archived") {
-      return c.json(
-        {
-          error: "conflict",
-          message: `Environment "${connectionGroupId}" is archived. Restore it before attaching new connections.`,
-          requestId,
-        },
-        409,
-      );
     }
   }
 
@@ -790,27 +882,26 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
     return c.json({ error: "conflict", message: `Connection "${id}" already exists.`, requestId }, 409);
   }
 
-  // Archive-aware conflict check: the archive-on-delete flow preserves rows,
-  // so the (id, org_id) PK may collide even when the registry has no entry.
-  // If an archived row already owns this PK, the INSERT below would 500;
-  // we revive it instead via UPDATE. Any other status (published/draft) is a
-  // real conflict.
-  let existingRow: { status: string }[];
-  try {
-    existingRow = await internalQuery<{ status: string }>(
-      `SELECT status FROM connections WHERE id = $1 AND org_id = $2`,
-      [id, orgId],
-    );
-  } catch (err) {
-    log.error({ err: errorMessage(err), connectionId: id, requestId }, "Failed to check for existing connection row before create");
-    return c.json({ error: "internal_error", message: "Failed to check for existing connection. Try again.", requestId }, 500);
-  }
+  // Archive-aware conflict check: an admin who soft-deleted a connection
+  // can re-create it under the same install_id and we revive in place to
+  // preserve audit history. Any other status (published/draft) is a real
+  // conflict.
+  const existingRow = await internalQuery<{ status: string }>(
+    `SELECT status FROM workspace_plugins
+      WHERE workspace_id = $1 AND pillar = 'datasource' AND install_id = $2
+      LIMIT 1`,
+    [orgId, id],
+  );
   if (existingRow.length > 0 && existingRow[0].status !== "archived") {
     return c.json({ error: "conflict", message: `Connection "${id}" already exists.`, requestId }, 409);
   }
   const revivingArchived = existingRow.length > 0;
 
-  // Test the connection before saving
+  // Test-connect dance is route-owned per ADR-0007 (installer trusts
+  // the caller has validated reachability). Register then healthCheck
+  // produces a clear `connection_failed` 400 with the upstream error,
+  // and rollback unregisters so a failed test never leaves a phantom
+  // pool behind.
   try {
     connections.register(id, {
       url,
@@ -827,108 +918,88 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
     }, 400);
   }
 
-  // Encrypt and persist to internal DB with org_id
-  let encryptedUrl: URLSecret;
-  try {
-    encryptedUrl = encryptSecret(url);
-  } catch (err) {
-    connections.unregister(id);
-    log.error({ err: errorMessage(err), connectionId: id, requestId }, "Failed to encrypt connection URL");
-    return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET.", requestId }, 500);
-  }
+  // `encryptSecretFields` will encrypt the `url` field at the installer
+  // boundary per the catalog's config_schema (where `secret: true`).
+  const formData: Record<string, unknown> = {
+    url,
+    ...(typeof description === "string" ? { description } : {}),
+    ...(typeof schema === "string" && schema.length > 0 ? { schema } : {}),
+  };
 
-  // All new connections stamp `status = 'draft'` regardless of the caller's
-  // `atlasMode` header (#2177). The pending-changes pill in the admin top bar
-  // surfaces the draft count; the admin publishes via the atomic
-  // `/api/v1/admin/publish` endpoint instead of flipping a mode toggle first.
-  const status = "draft";
+  // Admin POSTs always land on the bare `dbType` catalog row; the
+  // `demo-postgres` slug is reserved for the migration backfill.
+  const catalogSlug = dbType;
 
-  // Surfaced in the response so the UI can render the env chip without
-  // a re-fetch.
-  let resolvedGroupId: string | null = null;
   try {
-    const urlKeyVersion = activeKeyVersion();
     if (revivingArchived) {
-      // The archived row owns the PK — revive it in place so we preserve
-      // audit/version history rather than stranding it.
-      if (typeof connectionGroupId === "string") {
-        resolvedGroupId = connectionGroupId;
-        await internalQuery(
-          `UPDATE connections SET url = $1, url_key_version = $8, type = $2, description = $3, schema_name = $4, status = $5, group_id = $9, updated_at = now() WHERE id = $6 AND org_id = $7`,
-          [encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null, status, id, orgId, urlKeyVersion, connectionGroupId],
-        );
-      } else if (trimmedNewGroupName !== null) {
-        const newGroupId = generateGroupId();
-        resolvedGroupId = newGroupId;
-        await internalQuery(
-          `WITH group_row AS (
-             INSERT INTO connection_groups (id, org_id, name, primary_connection_id)
-             VALUES ($9, $7, $10, $6)
-             RETURNING id
-           )
-           UPDATE connections SET url = $1, url_key_version = $8, type = $2, description = $3, schema_name = $4, status = $5, group_id = (SELECT id FROM group_row), updated_at = now() WHERE id = $6 AND org_id = $7`,
-          [encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null, status, id, orgId, urlKeyVersion, newGroupId, trimmedNewGroupName],
-        );
-      } else {
-        await internalQuery(
-          `UPDATE connections SET url = $1, url_key_version = $8, type = $2, description = $3, schema_name = $4, status = $5, updated_at = now() WHERE id = $6 AND org_id = $7`,
-          [encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null, status, id, orgId, urlKeyVersion],
-        );
+      // Reviving an archived row: route through updateDatasourceConfig
+      // (the installer rejects installDatasource on existing row with
+      // 409). atlasMode='draft' so the revived row carries status='draft'
+      // matching legacy behaviour (#2177).
+      const result = await runInstaller(
+        c,
+        (installer) =>
+          installer.updateDatasourceConfig(
+            orgId as WorkspaceId,
+            catalogSlug,
+            id,
+            {
+              partialConfig: formData,
+              groupId: resolvedGroupId,
+              status: "draft",
+              atlasMode: "draft",
+            },
+          ),
+      );
+      if (result.kind === "error") {
+        // Reviving an archived row: the pool already existed from the
+        // pre-archive era; the test-connect dance above re-registered it
+        // against the same URL the user just supplied. Leave it in place
+        // so the next list/agent query sees a live pool matching the
+        // (still-archived) DB row.
+        return c.json({ ...result.body, requestId }, result.status);
       }
-    } else if (typeof connectionGroupId === "string") {
-      resolvedGroupId = connectionGroupId;
-      await internalQuery(
-        `INSERT INTO connections (id, url, url_key_version, type, description, schema_name, org_id, status, group_id)
-         VALUES ($1, $2, $8, $3, $4, $5, $6, $7, $9)`,
-        [id, encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null, orgId, status, urlKeyVersion, connectionGroupId],
-      );
-    } else if (trimmedNewGroupName !== null) {
-      // Atomic CTE: a 23505 on uq_connection_groups_org_name rolls the
-      // connection INSERT back too — no half-created connection without
-      // its env. primary_connection_id = <new id> makes the env
-      // user-named to isAutoBackfilledSingleton (web) the moment it lands.
-      const newGroupId = generateGroupId();
-      resolvedGroupId = newGroupId;
-      await internalQuery(
-        `WITH group_row AS (
-           INSERT INTO connection_groups (id, org_id, name, primary_connection_id)
-           VALUES ($9, $6, $10, $1)
-           RETURNING id
-         )
-         INSERT INTO connections (id, url, url_key_version, type, description, schema_name, org_id, status, group_id)
-         VALUES ($1, $2, $8, $3, $4, $5, $6, $7, (SELECT id FROM group_row))`,
-        [id, encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null, orgId, status, urlKeyVersion, newGroupId, trimmedNewGroupName],
-      );
     } else {
-      // Preserve migration-0062 invariant: every connection has a group,
-      // even when the caller doesn't specify one.
-      resolvedGroupId = `g_${id}`;
-      await internalQuery(
-        `WITH group_row AS (
-           INSERT INTO connection_groups (id, org_id, name)
-           VALUES ('g_' || $1, $6, $1)
-           ON CONFLICT (id, org_id) DO UPDATE SET updated_at = connection_groups.updated_at
-           RETURNING id
-         )
-         INSERT INTO connections (id, url, url_key_version, type, description, schema_name, org_id, status, group_id)
-         VALUES ($1, $2, $8, $3, $4, $5, $6, $7, (SELECT id FROM group_row))`,
-        [id, encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null, orgId, status, urlKeyVersion],
+      const result = await runInstaller(
+        c,
+        (installer) =>
+          installer.installDatasource(
+            orgId as WorkspaceId,
+            catalogSlug,
+            {
+              installId: id,
+              formData,
+              groupId: resolvedGroupId,
+              // All new connections always stamp `status = 'draft'`
+              // regardless of the caller's atlasMode (#2177). The
+              // pending-changes pill surfaces the draft count and the
+              // admin publishes atomically.
+              atlasMode: "draft",
+            },
+          ),
       );
+      if (result.kind === "error") {
+        // Installer returned a typed error (e.g. ConfigSchemaError,
+        // CatalogNotFoundError, AlreadyInstalledError from a race). The
+        // pre-install test-connect dance above already registered a live
+        // pool against the user-supplied URL — leaving it would produce
+        // a phantom 409 on retry from `connections.has(id)` and would
+        // also hand future code paths a pool with no DB row. Tear it
+        // down before returning.
+        try {
+          connections.unregister(id);
+        } catch (cleanupErr) {
+          log.error(
+            { err: errorMessage(cleanupErr), connectionId: id, requestId },
+            "Failed to unregister pre-registered pool after installer error — pool may need a server restart to clear",
+          );
+        }
+        return c.json({ ...result.body, requestId }, result.status);
+      }
     }
   } catch (err) {
     connections.unregister(id);
-    // 23505 on the unique-name index gets field-targeted 409 copy
-    // instead of a generic 500 toast. Log `constraint` on the fallthrough
-    // so post-hoc triage can tell unique-name from PK-collision from
-    // FK-violation without re-running with a stack trace.
-    const meta = pgErrorMeta(err);
-    if (meta.code === "23505" && meta.constraint === UNIQUE_NAME_CONSTRAINT && trimmedNewGroupName !== null) {
-      return c.json(
-        { error: "conflict", message: `An environment named "${trimmedNewGroupName}" already exists.`, requestId },
-        409,
-      );
-    }
-    log.error({ err: errorMessage(err), connectionId: id, requestId, pgCode: meta.code, pgConstraint: meta.constraint }, "Failed to persist connection");
+    log.error({ err: errorMessage(err), connectionId: id, requestId }, "Failed to persist connection via WorkspaceInstaller");
     return c.json({ error: "internal_error", message: "Failed to save connection.", requestId }, 500);
   }
 
@@ -976,15 +1047,29 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
     return c.json({ error: "forbidden", message: "Cannot modify the default connection. Update ATLAS_DATASOURCE_URL instead.", requestId }, 403);
   }
 
-  // Check it exists in the DB and belongs to this org. Excludes archived
-  // rows so per-org delete-as-hide tombstones (whose `url = ''` placeholder
-  // would crash `decryptSecret` below) read as "not found here, did you mean
-  // to restore first?" rather than a misleading "encryption key changed"
-  // 500.
-  const existing = await internalQuery<{ id: string; url: string; type: string; description: string | null; schema_name: string | null; group_id: string | null }>(
-    `SELECT id, url, type, description, schema_name, group_id FROM connections
-     WHERE id = $1 AND org_id = $2 AND status != 'archived'`,
-    [id, orgId],
+  // Load the existing row from workspace_plugins. Need the catalog slug
+  // (for the installer call), the JOIN to plugin_catalog for config_schema
+  // (for in-place decrypt), and the current config (for legacy
+  // url-changed detection). Excludes archived rows so soft-deleted
+  // installs read as "not found" rather than blank-decrypt 500s.
+  const existing = await internalQuery<{
+    catalog_slug: string;
+    config: Record<string, unknown> | null;
+    config_schema: unknown;
+    group_id: string | null;
+  }>(
+    `SELECT pc.slug AS catalog_slug,
+            wp.config,
+            pc.config_schema,
+            wp.config->>'group_id' AS group_id
+       FROM workspace_plugins wp
+       JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+      WHERE wp.workspace_id = $1
+        AND wp.install_id = $2
+        AND wp.pillar = 'datasource'
+        AND wp.status != 'archived'
+      LIMIT 1`,
+    [orgId, id],
   );
 
   if (existing.length === 0) {
@@ -1003,9 +1088,9 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
   const { url, description, schema, connectionGroupId, newGroupName } = body as Record<string, unknown>;
   const current = existing[0];
 
-  // Symmetric to POST: connectionGroupId string attaches, null
-  // re-attaches to auto-`g_<id>`, newGroupName creates inline. Cross-org
-  // rejected like POST. Both fields = 400.
+  // Symmetric to POST: connectionGroupId string attaches, null clears
+  // the group binding, newGroupName creates inline (now just a string
+  // written into config.group_id per the locked decision). Both fields = 400.
   if (connectionGroupId !== undefined && newGroupName !== undefined) {
     return c.json(
       {
@@ -1019,8 +1104,16 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
   if (connectionGroupId !== undefined && connectionGroupId !== null && typeof connectionGroupId !== "string") {
     return c.json({ error: "invalid_request", message: "connectionGroupId must be a string or null when provided.", requestId }, 400);
   }
-  let trimmedNewGroupName: string | null = null;
-  if (newGroupName !== undefined) {
+  // groupIdPatch carries the desired group_id for the installer:
+  //   - undefined: no change
+  //   - null: clear group_id (DELETE the JSONB key)
+  //   - string: set group_id verbatim
+  let groupIdPatch: string | null | undefined = undefined;
+  if (typeof connectionGroupId === "string") {
+    groupIdPatch = connectionGroupId;
+  } else if (connectionGroupId === null) {
+    groupIdPatch = null;
+  } else if (newGroupName !== undefined) {
     if (typeof newGroupName !== "string" || !GROUP_NAME_PATTERN.test(newGroupName.trim())) {
       return c.json(
         {
@@ -1031,63 +1124,62 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
         400,
       );
     }
-    trimmedNewGroupName = newGroupName.trim();
+    groupIdPatch = newGroupName.trim();
   }
 
-  // Name-collision guard (#2506). On update, `id` is the existing
-  // connection being edited — a self-named group ("Production") for
-  // a same-named connection ("Production") is still a collision the
-  // env combobox would surface confusingly, so we don't carve out a
-  // self-match here (in contrast to POST, where the connection
-  // doesn't exist yet).
-  if (
-    trimmedNewGroupName !== null &&
-    (await connectionNameCollidesWithGroup(orgId, trimmedNewGroupName))
-  ) {
-    return c.json(
-      {
-        error: "conflict",
-        message: `A connection named "${trimmedNewGroupName}" already exists in this workspace. Choose a different environment name.`,
-        requestId,
-      },
-      409,
-    );
-  }
-
+  // Cross-org connectionGroupId validation: at least one other
+  // workspace_plugins row in this workspace must claim that group_id.
+  // The legacy "archived group rejects attach" check is gone (no
+  // separate group state to be archived).
   if (typeof connectionGroupId === "string") {
-    const groupRows = await internalQuery<{ id: string; status: string }>(
-      `SELECT id, status FROM connection_groups WHERE id = $1 AND org_id = $2`,
-      [connectionGroupId, orgId],
+    const groupRows = await internalQuery<{ install_id: string }>(
+      `SELECT install_id FROM workspace_plugins
+        WHERE workspace_id = $1 AND pillar = 'datasource'
+          AND config->>'group_id' = $2
+        LIMIT 1`,
+      [orgId, connectionGroupId],
     );
     if (groupRows.length === 0) {
       return c.json({ error: "not_found", message: `Environment "${connectionGroupId}" not found.`, requestId }, 404);
     }
-    if (groupRows[0].status === "archived") {
-      return c.json(
-        {
-          error: "conflict",
-          message: `Environment "${connectionGroupId}" is archived. Restore it before attaching connections to it.`,
-          requestId,
-        },
-        409,
-      );
-    }
   }
 
+  // Decrypt the stored URL so we can detect URL changes and roll the
+  // pool back on test-connect failure. `decryptSecretFields` walks the
+  // catalog's `config_schema` to find `secret: true` keys (i.e. `url`)
+  // and unwraps each — the rest of config passes through.
   let currentUrl: string;
+  let currentDescription: string | null;
+  let currentSchema: string | null;
   try {
-    currentUrl = decryptSecret(current.url);
+    const schemaSpec = parseConfigSchema(current.config_schema);
+    const decrypted = decryptSecretFields(current.config ?? {}, schemaSpec);
+    currentUrl = typeof decrypted.url === "string" ? decrypted.url : "";
+    currentDescription =
+      typeof decrypted.description === "string" && decrypted.description.length > 0
+        ? decrypted.description
+        : null;
+    currentSchema =
+      typeof decrypted.schema === "string" && decrypted.schema.length > 0
+        ? decrypted.schema
+        : null;
+    if (!currentUrl) {
+      throw new Error("workspace_plugins.config.url missing or empty");
+    }
   } catch (err) {
     log.error({ connectionId: id, requestId, err: errorMessage(err) }, "Failed to decrypt stored connection URL");
     return c.json({ error: "decryption_failed", message: "Stored connection URL could not be decrypted. The encryption key may have changed.", requestId }, 500);
   }
 
   const newUrl = typeof url === "string" ? url : currentUrl;
-  const newDescription = typeof description === "string" ? description : current.description;
-  const newSchema = typeof schema === "string" ? (schema || null) : current.schema_name;
+  const newDescription = typeof description === "string" ? description : currentDescription;
+  const newSchema = typeof schema === "string" ? (schema || null) : currentSchema;
   const urlChanged = typeof url === "string" && url !== currentUrl;
 
-  let dbType = current.type;
+  // dbType for the response — derived from the catalog slug since that's
+  // the source of truth post-cutover. For URL changes we re-detect to
+  // validate the new URL's shape before the test-connect dance.
+  let dbType = current.catalog_slug;
   if (urlChanged) {
     try {
       dbType = detectDBType(newUrl);
@@ -1096,7 +1188,8 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
     }
   }
 
-  // Re-test if URL changed
+  // Re-test if URL changed. Test-connect dance is route-owned per
+  // ADR-0007 — the installer trusts the caller's reachability check.
   if (urlChanged) {
     try {
       connections.register(id, { url: newUrl, description: newDescription ?? undefined, schema: newSchema ?? undefined });
@@ -1104,7 +1197,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
     } catch (err) {
       let rollbackFailed = false;
       try {
-        connections.register(id, { url: currentUrl, description: current.description ?? undefined, schema: current.schema_name ?? undefined });
+        connections.register(id, { url: currentUrl, description: currentDescription ?? undefined, schema: currentSchema ?? undefined });
       } catch (restoreErr) {
         rollbackFailed = true;
         log.error({ connectionId: id, requestId, err: errorMessage(restoreErr) }, "Failed to restore previous connection after update failure — connection unregistered");
@@ -1125,98 +1218,69 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
     }
   }
 
-  // Encrypt and update in DB — rollback registry on failure
-  let encryptedNewUrl: URLSecret;
-  try {
-    encryptedNewUrl = encryptSecret(newUrl);
-  } catch (err) {
-    let rollbackFailed = false;
-    try {
-      connections.register(id, { url: currentUrl, description: current.description ?? undefined, schema: current.schema_name ?? undefined });
-    } catch (restoreErr) {
-      rollbackFailed = true;
-      log.error({ connectionId: id, requestId, err: errorMessage(restoreErr) }, "Failed to restore previous connection after encryption failure — connection unregistered");
-      connections.unregister(id);
-    }
-    log.error({ err: errorMessage(err), connectionId: id, requestId }, "Failed to encrypt connection URL");
-    const encMsg = rollbackFailed
-      ? "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET. The connection may need a server restart to restore."
-      : "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET.";
-    return c.json({ error: "encryption_failed", message: encMsg, requestId }, 500);
+  // Build the partial config for the installer. Only include fields the
+  // caller actually patched — the installer merges onto the existing
+  // decrypted config so omitted fields stay put.
+  const partialConfig: Record<string, unknown> = {};
+  if (typeof url === "string") partialConfig.url = url;
+  if (typeof description === "string") partialConfig.description = description;
+  if (typeof schema === "string") {
+    // Empty string clears the schema; non-empty sets it.
+    partialConfig.schema = schema || null;
   }
 
-  // group_id rides on the same UPDATE as URL/description/schema so
-  // both changes fail together — no half-committed "URL updated but
-  // env didn't move" state observable to the caller.
-  let resolvedGroupId: string | null = current.group_id;
-  try {
-    const urlKeyVersion = activeKeyVersion();
-    if (typeof connectionGroupId === "string") {
-      // Attach to an existing env (already cross-org validated above).
-      resolvedGroupId = connectionGroupId;
-      await internalQuery(
-        `UPDATE connections SET url = $1, url_key_version = $7, type = $2, description = $3, schema_name = $4, group_id = $8, updated_at = NOW() WHERE id = $5 AND org_id = $6`,
-        [encryptedNewUrl, dbType, newDescription, newSchema, id, orgId, urlKeyVersion, connectionGroupId],
-      );
-    } else if (connectionGroupId === null) {
-      // Explicit ungroup — back to the auto `g_<id>` self-group, matching
-      // assignMember's unassign branch in admin-connection-groups.ts.
-      // ON CONFLICT keeps this idempotent if the auto-singleton was never
-      // cleaned up after a previous reassign.
-      const autoGroupId = `g_${id}`;
-      resolvedGroupId = autoGroupId;
-      await internalQuery(
-        `WITH group_row AS (
-           INSERT INTO connection_groups (id, org_id, name)
-           VALUES ($8, $6, $9)
-           ON CONFLICT (id, org_id) DO UPDATE SET updated_at = connection_groups.updated_at
-           RETURNING id
-         )
-         UPDATE connections SET url = $1, url_key_version = $7, type = $2, description = $3, schema_name = $4, group_id = (SELECT id FROM group_row), updated_at = NOW() WHERE id = $5 AND org_id = $6`,
-        [encryptedNewUrl, dbType, newDescription, newSchema, id, orgId, urlKeyVersion, autoGroupId, id],
-      );
-    } else if (trimmedNewGroupName !== null) {
-      // Inline-create + reassign atomically. A unique-name 23505 rolls
-      // the whole statement back — no half-renamed connection.
-      const newGroupId = generateGroupId();
-      resolvedGroupId = newGroupId;
-      await internalQuery(
-        `WITH group_row AS (
-           INSERT INTO connection_groups (id, org_id, name, primary_connection_id)
-           VALUES ($8, $6, $9, $5)
-           RETURNING id
-         )
-         UPDATE connections SET url = $1, url_key_version = $7, type = $2, description = $3, schema_name = $4, group_id = (SELECT id FROM group_row), updated_at = NOW() WHERE id = $5 AND org_id = $6`,
-        [encryptedNewUrl, dbType, newDescription, newSchema, id, orgId, urlKeyVersion, newGroupId, trimmedNewGroupName],
-      );
-    } else {
-      await internalQuery(
-        `UPDATE connections SET url = $1, url_key_version = $7, type = $2, description = $3, schema_name = $4, updated_at = NOW() WHERE id = $5 AND org_id = $6`,
-        [encryptedNewUrl, dbType, newDescription, newSchema, id, orgId, urlKeyVersion],
-      );
-    }
-  } catch (err) {
+  // Resolved group_id for the response — derive from patch intent vs
+  // existing value so the wire shape is accurate without a re-fetch.
+  const resolvedGroupId =
+    groupIdPatch === undefined
+      ? current.group_id
+      : groupIdPatch;
+
+  const result = await runInstaller(
+    c,
+    (installer) =>
+      installer.updateDatasourceConfig(
+        orgId as WorkspaceId,
+        current.catalog_slug,
+        id,
+        {
+          ...(Object.keys(partialConfig).length > 0 ? { partialConfig } : {}),
+          ...(groupIdPatch !== undefined ? { groupId: groupIdPatch } : {}),
+          // atlasMode='draft' so any config change downgrades status to
+          // draft, matching the pre-cutover "every edit drafts" rule
+          // documented in #2177.
+          atlasMode: "draft",
+        },
+      ),
+  );
+  if (result.kind === "error") {
+    // Rollback the registry to the pre-update URL — the DB write didn't
+    // land so the live pool shouldn't reflect the attempted change.
     let rollbackFailed = false;
     try {
-      connections.register(id, { url: currentUrl, description: current.description ?? undefined, schema: current.schema_name ?? undefined });
+      connections.register(id, { url: currentUrl, description: currentDescription ?? undefined, schema: currentSchema ?? undefined });
     } catch (restoreErr) {
       rollbackFailed = true;
-      log.error({ connectionId: id, requestId, err: errorMessage(restoreErr) }, "Failed to restore previous connection after DB update failure — connection unregistered");
+      log.error({ connectionId: id, requestId, err: errorMessage(restoreErr) }, "Failed to restore previous connection after installer error — connection unregistered");
       connections.unregister(id);
     }
-    // Mirrors POST — 23505 on inline-create → 409 with field-targeted copy.
-    const meta = pgErrorMeta(err);
-    if (meta.code === "23505" && meta.constraint === UNIQUE_NAME_CONSTRAINT && trimmedNewGroupName !== null) {
+    if (rollbackFailed) {
+      // Rollback failed AND the installer rejected the change: the in-memory
+      // registry is now empty for this id, agent queries will fail until
+      // restart. Escalate to 500 so the caller knows the state is degraded
+      // — surfacing the original 4xx alone would let the admin think they
+      // just need to fix their input.
+      log.error({ connectionId: id, requestId }, "Installer error + rollback failure — registry is empty, surface as 500 to caller");
       return c.json(
-        { error: "conflict", message: `An environment named "${trimmedNewGroupName}" already exists.`, requestId },
-        409,
+        {
+          error: "internal_error",
+          message: `${result.body.message ?? "Connection update failed"} — the previous connection could not be restored either. The connection may need a server restart.`,
+          requestId,
+        },
+        500,
       );
     }
-    log.error({ err: errorMessage(err), connectionId: id, requestId, pgCode: meta.code, pgConstraint: meta.constraint }, "Failed to update connection in DB");
-    const updateMsg = rollbackFailed
-      ? "Failed to update connection. The connection may need a server restart to restore."
-      : "Failed to update connection.";
-    return c.json({ error: "internal_error", message: updateMsg, requestId }, 500);
+    return c.json({ ...result.body, requestId }, result.status);
   }
 
   try {
@@ -1258,43 +1322,44 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => runHandler(c, "dele
     return c.json({ error: "forbidden", message: "Cannot delete the default connection.", requestId }, 403);
   }
 
-  // With the global demo + per-org tombstone model (#2304), "delete" no
-  // longer mutates shared state — it inserts a per-org archived row that
-  // hides the global from this workspace only. Other tenants are
-  // untouched. Updates to the canonical demo URL/description go through
-  // the PUT handler; #2177 removed the demo-readonly 403 there so admins
-  // can edit demo data without flipping the mode toggle first.
-
-  // Two cases:
-  //   - Org-owned row exists → archive in place (existing behavior).
-  //   - Only a `__global__` row exists for this id (e.g. the shared
-  //     `__demo__` provisioned by onboarding under #2304) → insert a
-  //     per-org archived shadow row. The visibility query's NOT EXISTS
-  //     check then hides the global from this org's view while leaving
-  //     it intact for every other workspace.
-  // `type` is NOT NULL in the schema (migration 0000_baseline.sql:170,
-  // schema.ts:276) — declare it as `string`, not `string | null`. The
-  // previous annotation invented a nullable case the DB cannot produce.
-  const existing = await internalQuery<{ id: string; org_id: string; type: string }>(
-    `SELECT id, org_id, type FROM connections WHERE id = $1 AND org_id IN ($2, '__global__')`,
-    [id, orgId],
+  // Look up the install row and resolve its catalog slug so the
+  // installer can route the uninstall. Post-#2744 every workspace owns
+  // its own demo row — there's no `__global__` shared install to shadow
+  // anymore, so the legacy global/own branching collapses into one
+  // simple lookup.
+  const existing = await internalQuery<{ catalog_slug: string }>(
+    `SELECT pc.slug AS catalog_slug
+       FROM workspace_plugins wp
+       JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+      WHERE wp.workspace_id = $1
+        AND wp.install_id = $2
+        AND wp.pillar = 'datasource'
+      LIMIT 1`,
+    [orgId, id],
   );
-  const ownRow = existing.find((r) => r.org_id === orgId);
-  const globalRow = existing.find((r) => r.org_id === "__global__");
 
-  if (!ownRow && !globalRow) {
+  if (existing.length === 0) {
     return c.json({ error: "not_found", message: `Connection "${id}" not found or is not admin-managed.`, requestId }, 404);
   }
 
+  // Scheduled-task reference check: refuse delete when any scheduled_task
+  // points at a group_id this install belongs to. The catch below carves
+  // out PostgreSQL SQLSTATE 42P01 (relation does not exist) — see comment
+  // at the catch site.
   try {
     const groupRefs = await internalQuery<{ count: string }>(
       `SELECT COUNT(*) AS count
          FROM scheduled_tasks st
-         JOIN connections c
-           ON c.group_id = st.connection_group_id
-          AND c.org_id = st.org_id
-        WHERE c.id = $1 AND c.org_id = $2`,
-      [id, orgId],
+        WHERE st.org_id = $1
+          AND st.connection_group_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM workspace_plugins wp
+             WHERE wp.workspace_id = $1
+               AND wp.install_id = $2
+               AND wp.pillar = 'datasource'
+               AND wp.config->>'group_id' = st.connection_group_id
+          )`,
+      [orgId, id],
     );
     const refCount = parseInt(String(groupRefs[0]?.count ?? "0"), 10);
     if (refCount > 0) {
@@ -1314,51 +1379,19 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => runHandler(c, "dele
     log.warn({ connectionId: id, requestId }, "Scheduled tasks table does not exist — skipping reference check");
   }
 
-  try {
-    if (ownRow) {
-      // Archive in place — drafts can be restored, publish flow retains history.
-      await internalQuery(
-        `UPDATE connections SET status = 'archived', updated_at = now() WHERE id = $1 AND org_id = $2`,
-        [id, orgId],
-      );
-    } else {
-      // Global-only row: insert a per-org archived shadow. URL is empty
-      // because we never want to mutate the canonical global URL — the
-      // archived status alone hides it from this org's lists.
-      //
-      // Readers must filter by `status != 'archived'` before passing this
-      // row to `decryptSecret` or runtime registration — the empty URL is a
-      // marker, not a value. Those filters live in `wizard.ts`,
-      // `internal.ts::loadSavedConnections`, and the PUT/GET handlers in
-      // this file.
-      await internalQuery(
-        `WITH group_row AS (
-           INSERT INTO connection_groups (id, org_id, name)
-           VALUES ('g_' || $1, $4, $1)
-           ON CONFLICT (id, org_id) DO UPDATE SET updated_at = connection_groups.updated_at
-           RETURNING id
-         )
-         INSERT INTO connections (id, url, url_key_version, type, description, org_id, status, group_id)
-         VALUES ($1, '', 1, $2, $3, $4, 'archived', (SELECT id FROM group_row))
-         ON CONFLICT (id, org_id) DO UPDATE SET status = 'archived', group_id = COALESCE(connections.group_id, EXCLUDED.group_id), updated_at = now()`,
-        [id, globalRow!.type, `Hidden from this workspace`, orgId],
-      );
-    }
-  } catch (err) {
-    log.error({ err: errorMessage(err), connectionId: id, requestId }, "Failed to archive connection");
-    return c.json({ error: "internal_error", message: "Failed to archive connection.", requestId }, 500);
-  }
-
-  // Only unregister from the in-memory pool when we actually archived the
-  // org-owned row. Global-only delete is a per-org hide — the underlying
-  // connection must stay registered for other workspaces.
-  if (ownRow) {
-    try {
-      connections.unregister(id);
-    } catch (err) {
-      log.warn({ err: errorMessage(err), connectionId: id, requestId }, "Failed to unregister connection from in-memory registry — will reconcile on restart");
-    }
-  }
+  // Soft archive via the installer — the pool is unregistered as part of
+  // the operation so live queries against the archived install
+  // fail-closed immediately.
+  const result = await runInstaller(
+    c,
+    (installer) =>
+      installer.uninstallDatasource(
+        orgId as WorkspaceId,
+        existing[0].catalog_slug,
+        id,
+      ),
+  );
+  if (result.kind === "error") return c.json({ ...result.body, requestId }, result.status);
 
   log.info({ requestId, connectionId: id, actorId: authResult.user?.id }, "Connection archived");
 
@@ -1392,7 +1425,11 @@ adminConnections.openapi(getConnectionRoute, async (c) => runHandler(c, "get con
 
   const meta = connections.describe().find((m) => m.id === id);
 
-  // If admin-managed, include masked URL and schema from DB
+  // If admin-managed, include masked URL and schema from DB. Post-#2744
+  // the row lives in workspace_plugins with the URL inside `config`
+  // JSONB (selective-field encrypted per the catalog's config_schema).
+  // groupName mirrors groupId per the locked decision — connection_groups
+  // is gone.
   let maskedUrl: string | null = null;
   let schema: string | null = null;
   let managed = false;
@@ -1400,33 +1437,36 @@ adminConnections.openapi(getConnectionRoute, async (c) => runHandler(c, "get con
   let groupName: string | null = null;
   if (hasInternalDB()) {
     try {
-      // Defense-in-depth: even though visibility already filters out
-      // archived rows, exclude them here too so a future visibility-layer
-      // bug can never feed the empty-string tombstone marker to decryptSecret.
-      // LEFT JOIN connection_groups so the detail response carries the same
-      // groupId + groupName fields the list endpoint emits — the admin UI's
-      // Edit dialog reuses ConnectionDetail and would otherwise lose the
-      // environment chip on detail render.
       const rows = await internalQuery<{
-        url: string;
-        schema_name: string | null;
+        config: Record<string, unknown> | null;
+        config_schema: unknown;
         group_id: string | null;
-        group_name: string | null;
       }>(
-        `SELECT c.url, c.schema_name, c.group_id, g.name AS group_name
-           FROM connections c
-           LEFT JOIN connection_groups g
-             ON g.id = c.group_id AND g.org_id = c.org_id
-          WHERE c.id = $1 AND c.org_id = $2 AND c.status != 'archived'`,
-        [id, orgId],
+        `SELECT wp.config, pc.config_schema, wp.config->>'group_id' AS group_id
+           FROM workspace_plugins wp
+           JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+          WHERE wp.workspace_id = $1
+            AND wp.install_id = $2
+            AND wp.pillar = 'datasource'
+            AND wp.status != 'archived'
+          LIMIT 1`,
+        [orgId, id],
       );
       if (rows.length > 0) {
         managed = true;
-        schema = rows[0].schema_name;
         groupId = rows[0].group_id;
-        groupName = rows[0].group_name;
+        groupName = rows[0].group_id;
         try {
-          maskedUrl = maskConnectionUrl(decryptSecret(rows[0].url));
+          const schemaSpec = parseConfigSchema(rows[0].config_schema);
+          const decrypted = decryptSecretFields(rows[0].config ?? {}, schemaSpec);
+          schema =
+            typeof decrypted.schema === "string" && decrypted.schema.length > 0
+              ? decrypted.schema
+              : null;
+          maskedUrl =
+            typeof decrypted.url === "string" && decrypted.url.length > 0
+              ? maskConnectionUrl(decrypted.url)
+              : null;
         } catch (decryptErr) {
           log.error({ connectionId: id, requestId, err: decryptErr instanceof Error ? decryptErr.message : String(decryptErr) }, "Failed to decrypt stored connection URL");
           maskedUrl = "[encrypted — decryption failed]";

@@ -254,7 +254,7 @@ describe("POST /api/v1/admin/archive-connection — cascade", () => {
     demoIndustryFixture = "cybersecurity";
 
     queryHandler = async (sql) => {
-      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+      if (/SELECT\s+status\s+FROM\s+workspace_plugins/i.test(sql)) {
         return { rows: [{ status: "published" }] };
       }
       if (/UPDATE\s+semantic_entities\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
@@ -300,7 +300,7 @@ describe("POST /api/v1/admin/archive-connection — cascade", () => {
 
   it("archives a non-demo connection + entities without touching prompts", async () => {
     queryHandler = async (sql) => {
-      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+      if (/SELECT\s+status\s+FROM\s+workspace_plugins/i.test(sql)) {
         return { rows: [{ status: "published" }] };
       }
       if (/UPDATE\s+semantic_entities\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
@@ -329,7 +329,7 @@ describe("POST /api/v1/admin/archive-connection — cascade", () => {
 
   it("every mutating statement is scoped by org_id", async () => {
     queryHandler = async (sql) => {
-      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+      if (/SELECT\s+status\s+FROM\s+workspace_plugins/i.test(sql)) {
         return { rows: [{ status: "published" }] };
       }
       return { rows: [] };
@@ -353,14 +353,14 @@ describe("POST /api/v1/admin/archive-connection — cascade", () => {
 
   it("locks the connection row with SELECT ... FOR UPDATE before mutating", async () => {
     queryHandler = async (sql) => {
-      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+      if (/SELECT\s+status\s+FROM\s+workspace_plugins/i.test(sql)) {
         return { rows: [{ status: "published" }] };
       }
       return { rows: [] };
     };
     await app.fetch(makeReq("archive-connection", { connectionId: "warehouse" }));
     const selectIdx = clientQueries.findIndex((q) =>
-      /SELECT\s+status\s+FROM\s+connections[\s\S]*FOR\s+UPDATE/i.test(q.sql),
+      /SELECT\s+status\s+FROM\s+workspace_plugins[\s\S]*FOR\s+UPDATE/i.test(q.sql),
     );
     const firstUpdateIdx = clientQueries.findIndex((q) =>
       /UPDATE\s+(connections|semantic_entities|prompt_collections)/i.test(q.sql),
@@ -383,7 +383,7 @@ describe("POST /api/v1/admin/archive-connection — errors", () => {
 
   it("returns 404 when the connection does not exist for the org", async () => {
     queryHandler = async (sql) => {
-      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+      if (/SELECT\s+status\s+FROM\s+workspace_plugins/i.test(sql)) {
         return { rows: [] };
       }
       return { rows: [] };
@@ -410,7 +410,7 @@ describe("POST /api/v1/admin/archive-connection — errors", () => {
     // report `connection: false` (the connection row didn't flip) AND
     // surface the reconciled cascade count.
     queryHandler = async (sql) => {
-      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+      if (/SELECT\s+status\s+FROM\s+workspace_plugins/i.test(sql)) {
         return { rows: [{ status: "archived" }] };
       }
       if (/UPDATE\s+semantic_entities\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
@@ -431,7 +431,7 @@ describe("POST /api/v1/admin/archive-connection — errors", () => {
 
     // No connection-row UPDATE (already archived)
     const connUpdate = clientQueries.find((q) =>
-      /UPDATE\s+connections\s+SET\s+status\s*=\s*'archived'/i.test(q.sql),
+      /UPDATE\s+workspace_plugins\s+SET\s+status\s*=\s*'archived'/i.test(q.sql),
     );
     expect(connUpdate).toBeUndefined();
     // But the entity cascade UPDATE did fire
@@ -443,7 +443,7 @@ describe("POST /api/v1/admin/archive-connection — errors", () => {
 
   it("idempotent no-op when already archived and nothing to reconcile", async () => {
     queryHandler = async (sql) => {
-      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+      if (/SELECT\s+status\s+FROM\s+workspace_plugins/i.test(sql)) {
         return { rows: [{ status: "archived" }] };
       }
       return { rows: [] };
@@ -463,7 +463,7 @@ describe("POST /api/v1/admin/archive-connection — errors", () => {
   it("issues ROLLBACK and returns 500 when a mid-transaction statement fails", async () => {
     const rawErrorMessage = "simulated failure: connection pool exhausted";
     queryHandler = async (sql) => {
-      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+      if (/SELECT\s+status\s+FROM\s+workspace_plugins/i.test(sql)) {
         return { rows: [{ status: "published" }] };
       }
       if (/^\s*UPDATE/i.test(sql)) {
@@ -508,7 +508,7 @@ describe("POST /api/v1/admin/archive-connection — errors", () => {
     demoIndustryFixture = null;
 
     queryHandler = async (sql) => {
-      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+      if (/SELECT\s+status\s+FROM\s+workspace_plugins/i.test(sql)) {
         return { rows: [{ status: "published" }] };
       }
       if (/UPDATE\s+semantic_entities\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
@@ -561,7 +561,7 @@ describe("POST /api/v1/admin/archive-connection — errors", () => {
     // Primary UPDATE fails, but ROLLBACK succeeds. Client is clean, so
     // release() must be called without an error arg.
     queryHandler = async (sql) => {
-      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+      if (/SELECT\s+status\s+FROM\s+workspace_plugins/i.test(sql)) {
         return { rows: [{ status: "published" }] };
       }
       if (/^\s*UPDATE/i.test(sql)) {
@@ -582,7 +582,7 @@ describe("POST /api/v1/admin/archive-connection — errors", () => {
     // When ROLLBACK itself throws, the socket is dirty. release(err)
     // tells pg to destroy the client instead of pooling it.
     queryHandler = async (sql) => {
-      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+      if (/SELECT\s+status\s+FROM\s+workspace_plugins/i.test(sql)) {
         return { rows: [{ status: "published" }] };
       }
       if (/^\s*UPDATE/i.test(sql)) {
@@ -621,7 +621,7 @@ describe("POST /api/v1/admin/restore-connection — cascade", () => {
     demoIndustryFixture = "cybersecurity";
 
     queryHandler = async (sql) => {
-      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+      if (/SELECT\s+status\s+FROM\s+workspace_plugins/i.test(sql)) {
         return { rows: [{ status: "archived" }] };
       }
       if (
@@ -658,7 +658,7 @@ describe("POST /api/v1/admin/restore-connection — cascade", () => {
 
   it("restores a non-demo connection + entities without touching prompts", async () => {
     queryHandler = async (sql) => {
-      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+      if (/SELECT\s+status\s+FROM\s+workspace_plugins/i.test(sql)) {
         return { rows: [{ status: "archived" }] };
       }
       if (
@@ -718,7 +718,7 @@ describe("POST /api/v1/admin/restore-connection — errors", () => {
 
   it("returns 404 when the connection is not currently archived", async () => {
     queryHandler = async (sql) => {
-      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+      if (/SELECT\s+status\s+FROM\s+workspace_plugins/i.test(sql)) {
         return { rows: [{ status: "published" }] };
       }
       return { rows: [] };
@@ -745,7 +745,7 @@ describe("POST /api/v1/admin/restore-connection — errors", () => {
   it("issues ROLLBACK and returns 500 when a mid-transaction statement fails", async () => {
     const rawErrorMessage = "simulated failure: entity cascade broken";
     queryHandler = async (sql) => {
-      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+      if (/SELECT\s+status\s+FROM\s+workspace_plugins/i.test(sql)) {
         return { rows: [{ status: "archived" }] };
       }
       if (/UPDATE\s+semantic_entities/i.test(sql)) {
@@ -797,7 +797,7 @@ describe("POST /api/v1/admin/restore-connection — errors", () => {
 
   it("destroys the client on failed ROLLBACK — release(err) called with the rollback error", async () => {
     queryHandler = async (sql) => {
-      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+      if (/SELECT\s+status\s+FROM\s+workspace_plugins/i.test(sql)) {
         return { rows: [{ status: "archived" }] };
       }
       if (/^\s*UPDATE/i.test(sql)) {

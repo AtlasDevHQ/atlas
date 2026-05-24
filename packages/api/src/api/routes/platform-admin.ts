@@ -446,7 +446,8 @@ platformAdmin.openapi(listWorkspacesRoute, async (c) => {
        LEFT JOIN (SELECT "organizationId", COUNT(*)::int AS cnt FROM member GROUP BY "organizationId") m ON m."organizationId" = o.id
        LEFT JOIN (SELECT org_id, COUNT(*)::int AS cnt FROM conversations GROUP BY org_id) cv ON cv.org_id = o.id
        LEFT JOIN (SELECT org_id, COUNT(*)::int AS cnt FROM audit_log WHERE timestamp > now() - interval '24 hours' GROUP BY org_id) al ON al.org_id = o.id
-       LEFT JOIN (SELECT org_id, COUNT(*)::int AS cnt FROM connections GROUP BY org_id) cn ON cn.org_id = o.id
+       LEFT JOIN (SELECT workspace_id AS org_id, COUNT(*)::int AS cnt FROM workspace_plugins
+                  WHERE pillar = 'datasource' AND status != 'archived' GROUP BY workspace_id) cn ON cn.org_id = o.id
        LEFT JOIN (SELECT org_id, COUNT(*)::int AS cnt FROM scheduled_tasks WHERE enabled = true GROUP BY org_id) st ON st.org_id = o.id
        ORDER BY o."createdAt" DESC`,
     );
@@ -518,10 +519,12 @@ platformAdmin.openapi(getWorkspaceRoute, async (c) => {
         `SELECT COUNT(*)::int as count FROM audit_log WHERE org_id = $1 AND timestamp > now() - interval '24 hours'`,
         [workspaceId],
       ),
-      // Exclude archive tombstones — hidden `__global__` connections
-      // shouldn't inflate the platform org-list per-org connection count.
+      // Exclude archive tombstones — hidden demo installs shouldn't
+      // inflate the platform org-list per-workspace connection count.
+      // Datasource installs live in workspace_plugins post-0096 cutover.
       internalQuery<{ count: number }>(
-        `SELECT COUNT(*)::int as count FROM connections WHERE org_id = $1 AND status != 'archived'`,
+        `SELECT COUNT(*)::int as count FROM workspace_plugins
+          WHERE workspace_id = $1 AND pillar = 'datasource' AND status != 'archived'`,
         [workspaceId],
       ),
       internalQuery<{ count: number }>(

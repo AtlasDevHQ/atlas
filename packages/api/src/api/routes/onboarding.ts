@@ -22,8 +22,7 @@ import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { connections, detectDBType, resolveDatasourceUrl } from "@atlas/api/lib/db/connection";
 import { isAuthEmailDeliveryConfigured } from "@atlas/api/lib/email/delivery";
-import { hasInternalDB, internalQuery, queryEffect, encryptSecret, type URLSecret } from "@atlas/api/lib/db/internal";
-import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
+import { hasInternalDB, internalQuery, queryEffect, encryptSecret } from "@atlas/api/lib/db/internal";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { importFromDisk } from "@atlas/api/lib/semantic/sync";
@@ -491,32 +490,74 @@ onboarding.openapi(
         return testResult.response;
       }
 
-      // Encrypt and persist to internal DB
-      let encryptedUrl: URLSecret;
+      // Encrypt and persist to internal DB as a workspace_plugins
+      // datasource install (post-0096 cutover, #2744 / ADR-0007). The
+      // group concept collapses into the JSONB `config.group_id` — no
+      // separate `connection_groups` row is created here. The two
+      // encryption modules produce identical ciphertext, so the legacy
+      // `encryptSecret(url)` round-trips through `decryptSecret(config->>'url')`
+      // verbatim — only the surrounding catalog-schema awareness changes.
+      const catalogRows = yield* Effect.tryPromise({
+        try: () => internalQuery<{ id: string }>(
+          `SELECT id FROM plugin_catalog WHERE slug = $1 AND pillar = 'datasource' LIMIT 1`,
+          [dbType],
+        ),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(Effect.catchAll((err) => {
+        log.error({ err: err.message, requestId, dbType }, "Failed to look up datasource catalog row");
+        return Effect.succeed([] as Array<{ id: string }>);
+      }));
+      if (catalogRows.length === 0) {
+        log.error({ requestId, dbType }, "No built-in datasource catalog row for dbType — onboarding cannot proceed");
+        return c.json({
+          error: "internal_error",
+          message: `No catalog row for datasource type '${dbType}'.`,
+          requestId,
+        }, 500);
+      }
+      const catalogId = catalogRows[0].id;
+
+      let encryptedUrl: string;
       try {
         encryptedUrl = encryptSecret(url);
       } catch (err) {
         log.error({ err: errorMessage(err), requestId }, "Failed to encrypt connection URL during onboarding");
         return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL.", requestId }, 500);
       }
+      const configJson = JSON.stringify({
+        url: encryptedUrl,
+        description: `${dbType} datasource`,
+        db_type: dbType,
+      });
 
-      const urlKeyVersion = activeKeyVersion();
-      // Org-scoped upsert: composite PK (id, org_id) ensures each org has its own namespace.
-      // The deterministic group row is created in the same statement so 0069's
-      // NOT NULL + FK requirements are satisfied before the connection is inserted.
+      // Pre-delete any existing datasource install with the same
+      // (workspace_id, install_id) regardless of catalog so re-running
+      // onboarding with the same `connectionId` but a different dbType
+      // updates the logical connection in place instead of leaving a
+      // ghost row under the prior catalog (codex P2, #2784). The composite
+      // PK on workspace_plugins is `(workspace_id, catalog_id, install_id)`,
+      // so a plain ON CONFLICT can't span catalogs — delete-then-insert
+      // is the right shape. install_id is the user-facing unique key in
+      // every read path; this preserves that invariant on write.
+      yield* Effect.tryPromise({
+        try: () => internalQuery(
+          `DELETE FROM workspace_plugins
+            WHERE workspace_id = $1 AND pillar = 'datasource' AND install_id = $2`,
+          [orgId, id],
+        ),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(Effect.catchAll((err) => {
+        log.error({ err: err.message, requestId }, "Failed to clear prior datasource install during onboarding");
+        return Effect.succeed(null);
+      }));
+
       const upsertResult = yield* Effect.tryPromise({
         try: () => internalQuery<{ id: string }>(
-          `WITH group_row AS (
-             INSERT INTO connection_groups (id, org_id, name)
-             VALUES ('g_' || $1, $5, $1)
-             ON CONFLICT (id, org_id) DO UPDATE SET updated_at = connection_groups.updated_at
-             RETURNING id
-           )
-           INSERT INTO connections (id, url, url_key_version, type, description, org_id, group_id)
-           VALUES ($1, $2, $6, $3, $4, $5, (SELECT id FROM group_row))
-           ON CONFLICT (id, org_id) DO UPDATE SET url = $2, url_key_version = $6, type = $3, group_id = COALESCE(connections.group_id, EXCLUDED.group_id), updated_at = NOW()
-           RETURNING id`,
-          [id, encryptedUrl, dbType, `${dbType} datasource`, orgId, urlKeyVersion],
+          `INSERT INTO workspace_plugins
+             (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at, status)
+           VALUES ($1, $2, $3, $4, 'datasource', $5::jsonb, true, NOW(), 'published')
+           RETURNING install_id AS id`,
+          [`cn_${orgId}_${id}`, orgId, catalogId, id, configJson],
         ),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }).pipe(Effect.catchAll((err) => {
@@ -682,7 +723,7 @@ onboarding.openapi(
         }, 500);
       }
 
-      let encryptedUrl: URLSecret;
+      let encryptedUrl: string;
       try {
         encryptedUrl = encryptSecret(url);
       } catch (err) {
@@ -691,37 +732,16 @@ onboarding.openapi(
       }
 
       // ---------------------------------------------------------------
-      // Phase 2 — create the deterministic demo group, then import
-      // entities FIRST. The group is not user-visible by itself; entity
-      // reads still require a published/draft connection with a matching
-      // group_id. Pre-creating it lets the semantic upsert resolve
-      // connection_group_id even though the demo connection row does not
-      // commit until phase 3, preventing imported demo entities from
-      // falling into the default NULL scope. If phase 3 fails, the rows
-      // remain hidden by the connection-visibility join and retry reuses
-      // the same group.
+      // Phase 2 — import demo semantic entities. Post-0096 cutover
+      // (#2744 / ADR-0007) there's no longer a pre-created
+      // `connection_groups` row to anchor the entities against; the
+      // per-workspace demo install (auto-created by `loadSavedConnections`
+      // / 0096 step 3) typically has no `config.group_id`, so the
+      // entities import with `connection_group_id = NULL` and the
+      // visibility join's `connection_group_id IS NULL` branch keeps
+      // them visible. The phase-3 connection upsert below remains the
+      // commit point that flips the demo install to `status='published'`.
       // ---------------------------------------------------------------
-      const demoGroupResult = yield* Effect.tryPromise({
-        try: () => internalQuery<{ id: string }>(
-          `INSERT INTO connection_groups (id, org_id, name)
-           VALUES ('g_' || $1, '__global__', $1)
-           ON CONFLICT (id, org_id) DO UPDATE SET updated_at = connection_groups.updated_at
-           RETURNING id`,
-          [id],
-        ),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      }).pipe(Effect.catchAll((err) => {
-        log.error({ err: err.message, requestId }, "Failed to prepare demo connection group");
-        return Effect.succeed(null);
-      }));
-
-      if (demoGroupResult === null || demoGroupResult.length === 0) {
-        return c.json({
-          error: "internal_error",
-          message: "Failed to prepare the demo environment. Retry in a moment.",
-          requestId,
-        }, 500);
-      }
 
       const importResult = yield* Effect.tryPromise({
         try: () => importFromDisk(orgId, { sourceDir: semanticDir, connectionId: DEMO_CONNECTION_ID }),
@@ -778,34 +798,46 @@ onboarding.openapi(
       );
 
       // ---------------------------------------------------------------
-      // Phase 3 — commit point. Once this row lands, the entities
-      // imported in phase 2 become visible to the agent and the
-      // semantic page.
+      // Phase 3 — commit point. Once the per-workspace demo install is
+      // flipped to `status='published'`, the entities imported in phase
+      // 2 become visible to the agent and the semantic page.
       //
-      // The demo connection lives once at `org_id = '__global__'` rather
-      // than being cloned per workspace as customer count grows (#2304).
-      // ON CONFLICT DO NOTHING means the first onboarding write is
-      // canonical — subsequent onboarders inherit whatever URL it pinned.
-      // Per-org entity rows imported in phase 2 remain org-scoped; the
-      // connection-visibility subquery in `listEntitiesWithOverlay`
-      // accepts both own-org and `__global__` connections so those
-      // entities resolve correctly.
+      // Post-0096 cutover (#2744 / ADR-0007) every workspace owns its
+      // own `__demo__` install row (auto-created at boot via
+      // `loadSavedConnections` / 0096 step 3). Onboarding simply
+      // upserts the row's config + status for THIS workspace; the
+      // shared-singleton `__global__` model is gone. Workspaces that
+      // already onboarded will hit ON CONFLICT and the row is updated
+      // in place with the latest demo URL.
       // ---------------------------------------------------------------
       const demoLabel = DEMO_LABEL;
-      const urlKeyVersion = activeKeyVersion();
+      const demoCatalogRows = yield* Effect.tryPromise({
+        try: () => internalQuery<{ id: string }>(
+          `SELECT id FROM plugin_catalog WHERE slug = 'demo-postgres' AND pillar = 'datasource' LIMIT 1`,
+        ),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(Effect.catchAll((err) => {
+        log.error({ err: err.message, requestId }, "Failed to look up demo-postgres catalog row");
+        return Effect.succeed([] as Array<{ id: string }>);
+      }));
+      if (demoCatalogRows.length === 0) {
+        log.error({ requestId }, "demo-postgres catalog row missing — onboarding cannot commit");
+        return c.json({ error: "internal_error", message: "Demo catalog not seeded.", requestId }, 500);
+      }
+      const demoConfigJson = JSON.stringify({
+        url: encryptedUrl,
+        description: `${demoLabel} — demo ${dbType} datasource`,
+        db_type: dbType,
+      });
       const upsertResult = yield* Effect.tryPromise({
         try: () => internalQuery<{ id: string }>(
-          `WITH group_row AS (
-             INSERT INTO connection_groups (id, org_id, name)
-             VALUES ('g_' || $1, '__global__', $1)
-             ON CONFLICT (id, org_id) DO UPDATE SET updated_at = connection_groups.updated_at
-             RETURNING id
-           )
-           INSERT INTO connections (id, url, url_key_version, type, description, org_id, status, group_id)
-           VALUES ($1, $2, $5, $3, $4, '__global__', 'published', (SELECT id FROM group_row))
-           ON CONFLICT (id, org_id) DO NOTHING
-           RETURNING id`,
-          [id, encryptedUrl, dbType, `${demoLabel} — demo ${dbType} datasource`, urlKeyVersion],
+          `INSERT INTO workspace_plugins
+             (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at, status)
+           VALUES ($1, $2, $3, $4, 'datasource', $5::jsonb, true, NOW(), 'published')
+           ON CONFLICT (workspace_id, catalog_id, install_id)
+             DO UPDATE SET config = EXCLUDED.config, status = 'published', updated_at = NOW()
+           RETURNING install_id AS id`,
+          [`cn_${orgId}_${id}`, orgId, demoCatalogRows[0].id, id, demoConfigJson],
         ),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }).pipe(Effect.catchAll((err) => {
@@ -816,30 +848,13 @@ onboarding.openapi(
       if (upsertResult === null) {
         return c.json({ error: "internal_error", message: "Failed to save connection.", requestId }, 500);
       }
-      // INSERT-or-no-op: zero rows just means the global demo was already
-      // provisioned by an earlier onboarder; verify the row really exists
-      // before we declare success. Distinguish "verify SELECT errored"
-      // from "verify SELECT returned no row" so flaky-read-replica blips
-      // don't masquerade as missing data in the operator logs.
       if (upsertResult.length === 0) {
-        const existing = yield* Effect.tryPromise({
-          try: () => internalQuery<{ id: string }>(
-            `SELECT id FROM connections WHERE id = $1 AND org_id = '__global__' AND status = 'published'`,
-            [id],
-          ),
-          catch: (err) => err instanceof Error ? err : new Error(String(err)),
-        }).pipe(Effect.catchAll((err) => {
-          log.error({ err: err.message, connectionId: id, orgId, requestId }, "Demo connection verify SELECT failed — treating as not-found");
-          return Effect.succeed([] as Array<{ id: string }>);
-        }));
-        if (existing.length === 0) {
-          log.error({ connectionId: id, orgId, requestId }, "Demo connection upsert returned 0 rows and no global row found");
-          return c.json({
-            error: "internal_error",
-            message: "Demo connection write may have succeeded but the database did not confirm. Retry the request — the operation is idempotent.",
-            requestId,
-          }, 500);
-        }
+        log.error({ connectionId: id, orgId, requestId }, "Demo connection upsert returned 0 rows");
+        return c.json({
+          error: "internal_error",
+          message: "Demo connection write may have succeeded but the database did not confirm. Retry the request — the operation is idempotent.",
+          requestId,
+        }, 500);
       }
 
       // Skip re-registration if the in-memory pool already has this id —

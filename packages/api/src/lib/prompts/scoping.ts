@@ -123,25 +123,20 @@ export async function resolvePromptScope(opts: {
 
   const demoIndustry =
     getSettingAuto(DEMO_INDUSTRY_SETTING, opts.orgId) ?? null;
-  // Mirror the OWN_OR_GLOBAL shadow rule from `getVisibleConnectionIds` so
-  // an org using the canonical `__global__/__demo__` connection (the model
-  // introduced in #2304) gets `demoConnectionActive = true` and the
-  // demo-industry global builtin prompt collections show up. Without this
-  // the demo prompt library silently drops out for every workspace that
-  // doesn't have a legacy per-org __demo__ row.
+  // Post-0096 cutover (#2744 / ADR-0007): every workspace owns its own
+  // per-workspace `demo-postgres` install row, archived per-workspace
+  // to hide. "Demo active" collapses to a workspace-scoped lookup —
+  // the OWN_OR_GLOBAL shadow rule the legacy `connections` shape
+  // required is gone.
   const rows = await internalQuery<{ active: boolean }>(
     `SELECT EXISTS (
-       SELECT 1 FROM connections
-       WHERE id = '__demo__' AND status = 'published'
-         AND (
-           org_id = $1
-           OR (
-             org_id = '__global__'
-             AND NOT EXISTS (
-               SELECT 1 FROM connections c2 WHERE c2.org_id = $1 AND c2.id = '__demo__'
-             )
-           )
-         )
+       SELECT 1 FROM workspace_plugins wp
+         JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+        WHERE wp.workspace_id = $1
+          AND wp.pillar = 'datasource'
+          AND wp.install_id = '__demo__'
+          AND pc.slug = 'demo-postgres'
+          AND wp.status = 'published'
      ) AS active`,
     [opts.orgId],
   );

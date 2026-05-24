@@ -49,9 +49,13 @@
  * @see docs/adr/0005-integration-credentials-table.md
  */
 
-import { Context, Data, Effect, Layer } from "effect";
+import { Context, Effect, Layer } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
-import { encryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
+import {
+  decryptSecretFields,
+  encryptSecretFields,
+  parseConfigSchema,
+} from "@atlas/api/lib/plugins/secrets";
 import { lazyPluginLoader } from "@atlas/api/lib/plugins/lazy-loader";
 import type {
   CatalogRowForDispatch,
@@ -60,6 +64,48 @@ import type {
 } from "@atlas/api/lib/integrations/install/types";
 import type { CatalogInstallModel } from "@atlas/api/lib/config";
 import type { WorkspaceId } from "@useatlas/types";
+import {
+  type BuiltinDatasourceDbType,
+  catalogSlugToDbType,
+  resolveDatasourcePoolConfig,
+} from "@atlas/api/lib/db/datasource-pool-resolver";
+import { maskConnectionUrl } from "@atlas/api/lib/security";
+import {
+  AlreadyInstalledError,
+  CatalogNotFoundError,
+  ConfigSchemaError,
+  InstallNotFoundError,
+  InvalidInstallIdError,
+} from "@atlas/api/lib/effect/errors";
+
+// Re-export so existing consumers that import these tags from
+// `workspace-installer.ts` keep working — the canonical definitions live
+// in `errors.ts` so they participate in the `AtlasError` union and
+// `mapTaggedError` exhaustive switch. Re-exporting (instead of declaring
+// local classes) closes a latent `instanceof` footgun: two classes
+// sharing the same `_tag` would pass tag-string matching in `hono.ts`
+// but fail `instanceof errorsModule.AlreadyInstalledError` checks in
+// tests that hold both references.
+export {
+  AlreadyInstalledError,
+  CatalogNotFoundError,
+  ConfigSchemaError,
+  InstallNotFoundError,
+  InvalidInstallIdError,
+};
+
+// The registry bridge transitively imports `db/connection.ts` →
+// `enterprise-layer.ts`. Static-importing here closes a cycle through
+// `lib/effect/hono.ts` (which imports this module's `_tag` constants for
+// `mapTaggedError`), so `enterprise-layer.ts:NoopEnterpriseDefaultsLayer`
+// hits TDZ on test imports. Lazy-`require` mirrors the same pattern used
+// for `lazyInternalQuery` / `lazyGetInstallHandler` above. The runtime
+// resolution cost is one cached resolver hit per install call.
+type DatasourceRegistryBridge = typeof import("@atlas/api/lib/db/datasource-registry-bridge");
+function lazyDatasourceBridge(): DatasourceRegistryBridge {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require("@atlas/api/lib/db/datasource-registry-bridge") as DatasourceRegistryBridge;
+}
 
 // Type-only import for `InternalDB` so admin-approval-style tests that
 // partial-mock `db/internal` don't trip bun's loader on services.ts ->
@@ -86,70 +132,100 @@ function lazyGetInstallHandler(): (row: CatalogRowForDispatch) => PlatformInstal
 const log = createLogger("workspace-installer");
 
 // ---------------------------------------------------------------------------
-// Tagged errors
+// Tagged errors — canonical classes live in `lib/effect/errors.ts` and are
+// re-exported above for back-compat. Defining them here would produce two
+// classes sharing the same `_tag`: tag-string matching in `hono.ts` would
+// still work but `instanceof errorsModule.AlreadyInstalledError` checks in
+// tests holding both references would silently fail.
 // ---------------------------------------------------------------------------
-
-/**
- * Pillar-singleton violation — a `chat` / `action` install already exists
- * for `(workspaceId, catalogSlug)`. Maps to HTTP 409 in `mapTaggedError`.
- *
- * Friendlier than relying on the DB partial-unique-index violation: the
- * pre-check produces an actionable error message and avoids a wasted
- * round-trip through the per-handler write path before the constraint
- * fires. The index remains the defensive backstop against races.
- */
-export class AlreadyInstalledError extends Data.TaggedError("AlreadyInstalledError")<{
-  readonly message: string;
-  readonly workspaceId: string;
-  readonly catalogSlug: string;
-  readonly pillar: "chat" | "action";
-}> {}
-
-/**
- * `config` failed validation against `plugin_catalog.config_schema`. Maps
- * to HTTP 400 in `mapTaggedError`. `fieldErrors` carries per-field issues
- * shaped for the admin UI's per-field message rendering; `formErrors`
- * collects top-level issues (unknown fields, schema-level rejections).
- *
- * Per-handler Zod validation (e.g. Email's strict shape) layers richer
- * checks on top — this error is the catalog-level contract violation
- * (missing required field, wrong type) that fires before the handler
- * runs.
- */
-export class ConfigSchemaError extends Data.TaggedError("ConfigSchemaError")<{
-  readonly message: string;
-  readonly catalogSlug: string;
-  readonly fieldErrors: Readonly<Record<string, readonly string[]>>;
-  readonly formErrors: readonly string[];
-}> {}
-
-/**
- * Catalog row not found, kill-switched, or carries an unknown
- * `install_model`. Maps to HTTP 404 in `mapTaggedError` (the catalog
- * lookup is the closest analogue to "resource doesn't exist").
- */
-export class CatalogNotFoundError extends Data.TaggedError("CatalogNotFoundError")<{
-  readonly message: string;
-  readonly catalogSlug: string;
-}> {}
-
-/**
- * Install row not found for `(workspaceId, catalogSlug)`. Surfaces from
- * `uninstall` and `updateConfig` when the target row is gone. Maps to
- * HTTP 404 in `mapTaggedError`.
- */
-export class InstallNotFoundError extends Data.TaggedError("InstallNotFoundError")<{
-  readonly message: string;
-  readonly workspaceId: string;
-  readonly catalogSlug: string;
-}> {}
 
 /** Discriminated union of every error the facade emits in its E channel. */
 export type InstallError =
   | AlreadyInstalledError
   | ConfigSchemaError
   | CatalogNotFoundError
-  | InstallNotFoundError;
+  | InstallNotFoundError
+  | InvalidInstallIdError;
+
+/** Route-renderable mapping for a single {@link InstallError}. */
+export interface InstallErrorMapping {
+  readonly status: 400 | 404 | 409;
+  readonly code: string;
+  readonly message: string;
+  /** Tag-specific fields the route spreads into the JSON body. */
+  readonly body?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Map a tagged {@link InstallError} to its HTTP status + body envelope.
+ *
+ * Exhaustive `switch (e._tag)` — adding a new `InstallError` variant
+ * fails at compile time here, replacing the runtime "unknown status"
+ * defect previously thrown in `runInstaller`. Mirrors the shape of
+ * `mapTaggedError` in `hono.ts` but with the status narrowed to
+ * `400 | 404 | 409` so route handlers can use `c.json(body, status)`
+ * without a `ContentfulStatusCode` widening cast.
+ *
+ * Pillar/reason/fieldErrors carry into `body` so the admin UI can
+ * render per-tag UX without parsing strings.
+ */
+export function mapInstallError(e: InstallError): InstallErrorMapping {
+  // Body shapes mirror the corresponding `case` branches in
+  // `lib/effect/hono.ts:mapTaggedError` so the wire payload stays
+  // identical regardless of whether the route reached this map via
+  // `runHandler` (full-Effect) or `runInstaller` (this PR's bridge).
+  switch (e._tag) {
+    case "InvalidInstallIdError":
+      return {
+        status: 400,
+        code: "bad_request",
+        message: e.message,
+        body: { installId: e.installId, reason: e.reason },
+      };
+    case "ConfigSchemaError":
+      return {
+        status: 400,
+        code: "bad_request",
+        message: e.message,
+        body: {
+          catalogSlug: e.catalogSlug,
+          fieldErrors: Object.fromEntries(
+            Object.entries(e.fieldErrors).map(([k, v]) => [k, [...v]]),
+          ),
+          formErrors: [...e.formErrors],
+        },
+      };
+    case "CatalogNotFoundError":
+      return {
+        status: 404,
+        code: "not_found",
+        message: e.message,
+        body: { catalogSlug: e.catalogSlug },
+      };
+    case "InstallNotFoundError":
+      return {
+        status: 404,
+        code: "not_found",
+        message: e.message,
+        body: { workspaceId: e.workspaceId, catalogSlug: e.catalogSlug },
+      };
+    case "AlreadyInstalledError":
+      return {
+        status: 409,
+        code: "conflict",
+        message: e.message,
+        body: { catalogSlug: e.catalogSlug, pillar: e.pillar },
+      };
+    default: {
+      // Compile-time exhaustiveness check — a new `InstallError` tag must
+      // add a case above. Runtime guard is unreachable today.
+      const _exhaustive: never = e;
+      throw new Error(
+        `mapInstallError: unhandled tag ${JSON.stringify(_exhaustive)}`,
+      );
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -165,8 +241,77 @@ export interface WorkspaceInstallRow {
   readonly workspaceId: WorkspaceId;
   readonly catalogSlug: string;
   readonly catalogId: string;
-  readonly pillar: "chat" | "action";
+  readonly pillar: "chat" | "action" | "datasource";
   readonly installId: string;
+}
+
+/**
+ * Row returned by the datasource variants (#2744). Extends
+ * {@link WorkspaceInstallRow} with the additional admin-UI fields the
+ * `/admin/connections` list / detail endpoints surface: derived `dbType`,
+ * masked URL (never the ciphertext), status, description, schema, and
+ * group binding. The facade owns masking so the route can spread the row
+ * verbatim — no chance of leaking a decrypted URL.
+ */
+export interface DatasourceInstallRow extends WorkspaceInstallRow {
+  readonly pillar: "datasource";
+  /** Derived from `catalogSlug` via {@link catalogSlugToDbType}. */
+  readonly dbType: BuiltinDatasourceDbType;
+  readonly status: "draft" | "published" | "archived";
+  /** Masked URL for native dbTypes; `null` when no URL applies (Salesforce, BigQuery service-account, …). */
+  readonly maskedUrl: string | null;
+  readonly description: string | null;
+  readonly schema: string | null;
+  readonly groupId: string | null;
+}
+
+/**
+ * Input to `installDatasource`. The caller (`/admin/connections` POST)
+ * collects the per-`db_type` form fields and atlasMode from the request,
+ * and supplies them here as opaque `formData`. The facade encrypts
+ * `secret: true` fields according to the catalog row's `config_schema`,
+ * resolves the pool config as a dry-run validator, and writes the row
+ * with `status` derived from `atlasMode` (draft when editing in
+ * developer mode, published in published mode).
+ *
+ * `installId` is the user-facing per-instance identifier (`prod-us`,
+ * `warehouse`, etc.). Validated against `^[a-z][a-z0-9_-]*$`; `default`
+ * is reserved; the historical `__demo__` sentinel is exempted because
+ * migration 0094 backfilled it verbatim.
+ */
+export interface DatasourceInstallInput {
+  readonly installId: string;
+  /** Raw form payload — `url`, `schema?`, `description?`, plus per-dbType fields. */
+  readonly formData: Record<string, unknown>;
+  /** When `undefined`, the install lands ungrouped. When a string, written verbatim into `config.group_id`. */
+  readonly groupId?: string | null;
+  /** Caller's resolved Atlas mode; the facade maps `draft` → `status='draft'`, `published` → `status='published'`. */
+  readonly atlasMode: "draft" | "published";
+}
+
+/**
+ * Partial-update input for `updateDatasourceConfig`. Each field is
+ * independently optional so the route can express the three legacy
+ * shapes (config edit, group reassignment, status patch) without
+ * sending the whole row.
+ *
+ * `partialConfig` is merged onto the existing decrypted config and
+ * validated against the catalog `config_schema`. `groupId === null`
+ * removes the group binding; `groupId === undefined` leaves it
+ * untouched. `status` is the demo hide/show path (`archived` ↔
+ * `published`); when omitted the existing status is preserved.
+ */
+export interface DatasourceUpdateInput {
+  readonly partialConfig?: Record<string, unknown>;
+  readonly groupId?: string | null;
+  readonly status?: "draft" | "published" | "archived";
+  /**
+   * When `partialConfig` is non-empty AND `atlasMode === "draft"`, the
+   * facade downgrades `status` to `draft` (matching the legacy
+   * `/admin/connections` PUT behavior — see #2177). Omit to preserve
+   * the existing status regardless of mode.
+   */
+  readonly atlasMode?: "draft" | "published";
 }
 
 /**
@@ -506,12 +651,218 @@ export interface WorkspaceInstallerShape {
     installId: string,
     partialConfig: Record<string, unknown>,
   ) => Effect.Effect<WorkspaceInstallRow, InstallError>;
+
+  // ── Datasource pillar (#2744 / ADR-0007) ─────────────────────────
+  //
+  // Datasource installs have a fundamentally different contract from
+  // chat/action: `installId` is caller-provided (user-facing slug like
+  // `prod-us`), multi-instance per `(workspace, catalog)`, no OAuth
+  // dance for the native form-installed dbTypes, and participates in
+  // the content-mode system via `workspace_plugins.status`. The three
+  // methods below are the unified-pipeline replacement for the legacy
+  // `/admin/connections` route's direct `connections` INSERT/UPDATE/
+  // DELETE SQL.
+
+  /**
+   * Create a datasource install for the given workspace. Validates the
+   * `installId` slug (`^[a-z][a-z0-9_-]*$`; `default` reserved), encrypts
+   * `secret: true` fields per the catalog `config_schema`, resolves the
+   * decrypted config as a dry-run to surface required-field errors with
+   * per-`db_type` accuracy, writes the `workspace_plugins` row with
+   * `status` derived from `input.atlasMode`, and registers the resulting
+   * native pool with the `ConnectionRegistry` via
+   * `registerDatasourceInstall` (no-op for plugin-managed dbTypes).
+   *
+   * Route ownership of `connection.healthCheck()` is preserved: the
+   * route does its pre-flight test against a freshly-registered pool,
+   * THEN calls this method. The bridge's `has()` guard means the
+   * post-install register is a no-op when the route pre-registered.
+   *
+   * Returns the persisted row with `maskedUrl` already shaped — callers
+   * never see decrypted secrets.
+   */
+  readonly installDatasource: (
+    workspaceId: WorkspaceId,
+    catalogSlug: string,
+    input: DatasourceInstallInput,
+  ) => Effect.Effect<DatasourceInstallRow, InstallError>;
+
+  /**
+   * Archive (default) or hard-delete a datasource install. `status` →
+   * `'archived'` is the soft path — the row stays so the admin can
+   * unarchive later via `updateDatasourceConfig({ status: 'published' })`.
+   * The hard path (`options.hard = true`) DELETEs and is reserved for
+   * tooling / migration scripts; the admin UI uses soft archive
+   * exclusively.
+   *
+   * Both paths call `unregisterDatasourceInstall(installId)` so live
+   * queries against the install fail-closed immediately, matching the
+   * legacy route's `connections.unregister` side-effect.
+   */
+  readonly uninstallDatasource: (
+    workspaceId: WorkspaceId,
+    catalogSlug: string,
+    installId: string,
+    options?: { readonly hard?: boolean },
+  ) => Effect.Effect<void, InstallError>;
+
+  /**
+   * Patch an existing datasource install. Each `patch` field is
+   * independent: `partialConfig` merges + re-encrypts, `groupId` is set
+   * verbatim into `config.group_id` (or removed when `null`), `status`
+   * drives the content-mode column. When `partialConfig` is non-empty
+   * and `patch.atlasMode === 'draft'`, status is downgraded to `'draft'`
+   * — matching the legacy PUT behavior that #2177 documented.
+   *
+   * URL changes are NOT registered automatically; the route owns the
+   * test-connect-then-update dance. After a successful write the
+   * facade does call `unregisterDatasourceInstall(installId)` to evict
+   * the now-stale pool — the next query rebuilds from the new config.
+   */
+  readonly updateDatasourceConfig: (
+    workspaceId: WorkspaceId,
+    catalogSlug: string,
+    installId: string,
+    patch: DatasourceUpdateInput,
+  ) => Effect.Effect<DatasourceInstallRow, InstallError>;
 }
 
 export class WorkspaceInstaller extends Context.Tag("WorkspaceInstaller")<
   WorkspaceInstaller,
   WorkspaceInstallerShape
 >() {}
+
+// ---------------------------------------------------------------------------
+// Datasource helpers (#2744)
+// ---------------------------------------------------------------------------
+
+/**
+ * Slug pattern enforced for caller-provided `installId` on the datasource
+ * pillar. Matches the legacy `/admin/connections` POST regex (lowercase
+ * leading char + letters/digits/`_`/`-`). `__demo__` was backfilled by
+ * migration 0094 and bypasses the pattern check — it's the one historical
+ * sentinel preserved across the cutover.
+ */
+const DATASOURCE_INSTALL_ID_PATTERN = /^[a-z][a-z0-9_-]*$/;
+
+/** Reserved ids the facade rejects unconditionally. */
+const RESERVED_INSTALL_IDS: ReadonlySet<string> = new Set<string>(["default"]);
+
+/**
+ * Validate a caller-provided install_id. Returns an `InvalidInstallIdError`
+ * on the E channel when the slug is empty, fails the pattern, or hits the
+ * reserved list. `__demo__` is permitted (pattern bypass) so per-workspace
+ * demo backfills round-trip through updateDatasourceConfig cleanly.
+ */
+function validateInstallId(installId: string): InvalidInstallIdError | null {
+  if (installId === "__demo__") return null;
+  if (RESERVED_INSTALL_IDS.has(installId)) {
+    return new InvalidInstallIdError({
+      message: `install_id "${installId}" is reserved — pick a different name.`,
+      installId,
+      reason: "reserved",
+    });
+  }
+  if (!DATASOURCE_INSTALL_ID_PATTERN.test(installId)) {
+    return new InvalidInstallIdError({
+      message: `install_id "${installId}" must match ${DATASOURCE_INSTALL_ID_PATTERN.source} (lowercase letter, then letters/digits/underscores/hyphens).`,
+      installId,
+      reason: "pattern",
+    });
+  }
+  return null;
+}
+
+/**
+ * The resolver throws plain `Error` with messages like
+ * `DatasourcePoolResolver(postgres): missing required field \`url\``. Wrap
+ * those as `ConfigSchemaError` so the admin UI gets a consistent
+ * `fieldErrors` / `formErrors` envelope — extract the field name from the
+ * message when possible.
+ *
+ * The format is `DatasourcePoolResolver(<dbtype>): <reason>` where reason
+ * is one of `missing required field \`<field>\``, `invalid schema "..."`,
+ * etc. We grep for the backticked field, falling back to formErrors.
+ */
+function resolverErrorToConfigSchemaError(
+  catalogSlug: string,
+  err: Error,
+): ConfigSchemaError {
+  const msg = err.message;
+  const fieldMatch = msg.match(/`([^`]+)`/);
+  if (fieldMatch && fieldMatch[1]) {
+    return new ConfigSchemaError({
+      message: `Datasource config for "${catalogSlug}" failed resolver validation.`,
+      catalogSlug,
+      fieldErrors: { [fieldMatch[1]]: [msg] },
+      formErrors: [],
+    });
+  }
+  return new ConfigSchemaError({
+    message: `Datasource config for "${catalogSlug}" failed resolver validation.`,
+    catalogSlug,
+    fieldErrors: {},
+    formErrors: [msg],
+  });
+}
+
+/**
+ * Shape a `DatasourceInstallRow` from the persisted row data plus the
+ * decrypted config. Masking happens here — the route never sees
+ * decrypted secrets. `maskedUrl` is `null` for dbTypes that don't carry a
+ * URL (Salesforce, BigQuery service-account).
+ *
+ * Pure: same inputs always produce the same output. Resolver re-runs to
+ * pick the `dbType` discriminant since the row only carries
+ * `catalogSlug`.
+ */
+function shapeDatasourceRow(args: {
+  rowId: string;
+  workspaceId: WorkspaceId;
+  catalogId: string;
+  catalogSlug: string;
+  installId: string;
+  status: "draft" | "published" | "archived";
+  decryptedConfig: Readonly<Record<string, unknown>>;
+}): DatasourceInstallRow {
+  const dbType = catalogSlugToDbType(args.catalogSlug);
+  const cfg = args.decryptedConfig;
+
+  const urlValue =
+    typeof cfg.url === "string" && cfg.url.length > 0 ? cfg.url : null;
+  const maskedUrl =
+    urlValue !== null &&
+    (dbType === "postgres" || dbType === "mysql" || dbType === "snowflake" ||
+      dbType === "clickhouse")
+      ? maskConnectionUrl(urlValue)
+      : null;
+
+  const description =
+    typeof cfg.description === "string" && cfg.description.length > 0
+      ? cfg.description
+      : null;
+  const schema =
+    typeof cfg.schema === "string" && cfg.schema.length > 0 ? cfg.schema : null;
+  const groupId =
+    typeof cfg.group_id === "string" && cfg.group_id.length > 0
+      ? cfg.group_id
+      : null;
+
+  return {
+    id: args.rowId,
+    workspaceId: args.workspaceId,
+    catalogSlug: args.catalogSlug,
+    catalogId: args.catalogId,
+    pillar: "datasource",
+    installId: args.installId,
+    dbType,
+    status: args.status,
+    maskedUrl,
+    description,
+    schema,
+    groupId,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Live implementation
@@ -545,12 +896,14 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
         );
       }
 
-      // Pillar guard — facade only handles chat / action (slice 6 owns
-      // datasource).
+      // Pillar guard — datasource installs flow through `installDatasource`
+      // (multi-instance per `(workspace, catalog)`; user-supplied
+      // `install_id`). Falling into this method with a datasource catalog
+      // is a route-layer regression, not a runtime case to handle.
       if (catalog.pillar === "datasource") {
         return yield* Effect.fail(
           new CatalogNotFoundError({
-            message: `Datasource installs are not handled by WorkspaceInstaller (see slice 6 / issue #2744). Slug: "${catalogSlug}".`,
+            message: `Catalog "${catalogSlug}" is pillar 'datasource' — route through WorkspaceInstaller.installDatasource instead.`,
             catalogSlug,
           }),
         );
@@ -768,7 +1121,7 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
       if (catalog.pillar === "datasource") {
         return yield* Effect.fail(
           new CatalogNotFoundError({
-            message: `Datasource uninstalls are not handled by WorkspaceInstaller (see slice 6 / issue #2744). Slug: "${catalogSlug}".`,
+            message: `Catalog "${catalogSlug}" is pillar 'datasource' — route through WorkspaceInstaller.uninstallDatasource instead.`,
             catalogSlug,
           }),
         );
@@ -857,7 +1210,7 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
       if (catalog.pillar === "datasource") {
         return yield* Effect.fail(
           new CatalogNotFoundError({
-            message: `Datasource updateConfig is not handled by WorkspaceInstaller (see slice 6 / issue #2744). Slug: "${catalogSlug}".`,
+            message: `Catalog "${catalogSlug}" is pillar 'datasource' — route through WorkspaceInstaller.updateDatasourceConfig instead.`,
             catalogSlug,
           }),
         );
@@ -915,7 +1268,8 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
         try: () =>
           lazyInternalQuery()(
             `UPDATE workspace_plugins
-                SET config = $1::jsonb
+                SET config = $1::jsonb,
+                    updated_at = NOW()
               WHERE workspace_id = $2 AND catalog_id = $3 AND install_id = $4`,
             [JSON.stringify(encryptedConfig), workspaceId, catalog.id, installId],
           ),
@@ -953,10 +1307,489 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
       } satisfies WorkspaceInstallRow;
     });
 
+  // ── Datasource pillar (#2744 / ADR-0007) ─────────────────────────
+
+  const installDatasourceImpl: WorkspaceInstallerShape["installDatasource"] = (
+    workspaceId,
+    catalogSlug,
+    input,
+  ) =>
+    Effect.gen(function* () {
+      const installIdErr = validateInstallId(input.installId);
+      if (installIdErr) return yield* Effect.fail(installIdErr);
+
+      const catalog = yield* Effect.tryPromise({
+        try: () => loadCatalogRowForInstall(catalogSlug),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(Effect.catchAll((err) => Effect.die(err)));
+      if (catalog === null) {
+        return yield* Effect.fail(
+          new CatalogNotFoundError({
+            message: `Unknown or disabled catalog slug "${catalogSlug}".`,
+            catalogSlug,
+          }),
+        );
+      }
+      if (catalog.pillar !== "datasource") {
+        // Symmetric to the rejection in `install` — route through the
+        // pillar-correct method.
+        return yield* Effect.fail(
+          new CatalogNotFoundError({
+            message: `Catalog "${catalogSlug}" is pillar '${catalog.pillar}' — route through WorkspaceInstaller.install instead.`,
+            catalogSlug,
+          }),
+        );
+      }
+
+      // Catalog `config_schema` validation — required-field + type-shape.
+      // Per-`db_type` required-field rules (e.g. bigquery needing
+      // `project_id` + `service_account_json`) are enforced by the
+      // resolver dry-run below; this layer catches missing fields the
+      // catalog declared.
+      const schemaErr = validateAgainstConfigSchema(
+        catalogSlug,
+        catalog.config_schema,
+        input.formData,
+      );
+      if (schemaErr) return yield* Effect.fail(schemaErr);
+
+      // Resolver dry-run — surface per-`db_type` required-field violations
+      // (e.g. invalid Postgres schema identifier) as a catalog-schema
+      // error so the admin UI can render the message in-context. Convert
+      // any Error from the resolver into a ConfigSchemaError keyed by
+      // the field name when we can extract it; otherwise dump to
+      // formErrors. Wrapped in `Effect.try` so the throw is folded into
+      // the E channel rather than killed as a defect.
+      const dryRun = yield* Effect.try({
+        try: () =>
+          resolveDatasourcePoolConfig(
+            {
+              workspaceId,
+              catalogId: catalog.id,
+              installId: input.installId,
+              pillar: "datasource",
+              catalogSlug,
+            },
+            input.formData,
+          ),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(
+        Effect.matchEffect({
+          onFailure: (err) =>
+            Effect.fail(resolverErrorToConfigSchemaError(catalogSlug, err)),
+          onSuccess: (cfg) => Effect.succeed(cfg),
+        }),
+      );
+
+      // Singleton pre-check — collision on `(workspace, catalog, install_id)`.
+      // The composite PK is the DB backstop; this pre-check produces a
+      // friendlier 409 with `pillar: 'datasource'`.
+      const existing = yield* Effect.tryPromise({
+        try: () =>
+          lazyInternalQuery()<{ install_id: string }>(
+            `SELECT install_id
+               FROM workspace_plugins
+              WHERE workspace_id = $1 AND catalog_id = $2 AND install_id = $3
+              LIMIT 1`,
+            [workspaceId, catalog.id, input.installId],
+          ),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(Effect.catchAll((err) => Effect.die(err)));
+      if (existing.length > 0) {
+        return yield* Effect.fail(
+          new AlreadyInstalledError({
+            message: `Datasource "${catalogSlug}" with install_id "${input.installId}" already exists in this workspace.`,
+            workspaceId,
+            catalogSlug,
+            pillar: "datasource",
+          }),
+        );
+      }
+
+      // Build the config: form data (validated) + groupId. Encrypt
+      // `secret: true` fields per the catalog schema. `encryptSecretFields`
+      // is idempotent against already-`enc:v1:` ciphertext.
+      const configBeforeEncrypt: Record<string, unknown> = {
+        ...input.formData,
+        ...(input.groupId !== undefined && input.groupId !== null
+          ? { group_id: input.groupId }
+          : {}),
+      };
+      const schema = parseConfigSchema(catalog.config_schema);
+      const encryptedConfig = encryptSecretFields(configBeforeEncrypt, schema);
+
+      const status: "draft" | "published" =
+        input.atlasMode === "draft" ? "draft" : "published";
+      const rowId = `cn_${workspaceId.slice(0, 16)}_${input.installId}`;
+
+      yield* Effect.tryPromise({
+        try: () =>
+          lazyInternalQuery()(
+            `INSERT INTO workspace_plugins
+               (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at, status)
+             VALUES ($1, $2, $3, $4, 'datasource', $5::jsonb, true, NOW(), $6)`,
+            [
+              rowId,
+              workspaceId,
+              catalog.id,
+              input.installId,
+              JSON.stringify(encryptedConfig),
+              status,
+            ],
+          ),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(Effect.catchAll((err) => Effect.die(err)));
+
+      // Register the native pool (idempotent for plugin dbTypes and for
+      // route-pre-registered pools).
+      try {
+        lazyDatasourceBridge().registerDatasourceInstall(
+          {
+            workspaceId,
+            catalogId: catalog.id,
+            installId: input.installId,
+            pillar: "datasource",
+            catalogSlug,
+          },
+          input.formData,
+        );
+      } catch (err) {
+        // Registry rejection is best-effort post-write: the DB row
+        // landed, so subsequent boots' `loadSavedConnections` will pick
+        // it up. Surface the warning rather than rolling back the
+        // install — the route's pre-flight test-connect would have
+        // caught a real connectivity issue.
+        log.warn(
+          {
+            workspaceId,
+            installId: input.installId,
+            catalogSlug,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "registerDatasourceInstall threw post-install — row persisted; next boot will reload",
+        );
+      }
+
+      log.info(
+        { workspaceId, catalogSlug, installId: input.installId, dbType: dryRun.dbType, status },
+        "WorkspaceInstaller.installDatasource completed",
+      );
+
+      return shapeDatasourceRow({
+        rowId,
+        workspaceId,
+        catalogId: catalog.id,
+        catalogSlug,
+        installId: input.installId,
+        status,
+        // configBeforeEncrypt carries the merged form + groupId, both in
+        // plaintext — what the route needs to render the response row.
+        // Never pass encryptedConfig here: shapeDatasourceRow would mask
+        // an `enc:v1:…` ciphertext as if it were a URL.
+        decryptedConfig: configBeforeEncrypt,
+      });
+    });
+
+  const uninstallDatasourceImpl: WorkspaceInstallerShape["uninstallDatasource"] = (
+    workspaceId,
+    catalogSlug,
+    installId,
+    options,
+  ) =>
+    Effect.gen(function* () {
+      const catalog = yield* Effect.tryPromise({
+        try: () => loadCatalogRowForDisconnect(catalogSlug),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(Effect.catchAll((err) => Effect.die(err)));
+      if (catalog === null) {
+        return yield* Effect.fail(
+          new CatalogNotFoundError({
+            message: `Unknown catalog slug "${catalogSlug}".`,
+            catalogSlug,
+          }),
+        );
+      }
+      if (catalog.pillar !== "datasource") {
+        return yield* Effect.fail(
+          new CatalogNotFoundError({
+            message: `Catalog "${catalogSlug}" is pillar '${catalog.pillar}' — route through WorkspaceInstaller.uninstall instead.`,
+            catalogSlug,
+          }),
+        );
+      }
+
+      const hard = options?.hard === true;
+
+      if (hard) {
+        const result = yield* Effect.tryPromise({
+          try: () =>
+            lazyInternalQuery()<{ id: string }>(
+              `DELETE FROM workspace_plugins
+                WHERE workspace_id = $1 AND catalog_id = $2 AND install_id = $3
+                RETURNING id`,
+              [workspaceId, catalog.id, installId],
+            ),
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(Effect.catchAll((err) => Effect.die(err)));
+        if (result.length === 0) {
+          return yield* Effect.fail(
+            new InstallNotFoundError({
+              message: `No ${catalogSlug} install found for installId "${installId}".`,
+              workspaceId,
+              catalogSlug,
+            }),
+          );
+        }
+      } else {
+        const result = yield* Effect.tryPromise({
+          try: () =>
+            lazyInternalQuery()<{ id: string }>(
+              `UPDATE workspace_plugins
+                  SET status = 'archived', enabled = false, updated_at = NOW()
+                WHERE workspace_id = $1 AND catalog_id = $2 AND install_id = $3
+                RETURNING id`,
+              [workspaceId, catalog.id, installId],
+            ),
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(Effect.catchAll((err) => Effect.die(err)));
+        if (result.length === 0) {
+          return yield* Effect.fail(
+            new InstallNotFoundError({
+              message: `No ${catalogSlug} install found for installId "${installId}".`,
+              workspaceId,
+              catalogSlug,
+            }),
+          );
+        }
+      }
+
+      // Tear the pool down whichever path we took — live queries against
+      // the archived install fail-closed immediately rather than at TTL.
+      try {
+        lazyDatasourceBridge().unregisterDatasourceInstall(installId);
+      } catch (err) {
+        log.warn(
+          {
+            workspaceId,
+            installId,
+            catalogSlug,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "unregisterDatasourceInstall threw — DB row archived anyway",
+        );
+      }
+
+      log.info(
+        { workspaceId, catalogSlug, installId, hard },
+        "WorkspaceInstaller.uninstallDatasource completed",
+      );
+    });
+
+  const updateDatasourceConfigImpl: WorkspaceInstallerShape["updateDatasourceConfig"] = (
+    workspaceId,
+    catalogSlug,
+    installId,
+    patch,
+  ) =>
+    Effect.gen(function* () {
+      const catalog = yield* Effect.tryPromise({
+        try: () => loadCatalogRowForInstall(catalogSlug),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(Effect.catchAll((err) => Effect.die(err)));
+      if (catalog === null) {
+        return yield* Effect.fail(
+          new CatalogNotFoundError({
+            message: `Unknown or disabled catalog slug "${catalogSlug}".`,
+            catalogSlug,
+          }),
+        );
+      }
+      if (catalog.pillar !== "datasource") {
+        return yield* Effect.fail(
+          new CatalogNotFoundError({
+            message: `Catalog "${catalogSlug}" is pillar '${catalog.pillar}' — route through WorkspaceInstaller.updateConfig instead.`,
+            catalogSlug,
+          }),
+        );
+      }
+
+      // Load the existing row so partials merge against the current
+      // decrypted config (catalog `required` rules apply to the merged
+      // shape, not just the patch).
+      const rows = yield* Effect.tryPromise({
+        try: () =>
+          lazyInternalQuery()<{
+            id: string;
+            install_id: string;
+            config: Record<string, unknown> | null;
+            status: string;
+          }>(
+            `SELECT id, install_id, config, status
+               FROM workspace_plugins
+              WHERE workspace_id = $1 AND catalog_id = $2 AND install_id = $3
+              LIMIT 1`,
+            [workspaceId, catalog.id, installId],
+          ),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(Effect.catchAll((err) => Effect.die(err)));
+      if (rows.length === 0) {
+        return yield* Effect.fail(
+          new InstallNotFoundError({
+            message: `No ${catalogSlug} install found for installId "${installId}".`,
+            workspaceId,
+            catalogSlug,
+          }),
+        );
+      }
+      const schema = parseConfigSchema(catalog.config_schema);
+      const existingDecrypted = decryptSecretFields(rows[0].config ?? {}, schema);
+
+      // Merge config patches.
+      const hasConfigPatch =
+        patch.partialConfig !== undefined && Object.keys(patch.partialConfig).length > 0;
+      const merged: Record<string, unknown> = hasConfigPatch
+        ? { ...existingDecrypted, ...patch.partialConfig }
+        : { ...existingDecrypted };
+
+      // groupId: undefined = leave alone, null = remove, string = set.
+      if (patch.groupId === null) {
+        delete merged.group_id;
+      } else if (typeof patch.groupId === "string") {
+        merged.group_id = patch.groupId;
+      }
+
+      // Catalog schema validation on the merged shape.
+      const schemaErr = validateAgainstConfigSchema(catalogSlug, catalog.config_schema, merged);
+      if (schemaErr) return yield* Effect.fail(schemaErr);
+
+      // Resolver dry-run for per-`db_type` required-field rules.
+      const dryRun = yield* Effect.try({
+        try: () =>
+          resolveDatasourcePoolConfig(
+            {
+              workspaceId,
+              catalogId: catalog.id,
+              installId,
+              pillar: "datasource",
+              catalogSlug,
+            },
+            merged,
+          ),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(
+        Effect.matchEffect({
+          onFailure: (err) =>
+            Effect.fail(resolverErrorToConfigSchemaError(catalogSlug, err)),
+          onSuccess: (cfg) => Effect.succeed(cfg),
+        }),
+      );
+
+      // Status resolution:
+      //   - explicit `status` on the patch wins
+      //   - else: if config changed AND atlasMode === 'draft', downgrade to draft
+      //   - else: preserve existing
+      let nextStatus = rows[0].status;
+      if (patch.status !== undefined) {
+        nextStatus = patch.status;
+      } else if (hasConfigPatch && patch.atlasMode === "draft") {
+        nextStatus = "draft";
+      }
+
+      const encryptedConfig = encryptSecretFields(merged, schema);
+
+      yield* Effect.tryPromise({
+        try: () =>
+          lazyInternalQuery()(
+            // `updated_at` must be set explicitly — `simplePromoteSql` and
+            // `DRAFT_ACTIVITY_SQL` read `MAX(updated_at)` post-cutover to
+            // compute "last edited" recency in mode/publish UX; leaving it
+            // at the row's `installed_at` value would silently hide draft
+            // edits from the pending-changes pill (codex P2, #2784).
+            `UPDATE workspace_plugins
+                SET config = $1::jsonb,
+                    status = $2,
+                    enabled = ($2 != 'archived'),
+                    updated_at = NOW()
+              WHERE workspace_id = $3 AND catalog_id = $4 AND install_id = $5`,
+            [JSON.stringify(encryptedConfig), nextStatus, workspaceId, catalog.id, installId],
+          ),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(Effect.catchAll((err) => Effect.die(err)));
+
+      // Evict the existing pool so its open connections drain. Then —
+      // unless the row is archived — re-register with the merged config
+      // so subsequent queries find a live pool. `ConnectionRegistry.getForOrg`
+      // does NOT lazy-load from `workspace_plugins`; a post-update query
+      // against an unregistered install throws `ConnectionNotRegisteredError`
+      // until next boot (codex P1, #2784).
+      try {
+        lazyDatasourceBridge().unregisterDatasourceInstall(installId);
+      } catch (err) {
+        log.warn(
+          {
+            workspaceId,
+            installId,
+            catalogSlug,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "unregisterDatasourceInstall threw during updateDatasourceConfig — DB row updated anyway",
+        );
+      }
+      if (nextStatus !== "archived") {
+        try {
+          lazyDatasourceBridge().registerDatasourceInstall(
+            {
+              workspaceId,
+              catalogId: catalog.id,
+              installId,
+              pillar: "datasource",
+              catalogSlug,
+            },
+            merged,
+          );
+        } catch (err) {
+          log.warn(
+            {
+              workspaceId,
+              installId,
+              catalogSlug,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "registerDatasourceInstall threw during updateDatasourceConfig — DB row updated; next query may surface ConnectionNotRegisteredError until restart",
+          );
+        }
+      }
+
+      log.info(
+        {
+          workspaceId,
+          catalogSlug,
+          installId,
+          dbType: dryRun.dbType,
+          status: nextStatus,
+          configChanged: hasConfigPatch,
+        },
+        "WorkspaceInstaller.updateDatasourceConfig completed",
+      );
+
+      return shapeDatasourceRow({
+        rowId: rows[0].id,
+        workspaceId,
+        catalogId: catalog.id,
+        catalogSlug,
+        installId: rows[0].install_id,
+        status: nextStatus as "draft" | "published" | "archived",
+        decryptedConfig: merged,
+      });
+    });
+
   return {
     install: installImpl,
     uninstall: uninstallImpl,
     updateConfig: updateConfigImpl,
+    installDatasource: installDatasourceImpl,
+    uninstallDatasource: uninstallDatasourceImpl,
+    updateDatasourceConfig: updateDatasourceConfigImpl,
   } satisfies WorkspaceInstallerShape;
 }
 
@@ -1051,4 +1884,7 @@ export function createWorkspaceInstallerTestLayer(
 
 export const _testing = {
   validateAgainstConfigSchema,
+  validateInstallId,
+  resolverErrorToConfigSchemaError,
+  shapeDatasourceRow,
 } as const;

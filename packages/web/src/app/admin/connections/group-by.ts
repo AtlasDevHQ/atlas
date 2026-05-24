@@ -1,20 +1,16 @@
 import type { ConnectionInfo } from "@useatlas/types/connection";
 
-/** Bucketization dimension for the connections list. Kept separate from
- * the nuqs parser so the bucketizer is testable without a Next.js
- * context. */
+/** Bucketization dimension for the connections list. Post-0096 cutover
+ * (#2744 / ADR-0007) the `"environment"` view is gone — the type-grouped
+ * provider blocks are now the sole view. The dimension type stays for
+ * the bucketizer's API surface so call sites stay explicit, but `"type"`
+ * is the only meaningful value. */
 export type GroupByDimension = "type" | "environment";
 
-/** Reserved bucket key for connections with no `groupId`. The UI
- * renders this bucket as "No environment" so unassigned connections
- * stay visible rather than filtered out. */
+/** Reserved bucket key for connections with no `groupId`. Kept for the
+ * environment-bucket branch in the bucketizer; callers that don't use
+ * that dimension can ignore. */
 export const NO_ENVIRONMENT_KEY = "__none__";
-
-/** Canonical deep link to the embedded environments view. Anything
- * that links to the connection groups should import this rather than
- * hand-rolling the URL — keeps the toggle, the per-row chip, and the
- * scheduled-tasks empty state in lockstep. */
-export const ENVIRONMENT_VIEW_HREF = "/admin/connections?groupBy=environment";
 
 export interface ConnectionBucket {
   key: string;

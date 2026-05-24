@@ -93,7 +93,6 @@ import { adminMigrate } from "./admin-migrate";
 import { adminTokens } from "./admin-tokens";
 import { adminOauthClients } from "./admin-oauth-clients";
 import { adminConnections, getVisibleConnectionIds } from "./admin-connections";
-import { adminConnectionGroups } from "./admin-connection-groups";
 import { adminProactive } from "./admin-proactive";
 import { adminPlugins } from "./admin-plugins";
 import { adminCache } from "./admin-cache";
@@ -322,8 +321,6 @@ import { registerMfaResetRoutes } from "./admin-mfa-reset";
 registerMfaResetRoutes(admin, adminAuthAndContext, verifyOrgMembership, reqId);
 admin.route("/connections", adminConnections);
 admin.route("/connections/", adminConnections);
-admin.route("/connection-groups", adminConnectionGroups);
-admin.route("/connection-groups/", adminConnectionGroups);
 admin.route("/proactive", adminProactive);
 admin.route("/proactive/", adminProactive);
 admin.route("/publish", adminPublish);
@@ -2111,25 +2108,20 @@ admin.openapi(importOrgEntitiesRoute, async (c) => runHandler(c, "import org sem
   let result: Awaited<ReturnType<typeof importFromDisk>>;
   let resolvedSource: string;
   if (body.source === "demo-seed") {
-    // Caller must already own a `__demo__` connection — otherwise a stale
+    // Caller must already own a `__demo__` install — otherwise a stale
     // URL or programmatic caller could write NovaMart entities into an
-    // unrelated workspace under a phantom connection id.
-    // Same OWN_OR_GLOBAL shadow rule as `getVisibleConnectionIds` —
-    // an org using the canonical `__global__/__demo__` (no per-org row)
-    // counts as owning the demo for the purposes of this recovery
-    // probe. Without this, every post-#2304 onboarding gets a 409 here.
-    const ownsDemo = await internalQuery<{ id: string }>(
-      `SELECT id FROM connections
-       WHERE id = '__demo__' AND status IN ('published', 'draft')
-         AND (
-           org_id = $1
-           OR (
-             org_id = '__global__'
-             AND NOT EXISTS (
-               SELECT 1 FROM connections c2 WHERE c2.org_id = $1 AND c2.id = '__demo__'
-             )
-           )
-         )`,
+    // unrelated workspace under a phantom install id.
+    // Post-0096 cutover (#2744 / ADR-0007) every workspace owns its own
+    // per-workspace demo install row, so the OWN_OR_GLOBAL shadow check
+    // collapses to a simple workspace-scoped lookup.
+    const ownsDemo = await internalQuery<{ install_id: string }>(
+      `SELECT wp.install_id FROM workspace_plugins wp
+         JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+        WHERE wp.workspace_id = $1
+          AND wp.pillar = 'datasource'
+          AND wp.install_id = '__demo__'
+          AND pc.slug = 'demo-postgres'
+          AND wp.status IN ('published', 'draft')`,
       [orgId],
     ).then((rows) => rows.length > 0).catch((err) => {
       log.warn({ err: err instanceof Error ? err.message : String(err), requestId, orgId }, "Demo-ownership probe failed during recovery");
@@ -2167,19 +2159,16 @@ admin.openapi(importOrgEntitiesRoute, async (c) => runHandler(c, "import org sem
       // recover from the bundled seed transparently.
       let ownsDemo = false;
       try {
-        const demoRows = await internalQuery<{ id: string }>(
-          // OWN_OR_GLOBAL shadow rule — see the matching probe above.
-          `SELECT id FROM connections
-           WHERE id = '__demo__' AND status IN ('published', 'draft')
-             AND (
-               org_id = $1
-               OR (
-                 org_id = '__global__'
-                 AND NOT EXISTS (
-                   SELECT 1 FROM connections c2 WHERE c2.org_id = $1 AND c2.id = '__demo__'
-                 )
-               )
-             )`,
+        const demoRows = await internalQuery<{ install_id: string }>(
+          // Workspace-scoped lookup — see the matching probe above for
+          // why this collapsed post-0096 cutover.
+          `SELECT wp.install_id FROM workspace_plugins wp
+             JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+            WHERE wp.workspace_id = $1
+              AND wp.pillar = 'datasource'
+              AND wp.install_id = '__demo__'
+              AND pc.slug = 'demo-postgres'
+              AND wp.status IN ('published', 'draft')`,
           [orgId],
         );
         ownsDemo = demoRows.length > 0;

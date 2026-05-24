@@ -7,13 +7,13 @@
  */
 
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
-import { hasInternalDB, internalQuery, encryptSecret, type URLSecret } from "@atlas/api/lib/db/internal";
-import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
+import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { connections, detectDBType, resolveDatasourceUrl } from "@atlas/api/lib/db/connection";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { importFromDisk } from "@atlas/api/lib/semantic/sync";
 import { getSemanticRoot } from "@atlas/api/lib/semantic/files";
+import { encryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
 
 const log = createLogger("auth-migrate");
 
@@ -298,21 +298,31 @@ async function seedDemoData(orgId: string): Promise<void> {
     return;
   }
 
-  // Encrypt and persist connection
+  // Encrypt and persist as a workspace_plugins datasource install
+  // (#2744 cutover — `connections` + `connection_groups` are gone).
   try {
-    const encryptedUrl: URLSecret = encryptSecret(url);
-    const urlKeyVersion = activeKeyVersion();
+    const catalogRows = await internalQuery<{ id: string; config_schema: unknown }>(
+      `SELECT id, config_schema FROM plugin_catalog
+        WHERE slug = $1 AND pillar = 'datasource' LIMIT 1`,
+      [dbType],
+    );
+    if (catalogRows.length === 0) {
+      log.warn({ dbType }, "Dev seed: no built-in datasource catalog row for dbType — skipping persist");
+      return;
+    }
+    const catalog = catalogRows[0];
+    const schema = parseConfigSchema(catalog.config_schema);
+    const config = encryptSecretFields(
+      { url, description: `Demo ${dbType} datasource`, db_type: dbType },
+      schema,
+    );
     await internalQuery(
-      `WITH group_row AS (
-         INSERT INTO connection_groups (id, org_id, name)
-         VALUES ('g_' || $1, $5, $1)
-         ON CONFLICT (id, org_id) DO UPDATE SET updated_at = connection_groups.updated_at
-         RETURNING id
-       )
-       INSERT INTO connections (id, url, url_key_version, type, description, org_id, group_id)
-       VALUES ($1, $2, $6, $3, $4, $5, (SELECT id FROM group_row))
-       ON CONFLICT (id, org_id) DO UPDATE SET url = $2, url_key_version = $6, type = $3, group_id = COALESCE(connections.group_id, EXCLUDED.group_id), updated_at = NOW()`,
-      ["default", encryptedUrl, dbType, `Demo ${dbType} datasource`, orgId, urlKeyVersion],
+      `INSERT INTO workspace_plugins
+         (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at, status)
+       VALUES ($1, $2, $3, 'default', 'datasource', $4::jsonb, true, NOW(), 'published')
+       ON CONFLICT (workspace_id, catalog_id, install_id)
+         DO UPDATE SET config = EXCLUDED.config, status = 'published', updated_at = NOW()`,
+      [`cn_${orgId}_default`, orgId, catalog.id, JSON.stringify(config)],
     );
 
     // Register in runtime

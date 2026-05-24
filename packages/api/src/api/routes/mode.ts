@@ -116,24 +116,21 @@ const getModeRoute = createRoute({
   },
 });
 
-// "Demo is active for this org" if either:
-//   1. The org owns a published `__demo__` row (legacy pre-#2304 onboarding), OR
-//   2. The canonical `__global__/__demo__` exists AND the org hasn't
-//      tombstoned it (no per-org row of any status — matches the
-//      shadow-check semantics in `getVisibleConnectionIds`).
+// "Demo is active for this org" post-0096 cutover: every workspace
+// owns its own per-workspace `demo-postgres` install row, archived
+// per-workspace to hide. So "active" is simply "the demo row exists
+// for this workspace and isn't archived". The shared-tombstone
+// fallback the legacy `connections` shape required is gone (#2744 /
+// ADR-0007).
 const DEMO_ACTIVE_SQL = `
   SELECT EXISTS (
-    SELECT 1 FROM connections
-    WHERE id = '__demo__' AND status = 'published'
-      AND (
-        org_id = $1
-        OR (
-          org_id = '__global__'
-          AND NOT EXISTS (
-            SELECT 1 FROM connections c2 WHERE c2.org_id = $1 AND c2.id = '__demo__'
-          )
-        )
-      )
+    SELECT 1 FROM workspace_plugins wp
+      JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+     WHERE wp.workspace_id = $1
+       AND wp.pillar = 'datasource'
+       AND wp.install_id = '__demo__'
+       AND pc.slug = 'demo-postgres'
+       AND wp.status = 'published'
   ) AS active
 `;
 
@@ -159,8 +156,8 @@ function totalDrafts(counts: ModeDraftCounts): number {
  * single round-trip so it cost-matches the existing `countAllDrafts`.
  */
 const DRAFT_ACTIVITY_SQL = `
-  SELECT 'connections' AS key, MAX(updated_at) AS at FROM connections
-   WHERE org_id = $1 AND status = 'draft'
+  SELECT 'connections' AS key, MAX(updated_at) AS at FROM workspace_plugins
+   WHERE workspace_id = $1 AND pillar = 'datasource' AND status = 'draft'
   UNION ALL
   SELECT 'entities' AS key, MAX(updated_at) AS at FROM semantic_entities
    WHERE org_id = $1 AND status = 'draft'

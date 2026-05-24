@@ -151,9 +151,9 @@ adminPublishPreview.openapi(previewRoute, async (c) =>
       starterPromptRows,
     ] = await Promise.all([
       internalQuery<DbRow>(
-        `SELECT id, id AS label, updated_at
-           FROM connections
-          WHERE org_id = $1 AND status = 'draft'
+        `SELECT install_id AS id, install_id AS label, updated_at
+           FROM workspace_plugins
+          WHERE workspace_id = $1 AND pillar = 'datasource' AND status = 'draft'
           ORDER BY updated_at DESC`,
         [orgId],
       ),

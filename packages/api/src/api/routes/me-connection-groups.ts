@@ -127,27 +127,28 @@ meConnectionGroups.openapi(listRoute, async (c) => {
     // One round-trip via a left-join so groups with zero non-archived
     // members still appear in the list (the picker should show them so
     // the user can spot the "empty group" misconfiguration).
+    // Post-0096 cutover (#2744 / ADR-0007 pure-collapse): groups are
+    // free-form JSONB strings in `workspace_plugins.config.group_id`
+    // with no separate `connection_groups` row. "Group name" and "group
+    // id" collapse to the same value (the JSONB string). There's no
+    // `primary_connection_id` — the picker falls back to the deterministic
+    // first-by-install_id ordering when no explicit pin exists.
     const rows = await internalQuery<{
       group_id: string;
-      group_name: string;
-      primary_connection_id: string | null;
-      connection_id: string | null;
+      connection_id: string;
       db_type: string | null;
       description: string | null;
     }>(
-      `SELECT g.id                    AS group_id,
-              g.name                  AS group_name,
-              g.primary_connection_id AS primary_connection_id,
-              c.id                    AS connection_id,
-              c.type                  AS db_type,
-              c.description           AS description
-         FROM connection_groups g
-         LEFT JOIN connections c
-           ON c.group_id = g.id
-          AND c.org_id   = g.org_id
-          AND c.status  != 'archived'
-        WHERE g.org_id = $1
-        ORDER BY g.name ASC, c.id ASC`,
+      `SELECT config->>'group_id' AS group_id,
+              install_id           AS connection_id,
+              config->>'db_type'   AS db_type,
+              config->>'description' AS description
+         FROM workspace_plugins
+        WHERE workspace_id = $1
+          AND pillar = 'datasource'
+          AND status != 'archived'
+          AND config->>'group_id' IS NOT NULL
+        ORDER BY config->>'group_id' ASC, install_id ASC`,
       [orgId],
     );
 
@@ -158,44 +159,17 @@ meConnectionGroups.openapi(listRoute, async (c) => {
       if (!group) {
         group = {
           id: row.group_id,
-          name: row.group_name,
-          primaryConnectionId: row.primary_connection_id,
+          name: row.group_id,
+          primaryConnectionId: null,
           members: [],
         };
         byGroup.set(row.group_id, group);
       }
-      if (row.connection_id) {
-        group.members.push({
-          connectionId: row.connection_id,
-          dbType: row.db_type ?? "unknown",
-          description: row.description,
-        });
-      }
-    }
-    // The composite FK on `(primary_connection_id, org_id)` uses
-    // `ON DELETE SET NULL`, so a deleted member can't dangle here.
-    // But archive isn't delete: the LEFT JOIN filters
-    // `status != 'archived'`, leaving rows where the primary references
-    // an archived member the user can no longer see. Null those out so
-    // the picker doesn't pin to an invisible member, and log it —
-    // archive + stale primary is operator-actionable config drift.
-    for (const group of byGroup.values()) {
-      if (
-        group.primaryConnectionId &&
-        !group.members.some((m) => m.connectionId === group.primaryConnectionId)
-      ) {
-        log.warn(
-          {
-            requestId,
-            orgId,
-            groupId: group.id,
-            primaryConnectionId: group.primaryConnectionId,
-            memberIds: group.members.map((m) => m.connectionId),
-          },
-          "connection_groups.primary_connection_id points to an archived/missing member — falling back to alphabetical-first",
-        );
-        group.primaryConnectionId = null;
-      }
+      group.members.push({
+        connectionId: row.connection_id,
+        dbType: row.db_type ?? "unknown",
+        description: row.description,
+      });
     }
     // `reason: null` covers both "workspace has groups" and the
     // ordinary "workspace has no groups configured yet" — the picker

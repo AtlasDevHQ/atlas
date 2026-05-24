@@ -9,6 +9,13 @@
  * these so they can assert on BEGIN / lock-before-mutate / cascade-order /
  * COMMIT without spinning up a real pg pool.
  *
+ * Post-#2744 cutover: stubs target `workspace_plugins (pillar='datasource')`
+ * instead of the dropped `connections` table — must stay in lockstep with
+ * `entities.ts::archiveSingleConnection` / `restoreSingleConnection`.
+ * `connectionId` is now the post-cutover `install_id` (user-facing slug);
+ * the legacy tombstone branch is gone (per-workspace demo rows replace
+ * the global tombstone overlay).
+ *
  * When the real helper's SQL shape or tagged-result contract changes, update
  * this file — both `admin-archive-restore.test.ts` and `admin-publish.test.ts`
  * import from here, so a single edit keeps them in lockstep.
@@ -44,7 +51,9 @@ export function makeArchiveRestoreStubs() {
       opts?: { demoIndustry?: string | null },
     ) => {
       const current = await client.query(
-        `SELECT status FROM connections WHERE org_id = $1 AND id = $2 FOR UPDATE`,
+        `SELECT status FROM workspace_plugins
+          WHERE workspace_id = $1 AND install_id = $2 AND pillar = 'datasource'
+          FOR UPDATE`,
         [orgId, connectionId],
       );
       if (current.rows.length === 0) return { status: "not_found" as const };
@@ -52,18 +61,22 @@ export function makeArchiveRestoreStubs() {
       const wasAlreadyArchived = row.status === "archived";
       if (!wasAlreadyArchived) {
         await client.query(
-          `UPDATE connections SET status = 'archived', updated_at = now()
-           WHERE org_id = $1 AND id = $2`,
+          `UPDATE workspace_plugins
+              SET status = 'archived', enabled = false, updated_at = now()
+            WHERE workspace_id = $1 AND install_id = $2 AND pillar = 'datasource'`,
           [orgId, connectionId],
         );
       }
       const archivedEntities = await client.query(
         `WITH conn AS (
-           SELECT group_id,
-                  (SELECT COUNT(*)::int FROM connections m
-                     WHERE m.org_id = c.org_id AND m.group_id = c.group_id) AS member_count
-           FROM connections c
-           WHERE c.org_id = $1 AND c.id = $2
+           SELECT wp.config->>'group_id' AS group_id,
+                  (SELECT COUNT(*)::int
+                     FROM workspace_plugins m
+                    WHERE m.workspace_id = wp.workspace_id
+                      AND m.pillar = 'datasource'
+                      AND m.config->>'group_id' = wp.config->>'group_id') AS member_count
+           FROM workspace_plugins wp
+           WHERE wp.workspace_id = $1 AND wp.install_id = $2 AND wp.pillar = 'datasource'
          )
          UPDATE semantic_entities SET status = 'archived', updated_at = now()
             FROM conn
@@ -101,7 +114,9 @@ export function makeArchiveRestoreStubs() {
       opts?: { demoIndustry?: string | null },
     ) => {
       const current = await client.query(
-        `SELECT status FROM connections WHERE org_id = $1 AND id = $2 FOR UPDATE`,
+        `SELECT status FROM workspace_plugins
+          WHERE workspace_id = $1 AND install_id = $2 AND pillar = 'datasource'
+          FOR UPDATE`,
         [orgId, connectionId],
       );
       if (current.rows.length === 0) return { status: "not_found" as const };
@@ -110,17 +125,21 @@ export function makeArchiveRestoreStubs() {
         return { status: "not_archived" as const };
       }
       await client.query(
-        `UPDATE connections SET status = 'published', updated_at = now()
-         WHERE org_id = $1 AND id = $2 AND status = 'archived'`,
+        `UPDATE workspace_plugins
+            SET status = 'published', enabled = true, updated_at = now()
+          WHERE workspace_id = $1 AND install_id = $2 AND pillar = 'datasource' AND status = 'archived'`,
         [orgId, connectionId],
       );
       const restoredEntities = await client.query(
         `WITH conn AS (
-           SELECT group_id,
-                  (SELECT COUNT(*)::int FROM connections m
-                     WHERE m.org_id = c.org_id AND m.group_id = c.group_id) AS member_count
-           FROM connections c
-           WHERE c.org_id = $1 AND c.id = $2
+           SELECT wp.config->>'group_id' AS group_id,
+                  (SELECT COUNT(*)::int
+                     FROM workspace_plugins m
+                    WHERE m.workspace_id = wp.workspace_id
+                      AND m.pillar = 'datasource'
+                      AND m.config->>'group_id' = wp.config->>'group_id') AS member_count
+           FROM workspace_plugins wp
+           WHERE wp.workspace_id = $1 AND wp.install_id = $2 AND wp.pillar = 'datasource'
          )
          UPDATE semantic_entities SET status = 'published', updated_at = now()
             FROM conn

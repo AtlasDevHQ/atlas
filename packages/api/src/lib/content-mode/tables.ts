@@ -24,7 +24,23 @@ import { promoteSemanticEntities } from "./adapters/semantic-entities";
 // InferDraftCounts; `satisfies` enforces the port shape without widening.
 // Do not collapse to one or the other.
 export const CONTENT_MODE_TABLES = [
-  { kind: "simple", key: "connections" },
+  // #2744 / ADR-0007 — `connections` segment key preserved for wire
+  // compatibility (`/api/v1/mode` `draftCounts.connections` keeps its
+  // contract) but the physical table is now `workspace_plugins` with
+  // `org_id` widened to `workspace_id`. The `where` filter scopes
+  // count + promote to `pillar='datasource'` rows so a future bug or
+  // manual fix-up that leaves a chat/action `workspace_plugins` row in
+  // `status='draft'` doesn't (a) inflate `draftCounts.connections` in the
+  // admin banner or (b) get silently promoted by the publish endpoint.
+  // Chat/action handlers currently always write `status='published'` —
+  // this filter is a defense-in-depth.
+  {
+    kind: "simple",
+    key: "connections",
+    table: "workspace_plugins",
+    orgColumn: "workspace_id",
+    where: "pillar = 'datasource'",
+  },
   { kind: "simple", key: "prompts", table: "prompt_collections" },
   { kind: "simple", key: "starterPrompts", table: "query_suggestions" },
   {

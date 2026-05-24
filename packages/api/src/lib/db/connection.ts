@@ -1397,7 +1397,8 @@ export async function isConnectionVisibleInMode(
 
   try {
     const rows = await internalQuery<{ id: string }>(
-      `SELECT id FROM connections WHERE org_id = $1 AND id = $2 AND ${statusClause}`,
+      `SELECT install_id AS id FROM workspace_plugins
+        WHERE workspace_id = $1 AND install_id = $2 AND pillar = 'datasource' AND ${statusClause}`,
       [orgId, connectionId],
     );
     return rows.length > 0;

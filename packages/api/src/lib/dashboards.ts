@@ -180,28 +180,28 @@ export async function loadGroupSnapshot(
   orgId: string | null,
 ): Promise<GroupSnapshot | null> {
   if (!hasInternalDB()) return null;
-  // Resolve via the parent dashboard's `org_id`. `orgId` is the active
-  // request scope (may be NULL for legacy global content). The group
-  // lookup composite PK `(id, org_id)` ensures cross-org membership is
-  // impossible at the DB layer.
-  const groupRows = await internalQuery<{ primary_connection_id: string | null }>(
-    `SELECT primary_connection_id FROM connection_groups
-      WHERE id = $1 AND org_id = $2`,
-    [groupId, orgId ?? "__global__"],
-  );
-  if (groupRows.length === 0) return null;
-
+  // Post-0096 cutover (#2744 / ADR-0007 pure-collapse): groups are
+  // free-form JSONB strings in `workspace_plugins.config.group_id`
+  // with no separate `connection_groups` row and no `primary_connection_id`.
+  // "Membership" is an aggregation over datasource installs sharing
+  // the same `config->>'group_id'` in the workspace. The snapshot's
+  // `primaryConnectionId` field stays null; `selectGroupMember` falls
+  // through to the deterministic (installed_at, install_id) sort.
   const memberRows = await internalQuery<{ id: string; created_at: Date | string }>(
-    `SELECT id, created_at FROM connections
-      WHERE group_id = $1 AND org_id = $2
-      ORDER BY created_at ASC, id ASC`,
+    `SELECT install_id AS id, installed_at AS created_at FROM workspace_plugins
+      WHERE config->>'group_id' = $1
+        AND workspace_id = $2
+        AND pillar = 'datasource'
+        AND status != 'archived'
+      ORDER BY installed_at ASC, install_id ASC`,
     [groupId, orgId ?? "__global__"],
   );
+  if (memberRows.length === 0) return null;
 
   return {
     groupId,
     orgId,
-    primaryConnectionId: groupRows[0].primary_connection_id,
+    primaryConnectionId: null,
     members: memberRows.map((r) => ({
       id: r.id,
       createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),

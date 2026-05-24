@@ -264,49 +264,24 @@ export const actionLog = pgTable(
 );
 
 // ---------------------------------------------------------------------------
-// Connection groups — multi-environment semantic layer
+// Connection groups + connections — DROPPED by migration 0094
 // ---------------------------------------------------------------------------
 //
-// Declared above `connections` so the composite FK on `connections.group_id`
-// can name `connectionGroups` directly; the chronological-by-introduction
-// ordering of this file is a soft convention, not a runtime requirement.
-
-export const connectionGroups = pgTable(
-  "connection_groups",
-  {
-    id: text("id").notNull(),
-    orgId: text("org_id").notNull().default("__global__"),
-    name: text("name").notNull(),
-    // Admin-pinned primary member. NULL = "use first member by
-    // (created_at, id)" — see lib/dashboards-group-resolve.ts. 0066
-    // introduces this for group-scoped dashboard cards (#2342).
-    //
-    // The DB enforces a composite FK `(primary_connection_id, org_id)
-    // → connections(id, org_id)` so the primary stays org-isolated.
-    // The FK is declared in the migration only — drizzle's declaration
-    // order forbids referencing `connections` from this earlier table
-    // (forward reference at module eval time). The smoke test in
-    // `migrate-pg.test.ts` pins the FK shape so drift here surfaces
-    // explicitly rather than as a silently dropped constraint.
-    primaryConnectionId: text("primary_connection_id"),
-    // 0071 — group lifecycle. `active` = normal; `archived` = retired
-    // region (cascade ran). See PRD #2336 § "Phase 4 archive cascade"
-    // and the POST /admin/connection-groups/:id/archive route.
-    status: text("status").notNull().default("active"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    primaryKey({ columns: [t.id, t.orgId] }),
-    index("idx_connection_groups_org").on(t.orgId),
-    uniqueIndex("uq_connection_groups_org_name").on(t.orgId, t.name),
-    index("idx_connection_groups_primary").on(t.primaryConnectionId, t.orgId),
-    // 0071 — partial index supports the list handler's hot path
-    // (`WHERE org_id = $1 AND status = 'active'`).
-    index("idx_connection_groups_active").on(t.orgId).where(sql`status = 'active'`),
-    check("chk_connection_groups_status", sql`status IN ('active', 'archived')`),
-  ],
-);
+// 0094 / #2744 (ADR-0007) is the 1.5.3 cutover. The `connection_groups`
+// and `connections` pgTables that previously lived in this region of the
+// file are gone. Installs live in `workspace_plugins` under
+// `pillar = 'datasource'`; `ConnectionRegistry` reads from there via
+// `DatasourcePoolResolver` (slice 5 / #2743). The named-group
+// abstraction collapsed into denormalised JSONB inside
+// `workspace_plugins.config.group_id` — remaining `connection_group_id`
+// columns on scheduled_tasks/approval_queue/conversations/
+// semantic_entities/dashboard_cards are free-form text identifiers
+// with no DB FK (they always matched a group conceptually, just one
+// that no longer has a backing row).
+//
+// `scripts/check-schema-drift.sh` excludes both dropped tables via the
+// CREATE-minus-DROP set logic, so the drift check stays green without
+// vestigial pgTable definitions here.
 
 // ---------------------------------------------------------------------------
 // Scheduled tasks
@@ -345,11 +320,9 @@ export const scheduledTasks = pgTable(
     index("idx_scheduled_tasks_org").on(t.orgId),
     index("idx_scheduled_tasks_group").on(t.orgId, t.connectionGroupId),
     index("idx_scheduled_tasks_plugin_org").on(t.pluginId, t.orgId).where(sql`plugin_id IS NOT NULL`),
-    foreignKey({
-      columns: [t.connectionGroupId, t.orgId],
-      foreignColumns: [connectionGroups.id, connectionGroups.orgId],
-      name: "fk_scheduled_tasks_group",
-    }).onDelete("restrict"),
+    // 0094 / #2744 — composite FK to `connection_groups (id, org_id)`
+    // dropped with the table. `connection_group_id` stays as a
+    // free-form text identifier matching `workspace_plugins.config->>'group_id'`.
   ],
 );
 
@@ -377,50 +350,11 @@ export const scheduledTaskRuns = pgTable(
 );
 
 // ---------------------------------------------------------------------------
-// Admin-managed connections
+// Admin-managed connections — DROPPED by migration 0094
 // ---------------------------------------------------------------------------
-
-export const connections = pgTable(
-  "connections",
-  {
-    id: text("id").notNull(),
-    url: text("url").notNull(),
-    // F-47: encryption key version for `url`. Populated by app code on
-    // write with the active keyset version; read by the rotation script
-    // to identify rows below the active version.
-    urlKeyVersion: integer("url_key_version").notNull().default(1),
-    type: text("type").notNull(),
-    description: text("description"),
-    schemaName: text("schema_name"),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
-    // Org scoping — composite PK with id
-    orgId: text("org_id").notNull().default("__global__"),
-    // Developer/published mode status
-    status: text("status").notNull().default("published"),
-    // Connection group membership (multi-environment semantic layer).
-    // Required after 0069; existing rows are repaired into a
-    // single-member group before the NOT NULL constraint is applied.
-    groupId: text("group_id").notNull(),
-  },
-  (t) => [
-    primaryKey({ columns: [t.id, t.orgId] }),
-    index("idx_connections_org").on(t.orgId),
-    index("idx_connections_group").on(t.groupId, t.orgId),
-    // Composite FK so a connection can never reference a group in a
-    // different org. ON DELETE RESTRICT: the DELETE handler already
-    // rejects non-empty groups with a typed 409; the FK is the
-    // last-resort defence against raw-SQL or test-path bypasses. SET NULL
-    // would have been the friendlier action, but PG nulls every column
-    // in a composite FK on cascade and `connections.org_id` is NOT NULL.
-    foreignKey({
-      columns: [t.groupId, t.orgId],
-      foreignColumns: [connectionGroups.id, connectionGroups.orgId],
-      name: "fk_connections_group",
-    }).onDelete("restrict"),
-    check("chk_connections_status", sql`status IN ('published', 'draft', 'archived')`),
-  ],
-);
+//
+// See the consolidated note above the `connection_groups` placeholder.
+// Datasource installs live in `workspace_plugins WHERE pillar = 'datasource'`.
 
 // ---------------------------------------------------------------------------
 // Token usage
@@ -1098,11 +1032,9 @@ export const approvalQueue = pgTable(
       "chk_approval_request_surface",
       sql`surface IS NULL OR surface IN ('chat', 'mcp', 'scheduler', 'slack', 'teams', 'telegram', 'webhook')`,
     ),
-    foreignKey({
-      columns: [t.connectionGroupId, t.orgId],
-      foreignColumns: [connectionGroups.id, connectionGroups.orgId],
-      name: "fk_approval_queue_group",
-    }).onDelete("restrict"),
+    // 0094 / #2744 — composite FK to `connection_groups (id, org_id)`
+    // dropped with the table. `connection_group_id` stays as a
+    // free-form text identifier matching `workspace_plugins.config->>'group_id'`.
     index("idx_approval_queue_org_status").on(t.orgId, t.status),
     index("idx_approval_queue_expires").on(t.expiresAt).where(sql`status = 'pending'`),
     index("idx_approval_queue_requester").on(t.requesterId),
@@ -1647,6 +1579,17 @@ export const workspacePlugins = pgTable(
     enabled: boolean("enabled").notNull().default(true),
     installedAt: timestamp("installed_at", { withTimezone: true }).notNull().defaultNow(),
     installedBy: text("installed_by"),
+    // 0094 / #2744 — content-mode column mirroring the dropped
+    // `connections.status`. Admin route + ConnectionRegistry read this
+    // to filter draft/archived installs; the content-mode middleware
+    // overlays `status IN ('published', 'draft')` in developer mode.
+    status: text("status").notNull().default("published"),
+    // 0094 / #2744 — required by `ContentModeRegistry`'s simple promote
+    // SQL (`UPDATE workspace_plugins SET status='published', updated_at = now()`).
+    // Every other content-mode table carries one; workspace_plugins
+    // inherits the column now that it participates in the mode system
+    // as the post-cutover `connections` substitute.
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     // 0092 / #2739 — composite PK per ADR-0007. Replaces single-column
@@ -1655,15 +1598,11 @@ export const workspacePlugins = pgTable(
     // 0092 / #2739 — preserves the `id` uniqueness invariant that the
     // dropped single-column PK used to enforce.
     uniqueIndex("workspace_plugins_id_unique").on(t.id),
-    // Pre-existing global unique (0014). Kept until #2743 / #2744
-    // introduces multi-instance datasource installs and pivots
-    // handler ON CONFLICT clauses off this constraint — see migration
-    // 0092's header comment for the rationale, including the
-    // Drizzle-vs-production naming drift (on disk this lives as
-    // `workspace_plugins_workspace_id_catalog_id_key`).
-    // TODO(#2743): drop and align the Drizzle name with the on-disk
-    // constraint when the cutover lands.
-    uniqueIndex("idx_workspace_plugins_unique").on(t.workspaceId, t.catalogId),
+    // 0094 / #2744 — the pre-1.5.3 global unique
+    // (`idx_workspace_plugins_unique`) was dropped here as part of the
+    // cutover. `workspace_plugins_singleton` below remains as the sole
+    // singleton-enforcement index for chat + action pillars; datasource
+    // installs are intentionally multi-instance per (workspace, catalog).
     // 0092 / #2739 — post-1.5.3 invariant: singleton install per
     // (workspace, catalog) for chat + action pillars only. Datasource
     // pillar is admitted multiple times.
@@ -1672,7 +1611,9 @@ export const workspacePlugins = pgTable(
       .where(sql`pillar IN ('chat', 'action')`),
     index("idx_workspace_plugins_workspace").on(t.workspaceId),
     index("idx_workspace_plugins_catalog").on(t.catalogId),
+    index("idx_workspace_plugins_status").on(t.workspaceId, t.status),
     check("chk_workspace_plugins_pillar", sql`pillar IN ('datasource', 'chat', 'action')`),
+    check("chk_workspace_plugins_status", sql`status IN ('published', 'draft', 'archived')`),
   ],
 );
 

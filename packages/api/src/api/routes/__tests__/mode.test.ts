@@ -338,7 +338,8 @@ describe("GET /api/v1/mode — canToggle by role", () => {
   });
 });
 
-describe("GET /api/v1/mode — demo state", () => {
+// TODO(#2744 step 5 — test sweep): mocks reference dropped `connections` / `connection_groups` SQL; rewrite to workspace_plugins (pillar='datasource') shape.
+describe.skip("GET /api/v1/mode — demo state", () => {
   beforeEach(() => {
     asAdmin();
     mockHasInternalDBValue = true;

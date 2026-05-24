@@ -923,69 +923,152 @@ export async function migrateInternalDB(): Promise<void> {
 // seedPromptLibrary moved to migrate.ts → runSeeds() (#978)
 
 /**
- * Load admin-managed connections from the internal DB and register them
- * in the ConnectionRegistry. Idempotent — safe to call at startup.
- * Silently skips if no internal DB or the connections table doesn't exist yet.
+ * Load admin-managed datasource installs from `workspace_plugins` and
+ * register them in the ConnectionRegistry. Idempotent — safe to call at
+ * startup. Silently skips if no internal DB or `workspace_plugins`
+ * doesn't exist yet.
  *
- * With composite PK (id, org_id), multiple orgs can share the same connection
- * ID (e.g. "default"). DISTINCT ON (id) deduplicates so each base connection
- * ID is registered once — org-specific pools are created lazily by getForOrg().
+ * 0094 / #2744 — post-cutover this reads from
+ * `workspace_plugins WHERE pillar = 'datasource'` instead of the dropped
+ * `connections` table. Per ADR-0007 the URL lives inside `config` JSONB
+ * with selective-field encryption; `decryptSecretFields` (keyed off the
+ * catalog row's `config_schema`) unwraps it. `DatasourcePoolResolver`
+ * translates the resulting (row, decrypted config) pair into the typed
+ * `DatasourcePoolConfig` we hand to `ConnectionRegistry.register`.
+ *
+ * Multi-tenant note: today's pre-cutover registry has a long-standing
+ * bug where two workspaces sharing an `install_id` (e.g. both naming
+ * their warehouse `warehouse`, or both auto-owning the demo at
+ * `install_id='__demo__'`) collapse onto a single base URL via
+ * `DISTINCT ON (id)`. The cleanest fix is per-(workspace, install_id)
+ * registration, but that's a deeper ConnectionRegistry refactor than
+ * this slice carries — slice 6 preserves today's behaviour (`DISTINCT
+ * ON (install_id)` picks the most-recently-installed row) and #2783
+ * tracks the per-(workspace, install_id) refactor. The `default`
+ * connection (auto-initialised from `ATLAS_DATASOURCE_URL`) continues
+ * to be runtime-only and is NOT touched here.
  */
 export async function loadSavedConnections(): Promise<number> {
   if (!hasInternalDB()) return 0;
 
-  // Lazy-import to avoid circular dependency at module level
-  const { connections } = await import("@atlas/api/lib/db/connection");
+  // Lazy-imports to avoid circular dependency at module level + keep
+  // the static graph here narrow (admin-route tests partial-mock this
+  // module heavily and would otherwise need to declare extra no-op
+  // exports).
+  const { BUILTIN_DATASOURCE_CATALOG_SLUGS } = await import(
+    "@atlas/api/lib/db/datasource-pool-resolver"
+  );
+  const { registerDatasourceInstall } = await import(
+    "@atlas/api/lib/db/datasource-registry-bridge"
+  );
+  const { decryptSecretFields, parseConfigSchema } =
+    await import("@atlas/api/lib/plugins/secrets");
 
   try {
-    type ConnRow = { id: string; url: string; type: string; description: string | null; schema_name: string | null };
-    // Exclude `status = 'archived'` so per-org tombstone rows (the shadow
-    // rows from the delete-as-hide flow in admin-connections.ts) never feed
-    // their empty-string `url` marker to `decryptSecret`. Without this filter
-    // a tombstone's newer `updated_at` would win the DISTINCT ON (id) race
-    // and silently knock the canonical global row out of the in-memory
-    // registry across every workspace on the next process restart.
-    const rows = await internalQuery<ConnRow>(
-      `SELECT DISTINCT ON (id) id, url, type, description, schema_name
-       FROM connections
-       WHERE status != 'archived'
-       ORDER BY id, updated_at DESC, org_id ASC`,
+    type WpRow = {
+      workspace_id: string;
+      install_id: string;
+      catalog_slug: string;
+      config: Record<string, unknown> | null;
+      config_schema: unknown;
+    };
+    // Exclude `status = 'archived'` so per-workspace demo-hide rows
+    // never feed their decrypted URL to the registry. `DISTINCT ON
+    // (install_id)` preserves today's pre-cutover behaviour where two
+    // workspaces sharing an install_id collapse onto the most-recently-
+    // installed row's URL — see the multi-tenant note above.
+    const rows = await internalQuery<WpRow>(
+      `SELECT DISTINCT ON (wp.install_id)
+              wp.workspace_id,
+              wp.install_id,
+              pc.slug AS catalog_slug,
+              wp.config,
+              pc.config_schema
+         FROM workspace_plugins wp
+         JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+        WHERE wp.pillar = 'datasource'
+          AND wp.status != 'archived'
+          AND pc.slug = ANY($1::text[])
+        ORDER BY wp.install_id, wp.installed_at DESC, wp.workspace_id ASC`,
+      [BUILTIN_DATASOURCE_CATALOG_SLUGS as readonly string[]],
     );
 
     let registered = 0;
     for (const row of rows) {
-      if (connections.has(row.id)) {
-        log.debug({ connectionId: row.id }, "Skipping already-registered connection — org-scoped pools resolve via getForOrg()");
-        continue;
-      }
+      // `stage` lets log alerting differentiate between schema-parse,
+      // decrypt, and bridge failures without parsing the error message.
+      // `bridge` is coarse-grained on purpose: it covers both resolver
+      // violations (missing required field, invalid schema identifier)
+      // and registry-side failures (`connections.register` rejecting a
+      // URL scheme). They share a stage because the bridge fuses them
+      // into one call. Run the migration sanity-check script
+      // (`db/migrations/scripts/0094_*`) to disambiguate.
+      let stage: "parse" | "decrypt" | "bridge" = "parse";
       try {
-        const url = decryptSecret(row.url);
-        connections.register(row.id, {
-          url,
-          description: row.description ?? undefined,
-          schema: row.schema_name ?? undefined,
-        });
-        registered++;
+        const schema = parseConfigSchema(row.config_schema);
+        stage = "decrypt";
+        const decryptedConfig = decryptSecretFields(row.config ?? {}, schema);
+        stage = "bridge";
+        const didRegister = registerDatasourceInstall(
+          {
+            workspaceId: row.workspace_id,
+            catalogId: "",
+            installId: row.install_id,
+            pillar: "datasource",
+            catalogSlug: row.catalog_slug,
+          },
+          decryptedConfig,
+        );
+        if (didRegister) registered++;
       } catch (err) {
         log.warn(
-          { connectionId: row.id, err: err instanceof Error ? err.message : String(err) },
-          "Failed to register saved connection — skipping",
+          {
+            stage,
+            workspaceId: row.workspace_id,
+            installId: row.install_id,
+            catalogSlug: row.catalog_slug,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "Failed to register saved datasource install — skipping",
         );
       }
     }
 
     if (registered > 0) {
-      log.info({ count: registered }, "Loaded saved connections from internal DB");
+      log.info({ count: registered }, "Loaded datasource installs from workspace_plugins");
     }
     return registered;
   } catch (err) {
-    // Table may not exist yet (pre-migration) — that's expected on first boot
-    log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Could not load saved connections (table may not exist yet)",
+    // Distinguish "table missing" (Postgres SQLSTATE 42P01 —
+    // `undefined_table`, expected on pre-migration first boot) from
+    // every other failure (connectivity loss, permissions change,
+    // dynamic-import failure, syntactic regression). The pre-cutover
+    // code swallowed everything as "first boot"; post-cutover that's
+    // misleading — `workspace_plugins` always exists in any working
+    // deploy, so a thrown error is real signal.
+    const sqlstate = isPgError(err) ? err.code : undefined;
+    if (sqlstate === "42P01") {
+      log.warn(
+        { sqlstate, err: err instanceof Error ? err.message : String(err) },
+        "workspace_plugins / plugin_catalog not present — skipping datasource load (expected on first boot)",
+      );
+      return 0;
+    }
+    log.error(
+      { sqlstate, err: err instanceof Error ? err.message : String(err) },
+      "Failed to load datasource installs from workspace_plugins — registry will be empty until next boot",
     );
     return 0;
   }
+}
+
+/** Postgres SQLSTATE error shape. `pg` driver attaches `.code` to thrown errors. */
+function isPgError(err: unknown): err is Error & { code: string } {
+  return (
+    err instanceof Error &&
+    "code" in err &&
+    typeof (err as { code: unknown }).code === "string"
+  );
 }
 
 // ── Learned pattern helpers ─────────────────────────────────────────
@@ -1850,7 +1933,11 @@ export async function getWorkspaceHealthSummary(orgId: string): Promise<{
       // Exclude archive tombstones for the same reason as the plan-limit
       // and billing counts — hidden `__global__` connections shouldn't
       // inflate workspace health summaries.
-      countQuery(`SELECT COUNT(*)::int as count FROM connections WHERE org_id = $1 AND status != 'archived'`, [orgId]),
+      countQuery(
+        `SELECT COUNT(*)::int as count FROM workspace_plugins
+          WHERE workspace_id = $1 AND pillar = 'datasource' AND status != 'archived'`,
+        [orgId],
+      ),
       countQuery(`SELECT COUNT(*)::int as count FROM scheduled_tasks WHERE org_id = $1 AND enabled = true`, [orgId]),
     ], { concurrency: "unbounded" }).pipe(
       Effect.timeoutFail({
@@ -1932,7 +2019,6 @@ export interface HardDeleteResult {
   actionLog: number;
   scheduledTaskRuns: number;
   scheduledTasks: number;
-  connections: number;
   tokenUsage: number;
   invitations: number;
   pluginSettings: number;
@@ -2085,7 +2171,9 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     );
     const actionLog = await del(`DELETE FROM action_log WHERE org_id = $1`);
     const scheduledTasks = await del(`DELETE FROM scheduled_tasks WHERE org_id = $1`);
-    const connections = await del(`DELETE FROM connections WHERE org_id = $1`);
+    // `connections` table dropped by 0096 cutover — datasource installs
+    // live in `workspace_plugins` (pillar='datasource') and are wiped
+    // alongside other installs in Phase 3 below.
     const tokenUsage = await del(`DELETE FROM token_usage WHERE org_id = $1`);
     const invitations = await del(`DELETE FROM invitations WHERE org_id = $1`);
     const pluginSettings = await del(`DELETE FROM plugin_settings WHERE org_id = $1`);
@@ -2194,7 +2282,6 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
       actionLog,
       scheduledTaskRuns,
       scheduledTasks,
-      connections,
       tokenUsage,
       invitations,
       pluginSettings,

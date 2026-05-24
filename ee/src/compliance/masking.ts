@@ -168,11 +168,16 @@ const resolveGroupIdForConnection = (
   Effect.gen(function* () {
     if (!connectionId) return null;
     if (!hasInternalDB()) return null;
+    // Post-0096 cutover (#2744 / ADR-0007): the install's group_id lives
+    // in `workspace_plugins.config->>'group_id'`; own-workspace beats
+    // __global__ via ORDER BY priority.
     const rows = yield* Effect.tryPromise({
       try: () => internalQuery<{ group_id: string | null }>(
-        `SELECT group_id FROM connections
-         WHERE id = $1 AND (org_id = $2 OR org_id = '__global__')
-         ORDER BY CASE WHEN org_id = $2 THEN 0 ELSE 1 END
+        `SELECT config->>'group_id' AS group_id FROM workspace_plugins
+         WHERE install_id = $1
+           AND pillar = 'datasource'
+           AND (workspace_id = $2 OR workspace_id = '__global__')
+         ORDER BY CASE WHEN workspace_id = $2 THEN 0 ELSE 1 END
          LIMIT 1`,
         [connectionId, orgId],
       ),

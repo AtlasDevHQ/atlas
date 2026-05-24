@@ -14,6 +14,7 @@ export type {
   GetChannelConfigsFn,
   GetWorkspaceConfigFn,
   InstallGateConfig,
+  InstallGateDenyReason,
   InstallGateDescribeFn,
   InstallGateFn,
   InstallGateVerdict,

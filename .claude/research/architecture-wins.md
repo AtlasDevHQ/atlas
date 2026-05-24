@@ -2043,3 +2043,46 @@ The drift meant catalog rows could ship at `min_plan='team'` and silently deny e
 - **2 docs entries** (integrations.mdx gains a "Plan tiers and integrations" section + an "Operator workspaces" note).
 
 **Category:** Deep module — narrow interface (one rank table + two helpers), broad implementation (vocabulary unification across two enums + operator-bypass column + 4 API layers + 3 UI states + structured-verdict listener log). Same shape as win #58 (connection-mode resolver) and win #69 (`WorkspaceInstallGate`) — pushing the entitlement decision down to one module means callers stop reaching past the module to assemble the verdict themselves, and the cross-cutting concern stays in one place when the ladder reshuffles.
+
+---
+
+## 71. PlanTier narrowing at trust boundaries + InstallGateVerdict discriminated union (#2715)
+
+**Date:** 2026-05-24
+**Issue:** #2715
+**Branch:** 2715-plan-tier-tightening
+
+**Problem:** Five interlocking type-design findings from the #2713 entitlement-bundle review, all hanging off the same `PlanTier` seam:
+1. `planRank()` / `isPlanEligible()` accepted `string`, so internal callers could pass `"team"` by accident.
+2. `InstallGateVerdict.reason` was `string`, despite JSDoc enumerating the legal values.
+3. `InstallGateVerdict` was a flat record where `active: true + installFound: false` was representable but illegal.
+4. Catalog wire-shape `(accessible, upgradeRequired)` pair was enforced at the producer only; consumers had to re-check both fields.
+5. `403 plan_upgrade_required` body fields (`required_plan`, `current_plan`) were `string` everywhere — no shared `@useatlas/types` definition.
+
+**Solution:** Single PR that lands all five together because they all touch the same files:
+1. Added `parsePlanTier(value: unknown): PlanTier | null` narrowing helper, called exactly once at each trust boundary (SQL row read in `getWorkspaceEntitlement`, `getWorkspacePlan`, `withInstallStatusFor`, the install-gate JOIN; wire-boundary read in `checkPlanEligibility` and `isAccessible`). Tightened `planRank()` / `isPlanEligible()` to accept `PlanTier | null`.
+2. Promoted `reason: string` to `InstallGateDenyReason` literal union (`"no_install_row" | "install_disabled" | "catalog_disabled" | "unknown_min_plan" | "plan_below_min" | "db_error"`). Mirror types in both `packages/api/.../workspace-install-gate.ts` and `plugins/chat/src/proactive/types.ts`.
+3. Made `InstallGateVerdict` a discriminated union on `active`: the `true` branch carries only `operatorBypass`; the `false` branch carries `reason` + fact fields. Half-wired states are now compile-impossible.
+4. Added `CatalogAccess = { kind: "accessible" } | { kind: "upgrade"; requiredPlan: PlanTier | null }` discriminated union, parsed at the fetch boundary in `admin-schemas.ts` via a Zod `.transform`. Wire shape stays backward-compatible. Admin UI's `catalog-section.tsx` branches on `entry.access.kind` instead of re-deriving from booleans.
+5. Defined `PlanUpgradeRequiredBody` in `@useatlas/types` with PlanTier-typed fields. Used in the route handler via a `buildPlanUpgradeBody()` helper, in the OpenAPI schema via a `PlanUpgradeRequiredBodySchema satisfies z.ZodType<PlanUpgradeRequiredBody>` pin, and surfaced as a union with `AuthErrorSchema` on the three 403 responses.
+6. `checkPlanEligibility()` itself became a discriminated union (`"admit" | "deny" | "catalog_drift"`) so callers route catalog drift (unknown `min_plan`) to a structured 501 instead of masquerading as an upgrade prompt with a bogus tier name.
+
+**Deep-module surface metrics:**
+- **Interface:** 1 new helper (`parsePlanTier`), 1 new TS type (`PlanUpgradeRequiredBody`), 1 new fetch-boundary parser (`CatalogAccess` + `deriveAccess`). Existing module entry points (`planRank` / `isPlanEligible` / `describeInstallGateState`) keep their names; signatures narrowed.
+- **Implementation:** Compile-time narrowing pushed to SQL/wire boundaries; the discriminated `InstallGateVerdict` makes 8 fields into 2 mutually-exclusive shapes; the catalog wire shape is unchanged (backward compat) but parsed once at the fetch boundary so every UI call site sees the tagged union.
+- **Cost ceiling:** zero runtime cost — pure compile-time tightening. `parsePlanTier` is one `in` check.
+
+**What got unbundled:**
+- **Untyped catalog reads → typed at the SQL boundary.** Pre-#2715 every consumer of `organization.plan_tier` / `plugin_catalog.min_plan` reasoned about a raw `string`. Post-#2715 the narrowing happens once per read and downstream code reads `PlanTier | null`.
+- **8-field flat verdict with implicit invariants → 2-branch discriminated union.** Consumers (the proactive listener's deny log) now `switch` on `verdict.active` and only access fields valid for that branch.
+- **Wire-compat catalog pair → fetch-boundary tagged union.** The wire still ships `(accessible, upgradeRequired)` for backward compat with older clients, but new UI consumers get `entry.access` with `kind: "accessible" | "upgrade"`.
+- **Implicit `{ required_plan: string; current_plan: string }` body → shared `PlanUpgradeRequiredBody` in `@useatlas/types`.** Routes, OpenAPI schemas, and tests share one source of truth.
+
+**Impact:**
+- **No runtime behavior change** for the happy and normal-denial paths. The catalog-drift branch (operator typoed `min_plan`) now returns 501 with a structured "operator must fix" message instead of a 403 with a bogus tier name — strictly clearer.
+- **17 type errors caught by the narrowed signatures**, every one a real drift surface (`"team"` / `"enterprise"` / `"legacy-tier"` strings smuggled through tests, `active: boolean` mocks that didn't satisfy the union).
+- **Plan-rank test suite +6 cases** (parsePlanTier matrix + negative-type `@ts-expect-error` tests pinning the compile contract).
+- **Gate test suite refactored** to use `if (verdict.active !== false)` narrowing instead of accessing union-only fields directly.
+- **Listener test mock pinned** with `as const` so the discriminated-union return shape is satisfied.
+
+**Category:** Type-design deepening — five interlocking invariants moved from "documented and runtime-enforced" to "compile-time-enforced at the boundary." Same shape as win #69 (`WorkspaceInstallGate`) and win #70 (`PLAN_RANK`) — pushing the type narrowing down to one module per trust boundary means every other consumer in the project stops re-checking the invariant.

@@ -32,6 +32,7 @@ export type {
 import type { Adapter, Message, Thread } from "chat";
 import type {
   ClassificationResult,
+  PlanTier,
   ProactiveMeterEvent,
   PublicDatasetEntry as ProactivePublicDatasetEntry,
   SensitivityPreset,
@@ -265,6 +266,22 @@ export type InstallGateFn = (
 ) => Promise<boolean>;
 
 /**
+ * Reason codes the deny branch of {@link InstallGateVerdict} can carry
+ * (#2715). Pre-#2715 this was `reason: string` with the legal values
+ * documented only in the JSDoc; the literal union gives consumers
+ * exhaustive `switch` and prevents drift between the structured log
+ * keys and what hosts emit. The plugin-side mirror of
+ * `lib/integrations/install/workspace-install-gate.ts:InstallGateDenyReason`.
+ */
+export type InstallGateDenyReason =
+  | "no_install_row"
+  | "install_disabled"
+  | "catalog_disabled"
+  | "unknown_min_plan"
+  | "plan_below_min"
+  | "db_error";
+
+/**
  * Structured verdict the listener logs on the gate-deny path
  * (#2703). The host's optional {@link InstallGateConfig.describeState}
  * returns one of these so an operator investigating "why doesn't
@@ -272,20 +289,29 @@ export type InstallGateFn = (
  * log instead of running the rank table by hand.
  *
  * The shape is host-facing (this types.ts file is shared with the
- * chat plugin SDK). Fields are nullable to support hosts that can't
- * surface every fact — the listener treats missing fields as "no
- * data" rather than "false".
+ * chat plugin SDK). Discriminated union on `active` (#2715): the
+ * `active: true` branch carries only `operatorBypass`; the
+ * `active: false` branch carries the structured `reason` plus every
+ * fact field the caller might want to surface. Pre-#2715 the shape
+ * had eight readonly fields where `active: true + installFound: false`
+ * was representable but illegal.
+ *
+ * `planTier` / `minPlan` are `PlanTier | null` — both shared with the
+ * host via `@useatlas/types`, so structural drift between plugin and
+ * host is a compile error.
  */
-export interface InstallGateVerdict {
-  readonly active: boolean;
-  readonly installFound: boolean;
-  readonly installEnabled: boolean;
-  readonly catalogEnabled: boolean;
-  readonly planTier: string | null;
-  readonly minPlan: string | null;
-  readonly operatorBypass: boolean;
-  readonly reason: string;
-}
+export type InstallGateVerdict =
+  | { readonly active: true; readonly operatorBypass: boolean }
+  | {
+      readonly active: false;
+      readonly reason: InstallGateDenyReason;
+      readonly installFound: boolean;
+      readonly installEnabled: boolean;
+      readonly catalogEnabled: boolean;
+      readonly planTier: PlanTier | null;
+      readonly minPlan: PlanTier | null;
+      readonly operatorBypass: boolean;
+    };
 
 /**
  * Optional diagnostic variant of {@link InstallGateFn}. Wired by the

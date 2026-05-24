@@ -654,15 +654,34 @@ export async function registerProactiveListener(
                   workspaceId,
                   installGateCfg.catalogId,
                 );
-                factState = {
-                  reason: verdict.reason,
-                  installFound: verdict.installFound,
-                  installEnabled: verdict.installEnabled,
-                  catalogEnabled: verdict.catalogEnabled,
-                  planTier: verdict.planTier,
-                  minPlan: verdict.minPlan,
-                  operatorBypass: verdict.operatorBypass,
-                };
+                // Discriminated union (#2715): we only reach this branch
+                // because the boolean gate said `active: false`, so the
+                // verdict should also be `active: false`. The `active:
+                // true` branch is recorded as a benign anomaly ("gate
+                // raced from no → yes between the two reads") with the
+                // fact fields nulled out — surfacing the bypass flag so
+                // operators can spot the race.
+                if (verdict.active === false) {
+                  factState = {
+                    reason: verdict.reason,
+                    installFound: verdict.installFound,
+                    installEnabled: verdict.installEnabled,
+                    catalogEnabled: verdict.catalogEnabled,
+                    planTier: verdict.planTier,
+                    minPlan: verdict.minPlan,
+                    operatorBypass: verdict.operatorBypass,
+                  };
+                } else {
+                  factState = {
+                    reason: "active",
+                    installFound: true,
+                    installEnabled: true,
+                    catalogEnabled: true,
+                    planTier: null,
+                    minPlan: null,
+                    operatorBypass: verdict.operatorBypass,
+                  };
+                }
               } catch (err) {
                 log.warn(
                   {

@@ -72125,12 +72125,60 @@
             }
           },
           "403": {
-            "description": "Caller is not a workspace admin, or the workspace's plan tier does not admit this integration (JSON callers; browsers see a 302 to the admin UI).",
+            "description": "Caller is not a workspace admin, or the workspace's plan tier does not admit this integration (JSON callers; browsers see a 302 to the admin UI). Plan-upgrade responses follow the PlanUpgradeRequiredBody shape with PlanTier-typed `required_plan` + `current_plan` fields.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string",
+                          "enum": [
+                            "plan_upgrade_required"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "required_plan": {
+                          "type": "string",
+                          "enum": [
+                            "free",
+                            "trial",
+                            "starter",
+                            "pro",
+                            "business"
+                          ]
+                        },
+                        "current_plan": {
+                          "type": "string",
+                          "enum": [
+                            "free",
+                            "trial",
+                            "starter",
+                            "pro",
+                            "business"
+                          ]
+                        },
+                        "requestId": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "message",
+                        "required_plan",
+                        "current_plan",
+                        "requestId"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": {}
+                    }
+                  ]
                 }
               }
             }
@@ -72312,12 +72360,60 @@
             }
           },
           "403": {
-            "description": "Caller is not a workspace admin, or the workspace's plan tier does not admit this integration.",
+            "description": "Caller is not a workspace admin, or the workspace's plan tier does not admit this integration. Plan-upgrade responses follow the PlanUpgradeRequiredBody shape with PlanTier-typed `required_plan` + `current_plan` fields.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string",
+                          "enum": [
+                            "plan_upgrade_required"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "required_plan": {
+                          "type": "string",
+                          "enum": [
+                            "free",
+                            "trial",
+                            "starter",
+                            "pro",
+                            "business"
+                          ]
+                        },
+                        "current_plan": {
+                          "type": "string",
+                          "enum": [
+                            "free",
+                            "trial",
+                            "starter",
+                            "pro",
+                            "business"
+                          ]
+                        },
+                        "requestId": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "message",
+                        "required_plan",
+                        "current_plan",
+                        "requestId"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": {}
+                    }
+                  ]
                 }
               }
             }
@@ -72456,12 +72552,60 @@
             }
           },
           "403": {
-            "description": "Workspace plan changed mid-OAuth and no longer admits this integration (JSON callers; browsers see a 302 to the admin UI).",
+            "description": "Workspace plan changed mid-OAuth and no longer admits this integration (JSON callers; browsers see a 302 to the admin UI). Body follows the PlanUpgradeRequiredBody shape with PlanTier-typed `required_plan` + `current_plan` fields.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string",
+                          "enum": [
+                            "plan_upgrade_required"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "required_plan": {
+                          "type": "string",
+                          "enum": [
+                            "free",
+                            "trial",
+                            "starter",
+                            "pro",
+                            "business"
+                          ]
+                        },
+                        "current_plan": {
+                          "type": "string",
+                          "enum": [
+                            "free",
+                            "trial",
+                            "starter",
+                            "pro",
+                            "business"
+                          ]
+                        },
+                        "requestId": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "message",
+                        "required_plan",
+                        "current_plan",
+                        "requestId"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": {}
+                    }
+                  ]
                 }
               }
             }

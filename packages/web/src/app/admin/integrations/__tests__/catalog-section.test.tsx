@@ -118,6 +118,10 @@ describe("CatalogCard — coming_soon", () => {
     // A coming_soon row should never appear "installed"; the API guards
     // against this server-side, but the UI also short-circuits ahead of
     // the install branch as defense-in-depth.
+    //
+    // Asserting via data-testid (not textContent) so a future copy
+    // change to "Configure"/"Remove" doesn't silently green-light the
+    // regression.
     const { container } = render(
       <CatalogCard
         entry={makeEntry({
@@ -131,8 +135,12 @@ describe("CatalogCard — coming_soon", () => {
       />,
     );
 
-    expect(container.textContent).not.toContain("Manage");
-    expect(container.textContent).not.toContain("Disconnect");
+    // The two install-branch CTAs have no data-testid in production
+    // today, so use aria-label as the regression hook — same robustness
+    // as data-testid (won't drift on copy changes) without requiring
+    // a production-code attribute add.
+    expect(container.querySelector('button[aria-label^="Manage "]')).toBeNull();
+    expect(container.querySelector('button[aria-label^="Disconnect "]')).toBeNull();
     expect(
       container.querySelector('[data-testid="catalog-card-whatsapp-coming-soon-cta"]'),
     ).not.toBeNull();
@@ -157,6 +165,15 @@ describe("CatalogCard — upgrade_required (regression guard for #2747)", () => 
       />,
     );
 
+    // `data-card-state` is the dominant gate identifier — assert it
+    // here so a future regression that conflates upgrade-required with
+    // coming-soon or accessible breaks loud at this assertion (not
+    // later via a copy / icon comparison).
+    expect(
+      container
+        .querySelector('[data-testid="catalog-card-salesforce"]')
+        ?.getAttribute("data-card-state"),
+    ).toBe("upgrade-required");
     expect(
       container.querySelector('[data-testid="catalog-card-salesforce-lock-icon"]'),
     ).not.toBeNull();

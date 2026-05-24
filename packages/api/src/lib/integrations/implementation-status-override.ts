@@ -125,8 +125,18 @@ const EMPTY_RESULT: ImplementationStatusOverrideResult = {
 
 /**
  * Apply the operator override against `plugin_catalog`. Returns a
- * summary the boot pass can log. Each UPDATE is its own round trip —
- * keeps the SQL simple, and the override map is typically 0–3 entries.
+ * summary the boot pass can log.
+ *
+ * Atomic: the UPDATE loop runs inside a single `BEGIN`/`COMMIT` so a
+ * mid-loop failure rolls back every prior UPDATE in the boot. Without
+ * the wrap, a per-UPDATE crash would leave the catalog in a mixed
+ * state — some slugs flipped, some not — which contradicts the
+ * "override is the final word" contract. Per PR #2782 codex review.
+ *
+ * The override map is typically 0–3 entries, so the round-trip cost
+ * (BEGIN + N UPDATEs + COMMIT vs. a single set-based UPDATE) is
+ * negligible. Per-row UPDATE keeps the SQL readable and the warn-log
+ * call site clean.
  */
 export async function applyImplementationStatusOverride(
   db: ImplementationStatusOverrideDb,
@@ -157,18 +167,39 @@ export async function applyImplementationStatusOverride(
 
   const plan = planImplementationStatusOverride(override, narrowed);
 
-  for (const action of plan.actions) {
-    await db.query(
-      `UPDATE plugin_catalog
-          SET implementation_status = $1,
-              updated_at = NOW()
-        WHERE slug = $2`,
-      [action.to, action.slug],
-    );
-    log.info(
-      { slug: action.slug, from: action.from, to: action.to },
-      "Implementation-status override applied",
-    );
+  if (plan.actions.length > 0) {
+    await db.query("BEGIN");
+    try {
+      for (const action of plan.actions) {
+        await db.query(
+          `UPDATE plugin_catalog
+              SET implementation_status = $1,
+                  updated_at = NOW()
+            WHERE slug = $2`,
+          [action.to, action.slug],
+        );
+        log.info(
+          { slug: action.slug, from: action.from, to: action.to },
+          "Implementation-status override applied",
+        );
+      }
+      await db.query("COMMIT");
+    } catch (err) {
+      // Best-effort rollback — if ROLLBACK itself fails (broken
+      // socket / connection lost), the connection is already in a
+      // bad state and Postgres will discard the txn on connection
+      // close. Re-throw the original error so the boot wrapper's
+      // try/catch can surface it as `outcome: "error"`.
+      try {
+        await db.query("ROLLBACK");
+      } catch (rollbackErr) {
+        log.warn(
+          { rollbackErr: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr) },
+          "Implementation-status override ROLLBACK failed — connection will be discarded",
+        );
+      }
+      throw err;
+    }
   }
 
   for (const slug of plan.unmatchedSlugs) {

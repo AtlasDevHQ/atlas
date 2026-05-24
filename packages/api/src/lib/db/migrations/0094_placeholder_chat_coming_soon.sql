@@ -17,18 +17,25 @@
 -- because the planner can't distinguish "config history said false"
 -- from "ops just disabled this".
 --
--- Idempotent: only updates rows that match the placeholder set AND
--- still hold the pre-#2747 state (`enabled = false AND
--- implementation_status = 'available'`). On self-host without these
--- rows declared the migration is a no-op (UPDATE affects 0 rows).
--- On a subsequent operator emergency-disable, the seeder's
--- preserve-disabled branch takes over and the migration doesn't
--- re-fire (the WHERE clause excludes already-promoted rows).
+-- Idempotent + operator-intent-safe: the WHERE clause has FOUR terms,
+-- each load-bearing:
+--   1. `slug IN (...)` — scope to the 1.5.2 placeholder set only
+--   2. `enabled = false` — pre-#2747 default state for these rows
+--   3. `implementation_status = 'available'` — pre-#2747 default state
+--   4. `updated_at = created_at` — row has NEVER been touched since
+--      the seed wrote it. This is the operator-intent guard: a
+--      self-host operator who disabled `discord` after slice-2 seeded
+--      it (catalog upsert bumps `updated_at` via `NOW()` on every
+--      write) keeps their `enabled = false` decision. Without this
+--      clause we'd un-disable rows the operator deliberately
+--      disabled — see PR-review feedback on #2782.
 --
--- Slices 10-16 (the individual chat-Platform install slices) flip
--- their row's `implementation_status` to `'available'` via the
--- atlas.config.ts edit + catalog seeder upsert — no further DB
--- migration needed.
+-- On self-host without these rows declared the migration is a no-op
+-- (UPDATE affects 0 rows). On any subsequent operator action the
+-- WHERE clause stops matching and re-runs are inert. Slices 10-16
+-- (the individual chat-Platform install slices) flip their row's
+-- `implementation_status` to `'available'` via the atlas.config.ts
+-- edit + catalog seeder upsert — no further DB migration needed.
 
 UPDATE plugin_catalog
 SET enabled = true,
@@ -36,4 +43,5 @@ SET enabled = true,
     updated_at = NOW()
 WHERE slug IN ('teams', 'discord', 'gchat', 'telegram', 'whatsapp')
   AND enabled = false
-  AND implementation_status = 'available';
+  AND implementation_status = 'available'
+  AND updated_at = created_at;

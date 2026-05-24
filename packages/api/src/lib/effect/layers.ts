@@ -639,10 +639,35 @@ export const ImplementationStatusOverrideLive: Layer.Layer<
         const result = await runImplementationStatusOverrideBoot();
         switch (result.kind) {
           case "skipped":
-            return {
-              ...zeroCounts,
-              outcome: "skipped-empty",
-            } satisfies ImplementationStatusOverrideShape;
+            // Three skip reasons, two outcomes:
+            //   - `no-internal-db` should be unreachable here (the Layer's
+            //     `!db.available` gate above already caught it), but if a
+            //     future refactor decouples the gate from the wrapper this
+            //     surfaces as `skipped-gate` instead of mislabelling.
+            //   - `no-config` mid-boot is genuinely unexpected — the Config
+            //     Tag should have loaded by the time the override Layer
+            //     runs — so surface as `error` for health visibility.
+            //   - `empty-override` is the SaaS-norm path and the explicit
+            //     "operator declared nothing" path on self-host.
+            switch (result.reason) {
+              case "no-internal-db":
+                return {
+                  ...zeroCounts,
+                  outcome: "skipped-gate",
+                } satisfies ImplementationStatusOverrideShape;
+              case "no-config":
+                return {
+                  ...zeroCounts,
+                  outcome: "error",
+                  error: "Implementation-status override: no resolved config at post-seed boot phase",
+                } satisfies ImplementationStatusOverrideShape;
+              case "empty-override":
+                return {
+                  ...zeroCounts,
+                  outcome: "skipped-empty",
+                } satisfies ImplementationStatusOverrideShape;
+            }
+            break;
           case "applied":
             return {
               updatedCount: result.updatedCount,
@@ -653,7 +678,11 @@ export const ImplementationStatusOverrideLive: Layer.Layer<
             return {
               ...zeroCounts,
               outcome: "error",
-              error: result.message,
+              // Scrub the wrapper's message at the Layer boundary —
+              // a pg connection-string echo in the underlying error
+              // shouldn't survive into the Tag value the health
+              // surface reads.
+              error: errorMessage(new Error(result.message)),
             } satisfies ImplementationStatusOverrideShape;
         }
       },

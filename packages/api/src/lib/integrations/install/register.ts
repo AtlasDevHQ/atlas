@@ -33,6 +33,8 @@ import {
 import { lazyPluginLoader } from "@atlas/api/lib/plugins/lazy-loader";
 import { createJiraLazyBuilder } from "@atlas/api/lib/integrations/jira/lazy-builder";
 import { createSalesforceLazyBuilder } from "@atlas/api/lib/integrations/salesforce/lazy-builder";
+import { createEmailLazyBuilder } from "@atlas/api/lib/integrations/email-tool";
+import { EMAIL_CATALOG_ID } from "./email-secret-schema";
 
 const log = createLogger("integrations.install.register");
 
@@ -87,7 +89,14 @@ export function registerBuiltinInstallHandlers(): void {
   // additive merges (e.g. Salesforce slice #2658) land at predictable
   // line offsets and don't conflict here.
   registerFormHandler("email", new EmailFormInstallHandler());
-  log.info("Registered EmailFormInstallHandler");
+  if (!lazyPluginLoader.hasBuilder(EMAIL_CATALOG_ID)) {
+    // No operator env gate — customer-supplied SMTP creds make the
+    // builder always available alongside the form handler. Pair them
+    // together so a half-wired deploy can't end up with an installable
+    // card whose first tool call fails with builder_missing.
+    lazyPluginLoader.registerBuilder(EMAIL_CATALOG_ID, createEmailLazyBuilder());
+  }
+  log.info("Registered EmailFormInstallHandler + LazyPluginLoader builder");
   registerFormHandler("obsidian", new ObsidianFormInstallHandler());
   log.info("Registered ObsidianFormInstallHandler");
   registerFormHandler("webhook", new WebhookFormInstallHandler());

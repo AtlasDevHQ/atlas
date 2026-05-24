@@ -334,6 +334,12 @@ When connected, the card shows:
 - **Sender** — The configured sender email address
 - **Connected** — Timestamp of when the configuration was saved
 
+### Agent tool — `sendEmail`
+
+Once installed, Atlas's agent loop can deliver messages through the workspace's SMTP transport via the `sendEmail` tool. The agent resolves the active workspace at execute time and routes through the same encrypted credentials the form persisted — no operator env vars are required. If a workspace has no Email install, `sendEmail` returns an actionable error pointing the user back to `/admin/integrations` instead of failing with a generic 500.
+
+The Resend-based `sendEmailReport` tool (operator-env-configured plugin under `plugins/email/`) remains available and uses a different tool name, so both can coexist in the same deploy — pick whichever credentials your workspace has set up.
+
 ### Disconnecting
 
 Click **Disconnect** and confirm. Email delivery will fall back to environment variables (`ATLAS_SMTP_URL` or `RESEND_API_KEY`) or be disabled until reconnected.

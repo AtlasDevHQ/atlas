@@ -3,6 +3,7 @@ import { type AtlasAction, isAction } from "@atlas/api/lib/action-types";
 import { explore } from "./explore";
 import { executeSQL } from "./sql";
 import { createDashboard } from "./create-dashboard";
+import { sendEmailTool, SEND_EMAIL_DESCRIPTION } from "@atlas/api/lib/integrations/email-tool";
 
 export type { AtlasAction };
 export { isAction };
@@ -174,6 +175,17 @@ defaultRegistry.register({
   tool: createDashboard,
 });
 
+// First per-Workspace lazy-plugin tool (#2698). Registered globally
+// because the workspace + install check happens at execute time inside
+// the tool — keeping the tool discoverable across all Workspaces while
+// the "is the Email integration installed for this workspace" gate
+// runs in the loader.
+defaultRegistry.register({
+  name: "sendEmail",
+  description: SEND_EMAIL_DESCRIPTION,
+  tool: sendEmailTool,
+});
+
 defaultRegistry.freeze();
 
 interface BuildRegistryResult {
@@ -212,6 +224,12 @@ export async function buildRegistry(options?: {
     name: "createDashboard",
     description: CREATE_DASHBOARD_DESCRIPTION,
     tool: createDashboard,
+  });
+
+  registry.register({
+    name: "sendEmail",
+    description: SEND_EMAIL_DESCRIPTION,
+    tool: sendEmailTool,
   });
 
   if (process.env.ATLAS_PYTHON_ENABLED === "true") {

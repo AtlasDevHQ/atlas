@@ -151,7 +151,12 @@ describe("defaultRegistry", () => {
 
   it("getAll returns exactly the core tools", () => {
     const all = defaultRegistry.getAll();
-    expect(Object.keys(all).sort()).toEqual(["createDashboard", "executeSQL", "explore"]);
+    expect(Object.keys(all).sort()).toEqual([
+      "createDashboard",
+      "executeSQL",
+      "explore",
+      "sendEmail",
+    ]);
   });
 
   it("describe produces the expected workflow text", () => {
@@ -196,7 +201,13 @@ describe("buildRegistry", () => {
       process.env.ATLAS_SANDBOX_URL = "http://localhost:8080";
       const { registry } = await buildRegistry();
       const names = Object.keys(registry.getAll()).sort();
-      expect(names).toEqual(["createDashboard", "executePython", "executeSQL", "explore"]);
+      expect(names).toEqual([
+        "createDashboard",
+        "executePython",
+        "executeSQL",
+        "explore",
+        "sendEmail",
+      ]);
       expect(registry.describe()).toContain("### 4. Analyze Data with Python");
     } finally {
       if (saved.enabled !== undefined) process.env.ATLAS_PYTHON_ENABLED = saved.enabled;
@@ -209,7 +220,7 @@ describe("buildRegistry", () => {
   it("returns core tools by default", async () => {
     const { registry } = await buildRegistry();
     const names = Object.keys(registry.getAll()).sort();
-    expect(names).toEqual(["createDashboard", "executeSQL", "explore"]);
+    expect(names).toEqual(["createDashboard", "executeSQL", "explore", "sendEmail"]);
   });
 
   it("with includeActions includes createJiraTicket and sendEmailReport alongside core tools", async () => {
@@ -220,6 +231,7 @@ describe("buildRegistry", () => {
       "createJiraTicket",
       "executeSQL",
       "explore",
+      "sendEmail",
       "sendEmailReport",
     ]);
   });

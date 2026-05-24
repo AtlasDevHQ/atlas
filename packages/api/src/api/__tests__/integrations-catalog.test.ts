@@ -1,222 +1,75 @@
 /**
- * Tests for GET /api/v1/integrations/catalog (#2651, slice 3 of 1.5.2).
+ * Tests for GET /api/v1/integrations/catalog.
  *
- * Drives the catalog read-only endpoint directly without going through the
- * full admin router import graph. Follows the admin-marketplace.test.ts shape
- * — module-level mocks for `effect`, `@atlas/api/lib/effect/services`, and
- * `@atlas/api/lib/db/internal` — so we can assert plan filtering, install-state
- * join, SaaS `saas_eligible` filter, and admin-role gating without standing up
- * the entire app.
+ * Post-#2741 (slice 3 of 1.5.3): the route is a thin projection over the
+ * `PillarCatalogQuery` facade. The route owns:
+ *   - admin gating (delegated to `requireOrgContext()` + `createAdminRouter`)
+ *   - `hasInternalDB()` short-circuit → 404
+ *   - facade `withInstallStatusFor(orgId)` invocation
+ *   - rich-row → wire-shape projection (preserves `type`, `accessible`,
+ *     `upsellOnly`, `installStatus`, `installedAt`, `installedBy`; adds
+ *     `pillar` + `implementationStatus`)
+ *
+ * The pre-slice-3 test mocked `internalQuery` to assert plan-filtering /
+ * deploy-mode SQL fragments — that surface moved into the facade and is
+ * covered there (`lib/effect/__tests__/pillar-catalog-query.test.ts`).
+ * This file pins ONLY the route-level surface: gating, the 404 short
+ * circuit, and the wire-shape projection (including the two new fields).
  */
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
+import { Effect } from "effect";
+import type { CatalogEntryWithState } from "@atlas/api/lib/effect/pillar-catalog-query";
 
-// --- Audit capture ---
+// ---------------------------------------------------------------------------
+// Facade stub — single source of truth for the test's response shape.
+// ---------------------------------------------------------------------------
 
-interface CapturedAuditEntry {
-  actionType: string;
-  targetType: string;
-  targetId: string;
-  status?: "success" | "failure";
-  metadata?: Record<string, unknown>;
-  scope?: "platform" | "workspace";
-  ipAddress?: string | null;
-}
+const mockWithInstallStatusFor: Mock<
+  (workspaceId: string) => Effect.Effect<readonly CatalogEntryWithState[], Error>
+> = mock(() => Effect.succeed([] as readonly CatalogEntryWithState[]));
 
-const mockLogAdminAction: Mock<(entry: CapturedAuditEntry) => void> = mock(() => {});
+let mockHasInternalDB = true;
 
-mock.module("@atlas/api/lib/audit", async () => {
-  const actual = await import("@atlas/api/lib/audit/actions");
-  return {
-    logAdminAction: mockLogAdminAction,
-    logAdminActionAwait: mock(async () => {}),
-    ADMIN_ACTIONS: actual.ADMIN_ACTIONS,
-  };
-});
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const realPillarFacade = require("@atlas/api/lib/effect/pillar-catalog-query") as typeof import("@atlas/api/lib/effect/pillar-catalog-query");
 
-mock.module("@atlas/api/lib/audit/error-scrub", () => ({
-  errorMessage: (err: unknown): string => {
-    const raw = err instanceof Error ? err.message : String(err);
-    return raw.length > 512 ? `${raw.slice(0, 509)}...` : raw;
-  },
-  causeToError: () => undefined,
-}));
-
-// --- Effect bridge shim ---
-
-const mockEffectUser: Record<string, unknown> = {
-  id: "admin-1",
-  mode: "simple-key",
-  role: "admin",
-  activeOrganizationId: "org-1",
-  orgId: "org-1",
-};
-
-const fakeAuthContext = {
-  [Symbol.iterator]: function* (): Generator<unknown, Record<string, unknown>> {
-    return yield mockEffectUser;
-  },
-};
-
-interface TestEffectPromise {
-  _tag: "EffectPromise";
-  fn: () => Promise<unknown>;
-  errorTaps: Array<(err: unknown) => unknown>;
-}
-
-interface TestPipeable {
-  [Symbol.iterator]: () => Generator<unknown, unknown>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pipe is variadic across operator types
-  pipe(...ops: Array<(source: TestPipeable) => any>): any;
-}
-
-function makePipeable(effectValue: TestEffectPromise): TestPipeable {
-  const pipeable: TestPipeable = {
-    [Symbol.iterator]: function* (): Generator<unknown, unknown> {
-      return yield effectValue;
-    },
-    pipe(...ops) {
-      let current: TestPipeable = pipeable;
-      for (const op of ops) current = op(current);
-      return current;
-    },
-  };
-  return pipeable;
-}
-
-mock.module("effect", () => {
-  const Effect = {
-    gen: (genFn: () => Generator) => ({ _tag: "EffectGen", genFn }),
-    promise: (fn: () => Promise<unknown>) => {
-      const effectValue: TestEffectPromise = { _tag: "EffectPromise", fn, errorTaps: [] };
-      return makePipeable(effectValue);
-    },
-    // `tryPromise({ try, catch })` — shim treats it as a promise that runs
-    // `try()`; on rejection it applies `catch(err)` before propagation
-    // (matches real Effect's typed-failure channel for assertions).
-    tryPromise: <E>(opts: { try: () => Promise<unknown>; catch: (err: unknown) => E }) => {
-      const effectValue: TestEffectPromise = {
-        _tag: "EffectPromise",
-        fn: async () => {
-          try {
-            return await opts.try();
-          } catch (err) {
-            throw opts.catch(err);
-          }
-        },
-        errorTaps: [],
-      };
-      return makePipeable(effectValue);
-    },
-    runPromise: (value: unknown) => Promise.resolve(value),
-    sync: (syncFn: () => unknown) => ({ _tag: "EffectSync", fn: syncFn }),
-    tapError: (handler: (err: unknown) => unknown) => (source: TestPipeable) => {
-      const originalIterator = source[Symbol.iterator].bind(source);
-      const newPipeable: TestPipeable = {
-        [Symbol.iterator]: function* (): Generator<unknown, unknown> {
-          const gen = originalIterator();
-          let next = gen.next();
-          while (!next.done) {
-            const value = next.value;
-            if (
-              value &&
-              typeof value === "object" &&
-              (value as { _tag?: string })._tag === "EffectPromise"
-            ) {
-              (value as TestEffectPromise).errorTaps.push(handler);
-            }
-            const piped = yield value;
-            next = gen.next(piped);
-          }
-          return next.value;
-        },
-        pipe: source.pipe.bind(source),
-      };
-      return newPipeable;
-    },
-  };
-  return { Effect };
-});
-
-mock.module("@atlas/api/lib/effect/services", () => ({
-  AuthContext: fakeAuthContext,
-  RequestContext: {
-    [Symbol.iterator]: function* (): Generator<unknown, unknown> {
-      return yield { requestId: "test-req-1", startTime: Date.now() };
-    },
-  },
-  makeRequestContextLayer: () => ({}),
-  makeAuthContextLayer: () => ({}),
-  NoopEnterpriseDefaultsLayer: { _tag: "MockLayer" },
-  IpAllowlistPolicy: { _tag: "MockTag" },
-  SSOPolicy: { _tag: "MockTag" },
-  SCIMProvenance: { _tag: "MockTag" },
-  RolesPolicy: {
-    [Symbol.iterator]: function* (): Generator<unknown, unknown> {
-      return yield {};
-    },
-  },
-}));
-
-mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
-  EnterpriseLayer: { _tag: "MockLayer" },
-  getEnterpriseRuntime: () => ({
-    runPromise: () => Promise.resolve(undefined),
-    runPromiseExit: () => Promise.resolve({ _tag: "Success", value: undefined } as never),
-    dispose: () => Promise.resolve(),
+mock.module("@atlas/api/lib/effect/pillar-catalog-query", () => ({
+  ...realPillarFacade,
+  // Replace the Live Layer with a test layer that delegates to the mock.
+  PillarCatalogQueryLive: realPillarFacade.createPillarCatalogQueryTestLayer({
+    withInstallStatusFor: (workspaceId) => mockWithInstallStatusFor(workspaceId),
+    getByPillar: () =>
+      Effect.fail(new Error("test: getByPillar not used by this route")),
+    getBySlug: () =>
+      Effect.fail(new Error("test: getBySlug not used by this route")),
   }),
-  runEnterprise: () => Promise.resolve(undefined),
 }));
 
-mock.module("@atlas/api/lib/effect/hono", () => ({
-  runEffect: async (
-    _c: unknown,
-    effect: { _tag: string; genFn: () => Generator },
-    _opts?: unknown,
-  ) => {
-    const gen = effect.genFn();
-    let result = gen.next();
-    while (!result.done) {
-      const value = result.value;
-      if (
-        value &&
-        typeof value === "object" &&
-        (value as { _tag?: string })._tag === "EffectPromise"
-      ) {
-        const promiseValue = value as TestEffectPromise;
-        try {
-          const resolved = await promiseValue.fn();
-          result = gen.next(resolved);
-        } catch (err) {
-          for (const tap of promiseValue.errorTaps) {
-            try {
-              const tapResult = tap(err);
-              if (
-                tapResult &&
-                typeof tapResult === "object" &&
-                (tapResult as { _tag?: string })._tag === "EffectSync"
-              ) {
-                (tapResult as { fn: () => unknown }).fn();
-              }
-            } catch {
-              // tap failures must not swallow the original error
-            }
-          }
-          result = gen.throw(err);
-        }
-      } else {
-        result = gen.next(value);
-      }
-    }
-    return result.value;
-  },
-  DomainErrorMapping: Array,
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const realDbInternal = require("@atlas/api/lib/db/internal") as typeof import("@atlas/api/lib/db/internal");
+
+mock.module("@atlas/api/lib/db/internal", () => ({
+  ...realDbInternal,
+  hasInternalDB: () => mockHasInternalDB,
+  // makeInternalDBShimLayer is invoked by the route; pass through the
+  // real implementation so the facade test layer (which doesn't read
+  // InternalDB) just gets a no-op shim.
+  makeInternalDBShimLayer: realDbInternal.makeInternalDBShimLayer,
 }));
 
-// --- Middleware mock — bypass adminAuth so tests can set context vars directly ---
+mock.module("@atlas/api/lib/logger", () => ({
+  createLogger: () => ({
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+    debug: () => {},
+  }),
+  withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
+}));
 
+// Bypass adminAuth/MFA so the test can inject `orgContext` directly.
 import { createMiddleware } from "hono/factory";
-
 const passthrough = createMiddleware(async (_c, next) => {
   await next();
 });
@@ -228,12 +81,6 @@ mock.module("./routes/middleware", () => ({
   standardAuth: passthrough,
   withRequestId: passthrough,
 }));
-
-// admin-router.ts imports adminAuth/mfaRequired via relative `./middleware`
-// + `./admin-mfa-required`. Bun's mock.module key matches the literal import
-// spec — duplicate the registration under those specs so the real
-// middleware never runs (otherwise adminAuth re-runs authenticateRequest and
-// overwrites the test's `c.set("authResult", ...)`).
 mock.module("../routes/middleware", () => ({
   adminAuth: passthrough,
   platformAdminAuth: passthrough,
@@ -241,13 +88,15 @@ mock.module("../routes/middleware", () => ({
   standardAuth: passthrough,
   withRequestId: passthrough,
 }));
-
 mock.module("@atlas/api/api/routes/middleware", () => ({
   adminAuth: passthrough,
   platformAdminAuth: passthrough,
   requestContext: passthrough,
   standardAuth: passthrough,
   withRequestId: passthrough,
+}));
+mock.module("./routes/admin-mfa-required", () => ({
+  mfaRequired: passthrough,
 }));
 
 mock.module("@atlas/api/lib/auth/middleware", () => ({
@@ -265,78 +114,15 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   _setValidatorOverrides: mock(() => {}),
 }));
 
-mock.module("./routes/admin-mfa-required", () => ({
-  mfaRequired: passthrough,
-}));
-
-// --- Deploy-mode config mock — flip per test ---
-
-let mockConfigOverride: { deployMode?: "saas" | "self-hosted" } | null = null;
-
-mock.module("@atlas/api/lib/config", () => ({
-  getConfig: () => mockConfigOverride,
-  defineConfig: (c: unknown) => c,
-}));
-
-// --- Internal DB mock ---
-
-let mockHasInternalDB = true;
-let mockQueryResults: Map<string, unknown[] | Error> = new Map();
-let capturedQueries: Array<{ sql: string; params: unknown[] }> = [];
-
-function setQueryResult(pattern: string, rows: unknown[] | Error) {
-  mockQueryResults.set(pattern, rows);
-}
-
-function findQueryResult(sql: string): unknown[] | Error {
-  for (const [pattern, rows] of mockQueryResults) {
-    if (sql.includes(pattern)) return rows;
-  }
-  return [];
-}
-
-function invokeInternalQueryMock(sql: string, params: unknown[] = []): Promise<unknown[]> {
-  capturedQueries.push({ sql, params });
-  const result = findQueryResult(sql);
-  return result instanceof Error ? Promise.reject(result) : Promise.resolve(result);
-}
-
-mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => mockHasInternalDB,
-  getInternalDB: () => ({
-    query: () => Promise.resolve({ rows: [] }),
-    end: async () => {},
-    on: () => {},
-  }),
-  internalQuery: (sql: string, params?: unknown[]) => invokeInternalQueryMock(sql, params),
-  queryEffect: (sql: string, params?: unknown[]) => {
-    const effectValue: TestEffectPromise = {
-      _tag: "EffectPromise",
-      fn: () => invokeInternalQueryMock(sql, params),
-      errorTaps: [],
-    };
-    return makePipeable(effectValue);
-  },
-  internalExecute: () => {},
-}));
-
-mock.module("@atlas/api/lib/logger", () => ({
-  createLogger: () => ({
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-    debug: () => {},
-  }),
-  withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
-}));
-
-// --- Import the router after mocks ---
+// ---------------------------------------------------------------------------
+// Import after mocks
+// ---------------------------------------------------------------------------
 
 const { integrationsCatalog } = await import("../routes/integrations-catalog");
 const { OpenAPIHono } = await import("@hono/zod-openapi");
 
 // ---------------------------------------------------------------------------
-// Test helpers
+// Helpers
 // ---------------------------------------------------------------------------
 
 function buildApp(role: string = "admin", orgId: string | null = "org-1") {
@@ -361,59 +147,27 @@ function buildApp(role: string = "admin", orgId: string | null = "org-1") {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test helper for untyped JSON responses
 const json = (res: Response) => res.json() as Promise<any>;
 
-const now = new Date().toISOString();
-
-const slackRow = {
-  id: "catalog:slack",
-  slug: "slack",
-  name: "Slack",
-  description: "Connect Slack to receive answers in channel.",
-  type: "chat",
-  install_model: "oauth",
-  icon_url: null,
-  config_schema: null,
-  min_plan: "starter",
-  enabled: true,
-  saas_eligible: true,
-  created_at: now,
-  updated_at: now,
-};
-
-// Post-#2666 vocabulary: catalog min_plan uses PLAN_TIERS only (no
-// `team` / `enterprise`). Salesforce is a premium integration that
-// would have been `team` pre-#2666; the migration backfills to
-// `business`.
-const teamRow = {
-  id: "catalog:salesforce",
-  slug: "salesforce",
-  name: "Salesforce",
-  description: "Sync Salesforce records.",
-  type: "integration",
-  install_model: "oauth",
-  icon_url: null,
-  config_schema: null,
-  min_plan: "business",
-  enabled: true,
-  saas_eligible: true,
-  created_at: now,
-  updated_at: now,
-};
-
-const githubPatRow = {
-  id: "catalog:github-pat",
-  slug: "github-pat",
-  name: "GitHub (PAT)",
-  description: "Per-user personal access token.",
-  type: "integration",
-  install_model: "form",
-  icon_url: null,
-  config_schema: null,
-  min_plan: "starter",
-  enabled: true,
-  saas_eligible: false,
-  created_at: now,
-  updated_at: now,
-};
+function makeRichRow(overrides: Partial<CatalogEntryWithState> = {}): CatalogEntryWithState {
+  return {
+    id: "catalog:slack",
+    slug: "slack",
+    name: "Slack",
+    description: "Connect Slack",
+    type: "chat",
+    installModel: "oauth",
+    iconUrl: null,
+    configSchema: null,
+    minPlan: "starter",
+    saasEligible: true,
+    pillar: "chat",
+    implementationStatus: "available",
+    autoInstall: false,
+    install: null,
+    state: "accessible",
+    planAccessible: true,
+    ...overrides,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -422,18 +176,14 @@ const githubPatRow = {
 describe("GET /api/v1/integrations/catalog", () => {
   beforeEach(() => {
     mockHasInternalDB = true;
-    mockQueryResults = new Map();
-    capturedQueries = [];
-    mockConfigOverride = null;
-    mockLogAdminAction.mockClear();
+    mockWithInstallStatusFor.mockReset();
+    mockWithInstallStatusFor.mockReturnValue(
+      Effect.succeed([] as readonly CatalogEntryWithState[]),
+    );
   });
 
   describe("admin gating", () => {
     it("returns 400 when no active org", async () => {
-      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
-      setQueryResult("FROM plugin_catalog", [slackRow]);
-      setQueryResult("FROM workspace_plugins", []);
-
       const app = buildApp("admin", null);
       const res = await app.request("/integrations/catalog");
       expect(res.status).toBe(400);
@@ -447,17 +197,23 @@ describe("GET /api/v1/integrations/catalog", () => {
     });
   });
 
-  describe("response shape", () => {
-    it("returns enabled catalog entries with installed=false when no installations", async () => {
-      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
-      setQueryResult("FROM plugin_catalog", [slackRow]);
-      setQueryResult("FROM workspace_plugins", []);
+  describe("facade invocation", () => {
+    it("calls withInstallStatusFor with the caller's orgId", async () => {
+      const app = buildApp();
+      await app.request("/integrations/catalog");
+      expect(mockWithInstallStatusFor).toHaveBeenCalledWith("org-1");
+    });
+  });
+
+  describe("wire-shape projection", () => {
+    it("projects a rich row to the wire envelope (no install)", async () => {
+      const row = makeRichRow({ state: "accessible", planAccessible: true });
+      mockWithInstallStatusFor.mockReturnValueOnce(Effect.succeed([row]));
 
       const app = buildApp();
       const res = await app.request("/integrations/catalog");
       expect(res.status).toBe(200);
       const body = await json(res);
-      expect(body.catalog).toHaveLength(1);
       const entry = body.catalog[0];
       expect(entry.id).toBe("catalog:slack");
       expect(entry.slug).toBe("slack");
@@ -470,267 +226,79 @@ describe("GET /api/v1/integrations/catalog", () => {
       expect(entry.installedBy).toBeNull();
       expect(entry.installStatus).toBeNull();
       expect(entry.upsellOnly).toBe(false);
+      expect(entry.accessible).toBe(true);
+      expect(entry.upgradeRequired).toBeNull();
+      // New #2741 fields:
+      expect(entry.pillar).toBe("chat");
+      expect(entry.implementationStatus).toBe("available");
     });
 
-    it("surfaces installStatus from workspace_plugins.config (e.g. reconnect_needed for Salesforce)", async () => {
-      // #2658 — the Salesforce refresh-token flow flips config.status to
-      // 'reconnect_needed' on permanent failure. The catalog response
-      // carries the flag so /admin/integrations can render the
-      // Reconnect affordance.
-      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
-      setQueryResult("FROM plugin_catalog", [slackRow]);
-      setQueryResult("FROM workspace_plugins", [
-        {
-          catalog_id: "catalog:slack",
-          installed_at: now,
-          installed_by: "user-42",
-          install_status: "reconnect_needed",
+    it("surfaces install metadata when an install is present", async () => {
+      const row = makeRichRow({
+        state: "connected",
+        planAccessible: true,
+        install: {
+          id: "install-1",
+          catalogId: "catalog:slack",
+          installId: "catalog:slack",
+          workspaceId: "org-1",
+          pillar: "chat",
+          installedAt: "2026-05-20T10:00:00.000Z",
+          installedBy: "user-42",
+          status: "reconnect_needed",
+          disabled: false,
         },
-      ]);
+      });
+      mockWithInstallStatusFor.mockReturnValueOnce(Effect.succeed([row]));
 
       const app = buildApp();
       const res = await app.request("/integrations/catalog");
       expect(res.status).toBe(200);
       const body = await json(res);
-      expect(body.catalog[0].installStatus).toBe("reconnect_needed");
+      const entry = body.catalog[0];
+      expect(entry.installed).toBe(true);
+      expect(entry.installedAt).toBe("2026-05-20T10:00:00.000Z");
+      expect(entry.installedBy).toBe("user-42");
+      expect(entry.installStatus).toBe("reconnect_needed");
     });
 
-    it("only includes enabled rows (planner filter at SQL layer)", async () => {
-      // Endpoint should issue `WHERE enabled = true` — the mock matches the
-      // SQL fragment and returns only enabled rows. This test asserts the
-      // contract by verifying the captured SQL.
-      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
-      setQueryResult("FROM plugin_catalog", [slackRow]);
-      setQueryResult("FROM workspace_plugins", []);
-
-      const app = buildApp();
-      const res = await app.request("/integrations/catalog");
-      expect(res.status).toBe(200);
-
-      const catalogQuery = capturedQueries.find((q) => q.sql.includes("FROM plugin_catalog"));
-      expect(catalogQuery).toBeDefined();
-      expect(catalogQuery!.sql).toContain("enabled = true");
-    });
-
-    it("filters out legacy plugin_catalog `type` values at the SQL layer", async () => {
-      // The DB CHECK admits `datasource|context|interaction|action|sandbox`
-      // (legacy marketplace types) alongside the new `chat|integration`
-      // values. The customer-facing endpoint must narrow to the new pair
-      // or the client-side Zod parse will fail.
-      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
-      setQueryResult("FROM plugin_catalog", [slackRow]);
-      setQueryResult("FROM workspace_plugins", []);
-
-      const app = buildApp();
-      const res = await app.request("/integrations/catalog");
-      expect(res.status).toBe(200);
-
-      const catalogQuery = capturedQueries.find((q) => q.sql.includes("FROM plugin_catalog"));
-      expect(catalogQuery).toBeDefined();
-      expect(catalogQuery!.sql).toContain("type IN ('chat', 'integration')");
-    });
-  });
-
-  describe("install-state join", () => {
-    it("marks rows installed when workspace_plugins row exists", async () => {
-      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
-      setQueryResult("FROM plugin_catalog", [slackRow]);
-      setQueryResult("FROM workspace_plugins", [
-        {
-          catalog_id: "catalog:slack",
-          installed_at: now,
-          installed_by: "user-42",
-        },
-      ]);
+    it("flags above-plan rows as upsellOnly with upgradeRequired carrying the catalog min_plan", async () => {
+      const row = makeRichRow({
+        slug: "salesforce",
+        type: "integration",
+        pillar: "action",
+        minPlan: "business",
+        state: "upgrade_required",
+        planAccessible: false,
+      });
+      mockWithInstallStatusFor.mockReturnValueOnce(Effect.succeed([row]));
 
       const app = buildApp();
       const res = await app.request("/integrations/catalog");
       expect(res.status).toBe(200);
       const body = await json(res);
-      expect(body.catalog[0].installed).toBe(true);
-      expect(body.catalog[0].installedAt).toBe(now);
-      expect(body.catalog[0].installedBy).toBe("user-42");
+      const entry = body.catalog[0];
+      expect(entry.upsellOnly).toBe(true);
+      expect(entry.accessible).toBe(false);
+      expect(entry.upgradeRequired).toBe("business");
+      expect(entry.pillar).toBe("action");
     });
 
-    it("converts Date-typed installed_at to ISO string (pg returns timestamptz as Date)", async () => {
-      const installedDate = new Date("2026-05-19T10:00:00Z");
-      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
-      setQueryResult("FROM plugin_catalog", [slackRow]);
-      setQueryResult("FROM workspace_plugins", [
-        {
-          catalog_id: "catalog:slack",
-          installed_at: installedDate,
-          installed_by: "user-42",
-        },
-      ]);
+    it("surfaces the implementationStatus field for coming-soon rows", async () => {
+      const row = makeRichRow({
+        slug: "teams",
+        pillar: "chat",
+        implementationStatus: "coming_soon",
+        state: "coming_soon",
+        planAccessible: true,
+      });
+      mockWithInstallStatusFor.mockReturnValueOnce(Effect.succeed([row]));
 
       const app = buildApp();
       const res = await app.request("/integrations/catalog");
-      expect(res.status).toBe(200);
       const body = await json(res);
-      expect(body.catalog[0].installedAt).toBe(installedDate.toISOString());
-    });
-
-    it("scopes workspace_plugins lookup to caller's org via WHERE workspace_id = $1", async () => {
-      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
-      setQueryResult("FROM plugin_catalog", [slackRow]);
-      setQueryResult("FROM workspace_plugins", []);
-
-      const app = buildApp();
-      await app.request("/integrations/catalog");
-      const wpQuery = capturedQueries.find((q) => q.sql.includes("FROM workspace_plugins"));
-      expect(wpQuery).toBeDefined();
-      // Asserting both the SQL fragment AND `params[0] === orgId` guards
-      // against a regression that drops the WHERE clause (cross-tenant
-      // install-state leakage). `params.toContain` alone would pass even
-      // if `workspace_id = $1` were removed.
-      expect(wpQuery!.sql).toContain("workspace_id = $1");
-      expect(wpQuery!.params[0]).toBe("org-1");
-    });
-  });
-
-  describe("plan filtering", () => {
-    it("flags above-plan entries as upsellOnly=true", async () => {
-      // Workspace on starter; Salesforce requires business — should appear
-      // with `upsellOnly: true`, not be filtered out.
-      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
-      setQueryResult("FROM plugin_catalog", [slackRow, teamRow]);
-      setQueryResult("FROM workspace_plugins", []);
-
-      const app = buildApp();
-      const res = await app.request("/integrations/catalog");
-      expect(res.status).toBe(200);
-      const body = await json(res);
-      expect(body.catalog).toHaveLength(2);
-      const slack = body.catalog.find((e: { slug: string }) => e.slug === "slack");
-      const salesforce = body.catalog.find((e: { slug: string }) => e.slug === "salesforce");
-      expect(slack.upsellOnly).toBe(false);
-      expect(salesforce.upsellOnly).toBe(true);
-    });
-
-    it("flags unknown min_plan values as upsellOnly (fail-closed)", async () => {
-      // `#2666` migration window: a min_plan value outside both vocabularies
-      // (e.g. typo or future tier) must render read-only rather than
-      // silently allow install.
-      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
-      setQueryResult("FROM plugin_catalog", [
-        { ...slackRow, min_plan: "platinum" },
-      ]);
-      setQueryResult("FROM workspace_plugins", []);
-
-      const app = buildApp();
-      const res = await app.request("/integrations/catalog");
-      expect(res.status).toBe(200);
-      const body = await json(res);
-      expect(body.catalog[0].upsellOnly).toBe(true);
-    });
-
-    it("flags upsellOnly=false when workspace plan meets min_plan", async () => {
-      setQueryResult("FROM organization WHERE id", [{ plan_tier: "business" }]);
-      setQueryResult("FROM plugin_catalog", [slackRow, teamRow]);
-      setQueryResult("FROM workspace_plugins", []);
-
-      const app = buildApp();
-      const res = await app.request("/integrations/catalog");
-      expect(res.status).toBe(200);
-      const body = await json(res);
-      const salesforce = body.catalog.find((e: { slug: string }) => e.slug === "salesforce");
-      expect(salesforce.upsellOnly).toBe(false);
-    });
-
-    it("emits `accessible` and `upgradeRequired` per entry — accessible=true → upgradeRequired=null", async () => {
-      // Pin the 1.5.2 four-layer-entitlement contract: the admin UI's
-      // catalog-section reads BOTH fields, so a regression that drops
-      // either (or inverts the invariant) would silently break the
-      // three-state card render. Asserting at the route level keeps
-      // the contract pinned without round-tripping through the UI.
-      setQueryResult("FROM organization WHERE id", [{ plan_tier: "business" }]);
-      setQueryResult("FROM plugin_catalog", [slackRow, teamRow]);
-      setQueryResult("FROM workspace_plugins", []);
-
-      const app = buildApp();
-      const res = await app.request("/integrations/catalog");
-      expect(res.status).toBe(200);
-      const body = await json(res);
-      const slack = body.catalog.find((e: { slug: string }) => e.slug === "slack");
-      const salesforce = body.catalog.find((e: { slug: string }) => e.slug === "salesforce");
-      expect(slack.accessible).toBe(true);
-      expect(slack.upgradeRequired).toBeNull();
-      expect(salesforce.accessible).toBe(true);
-      expect(salesforce.upgradeRequired).toBeNull();
-    });
-
-    it("emits `accessible=false` + `upgradeRequired=<min_plan>` for above-plan entries", async () => {
-      // The other half of the invariant — when accessible=false,
-      // upgradeRequired carries the catalog row's min_plan so the
-      // locked card can render the "Premium — requires <plan>" badge.
-      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
-      setQueryResult("FROM plugin_catalog", [slackRow, teamRow]);
-      setQueryResult("FROM workspace_plugins", []);
-
-      const app = buildApp();
-      const res = await app.request("/integrations/catalog");
-      expect(res.status).toBe(200);
-      const body = await json(res);
-      const slack = body.catalog.find((e: { slug: string }) => e.slug === "slack");
-      const salesforce = body.catalog.find((e: { slug: string }) => e.slug === "salesforce");
-      // Slack admits starter — accessible
-      expect(slack.accessible).toBe(true);
-      expect(slack.upgradeRequired).toBeNull();
-      // Salesforce requires business — upgrade required
-      expect(salesforce.accessible).toBe(false);
-      expect(salesforce.upgradeRequired).toBe("business");
-    });
-  });
-
-  describe("deploy-mode filter", () => {
-    it("issues a SaaS-narrowed catalog query (`saas_eligible = true`) when deployMode is `saas`", async () => {
-      mockConfigOverride = { deployMode: "saas" };
-      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
-      setQueryResult("FROM plugin_catalog", [slackRow]);
-      setQueryResult("FROM workspace_plugins", []);
-
-      const app = buildApp();
-      const res = await app.request("/integrations/catalog");
-      expect(res.status).toBe(200);
-
-      const catalogQuery = capturedQueries.find((q) => q.sql.includes("FROM plugin_catalog"));
-      expect(catalogQuery).toBeDefined();
-      expect(catalogQuery!.sql).toContain("saas_eligible = true");
-    });
-
-    it("omits the `saas_eligible = true` predicate on self-hosted deploys", async () => {
-      mockConfigOverride = { deployMode: "self-hosted" };
-      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
-      setQueryResult("FROM plugin_catalog", [slackRow, githubPatRow]);
-      setQueryResult("FROM workspace_plugins", []);
-
-      const app = buildApp();
-      const res = await app.request("/integrations/catalog");
-      expect(res.status).toBe(200);
-
-      const catalogQuery = capturedQueries.find((q) => q.sql.includes("FROM plugin_catalog"));
-      expect(catalogQuery).toBeDefined();
-      expect(catalogQuery!.sql).not.toContain("saas_eligible = true");
-
-      // And every row from the DB surfaces in the response.
-      const body = await json(res);
-      expect(body.catalog).toHaveLength(2);
-    });
-
-    it("treats unloaded config as self-hosted (no `saas_eligible = true` predicate)", async () => {
-      mockConfigOverride = null;
-      setQueryResult("FROM organization WHERE id", [{ plan_tier: "starter" }]);
-      setQueryResult("FROM plugin_catalog", [slackRow, githubPatRow]);
-      setQueryResult("FROM workspace_plugins", []);
-
-      const app = buildApp();
-      const res = await app.request("/integrations/catalog");
-      expect(res.status).toBe(200);
-
-      const catalogQuery = capturedQueries.find((q) => q.sql.includes("FROM plugin_catalog"));
-      expect(catalogQuery).toBeDefined();
-      expect(catalogQuery!.sql).not.toContain("saas_eligible = true");
+      expect(body.catalog[0].implementationStatus).toBe("coming_soon");
+      expect(body.catalog[0].pillar).toBe("chat");
     });
   });
 });

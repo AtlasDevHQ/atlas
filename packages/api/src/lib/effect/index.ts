@@ -218,3 +218,17 @@ export {
   CatalogNotFoundError,
   InstallNotFoundError,
 } from "./errors";
+
+// ── PillarCatalogQuery (#2741 — slice 3 of 1.5.3) ───────────────────
+
+export {
+  PillarCatalogQuery,
+  PillarCatalogQueryLive,
+  createPillarCatalogQueryTestLayer,
+  projectCatalogWithInstalls,
+  type PillarCatalogQueryShape,
+  type CatalogEntry,
+  type CatalogEntryWithState,
+  type WorkspaceInstall,
+  type WorkspacePlanContext,
+} from "./pillar-catalog-query";

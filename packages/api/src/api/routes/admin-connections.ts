@@ -19,8 +19,7 @@ import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { runHandler } from "@atlas/api/lib/effect/hono";
-import { mapTaggedError } from "@atlas/api/lib/effect/hono";
-import type { AtlasError } from "@atlas/api/lib/effect/errors";
+import { mapInstallError } from "@atlas/api/lib/effect/workspace-installer";
 import { checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
 import { GROUP_NAME_PATTERN } from "@atlas/api/lib/db/connection-groups-helpers";
 import {
@@ -63,12 +62,11 @@ function getAtlasMode(c: { get(key: string): unknown }): import("@useatlas/types
  * the call site preserves the OpenAPI router's `RouteConfigToTypedResponse`
  * narrowing (Hono refuses to widen a plain `Response` returned from a
  * helper).
- */
-/**
- * The error body must include `error` + `message` as typed fields so the
- * OpenAPI route inference can match it against the response schemas
- * (which require both). Extra fields from `mapTaggedError`'s `body`
- * (e.g. `fieldErrors`, `catalogSlug`) ride on the index signature.
+ *
+ * `error` + `message` are required so OpenAPI route inference matches
+ * the response schemas; extra tag-specific fields from `mapInstallError`'s
+ * `body` (e.g. `fieldErrors`, `reason`, `pillar`) ride on the index
+ * signature.
  */
 interface InstallerErrorBody {
   readonly error: string;
@@ -76,25 +74,11 @@ interface InstallerErrorBody {
   readonly [key: string]: unknown;
 }
 
-/**
- * The status codes `mapTaggedError` produces for any `InstallError`:
- *   - `InvalidInstallIdError` → 400
- *   - `ConfigSchemaError` → 400
- *   - `CatalogNotFoundError` → 404
- *   - `InstallNotFoundError` → 404
- *   - `AlreadyInstalledError` → 409
- *
- * Narrowing keeps `c.json(..., result.status)` compatible with the
- * OpenAPI route definitions (Hono refuses to widen `ContentfulStatusCode`
- * into a specific 4xx slot).
- */
-type InstallerErrorStatus = 400 | 404 | 409;
-
 type InstallerResult<A> =
   | { readonly kind: "ok"; readonly value: A }
   | {
       readonly kind: "error";
-      readonly status: InstallerErrorStatus;
+      readonly status: 400 | 404 | 409;
       readonly body: InstallerErrorBody;
     };
 
@@ -102,7 +86,13 @@ type InstallerResult<A> =
  * Run a `WorkspaceInstaller`-using Effect from inside an async Hono
  * handler. Provides the live installer Layer and maps tagged installer
  * errors into a route-renderable `{ status, body }` pair via
- * `mapTaggedError`.
+ * {@link mapInstallError}.
+ *
+ * `mapInstallError` is an exhaustive `switch (error._tag)` — adding a new
+ * `InstallError` variant fails at compile time inside `mapInstallError`
+ * (not via a runtime "unknown status" log line here). The result type
+ * narrows `status` to `400 | 404 | 409` directly so `c.json(body, status)`
+ * matches the OpenAPI route schema without a `ContentfulStatusCode` cast.
  *
  * Defects (non-tagged Effect failures) re-throw so `runHandler`'s outer
  * try/catch produces a 500 with a request ID — same posture as a thrown
@@ -131,27 +121,10 @@ async function runInstaller<A>(
 
   const failure = Cause.failureOption(exit.cause);
   if (failure._tag === "Some") {
-    const mapping = mapTaggedError(failure.value as AtlasError);
-    // mapping.status is `ContentfulStatusCode` but for any `InstallError`
-    // tag it's always one of 400 / 404 / 409 — see `InstallerErrorStatus`.
-    // The narrow cast lets `c.json(body, status)` match the OpenAPI route
-    // schema; a future installer tag mapping to an unexpected status
-    // would surface as a runtime "unknown status" log line below rather
-    // than silently slipping through.
-    const status = mapping.status as InstallerErrorStatus;
-    if (status !== 400 && status !== 404 && status !== 409) {
-      log.error(
-        { mappedStatus: mapping.status, tag: (failure.value as { _tag?: string })._tag },
-        "runInstaller saw an unexpected status from mapTaggedError — falling back to 500",
-      );
-      // Re-throw so runHandler renders a 500. This preserves the
-      // never-silently-degrade invariant even if InstallError's tag set
-      // widens without a corresponding mapTaggedError update.
-      throw new Error(`runInstaller: unexpected status ${mapping.status} for tag ${(failure.value as { _tag?: string })._tag}`);
-    }
+    const mapping = mapInstallError(failure.value);
     return {
       kind: "error",
-      status,
+      status: mapping.status,
       body: {
         error: mapping.code,
         message: mapping.message,

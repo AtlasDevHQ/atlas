@@ -49,7 +49,7 @@
  * @see docs/adr/0005-integration-credentials-table.md
  */
 
-import { Context, Data, Effect, Layer } from "effect";
+import { Context, Effect, Layer } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   decryptSecretFields,
@@ -70,7 +70,29 @@ import {
   resolveDatasourcePoolConfig,
 } from "@atlas/api/lib/db/datasource-pool-resolver";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
-import { InvalidInstallIdError } from "@atlas/api/lib/effect/errors";
+import {
+  AlreadyInstalledError,
+  CatalogNotFoundError,
+  ConfigSchemaError,
+  InstallNotFoundError,
+  InvalidInstallIdError,
+} from "@atlas/api/lib/effect/errors";
+
+// Re-export so existing consumers that import these tags from
+// `workspace-installer.ts` keep working — the canonical definitions live
+// in `errors.ts` so they participate in the `AtlasError` union and
+// `mapTaggedError` exhaustive switch. Re-exporting (instead of declaring
+// local classes) closes a latent `instanceof` footgun: two classes
+// sharing the same `_tag` would pass tag-string matching in `hono.ts`
+// but fail `instanceof errorsModule.AlreadyInstalledError` checks in
+// tests that hold both references.
+export {
+  AlreadyInstalledError,
+  CatalogNotFoundError,
+  ConfigSchemaError,
+  InstallNotFoundError,
+  InvalidInstallIdError,
+};
 
 // The registry bridge transitively imports `db/connection.ts` →
 // `enterprise-layer.ts`. Static-importing here closes a cycle through
@@ -110,70 +132,12 @@ function lazyGetInstallHandler(): (row: CatalogRowForDispatch) => PlatformInstal
 const log = createLogger("workspace-installer");
 
 // ---------------------------------------------------------------------------
-// Tagged errors
+// Tagged errors — canonical classes live in `lib/effect/errors.ts` and are
+// re-exported above for back-compat. Defining them here would produce two
+// classes sharing the same `_tag`: tag-string matching in `hono.ts` would
+// still work but `instanceof errorsModule.AlreadyInstalledError` checks in
+// tests holding both references would silently fail.
 // ---------------------------------------------------------------------------
-
-/**
- * Pillar-singleton violation — a `chat` / `action` install already exists
- * for `(workspaceId, catalogSlug)`. Maps to HTTP 409 in `mapTaggedError`.
- *
- * Friendlier than relying on the DB partial-unique-index violation: the
- * pre-check produces an actionable error message and avoids a wasted
- * round-trip through the per-handler write path before the constraint
- * fires. The index remains the defensive backstop against races.
- */
-export class AlreadyInstalledError extends Data.TaggedError("AlreadyInstalledError")<{
-  readonly message: string;
-  readonly workspaceId: string;
-  readonly catalogSlug: string;
-  /**
-   * `datasource` widened in #2744 — the singleton invariant is per
-   * `(workspaceId, catalogSlug, installId)` for datasource installs and
-   * per `(workspaceId, catalogSlug)` for chat/action. Both surface
-   * through this tag so `hono.ts` can spread `pillar` into the response
-   * body uniformly.
-   */
-  readonly pillar: "chat" | "action" | "datasource";
-}> {}
-
-/**
- * `config` failed validation against `plugin_catalog.config_schema`. Maps
- * to HTTP 400 in `mapTaggedError`. `fieldErrors` carries per-field issues
- * shaped for the admin UI's per-field message rendering; `formErrors`
- * collects top-level issues (unknown fields, schema-level rejections).
- *
- * Per-handler Zod validation (e.g. Email's strict shape) layers richer
- * checks on top — this error is the catalog-level contract violation
- * (missing required field, wrong type) that fires before the handler
- * runs.
- */
-export class ConfigSchemaError extends Data.TaggedError("ConfigSchemaError")<{
-  readonly message: string;
-  readonly catalogSlug: string;
-  readonly fieldErrors: Readonly<Record<string, readonly string[]>>;
-  readonly formErrors: readonly string[];
-}> {}
-
-/**
- * Catalog row not found, kill-switched, or carries an unknown
- * `install_model`. Maps to HTTP 404 in `mapTaggedError` (the catalog
- * lookup is the closest analogue to "resource doesn't exist").
- */
-export class CatalogNotFoundError extends Data.TaggedError("CatalogNotFoundError")<{
-  readonly message: string;
-  readonly catalogSlug: string;
-}> {}
-
-/**
- * Install row not found for `(workspaceId, catalogSlug)`. Surfaces from
- * `uninstall` and `updateConfig` when the target row is gone. Maps to
- * HTTP 404 in `mapTaggedError`.
- */
-export class InstallNotFoundError extends Data.TaggedError("InstallNotFoundError")<{
-  readonly message: string;
-  readonly workspaceId: string;
-  readonly catalogSlug: string;
-}> {}
 
 /** Discriminated union of every error the facade emits in its E channel. */
 export type InstallError =
@@ -182,6 +146,80 @@ export type InstallError =
   | CatalogNotFoundError
   | InstallNotFoundError
   | InvalidInstallIdError;
+
+/** Route-renderable mapping for a single {@link InstallError}. */
+export interface InstallErrorMapping {
+  readonly status: 400 | 404 | 409;
+  readonly code: string;
+  readonly message: string;
+  /** Tag-specific fields the route spreads into the JSON body. */
+  readonly body?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Map a tagged {@link InstallError} to its HTTP status + body envelope.
+ *
+ * Exhaustive `switch (e._tag)` — adding a new `InstallError` variant
+ * fails at compile time here, replacing the runtime "unknown status"
+ * defect previously thrown in `runInstaller`. Mirrors the shape of
+ * `mapTaggedError` in `hono.ts` but with the status narrowed to
+ * `400 | 404 | 409` so route handlers can use `c.json(body, status)`
+ * without a `ContentfulStatusCode` widening cast.
+ *
+ * Pillar/reason/fieldErrors carry into `body` so the admin UI can
+ * render per-tag UX without parsing strings.
+ */
+export function mapInstallError(e: InstallError): InstallErrorMapping {
+  switch (e._tag) {
+    case "InvalidInstallIdError":
+      return {
+        status: 400,
+        code: "invalid_request",
+        message: e.message,
+        body: { installId: e.installId, reason: e.reason },
+      };
+    case "ConfigSchemaError":
+      return {
+        status: 400,
+        code: "invalid_request",
+        message: e.message,
+        body: { fieldErrors: e.fieldErrors, formErrors: e.formErrors },
+      };
+    case "CatalogNotFoundError":
+      return {
+        status: 404,
+        code: "not_found",
+        message: e.message,
+        body: { catalogSlug: e.catalogSlug },
+      };
+    case "InstallNotFoundError":
+      return {
+        status: 404,
+        code: "not_found",
+        message: e.message,
+        body: { workspaceId: e.workspaceId, catalogSlug: e.catalogSlug },
+      };
+    case "AlreadyInstalledError":
+      return {
+        status: 409,
+        code: "conflict",
+        message: e.message,
+        body: {
+          workspaceId: e.workspaceId,
+          catalogSlug: e.catalogSlug,
+          pillar: e.pillar,
+        },
+      };
+    default: {
+      // Compile-time exhaustiveness check — a new `InstallError` tag must
+      // add a case above. Runtime guard is unreachable today.
+      const _exhaustive: never = e;
+      throw new Error(
+        `mapInstallError: unhandled tag ${JSON.stringify(_exhaustive)}`,
+      );
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Public types

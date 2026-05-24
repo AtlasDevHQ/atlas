@@ -1,4 +1,4 @@
-import { describe, expect, it, mock, beforeEach } from "bun:test";
+import { describe, expect, it, mock, beforeEach, afterEach } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -67,17 +67,31 @@ mock.module("@atlas/api/lib/logger", () => ({
 const emptyCanonicalDir = fs.mkdtempSync(
   path.join(os.tmpdir(), "registry-canonical-empty-"),
 );
-fs.writeFileSync(
-  path.join(emptyCanonicalDir, "questions.yml"),
-  "questions: []\n",
-);
-process.env.ATLAS_CANONICAL_QUESTIONS_PATH = path.join(
-  emptyCanonicalDir,
-  "questions.yml",
-);
+const emptyCanonicalFixture = path.join(emptyCanonicalDir, "questions.yml");
+fs.writeFileSync(emptyCanonicalFixture, "questions: []\n");
+process.env.ATLAS_CANONICAL_QUESTIONS_PATH = emptyCanonicalFixture;
 
 // Import after mocks
 const { registerPrompts } = await import("../../prompts/registry.js");
+
+// Defense in depth — re-pin the canonical env between every test so a
+// test that overrides it (e.g. the "canonical end-to-end" group below
+// that `delete`s it to exercise the real fixture) can't leak the
+// override into subsequent tests. This file pre-#2757 used to leave
+// `ATLAS_CANONICAL_QUESTIONS_PATH` pointing at whatever the last test
+// set it to, including into other test files via the shared process.
+beforeEach(() => {
+  process.env.ATLAS_CANONICAL_QUESTIONS_PATH = emptyCanonicalFixture;
+});
+
+afterEach(() => {
+  // Re-pin again so the LAST test in this file (whose override would
+  // otherwise persist past the file boundary) can't leak into the
+  // next test file's process state. The next file's own `beforeEach`
+  // is responsible for snapshotting + clearing; this just bounds the
+  // worst-case leaked value to a known-empty fixture.
+  process.env.ATLAS_CANONICAL_QUESTIONS_PATH = emptyCanonicalFixture;
+});
 
 // ---------------------------------------------------------------------------
 // Helpers

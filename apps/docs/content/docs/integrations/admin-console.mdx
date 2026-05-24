@@ -6,14 +6,14 @@ description: Customer-facing surface for browsing and installing the integration
 # Integrations admin console
 
 The **Integrations admin console** at `/admin/integrations` is the
-customer-facing counterpart to the [Plugin Catalog](/docs/deployment/plugin-catalog).
+customer-facing counterpart to the [Plugin Catalog](/deployment/plugin-catalog).
 Workspace admins see one card per catalog entry, grouped by type
 (chat platforms vs integration plugins), with their install state and
 plan-tier eligibility surfaced at a glance.
 
 This page documents what Workspace admins see — for the operator
 declaration side (`atlas.config.ts:catalog`, boot-time seed, emergency
-disable) see the [Plugin Catalog](/docs/deployment/plugin-catalog) page.
+disable) see the [Plugin Catalog](/deployment/plugin-catalog) page.
 
 ## What you see
 
@@ -95,7 +95,7 @@ grant where possible, and logs an admin-action audit row.
 
 If your operator hasn't declared any catalog entries (or you're
 running self-hosted with the default config), the section renders an
-empty state pointing at the [Plugin Catalog](/docs/deployment/plugin-catalog)
+empty state pointing at the [Plugin Catalog](/deployment/plugin-catalog)
 docs. Ask your operator to add an entry; the seed runs on every API boot.
 
 ## Endpoint
@@ -132,7 +132,7 @@ Admin-role gated, scoped to the active Workspace. Response shape:
 
 ## Related
 
-- [Plugin Catalog](/docs/deployment/plugin-catalog) — operator-side
+- [Plugin Catalog](/deployment/plugin-catalog) — operator-side
   declaration and boot-time seed semantics.
 - [ADR-0002](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0002-catalog-seeded-from-config-at-boot.md) —
   why the catalog is config-declared and DB-canonical for runtime reads.

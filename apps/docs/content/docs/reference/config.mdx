@@ -993,6 +993,7 @@ export default defineConfig({
 | `enterprise` | `object` | `{ enabled: false }` | Enterprise feature gating ([details](#enterprise)) |
 | `deployMode` | `"auto" \| "saas" \| "self-hosted"` | `"auto"` | Deployment mode. `saas` enables hosted product features (enterprise-gated). `auto` detects from environment |
 | `residency` | `object` | — | Data residency region routing (enterprise-gated) |
+| `catalog` | `CatalogEntry[]` | — | Plugin Catalog declaration — installable chat Platforms and integration plugins. Idempotently seeded into `plugin_catalog` at boot. See [ADR-0002](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0002-catalog-seeded-from-config-at-boot.md) |
 
 ---
 

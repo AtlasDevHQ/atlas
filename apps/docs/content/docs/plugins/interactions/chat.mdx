@@ -9,6 +9,8 @@ The Chat SDK bridge plugin (`@useatlas/chat`) is the unified interaction layer f
 
 Instead of maintaining separate plugins per platform, `@useatlas/chat` wraps Chat SDK adapters and provides built-in state management, error scrubbing, and conversation threading — all configured from a single `chatPlugin()` call.
 
+See the [chat-plugin × Atlas contract](https://github.com/AtlasDevHQ/atlas/blob/main/docs/architecture/chat-plugin-atlas-contract.md) for the canonical boundary between `@useatlas/chat`, `@chat-adapter/*`, and the Atlas host — updated whenever a field at that boundary changes.
+
 ## Quick Navigation
 
 Jump to the platform or topic you need:
@@ -478,7 +480,7 @@ The `chunkIntervalMs` setting controls how frequently messages are edited on pla
 
 Routes are mounted under the plugin's base path (e.g., `/api/plugins/chat-interaction/webhooks/slack`).
 
-Slack OAuth install + callback are NOT mounted under the chat-plugin prefix — they live at the canonical integration surface `/api/v1/integrations/slack/{install,callback}` (owned by `SlackOAuthInstallHandler`). See [Integrations guide](/docs/guides/integrations) for the operator/customer seam and install-model design.
+Slack OAuth install + callback are NOT mounted under the chat-plugin prefix — they live at the canonical integration surface `/api/v1/integrations/slack/{install,callback}` (owned by `SlackOAuthInstallHandler`). See [Integrations guide](/guides/integrations) for the operator/customer seam and install-model design.
 
 ## Install consent language
 

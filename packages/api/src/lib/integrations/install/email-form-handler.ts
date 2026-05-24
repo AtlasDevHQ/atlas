@@ -22,82 +22,34 @@
  */
 
 import crypto from "crypto";
-import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
-import { encryptSecretFields, type ConfigSchema } from "@atlas/api/lib/plugins/secrets";
+import { encryptSecretFields } from "@atlas/api/lib/plugins/secrets";
+import { lazyPluginLoader } from "@atlas/api/lib/plugins/lazy-loader";
 import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
-import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import type { WorkspaceId } from "@useatlas/types";
+import {
+  EMAIL_CATALOG_ID,
+  EMAIL_SECRET_FIELDS_SCHEMA,
+  EmailFormDataSchema,
+} from "./email-secret-schema";
 import type {
   CatalogId,
   FormBasedInstallHandler,
   InstallRecord,
 } from "./types";
 
-const log = createLogger("integrations.install.email");
+// Re-export so existing call sites that imported from this module
+// (admin route, tests, install/index.ts barrel) keep compiling. The
+// canonical home is `./email-secret-schema` — new code should import
+// from there.
+export { EmailFormDataSchema };
+export type { EmailFormData } from "./email-secret-schema";
 
-/** Stable `plugin_catalog.id` for Email — `catalog:${slug}` per the seeder. */
-const EMAIL_CATALOG_ID = "catalog:email";
+const log = createLogger("integrations.install.email");
 
 /** Catalog slug — the dispatch key in {@link registerFormHandler}. */
 const EMAIL_SLUG: CatalogId = "email";
-
-/**
- * Sender-address regex. SMTP `from` values commonly carry a
- * display-name (`"Atlas <reports@example.com>"`) that bare `.email()`
- * would reject. The regex accepts both bare-email and display-name
- * forms; the actual delivery is nodemailer's responsibility.
- */
-const SMTP_FROM_RE =
-  /^(?:[^<>]*<\s*[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+\s*>|[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+)$/;
-
-/** Defensive upper bound on the password field — JSONB rows shouldn't carry 50MB strings. */
-const SMTP_PASSWORD_MAX = 4096;
-
-export const EmailFormDataSchema = z.object({
-  host: z.string().min(1, "host is required").max(253),
-  port: z.coerce.number().int().min(1).max(65_535),
-  username: z.string().min(1, "username is required").max(320),
-  password: z
-    .string()
-    .min(1, "password is required")
-    .max(SMTP_PASSWORD_MAX, `password must be ${SMTP_PASSWORD_MAX} characters or fewer`),
-  fromAddress: z
-    .string()
-    .min(3, "fromAddress is required")
-    .regex(SMTP_FROM_RE, "fromAddress must be a valid email or display-name form"),
-  /**
-   * STARTTLS / TLS toggle. Defaults to `true` — the safe choice for
-   * any public SMTP relay. Internal-only relays can opt out by
-   * submitting `secure: false`; that path is logged at warn so a
-   * mis-click is at least observable post-hoc.
-   */
-  secure: z.boolean().optional().default(true),
-}).strict();
-
-export type EmailFormData = z.infer<typeof EmailFormDataSchema>;
-
-/**
- * `encryptSecretFields` schema for the Email handler. The
- * `fields[].key` element is constrained to `keyof EmailFormData` so a
- * Zod rename without a matching update here surfaces as a TS error
- * rather than a silent encryption regression at runtime.
- */
-const EMAIL_SECRET_FIELDS_SCHEMA: ConfigSchema & {
-  state: "parsed";
-  fields: ReadonlyArray<ConfigSchemaField & { key: keyof EmailFormData }>;
-} = {
-  state: "parsed",
-  fields: [
-    { key: "host", type: "string" },
-    { key: "port", type: "number" },
-    { key: "username", type: "string" },
-    { key: "password", type: "string", secret: true },
-    { key: "fromAddress", type: "string" },
-    { key: "secure", type: "boolean" },
-  ],
-};
 
 /** Test-only injection of the install id generator. */
 export interface EmailFormInstallHandlerOptions {
@@ -198,6 +150,21 @@ export class EmailFormInstallHandler implements FormBasedInstallHandler {
         "Failed to persist Email install record — aborting install",
       );
       throw err;
+    }
+
+    // Evict any cached PluginLike for this (workspace, catalog) so the
+    // next tool dispatch rebuilds the transport against the freshly-
+    // persisted config. Without this, a re-install that rotates SMTP
+    // credentials (host / port / user / password / fromAddress) keeps
+    // the stale in-memory transport from before the upsert. Fire-and-
+    // forget — `evict` swallows teardown errors internally.
+    try {
+      await lazyPluginLoader.evict(workspaceId, EMAIL_CATALOG_ID);
+    } catch (err) {
+      log.warn(
+        { workspaceId, err: err instanceof Error ? err.message : String(err) },
+        "LazyPluginLoader.evict threw after Email install upsert — DB row is persisted anyway",
+      );
     }
 
     log.info(

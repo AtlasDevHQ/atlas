@@ -52,6 +52,7 @@
 import { Context, Data, Effect, Layer } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { encryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
+import { lazyPluginLoader } from "@atlas/api/lib/plugins/lazy-loader";
 import type {
   CatalogRowForDispatch,
   CredentialResult,
@@ -800,6 +801,26 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       }).pipe(Effect.catchAll((err) => Effect.die(err)));
 
+      // Evict the LazyPluginLoader cache for this (workspace, catalog).
+      // Without this, a hot workspace whose tool dispatch warmed the
+      // cache before disconnect keeps the stale `PluginLike` (and its
+      // socket-holding nodemailer / jsforce / fetch transports) until
+      // process restart — sends would continue after uninstall. Evict
+      // teardown errors are swallowed inside the loader, so this is
+      // fire-and-forget safe on the success path.
+      yield* Effect.tryPromise({
+        try: () => lazyPluginLoader.evict(workspaceId, catalog.id),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) => {
+          log.warn(
+            { workspaceId, catalogSlug, err: err instanceof Error ? err.message : String(err) },
+            "LazyPluginLoader.evict threw during uninstall — DB rows are cleared anyway",
+          );
+          return Effect.succeed(false);
+        }),
+      );
+
       log.info(
         { workspaceId, catalogSlug, pillar: catalog.pillar, teamId: row.teamId },
         "WorkspaceInstaller.uninstall completed (both stores cleared)",
@@ -892,6 +913,22 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
           ),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       }).pipe(Effect.catchAll((err) => Effect.die(err)));
+
+      // Evict the LazyPluginLoader cache so the next tool dispatch reads
+      // the freshly-updated config (e.g. rotated SMTP password) instead
+      // of the stale in-memory transport built from the previous row.
+      yield* Effect.tryPromise({
+        try: () => lazyPluginLoader.evict(workspaceId, catalog.id),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) => {
+          log.warn(
+            { workspaceId, catalogSlug, installId, err: err instanceof Error ? err.message : String(err) },
+            "LazyPluginLoader.evict threw during updateConfig — DB row updated anyway",
+          );
+          return Effect.succeed(false);
+        }),
+      );
 
       log.info(
         { workspaceId, catalogSlug, installId, pillar },

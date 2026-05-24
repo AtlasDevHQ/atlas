@@ -1,0 +1,449 @@
+/**
+ * Tests for the Email LazyPluginLoader builder + `sendEmail` agent tool.
+ *
+ * Coverage:
+ *   - Builder happy path: decrypts `password` via the shared secret
+ *     schema, hands every SMTP field through to `createTransport`,
+ *     surfaces `sendEmail()` that round-trips through the transport.
+ *   - Builder decrypt failure: `decryptSecretFields` throw → builder
+ *     wraps it in `EmailDecryptFailureError` (so the tool surface can
+ *     attach a `requestId` to the agent-visible payload).
+ *   - Builder malformed config: missing `host` short-circuits with a
+ *     clear "disconnect + reinstall" error before reaching the
+ *     transport factory.
+ *   - Tool no-install path: `LazyPluginInstallNotFoundError` → status
+ *     `no_install` with `/admin/integrations` copy. No agent-visible
+ *     stack trace.
+ *   - Tool decrypt-failure path: `EmailDecryptFailureError` → status
+ *     `decrypt_failure` with `requestId` echoed back.
+ *   - Tool misconfigured path: `LazyPluginBuilderMissingError` → status
+ *     `misconfigured` with `requestId`, distinct from `send_failure` so
+ *     the agent doesn't retry a deploy-side bug.
+ *   - Tool install-present path: dispatches into the cached instance's
+ *     `sendEmail`. Verifies the loader is hit exactly once (transport
+ *     caching is the loader's responsibility, but the tool must not
+ *     bypass it).
+ *   - Tool send-failure path: the transport throws → status
+ *     `send_failure` with `requestId` echoed back; underlying error
+ *     scrubbed via `errorMessage()`.
+ *
+ * The unit test injects fakes via the `SendEmailToolDeps` constructor
+ * (no `mock.module()`); the integration test in `email-tool.integration.test.ts`
+ * mirrors the full `db/internal` named-export surface for the mock-all-exports
+ * rule.
+ */
+
+import { beforeEach, describe, expect, it, mock, type Mock } from "bun:test";
+
+import {
+  createEmailLazyBuilder,
+  createSendEmailTool,
+  EmailDecryptFailureError,
+  type EmailPluginInstance,
+} from "../email-tool";
+import {
+  LazyPluginBuilderMissingError,
+  LazyPluginInstallNotFoundError,
+} from "@atlas/api/lib/plugins/lazy-loader";
+import { EMAIL_CATALOG_ID } from "../install/email-secret-schema";
+import type { PluginLike } from "@atlas/api/lib/plugins/registry";
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+const WSID = "ws-email-test";
+const CATALOG_ID = EMAIL_CATALOG_ID;
+
+const HAPPY_DECRYPTED_CONFIG = {
+  host: "smtp.example.com",
+  port: 587,
+  username: "atlas@example.com",
+  password: "smtp-password",
+  fromAddress: "Atlas <atlas@example.com>",
+  secure: true,
+};
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function runTool<T = unknown>(tool: any, args: unknown): Promise<T> {
+  if (!tool?.execute) throw new Error("tool has no execute");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (await tool.execute(args, undefined as any)) as T;
+}
+
+// ---------------------------------------------------------------------------
+// Builder — happy path
+// ---------------------------------------------------------------------------
+
+describe("createEmailLazyBuilder — happy path", () => {
+  it("decrypts the password, constructs a transport with every SMTP field, and sendEmail routes through transport.sendMail", async () => {
+    const mockSendMail = mock(() =>
+      Promise.resolve({
+        messageId: "<test-message-id@example.com>",
+        envelope: { from: HAPPY_DECRYPTED_CONFIG.fromAddress, to: ["dest@example.com"] },
+      }),
+    );
+    const mockClose = mock(() => undefined);
+    let lastTransportOptions: unknown = null;
+    const mockCreateTransport: Mock<(opts: unknown) => unknown> = mock((opts: unknown) => {
+      lastTransportOptions = opts;
+      return { sendMail: mockSendMail, close: mockClose };
+    });
+
+    const build = createEmailLazyBuilder({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      createTransport: mockCreateTransport as any,
+    });
+
+    const instance = (await build({
+      workspaceId: WSID,
+      catalogId: CATALOG_ID,
+      // Plaintext config — `decryptSecretFields` passes through
+      // un-ciphertext values (the F-42 backfill tolerance path), so the
+      // builder's decrypt step is a no-op on a plain dev row. The
+      // ciphertext path is exercised separately under "decrypt failure".
+      config: HAPPY_DECRYPTED_CONFIG,
+    })) as EmailPluginInstance;
+
+    expect(instance.id).toBe(`email:${WSID}`);
+    expect(lastTransportOptions).toEqual({
+      host: "smtp.example.com",
+      port: 587,
+      secure: true,
+      auth: { user: "atlas@example.com", pass: "smtp-password" },
+    });
+
+    const result = await instance.sendEmail({
+      to: ["dest@example.com"],
+      subject: "Hello",
+      body: "<p>Body</p>",
+    });
+    expect(result.messageId).toBe("<test-message-id@example.com>");
+    expect(mockSendMail).toHaveBeenCalledTimes(1);
+    const firstCall = mockSendMail.mock.calls[0] as readonly unknown[] | undefined;
+    expect(firstCall?.[0]).toMatchObject({
+      from: "Atlas <atlas@example.com>",
+      to: ["dest@example.com"],
+      subject: "Hello",
+      html: "<p>Body</p>",
+    });
+
+    // teardown closes the transport so socket pools don't leak across
+    // disconnect/reinstall cycles.
+    await instance.teardown?.();
+    expect(mockClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("defaults secure=true when the stored config omits the field", async () => {
+    let lastTransportOptions: unknown = null;
+    const mockCreateTransport: Mock<(opts: unknown) => unknown> = mock((opts: unknown) => {
+      lastTransportOptions = opts;
+      return { sendMail: mock(() => Promise.resolve({})), close: mock(() => undefined) };
+    });
+
+    const build = createEmailLazyBuilder({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      createTransport: mockCreateTransport as any,
+    });
+
+    // Drop `secure` from the config — older installs that pre-date the
+    // Zod schema's default value land with `secure` absent. The builder
+    // must default to TLS-on, not silently to plaintext SMTP.
+    const { secure: _secure, ...rest } = HAPPY_DECRYPTED_CONFIG;
+    await build({
+      workspaceId: WSID,
+      catalogId: CATALOG_ID,
+      config: rest,
+    });
+
+    expect((lastTransportOptions as { secure: boolean }).secure).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Builder — malformed / decrypt-failure
+// ---------------------------------------------------------------------------
+
+describe("createEmailLazyBuilder — error paths", () => {
+  it("throws when the decrypted config is missing a required field", async () => {
+    const build = createEmailLazyBuilder({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      createTransport: mock(() => ({ sendMail: mock(), close: mock() })) as any,
+    });
+
+    const { host: _omitted, ...withoutHost } = HAPPY_DECRYPTED_CONFIG;
+    await expect(
+      build({
+        workspaceId: WSID,
+        catalogId: CATALOG_ID,
+        config: withoutHost,
+      }),
+    ).rejects.toThrow(/missing required fields/);
+  });
+
+  it("wraps a decryptSecretFields throw in EmailDecryptFailureError", async () => {
+    // `decryptSecret` throws on ciphertext we can't actually decrypt
+    // (e.g. wrong key version after rotation). Pass an `enc:v9:…`
+    // string for the `password` field — the live secrets module sees
+    // the version prefix, attempts decrypt with the current keyset,
+    // and throws. The builder must wrap that throw so the tool layer
+    // can attach a `requestId` to the agent-visible payload.
+    const build = createEmailLazyBuilder({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      createTransport: mock(() => ({ sendMail: mock(), close: mock() })) as any,
+    });
+
+    const corruptConfig = {
+      ...HAPPY_DECRYPTED_CONFIG,
+      password: "enc:v99:AAAA:BBBB:CCCC",
+    };
+
+    let caught: unknown = null;
+    try {
+      await build({
+        workspaceId: WSID,
+        catalogId: CATALOG_ID,
+        config: corruptConfig,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(EmailDecryptFailureError);
+    expect((caught as EmailDecryptFailureError).workspaceId).toBe(WSID);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tool — execute paths
+// ---------------------------------------------------------------------------
+
+describe("createSendEmailTool — execute paths", () => {
+  let lastInstanceSendMail: Mock<(args: unknown) => Promise<unknown>>;
+
+  function makeLoader(handler: (workspaceId: string, catalogId: string) => Promise<PluginLike>) {
+    return {
+      getOrInstantiate: mock(async (workspaceId: string, catalogId: string): Promise<PluginLike> => {
+        return handler(workspaceId, catalogId);
+      }),
+    };
+  }
+
+  beforeEach(() => {
+    lastInstanceSendMail = mock(() =>
+      Promise.resolve({ messageId: "<sent@example.com>", envelope: {} }),
+    );
+  });
+
+  it("returns status=no_install when the loader throws LazyPluginInstallNotFoundError", async () => {
+    const tool = createSendEmailTool({
+      loader: makeLoader(async () => {
+        throw new LazyPluginInstallNotFoundError(WSID, CATALOG_ID);
+      }),
+      resolveWorkspaceId: () => WSID,
+      resolveRequestId: () => "req-no-install",
+    });
+
+    const result = await runTool<{ status: string; message: string }>(tool, {
+      to: ["dest@example.com"],
+      subject: "Hi",
+      body: "Hi",
+    });
+    expect(result.status).toBe("no_install");
+    expect(result.message).toMatch(/\/admin\/integrations/);
+  });
+
+  it("returns status=decrypt_failure with the requestId when the loader throws EmailDecryptFailureError", async () => {
+    const tool = createSendEmailTool({
+      loader: makeLoader(async () => {
+        throw new EmailDecryptFailureError(WSID, new Error("key version 99 not loaded"));
+      }),
+      resolveWorkspaceId: () => WSID,
+      resolveRequestId: () => "req-decrypt-99",
+    });
+
+    const result = await runTool<{
+      status: string;
+      message: string;
+      requestId: string | undefined;
+    }>(tool, {
+      to: ["dest@example.com"],
+      subject: "Hi",
+      body: "Hi",
+    });
+    expect(result.status).toBe("decrypt_failure");
+    expect(result.requestId).toBe("req-decrypt-99");
+    expect(result.message).toContain("req-decrypt-99");
+  });
+
+  it("returns status=sent when the loader yields a cached instance and sendMail succeeds", async () => {
+    const fakeInstance: EmailPluginInstance = {
+      id: `email:${WSID}`,
+      types: ["action"],
+      version: "0.1.0",
+      name: "Email",
+      sendEmail: lastInstanceSendMail as unknown as EmailPluginInstance["sendEmail"],
+    };
+
+    const loader = makeLoader(async () => fakeInstance);
+    const tool = createSendEmailTool({
+      loader,
+      resolveWorkspaceId: () => WSID,
+      resolveRequestId: () => "req-sent",
+    });
+
+    const result = await runTool<{
+      status: string;
+      messageId: string | undefined;
+    }>(tool, {
+      to: ["dest@example.com"],
+      subject: "Hi",
+      body: "Hi",
+    });
+    expect(result.status).toBe("sent");
+    expect(result.messageId).toBe("<sent@example.com>");
+    expect(lastInstanceSendMail).toHaveBeenCalledTimes(1);
+    expect(loader.getOrInstantiate).toHaveBeenCalledTimes(1);
+    // Pin the catalog id flowing through the tool to the shared
+    // constant — a drift between `EMAIL_CATALOG_ID` and what the tool
+    // requests would silently bypass the registered Email builder.
+    expect(loader.getOrInstantiate).toHaveBeenCalledWith(WSID, CATALOG_ID);
+  });
+
+  it("second send defers to the loader rather than bypassing it (caching is the loader's contract)", async () => {
+    // The lazy loader's caching contract is what guarantees the
+    // transport survives across sends — pinned in
+    // `email-tool.integration.test.ts` via `internalQuery` call-count.
+    // This unit test ONLY verifies the tool path doesn't short-circuit
+    // around the loader after the first build; the mocked loader here
+    // returns the same fake instance on every call, so caching isn't
+    // exercised at this layer.
+    const fakeInstance: EmailPluginInstance = {
+      id: `email:${WSID}`,
+      types: ["action"],
+      version: "0.1.0",
+      name: "Email",
+      sendEmail: lastInstanceSendMail as unknown as EmailPluginInstance["sendEmail"],
+    };
+    const loader = makeLoader(async () => fakeInstance);
+    const tool = createSendEmailTool({
+      loader,
+      resolveWorkspaceId: () => WSID,
+    });
+
+    await runTool(tool, { to: ["a@example.com"], subject: "1", body: "1" });
+    await runTool(tool, { to: ["b@example.com"], subject: "2", body: "2" });
+
+    expect(loader.getOrInstantiate).toHaveBeenCalledTimes(2);
+    expect(lastInstanceSendMail).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns status=misconfigured with the requestId when the loader has no builder for catalog:email", async () => {
+    // Boot-DAG-misconfigured failure mode — `register.ts` pairs the
+    // form handler with the builder, so the only way this fires is if
+    // `registerBuiltinInstallHandlers` itself didn't run. Distinct
+    // from `send_failure` so the agent stops looping and surfaces an
+    // operator-actionable error.
+    const tool = createSendEmailTool({
+      loader: makeLoader(async () => {
+        throw new LazyPluginBuilderMissingError(CATALOG_ID);
+      }),
+      resolveWorkspaceId: () => WSID,
+      resolveRequestId: () => "req-misconfig",
+    });
+
+    const result = await runTool<{
+      status: string;
+      message: string;
+      requestId: string | undefined;
+    }>(tool, {
+      to: ["dest@example.com"],
+      subject: "Hi",
+      body: "Hi",
+    });
+    expect(result.status).toBe("misconfigured");
+    expect(result.requestId).toBe("req-misconfig");
+    expect(result.message).toContain("req-misconfig");
+    expect(result.message).toMatch(/operator/i);
+  });
+
+  it("returns status=send_failure with the scrubbed requestId when transport.sendMail throws", async () => {
+    const failingSendMail = mock(() => Promise.reject(new Error("SMTP relay 5.7.0 rejected")));
+    const fakeInstance: EmailPluginInstance = {
+      id: `email:${WSID}`,
+      types: ["action"],
+      version: "0.1.0",
+      name: "Email",
+      sendEmail: failingSendMail as unknown as EmailPluginInstance["sendEmail"],
+    };
+    const tool = createSendEmailTool({
+      loader: makeLoader(async () => fakeInstance),
+      resolveWorkspaceId: () => WSID,
+      resolveRequestId: () => "req-send-fail",
+    });
+
+    const result = await runTool<{
+      status: string;
+      message: string;
+      requestId: string | undefined;
+    }>(tool, {
+      to: ["dest@example.com"],
+      subject: "Hi",
+      body: "Hi",
+    });
+    expect(result.status).toBe("send_failure");
+    expect(result.message).toContain("SMTP relay 5.7.0 rejected");
+    expect(result.requestId).toBe("req-send-fail");
+  });
+
+  it("scrubs connection-string userinfo from send_failure messages", async () => {
+    // A nodemailer / outbound-proxy error that embeds `scheme://user:pass@host`
+    // would leak creds into the agent's tool output without
+    // `errorMessage()` scrubbing. Pin the redaction at the tool boundary.
+    const leakySendMail = mock(() =>
+      Promise.reject(new Error("Could not connect to socks5://leak:secret@proxy:1080")),
+    );
+    const fakeInstance: EmailPluginInstance = {
+      id: `email:${WSID}`,
+      types: ["action"],
+      version: "0.1.0",
+      name: "Email",
+      sendEmail: leakySendMail as unknown as EmailPluginInstance["sendEmail"],
+    };
+    const tool = createSendEmailTool({
+      loader: makeLoader(async () => fakeInstance),
+      resolveWorkspaceId: () => WSID,
+    });
+
+    const result = await runTool<{ status: string; message: string }>(tool, {
+      to: ["dest@example.com"],
+      subject: "Hi",
+      body: "Hi",
+    });
+    expect(result.status).toBe("send_failure");
+    expect(result.message).not.toContain("leak:secret");
+    expect(result.message).toContain("socks5://***@proxy:1080");
+  });
+
+  it("returns status=no_workspace with non-install copy when no active workspaceId is in the request context", async () => {
+    // Distinct from `no_install` so the agent doesn't tell a user
+    // who already installed Email to "go install Email" — the actual
+    // remediation here is "open a workspace-scoped session".
+    const tool = createSendEmailTool({
+      loader: makeLoader(async () => {
+        throw new Error("should not be called");
+      }),
+      resolveWorkspaceId: () => undefined,
+    });
+
+    const result = await runTool<{ status: string; message: string }>(tool, {
+      to: ["dest@example.com"],
+      subject: "Hi",
+      body: "Hi",
+    });
+    expect(result.status).toBe("no_workspace");
+    expect(result.message).toMatch(/workspace/i);
+    // Must NOT recommend /admin/integrations — they already have it
+    // installed; the issue is request context, not the install state.
+    expect(result.message).not.toContain("/admin/integrations");
+  });
+});

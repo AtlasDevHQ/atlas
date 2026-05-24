@@ -38,6 +38,7 @@ const nextConfig: NextConfig = {
     "snowflake-sdk",
     "jsforce",
     "just-bash",
+    "nodemailer",
     "pino",
     "pino-pretty",
     "stripe",

@@ -273,12 +273,16 @@ export interface BuiltinDatasourceCatalogSeedResult {
 
 /**
  * Idempotently seed the eight built-in Datasource catalog rows.
- * `ON CONFLICT (slug) DO NOTHING` makes this safe on every boot.
  *
  * Bulk INSERT keeps the seed cheap (single statement vs eight) and lets
  * the result set (`RETURNING slug`) report which rows actually inserted
- * vs which were preserved. The bulk shape mirrors migration 0093's
- * VALUES block exactly — keeping them aligned is checked by the
+ * vs which were preserved. Unqualified `ON CONFLICT DO NOTHING` covers
+ * both the `slug` unique index AND the `id` primary key — so a stray
+ * operator-edited row with one of our canonical `catalog:<slug>` ids
+ * under a different slug doesn't crash the boot pass.
+ *
+ * The bulk shape mirrors migration 0093's VALUES block exactly —
+ * keeping them aligned is checked by the
  * `migration-and-seed-stay-aligned` test.
  */
 export async function seedBuiltinDatasourceCatalog(
@@ -329,7 +333,7 @@ export async function seedBuiltinDatasourceCatalog(
         implementation_status, auto_install, min_plan, enabled, saas_eligible,
         config_schema, created_at, updated_at)
      VALUES ${placeholders.join(", ")}
-     ON CONFLICT (slug) DO NOTHING
+     ON CONFLICT DO NOTHING
      RETURNING slug`,
     params,
   );

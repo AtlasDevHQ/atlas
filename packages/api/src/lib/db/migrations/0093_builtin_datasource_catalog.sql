@@ -17,8 +17,13 @@
 -- `demo-postgres` is the only row with `auto_install = true` (auto-seeded
 -- into every workspace at creation in slice 6's cutover migration).
 --
--- Idempotent via `ON CONFLICT (slug) DO NOTHING` — re-runs / re-deploys
--- are no-ops at the DB layer. The companion boot-time seed pass
+-- Idempotent via unqualified ON CONFLICT DO NOTHING — re-runs and
+-- re-deploys are no-ops at the DB layer. The unqualified form covers
+-- both the slug unique index AND the id primary key, so a stray
+-- operator-edited row whose id matches one of our canonical seed ids
+-- under a different slug doesn't crash startup with a PK violation.
+--
+-- The companion boot-time seed pass
 -- (`packages/api/src/lib/db/seed-builtin-datasource-catalog.ts`,
 -- wired via `BuiltinDatasourceCatalogSeedLive` in `effect/layers.ts`)
 -- re-asserts the same rows on every boot so a self-host operator who
@@ -206,4 +211,4 @@ VALUES
     NOW(),
     NOW()
   )
-ON CONFLICT (slug) DO NOTHING;
+ON CONFLICT DO NOTHING;

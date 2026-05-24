@@ -133,7 +133,11 @@ describe("seedBuiltinDatasourceCatalog (idempotent boot seed)", () => {
     await seedBuiltinDatasourceCatalog(db);
     expect(captured).toHaveLength(1);
     expect(captured[0]!.sql).toContain("INSERT INTO plugin_catalog");
-    expect(captured[0]!.sql).toContain("ON CONFLICT (slug) DO NOTHING");
+    // Unqualified ON CONFLICT DO NOTHING covers both the slug unique
+    // index AND the id PK — see seed module's JSDoc for the edge case
+    // (operator-edited row with a clashing `catalog:<slug>` id).
+    expect(captured[0]!.sql).toContain("ON CONFLICT DO NOTHING");
+    expect(captured[0]!.sql).not.toContain("ON CONFLICT (slug)");
     expect(captured[0]!.sql).toContain("RETURNING slug");
   });
 
@@ -213,8 +217,13 @@ describe("migration 0093 and seed module stay aligned", () => {
     }
   });
 
-  it("uses ON CONFLICT (slug) DO NOTHING — idempotent on re-deploy", () => {
-    expect(migrationSql).toContain("ON CONFLICT (slug) DO NOTHING");
+  it("uses unqualified ON CONFLICT DO NOTHING — covers slug + id PK collisions", () => {
+    // Unqualified (no `(slug)` target) so an operator-hand-edited row
+    // with a clashing `catalog:<slug>` id under a different slug doesn't
+    // crash startup with a PK violation. See migration header for the
+    // edge case.
+    expect(migrationSql).toContain("ON CONFLICT DO NOTHING");
+    expect(migrationSql).not.toContain("ON CONFLICT (slug)");
   });
 
   it("sets auto_install = true only on the demo-postgres row", () => {

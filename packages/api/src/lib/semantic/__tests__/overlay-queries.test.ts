@@ -93,8 +93,7 @@ function makeRow(opts: MakeRowOpts): Record<string, unknown> {
 // Tests
 // ---------------------------------------------------------------------------
 
-// TODO(#2744 step 5 — test sweep): mocks reference dropped `connections` / `connection_groups` SQL; rewrite to workspace_plugins (pillar='datasource') shape.
-describe.skip("listEntitiesWithOverlay — SQL shape", () => {
+describe("listEntitiesWithOverlay — SQL shape", () => {
   beforeEach(() => {
     resetCapture();
   });
@@ -114,13 +113,19 @@ describe.skip("listEntitiesWithOverlay — SQL shape", () => {
     expect(sql).toMatch(/WHERE\s+status\s*!=\s*'draft_delete'/i);
   });
 
-  it("restricts to entities whose parent connection is not archived", async () => {
+  it("restricts to entities whose parent install is not archived (workspace_plugins JSONB group_id)", async () => {
     await listEntitiesWithOverlay("org-1", "entity");
     const sql = capturedCalls[0].sql;
-    // Inner check: connection_id IN (SELECT id FROM connections WHERE status IN ('published','draft'))
-    // Or equivalent: connection is NULL (unscoped) OR in published/draft set
-    expect(sql).toMatch(/connections/i);
+    // Post-#2744 the OWN_OR_GLOBAL shadow rule pivots to workspace_plugins
+    // (pillar='datasource') and reads group_id from `config->>'group_id'`.
+    // The legacy `connections` table is gone.
+    expect(sql).toMatch(/workspace_plugins/i);
+    expect(sql).toMatch(/config->>'group_id'/i);
+    expect(sql).toMatch(/pillar\s*=\s*'datasource'/i);
     expect(sql).toMatch(/status\s+IN\s*\(\s*'published'\s*,\s*'draft'\s*\)/i);
+    // OWN_OR_GLOBAL shadow rule preserved: own-workspace beats __global__.
+    expect(sql).toContain("'__global__'");
+    expect(sql).toMatch(/install_id\s+NOT\s+IN/i);
   });
 
   it("includes status IN ('published','draft','draft_delete') for the entity side", async () => {

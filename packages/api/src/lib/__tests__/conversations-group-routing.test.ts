@@ -194,8 +194,7 @@ describe("per-turn override scoping", () => {
 
 // ── 3. Missing group falls back to legacy behavior ────────────────────
 
-// TODO(#2744 step 5 — test sweep): mocks reference dropped `connections` / `connection_groups` SQL; rewrite to workspace_plugins (pillar='datasource') shape.
-describe.skip("missing group falls back to legacy behavior", () => {
+describe("missing group falls back to legacy behavior", () => {
   it("resolveGroupForConnection returns null when no internal DB is configured", async () => {
     const result = await resolveGroupForConnection("conn-x", "org-1");
     expect(result).toBeNull();
@@ -203,13 +202,15 @@ describe.skip("missing group falls back to legacy behavior", () => {
     expect(queryCalls.length).toBe(0);
   });
 
-  it("returns null when the connection exists but has no group_id (legacy single-connection deploy)", async () => {
+  it("returns null when the install exists but config has no group_id (legacy single-connection deploy)", async () => {
     enableInternalDB();
     setResults({ rows: [{ group_id: null }] });
 
     const result = await resolveGroupForConnection("conn-legacy", "org-1");
     expect(result).toBeNull();
-    expect(queryCalls[0].sql).toContain("FROM connections");
+    // Post-#2744 the helper queries `workspace_plugins` for `config->>'group_id'`.
+    expect(queryCalls[0].sql).toContain("FROM workspace_plugins");
+    expect(queryCalls[0].sql).toContain("config->>'group_id'");
   });
 
   it("returns null when the connection does not exist for this org", async () => {
@@ -220,12 +221,12 @@ describe.skip("missing group falls back to legacy behavior", () => {
     expect(result).toBeNull();
   });
 
-  it("returns the group_id when the 0062 1:1 backfill produced one", async () => {
+  it("returns the group_id when workspace_plugins.config has one", async () => {
     enableInternalDB();
-    setResults({ rows: [{ group_id: "g_prod" }] });
+    setResults({ rows: [{ group_id: "prod" }] });
 
     const result = await resolveGroupForConnection("us-int", "org-1");
-    expect(result).toBe("g_prod");
+    expect(result).toBe("prod");
     expect(queryCalls[0].params).toEqual(["us-int", "org-1"]);
   });
 
@@ -240,15 +241,15 @@ describe.skip("missing group falls back to legacy behavior", () => {
     expect(result).toBeNull();
   });
 
-  it("uses a null-safe org predicate so caller orgId=null doesn't collapse to `__global__` only (#2415)", async () => {
+  it("uses a null-safe workspace predicate so caller orgId=null doesn't collapse to `__global__` only (#2415)", async () => {
     // Mock-theater regression guard. The mock returns whatever rows we
     // hand it regardless of WHERE-clause semantics, so a "result is
     // g_default" assertion gives false confidence. The real signal is
-    // the SQL itself: plain `org_id = $2` collapses to UNKNOWN when $2
-    // is NULL and falls through to `org_id = '__global__'`, silently
-    // losing the binding for any deploy whose connections.org_id is
-    // anything else. The null-safe `IS NOT DISTINCT FROM` operator
-    // matches NULL to NULL.
+    // the SQL itself: plain `workspace_id = $2` collapses to UNKNOWN
+    // when $2 is NULL and falls through to `workspace_id = '__global__'`,
+    // silently losing the binding for any deploy whose workspace_plugins
+    // row was scoped to NULL. The null-safe `IS NOT DISTINCT FROM`
+    // operator matches NULL to NULL.
     //
     // Real-Postgres coverage of the predicate semantics lives in
     // `db/__tests__/migrate-pg.test.ts` ("resolveGroupForConnection
@@ -257,24 +258,24 @@ describe.skip("missing group falls back to legacy behavior", () => {
     // refactor can't quietly weaken the predicate without the migrate-pg
     // suite catching it too.
     enableInternalDB();
-    setResults({ rows: [{ group_id: "g_default" }] });
+    setResults({ rows: [{ group_id: "default" }] });
 
     await resolveGroupForConnection("conn-1", null);
 
     expect(queryCalls.length).toBe(1);
     const { sql, params } = queryCalls[0];
     expect(sql).toContain("IS NOT DISTINCT FROM");
-    // Plain `org_id = $2 OR` is forbidden: it's null-unsafe by Postgres
-    // semantics (NULL=NULL → UNKNOWN), and the OR-fallback hides the
-    // miss. The null-safe `IS NOT DISTINCT FROM` form is the invariant
-    // this helper has to maintain.
-    expect(sql).not.toMatch(/org_id\s*=\s*\$2\s+OR/);
+    // Plain `workspace_id = $2 OR` is forbidden: it's null-unsafe by
+    // Postgres semantics (NULL=NULL → UNKNOWN), and the OR-fallback
+    // hides the miss. The null-safe `IS NOT DISTINCT FROM` form is the
+    // invariant this helper has to maintain.
+    expect(sql).not.toMatch(/workspace_id\s*=\s*\$2\s+OR/);
     // The fallback to the shared `__global__` row must still be in the
-    // predicate — that's what lets demo/global connections resolve under
-    // any caller orgId.
+    // predicate — that's what lets demo/global installs resolve under
+    // any caller workspace_id.
     expect(sql).toContain("'__global__'");
     // The caller's null orgId is forwarded as a SQL NULL so the
-    // null-safe operator can match against connections.org_id IS NULL.
+    // null-safe operator can match against workspace_plugins.workspace_id IS NULL.
     expect(params).toEqual(["conn-1", null]);
   });
 });

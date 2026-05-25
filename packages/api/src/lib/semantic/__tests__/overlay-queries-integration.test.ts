@@ -41,16 +41,19 @@ beforeAll(async () => {
 
   db = newDb();
 
-  // Minimal schema — only the columns referenced by the overlay CTE.
-  // `connection_group_id` mirrors the post-0069 schema: content rows key by
-  // group, while `connections.id` remains useful for global shadowing.
+  // Minimal schema — only the columns referenced by the post-#2744
+  // overlay CTE. The OWN_OR_GLOBAL shadow rule now reads from
+  // `workspace_plugins (pillar='datasource')` with the install's group_id
+  // living inside `config` JSONB. `install_id` replaces `connections.id`
+  // for the shadow-precedence NOT-IN check.
   db.public.none(`
-    CREATE TABLE connections (
-      id TEXT NOT NULL,
-      org_id TEXT NOT NULL,
+    CREATE TABLE workspace_plugins (
+      install_id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL,
+      pillar TEXT NOT NULL DEFAULT 'datasource',
       status TEXT NOT NULL DEFAULT 'published',
-      group_id TEXT,
-      PRIMARY KEY (id, org_id)
+      config JSONB,
+      PRIMARY KEY (workspace_id, install_id)
     );
     CREATE TABLE semantic_entities (
       id TEXT PRIMARY KEY,
@@ -89,16 +92,23 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
-  db.public.none(`TRUNCATE semantic_entities; TRUNCATE connections;`);
+  db.public.none(`TRUNCATE semantic_entities; TRUNCATE workspace_plugins;`);
 });
 
 // ---------------------------------------------------------------------------
 // Fixture helpers — thin wrappers around raw INSERTs
 // ---------------------------------------------------------------------------
 
-function seedConnection(id: string, status: "published" | "draft" | "archived" = "published"): void {
+function seedConnection(
+  id: string,
+  status: "published" | "draft" | "archived" = "published",
+  workspaceId = "org-1",
+): void {
+  // Post-#2744 each install lives in workspace_plugins with its
+  // group_id stashed under `config->>'group_id'`.
   db.public.none(
-    `INSERT INTO connections (id, org_id, status, group_id) VALUES ('${id}', 'org-1', '${status}', 'g_${id}')`,
+    `INSERT INTO workspace_plugins (install_id, workspace_id, pillar, status, config)
+     VALUES ('${id}', '${workspaceId}', 'datasource', '${status}', '{"group_id":"g_${id}"}'::jsonb)`,
   );
 }
 
@@ -127,8 +137,7 @@ function rowsByName(rows: Array<{ name: string; status: string }>): Record<strin
 // Acceptance matrix
 // ---------------------------------------------------------------------------
 
-// TODO(#2744 step 5 — test sweep): mocks reference dropped `connections` / `connection_groups` SQL; rewrite to workspace_plugins (pillar='datasource') shape.
-describe.skip("listEntitiesWithOverlay — acceptance matrix against real Postgres", () => {
+describe("listEntitiesWithOverlay — acceptance matrix against real Postgres", () => {
   it("case 1: published-only entity is visible", async () => {
     seedConnection("warehouse");
     seedEntity({ id: "e1", name: "users", status: "published", connectionId: "warehouse" });
@@ -240,12 +249,10 @@ describe.skip("listEntitiesWithOverlay — acceptance matrix against real Postgr
 
   it("cross-org rows are invisible", async () => {
     // Seed an entity under a different org — should never appear in org-1's overlay
-    db.public.none(
-      `INSERT INTO connections (id, org_id, status, group_id) VALUES ('warehouse', 'org-2', 'published', 'g_warehouse_org2')`,
-    );
+    seedConnection("warehouse-org2", "published", "org-2");
     db.public.none(
       `INSERT INTO semantic_entities (id, org_id, entity_type, name, yaml_content, connection_group_id, status)
-       VALUES ('other', 'org-2', 'entity', 'other_users', 'table: other', 'g_warehouse_org2', 'published')`,
+       VALUES ('other', 'org-2', 'entity', 'other_users', 'table: other', 'g_warehouse-org2', 'published')`,
     );
 
     // org-1 has nothing
@@ -253,48 +260,39 @@ describe.skip("listEntitiesWithOverlay — acceptance matrix against real Postgr
     expect(rows).toHaveLength(0);
   });
 
-  it("entities tied to a __global__ connection are visible to any org (#2304)", async () => {
-    // The canonical `__demo__` lives at org_id = '__global__'. Per-org
-    // entities reference it via connection_group_id; the connection-visibility
-    // subquery now accepts `__global__` rows so those entities resolve.
-    db.public.none(
-      `INSERT INTO connections (id, org_id, status, group_id) VALUES ('__demo__', '__global__', 'published', 'g___demo__')`,
-    );
+  it("entities tied to a __global__ install are visible to any org (#2304)", async () => {
+    // The canonical `__demo__` install lives at workspace_id='__global__'.
+    // Per-org entities reference it via `connection_group_id`; the
+    // connection-visibility subquery now accepts `__global__` rows so
+    // those entities resolve.
+    seedConnection("__demo__", "published", "__global__");
     seedEntity({ id: "demo-ent", name: "novamart_orders", status: "published", connectionId: "__demo__" });
 
     const rows = await listEntitiesWithOverlay("org-1", "entity");
     expect(rowsByName(rows)).toEqual({ novamart_orders: "published" });
   });
 
-  it("per-org tombstone hides entities tied to a `__global__` connection — exact archived/non-archived precedence (#2304)", async () => {
-    // Pin the *transition* sequence so a future refactor that flips
-    // `NOT IN (... org's rows ...)` to `NOT IN (... non-archived org rows ...)`
-    // can't silently start surfacing tombstoned demos to the agent. Visible
-    // before tombstone → hidden after.
-    db.public.none(
-      `INSERT INTO connections (id, org_id, status, group_id) VALUES ('__demo__', '__global__', 'published', 'g___demo__')`,
-    );
+  it("per-org override hides entities tied to a `__global__` install — exact precedence (#2304)", async () => {
+    // Pin the *transition* sequence so a future refactor that flips the
+    // NOT-IN shadow check can't silently start surfacing demo entities
+    // to a workspace whose own __demo__ install supersedes the global.
+    seedConnection("__demo__", "published", "__global__");
     seedEntity({ id: "demo-ent-pre", name: "novamart_orders", status: "published", connectionId: "__demo__" });
     expect(rowsByName(await listEntitiesWithOverlay("org-1", "entity"))).toEqual({ novamart_orders: "published" });
 
-    // Tombstone arrives — same id, status='archived', org-1 scope.
-    db.public.none(
-      `INSERT INTO connections (id, org_id, status, group_id) VALUES ('__demo__', 'org-1', 'archived', 'g___demo__')`,
-    );
+    // Per-workspace __demo__ install arrives (any status) — shadows the global.
+    seedConnection("__demo__", "archived", "org-1");
     expect(await listEntitiesWithOverlay("org-1", "entity")).toHaveLength(0);
   });
 
-  it("per-org tombstone hides entities tied to a `__global__` connection (#2304)", async () => {
-    // The "delete the demo from my workspace" flow inserts a per-org
-    // archived row at the same id as the global. The shadow check excludes
-    // the global from the visible-connection set, so any entities the org
-    // owns at that connection_group_id drop out of the overlay alongside it.
-    db.public.none(
-      `INSERT INTO connections (id, org_id, status, group_id) VALUES ('__demo__', '__global__', 'published', 'g___demo__')`,
-    );
-    db.public.none(
-      `INSERT INTO connections (id, org_id, status, group_id) VALUES ('__demo__', 'org-1', 'archived', 'g___demo__')`,
-    );
+  it("per-org install shadows a `__global__` install with the same id (#2304)", async () => {
+    // The "delete the demo from my workspace" flow now writes a per-org
+    // workspace_plugins row at the same install_id as the global. The
+    // shadow check (`install_id NOT IN ...own org's installs...`) excludes
+    // the global, so any entities tied to that connection_group_id drop
+    // out of the overlay alongside it.
+    seedConnection("__demo__", "published", "__global__");
+    seedConnection("__demo__", "archived", "org-1");
     seedEntity({ id: "demo-ent", name: "novamart_orders", status: "published", connectionId: "__demo__" });
 
     const rows = await listEntitiesWithOverlay("org-1", "entity");

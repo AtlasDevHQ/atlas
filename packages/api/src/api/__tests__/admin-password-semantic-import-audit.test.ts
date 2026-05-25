@@ -218,8 +218,7 @@ describe("POST /api/v1/admin/me/password — audit emission (F-29)", () => {
 // POST /semantic/org/import — bulk import
 // ---------------------------------------------------------------------------
 
-// TODO(#2744 step 5 — test sweep): mocks reference dropped `connections` SQL; rewrite to workspace_plugins (pillar='datasource') shape.
-describe.skip("POST /api/v1/admin/semantic/org/import — audit emission (F-29)", () => {
+describe("POST /api/v1/admin/semantic/org/import — audit emission (F-29)", () => {
   it("emits semantic.bulk_import with importedCount + sourceRef='disk:all' metadata", async () => {
     // Handler tolerates an empty JSON body (no `connectionId` → "disk:all").
     const res = await app.fetch(
@@ -311,8 +310,8 @@ describe.skip("POST /api/v1/admin/semantic/org/import — audit emission (F-29)"
     });
     // Org owns __demo__ — triggers the auto-recovery branch.
     mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
-      if (typeof sql === "string" && sql.includes("FROM connections") && sql.includes("__demo__")) {
-        return [{ id: "__demo__" }];
+      if (typeof sql === "string" && sql.includes("FROM workspace_plugins") && sql.includes("__demo__")) {
+        return [{ install_id: "__demo__" }];
       }
       return [];
     });
@@ -368,7 +367,7 @@ describe.skip("POST /api/v1/admin/semantic/org/import — audit emission (F-29)"
     // Org owns __demo__ — but caller asked about warehouse.
     mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
       if (typeof sql === "string" && sql.includes("__demo__")) {
-        return [{ id: "__demo__" }];
+        return [{ install_id: "__demo__" }];
       }
       return [];
     });
@@ -403,7 +402,7 @@ describe.skip("POST /api/v1/admin/semantic/org/import — audit emission (F-29)"
     });
     mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
       if (typeof sql === "string" && sql.includes("__demo__")) {
-        return [{ id: "__demo__" }];
+        return [{ install_id: "__demo__" }];
       }
       return [];
     });
@@ -430,7 +429,7 @@ describe.skip("POST /api/v1/admin/semantic/org/import — audit emission (F-29)"
     // Ownership check: caller must already have a __demo__ connection.
     mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
       if (typeof sql === "string" && sql.includes("__demo__")) {
-        return [{ id: "__demo__" }];
+        return [{ install_id: "__demo__" }];
       }
       return [];
     });

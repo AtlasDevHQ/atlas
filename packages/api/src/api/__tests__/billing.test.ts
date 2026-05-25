@@ -196,8 +196,7 @@ describe("billing routes", () => {
 
   // ── GET /billing ──────────────────────────────────────────────────
 
-  // TODO(#2744 step 5 — test sweep): mocks reference dropped `connections` SQL; rewrite to workspace_plugins (pillar='datasource') shape.
-  describe.skip("GET /api/v1/billing", () => {
+  describe("GET /api/v1/billing", () => {
     it("returns billing status for workspace", async () => {
       // Return seat count of 3 for member query, connection count of 2 for connections query
       mockInternalQuery.mockImplementation((...args: unknown[]) => {
@@ -205,7 +204,7 @@ describe("billing routes", () => {
         if (typeof sql === "string" && sql.includes("member")) {
           return Promise.resolve([{ count: 3 }]);
         }
-        if (typeof sql === "string" && sql.includes("connections")) {
+        if (typeof sql === "string" && sql.includes("workspace_plugins") && sql.includes("pillar = 'datasource'")) {
           return Promise.resolve([{ count: 2 }]);
         }
         return Promise.resolve([]);
@@ -252,7 +251,7 @@ describe("billing routes", () => {
     it("defaults connection count to 0 when connections query fails", async () => {
       mockInternalQuery.mockImplementation((...args: unknown[]) => {
         const sql = args[0];
-        if (typeof sql === "string" && sql.includes("connections")) {
+        if (typeof sql === "string" && sql.includes("workspace_plugins") && sql.includes("pillar = 'datasource'")) {
           return Promise.reject(new Error("relation does not exist"));
         }
         if (typeof sql === "string" && sql.includes("member")) {

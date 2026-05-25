@@ -204,16 +204,22 @@ describe("parseConnectionsArg", () => {
 
 // --- seedWorkspaceGroup ---
 
-// TODO(#2744 step 5 — test sweep): seedWorkspaceGroup was rewritten in
-// the 1.5.3 cutover to upsert `workspace_plugins` (pillar='datasource')
-// via catalog lookup; the legacy `connection_groups` + `connections`
-// shapes the mock-queue positions assume are gone. The tests still
-// run against the old positional mock and need a fresh queue keyed
-// to the new query sequence (BEGIN, resolve, DELETE wp demo, DELETE
-// se demo, DELETE se prior, DELETE wp prior, [SELECT catalog +
-// INSERT wp] per member, INSERT se per entity, COMMIT). Skipping
-// until the rewrite lands as part of the test-mock follow-up.
-describe.skip("seedWorkspaceGroup", () => {
+describe("seedWorkspaceGroup", () => {
+  // Post-#2744 the seeder writes `workspace_plugins (pillar='datasource')`
+  // with `group_id` stashed in JSONB `config`. There is no longer a
+  // separate `connection_groups` row, no `primary_connection_id` UPDATE,
+  // and no top-level `url_key_version` column — encryption travels inside
+  // the JSONB payload. The positional mock queue tracks the new query
+  // sequence:
+  //   BEGIN
+  //   resolveWorkspaceId
+  //   DELETE wp 'default'
+  //   DELETE se (NULL or 'g_default')
+  //   DELETE se for this group
+  //   DELETE wp for these install_ids
+  //   per connection: SELECT plugin_catalog → INSERT wp
+  //   per entity:     INSERT semantic_entities
+  //   COMMIT (or ROLLBACK on failure)
   function makeResolved(): ResolvedConnectionSpec[] {
     return [
       {
@@ -233,30 +239,26 @@ describe.skip("seedWorkspaceGroup", () => {
     ];
   }
 
-  it("clears demo + prior, creates group + connections + entities, sets primary", async () => {
+  it("clears demo + prior installs, upserts workspace_plugins per connection, inserts entities", async () => {
     const entities: SemanticEntityRow[] = [
       { entityType: "entity", name: "users", yaml: "table: users" },
       { entityType: "metric", name: "active_users", yaml: "name: active_users" },
     ];
-    const { client, queries } = createMockClient(
-      // 1 BEGIN, 1 resolve, 5 DELETEs, 1 group INSERT, 2 conn INSERTs, 1 primary UPDATE, 2 entity INSERTs, 1 COMMIT
-      [
-        { rows: [] }, // BEGIN
-        { rows: [{ id: "org_y" }] }, // resolve
-        { rows: [], rowCount: 1 }, // delete demo connection
-        { rows: [], rowCount: 5 }, // delete demo entities
-        { rows: [], rowCount: 0 }, // delete prior entities (none)
-        { rows: [], rowCount: 0 }, // delete prior connections
-        { rows: [], rowCount: 0 }, // delete prior group
-        { rows: [], rowCount: 1 }, // INSERT group
-        { rows: [], rowCount: 1 }, // INSERT us-prod
-        { rows: [], rowCount: 1 }, // INSERT eu-prod
-        { rows: [], rowCount: 1 }, // UPDATE primary
-        { rows: [], rowCount: 1 }, // INSERT entity users
-        { rows: [], rowCount: 1 }, // INSERT metric active_users
-        { rows: [] }, // COMMIT
-      ],
-    );
+    const { client, queries } = createMockClient([
+      { rows: [] },                                         // BEGIN
+      { rows: [{ id: "org_y" }] },                          // resolveWorkspaceId
+      { rows: [], rowCount: 1 },                            // DELETE wp 'default'
+      { rows: [], rowCount: 5 },                            // DELETE se NULL/g_default
+      { rows: [], rowCount: 0 },                            // DELETE se for g_prod (none prior)
+      { rows: [], rowCount: 0 },                            // DELETE wp prior installs
+      { rows: [{ id: "cat_postgres" }] },                   // SELECT plugin_catalog for us-prod
+      { rows: [], rowCount: 1 },                            // INSERT wp us-prod
+      { rows: [{ id: "cat_postgres" }] },                   // SELECT plugin_catalog for eu-prod
+      { rows: [], rowCount: 1 },                            // INSERT wp eu-prod
+      { rows: [], rowCount: 1 },                            // INSERT se 'users'
+      { rows: [], rowCount: 1 },                            // INSERT se 'active_users'
+      { rows: [] },                                         // COMMIT
+    ]);
 
     const result = await seedWorkspaceGroup(client, {
       workspace: "atlas",
@@ -277,33 +279,45 @@ describe.skip("seedWorkspaceGroup", () => {
     expect(queries[0]!.sql).toBe("BEGIN");
     expect(queries[queries.length - 1]!.sql).toBe("COMMIT");
 
-    // Group insert
+    // No legacy connection_groups writes at all post-cutover.
     const insGroup = queries.find((q) => q.sql.includes("INSERT INTO connection_groups"));
-    expect(insGroup).toBeDefined();
-    expect(insGroup!.params).toEqual(["g_prod", "org_y", "prod"]);
-
-    // Connection inserts in declaration order, both bound to g_prod
-    const insConns = queries.filter((q) => q.sql.includes("INSERT INTO connections"));
-    expect(insConns).toHaveLength(2);
-    expect(insConns[0]!.params).toEqual([
-      "us-prod",
-      "enc:v1:iv:tag:ciphertext-us",
-      1,
-      "postgres",
-      "us-prod (postgres)",
-      "org_y",
-      "g_prod",
-    ]);
-    expect(insConns[1]!.params[0]).toBe("eu-prod");
-
-    // Primary update points at the :primary entry
+    expect(insGroup).toBeUndefined();
     const updPrimary = queries.find((q) =>
-      q.sql.startsWith("UPDATE connection_groups SET primary_connection_id"),
+      q.sql.includes("UPDATE connection_groups SET primary_connection_id"),
     );
-    expect(updPrimary).toBeDefined();
-    expect(updPrimary!.params).toEqual(["us-prod", "g_prod", "org_y"]);
+    expect(updPrimary).toBeUndefined();
 
-    // Semantic entities inserted with the group id
+    // Two catalog lookups (one per connection) — slug = c.type = 'postgres'.
+    const catLookups = queries.filter((q) => q.sql.includes("FROM plugin_catalog"));
+    expect(catLookups).toHaveLength(2);
+    for (const q of catLookups) {
+      expect(q.params).toEqual(["postgres"]);
+    }
+
+    // workspace_plugins inserts in declaration order. Params:
+    //   [rowId, workspaceId, catalogId, installId, configJson]
+    const insWp = queries.filter((q) => q.sql.includes("INSERT INTO workspace_plugins"));
+    expect(insWp).toHaveLength(2);
+
+    const usParams = insWp[0]!.params as unknown[];
+    expect(usParams[0]).toBe("cn_org_y_us-prod");
+    expect(usParams[1]).toBe("org_y");
+    expect(usParams[2]).toBe("cat_postgres");
+    expect(usParams[3]).toBe("us-prod");
+    const usConfig = JSON.parse(usParams[4] as string) as Record<string, unknown>;
+    expect(usConfig).toMatchObject({
+      url: "enc:v1:iv:tag:ciphertext-us",
+      db_type: "postgres",
+      group_id: "g_prod",
+    });
+
+    expect((insWp[1]!.params as unknown[])[3]).toBe("eu-prod");
+    const euConfig = JSON.parse((insWp[1]!.params as unknown[])[4] as string) as Record<string, unknown>;
+    expect(euConfig.group_id).toBe("g_prod");
+    expect(euConfig.url).toBe("enc:v1:iv:tag:ciphertext-eu");
+
+    // Semantic entities still write `connection_group_id` (the entities
+    // table didn't change in #2744 — only the connections side did).
     const insEntities = queries.filter((q) => q.sql.includes("INSERT INTO semantic_entities"));
     expect(insEntities).toHaveLength(2);
     expect(insEntities[0]!.params).toEqual([
@@ -317,16 +331,15 @@ describe.skip("seedWorkspaceGroup", () => {
 
   it("rolls back when no primary is declared (defense-in-depth — parseConnectionsArg also rejects this)", async () => {
     const { client, queries } = createMockClient([
-      { rows: [] }, // BEGIN
-      { rows: [{ id: "org_y" }] }, // resolve
-      { rows: [], rowCount: 0 }, // delete demo connection
-      { rows: [], rowCount: 0 }, // delete demo entities
-      { rows: [], rowCount: 0 }, // delete prior entities
-      { rows: [], rowCount: 0 }, // delete prior connections
-      { rows: [], rowCount: 0 }, // delete prior group
-      { rows: [], rowCount: 1 }, // INSERT group
-      { rows: [], rowCount: 1 }, // INSERT us-prod (no primary marker)
-      { rows: [] }, // ROLLBACK
+      { rows: [] },                          // BEGIN
+      { rows: [{ id: "org_y" }] },           // resolveWorkspaceId
+      { rows: [], rowCount: 0 },             // DELETE wp 'default'
+      { rows: [], rowCount: 0 },             // DELETE se NULL/g_default
+      { rows: [], rowCount: 0 },             // DELETE se for g_prod
+      { rows: [], rowCount: 0 },             // DELETE wp prior installs
+      { rows: [{ id: "cat_postgres" }] },    // SELECT plugin_catalog for us-prod
+      { rows: [], rowCount: 1 },             // INSERT wp us-prod (no primary marker)
+      { rows: [] },                          // ROLLBACK
     ]);
     const conns = makeResolved().map((c) => ({ ...c, isPrimary: false }));
     await expect(

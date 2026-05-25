@@ -1170,10 +1170,11 @@ describeIfPg("migrate-pg (real Postgres)", () => {
   // CHECK so a regression that drops either column or admits a stray value
   // (`oauth2`, `oAuth`, etc.) fails the migrate smoke instead of landing
   // an un-dispatchable catalog row in production.
-  // TODO(#2744 step 5 — test sweep): tests assert trigger-derived `pillar`
-  // defaulting that 0096 step 7 drops. Re-write to assert post-cutover
-  // explicit-pillar-required behavior in a follow-up.
-  it.skip("0087: plugin_catalog.install_model + saas_eligible columns exist and CHECK is enforced", async () => {
+  // Post-#2744 the 0092 BEFORE INSERT trigger that filled pillar is gone
+  // (dropped by 0096 step 7), so every plugin_catalog INSERT must now
+  // name `pillar` explicitly. The 0087 column-existence + CHECK
+  // assertions stay relevant; we just thread pillar through.
+  it("0087: plugin_catalog.install_model + saas_eligible columns exist and CHECK is enforced", async () => {
     const slug = `pg-smoke-${Date.now()}`;
     const id = `cat-${slug}`;
 
@@ -1181,8 +1182,8 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     // saas_eligible. Defaults are tested by the seeder unit tests; here
     // we just confirm the columns accept the documented enum values.
     await pool.query(
-      `INSERT INTO plugin_catalog (id, name, slug, type, install_model, saas_eligible)
-       VALUES ($1, 'PG Smoke Catalog Entry', $2, 'chat', 'oauth', true)`,
+      `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model, saas_eligible)
+       VALUES ($1, 'PG Smoke Catalog Entry', $2, 'chat', 'chat', 'oauth', true)`,
       [id, slug],
     );
 
@@ -1197,8 +1198,8 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     // CHECK rejects an unknown install_model with 23514 (check_violation).
     await expect(
       pool.query(
-        `INSERT INTO plugin_catalog (id, name, slug, type, install_model)
-         VALUES ($1, 'Should Fail', $2, 'chat', 'not-a-model')`,
+        `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model)
+         VALUES ($1, 'Should Fail', $2, 'chat', 'chat', 'not-a-model')`,
         [`${id}-bad`, `${slug}-bad`],
       ),
     ).rejects.toMatchObject({ code: "23514" });
@@ -1206,19 +1207,23 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     // CHECK also accepts the other two documented values.
     for (const value of ["form", "static-bot"] as const) {
       await pool.query(
-        `INSERT INTO plugin_catalog (id, name, slug, type, install_model)
-         VALUES ($1, 'PG Smoke', $2, 'integration', $3)`,
+        `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model)
+         VALUES ($1, 'PG Smoke', $2, 'integration', 'action', $3)`,
         [`${id}-${value}`, `${slug}-${value}`, value],
       );
     }
 
     // The widened `type` CHECK admits 'chat' and 'integration' alongside
-    // the legacy values. Lock both new values down.
-    for (const t of ["chat", "integration"] as const) {
+    // the legacy values. Lock both new values down — pillar mirrors type
+    // here so the test fixture is faithful to the production catalog seed.
+    for (const [t, pillar] of [
+      ["chat", "chat"],
+      ["integration", "action"],
+    ] as const) {
       await pool.query(
-        `INSERT INTO plugin_catalog (id, name, slug, type, install_model)
-         VALUES ($1, 'PG Smoke Type', $2, $3, 'oauth')`,
-        [`${id}-type-${t}`, `${slug}-type-${t}`, t],
+        `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model)
+         VALUES ($1, 'PG Smoke Type', $2, $3, $4, 'oauth')`,
+        [`${id}-type-${t}`, `${slug}-type-${t}`, t, pillar],
       );
     }
   }, PG_TEST_TIMEOUT_MS);
@@ -1228,14 +1233,16 @@ describeIfPg("migrate-pg (real Postgres)", () => {
   // "tidying" revision that drops them. Without defaults, a row that
   // omits the columns lands NULL, which fails the CHECK (install_model)
   // or breaks downstream consumers (saas_eligible).
-  // TODO(#2744 step 5 — test sweep): same trigger dependency as above.
-  it.skip("0087: install_model + saas_eligible defaults apply on omission", async () => {
+  it("0087: install_model + saas_eligible defaults apply on omission", async () => {
     const slug = `pg-default-${Date.now()}`;
     const id = `cat-${slug}`;
 
+    // Post-#2744 the pillar trigger is gone — must name pillar explicitly.
+    // The 0087 defaults under test (install_model + saas_eligible) are
+    // orthogonal: they still default cleanly when the caller omits them.
     await pool.query(
-      `INSERT INTO plugin_catalog (id, name, slug, type)
-       VALUES ($1, 'PG Default Smoke', $2, 'chat')`,
+      `INSERT INTO plugin_catalog (id, name, slug, type, pillar)
+       VALUES ($1, 'PG Default Smoke', $2, 'chat', 'chat')`,
       [id, slug],
     );
 
@@ -1289,700 +1296,21 @@ describeIfPg("migrate-pg (real Postgres)", () => {
   // it verbatim — drift in the file (column rename, ON CONFLICT typo,
   // wrong substring offset) fails the smoke instead of silently passing
   // a hand-rolled copy. Pinned by pr-test-analyzer review on #2692.
-  // TODO(#2744 step 5 — test sweep): 0088 replays migration SQL that
-  // relies on the 0092 BEFORE-INSERT trigger to fill in `pillar` /
-  // `install_id` — both dropped by 0096 step 7. Rewrite to insert
-  // pillar+install_id explicitly in a follow-up.
-  describe.skip("0088: backfill workspace_plugins from chat_cache (#2655)", () => {
-    const migration0088Sql = readFileSync(
-      join(
-        import.meta.dir,
-        "..",
-        "migrations",
-        "0088_backfill_workspace_plugins.sql",
-      ),
-      "utf-8",
-    );
+  // 0088 backfill describe removed in #2786 (post-#2744 cleanup).
+  //
+  // The block re-executed migration 0088's actual SQL via `readFileSync`
+  // to assert idempotency + slug-JOIN robustness. The replay path stops
+  // working post-0096: 0088 INSERTs `workspace_plugins` without naming
+  // `pillar` / `install_id` and relied on 0092's BEFORE INSERT trigger
+  // to fill them. 0096 step 7 drops the trigger, so re-running 0088
+  // against the post-0096 schema fails with 23502 on `pillar`. The
+  // production migration chain still runs 0088 once at the right point
+  // (between 0092 trigger creation and 0096 trigger drop), and the
+  // migration smoke at `beforeAll` covers that end-to-end. Post-cutover
+  // invariants (workspace_plugins shape, status column, demo per-workspace
+  // backfill) live in the `0096: cutover` describe at the bottom of
+  // this file.
 
-    it("inserts workspace_plugins rows for chat_cache:slack:installation rows with non-empty orgId", async () => {
-      const ws = "org-backfill-smoke";
-      const team = `T-backfill-${Date.now()}`;
-      // Write a chat_cache row in the post-#2634 consolidated shape.
-      await pool.query(
-        `INSERT INTO chat_cache (key, value)
-         VALUES ($1, $2::jsonb)
-         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-        [
-          `slack:installation:${team}`,
-          JSON.stringify({
-            botToken: "xoxb-backfill-smoke",
-            orgId: ws,
-            workspaceName: "Backfill Smoke",
-            installedAt: "2026-01-01T00:00:00.000Z",
-          }),
-        ],
-      );
-      // Re-execute the migration's actual SQL verbatim. The migration
-      // runner already replayed it at beforeAll (so `catalog:slack` row
-      // exists); this run picks up the new chat_cache row via the
-      // INSERT…SELECT sweep.
-      await pool.query(migration0088Sql);
-      const { rows: after } = await pool.query<{
-        catalog_id: string;
-        config: { team_id: string; backfilled_from: string };
-      }>(
-        `SELECT wp.catalog_id, wp.config
-           FROM workspace_plugins wp
-           JOIN plugin_catalog pc ON pc.id = wp.catalog_id
-          WHERE pc.slug = 'slack' AND wp.workspace_id = $1
-          LIMIT 1`,
-        [ws],
-      );
-      expect(after).toHaveLength(1);
-      expect(after[0]?.config.team_id).toBe(team);
-      expect(after[0]?.config.backfilled_from).toBe("chat_cache (migration 0088)");
-    }, PG_TEST_TIMEOUT_MS);
-
-    it("resolves catalog_id via slug JOIN, not the literal 'catalog:slack' string (Codex P1)", async () => {
-      // Codex flagged on #2692: if `plugin_catalog` already carried a
-      // `slug='slack'` row with a non-`catalog:slack` id (admin-marketplace
-      // mints UUIDs via `crypto.randomUUID()`), the migration's
-      // `ON CONFLICT (slug) DO NOTHING` keeps the legacy id, and a
-      // hard-coded `'catalog:slack'` FK target would abort with a
-      // foreign-key violation. Pinning the slug-JOIN posture here.
-      const customCatalogId = `cat-custom-${Date.now()}`;
-      const customSlug = `custom-slack-${Date.now()}`;
-      const ws = `org-custom-${Date.now()}`;
-      const team = `T-custom-${Date.now()}`;
-
-      // Pre-seed plugin_catalog with a non-canonical id but slug=custom-slack.
-      // (Using a non-'slack' slug so we don't disturb the dogfood catalog row.)
-      await pool.query(
-        `INSERT INTO plugin_catalog (id, name, slug, type, install_model, enabled)
-         VALUES ($1, 'Custom Slack', $2, 'chat', 'oauth', true)`,
-        [customCatalogId, customSlug],
-      );
-      await pool.query(
-        `INSERT INTO chat_cache (key, value)
-         VALUES ($1, $2::jsonb)
-         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-        [
-          `slack:installation:${team}`,
-          JSON.stringify({ botToken: "xoxb-custom", orgId: ws }),
-        ],
-      );
-      // Run the equivalent slug-JOIN INSERT against the custom slug.
-      // Demonstrates the JOIN pattern is robust to non-canonical
-      // catalog ids — exactly what the Codex P1 fix protects against.
-      await pool.query(
-        `INSERT INTO workspace_plugins
-          (id, workspace_id, catalog_id, config, enabled, installed_at)
-         SELECT
-           gen_random_uuid()::text,
-           cc.value ->> 'orgId',
-           pc.id,
-           jsonb_build_object('team_id', substring(cc.key FROM length('slack:installation:') + 1)),
-           true,
-           NOW()
-         FROM chat_cache cc
-         JOIN plugin_catalog pc ON pc.slug = $2
-         WHERE cc.key LIKE 'slack:installation:%'
-           AND cc.value ->> 'orgId' = $1
-         ON CONFLICT (workspace_id, catalog_id) DO NOTHING`,
-        [ws, customSlug],
-      );
-      const { rows } = await pool.query<{ catalog_id: string }>(
-        `SELECT catalog_id FROM workspace_plugins WHERE workspace_id = $1`,
-        [ws],
-      );
-      // FK resolved against the pre-seeded id, not 'catalog:custom-slack'.
-      expect(rows[0]?.catalog_id).toBe(customCatalogId);
-    }, PG_TEST_TIMEOUT_MS);
-
-    it("is idempotent — re-running the migration SQL does not duplicate", async () => {
-      const ws = "org-backfill-idempotent";
-      const team = `T-idem-${Date.now()}`;
-      await pool.query(
-        `INSERT INTO chat_cache (key, value)
-         VALUES ($1, $2::jsonb)
-         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-        [
-          `slack:installation:${team}`,
-          JSON.stringify({ botToken: "xoxb-idem", orgId: ws }),
-        ],
-      );
-      await pool.query(migration0088Sql);
-      await pool.query(migration0088Sql);
-      await pool.query(migration0088Sql);
-      const { rows } = await pool.query<{ n: string }>(
-        `SELECT COUNT(*)::text AS n FROM workspace_plugins wp
-           JOIN plugin_catalog pc ON pc.id = wp.catalog_id
-          WHERE pc.slug = 'slack' AND wp.workspace_id = $1`,
-        [ws],
-      );
-      // Three runs, one row — the composite unique index does the job.
-      expect(rows[0]?.n).toBe("1");
-    }, PG_TEST_TIMEOUT_MS);
-
-    it("skips chat_cache rows with NULL or empty orgId (no FK-less workspace_plugins rows)", async () => {
-      const team = `T-noorg-${Date.now()}`;
-      await pool.query(
-        `INSERT INTO chat_cache (key, value)
-         VALUES ($1, $2::jsonb)
-         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-        [
-          `slack:installation:${team}`,
-          // No orgId at all.
-          JSON.stringify({ botToken: "xoxb-noorg" }),
-        ],
-      );
-      // Run the migration's actual SQL — it sweeps every chat_cache
-      // installation row, so this exercises the WHERE-filter against
-      // a real orgId-less row sitting in the table.
-      await pool.query(migration0088Sql);
-      const after = await pool.query<{ n: string }>(
-        `SELECT COUNT(*)::text AS n FROM workspace_plugins wp
-           JOIN plugin_catalog pc ON pc.id = wp.catalog_id
-          WHERE pc.slug = 'slack' AND wp.config ->> 'team_id' = $1`,
-        [team],
-      );
-      // Orphan row was orgId-less → migration's WHERE clause filtered
-      // it out, so no workspace_plugins row carries our team_id.
-      expect(after.rows[0]?.n).toBe("0");
-    }, PG_TEST_TIMEOUT_MS);
-  });
-
-  // 0092 / #2739 — three-pillar taxonomy + install_id foundation.
-  // Schema-only slice: callers under integrations/install/*-handler.ts
-  // continue to omit `pillar` and `install_id`; two BEFORE INSERT
-  // triggers fill them in. These tests pin trigger fill (both tables),
-  // trigger non-clobber, CHECK enforcement (both pillar columns +
-  // implementation_status), defaults-on-omission, the composite PK,
-  // the partial unique singleton, the preserved `id` uniqueness, the
-  // diagnostic 23503 the workspace trigger raises on orphan catalog_id,
-  // and the prod-critical backfill regression — the prior-art "fresh
-  // self-host upgrade" path subsequent slices depend on.
-  // TODO(#2744 step 5 — test sweep): 0092 describe tests the BEFORE
-  // INSERT/UPDATE triggers, the partial unique 'workspace_plugins_singleton',
-  // and the global unique on (workspace_id, catalog_id). All three are
-  // dropped by 0096 step 6 + step 7. The post-cutover invariants live
-  // in the new 0096 cutover describe at the bottom of this file.
-  describe.skip("0092: pillar + install_id columns (#2739, 1.5.3 slice 1)", () => {
-    it("plugin_catalog: new columns + CHECK constraints are enforced (pillar, implementation_status)", async () => {
-      const slug = `pg-0092-${Date.now()}`;
-      const id = `cat-${slug}`;
-
-      // Insert with all three new columns explicit — exercises that the
-      // columns exist with the documented types and that explicit values
-      // round-trip (no SELECT pillar/implementation_status/auto_install
-      // semantics happen in production code yet — slice 3+ wire reads).
-      await pool.query(
-        `INSERT INTO plugin_catalog (id, name, slug, type, pillar, implementation_status, auto_install)
-         VALUES ($1, '0092 Smoke', $2, 'integration', 'action', 'available', false)`,
-        [id, slug],
-      );
-
-      const { rows } = await pool.query<{
-        pillar: string;
-        implementation_status: string;
-        auto_install: boolean;
-      }>(
-        `SELECT pillar, implementation_status, auto_install FROM plugin_catalog WHERE id = $1`,
-        [id],
-      );
-      expect(rows[0]?.pillar).toBe("action");
-      expect(rows[0]?.implementation_status).toBe("available");
-      expect(rows[0]?.auto_install).toBe(false);
-
-      // CHECK rejects unknown pillar with 23514.
-      await expect(
-        pool.query(
-          `INSERT INTO plugin_catalog (id, name, slug, type, pillar)
-           VALUES ($1, 'Bad Pillar', $2, 'chat', 'something-else')`,
-          [`${id}-bad-pillar`, `${slug}-bad-pillar`],
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-
-      // CHECK rejects unknown implementation_status with 23514.
-      await expect(
-        pool.query(
-          `INSERT INTO plugin_catalog (id, name, slug, type, pillar, implementation_status)
-           VALUES ($1, 'Bad Status', $2, 'chat', 'chat', 'totally-shipped')`,
-          [`${id}-bad-status`, `${slug}-bad-status`],
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-    }, PG_TEST_TIMEOUT_MS);
-
-    it("plugin_catalog: trigger derives pillar from type (chat/datasource/integration) when caller omits pillar", async () => {
-      // Three call sites today (admin-marketplace.ts, catalog-seeder.ts,
-      // migration 0088) INSERT plugin_catalog rows without naming
-      // pillar. Trigger must map type → pillar correctly for each.
-      const slug = `pg-0092-cat-trig-${Date.now()}`;
-
-      type Row = { pillar: string };
-      const cases: Array<{ type: string; expected: string }> = [
-        { type: "chat", expected: "chat" },
-        { type: "datasource", expected: "datasource" },
-        { type: "integration", expected: "action" },
-        { type: "action", expected: "action" },
-      ];
-
-      for (const { type, expected } of cases) {
-        const id = `cat-${slug}-${type}`;
-        await pool.query(
-          `INSERT INTO plugin_catalog (id, name, slug, type) VALUES ($1, '0092 Trigger', $2, $3)`,
-          [id, `${slug}-${type}`, type],
-        );
-        const { rows } = await pool.query<Row>(
-          `SELECT pillar FROM plugin_catalog WHERE id = $1`,
-          [id],
-        );
-        expect(rows[0]?.pillar).toBe(expected);
-      }
-    }, PG_TEST_TIMEOUT_MS);
-
-    it("plugin_catalog: trigger does NOT clobber caller-provided pillar", async () => {
-      // Load-bearing for slice 5 (#2743): once built-in Datasource
-      // catalog rows are seeded with explicit pillar, a future
-      // "simplification" that drops the `IF NEW.pillar IS NULL` guard
-      // would silently rewrite their pillar from the CASE expression
-      // (e.g. a `type='datasource', pillar='datasource'` row stays at
-      // datasource — but a future `type='custom', pillar='chat'` row
-      // would silently get rewritten to 'action').
-      const slug = `pg-0092-cat-noclobber-${Date.now()}`;
-      const id = `cat-${slug}`;
-      // type='datasource' would auto-derive pillar='datasource'; we
-      // pass pillar='chat' explicitly to prove the guard holds even
-      // when the CASE would produce a different value.
-      await pool.query(
-        `INSERT INTO plugin_catalog (id, name, slug, type, pillar)
-         VALUES ($1, '0092 No-Clobber', $2, 'datasource', 'chat')`,
-        [id, slug],
-      );
-      const { rows } = await pool.query<{ pillar: string }>(
-        `SELECT pillar FROM plugin_catalog WHERE id = $1`,
-        [id],
-      );
-      expect(rows[0]?.pillar).toBe("chat");
-    }, PG_TEST_TIMEOUT_MS);
-
-    it("plugin_catalog: BEFORE UPDATE trigger re-derives pillar when type changes (UPDATE without naming pillar)", async () => {
-      // Codex P1 on PR #2756: catalog-seeder upsert (`SET type =
-      // EXCLUDED.type`) and admin marketplace PATCH both UPDATE type
-      // on existing rows. Without the UPDATE trigger, pillar drifts
-      // and the workspace_plugins INSERT trigger propagates the stale
-      // value.
-      const slug = `pg-0092-cat-update-${Date.now()}`;
-      const id = `cat-${slug}`;
-
-      await pool.query(
-        `INSERT INTO plugin_catalog (id, name, slug, type) VALUES ($1, '0092 Update Trigger', $2, 'chat')`,
-        [id, slug],
-      );
-      // INSERT trigger derives pillar='chat' from type='chat'.
-      let { rows } = await pool.query<{ pillar: string }>(
-        `SELECT pillar FROM plugin_catalog WHERE id = $1`,
-        [id],
-      );
-      expect(rows[0]?.pillar).toBe("chat");
-
-      // Update type only — UPDATE trigger re-derives pillar.
-      await pool.query(
-        `UPDATE plugin_catalog SET type = 'datasource' WHERE id = $1`,
-        [id],
-      );
-      ({ rows } = await pool.query<{ pillar: string }>(
-        `SELECT pillar FROM plugin_catalog WHERE id = $1`,
-        [id],
-      ));
-      expect(rows[0]?.pillar).toBe("datasource");
-
-      // Update type from datasource → integration — pillar follows
-      // to 'action'.
-      await pool.query(
-        `UPDATE plugin_catalog SET type = 'integration' WHERE id = $1`,
-        [id],
-      );
-      ({ rows } = await pool.query<{ pillar: string }>(
-        `SELECT pillar FROM plugin_catalog WHERE id = $1`,
-        [id],
-      ));
-      expect(rows[0]?.pillar).toBe("action");
-    }, PG_TEST_TIMEOUT_MS);
-
-    it("plugin_catalog: BEFORE UPDATE trigger does NOT clobber when caller updates both type AND pillar", async () => {
-      // Same UPDATE statement names both columns to different values:
-      // the explicit pillar wins. Locks the `IS NOT DISTINCT FROM`
-      // guard against a future revision that drops it.
-      const slug = `pg-0092-cat-update-noclobber-${Date.now()}`;
-      const id = `cat-${slug}`;
-
-      await pool.query(
-        `INSERT INTO plugin_catalog (id, name, slug, type, pillar) VALUES ($1, '0092 Update No-Clobber', $2, 'chat', 'chat')`,
-        [id, slug],
-      );
-
-      // Update type='datasource' would normally derive pillar='datasource';
-      // caller explicitly says pillar='action' — explicit wins.
-      await pool.query(
-        `UPDATE plugin_catalog SET type = 'datasource', pillar = 'action' WHERE id = $1`,
-        [id],
-      );
-      const { rows } = await pool.query<{ type: string; pillar: string }>(
-        `SELECT type, pillar FROM plugin_catalog WHERE id = $1`,
-        [id],
-      );
-      expect(rows[0]?.type).toBe("datasource");
-      expect(rows[0]?.pillar).toBe("action");
-    }, PG_TEST_TIMEOUT_MS);
-
-    it("plugin_catalog: BEFORE UPDATE trigger leaves pillar alone when only unrelated columns change", async () => {
-      // Updating description/enabled/etc. must not touch pillar — the
-      // trigger guard `NEW.type IS DISTINCT FROM OLD.type` short-
-      // circuits when type didn't change.
-      const slug = `pg-0092-cat-update-unrelated-${Date.now()}`;
-      const id = `cat-${slug}`;
-
-      // Insert with explicit non-trigger-mapped pillar (chat for a
-      // datasource-typed row) so a stray "re-derive on every update"
-      // would visibly rewrite to 'datasource'.
-      await pool.query(
-        `INSERT INTO plugin_catalog (id, name, slug, type, pillar) VALUES ($1, '0092 Update Untouched', $2, 'datasource', 'chat')`,
-        [id, slug],
-      );
-
-      await pool.query(
-        `UPDATE plugin_catalog SET description = 'updated description' WHERE id = $1`,
-        [id],
-      );
-      const { rows } = await pool.query<{ pillar: string }>(
-        `SELECT pillar FROM plugin_catalog WHERE id = $1`,
-        [id],
-      );
-      expect(rows[0]?.pillar).toBe("chat");
-    }, PG_TEST_TIMEOUT_MS);
-
-    it("plugin_catalog: implementation_status + auto_install defaults apply on omission", async () => {
-      // Pinned by silent-failure review on #2756 — guards the
-      // `DEFAULT 'available'` / `DEFAULT false` clauses against a
-      // future revision that drops them. Without defaults, a row that
-      // omits the columns lands NULL, which fails the
-      // implementation_status CHECK (23514).
-      const slug = `pg-0092-cat-defaults-${Date.now()}`;
-      const id = `cat-${slug}`;
-      await pool.query(
-        `INSERT INTO plugin_catalog (id, name, slug, type) VALUES ($1, '0092 Defaults', $2, 'integration')`,
-        [id, slug],
-      );
-      const { rows } = await pool.query<{
-        implementation_status: string;
-        auto_install: boolean;
-      }>(
-        `SELECT implementation_status, auto_install FROM plugin_catalog WHERE id = $1`,
-        [id],
-      );
-      expect(rows[0]?.implementation_status).toBe("available");
-      expect(rows[0]?.auto_install).toBe(false);
-    }, PG_TEST_TIMEOUT_MS);
-
-    it("workspace_plugins: BEFORE INSERT trigger fills install_id + pillar when caller omits them", async () => {
-      // Seed a catalog row whose pillar will flow through the trigger.
-      const slug = `pg-0092-trig-${Date.now()}`;
-      const catalogId = `cat-${slug}`;
-      await pool.query(
-        `INSERT INTO plugin_catalog (id, name, slug, type, pillar)
-         VALUES ($1, '0092 Trigger Smoke', $2, 'chat', 'chat')`,
-        [catalogId, slug],
-      );
-
-      // Mimic the existing handler INSERT shape (no install_id, no
-      // pillar). Trigger fills both.
-      const installId = `wp-${slug}`;
-      const workspaceId = `ws-${slug}`;
-      await pool.query(
-        `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, enabled, installed_at)
-         VALUES ($1, $2, $3, '{}'::jsonb, true, NOW())`,
-        [installId, workspaceId, catalogId],
-      );
-
-      const { rows } = await pool.query<{
-        install_id: string;
-        pillar: string;
-      }>(
-        `SELECT install_id, pillar FROM workspace_plugins WHERE workspace_id = $1 AND catalog_id = $2`,
-        [workspaceId, catalogId],
-      );
-      expect(rows[0]?.install_id).toBe(catalogId);
-      expect(rows[0]?.pillar).toBe("chat");
-    }, PG_TEST_TIMEOUT_MS);
-
-    it("workspace_plugins: partial unique 'workspace_plugins_singleton' blocks a second chat install for the same (workspace, catalog)", async () => {
-      const slug = `pg-0092-uniq-${Date.now()}`;
-      const catalogId = `cat-${slug}`;
-      await pool.query(
-        `INSERT INTO plugin_catalog (id, name, slug, type, pillar)
-         VALUES ($1, '0092 Unique Smoke', $2, 'chat', 'chat')`,
-        [catalogId, slug],
-      );
-
-      const workspaceId = `ws-${slug}`;
-      await pool.query(
-        `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, enabled, installed_at)
-         VALUES ($1, $2, $3, '{}'::jsonb, true, NOW())`,
-        [`first-${slug}`, workspaceId, catalogId],
-      );
-
-      // Second insert for the same (workspace, catalog) — different `id`
-      // and `install_id` — should still be blocked. The pre-existing
-      // `idx_workspace_plugins_unique` would catch it too in this slice,
-      // but the partial unique is the post-1.5.3 invariant that survives
-      // slice 5/6's global-unique drop. Either way: 23505.
-      await expect(
-        pool.query(
-          `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
-           VALUES ($1, $2, $3, $4, 'chat', '{}'::jsonb, true, NOW())`,
-          [`second-${slug}`, workspaceId, catalogId, `second-install-${slug}`],
-        ),
-      ).rejects.toMatchObject({ code: "23505" });
-    }, PG_TEST_TIMEOUT_MS);
-
-    it("workspace_plugins: composite PK rejects an exact (workspace, catalog, install) duplicate even across pillars", async () => {
-      const slug = `pg-0092-pk-${Date.now()}`;
-      const catalogId = `cat-${slug}`;
-      await pool.query(
-        `INSERT INTO plugin_catalog (id, name, slug, type, pillar)
-         VALUES ($1, '0092 PK Smoke', $2, 'integration', 'action')`,
-        [catalogId, slug],
-      );
-
-      const workspaceId = `ws-${slug}`;
-      const installId = `inst-${slug}`;
-
-      await pool.query(
-        `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
-         VALUES ($1, $2, $3, $4, 'action', '{}'::jsonb, true, NOW())`,
-        [`first-${slug}`, workspaceId, catalogId, installId],
-      );
-
-      await expect(
-        pool.query(
-          `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
-           VALUES ($1, $2, $3, $4, 'action', '{}'::jsonb, true, NOW())`,
-          [`second-${slug}`, workspaceId, catalogId, installId],
-        ),
-      ).rejects.toMatchObject({ code: "23505" });
-    }, PG_TEST_TIMEOUT_MS);
-
-    it("workspace_plugins: `id` uniqueness preserved after PK swap", async () => {
-      // The dropped single-column PK used to enforce id uniqueness;
-      // `workspace_plugins_id_unique` takes over. Reuse the same id
-      // across two distinct (workspace, catalog) pairs and confirm
-      // the second insert rejects with 23505.
-      const slug = `pg-0092-id-${Date.now()}`;
-      const catalogIdA = `cat-a-${slug}`;
-      const catalogIdB = `cat-b-${slug}`;
-      const sharedId = `shared-${slug}`;
-
-      await pool.query(
-        `INSERT INTO plugin_catalog (id, name, slug, type, pillar)
-         VALUES ($1, '0092 ID Smoke A', $2, 'chat', 'chat'),
-                ($3, '0092 ID Smoke B', $4, 'chat', 'chat')`,
-        [catalogIdA, `${slug}-a`, catalogIdB, `${slug}-b`],
-      );
-
-      await pool.query(
-        `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, enabled, installed_at)
-         VALUES ($1, $2, $3, '{}'::jsonb, true, NOW())`,
-        [sharedId, `ws-${slug}`, catalogIdA],
-      );
-
-      await expect(
-        pool.query(
-          `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, enabled, installed_at)
-           VALUES ($1, $2, $3, '{}'::jsonb, true, NOW())`,
-          [sharedId, `ws-${slug}`, catalogIdB],
-        ),
-      ).rejects.toMatchObject({ code: "23505" });
-    }, PG_TEST_TIMEOUT_MS);
-
-    it("workspace_plugins: trigger does NOT clobber caller-provided install_id + pillar", async () => {
-      // Slice 4 (WorkspaceInstaller, #2742) will explicitly name both
-      // columns. The `IF NEW.x IS NULL` guards are load-bearing then —
-      // a "simplification" that drops them would silently rewrite the
-      // explicit values from the catalog lookup / sentinel.
-      const slug = `pg-0092-wp-noclobber-${Date.now()}`;
-      const catalogId = `cat-${slug}`;
-      await pool.query(
-        `INSERT INTO plugin_catalog (id, name, slug, type, pillar)
-         VALUES ($1, '0092 No-Clobber', $2, 'integration', 'action')`,
-        [catalogId, slug],
-      );
-
-      const explicitInstallId = `prod-us-${slug}`;
-      const workspaceId = `ws-${slug}`;
-      // Caller passes pillar='datasource' even though catalog says
-      // 'action' — proves the trigger doesn't second-guess explicit
-      // values via its catalog SELECT.
-      await pool.query(
-        `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
-         VALUES ($1, $2, $3, $4, 'datasource', '{}'::jsonb, true, NOW())`,
-        [`wp-${slug}`, workspaceId, catalogId, explicitInstallId],
-      );
-
-      const { rows } = await pool.query<{ install_id: string; pillar: string }>(
-        `SELECT install_id, pillar FROM workspace_plugins WHERE workspace_id = $1 AND catalog_id = $2`,
-        [workspaceId, catalogId],
-      );
-      expect(rows[0]?.install_id).toBe(explicitInstallId);
-      expect(rows[0]?.pillar).toBe("datasource");
-    }, PG_TEST_TIMEOUT_MS);
-
-    it("workspace_plugins: chk_workspace_plugins_pillar rejects unknown pillar with 23514", async () => {
-      // Separate constraint from `chk_plugin_catalog_pillar` — a
-      // missing `ADD CONSTRAINT chk_workspace_plugins_pillar` in the
-      // migration would only surface on the catalog side without this
-      // test.
-      const slug = `pg-0092-wp-check-${Date.now()}`;
-      const catalogId = `cat-${slug}`;
-      await pool.query(
-        `INSERT INTO plugin_catalog (id, name, slug, type, pillar)
-         VALUES ($1, '0092 Pillar Check', $2, 'integration', 'action')`,
-        [catalogId, slug],
-      );
-      await expect(
-        pool.query(
-          `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
-           VALUES ($1, $2, $3, $4, 'something-else', '{}'::jsonb, true, NOW())`,
-          [`wp-${slug}`, `ws-${slug}`, catalogId, `inst-${slug}`],
-        ),
-      ).rejects.toMatchObject({ code: "23514" });
-    }, PG_TEST_TIMEOUT_MS);
-
-    it("workspace_plugins: backfill UPDATEs assign sentinel install_id + joined pillar for pre-existing NULL rows", async () => {
-      // Prod-critical regression: a self-host upgrade with live rows
-      // walks through ADD COLUMN (NULL on existing rows) → UPDATE
-      // backfill → SET NOT NULL. The full migration has already run
-      // in beforeAll, so we simulate the pre-backfill state inside a
-      // transaction: drop the NOT NULLs, disable the trigger so we
-      // can insert NULLs, replay the migration's UPDATE statements,
-      // assert. Postgres DDL is transactional — ROLLBACK reverts every
-      // change so subsequent tests see the unchanged shape.
-      const slug = `pg-0092-backfill-${Date.now()}`;
-      const catalogId = `cat-${slug}`;
-      const workspaceId = `ws-${slug}`;
-      const installRowId = `wp-${slug}`;
-
-      const client = await pool.connect();
-      try {
-        await client.query("BEGIN");
-        // Mimic the post-ADD-COLUMN, pre-UPDATE state of the live
-        // migration:
-        //   1. Drop the composite PK so install_id can lose its
-        //      implicit NOT NULL (PK columns can't be nullable).
-        //   2. Drop the explicit NOT NULLs on pillar + install_id.
-        //   3. Disable the BEFORE INSERT triggers so we can stage
-        //      NULL rows.
-        // Postgres DDL is transactional — ROLLBACK reverts every
-        // change so subsequent tests see the unchanged shape.
-        await client.query(
-          `ALTER TABLE workspace_plugins DROP CONSTRAINT workspace_plugins_pkey`,
-        );
-        await client.query(
-          `ALTER TABLE plugin_catalog ALTER COLUMN pillar DROP NOT NULL`,
-        );
-        await client.query(
-          `ALTER TABLE workspace_plugins ALTER COLUMN pillar DROP NOT NULL`,
-        );
-        await client.query(
-          `ALTER TABLE workspace_plugins ALTER COLUMN install_id DROP NOT NULL`,
-        );
-        await client.query(
-          `ALTER TABLE plugin_catalog DISABLE TRIGGER trg_plugin_catalog_default_pillar`,
-        );
-        await client.query(
-          `ALTER TABLE workspace_plugins DISABLE TRIGGER trg_workspace_plugins_default_pillar_install_id`,
-        );
-
-        await client.query(
-          `INSERT INTO plugin_catalog (id, name, slug, type, pillar)
-           VALUES ($1, '0092 Backfill', $2, 'chat', NULL)`,
-          [catalogId, slug],
-        );
-        await client.query(
-          `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
-           VALUES ($1, $2, $3, NULL, NULL, '{}'::jsonb, true, NOW())`,
-          [installRowId, workspaceId, catalogId],
-        );
-
-        // Replay the migration's backfill — three plugin_catalog
-        // UPDATEs, then the workspace_plugins UPDATE that sets
-        // install_id = catalog_id sentinel, then the join that sets
-        // workspace_plugins.pillar from the now-populated catalog.
-        await client.query(
-          `UPDATE plugin_catalog SET pillar = 'chat'       WHERE pillar IS NULL AND type = 'chat'`,
-        );
-        await client.query(
-          `UPDATE plugin_catalog SET pillar = 'datasource' WHERE pillar IS NULL AND type = 'datasource'`,
-        );
-        await client.query(
-          `UPDATE plugin_catalog SET pillar = 'action'     WHERE pillar IS NULL`,
-        );
-        await client.query(
-          `UPDATE workspace_plugins SET install_id = catalog_id WHERE install_id IS NULL`,
-        );
-        await client.query(
-          `UPDATE workspace_plugins wp SET pillar = pc.pillar FROM plugin_catalog pc WHERE pc.id = wp.catalog_id AND wp.pillar IS NULL`,
-        );
-
-        const { rows } = await client.query<{
-          install_id: string;
-          pillar: string;
-        }>(
-          `SELECT install_id, pillar FROM workspace_plugins WHERE id = $1`,
-          [installRowId],
-        );
-        expect(rows[0]?.install_id).toBe(catalogId);
-        expect(rows[0]?.pillar).toBe("chat");
-
-        const { rows: catRows } = await client.query<{ pillar: string }>(
-          `SELECT pillar FROM plugin_catalog WHERE id = $1`,
-          [catalogId],
-        );
-        expect(catRows[0]?.pillar).toBe("chat");
-      } finally {
-        await client.query("ROLLBACK");
-        client.release();
-      }
-    }, PG_TEST_TIMEOUT_MS);
-
-    it("workspace_plugins: orphan catalog_id surfaces 23503 from the trigger, not 23502 from NOT NULL", async () => {
-      // The trigger raises a FK-style 23503 with a diagnostic message
-      // naming the missing catalog_id, instead of letting the row fall
-      // through to a confusing `NULL value in column "pillar"` NOT NULL
-      // violation. The real FK normally prevents this path; the trigger
-      // is a belt-and-braces diagnostic. To exercise it we drop the FK
-      // inside a transaction and roll back — works without superuser
-      // (unlike SET session_replication_role).
-      const slug = `pg-0092-orphan-${Date.now()}`;
-      const client = await pool.connect();
-      try {
-        await client.query("BEGIN");
-        await client.query(
-          `ALTER TABLE workspace_plugins DROP CONSTRAINT workspace_plugins_catalog_id_fkey`,
-        );
-        await expect(
-          client.query(
-            `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, enabled, installed_at)
-             VALUES ($1, $2, $3, '{}'::jsonb, true, NOW())`,
-            [`wp-${slug}`, `ws-${slug}`, `does-not-exist-${slug}`],
-          ),
-        ).rejects.toMatchObject({ code: "23503" });
-      } finally {
-        await client.query("ROLLBACK");
-        client.release();
-      }
-    }, PG_TEST_TIMEOUT_MS);
-  });
 
   // ─────────────────────────────────────────────────────────────────────
   // 0096: connections / connection_groups cutover (#2744, 1.5.3 slice 6)

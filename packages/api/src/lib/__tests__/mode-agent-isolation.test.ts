@@ -24,7 +24,11 @@ let connectionRows: ConnectionRow[] = [];
 const mockInternalQuery = mock(async (sql: string, params?: unknown[]) => {
   const [orgIdParam, idParam] = (params ?? []) as string[];
 
-  if (sql.includes("FROM connections")) {
+  // Post-#2744 `isConnectionVisibleInMode` queries `workspace_plugins`
+  // (pillar='datasource') and projects `install_id AS id`. The status
+  // clause is the same — published mode restricts to `status = 'published'`,
+  // developer mode expands to `status IN ('published', 'draft')`.
+  if (sql.includes("FROM workspace_plugins")) {
     const published = sql.includes("status = 'published'");
     const overlay = sql.includes("status IN ('published', 'draft')");
     const allowedStatuses = new Set<"published" | "draft">(
@@ -63,8 +67,7 @@ const { getSemanticRoot } = syncMod;
 // Connection visibility
 // ---------------------------------------------------------------------------
 
-// TODO(#2744 step 5 — test sweep): mocks reference dropped `connections` / `connection_groups` SQL; rewrite to workspace_plugins (pillar='datasource') shape.
-describe.skip("isConnectionVisibleInMode", () => {
+describe("isConnectionVisibleInMode", () => {
   beforeEach(() => {
     connectionRows = [];
     mockInternalQuery.mockClear();

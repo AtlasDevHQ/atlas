@@ -633,8 +633,7 @@ describe("POST /api/v1/onboarding/tour-reset", () => {
 // POST /api/v1/onboarding/use-demo
 // ---------------------------------------------------------------------------
 
-// TODO(#2744 step 5 — test sweep): mocks reference dropped `connections` SQL; rewrite to workspace_plugins (pillar='datasource') shape.
-describe.skip("POST /api/v1/onboarding/use-demo", () => {
+describe("POST /api/v1/onboarding/use-demo", () => {
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
@@ -648,7 +647,19 @@ describe.skip("POST /api/v1/onboarding/use-demo", () => {
     );
     mockHasInternalDB.mockImplementation(() => true);
     mockInternalQuery.mockClear();
-    mockInternalQuery.mockImplementation(async () => [{ id: "__demo__" }]);
+    // Post-#2744: /use-demo first looks up the demo-postgres catalog row,
+    // then runs an UPSERT into `workspace_plugins` that returns
+    // `install_id AS id`. Stub both — most tests just need the round-trip
+    // to succeed; assertion-focused tests further override locally.
+    mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === "string" && sql.includes("FROM plugin_catalog") && sql.includes("demo-postgres")) {
+        return [{ id: "cat_demo_postgres" }];
+      }
+      if (typeof sql === "string" && sql.includes("INSERT INTO workspace_plugins")) {
+        return [{ id: "__demo__" }];
+      }
+      return [{ id: "__demo__" }];
+    });
     mockEncryptUrl.mockClear();
     mockEncryptUrl.mockImplementation((url: string) => `encrypted:${url}`);
     mockRegister.mockClear();
@@ -683,27 +694,31 @@ describe.skip("POST /api/v1/onboarding/use-demo", () => {
     expect(data.entitiesImported).toBe(5);
   });
 
-  it("saves connection with status='published' in upsert SQL", async () => {
+  it("saves connection with status='published' in workspace_plugins upsert SQL", async () => {
     await request("/api/v1/onboarding/use-demo", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ demoType: "cybersec" }),
     });
 
-    // Find the INSERT INTO connections call
+    // Post-#2744 the upsert lands on `workspace_plugins` with the demo
+    // catalog row's id and a hard-coded 'published' status. The URL is
+    // encrypted into the JSONB `config` payload, not into a top-level
+    // column — assert on the install_id + the literal status in the SQL.
     const connectionInsertCall = mockInternalQuery.mock.calls.find(
-      (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO connections"),
+      (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO workspace_plugins"),
     );
     expect(connectionInsertCall).toBeDefined();
     const sql = connectionInsertCall![0] as string;
     expect(sql).toContain("'published'");
-    // F-47: INSERT carries url_key_version so post-rotation ops queries
-    // (`WHERE url_key_version < $active`) surface demo-flow rows too.
-    expect(sql).toContain("url_key_version");
+    expect(sql).toContain("'datasource'");
+    // ON CONFLICT key for the singleton (workspace, catalog, install_id) PK.
+    expect(sql).toContain("ON CONFLICT (workspace_id, catalog_id, install_id)");
     const params = connectionInsertCall![1] as unknown[];
-    expect(params[0]).toBe("__demo__");
-    // url_key_version defaults to 1 in tests with no ATLAS_ENCRYPTION_KEYS set.
-    expect(params[params.length - 1]).toBe(1);
+    // Params: [`cn_${orgId}_${id}`, orgId, catalogId, id, configJson]
+    expect(params[1]).toBe("org-1");      // workspace_id
+    expect(params[2]).toBe("cat_demo_postgres"); // catalog_id from the lookup mock
+    expect(params[3]).toBe("__demo__");   // install_id
   });
 
   it("imports semantic entities with connectionId='__demo__'", async () => {
@@ -1021,7 +1036,7 @@ describe.skip("POST /api/v1/onboarding/use-demo", () => {
     expect(data.error).toBe("import_failed");
 
     const connectionInsert = mockInternalQuery.mock.calls.find(
-      (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO connections"),
+      (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO workspace_plugins"),
     );
     expect(connectionInsert).toBeUndefined();
     expect(mockRegister).not.toHaveBeenCalled();
@@ -1048,7 +1063,7 @@ describe.skip("POST /api/v1/onboarding/use-demo", () => {
     expect(data.error).toBe("import_failed");
 
     const connectionInsert = mockInternalQuery.mock.calls.find(
-      (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO connections"),
+      (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO workspace_plugins"),
     );
     expect(connectionInsert).toBeUndefined();
     mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5 }));
@@ -1083,7 +1098,7 @@ describe.skip("POST /api/v1/onboarding/use-demo", () => {
     expect(data.error).toBe("demo_not_available");
 
     const connectionInsert = mockInternalQuery.mock.calls.find(
-      (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO connections"),
+      (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO workspace_plugins"),
     );
     expect(connectionInsert).toBeUndefined();
 
@@ -1108,7 +1123,7 @@ describe.skip("POST /api/v1/onboarding/use-demo", () => {
     expect(data.error).toBe("demo_not_available");
 
     const connectionInsert = mockInternalQuery.mock.calls.find(
-      (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO connections"),
+      (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO workspace_plugins"),
     );
     expect(connectionInsert).toBeUndefined();
     expect(mockImportFromDisk).not.toHaveBeenCalled();
@@ -1127,7 +1142,7 @@ describe.skip("POST /api/v1/onboarding/use-demo", () => {
     });
     const baseImpl = mockInternalQuery.getMockImplementation();
     mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
-      if (typeof sql === "string" && sql.includes("INSERT INTO connections")) {
+      if (typeof sql === "string" && sql.includes("INSERT INTO workspace_plugins")) {
         connectionInsertOrder = ++counter;
         return [{ id: "__demo__" }];
       }
@@ -1168,23 +1183,25 @@ describe.skip("POST /api/v1/onboarding/use-demo", () => {
     expect(data.entitiesImported).toBe(8);
 
     const connectionInsert = mockInternalQuery.mock.calls.find(
-      (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO connections"),
+      (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO workspace_plugins"),
     );
     expect(connectionInsert).toBeDefined();
     mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5 }));
   });
 
-  it("RACE: ON CONFLICT DO NOTHING — a 0-row INSERT followed by a successful verify SELECT still returns 201 (#2304)", async () => {
-    // The first onboarder pinned the global `__demo__` URL. A second
-    // onboarder whose INSERT is no-op'd by ON CONFLICT must still see
-    // 201 if the verify SELECT confirms the row already exists. Without
-    // this test, a future change that flips `DO NOTHING` back to
-    // `DO UPDATE SET url=...` would silently re-introduce per-onboarder
-    // URL clobbering.
+  it("RACE: idempotent UPSERT — ON CONFLICT DO UPDATE returns the install_id even on re-run (#2304)", async () => {
+    // Post-#2744 the demo upsert uses `ON CONFLICT (workspace_id, catalog_id,
+    // install_id) DO UPDATE SET config = EXCLUDED.config, status = 'published'`.
+    // RETURNING install_id always yields the row on both the fresh-insert
+    // and the conflict-update branch — so a second onboarder gets 201 with
+    // the same canonical id. The legacy `DO NOTHING` + verify-SELECT
+    // pattern that the global `__global__` install used is gone (each
+    // workspace owns its own demo row now per migration 0094).
     mockInternalQuery.mockImplementation(async (sql: string) => {
-      if (sql.includes("INSERT INTO connection_groups")) return [{ id: "g___demo__" }];
-      if (sql.includes("INSERT INTO connections")) return [];
-      if (sql.includes("SELECT id FROM connections WHERE id = $1 AND org_id = '__global__'")) {
+      if (typeof sql === "string" && sql.includes("FROM plugin_catalog") && sql.includes("demo-postgres")) {
+        return [{ id: "cat_demo_postgres" }];
+      }
+      if (typeof sql === "string" && sql.includes("INSERT INTO workspace_plugins")) {
         return [{ id: "__demo__" }];
       }
       return [];

@@ -117,7 +117,9 @@ let demoActiveFixture = false;
 // rows are also supported for any remaining callers of internalQuery directly.
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<Record<string, unknown>[]>> = mock(
   async (sql: string) => {
-    if (sql.includes("FROM connections") && sql.includes("'__demo__'")) {
+    // Post-#2744 `resolvePromptDemoContext` reads `workspace_plugins JOIN
+    // plugin_catalog (slug='demo-postgres')` and SELECTs `EXISTS (...) AS active`.
+    if (sql.includes("FROM workspace_plugins wp") && sql.includes("'__demo__'")) {
       return [{ active: demoActiveFixture }];
     }
     if (sql.includes("UNION ALL") && sql.includes("draft")) {
@@ -338,8 +340,7 @@ describe("GET /api/v1/mode — canToggle by role", () => {
   });
 });
 
-// TODO(#2744 step 5 — test sweep): mocks reference dropped `connections` / `connection_groups` SQL; rewrite to workspace_plugins (pillar='datasource') shape.
-describe.skip("GET /api/v1/mode — demo state", () => {
+describe("GET /api/v1/mode — demo state", () => {
   beforeEach(() => {
     asAdmin();
     mockHasInternalDBValue = true;

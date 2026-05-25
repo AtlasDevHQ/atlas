@@ -145,8 +145,7 @@ const toolCtx = { toolCallId: "tc-rls", messages: [], abortSignal: undefined as 
 // Tests
 // ---------------------------------------------------------------------------
 
-// TODO(#2744 step 5 — test sweep): mocks reference dropped `connections` / `connection_groups` SQL; rewrite to workspace_plugins (pillar='datasource') shape.
-describe.skip("RLS settings overlay in SaaS mode", () => {
+describe("RLS settings overlay in SaaS mode", () => {
   beforeEach(() => {
     mockSettingValues = {
       ATLAS_ROW_LIMIT: "1000",

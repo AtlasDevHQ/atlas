@@ -85,10 +85,16 @@ function cardRow(connectionGroupId: string | null): Record<string, unknown> {
   };
 }
 
-/** Two rows the group snapshot loader expects: a primary lookup, then a member list. */
-function groupSnapshotRows(primaryConnectionId: string, memberIds: string[]): Array<{ rows: Record<string, unknown>[] }> {
+/**
+ * Single query the post-#2744 `loadGroupSnapshot` expects: a SELECT against
+ * `workspace_plugins` returning every install in the group, ordered by
+ * `(installed_at ASC, install_id ASC)`. There's no separate
+ * `primary_connection_id` lookup any more — the snapshot's
+ * `primaryConnectionId` is always null and the resolver falls through to
+ * the deterministic first-by-installed_at member.
+ */
+function groupSnapshotRows(memberIds: string[]): Array<{ rows: Record<string, unknown>[] }> {
   return [
-    { rows: [{ primary_connection_id: primaryConnectionId }] },
     {
       rows: memberIds.map((id, idx) => ({
         id,
@@ -103,8 +109,7 @@ function setResults(...results: Array<{ rows: Record<string, unknown>[] }>) {
   queryResultIndex = 0;
 }
 
-// TODO(#2744 step 5 — test sweep): mocks reference dropped `connections` / `connection_groups` SQL; rewrite to workspace_plugins (pillar='datasource') shape.
-describe.skip("refreshDashboardCards org-scoped pool selection", () => {
+describe("refreshDashboardCards org-scoped pool selection", () => {
   const originalDatabaseUrl = process.env.DATABASE_URL;
 
   beforeEach(() => {
@@ -127,11 +132,14 @@ describe.skip("refreshDashboardCards org-scoped pool selection", () => {
     _resetPool(null);
   });
 
-  it("resolves the group's primary member when opening a scheduled refresh pool", async () => {
+  it("resolves the group's first member (deterministic by installed_at) when opening a scheduled refresh pool", async () => {
+    // Post-#2744 there's no `primary_connection_id` — the resolver falls
+    // through to the deterministic first-by-(installed_at, install_id)
+    // member. Single-member group → `warehouse` is both first AND only.
     setResults(
       { rows: [dashboardRow("org-1")] },
       { rows: [cardRow("g-warehouse")] },
-      ...groupSnapshotRows("warehouse", ["warehouse"]),
+      ...groupSnapshotRows(["warehouse"]),
       { rows: [{ id: "card-1" }] },
       { rows: [] },
     );

@@ -1,8 +1,3 @@
-// TODO(#2744 step 5 — test sweep): admin-connections audit tests assert
-// against the legacy `INSERT INTO connections (…)` SQL mocks. Route pivoted
-// to `WorkspaceInstaller.installDatasource` so describes `.skip`'d pending
-// step 5's mock-pattern rewrite. Audit semantics themselves are unchanged
-// (route still calls `logAdminAction(ADMIN_ACTIONS.connection.*)`).
 /**
  * Audit regression suite for `admin-connections.ts`.
  *
@@ -143,13 +138,15 @@ beforeEach(() => {
   mocks.setPlatformAdmin("org-alpha");
   mockLogAdminAction.mockClear();
   mocks.mockInternalQuery.mockReset();
-  // The audit suite drives platform admin flows. After the platform_admin
-  // visibility bypass was removed (every caller now goes through
-  // `getVisibleConnectionIds`), the warehouse connection must be present in
-  // the visibility set or `/:id/test` and `/:id/drain` 404 before they emit.
+  // Post-#2744 visibility query reads `workspace_plugins (pillar='datasource')`
+  // and returns `install_id`. The audit suite drives platform admin flows;
+  // after the platform_admin visibility bypass was removed (every caller
+  // goes through `getVisibleConnectionIds`), the warehouse install must be
+  // present in the visibility set or `/:id/test` and `/:id/drain` 404
+  // before they emit.
   mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
-    if (typeof sql === "string" && sql.includes("SELECT c.id FROM connections c WHERE c.org_id")) {
-      return [{ id: "warehouse" }];
+    if (typeof sql === "string" && sql.includes("FROM workspace_plugins wp") && sql.includes("DISTINCT wp.install_id")) {
+      return [{ install_id: "warehouse" }];
     }
     return [];
   });
@@ -173,7 +170,7 @@ beforeEach(() => {
 // POST /test — ephemeral probe
 // ---------------------------------------------------------------------------
 
-describe.skip("POST /api/v1/admin/connections/test — audit emission (F-29/F-34)", () => {
+describe("POST /api/v1/admin/connections/test — audit emission (F-29/F-34)", () => {
   it("emits connection.probe with success metadata on healthy probe", async () => {
     const res = await app.fetch(
       adminRequest("POST", "/api/v1/admin/connections/test", {
@@ -232,7 +229,7 @@ describe.skip("POST /api/v1/admin/connections/test — audit emission (F-29/F-34
 // POST /:id/test — existing connection health check
 // ---------------------------------------------------------------------------
 
-describe.skip("POST /api/v1/admin/connections/:id/test — audit emission (F-29/F-34)", () => {
+describe("POST /api/v1/admin/connections/:id/test — audit emission (F-29/F-34)", () => {
   it("emits connection.health_check with registered id as target", async () => {
     const res = await app.fetch(
       adminRequest("POST", "/api/v1/admin/connections/warehouse/test"),
@@ -268,7 +265,7 @@ describe.skip("POST /api/v1/admin/connections/:id/test — audit emission (F-29/
 // POST /pool/orgs/:orgId/drain — pool drain
 // ---------------------------------------------------------------------------
 
-describe.skip("POST /api/v1/admin/connections/pool/orgs/:orgId/drain — audit emission (F-29/F-34)", () => {
+describe("POST /api/v1/admin/connections/pool/orgs/:orgId/drain — audit emission (F-29/F-34)", () => {
   it("emits connection.pool_drain with platform scope + drainedConnections count", async () => {
     mockConnectionDrainOrg.mockResolvedValue({ drained: 5 });
 
@@ -316,7 +313,7 @@ describe.skip("POST /api/v1/admin/connections/pool/orgs/:orgId/drain — audit e
 // POST /:id/drain — per-connection pool drain (F-29 residuals)
 // ---------------------------------------------------------------------------
 
-describe.skip("POST /api/v1/admin/connections/:id/drain — audit emission (F-29 residuals)", () => {
+describe("POST /api/v1/admin/connections/:id/drain — audit emission (F-29 residuals)", () => {
   it("emits connection.pool_drain with workspace scope + connectionId metadata", async () => {
     mockConnectionDrain.mockResolvedValueOnce({ drained: true, message: "ok" });
 

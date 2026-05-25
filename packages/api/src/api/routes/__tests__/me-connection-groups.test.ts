@@ -49,11 +49,17 @@ mock.module("@atlas/api/lib/logger", () => {
 // ── DB mock ────────────────────────────────────────────────────────────────
 
 let dbAvailable = true;
+// Post-#2744 the route reads `workspace_plugins (pillar='datasource')`
+// and projects:
+//   - `config->>'group_id' AS group_id` (also acts as the group name)
+//   - `install_id AS connection_id`
+//   - `config->>'db_type' AS db_type`
+//   - `config->>'description' AS description`
+// The `connection_groups` table is gone, so there's no separate
+// `group_name` or `primary_connection_id` column to mock.
 type GroupRow = {
   group_id: string;
-  group_name: string;
-  primary_connection_id: string | null;
-  connection_id: string | null;
+  connection_id: string;
   db_type: string | null;
   description: string | null;
 };
@@ -157,8 +163,7 @@ beforeEach(() => {
   rowsForOrg = {};
 });
 
-// TODO(#2744 step 5 — test sweep): mocks reference dropped `connections` / `connection_groups` SQL; rewrite to workspace_plugins (pillar='datasource') shape.
-describe.skip("GET /api/v1/me/connection-groups — reason field (#2422)", () => {
+describe("GET /api/v1/me/connection-groups — reason field (#2422)", () => {
   it("returns 401 when unauthenticated", async () => {
     fakeAuth = null;
     const res = await meConnectionGroups.request("/", { method: "GET" });
@@ -212,9 +217,7 @@ describe.skip("GET /api/v1/me/connection-groups — reason field (#2422)", () =>
     fakeAuth = userAuth();
     rowsForOrg["org-1"] = [
       {
-        group_id: "g_prod",
-        group_name: "prod",
-        primary_connection_id: "us-int",
+        group_id: "prod",
         connection_id: "us-int",
         db_type: "postgres",
         description: null,
@@ -224,36 +227,39 @@ describe.skip("GET /api/v1/me/connection-groups — reason field (#2422)", () =>
     expect(res.status).toBe(200);
     const body = await getJson(res);
     expect(body.groups).toHaveLength(1);
-    expect(body.groups[0]).toMatchObject({ id: "g_prod", name: "prod" });
+    // Post-cutover groupName mirrors groupId verbatim — the
+    // `connection_groups.name` separate-from-id distinction is gone.
+    expect(body.groups[0]).toMatchObject({ id: "prod", name: "prod" });
     expect(body.reason).toBeNull();
   });
 });
 
-// TODO(#2744 step 5 — test sweep): mocks reference dropped `connections` / `connection_groups` SQL; rewrite to workspace_plugins (pillar='datasource') shape.
-describe.skip("GET /api/v1/me/connection-groups — primaryConnectionId surfacing", () => {
-  it("surfaces the group's primary_connection_id so the picker can default to it", async () => {
+describe("GET /api/v1/me/connection-groups — primaryConnectionId surfacing (post-cutover)", () => {
+  // Post-#2744 there's no separate `connection_groups.primary_connection_id`
+  // column — the route always emits `primaryConnectionId: null` on every
+  // group. The wire field is preserved for backwards compatibility with
+  // pre-#2744 clients; the picker now falls back to its deterministic
+  // first-by-install_id ordering when no explicit pin exists. These tests
+  // pin that contract so a regression that re-introduces a primary
+  // lookup (or accidentally drops the field) fails loudly.
+
+  it("emits primaryConnectionId: null on every group (no connection_groups table any more)", async () => {
     fakeAuth = userAuth();
     rowsForOrg["org-1"] = [
       {
-        group_id: "g_prod",
-        group_name: "prod",
-        primary_connection_id: "us-prod",
+        group_id: "prod",
         connection_id: "apac-prod",
         db_type: "postgres",
         description: "APAC",
       },
       {
-        group_id: "g_prod",
-        group_name: "prod",
-        primary_connection_id: "us-prod",
+        group_id: "prod",
         connection_id: "eu-prod",
         db_type: "postgres",
         description: "EU",
       },
       {
-        group_id: "g_prod",
-        group_name: "prod",
-        primary_connection_id: "us-prod",
+        group_id: "prod",
         connection_id: "us-prod",
         db_type: "postgres",
         description: "US",
@@ -263,7 +269,9 @@ describe.skip("GET /api/v1/me/connection-groups — primaryConnectionId surfacin
     expect(res.status).toBe(200);
     const body = await getJson(res);
     expect(body.groups).toHaveLength(1);
-    expect(body.groups[0]?.primaryConnectionId).toBe("us-prod");
+    expect(body.groups[0]?.primaryConnectionId).toBeNull();
+    // Member ordering preserves the SQL `ORDER BY install_id ASC` ordering
+    // so the picker's deterministic-default pick is stable.
     expect(body.groups[0]?.members.map((m) => m.connectionId)).toEqual([
       "apac-prod",
       "eu-prod",
@@ -271,69 +279,64 @@ describe.skip("GET /api/v1/me/connection-groups — primaryConnectionId surfacin
     ]);
   });
 
-  it("returns primaryConnectionId: null when the group has no primary configured", async () => {
+  it("buckets multiple group_ids into separate group entries", async () => {
+    fakeAuth = userAuth();
+    rowsForOrg["org-1"] = [
+      { group_id: "prod", connection_id: "us-prod", db_type: "postgres", description: null },
+      { group_id: "staging", connection_id: "us-stg", db_type: "postgres", description: null },
+    ];
+    const res = await meConnectionGroups.request("/", { method: "GET" });
+    const body = await getJson(res);
+    expect(body.groups).toHaveLength(2);
+    const ids = body.groups.map((g) => g.id).sort();
+    expect(ids).toEqual(["prod", "staging"]);
+  });
+
+  it("does NOT surface a group when every member is archived (config->>'group_id' IS NOT NULL filter)", async () => {
+    // The post-cutover query filters `config->>'group_id' IS NOT NULL`
+    // AND `status != 'archived'`, so the legacy LEFT JOIN behavior of
+    // returning a one-row-with-NULL-connection_id for an empty group is
+    // gone. Archived-only groups disappear from the picker entirely —
+    // which is the right UX (an empty group with no live members can't
+    // route a query anywhere).
+    fakeAuth = userAuth();
+    rowsForOrg["org-1"] = [];
+    const res = await meConnectionGroups.request("/", { method: "GET" });
+    const body = await getJson(res);
+    expect(body.groups).toEqual([]);
+  });
+
+  it("surfaces dbType + description from JSONB config fields", async () => {
     fakeAuth = userAuth();
     rowsForOrg["org-1"] = [
       {
-        group_id: "g_prod",
-        group_name: "prod",
-        primary_connection_id: null,
+        group_id: "prod",
         connection_id: "us-prod",
         db_type: "postgres",
-        description: null,
+        description: "US production",
       },
     ];
     const res = await meConnectionGroups.request("/", { method: "GET" });
     const body = await getJson(res);
-    expect(body.groups[0]?.primaryConnectionId).toBeNull();
+    expect(body.groups[0]?.members[0]).toEqual({
+      connectionId: "us-prod",
+      dbType: "postgres",
+      description: "US production",
+    });
   });
 
-  it("nulls out a primary that's no longer in the member list (archived / mismatched)", async () => {
-    // The composite FK has ON DELETE SET NULL, but archive isn't
-    // delete — the LEFT JOIN filter `status != 'archived'` is what
-    // strands the primary. Guard nulls it so the picker doesn't pin
-    // to an invisible member.
+  it("falls back to dbType: 'unknown' when JSONB config has no db_type key", async () => {
     fakeAuth = userAuth();
     rowsForOrg["org-1"] = [
       {
-        group_id: "g_prod",
-        group_name: "prod",
-        primary_connection_id: "us-prod-archived",
-        connection_id: "apac-prod",
-        db_type: "postgres",
-        description: null,
-      },
-      {
-        group_id: "g_prod",
-        group_name: "prod",
-        primary_connection_id: "us-prod-archived",
-        connection_id: "eu-prod",
-        db_type: "postgres",
-        description: null,
-      },
-    ];
-    const res = await meConnectionGroups.request("/", { method: "GET" });
-    const body = await getJson(res);
-    expect(body.groups[0]?.primaryConnectionId).toBeNull();
-  });
-
-  it("preserves primaryConnectionId on a group with zero non-archived members (left-join empty)", async () => {
-    // LEFT JOIN yields one row with NULL connection_id when every
-    // member is archived; dangling-primary guard still applies.
-    fakeAuth = userAuth();
-    rowsForOrg["org-1"] = [
-      {
-        group_id: "g_empty",
-        group_name: "empty",
-        primary_connection_id: "gone",
-        connection_id: null,
+        group_id: "prod",
+        connection_id: "us-prod",
         db_type: null,
         description: null,
       },
     ];
     const res = await meConnectionGroups.request("/", { method: "GET" });
     const body = await getJson(res);
-    expect(body.groups[0]?.members).toEqual([]);
-    expect(body.groups[0]?.primaryConnectionId).toBeNull();
+    expect(body.groups[0]?.members[0]?.dbType).toBe("unknown");
   });
 });

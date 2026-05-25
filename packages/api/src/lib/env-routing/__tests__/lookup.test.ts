@@ -14,7 +14,6 @@ import { describe, it, expect, beforeEach, mock } from "bun:test";
 let mockHasInternalDB = true;
 let mockConnRows: { group_id: string | null }[] = [];
 let mockMemberRows: { id: string }[] = [];
-let mockGroupRows: { primary_connection_id: string | null }[] = [];
 let mockShouldThrow: Error | null = null;
 let mockQueryCalls: { sql: string; params: unknown[] | undefined }[] = [];
 
@@ -23,17 +22,16 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: async (sql: string, params?: unknown[]) => {
     mockQueryCalls.push({ sql, params });
     if (mockShouldThrow) throw mockShouldThrow;
-    // Step 1 fetches `group_id` from `connections`.
-    if (sql.includes("FROM connections") && sql.includes("group_id") && !sql.includes("WHERE group_id")) {
+    // Post-#2744 the helper hits `workspace_plugins` in two steps:
+    //   1. Look up the install's `config->>'group_id'` (matched by install_id).
+    //   2. Aggregate sibling installs sharing the same group_id.
+    // The legacy `connection_groups` table (and its `primary_connection_id`
+    // column) is gone — `members[0]` is the deterministic primary now.
+    if (sql.includes("FROM workspace_plugins") && sql.includes("WHERE install_id = $1")) {
       return mockConnRows;
     }
-    // Step 2a fetches member ids.
-    if (sql.includes("FROM connections") && sql.includes("WHERE group_id")) {
+    if (sql.includes("FROM workspace_plugins") && sql.includes("config->>'group_id' = $1")) {
       return mockMemberRows;
-    }
-    // Step 2b fetches the group's primary.
-    if (sql.includes("FROM connection_groups")) {
-      return mockGroupRows;
     }
     return [];
   },
@@ -46,7 +44,6 @@ describe("loadGroupRoutingContext — 1×1 fallback paths", () => {
     mockHasInternalDB = true;
     mockConnRows = [];
     mockMemberRows = [];
-    mockGroupRows = [];
     mockShouldThrow = null;
     mockQueryCalls = [];
   });
@@ -103,51 +100,43 @@ describe("loadGroupRoutingContext — 1×1 fallback paths", () => {
   });
 });
 
-// TODO(#2744 step 5 — test sweep): mocks reference dropped `connections` / `connection_groups` SQL; rewrite to workspace_plugins (pillar='datasource') shape.
-describe.skip("loadGroupRoutingContext — multi-member resolution", () => {
+describe("loadGroupRoutingContext — multi-member resolution (post-cutover)", () => {
+  // Post-#2744 there's no explicit `primary_connection_id` — the primary
+  // is always the first member returned by `ORDER BY install_id`. The
+  // production SQL sorts alphabetically, so a deterministic mock fixture
+  // matches that contract verbatim.
   beforeEach(() => {
     mockHasInternalDB = true;
     mockConnRows = [];
     mockMemberRows = [];
-    mockGroupRows = [];
     mockShouldThrow = null;
     mockQueryCalls = [];
   });
 
-  it("3-member group with explicit primary → returns all 3 + named primary", async () => {
-    mockConnRows = [{ group_id: "g-prod" }];
+  it("3-member group → returns all 3 with first-alphabetical as primary", async () => {
+    mockConnRows = [{ group_id: "prod" }];
+    // Mock returns rows in the SQL's ORDER BY install_id ordering.
     mockMemberRows = [{ id: "apac" }, { id: "eu" }, { id: "us-int" }];
-    mockGroupRows = [{ primary_connection_id: "us-int" }];
     const ctx = await loadGroupRoutingContext("org-1", "eu");
-    expect(ctx.groupId).toBe("g-prod");
+    expect(ctx.groupId).toBe("prod");
     expect(ctx.members).toEqual(["apac", "eu", "us-int"]);
-    expect(ctx.primaryMember).toBe("us-int");
+    expect(ctx.primaryMember).toBe("apac"); // first by install_id
     expect(ctx.currentMember).toBe("eu");
   });
 
-  it("primary_connection_id NOT in members (stale FK) → first member becomes primary", async () => {
-    mockConnRows = [{ group_id: "g-prod" }];
-    mockMemberRows = [{ id: "apac" }, { id: "eu" }];
-    mockGroupRows = [{ primary_connection_id: "us-int" }]; // not in members
-    const ctx = await loadGroupRoutingContext("org-1", "eu");
-    expect(ctx.primaryMember).toBe("apac"); // first member
-  });
-
-  it("group row missing (race with delete) → first member becomes primary", async () => {
-    mockConnRows = [{ group_id: "g-prod" }];
+  it("2-member group → first member is primary, currentMember reflects caller", async () => {
+    mockConnRows = [{ group_id: "prod" }];
     mockMemberRows = [{ id: "us-int" }, { id: "eu" }];
-    mockGroupRows = []; // connection_groups deleted before lookup completed
     const ctx = await loadGroupRoutingContext("org-1", "eu");
     expect(ctx.members).toEqual(["us-int", "eu"]);
     expect(ctx.primaryMember).toBe("us-int");
   });
 
-  it("step-2 returns empty members (paranoid) → fallback to currentConnectionId", async () => {
-    mockConnRows = [{ group_id: "g-prod" }];
+  it("step-2 returns empty members (paranoid: step 1 said grouped but row archived) → fallback to currentConnectionId", async () => {
+    mockConnRows = [{ group_id: "prod" }];
     mockMemberRows = []; // empty even though step 1 said grouped
-    mockGroupRows = [{ primary_connection_id: "us-int" }];
     const ctx = await loadGroupRoutingContext("org-1", "eu");
     expect(ctx.members).toEqual(["eu"]);
-    expect(ctx.primaryMember).toBe("eu"); // primaryFromGroup not in [], falls to currentMember
+    expect(ctx.primaryMember).toBe("eu");
   });
 });

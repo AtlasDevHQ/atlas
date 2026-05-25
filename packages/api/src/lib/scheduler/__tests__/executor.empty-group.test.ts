@@ -164,15 +164,18 @@ afterEach(() => {
   _resetPool(null);
 });
 
-// TODO(#2744 step 5 — test sweep): mocks reference dropped `connections` / `connection_groups` SQL; rewrite to workspace_plugins (pillar='datasource') shape.
-describe.skip("executor — empty connection group (#2416)", () => {
+describe("executor — empty connection group (#2416)", () => {
   it("when the tenant's group has zero non-archived members, the executor throws WITHOUT firing the agent and WITHOUT crossing into __global__", async () => {
     // Real loadScheduledTaskGroupSnapshot runs against this mock pool.
-    // First query: connection_groups row exists (tenant owns the group).
-    // Second query: zero non-archived members (every connection archived).
+    // Post-#2744 the loader does two scoped probes on `workspace_plugins`:
+    //   1. EXISTS check (any status) — proves the group exists in this org.
+    //   2. SELECT install_id AS id, installed_at AS created_at WHERE
+    //      `status != 'archived'` — empty here, because every member is
+    //      archived. The two-stage split preserves the "group not found"
+    //      vs "group has zero non-archived members" distinction.
     queryResults = [
-      { rows: [{ primary_connection_id: null }] },
-      { rows: [] },
+      { rows: [{ exists_flag: true }] }, // group exists somewhere in this org
+      { rows: [] },                      // ...but every member is archived
     ];
     queryResultIndex = 0;
 
@@ -188,12 +191,17 @@ describe.skip("executor — empty connection group (#2416)", () => {
     expect(mockUpdateRunDeliveryStatus).not.toHaveBeenCalled();
 
     // Real SQL path was exercised — exactly the two scoped queries ran
-    // (group row + member rows), both bound to org-1, never __global__.
+    // (EXISTS probe + member rows), both bound to org-1, never widened
+    // to __global__ post-#2416.
     expect(queryCalls.length).toBe(2);
     for (const call of queryCalls) {
       expect(call.params).toContain("org-1");
       expect(call.params).not.toContain("__global__");
       expect(call.sql).not.toContain("'__global__'");
+      // Both queries target workspace_plugins; neither references the
+      // legacy `connection_groups` table.
+      expect(call.sql).toContain("workspace_plugins");
+      expect(call.sql).not.toContain("connection_groups");
     }
   });
 });

@@ -1734,9 +1734,7 @@ describe("GET /api/v1/admin/connections", () => {
   });
 });
 
-// TODO(#2744 step 5): describe mocks `SELECT c.url, c.schema_name, c.group_id, …`
-// from `connections`; route now reads workspace_plugins + plugin_catalog.
-describe.skip("GET /api/v1/admin/connections/:id", () => {
+describe("GET /api/v1/admin/connections/:id", () => {
   beforeEach(() => {
     mockAuthenticateRequest.mockReset();
     setOrgScopedAdmin();
@@ -1744,19 +1742,62 @@ describe.skip("GET /api/v1/admin/connections/:id", () => {
     mockInternalQuery.mockResolvedValue([]);
   });
 
-  it("returns connection detail for registered connection", async () => {
-    // Visibility lookup must return no org-owned rows so the runtime-registered
-    // `default` falls through to the visible set; detail SELECT returns the
-    // URL row.
+  it("returns connection detail for the runtime-registered default", async () => {
+    // Visibility lookup returns no workspace-owned installs so the runtime-
+    // registered `default` falls through to the visible set. Detail SELECT
+    // (post-#2744 `SELECT wp.config, pc.config_schema, ...`) returns
+    // nothing for `default` (it isn't in workspace_plugins) — the response
+    // shape's `managed` flips to false in that case.
     mockInternalQuery.mockImplementation((sql: string) => {
-      if (typeof sql === "string" && sql.includes("SELECT c.id FROM connections")) {
+      if (
+        typeof sql === "string" &&
+        sql.includes("FROM workspace_plugins wp") &&
+        sql.includes("DISTINCT wp.install_id")
+      ) {
         return Promise.resolve([]);
       }
-      return Promise.resolve([{ url: "postgresql://localhost/db", schema_name: "public" }]);
+      // Detail JOIN — no row for the runtime-registered `default`.
+      return Promise.resolve([]);
     });
     const res = await app.fetch(adminRequest("/api/v1/admin/connections/default"));
     expect(res.status).toBe(200);
 
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.id).toBe("default");
+    // `default` isn't admin-managed (no workspace_plugins row) — the
+    // detail JOIN returned 0 rows, so `managed: false`.
+    expect(body.managed).toBe(false);
+  });
+
+  it("returns 200 with managed: true for a workspace install", async () => {
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (
+        typeof sql === "string" &&
+        sql.includes("FROM workspace_plugins wp") &&
+        sql.includes("DISTINCT wp.install_id")
+      ) {
+        return Promise.resolve([{ install_id: "default" }]);
+      }
+      if (
+        typeof sql === "string" &&
+        sql.includes("SELECT wp.config, pc.config_schema") &&
+        sql.includes("JOIN plugin_catalog")
+      ) {
+        return Promise.resolve([
+          {
+            config: { url: "postgresql://localhost/db" },
+            config_schema: [
+              { key: "url", type: "string", required: true, secret: true },
+              { key: "schema", type: "string" },
+            ],
+            group_id: null,
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+    const res = await app.fetch(adminRequest("/api/v1/admin/connections/default"));
+    expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.id).toBe("default");
     expect(body.managed).toBe(true);
@@ -1780,10 +1821,14 @@ describe.skip("GET /api/v1/admin/connections/:id", () => {
   });
 });
 
-// TODO(#2744 step 5): rollback-escalation describe mocks legacy
-// `SELECT id, url, type, description, schema_name, group_id FROM connections`
-// + `decryptSecret`. Route now uses `decryptSecretFields` from workspace_plugins.config.
-describe.skip("PUT /api/v1/admin/connections/:id — rollback escalation", () => {
+describe("PUT /api/v1/admin/connections/:id — rollback escalation", () => {
+  // Post-#2744 the route loads existing config from `workspace_plugins`
+  // JOIN `plugin_catalog`, the URL lives inside `config` JSONB, and
+  // `decryptSecretFields` walks the catalog schema for `secret: true`
+  // keys. The rollback contract on a urlChanged + healthCheck failure
+  // is unchanged: register(new URL) → healthCheck throws → register
+  // (currentUrl) for rollback. Rollback failure escalates to 500 with
+  // restart guidance.
   beforeEach(() => {
     mockAuthenticateRequest.mockReset();
     setOrgScopedAdmin();
@@ -1794,12 +1839,42 @@ describe.skip("PUT /api/v1/admin/connections/:id — rollback escalation", () =>
     mockRegister.mockImplementation(() => {});
   });
 
+  function stageExistingInstall(): void {
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (
+        typeof sql === "string" &&
+        sql.includes("SELECT pc.slug AS catalog_slug") &&
+        sql.includes("wp.config")
+      ) {
+        return Promise.resolve([
+          {
+            catalog_slug: "postgres",
+            // Plain URL — the real `decryptSecret` returns un-prefixed values
+            // verbatim, so `currentUrl` resolves to this string and is what
+            // the rollback re-registers.
+            config: { url: "postgresql://old/db" },
+            config_schema: [
+              { key: "url", type: "string", required: true, secret: true },
+              { key: "schema", type: "string" },
+              { key: "description", type: "string" },
+            ],
+            group_id: null,
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+  }
+
   it("returns 400 when URL test fails but rollback succeeds", async () => {
-    // Existing connection in DB
-    mockInternalQuery.mockResolvedValueOnce([{ id: "warehouse", url: "postgresql://old/db", type: "postgres", description: null, schema_name: null }]);
+    stageExistingInstall();
     mockHealthCheck.mockRejectedValue(new Error("Connection refused"));
 
-    const res = await app.fetch(adminRequest("/api/v1/admin/connections/warehouse", "PUT", { url: "postgresql://bad/url" }));
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/connections/warehouse", "PUT", {
+        url: "postgresql://bad/url",
+      }),
+    );
     expect(res.status).toBe(400);
 
     const body = (await res.json()) as Record<string, unknown>;
@@ -1808,18 +1883,20 @@ describe.skip("PUT /api/v1/admin/connections/:id — rollback escalation", () =>
   });
 
   it("escalates to 500 with restart guidance when rollback fails", async () => {
-    // Existing connection in DB
-    mockInternalQuery.mockResolvedValueOnce([{ id: "warehouse", url: "postgresql://old/db", type: "postgres", description: null, schema_name: null }]);
-    // Health check fails
+    stageExistingInstall();
     mockHealthCheck.mockRejectedValue(new Error("Connection refused"));
-    // First call (register new URL) succeeds, second call (rollback) throws
+    // First call (register new URL) succeeds, second call (rollback) throws.
     let callCount = 0;
     mockRegister.mockImplementation(() => {
       callCount++;
       if (callCount >= 2) throw new Error("rollback failed");
     });
 
-    const res = await app.fetch(adminRequest("/api/v1/admin/connections/warehouse", "PUT", { url: "postgresql://bad/url" }));
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/connections/warehouse", "PUT", {
+        url: "postgresql://bad/url",
+      }),
+    );
     expect(res.status).toBe(500);
 
     const body = (await res.json()) as Record<string, unknown>;

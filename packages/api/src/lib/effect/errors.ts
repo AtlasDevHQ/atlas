@@ -580,6 +580,63 @@ export class TeamsApiUnavailableError extends Data.TaggedError(
   readonly message: string;
 }> {}
 
+// ── WhatsApp static-bot install (#2753 — 1.5.3 Phase D) ─────────────
+
+/**
+ * WhatsApp install rejected the supplied `phone_number_id` at the input-
+ * shape layer — not a numeric Meta phone-number identifier, empty, or
+ * pasted as the human-readable phone number (`+1 415 555 0100`). Maps to
+ * HTTP 400. The constructor message is admin-actionable verbatim; the
+ * route does not translate.
+ *
+ * Fourth subclass of the static-bot input-validation family alongside
+ * {@link TelegramChatIdInvalidError}, {@link DiscordGuildIdInvalidError},
+ * and {@link TeamsTenantIdInvalidError}.
+ *
+ * @see packages/api/src/lib/integrations/install/whatsapp-static-bot-handler.ts
+ */
+export class WhatsAppPhoneNumberIdInvalidError extends Data.TaggedError(
+  "WhatsAppPhoneNumberIdInvalidError",
+)<{
+  readonly message: string;
+}> {}
+
+/**
+ * Meta Graph API returned a non-OK envelope when verifying the supplied
+ * `phone_number_id` via `GET /v21.0/{phone_number_id}`. Maps to HTTP 400
+ * because the common failure modes (unknown number, number not owned by
+ * the operator's Meta Business Account, access token lacks
+ * whatsapp_business_management scope) are admin-correctable: re-copy the
+ * id from the Meta Business Suite, or ask the operator to extend the
+ * shared Meta Business account to include the customer's number.
+ *
+ * Distinct from {@link WhatsAppApiUnavailableError} (502 — operator/
+ * upstream) because user-correctable errors must not auto-retry.
+ */
+export class WhatsAppReachabilityError extends Data.TaggedError(
+  "WhatsAppReachabilityError",
+)<{
+  /** Admin-facing message — includes Meta's verbatim `error.message`. */
+  readonly message: string;
+  /** Meta-side numeric error code (100 "Invalid parameter", 190 "Access token expired", etc.). Forensic-only. */
+  readonly errorCode: number;
+}> {}
+
+/**
+ * Meta Graph API was unreachable at the network layer — DNS, TLS,
+ * timeout, or a malformed response. Maps to HTTP 502. The thrown message
+ * is admin-safe (the operator-shared `META_BUSINESS_ACCESS_TOKEN` rides
+ * in the `Authorization: Bearer` header, not in the URL path — so it
+ * doesn't surface in fetch error messages the way Telegram's URL-
+ * embedded bot token can); the underlying error is logged with the
+ * structured `requestId` for operator forensics.
+ */
+export class WhatsAppApiUnavailableError extends Data.TaggedError(
+  "WhatsAppApiUnavailableError",
+)<{
+  readonly message: string;
+}> {}
+
 // ── Workspace Installer (#2742) ────────────────────────────────────
 
 /**
@@ -730,6 +787,9 @@ export type AtlasError =
   | TeamsTenantIdInvalidError
   | TeamsReachabilityError
   | TeamsApiUnavailableError
+  | WhatsAppPhoneNumberIdInvalidError
+  | WhatsAppReachabilityError
+  | WhatsAppApiUnavailableError
   | AlreadyInstalledError
   | ConfigSchemaError
   | CatalogNotFoundError
@@ -799,6 +859,9 @@ export const ATLAS_ERROR_TAG_LIST = [
   "TeamsTenantIdInvalidError",
   "TeamsReachabilityError",
   "TeamsApiUnavailableError",
+  "WhatsAppPhoneNumberIdInvalidError",
+  "WhatsAppReachabilityError",
+  "WhatsAppApiUnavailableError",
   "AlreadyInstalledError",
   "ConfigSchemaError",
   "CatalogNotFoundError",

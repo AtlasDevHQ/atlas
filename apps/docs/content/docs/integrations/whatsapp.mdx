@@ -1,0 +1,318 @@
+---
+title: WhatsApp
+description: Connect Atlas to WhatsApp. The operator wires a single shared Meta Business / WhatsApp Business Cloud API account; each workspace points Atlas at one WhatsApp Business phone number via its Meta phone_number_id.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas's WhatsApp integration follows the **static-bot** install model:
+one operator-owned Meta Business / WhatsApp Business Cloud API account
+serves every workspace in your deploy, and each workspace admin points
+Atlas at one WhatsApp Business phone number by pasting Meta's
+`phone_number_id` (a numeric routing id, **not** the human-readable
+phone number) into the install modal. The Meta access token itself
+authenticates once at deploy time using the operator's System User
+credentials; per-workspace routing is the only thing a customer admin
+configures.
+
+This is in contrast to Slack, where each workspace runs its own OAuth
+dance and gets its own bot token. WhatsApp's model is operator-shared
+because Meta's Cloud API issues a single System User access token per
+WhatsApp Business Account that can act on every phone number shared
+into it — the operator-owned token is sufficient to send and receive
+on every customer's number, so adding a new tenant is just a
+configuration change in the operator's Meta Business Suite, not a
+fresh OAuth dance.
+
+<Callout type="warn" title="Plan tier">
+  WhatsApp installs are gated to the **Business** plan tier. Meta
+  charges the operator per-conversation for both user-initiated (24h
+  customer-service window) and template-initiated conversations — the
+  economics only work for workspaces on the highest tier. Lower-tier
+  workspaces see the upsell state on the WhatsApp catalog card instead
+  of the connect CTA.
+</Callout>
+
+## Operator setup (one-time, per deploy)
+
+These steps wire your deploy to a Meta Business / WhatsApp Business
+Cloud API account. Self-hosted operators run them once during initial
+deployment; Atlas Cloud customers don't — the Atlas Cloud team has
+already done this on the hosted regions.
+
+### 1. Create a Meta App with WhatsApp product
+
+In the [Meta for Developers console](https://developers.facebook.com),
+create a new **Business**-type app. During creation:
+
+- Set **App Type** to **Business**.
+- Choose your **Meta Business Account** as the owning Business
+  Account. This is the account whose System User token will act on
+  every customer's phone number — pick the operator-owned one, not a
+  customer's.
+- From the app dashboard, add the **WhatsApp** product. Meta walks you
+  through configuring a sandbox phone number; the production
+  WhatsApp Business phone numbers come in step 3.
+- From the app dashboard, copy the **App ID** → `META_BUSINESS_APP_ID`.
+- From **App Settings → Basic**, copy the **App Secret** →
+  `WHATSAPP_APP_SECRET`. Keep this secret — anyone with it can verify
+  webhook deliveries pretending to be Meta.
+
+### 2. Mint a System User access token
+
+In the [Meta Business Suite](https://business.facebook.com), open
+**Business Settings → Users → System Users** and create a new System
+User with **Admin** access. Then:
+
+- **Assign assets**: grant the System User access to the WhatsApp
+  Business Account that owns (or will own) the customer phone numbers.
+  Set the role to **Manage**.
+- **Generate token**: click **Generate New Token** and pick the app
+  you created in step 1. In the permissions panel select both
+  `whatsapp_business_management` (for the phone-number reachability
+  check Atlas runs at install time) and `whatsapp_business_messaging`
+  (for the chat adapter's outbound sends).
+- **Expiration**: choose **Never** — this is an operator-shared,
+  long-lived token. Rotating it requires updating
+  `META_BUSINESS_ACCESS_TOKEN` on every API service in your deploy.
+- Copy the generated token → `META_BUSINESS_ACCESS_TOKEN`. This is
+  the token Atlas uses to verify customer-supplied phone_number_ids
+  at install time and to send messages on behalf of every customer.
+
+### 3. Set the env vars
+
+Set the following on every Atlas API service in your deploy:
+
+```bash
+META_BUSINESS_ACCESS_TOKEN=<System User access token from step 2>
+META_BUSINESS_APP_ID=<Meta App ID from step 1>
+WHATSAPP_APP_SECRET=<App Secret from step 1>
+WHATSAPP_VERIFY_TOKEN=<a random string — invent one, keep it secret>
+```
+
+`META_BUSINESS_ACCESS_TOKEN` + `META_BUSINESS_APP_ID` are required by
+the install handler (Atlas refuses to register the install path
+without them); `WHATSAPP_APP_SECRET` + `WHATSAPP_VERIFY_TOKEN` are
+required by the chat adapter (Atlas refuses to wire the inbound
+webhook without them). The two pairs are gated independently so a
+half-wired deploy fails in an actionable way — the install path may
+work without the adapter half, but inbound messages won't route.
+
+For single-tenant deploys (where one operator and one customer are the
+same party, and there's only one WhatsApp number to send from), you
+can additionally set:
+
+```bash
+WHATSAPP_DEFAULT_PHONE_NUMBER_ID=<the single tenant's phone_number_id>
+```
+
+The chat adapter uses this as the default sender when no per-workspace
+routing applies. MultiTenant deploys leave it empty — the adapter
+pulls the phone_number_id from the inbound webhook envelope's
+`metadata.phone_number_id` field, and Atlas's host `executeQuery`
+resolves the right workspace by matching it against the
+`workspace_plugins.config` rows.
+
+### 4. Configure the Meta webhook
+
+In the Meta for Developers console, on your app's **WhatsApp →
+Configuration** blade:
+
+- Set the **Callback URL** to your Atlas deploy's webhook URL:
+
+  ```
+  https://api.your-atlas-deploy.example.com/api/plugins/chat-interaction/webhooks/whatsapp
+  ```
+
+- Set the **Verify token** to the same value you put in
+  `WHATSAPP_VERIFY_TOKEN`.
+- Click **Verify and Save**. Meta makes a GET request to your callback
+  URL with the verify token; Atlas's adapter mirrors it back to
+  confirm.
+- After saving, click **Manage** next to the webhook field and
+  subscribe to the `messages` field at minimum. Reactions and message
+  status updates can be subscribed too, but `messages` is the
+  user-initiated event Atlas responds to.
+
+### 5. Enable the catalog row
+
+Atlas ships the WhatsApp catalog entry pre-declared in
+`deploy/api/atlas.config.ts`. If you've started from the deploy
+template, the row is already `enabled: true` — no change needed. For
+custom configs, mirror the shape:
+
+```ts
+{
+  slug: "whatsapp",
+  type: "chat",
+  install_model: "static-bot",
+  enabled: true,
+  saas_eligible: true,
+  min_plan: "business",
+  // (configSchema omitted here — see atlas.config.ts for the full row)
+}
+```
+
+Once the env vars are set and the catalog row is enabled, the boot
+log should include:
+
+```
+Registered WhatsAppStaticBotInstallHandler
+AdapterRegistry: chat adapter registered  { slug: 'whatsapp', platform: 'whatsapp' }
+```
+
+If either line is missing, see [troubleshooting](#troubleshooting) below.
+
+## Customer install (per workspace)
+
+Once the operator has wired the Meta App, workspace admins can install
+WhatsApp from **Admin → Integrations**.
+
+<Callout type="warn" title="Operator must add the number first">
+  Before a customer admin can install, the operator has to share the
+  customer's WhatsApp Business phone number into the operator's Meta
+  Business Account. This is a one-time step per customer phone number,
+  done by the operator in the Meta Business Suite — Atlas can't do it
+  on the customer's behalf because the share requires the operator's
+  Meta admin credentials.
+</Callout>
+
+### 1. Operator adds the customer's number to the Meta Business Account
+
+In the Meta Business Suite, open **WhatsApp Manager → Phone numbers →
+Add phone number**. Walk through Meta's verification flow (SMS or
+voice OTP to the customer's number). Once verified, the number
+appears in the **Phone numbers** list with a Meta-assigned
+`Phone number ID` next to it. Copy that ID — that's the value the
+customer admin will paste into Atlas's install modal.
+
+### 2. Customer admin pastes the phone_number_id
+
+In **Admin → Integrations → WhatsApp**, click **Install** and paste
+the `Phone number ID` from step 1 (a numeric routing id, e.g.
+`1098765432109876` — NOT the human-readable phone number) into the
+input.
+
+Click **Confirm**.
+
+### 3. Atlas verifies the number
+
+Atlas immediately calls Meta Graph API
+(`GET /v21.0/{phone_number_id}`) with the operator's access token to
+confirm:
+
+- The phone_number_id is visible to the operator's Meta Business
+  Account (i.e. the operator did step 1).
+- The access token has the `whatsapp_business_management` scope.
+
+If both pass, the install row is persisted and the card flips to
+"Installed". The display phone number (e.g. `+1 415 555 0100`) Meta
+returns is captured as the optional `display_phone` label on the
+install card. If verification fails, Meta's error message bubbles up
+verbatim — see the next section.
+
+## Troubleshooting
+
+### "Meta rejected phone_number_id … — this phone_number_id isn't visible to the operator's Meta Business Account"
+
+Atlas couldn't find the phone_number_id you submitted under the
+operator's Meta Business Account. Common causes:
+
+- The phone_number_id has a typo — re-copy it from the Meta Business
+  Suite under **WhatsApp Manager → Phone numbers → API Setup → Phone
+  number ID**.
+- The operator hasn't yet shared the customer's WhatsApp number into
+  the operator's Meta Business Account. The operator must add the
+  number first (see customer-install step 1 above).
+- You pasted the WhatsApp Business Account ID (`waba_id`) by mistake;
+  it's a different identifier on the same screen.
+
+### "WhatsApp phone_number_id … is not a valid Meta routing id"
+
+You submitted a value that doesn't match the canonical 10–30 decimal
+digit format. Human-readable phone numbers (`+1 415 555 0100`) and
+WhatsApp Business Account IDs are common paste mistakes. Find the
+numeric Phone Number ID in the Meta Business Suite under
+**WhatsApp Manager → Phone numbers → API Setup** and re-submit.
+
+### "Meta rejected phone_number_id … — the operator-side META_BUSINESS_ACCESS_TOKEN may be expired or revoked"
+
+Meta returned error code 190 (or similar). The operator's System User
+access token has expired, been revoked, or had its scopes downgraded.
+Ops must mint a fresh System User token with `whatsapp_business_management`
++ `whatsapp_business_messaging` and update `META_BUSINESS_ACCESS_TOKEN`
+on every API service in the deploy.
+
+### "Meta Graph API unreachable"
+
+A network failure between Atlas and `graph.facebook.com`. Check
+operator-side egress (firewall, region routing, DNS) and retry. Atlas
+does not retry automatically — install attempts are user-initiated and
+a transient failure surfaces back to the admin.
+
+### "No static-bot install handler registered for catalog slug 'whatsapp'"
+
+The operator hasn't set `META_BUSINESS_ACCESS_TOKEN` and
+`META_BUSINESS_APP_ID`, or one is empty on the API process handling
+the install. Both are required (the install flow can't proceed without
+either). Ops sets both per-service and restarts the API. On the next
+boot, log streams should include `Registered
+WhatsAppStaticBotInstallHandler` — if not, double check the env values
+aren't empty / whitespace-only.
+
+### Bot doesn't respond inside WhatsApp
+
+Atlas listens over Meta's WhatsApp Cloud API webhook. That means:
+
+- The Meta webhook callback URL must match your Atlas deploy's webhook
+  URL (see operator-setup step 4).
+- The webhook must be subscribed to the `messages` field — Meta
+  delivers user-initiated events on that channel.
+- `WHATSAPP_APP_SECRET` and `WHATSAPP_VERIFY_TOKEN` on the API service
+  must match the Meta app's App Secret and the verify token you
+  pasted into the webhook configuration.
+- The customer's phone number must be shared into the operator's Meta
+  Business Account AND a `workspace_plugins` row must exist for that
+  phone_number_id (i.e. the customer admin has actually clicked
+  Install in `/admin/integrations`).
+
+If all four are correct and messages still don't arrive, check the
+Meta for Developers app's **Webhooks → Recent deliveries** panel for
+delivery attempts and their response codes.
+
+### Webhook deliveries land but routing's wrong
+
+Inbound WhatsApp messages carry the phone_number_id in
+`value.metadata.phone_number_id`. Atlas matches this against
+`workspace_plugins.config.phone_number_id` to route to the right
+workspace. If a workspace is receiving another tenant's messages (or
+vice versa), the most common cause is two `workspace_plugins` rows
+pointing at the same `phone_number_id` — Atlas's UPSERT path makes
+this impossible at install time, but a database-level edit can
+introduce it. Check the DB:
+
+```sql
+SELECT workspace_id, config->>'phone_number_id' AS phone_number_id
+FROM workspace_plugins
+WHERE catalog_id = 'catalog:whatsapp';
+```
+
+Phone number IDs must be unique across the column. Resolve the
+duplicate manually before re-installing. (Atlas's executeQuery
+resolver fails-closed when it sees >1 match — inbound messages will
+be rejected with a user-safe error until the duplicate is fixed.)
+
+## Disconnecting
+
+To disconnect a workspace from WhatsApp, open **Admin → Integrations
+→ WhatsApp** and click **Disconnect**. Atlas clears the
+`workspace_plugins` row via `WorkspaceInstaller.uninstall` — the
+phone number stays connected to the operator's Meta Business Account
+(Atlas doesn't have permission to unshare it), but incoming messages
+are no longer routed to the workspace.
+
+To remove the phone number from the operator's Meta Business Account
+entirely, the operator opens the **Meta Business Suite → WhatsApp
+Manager → Phone numbers**, picks the number, and clicks **Delete**.
+This is operator-scoped — a workspace admin can't trigger it from
+Atlas.

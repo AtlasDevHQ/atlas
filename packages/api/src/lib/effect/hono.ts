@@ -190,6 +190,15 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
     case "TeamsTenantIdInvalidError":
     case "TeamsReachabilityError":
       return { status: 400, code: "bad_request", message: error.message };
+    // #2753 — WhatsApp install rejected at the input or upstream-
+    // verification layer. Both are admin-correctable (re-paste the id,
+    // confirm the number is in the operator's Meta Business Account,
+    // refresh the access token) so 400 is the right surface. The
+    // message carries Meta's verbatim `error.message` for
+    // `WhatsAppReachabilityError`; the route does not translate.
+    case "WhatsAppPhoneNumberIdInvalidError":
+    case "WhatsAppReachabilityError":
+      return { status: 400, code: "bad_request", message: error.message };
     // #2742 — catalog `config_schema` violation. Surface per-field
     // detail in the response body so the admin UI's form can highlight
     // the wrong inputs without a follow-up roundtrip. Field names are
@@ -353,6 +362,13 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
     // TEAMS_APP_PASSWORD never reach the discovery endpoint, so they
     // can't leak in fetch error messages).
     case "TeamsApiUnavailableError":
+      return { status: 502, code: "upstream_error", message: error.message };
+    // #2753 — Meta Graph API unreachable at the network layer (DNS, TLS,
+    // timeout). Same upstream posture as Telegram / Discord / Teams; the
+    // message is admin-safe (the operator-shared META_BUSINESS_ACCESS_TOKEN
+    // rides in `Authorization: Bearer`, not in the URL path, so it
+    // can't surface in fetch error messages).
+    case "WhatsAppApiUnavailableError":
       return { status: 502, code: "upstream_error", message: error.message };
 
     // ── 503 Service Unavailable ──────────────────────────────────

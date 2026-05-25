@@ -63,12 +63,18 @@ function clearTeamsEnv(): void {
   delete process.env.TEAMS_APP_PASSWORD;
 }
 
+function clearWhatsAppEnv(): void {
+  delete process.env.META_BUSINESS_ACCESS_TOKEN;
+  delete process.env.META_BUSINESS_APP_ID;
+}
+
 beforeEach(() => {
   // Reset the env to a known-clean state; each test sets only what it needs.
   process.env = { ...ORIGINAL_ENV };
   clearTelegramEnv();
   clearDiscordEnv();
   clearTeamsEnv();
+  clearWhatsAppEnv();
   delete process.env.SLACK_CLIENT_ID;
   delete process.env.SLACK_CLIENT_SECRET;
   delete process.env.JIRA_CLIENT_ID;
@@ -255,6 +261,63 @@ describe("registerBuiltinInstallHandlers — Teams env gate (#2752)", () => {
   });
 
   it("does not throw when the catalog has no teams row at all (operator hasn't opted in)", () => {
+    mockedConfig = { catalog: [{ slug: "slack", enabled: true }] };
+    expect(() => registerBuiltinInstallHandlers()).not.toThrow();
+  });
+});
+
+describe("registerBuiltinInstallHandlers — WhatsApp env gate (#2753)", () => {
+  it("does not register the WhatsApp handler when META_BUSINESS_ACCESS_TOKEN is unset", () => {
+    process.env.META_BUSINESS_APP_ID = "fake-meta-app-id";
+    registerBuiltinInstallHandlers();
+    expect(() =>
+      getInstallHandler({ slug: "whatsapp", install_model: "static-bot" }),
+    ).toThrow(/No static-bot install handler registered/);
+  });
+
+  it("does not register the WhatsApp handler when META_BUSINESS_APP_ID is unset", () => {
+    process.env.META_BUSINESS_ACCESS_TOKEN = "fake-meta-token";
+    registerBuiltinInstallHandlers();
+    expect(() =>
+      getInstallHandler({ slug: "whatsapp", install_model: "static-bot" }),
+    ).toThrow(/No static-bot install handler registered/);
+  });
+
+  it("does not register when either WhatsApp env var is an empty string", () => {
+    process.env.META_BUSINESS_ACCESS_TOKEN = "";
+    process.env.META_BUSINESS_APP_ID = "";
+    registerBuiltinInstallHandlers();
+    expect(() =>
+      getInstallHandler({ slug: "whatsapp", install_model: "static-bot" }),
+    ).toThrow(/No static-bot install handler registered/);
+  });
+
+  it("registers the WhatsApp handler when both META_BUSINESS_ACCESS_TOKEN and META_BUSINESS_APP_ID are set", () => {
+    process.env.META_BUSINESS_ACCESS_TOKEN = "fake-meta-access-token";
+    process.env.META_BUSINESS_APP_ID = "fake-meta-app-id";
+    registerBuiltinInstallHandlers();
+    const handler = getInstallHandler({
+      slug: "whatsapp",
+      install_model: "static-bot",
+    });
+    expect(handler.kind).toBe("static-bot");
+  });
+
+  it("logs (but does not throw) when the catalog says whatsapp is enabled but the env is half-wired — #2673 escalation", () => {
+    // Only META_BUSINESS_ACCESS_TOKEN set (META_BUSINESS_APP_ID missing)
+    // — same severity-escalation contract as the Telegram / Discord /
+    // Teams catalog-enabled + env-missing paths.
+    process.env.META_BUSINESS_ACCESS_TOKEN = "fake-token-only";
+    mockedConfig = {
+      catalog: [{ slug: "whatsapp", enabled: true }],
+    };
+    expect(() => registerBuiltinInstallHandlers()).not.toThrow();
+    expect(() =>
+      getInstallHandler({ slug: "whatsapp", install_model: "static-bot" }),
+    ).toThrow(/No static-bot install handler registered/);
+  });
+
+  it("does not throw when the catalog has no whatsapp row at all (operator hasn't opted in)", () => {
     mockedConfig = { catalog: [{ slug: "slack", enabled: true }] };
     expect(() => registerBuiltinInstallHandlers()).not.toThrow();
   });

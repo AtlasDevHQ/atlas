@@ -112,8 +112,10 @@ describe("runMigrations", () => {
     // + 0097 (forward-fix for 0096 constraint-ordering bug on us-int-postgres, #2744)
     // + 0098 (twenty_integrations table, #2727)
     // + 0099 (add 'discord' to approval-surface CHECK enums + promote
-    //   discord catalog row to 'available', #2749) = 100.
-    expect(count).toBe(100);
+    //   discord catalog row to 'available', #2749)
+    // + 0100 (add 'whatsapp' to approval-surface CHECK enums + promote
+    //   whatsapp catalog row to 'available', #2753) = 101.
+    expect(count).toBe(101);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -242,6 +244,7 @@ describe("runMigrations", () => {
         "0097_fix_0096_us_constraint_order.sql",
         "0098_twenty_integrations.sql",
         "0099_approval_surface_discord.sql",
+        "0100_approval_surface_whatsapp.sql",
       ],
     });
 

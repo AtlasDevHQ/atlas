@@ -133,9 +133,9 @@ async function resolveEffectiveRole(
  */
 // Telegram (#2748) is the first non-Slack chat platform with a real
 // botActor binding — see lib/chat-plugin/executeQuery.ts's Telegram branch.
-// Discord (#2749) lands a real binding here when its slice ships; teams
+// Discord (#2749) and WhatsApp (#2753) shipped real bindings; teams
 // remains a forward placeholder (no executeQuery branch yet).
-export const CHAT_BOT_PLATFORMS = ["slack", "teams", "telegram", "discord"] as const;
+export const CHAT_BOT_PLATFORMS = ["slack", "teams", "telegram", "discord", "whatsapp"] as const;
 export type ChatBotPlatform = (typeof CHAT_BOT_PLATFORMS)[number];
 
 /**

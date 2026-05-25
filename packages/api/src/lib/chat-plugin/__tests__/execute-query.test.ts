@@ -772,4 +772,151 @@ describe("chat-plugin executeQuery host helper", () => {
     expect(mockInternalQuery).not.toHaveBeenCalled();
     expect(capturedAgentCalls).toHaveLength(0);
   });
+
+  // ---------------------------------------------------------------------------
+  // WhatsApp branch — 1.5.3 #2753 (Phase D)
+  //
+  // Per-tenant phone routing verified end-to-end with a mocked Meta
+  // webhook envelope. The chat adapter normalizes Meta's nested webhook
+  // shape (entry[].changes[].value.metadata.phone_number_id) onto a flat
+  // `rawMessage.phoneNumberId` before reaching executeQuery, so the
+  // routing test feeds the flat shape — the same data the bridge would
+  // hand the host callback in production.
+  // ---------------------------------------------------------------------------
+
+  it("WhatsApp happy path: resolves phone_number_id → workspace + binds whatsapp actor + stamps approvalSurface='whatsapp'", async () => {
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("workspace_plugins")) {
+        return Promise.resolve([{ workspace_id: "org-whatsapp-tenant" }]);
+      }
+      return Promise.resolve([]);
+    });
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    const result = await runExecuteQuery("how many active users?", {
+      threadId: "whatsapp:1098765432109876:16315551234",
+      adapter: { name: "whatsapp" },
+      rawMessage: {
+        phoneNumberId: "1098765432109876",
+        contact: { profile: { name: "Test User" }, wa_id: "16315551234" },
+        message: {
+          id: "wamid.HBgLMTYzMTU1NTEyMzQVAgARGBI",
+          from: "16315551234",
+          type: "text",
+          text: { body: "how many active users?" },
+        },
+      },
+    });
+
+    expect(result.answer).toBe("42 active users");
+    const call = capturedAgentCalls[0];
+    expect(call.options?.actor?.id).toBe("whatsapp-bot:1098765432109876:16315551234");
+    expect(call.options?.actor?.activeOrganizationId).toBe("org-whatsapp-tenant");
+    expect(call.options?.approvalSurface).toBe("whatsapp");
+    // Rate-limit key shape is `whatsapp:${phoneNumberId}` (per-number bucket).
+    expect(observedRateLimitKeys).toContain("whatsapp:1098765432109876");
+    // DB lookup against the catalog row's stable id with config->>'phone_number_id'.
+    const installQueryCalls = mockInternalQuery.mock.calls.filter(([sql]) =>
+      String(sql).includes("workspace_plugins"),
+    );
+    expect(installQueryCalls).toHaveLength(1);
+    const [sql, params] = installQueryCalls[0];
+    expect(String(sql)).toMatch(/config->>'phone_number_id'/);
+    expect(params).toEqual(["catalog:whatsapp", "1098765432109876"]);
+  });
+
+  it("WhatsApp fail-closes on unknown phone_number_id (no install row) — never invokes the agent", async () => {
+    // No rows match → resolveWhatsAppWorkspaceId throws the inline
+    // WhatsAppUnknownTenantError; runWhatsAppExecuteQuery rethrows as
+    // a user-safe error. The agent must never run.
+    mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await expect(
+      runExecuteQuery("q", {
+        threadId: "whatsapp:9999999999999999:16315551234",
+        adapter: { name: "whatsapp" },
+        rawMessage: {
+          phoneNumberId: "9999999999999999",
+          contact: { profile: { name: "Test" }, wa_id: "16315551234" },
+          message: { from: "16315551234", type: "text", text: { body: "q" } },
+        },
+      }),
+    ).rejects.toThrow(/not connected to Atlas/i);
+    expect(capturedAgentCalls).toHaveLength(0);
+  });
+
+  it("WhatsApp fail-closes on DB outage during workspace resolution — user-safe error, never invokes the agent", async () => {
+    mockInternalQuery.mockImplementation(() =>
+      Promise.reject(new Error("ECONNREFUSED postgres://internal-db:5432")),
+    );
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await expect(
+      runExecuteQuery("q", {
+        threadId: "whatsapp:1098765432109876",
+        adapter: { name: "whatsapp" },
+        rawMessage: {
+          phoneNumberId: "1098765432109876",
+          message: { from: "16315551234", type: "text", text: { body: "q" } },
+        },
+      }),
+    ).rejects.toThrow(/could not resolve the WhatsApp workspace/i);
+    expect(capturedAgentCalls).toHaveLength(0);
+  });
+
+  it("WhatsApp fail-closes when the same phone_number_id maps to multiple workspaces — cross-tenant misroute defense", async () => {
+    // Meta issues each phone_number_id exactly once across the entire
+    // platform, so a duplicate here is operator misconfig (manual DB
+    // edit). The fail-closed branch surfaces as the same user-safe
+    // error as "unknown number," and an operator log line points at
+    // the duplicate.
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("workspace_plugins")) {
+        return Promise.resolve([
+          { workspace_id: "org-a" },
+          { workspace_id: "org-b" },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await expect(
+      runExecuteQuery("q", {
+        threadId: "whatsapp:dup",
+        adapter: { name: "whatsapp" },
+        rawMessage: {
+          phoneNumberId: "1098765432109876",
+          message: { from: "16315551234", type: "text", text: { body: "q" } },
+        },
+      }),
+    ).rejects.toThrow(/not connected to Atlas/i);
+    expect(capturedAgentCalls).toHaveLength(0);
+  });
+
+  it("WhatsApp rejects events whose phoneNumberId isn't a valid Meta routing id — defends rate-limit cache key shape", async () => {
+    // Even though the HMAC-SHA256 webhook signature gate catches forgery
+    // at the adapter layer, the dispatcher belt-and-suspenders by
+    // re-validating the routing-id shape (WHATSAPP_PHONE_NUMBER_ID_RE).
+    // Garbage phoneNumberId surfaces as the "missing tenant context"
+    // error — no DB read, no agent.
+    mockInternalQuery.mockImplementation(() => {
+      throw new Error("internalQuery should never be reached on shape failure");
+    });
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await expect(
+      runExecuteQuery("q", {
+        threadId: "whatsapp:bad",
+        adapter: { name: "whatsapp" },
+        rawMessage: {
+          phoneNumberId: "not-a-number'; DROP TABLE--",
+          message: { from: "16315551234", type: "text", text: { body: "q" } },
+        },
+      }),
+    ).rejects.toThrow(/missing tenant context/i);
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(capturedAgentCalls).toHaveLength(0);
+  });
 });

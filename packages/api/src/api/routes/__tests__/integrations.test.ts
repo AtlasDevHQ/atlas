@@ -533,6 +533,102 @@ describe("GET /api/v1/integrations/slack/callback — non-OAuth-exchange failure
 });
 
 // ---------------------------------------------------------------------------
+// Salesforce-specific callback destination — slice 7 of 1.5.3 (#2745).
+// Salesforce moved to `/admin/connections`, so its redirect targets must
+// route there instead of `/admin/integrations`. Locks in the
+// `adminDestinationForPlatform` exception so a future refactor that
+// collapses the helper back to a single path is caught here.
+// ---------------------------------------------------------------------------
+
+describe("GET /api/v1/integrations/salesforce/callback — redirects to /admin/connections", () => {
+  let salesforceCallbackImpl: () => Promise<CallbackResult> = async () => null;
+
+  const salesforceHandler: OAuthPlatformInstallHandler = {
+    kind: "oauth" as const,
+    startInstall: async () => ({
+      redirectUrl: "https://login.salesforce.com/services/oauth2/authorize?client_id=test&state=stub",
+      stateToken: "stub",
+    }),
+    handleCallback: async () => salesforceCallbackImpl(),
+  };
+
+  beforeAll(() => {
+    registerOAuthHandler("salesforce", salesforceHandler);
+  });
+
+  beforeEach(() => {
+    mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("FROM organization")) {
+        return [{ plan_tier: "business", is_operator_workspace: false }];
+      }
+      return [{ slug: "salesforce", install_model: "oauth", enabled: true, min_plan: "starter" }];
+    });
+    salesforceCallbackImpl = async () => null;
+  });
+
+  it("routes installed= to /admin/connections, not /admin/integrations", async () => {
+    salesforceCallbackImpl = async () => ({
+      workspaceId: "ws-1" as never,
+      catalogId: "salesforce",
+      installRecord: {
+        id: "install-sf-1",
+        workspaceId: "ws-1" as never,
+        catalogId: "salesforce",
+      },
+      credentialResult: { written: true },
+    });
+
+    const res = await request(
+      "/api/v1/integrations/salesforce/callback?code=auth-abc&state=stub",
+      { headers: { Accept: "text/html" } },
+    );
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe(
+      "https://app.atlas.example/admin/connections?installed=salesforce",
+    );
+  });
+
+  it("routes reconnect= to /admin/connections when the credential write missed", async () => {
+    salesforceCallbackImpl = async () => ({
+      workspaceId: "ws-1" as never,
+      catalogId: "salesforce",
+      installRecord: {
+        id: "install-sf-2",
+        workspaceId: "ws-1" as never,
+        catalogId: "salesforce",
+      },
+      credentialResult: { written: false, reason: "stub" },
+    });
+
+    const res = await request(
+      "/api/v1/integrations/salesforce/callback?code=auth-abc&state=stub",
+      { headers: { Accept: "text/html" } },
+    );
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe(
+      "https://app.atlas.example/admin/connections?reconnect=salesforce",
+    );
+  });
+
+  it("routes invalid_state error= to /admin/connections for browser callers", async () => {
+    salesforceCallbackImpl = async () => null;
+
+    const res = await request(
+      "/api/v1/integrations/salesforce/callback?code=auth-abc&state=tampered",
+      { headers: { Accept: "text/html" } },
+    );
+
+    expect(res.status).toBe(302);
+    const location = res.headers.get("location") ?? "";
+    expect(location).toContain("https://app.atlas.example/admin/connections");
+    expect(location).toContain("error=salesforce");
+    expect(location).toContain("reason=invalid_state");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // POST /:platform/install-form — slice 7 (#2660)
 // ---------------------------------------------------------------------------
 

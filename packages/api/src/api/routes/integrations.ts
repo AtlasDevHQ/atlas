@@ -325,15 +325,28 @@ function prefersHtml(req: Request): boolean {
   return accept.includes("text/html");
 }
 
-function buildAdminIntegrationsUrl(
+/**
+ * Per-platform admin destination for browser-facing redirects after the
+ * OAuth dance (success, reconnect, plan_upgrade_required, invalid_state,
+ * upstream_error). Most platforms render on `/admin/integrations`, but
+ * Salesforce moved to `/admin/connections` in #2745 — sending its
+ * callbacks to the old page would land users on a screen that no longer
+ * lists Salesforce. Add new exceptions here when a future platform
+ * follows the same pattern (Jira, etc.).
+ */
+function adminDestinationForPlatform(platform: string): string {
+  if (platform === "salesforce") return "/admin/connections";
+  return "/admin/integrations";
+}
+
+function buildPlatformAdminUrl(
   param: "installed" | "reconnect" | "error",
   platform: string,
   extra?: Record<string, string>,
 ): string {
   const webOrigin = getWebOrigin();
-  const base = webOrigin
-    ? `${webOrigin}/admin/integrations`
-    : "/admin/integrations";
+  const path = adminDestinationForPlatform(platform);
+  const base = webOrigin ? `${webOrigin}${path}` : path;
   const qs = new URLSearchParams({ [param]: platform, ...extra });
   return `${base}?${qs.toString()}`;
 }
@@ -575,7 +588,7 @@ integrations.openapi(installRoute, async (c) =>
         );
         if (prefersHtml(c.req.raw)) {
           return c.redirect(
-            buildAdminIntegrationsUrl("error", platform, {
+            buildPlatformAdminUrl("error", platform, {
               reason: "plan_upgrade_required",
               required_plan: planCheck.required_plan,
             }),
@@ -880,7 +893,7 @@ integrations.openapi(callbackRoute, async (c) =>
         );
         if (prefersHtml(c.req.raw)) {
           return c.redirect(
-            buildAdminIntegrationsUrl("error", platform, {
+            buildPlatformAdminUrl("error", platform, {
               reason: "plan_upgrade_required",
               required_plan: planCheck.required_plan,
             }),
@@ -916,7 +929,7 @@ integrations.openapi(callbackRoute, async (c) =>
           "Install callback failed: upstream OAuth exchange refused",
         );
         if (prefersHtml(c.req.raw)) {
-          return c.redirect(buildAdminIntegrationsUrl("error", platform, { reason: "upstream_error" }));
+          return c.redirect(buildPlatformAdminUrl("error", platform, { reason: "upstream_error" }));
         }
       }
       throw err;
@@ -928,19 +941,22 @@ integrations.openapi(callbackRoute, async (c) =>
       // redirect; JSON callers keep the 400.
       log.warn({ platform }, "Install callback rejected invalid state token");
       if (prefersHtml(c.req.raw)) {
-        return c.redirect(buildAdminIntegrationsUrl("error", platform, { reason: "invalid_state" }));
+        return c.redirect(buildPlatformAdminUrl("error", platform, { reason: "invalid_state" }));
       }
+      const restartFrom = adminDestinationForPlatform(platform);
       return c.json(
-        { error: "invalid_state", message: "Invalid or expired install state. Restart the install from /admin/integrations.", requestId },
+        { error: "invalid_state", message: `Invalid or expired install state. Restart the install from ${restartFrom}.`, requestId },
         400,
       );
     }
 
     // Success — redirect to admin UI. Partial-failure (credential write
-    // didn't land) flips the query param so /admin/integrations shows
-    // a Reconnect affordance per ADR-0003.
+    // didn't land) flips the query param so the admin page shows a
+    // Reconnect affordance per ADR-0003. Destination is per-platform
+    // (`adminDestinationForPlatform`) — Salesforce lives on
+    // `/admin/connections`, everything else on `/admin/integrations`.
     const queryParam = result.credentialResult.written ? "installed" : "reconnect";
-    return c.redirect(buildAdminIntegrationsUrl(queryParam, platform));
+    return c.redirect(buildPlatformAdminUrl(queryParam, platform));
   }),
 );
 

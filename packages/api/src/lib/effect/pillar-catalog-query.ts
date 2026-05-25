@@ -107,6 +107,14 @@ export interface WorkspaceInstall {
   readonly status: string | null;
   /** True when the install row's `enabled` column is false (disabled but not torn down). */
   readonly disabled: boolean;
+  /**
+   * Raw `workspace_plugins.config` JSONB. Carries operator-visible
+   * install metadata (Salesforce `instance_url` / `org_id`, Jira
+   * `cloud_id`, etc.). Secret-marked fields are NOT scrubbed here — the
+   * route layer applies {@link maskSecretFields} against the catalog
+   * row's `configSchema` before projecting to the wire.
+   */
+  readonly config: Record<string, unknown>;
 }
 
 /**
@@ -218,6 +226,7 @@ interface InstallRow extends Record<string, unknown> {
   installed_by: string | null;
   install_status: string | null;
   enabled: boolean;
+  config: unknown;
 }
 
 interface OrgRow extends Record<string, unknown> {
@@ -247,6 +256,14 @@ function rowToWorkspaceInstall(row: InstallRow): WorkspaceInstall {
   const installedAt = row.installed_at instanceof Date
     ? row.installed_at.toISOString()
     : String(row.installed_at);
+  // Defensive narrowing: the column is JSONB so pg returns either a plain
+  // object or `null`. Arrays / scalars would only land here on schema
+  // drift — treat them as empty config so the route's `maskSecretFields`
+  // pass doesn't spread a non-object across the wire envelope.
+  const config =
+    row.config && typeof row.config === "object" && !Array.isArray(row.config)
+      ? (row.config as Record<string, unknown>)
+      : {};
   return {
     id: row.id,
     catalogId: row.catalog_id,
@@ -257,6 +274,7 @@ function rowToWorkspaceInstall(row: InstallRow): WorkspaceInstall {
     installedBy: row.installed_by,
     status: row.install_status,
     disabled: row.enabled === false,
+    config,
   };
 }
 
@@ -461,7 +479,7 @@ function buildPillarCatalogQueryService(
               ),
               db.query<InstallRow>(
                 `SELECT id, catalog_id, install_id, workspace_id, pillar,
-                        installed_at, installed_by, enabled,
+                        installed_at, installed_by, enabled, config,
                         config->>'status' AS install_status
                    FROM workspace_plugins
                   WHERE workspace_id = $1`,

@@ -103,13 +103,49 @@ export default defineConfig({
     // machine short-circuits ahead of the install-handler dispatch.
     // Each row flips to `implementation_status: 'available'` in its
     // own slice (10–16) when the handler ships.
+    // Microsoft Teams — 1.5.3 #2752 (Phase D). The operator wires an
+    // Azure Bot registration (TEAMS_APP_ID + TEAMS_APP_PASSWORD); each
+    // customer admin uploads the Atlas Teams app manifest to their
+    // tenant (or installs from AppSource), then pastes their Microsoft
+    // Entra ID tenant GUID into the install modal. The bot is
+    // operator-shared in MultiTenant mode — Bot Framework token
+    // acquisition is keyed on the app credentials, not on the customer
+    // tenant — and `tenant_id` is the per-Workspace routing identifier
+    // that scopes inbound activities.
+    //
+    // `tenant_id` is NOT marked `secret: true` — Microsoft tenant GUIDs
+    // are routing identifiers that leak in every Bot Framework activity
+    // envelope's `channelData.tenant.id`. Same posture as Discord's
+    // `guild_id` and Telegram's `chat_id`.
     {
       slug: "teams",
       type: "chat",
       install_model: "static-bot",
       enabled: true,
       saas_eligible: true,
-      implementation_status: "coming_soon",
+      implementation_status: "available",
+      name: "Microsoft Teams",
+      description:
+        "Chat with Atlas inside Microsoft Teams. The operator wires a shared Azure Bot (TEAMS_APP_ID + TEAMS_APP_PASSWORD); customer admins upload the Atlas Teams manifest to their tenant (or install from AppSource), then point Atlas at their Microsoft Entra ID tenant GUID.",
+      min_plan: "starter",
+      configSchema: [
+        {
+          key: "tenant_id",
+          type: "string",
+          label: "Tenant ID",
+          description:
+            "Microsoft Entra ID tenant GUID (8-4-4-4-12 hex digits, e.g. 72f988bf-86f1-41af-91ab-2d7cd011db47). Find it in the Microsoft Entra admin center under Overview → Tenant ID, or run `az account show --query tenantId` in the Azure CLI.",
+          required: true,
+        },
+        {
+          key: "tenant_name",
+          type: "string",
+          label: "Tenant name",
+          description:
+            "Optional admin-friendly label for this tenant. Shown on the integrations card.",
+          required: false,
+        },
+      ],
     },
     // Discord — 1.5.3 #2749 (Phase D). The operator wires a Discord
     // application (DISCORD_BOT_TOKEN + DISCORD_CLIENT_ID + DISCORD_PUBLIC_KEY);
@@ -213,6 +249,152 @@ export default defineConfig({
       enabled: true,
       saas_eligible: true,
       implementation_status: "coming_soon",
+    },
+    // ── Linear (1.5.3 #2750 — Phase D, Action Target) ──────────────
+    // Two catalog rows, one per install mode (per CONTEXT.md
+    // "Multi-mode integrations" — each install model is its own row so
+    // the admin sees the real trade-off in /admin/integrations cards).
+    // Both rows are pillar='action' (Atlas creates Linear issues; this
+    // is NOT a chat platform — users don't talk to Atlas through Linear).
+    // A future `linear-data` row for Linear-as-Datasource is documented
+    // in ADR-0006 but out of scope for this milestone.
+    //
+    //   - `linear` (OAuth): Atlas OAuth App (per-deploy LINEAR_CLIENT_ID
+    //     + LINEAR_CLIENT_SECRET); workspace admins grant Atlas access
+    //     to one Linear workspace; refresh tokens persist in
+    //     `integration_credentials`. Mirrors the Jira/Salesforce shape.
+    //   - `linear-apikey` (form): workspace admin pastes a Personal API
+    //     Key from Linear settings; the key encrypts inline into
+    //     `workspace_plugins.config.api_key` via selective-field
+    //     encryption (keyed on `secret: true` below).
+    //
+    // SaaS-eligible note: API-key mode is acceptable on SaaS for entry-
+    // tier workspaces (low blast radius — a per-workspace personal key
+    // can be rotated unilaterally). OAuth is the recommended path for
+    // every other workspace. Self-host operators who'd rather not
+    // register an OAuth App can use API-key mode exclusively.
+    {
+      slug: "linear",
+      type: "integration",
+      install_model: "oauth",
+      enabled: true,
+      saas_eligible: true,
+      name: "Linear (OAuth)",
+      description:
+        "Create Linear issues from agent findings. Connects through your operator's Linear OAuth App and refreshes access tokens automatically.",
+      min_plan: "starter",
+    },
+    {
+      slug: "linear-apikey",
+      type: "integration",
+      install_model: "form",
+      enabled: true,
+      saas_eligible: true,
+      name: "Linear (API Key)",
+      description:
+        "Create Linear issues from agent findings using a personal API key from Linear settings. The simplest install — no OAuth App registration required — but the key is tied to one Linear user.",
+      min_plan: "starter",
+      configSchema: [
+        {
+          key: "api_key",
+          type: "string",
+          label: "Linear Personal API Key",
+          description:
+            "Generate one at https://linear.app/settings/api → \"Personal API keys\". Stored encrypted at rest.",
+          required: true,
+          secret: true,
+        },
+        {
+          key: "workspace_name",
+          type: "string",
+          label: "Workspace name",
+          description:
+            "Optional admin-friendly label for which Linear workspace this key belongs to. Defaults to the workspace name returned by Linear's API at first use.",
+          required: false,
+        },
+      ],
+    },
+    // ── GitHub (1.5.3 #2751 — Phase D, Action Target) ──────────────
+    // Three catalog rows, one per install mode (per CONTEXT.md
+    // "Multi-mode integrations"). All rows are pillar='action' — Atlas
+    // creates issues / opens PRs through GitHub; this is NOT a chat
+    // platform. A future `github-data` row for GitHub-as-Datasource is
+    // documented in ADR-0006 but out of scope for this milestone.
+    //
+    //   - `github` (App, multi-tenant OAuth): workspace admins grant a
+    //     GitHub App per Atlas Workspace. Installation tokens are minted
+    //     on demand by signing a JWT with the App's private key. The
+    //     primary SaaS-eligible mode. Currently `coming_soon` — handler
+    //     ships in a follow-up PR (JWT minting + installation-token
+    //     lifecycle is its own slice).
+    //   - `github-single-tenant` (App, single-tenant): identical wire
+    //     shape to multi-tenant, but the App's install is pinned to one
+    //     GitHub org (the operator's). `saas_eligible: false` because
+    //     one org's install cannot serve multiple Atlas workspaces.
+    //     Also `coming_soon` — same follow-up PR.
+    //   - `github-pat` (form): workspace admin pastes a Personal Access
+    //     Token from https://github.com/settings/tokens. The token
+    //     encrypts inline into `workspace_plugins.config.pat` via
+    //     selective-field encryption. `saas_eligible: false` — a PAT is
+    //     tied to one GitHub user and dies when they leave; acceptable
+    //     for self-host but the failure mode is too sharp for SaaS.
+    //
+    // SaaS visibility: the catalog route filters out
+    // `saas_eligible: false` rows on SaaS deploys, so only `github`
+    // surfaces in the SaaS catalog. Self-host shows all three.
+    {
+      slug: "github",
+      type: "integration",
+      install_model: "oauth",
+      enabled: true,
+      saas_eligible: true,
+      implementation_status: "coming_soon",
+      name: "GitHub (App)",
+      description:
+        "Create GitHub issues and open pull requests from agent findings. Connects through your operator's GitHub App and mints short-lived installation tokens automatically.",
+      min_plan: "starter",
+    },
+    {
+      slug: "github-single-tenant",
+      type: "integration",
+      install_model: "oauth",
+      enabled: true,
+      saas_eligible: false,
+      implementation_status: "coming_soon",
+      name: "GitHub (App, single-tenant)",
+      description:
+        "Self-host only. Operator-baked GitHub App pinned to one GitHub organization. Use when you don't want to publish a multi-tenant App registration.",
+      min_plan: "starter",
+    },
+    {
+      slug: "github-pat",
+      type: "integration",
+      install_model: "form",
+      enabled: true,
+      saas_eligible: false,
+      name: "GitHub (Personal Access Token)",
+      description:
+        "Self-host only. The simplest install — no GitHub App registration required — but the token is tied to one GitHub user. Atlas access dies if that user leaves the org or the token is revoked.",
+      min_plan: "starter",
+      configSchema: [
+        {
+          key: "pat",
+          type: "string",
+          label: "GitHub Personal Access Token",
+          description:
+            "Generate one at https://github.com/settings/tokens. Fine-grained tokens are recommended; classic tokens also work. Scope: `repo` (issues + pull requests). Stored encrypted at rest.",
+          required: true,
+          secret: true,
+        },
+        {
+          key: "default_owner",
+          type: "string",
+          label: "Default owner (optional)",
+          description:
+            "GitHub user or organization Atlas defaults to when creating issues. Can be overridden per call. Leave blank to require the agent to specify each time.",
+          required: false,
+        },
+      ],
     },
     // ── Lazy OAuth integrations (1.5.2 slice 8 — #2658 / #2659) ─────
     // Salesforce (#2658) established the pattern; Jira (#2659) proves

@@ -7,6 +7,9 @@
     "llm-providers",
     "telegram",
     "discord",
+    "teams",
+    "linear",
+    "github",
     "sub-processor-feed"
   ]
 }

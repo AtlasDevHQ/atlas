@@ -855,11 +855,8 @@ describe("GET /api/v1/admin/overview", () => {
     // count them, not just per-org rows. Dropping the UNION branch would
     // silently report `connections: 0` for every onboarded workspace.
     setOrgScopedAdmin("org-test-1");
-    // #2744 — admin overview / billing counter both pivot to
-    // workspace_plugins; either name pattern matches for back-compat
-    // until step 5 rewrites this mock setup fully.
     mockInternalQuery.mockImplementation(async (sql: string) => {
-      if (sql.includes("FROM workspace_plugins") || sql.includes("FROM connections")) {
+      if (sql.includes("FROM workspace_plugins")) {
         return [{ id: "__demo__", install_id: "__demo__" }];
       }
       return [];

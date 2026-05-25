@@ -1,0 +1,203 @@
+---
+title: GitHub
+description: Create GitHub issues and open pull requests from Atlas agent findings. Three install modes — GitHub App multi-tenant (SaaS recommended), App single-tenant (self-host), and Personal Access Token (self-host).
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas's GitHub integration is an **Action Target**: Atlas creates GitHub
+issues and opens pull requests from agent findings (e.g. "file a GitHub
+issue for every failing test in the dashboard"). It is NOT a chat
+platform — users don't talk to Atlas through GitHub.
+
+GitHub ships with **three install modes**, surfaced as distinct cards in
+**Admin → Integrations → Actions**. Workspace admins pick the mode that
+fits their deploy posture and access model:
+
+- **GitHub (App)** — multi-tenant GitHub App, OAuth-flavored install.
+  The operator registers a GitHub App once; each workspace admin
+  installs that App against their own GitHub organization. Installation
+  tokens mint on demand by signing a JWT with the App's private key.
+  **The primary SaaS-eligible mode.**
+- **GitHub (App, single-tenant)** — same wire shape, but the App is
+  pinned to one GitHub organization (the operator's). Use when you
+  don't want to publish a multi-tenant App registration. **Self-host
+  only.**
+- **GitHub (Personal Access Token)** — workspace admin pastes a PAT
+  from their own GitHub settings. The simplest install — no App
+  registration required — but the token is tied to one GitHub user
+  and dies if that user leaves the org or rotates the token.
+  **Self-host only.**
+
+<Callout type="info" title="Which mode should I use?">
+  **GitHub App (multi-tenant)** is the recommended path for any deploy
+  expecting more than a handful of workspaces and the only mode SaaS
+  customers see. **App (single-tenant)** is the right choice for
+  self-host operators serving one GitHub org who don't want to maintain
+  a public App registration. **PAT** is the quickest install for
+  self-host evaluation and one-off integrations where the failure mode
+  (token tied to one user) is acceptable.
+</Callout>
+
+<Callout type="warn" title="GitHub App modes are not yet implemented">
+  Both **GitHub (App)** and **GitHub (App, single-tenant)** ship with
+  `implementation_status: "coming_soon"` in the catalog. The cards
+  render in **Admin → Integrations** as inert "Coming soon" badges
+  until the App install handler lands in a follow-up PR (JWT minting
+  for installation tokens is its own slice). Until then, **GitHub
+  (Personal Access Token)** is the only working install mode — and it's
+  self-host only.
+</Callout>
+
+## Mode 1 — GitHub App, multi-tenant (`github` catalog row) <span data-coming-soon>Coming soon</span>
+
+The multi-tenant GitHub App ships in a follow-up PR. This section
+documents the planned shape for operator setup so self-host deploys can
+prepare environment values now.
+
+### Operator setup (one-time, per deploy)
+
+Self-hosted operators run these steps once during initial deployment;
+Atlas Cloud customers don't — the Atlas Cloud team will have already
+done this on the hosted regions.
+
+#### 1. Register a GitHub App
+
+In [GitHub Developer Settings → GitHub Apps → New GitHub App](https://github.com/settings/apps/new),
+create a new App:
+
+- **GitHub App name**: "Atlas" (or whatever brand makes sense for your
+  deploy)
+- **Homepage URL**: your Atlas marketing URL or `https://useatlas.dev`
+- **Callback URL**: `${ATLAS_PUBLIC_API_URL}/api/v1/integrations/github/callback`
+- **Request user authorization (OAuth) during installation**: enable
+- **Webhook → Active**: disable (Atlas does not need webhook events for
+  Action-target use cases)
+- **Repository permissions**: `Issues: Read & write`, `Pull requests:
+  Read & write`, `Contents: Read & write`
+- **Where can this GitHub App be installed?**: **Any account** (this is
+  the multi-tenant setting)
+
+After creation:
+- Note the **App ID** shown on the App settings page
+- Generate a **Private key** (`.pem` file). Treat as a credential —
+  anyone with it can act as your App
+- Note the **App slug** from the App's public URL
+  (`https://github.com/apps/<your-app-slug>`)
+
+#### 2. Set the env vars
+
+Set all three on every Atlas API service in your deploy:
+
+```bash
+GITHUB_APP_ID=<App ID from step 1>
+GITHUB_APP_SLUG=<App slug from step 1>
+GITHUB_APP_PRIVATE_KEY=<contents of the downloaded .pem file>
+```
+
+`ATLAS_PUBLIC_API_URL` must already be set on the same services — it's
+required by every OAuth-based integration to build the callback URL.
+
+## Mode 2 — GitHub App, single-tenant (`github-single-tenant` catalog row) <span data-coming-soon>Coming soon</span>
+
+Wire shape is identical to Mode 1; the only difference is the GitHub App
+registration's **Where can this GitHub App be installed?** setting is
+**Only on this account**. Use when you don't want to publish a
+multi-tenant registration. **`saas_eligible: false`** — one org's App
+installation cannot serve multiple Atlas workspaces, so this row is
+hidden from the SaaS catalog.
+
+## Mode 3 — Personal Access Token (`github-pat` catalog row)
+
+**Self-host only.** The catalog row carries `saas_eligible: false`
+because a PAT is tied to one GitHub user — when that user leaves the
+org or rotates the token, Atlas's access dies with no automatic
+recovery. The failure mode is too sharp for hosted SaaS.
+
+### Customer install (per workspace, no operator setup)
+
+The PAT install has no operator-side prerequisites — any self-hosted
+Atlas deploy supports it. Workspace admins install it from **Admin →
+Integrations → GitHub (Personal Access Token)**.
+
+1. In GitHub, open [Settings → Developer settings → Personal access tokens](https://github.com/settings/tokens).
+   Either format works:
+   - **Fine-grained tokens** (recommended) — choose **Generate new token**,
+     set an expiration, restrict to specific repositories if desired,
+     and grant **Issues: Read and write** + **Pull requests: Read and
+     write** + **Contents: Read and write**.
+   - **Classic tokens** — choose **Generate new token (classic)** and
+     select the `repo` scope.
+
+   Copy the value — it's shown once.
+
+2. Back in Atlas, click **Install** on the GitHub (Personal Access Token)
+   card and paste the token into the **GitHub Personal Access Token**
+   field. Optionally add a **Default owner** (your GitHub username or
+   organization name) so the agent doesn't have to specify one on every
+   call.
+
+3. Click **Save**. Atlas encrypts the token at rest (selective-field
+   encryption per ADR-0007) and the card flips to **Installed**.
+
+<Callout type="warn" title="PATs are tied to a single GitHub user">
+  A Personal Access Token carries the same access as the GitHub user
+  who generated it — if that user is removed from the organization or
+  the token is revoked, Atlas's access dies and agent calls fail with
+  `pat_rejected`. Rotate by generating a new token in GitHub settings
+  and re-submitting the install form.
+</Callout>
+
+### Disconnecting (PAT mode)
+
+Open **Admin → Integrations → GitHub (Personal Access Token)** and
+click **Disconnect**. Atlas deletes the `workspace_plugins` row
+containing the encrypted token — there's no separate credential store
+to clean up in this mode.
+
+You can also revoke the token from GitHub's side: open
+[Settings → Developer settings → Personal access tokens](https://github.com/settings/tokens)
+and delete the entry. Atlas's next GitHub call will return
+`reconnect_required` and surface "rotate your token" copy to the agent
+and admin.
+
+## SaaS vs self-host visibility
+
+Atlas Cloud (`saas_eligible` deploys) only surfaces the GitHub App
+(multi-tenant) card. The two `saas_eligible: false` rows are hidden:
+
+| Catalog row | `saas_eligible` | Visible on SaaS | Visible on self-host |
+| :---------- | :-------------- | :-------------- | :------------------- |
+| `github` | true | yes | yes |
+| `github-single-tenant` | false | **no** | yes |
+| `github-pat` | false | **no** | yes |
+
+The filter lives in [`PillarCatalogQuery`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/effect/pillar-catalog-query.ts) —
+generic across every catalog row, not GitHub-specific. Operators who
+need to override the gate (e.g. an enterprise self-host deploy that
+wants to expose all three modes) can flip `ATLAS_DEPLOY_MODE` away from
+`saas` at the deploy level.
+
+## Troubleshooting
+
+### "GitHub install needs to be set up first" (any mode)
+
+No GitHub catalog row is installed for the workspace. Open **Admin →
+Integrations** and pick the install mode that fits your deploy.
+
+### "GitHub rejected the stored PAT" (PAT mode)
+
+The Personal Access Token was revoked, its owning user was removed from
+the organization, or the token expired. Generate a fresh token in
+[GitHub settings → Personal access tokens](https://github.com/settings/tokens)
+and re-submit the install form via **Admin → Integrations → GitHub
+(Personal Access Token)**.
+
+### "GitHub App install handler not registered"
+
+The operator hasn't set `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, and
+`GITHUB_APP_PRIVATE_KEY`, or one is empty on the API process handling
+the install. The App-based install handler ships in a follow-up PR;
+until then, the install routes for `github` and `github-single-tenant`
+return 501. The PAT mode (`github-pat`) does not depend on these env
+vars and is always available on self-host deploys.

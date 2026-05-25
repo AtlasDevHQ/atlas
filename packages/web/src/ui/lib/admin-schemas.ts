@@ -353,6 +353,14 @@ const RawCatalogEntrySchema = z.object({
   // the legacy `type` field.
   pillar: z.enum(["datasource", "chat", "action"]).optional(),
   implementationStatus: z.enum(["available", "coming_soon"]).optional(),
+  // ── New in #2745 (slice 7 of 1.5.3) ──────────────────────────────
+  // Non-secret subset of `workspace_plugins.config` for installed rows.
+  // Carries Salesforce `instance_url` / `org_id`, Jira `cloud_id`, etc.
+  // Optional so older API responses (pre-#2745) parse via the same
+  // schema — `/admin/connections` defaults to a generic detail row when
+  // the field is absent. `null` is the explicit "row not installed"
+  // signal; treat it the same as absent at the render layer.
+  installConfig: z.record(z.string(), z.unknown()).nullable().optional(),
 });
 
 /**

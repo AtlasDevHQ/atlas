@@ -63328,6 +63328,13 @@
                               "available",
                               "coming_soon"
                             ]
+                          },
+                          "installConfig": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "additionalProperties": {}
                           }
                         },
                         "required": [
@@ -63347,7 +63354,8 @@
                           "accessible",
                           "upgradeRequired",
                           "pillar",
-                          "implementationStatus"
+                          "implementationStatus",
+                          "installConfig"
                         ]
                       }
                     }

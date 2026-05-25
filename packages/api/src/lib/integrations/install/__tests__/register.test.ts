@@ -58,11 +58,17 @@ function clearDiscordEnv(): void {
   delete process.env.DISCORD_CLIENT_ID;
 }
 
+function clearTeamsEnv(): void {
+  delete process.env.TEAMS_APP_ID;
+  delete process.env.TEAMS_APP_PASSWORD;
+}
+
 beforeEach(() => {
   // Reset the env to a known-clean state; each test sets only what it needs.
   process.env = { ...ORIGINAL_ENV };
   clearTelegramEnv();
   clearDiscordEnv();
+  clearTeamsEnv();
   delete process.env.SLACK_CLIENT_ID;
   delete process.env.SLACK_CLIENT_SECRET;
   delete process.env.JIRA_CLIENT_ID;
@@ -192,6 +198,63 @@ describe("registerBuiltinInstallHandlers — Discord env gate (#2749)", () => {
   });
 
   it("does not throw when the catalog has no discord row at all (operator hasn't opted in)", () => {
+    mockedConfig = { catalog: [{ slug: "slack", enabled: true }] };
+    expect(() => registerBuiltinInstallHandlers()).not.toThrow();
+  });
+});
+
+describe("registerBuiltinInstallHandlers — Teams env gate (#2752)", () => {
+  it("does not register the Teams handler when TEAMS_APP_ID is unset", () => {
+    process.env.TEAMS_APP_PASSWORD = "fake-password";
+    registerBuiltinInstallHandlers();
+    expect(() =>
+      getInstallHandler({ slug: "teams", install_model: "static-bot" }),
+    ).toThrow(/No static-bot install handler registered/);
+  });
+
+  it("does not register the Teams handler when TEAMS_APP_PASSWORD is unset", () => {
+    process.env.TEAMS_APP_ID = "fake-app-id";
+    registerBuiltinInstallHandlers();
+    expect(() =>
+      getInstallHandler({ slug: "teams", install_model: "static-bot" }),
+    ).toThrow(/No static-bot install handler registered/);
+  });
+
+  it("does not register when either Teams env var is an empty string", () => {
+    process.env.TEAMS_APP_ID = "";
+    process.env.TEAMS_APP_PASSWORD = "";
+    registerBuiltinInstallHandlers();
+    expect(() =>
+      getInstallHandler({ slug: "teams", install_model: "static-bot" }),
+    ).toThrow(/No static-bot install handler registered/);
+  });
+
+  it("registers the Teams handler when both TEAMS_APP_ID and TEAMS_APP_PASSWORD are set", () => {
+    process.env.TEAMS_APP_ID = "fake-teams-app-id";
+    process.env.TEAMS_APP_PASSWORD = "fake-teams-app-password";
+    registerBuiltinInstallHandlers();
+    const handler = getInstallHandler({
+      slug: "teams",
+      install_model: "static-bot",
+    });
+    expect(handler.kind).toBe("static-bot");
+  });
+
+  it("logs (but does not throw) when the catalog says teams is enabled but the env is half-wired — #2673 escalation", () => {
+    // Only TEAMS_APP_ID set (TEAMS_APP_PASSWORD missing) — same
+    // severity-escalation contract as Telegram/Discord's catalog-enabled
+    // + env-missing path.
+    process.env.TEAMS_APP_ID = "fake-app-id-only";
+    mockedConfig = {
+      catalog: [{ slug: "teams", enabled: true }],
+    };
+    expect(() => registerBuiltinInstallHandlers()).not.toThrow();
+    expect(() =>
+      getInstallHandler({ slug: "teams", install_model: "static-bot" }),
+    ).toThrow(/No static-bot install handler registered/);
+  });
+
+  it("does not throw when the catalog has no teams row at all (operator hasn't opted in)", () => {
     mockedConfig = { catalog: [{ slug: "slack", enabled: true }] };
     expect(() => registerBuiltinInstallHandlers()).not.toThrow();
   });

@@ -395,6 +395,31 @@ export class JiraReconnectRequiredError extends Data.TaggedError(
   readonly upstreamError: string;
 }> {}
 
+/**
+ * Linear OAuth refresh-token rotation failed permanently — Linear returned
+ * `invalid_grant` / `invalid_client`, the stored refresh token was rejected,
+ * or the OAuth App's `actor=app` scope was revoked. The install row's
+ * `workspace_plugins.config.status` has already been flipped to
+ * `"reconnect_needed"` by the refresh flow.
+ *
+ * Maps to HTTP 409 Conflict — same wire shape as
+ * {@link JiraReconnectRequiredError}. Third consumer of the pattern.
+ * The {@link IntegrationReconnectRequiredError} extraction (filed as a
+ * follow-up at #2659 review time) becomes justified at three; this
+ * Linear addition makes the rule of three concrete, so the extraction
+ * issue can land in a follow-up PR.
+ *
+ * @see packages/api/src/lib/integrations/install/linear-token-refresh.ts
+ */
+export class LinearReconnectRequiredError extends Data.TaggedError(
+  "LinearReconnectRequiredError",
+)<{
+  readonly message: string;
+  readonly workspaceId: string;
+  /** Raw Linear error code (`invalid_grant`, etc.). Forensic-only. */
+  readonly upstreamError: string;
+}> {}
+
 // ── Telegram static-bot install (#2748 — 1.5.3 Phase D keystone) ────
 
 /**
@@ -498,6 +523,59 @@ export class DiscordReachabilityError extends Data.TaggedError(
  */
 export class DiscordApiUnavailableError extends Data.TaggedError(
   "DiscordApiUnavailableError",
+)<{
+  readonly message: string;
+}> {}
+
+// ── Teams static-bot install (#2752 — 1.5.3 Phase D) ────────────────
+
+/**
+ * Teams install rejected the supplied `tenant_id` at the input-shape
+ * layer — not a Microsoft Entra ID tenant GUID (8-4-4-4-12 hex digits),
+ * empty, or pasted as a domain (`contoso.onmicrosoft.com`). Maps to HTTP
+ * 400. The constructor message is admin-actionable verbatim; the route
+ * does not translate.
+ *
+ * Third subclass of the static-bot input-validation family alongside
+ * {@link TelegramChatIdInvalidError} and {@link DiscordGuildIdInvalidError}.
+ *
+ * @see packages/api/src/lib/integrations/install/teams-static-bot-handler.ts
+ */
+export class TeamsTenantIdInvalidError extends Data.TaggedError(
+  "TeamsTenantIdInvalidError",
+)<{
+  readonly message: string;
+}> {}
+
+/**
+ * Microsoft tenant discovery returned a non-OK response when verifying
+ * the supplied `tenant_id` — the tenant doesn't exist in Microsoft Entra
+ * ID, has been deleted, or is otherwise unresolvable. Maps to HTTP 400
+ * because the common failure mode (admin pasted the wrong GUID) is
+ * admin-correctable. The thrown message is admin-safe.
+ *
+ * Distinct from {@link TeamsApiUnavailableError} (502 — operator/upstream)
+ * because a 400 from the OIDC discovery endpoint is user-side and
+ * must not auto-retry.
+ */
+export class TeamsReachabilityError extends Data.TaggedError(
+  "TeamsReachabilityError",
+)<{
+  /** Admin-facing message — includes Microsoft's verbatim error text when available. */
+  readonly message: string;
+  /** HTTP status returned by the tenant discovery endpoint. Forensic-only. */
+  readonly status: number;
+}> {}
+
+/**
+ * Microsoft tenant discovery was unreachable at the network layer — DNS,
+ * TLS, timeout, or a malformed response. Maps to HTTP 502. The thrown
+ * message is admin-safe (no operator credentials, no internal hostnames);
+ * the underlying error is logged with the structured `requestId` for
+ * operator forensics.
+ */
+export class TeamsApiUnavailableError extends Data.TaggedError(
+  "TeamsApiUnavailableError",
 )<{
   readonly message: string;
 }> {}
@@ -642,12 +720,16 @@ export type AtlasError =
   | PlatformOAuthExchangeError
   | SalesforceReconnectRequiredError
   | JiraReconnectRequiredError
+  | LinearReconnectRequiredError
   | TelegramChatIdInvalidError
   | TelegramReachabilityError
   | TelegramApiUnavailableError
   | DiscordGuildIdInvalidError
   | DiscordReachabilityError
   | DiscordApiUnavailableError
+  | TeamsTenantIdInvalidError
+  | TeamsReachabilityError
+  | TeamsApiUnavailableError
   | AlreadyInstalledError
   | ConfigSchemaError
   | CatalogNotFoundError
@@ -707,12 +789,16 @@ export const ATLAS_ERROR_TAG_LIST = [
   "PlatformOAuthExchangeError",
   "SalesforceReconnectRequiredError",
   "JiraReconnectRequiredError",
+  "LinearReconnectRequiredError",
   "TelegramChatIdInvalidError",
   "TelegramReachabilityError",
   "TelegramApiUnavailableError",
   "DiscordGuildIdInvalidError",
   "DiscordReachabilityError",
   "DiscordApiUnavailableError",
+  "TeamsTenantIdInvalidError",
+  "TeamsReachabilityError",
+  "TeamsApiUnavailableError",
   "AlreadyInstalledError",
   "ConfigSchemaError",
   "CatalogNotFoundError",

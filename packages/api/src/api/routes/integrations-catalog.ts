@@ -30,6 +30,10 @@ import {
   PillarCatalogQuery,
   PillarCatalogQueryLive,
 } from "@atlas/api/lib/effect/pillar-catalog-query";
+import {
+  maskSecretFields,
+  parseConfigSchema,
+} from "@atlas/api/lib/plugins/secrets";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
@@ -88,6 +92,20 @@ const CatalogEntryResponseSchema = z.object({
    * rendering).
    */
   implementationStatus: z.enum(["available", "coming_soon"]),
+  /**
+   * Non-secret subset of `workspace_plugins.config` for installed rows.
+   * Carries operator-visible install metadata: Salesforce
+   * `instance_url` / `org_id`, Jira `cloud_id`, etc. Secret-marked
+   * fields (driven by the catalog's `config_schema.fields[].secret`
+   * flag) are replaced with a masked placeholder server-side via
+   * {@link maskSecretFields} so the wire never carries plaintext
+   * credentials. `null` when the row is not installed.
+   *
+   * Slice 7 of 1.5.3 (#2745) introduced this field so the
+   * `/admin/connections` Salesforce render path can show "connected
+   * org" + "instance URL" detail rows without a second round-trip.
+   */
+  installConfig: z.record(z.string(), z.unknown()).nullable(),
 });
 
 const CatalogResponseSchema = z.object({
@@ -172,30 +190,42 @@ integrationsCatalog.openapi(listCatalogRoute, async (c) => {
       ),
     );
 
-    const catalog = rows.map((row) => ({
-      id: row.id,
-      slug: row.slug,
-      // The facade's `type` is the raw DB string; the route narrows
-      // back to the wire union. The legacy-type SQL exclusion in the
-      // facade keeps this safe — any other value would mean a CHECK
-      // constraint regression.
-      type: row.type as "chat" | "integration",
-      installModel: row.installModel as "oauth" | "form" | "static-bot",
-      name: row.name,
-      description: row.description,
-      iconUrl: row.iconUrl,
-      minPlan: row.minPlan,
-      configSchema: row.configSchema ?? null,
-      installed: row.install !== null,
-      installedAt: row.install?.installedAt ?? null,
-      installedBy: row.install?.installedBy ?? null,
-      installStatus: row.install?.status ?? null,
-      upsellOnly: !row.planAccessible,
-      accessible: row.planAccessible,
-      upgradeRequired: row.planAccessible ? null : row.minPlan,
-      pillar: row.pillar,
-      implementationStatus: row.implementationStatus,
-    }));
+    const catalog = rows.map((row) => {
+      // Project the non-secret subset of `workspace_plugins.config` to
+      // the wire so admin-UI render paths (e.g. /admin/connections for
+      // Salesforce, #2745) can show "connected org" / instance URL /
+      // tenant id without a second round-trip. `maskSecretFields`
+      // fail-closes on a `corrupt` schema (every non-empty string is
+      // masked) so a drifted catalog row can never leak plaintext.
+      const installConfig = row.install
+        ? maskSecretFields(row.install.config, parseConfigSchema(row.configSchema))
+        : null;
+      return {
+        id: row.id,
+        slug: row.slug,
+        // The facade's `type` is the raw DB string; the route narrows
+        // back to the wire union. The legacy-type SQL exclusion in the
+        // facade keeps this safe — any other value would mean a CHECK
+        // constraint regression.
+        type: row.type as "chat" | "integration",
+        installModel: row.installModel as "oauth" | "form" | "static-bot",
+        name: row.name,
+        description: row.description,
+        iconUrl: row.iconUrl,
+        minPlan: row.minPlan,
+        configSchema: row.configSchema ?? null,
+        installed: row.install !== null,
+        installedAt: row.install?.installedAt ?? null,
+        installedBy: row.install?.installedBy ?? null,
+        installStatus: row.install?.status ?? null,
+        upsellOnly: !row.planAccessible,
+        accessible: row.planAccessible,
+        upgradeRequired: row.planAccessible ? null : row.minPlan,
+        pillar: row.pillar,
+        implementationStatus: row.implementationStatus,
+        installConfig,
+      };
+    });
 
     return c.json({ catalog }, 200);
   });

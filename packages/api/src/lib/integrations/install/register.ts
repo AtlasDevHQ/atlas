@@ -42,11 +42,26 @@ import {
   DiscordStaticBotInstallHandler,
   DISCORD_SLUG,
 } from "./discord-static-bot-handler";
+import {
+  TeamsStaticBotInstallHandler,
+  TEAMS_SLUG,
+} from "./teams-static-bot-handler";
 import { lazyPluginLoader } from "@atlas/api/lib/plugins/lazy-loader";
 import { createJiraLazyBuilder } from "@atlas/api/lib/integrations/jira/lazy-builder";
 import { createSalesforceLazyBuilder } from "@atlas/api/lib/integrations/salesforce/lazy-builder";
 import { createEmailLazyBuilder } from "@atlas/api/lib/integrations/email-tool";
 import { EMAIL_CATALOG_ID } from "./email-secret-schema";
+import {
+  LinearOAuthInstallHandler,
+  LINEAR_CATALOG_ID,
+} from "./linear-oauth-handler";
+import { LinearApiKeyFormInstallHandler } from "./linear-apikey-form-handler";
+import { LINEAR_APIKEY_CATALOG_ID } from "./linear-apikey-secret-schema";
+import {
+  createLinearOAuthLazyBuilder,
+  createLinearApiKeyLazyBuilder,
+} from "@atlas/api/lib/integrations/linear/lazy-builder";
+import { GitHubPatFormInstallHandler } from "./github-pat-form-handler";
 
 const log = createLogger("integrations.install.register");
 
@@ -113,6 +128,28 @@ export function registerBuiltinInstallHandlers(): void {
   log.info("Registered ObsidianFormInstallHandler");
   registerFormHandler("webhook", new WebhookFormInstallHandler());
   log.info("Registered WebhookFormInstallHandler");
+  // Linear API-key form-install (#2750). Pairs with the lazy builder
+  // for `catalog:linear-apikey` registered below — same "register both
+  // halves together so a half-wired deploy can't end up with an
+  // installable card whose first tool call fails with builder_missing"
+  // rule as Email's pairing above.
+  registerFormHandler("linear-apikey", new LinearApiKeyFormInstallHandler());
+  if (!lazyPluginLoader.hasBuilder(LINEAR_APIKEY_CATALOG_ID)) {
+    lazyPluginLoader.registerBuilder(
+      LINEAR_APIKEY_CATALOG_ID,
+      createLinearApiKeyLazyBuilder(),
+    );
+  }
+  log.info("Registered LinearApiKeyFormInstallHandler + LazyPluginLoader builder");
+  // GitHub PAT form-install (#2751, Phase D PAT mode). No paired lazy
+  // builder yet — the GitHub action tool ships in a follow-up PR
+  // (alongside the GitHub App OAuth handler). The form handler still
+  // registers so the install path works end-to-end: the credential
+  // persists, and the tool dispatch will find it once the builder
+  // lands. Self-host only — the catalog row carries `saas_eligible:
+  // false`, so the integrations-catalog route hides this on SaaS.
+  registerFormHandler("github-pat", new GitHubPatFormInstallHandler());
+  log.info("Registered GitHubPatFormInstallHandler (no lazy builder yet — agent tool ships in follow-up)");
 
   // ── Slack OAuth ───────────────────────────────────────────────────
   registerSlackOAuthHandler();
@@ -125,6 +162,7 @@ export function registerBuiltinInstallHandlers(): void {
   // operator install doesn't end up with an installable card that
   // breaks on the first tool call.
   registerJiraOAuthHandler();
+  registerLinearOAuthHandler();
   registerSalesforceOAuthHandler();
 
   // ── Static-bot platforms (1.5.3 — Phase D, #2748+) ────────────────
@@ -136,6 +174,7 @@ export function registerBuiltinInstallHandlers(): void {
   // for emergency disable).
   registerTelegramStaticBotHandler();
   registerDiscordStaticBotHandler();
+  registerTeamsStaticBotHandler();
 }
 
 function registerSlackOAuthHandler(): void {
@@ -200,6 +239,41 @@ function registerJiraOAuthHandler(): void {
     );
   }
   log.info({ publicApiUrl }, "Registered JiraOAuthInstallHandler + LazyPluginLoader builder");
+}
+
+function registerLinearOAuthHandler(): void {
+  const clientId = process.env.LINEAR_CLIENT_ID;
+  const clientSecret = process.env.LINEAR_CLIENT_SECRET;
+  const publicApiUrl = resolvePublicApiUrl();
+
+  if (!clientId || !clientSecret) {
+    log.info(
+      "Linear OAuth handler not registered — LINEAR_CLIENT_ID / LINEAR_CLIENT_SECRET unset. /api/v1/integrations/linear/install will return 501 until configured. (linear-apikey form-install path remains available — no env gate.)",
+    );
+    return;
+  }
+  if (!publicApiUrl) {
+    log.warn(
+      "Linear OAuth handler not registered — ATLAS_PUBLIC_API_URL is unset, so the redirect URI cannot be resolved.",
+    );
+    return;
+  }
+
+  registerOAuthHandler(
+    "linear",
+    new LinearOAuthInstallHandler({
+      clientId,
+      clientSecret,
+      redirectUri: `${publicApiUrl}/api/v1/integrations/linear/callback`,
+    }),
+  );
+  if (!lazyPluginLoader.hasBuilder(LINEAR_CATALOG_ID)) {
+    lazyPluginLoader.registerBuilder(
+      LINEAR_CATALOG_ID,
+      createLinearOAuthLazyBuilder({ clientId, clientSecret }),
+    );
+  }
+  log.info({ publicApiUrl }, "Registered LinearOAuthInstallHandler + LazyPluginLoader builder");
 }
 
 function registerSalesforceOAuthHandler(): void {
@@ -346,6 +420,62 @@ function registerDiscordStaticBotHandler(): void {
       tokenFingerprint: fingerprintToken(botToken),
     },
     "Registered DiscordStaticBotInstallHandler",
+  );
+}
+
+/**
+ * Register the Teams static-bot install handler when the operator env
+ * is wired (#2752). Mirrors {@link registerDiscordStaticBotHandler}
+ * exactly — same severity-escalation contract when the catalog row says
+ * `enabled: true` but a required env var is missing.
+ *
+ * Two env vars gate registration: `TEAMS_APP_ID` (Microsoft App ID /
+ * client id from the operator's Azure Bot registration) and
+ * `TEAMS_APP_PASSWORD` (Microsoft App Password / client secret). Both
+ * are required because the chat adapter and the manifest download path
+ * each need them — the install route would otherwise 501 in a confusing
+ * half-wired way.
+ *
+ * `TEAMS_TENANT_ID` is an optional operator-side single-tenant override
+ * consumed by the chat adapter (`appType: "SingleTenant"` vs
+ * `"MultiTenant"`), not this handler — install always validates the
+ * customer-supplied tenant_id regardless. Single-tenant deploys pin one
+ * customer tenant up-front; MultiTenant deploys (the default) accept any
+ * customer tenant that passes OIDC discovery.
+ */
+function registerTeamsStaticBotHandler(): void {
+  const appId = process.env.TEAMS_APP_ID;
+  const appPassword = process.env.TEAMS_APP_PASSWORD;
+  if (!appId || appId.length === 0 || !appPassword || appPassword.length === 0) {
+    if (isCatalogSlugEnabled("teams")) {
+      log.error(
+        {
+          slug: "teams",
+          requiredEnv: ["TEAMS_APP_ID", "TEAMS_APP_PASSWORD"],
+          missing: [
+            ...(!appId ? ["TEAMS_APP_ID"] : []),
+            ...(!appPassword ? ["TEAMS_APP_PASSWORD"] : []),
+          ],
+        },
+        "Teams catalog row is enabled but TEAMS_APP_ID and/or TEAMS_APP_PASSWORD is unset — install route will return 501 and AdapterRegistry will skip the adapter. Set both per-service. See #2673 for the same-class silent-degradation precedent.",
+      );
+    } else {
+      log.info(
+        "Teams static-bot handler not registered — TEAMS_APP_ID and/or TEAMS_APP_PASSWORD unset and the 'teams' catalog row is not enabled (operator hasn't opted in).",
+      );
+    }
+    return;
+  }
+  registerStaticBotHandler(
+    TEAMS_SLUG,
+    new TeamsStaticBotInstallHandler({ appId, appPassword }),
+  );
+  log.info(
+    {
+      appIdFingerprint: fingerprintToken(appId),
+      appPasswordFingerprint: fingerprintToken(appPassword),
+    },
+    "Registered TeamsStaticBotInstallHandler",
   );
 }
 

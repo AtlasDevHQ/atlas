@@ -70753,6 +70753,327 @@
         "operationId": "postBillingByot"
       }
     },
+    "/api/v1/integrations/discord/install": {
+      "get": {
+        "tags": [
+          "Integrations"
+        ],
+        "summary": "Discord bot-install redirect",
+        "description": "Redirects to Discord's OAuth2 bot-install page using the operator-owned client_id. Customer admin authorizes the Atlas bot in their server; Discord then redirects to `/api/v1/integrations/discord/callback?guild_id=…&state=…`.",
+        "responses": {
+          "302": {
+            "description": "Redirect to Discord's OAuth2 authorize page on success, or to `/admin/integrations?error=discord&reason=plan_upgrade_required` when the workspace's plan does not admit the install (browser callers)."
+          },
+          "400": {
+            "description": "Caller lacks workspace binding, or Discord is not OAuth-installable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not authenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a workspace admin, or the workspace's plan does not admit Discord. Plan-upgrade responses follow PlanUpgradeRequiredBody (JSON callers; browsers see a 302).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string",
+                          "enum": [
+                            "plan_upgrade_required"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "required_plan": {
+                          "type": "string",
+                          "enum": [
+                            "free",
+                            "trial",
+                            "starter",
+                            "pro",
+                            "business"
+                          ]
+                        },
+                        "current_plan": {
+                          "type": "string",
+                          "enum": [
+                            "free",
+                            "trial",
+                            "starter",
+                            "pro",
+                            "business"
+                          ]
+                        },
+                        "requestId": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "message",
+                        "required_plan",
+                        "current_plan",
+                        "requestId"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": {}
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Discord catalog row missing or kill-switched",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Discord install handler not registered — operator must set DISCORD_BOT_TOKEN + DISCORD_CLIENT_ID.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getIntegrationsDiscordInstall"
+      }
+    },
+    "/api/v1/integrations/discord/callback": {
+      "get": {
+        "tags": [
+          "Integrations"
+        ],
+        "summary": "Discord bot-install callback",
+        "description": "Handles the redirect from Discord's bot-install authorization page. Verifies the state token, extracts `guild_id`, and dispatches into the static-bot install handler.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Signed state token from /install"
+            },
+            "required": true,
+            "description": "Signed state token from /install",
+            "name": "state",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Authorized guild snowflake"
+            },
+            "required": false,
+            "description": "Authorized guild snowflake",
+            "name": "guild_id",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "permissions",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "error",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "error_description",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Install complete — redirected to /admin/integrations. Success: `?installed=discord`. User cancel: `?error=discord&reason=authorization_denied`. JSON callers receive structured 4xx responses instead."
+          },
+          "400": {
+            "description": "Invalid state, user cancel, or missing guild_id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Discord catalog row missing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Discord install handler not registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Discord API unreachable while verifying the guild",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getIntegrationsDiscordCallback"
+      }
+    },
     "/api/v1/integrations/{platform}/install": {
       "get": {
         "tags": [

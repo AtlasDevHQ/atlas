@@ -986,7 +986,7 @@ export const approvalRules = pgTable(
     check("chk_approval_rule_type", sql`rule_type IN ('table', 'column', 'cost')`),
     check(
       "chk_approval_rule_surface",
-      sql`surface IN ('any', 'chat', 'mcp', 'scheduler', 'slack', 'teams', 'telegram', 'webhook')`,
+      sql`surface IN ('any', 'chat', 'mcp', 'scheduler', 'slack', 'teams', 'telegram', 'discord', 'webhook')`,
     ),
     index("idx_approval_rules_org").on(t.orgId),
     index("idx_approval_rules_org_enabled").on(t.orgId).where(sql`enabled = true`),
@@ -1030,7 +1030,7 @@ export const approvalQueue = pgTable(
     check("chk_approval_status", sql`status IN ('pending', 'approved', 'denied', 'expired')`),
     check(
       "chk_approval_request_surface",
-      sql`surface IS NULL OR surface IN ('chat', 'mcp', 'scheduler', 'slack', 'teams', 'telegram', 'webhook')`,
+      sql`surface IS NULL OR surface IN ('chat', 'mcp', 'scheduler', 'slack', 'teams', 'telegram', 'discord', 'webhook')`,
     ),
     // 0094 / #2744 — composite FK to `connection_groups (id, org_id)`
     // dropped with the table. `connection_group_id` stays as a

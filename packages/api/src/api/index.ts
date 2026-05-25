@@ -503,6 +503,15 @@ if (process.env.STRIPE_SECRET_KEY) {
 // rather than blocking boot — operators can leave the env unset until
 // they're ready to wire a Slack app.
 try {
+  // Discord static-bot install routes must mount BEFORE the generic
+  // integrations dispatcher — the generic router's `/:platform/install`
+  // path would otherwise match `/integrations/discord/install` and 400
+  // with `wrong_install_model` (the generic dispatcher only handles
+  // `install_model === "oauth"`). Discord is `static-bot` but uses an
+  // OAuth-shaped redirect flow (Discord's "Add bot to server" UX IS an
+  // OAuth authorize page); see `routes/integrations-discord.ts` docstring.
+  const { discordIntegrations } = await import("./routes/integrations-discord");
+  app.route("/api/v1/integrations/discord", discordIntegrations);
   const { integrations } = await import("./routes/integrations");
   app.route("/api/v1/integrations", integrations);
   const { registerBuiltinInstallHandlers } = await import(

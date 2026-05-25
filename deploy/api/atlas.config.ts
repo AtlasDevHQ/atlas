@@ -111,13 +111,46 @@ export default defineConfig({
       saas_eligible: true,
       implementation_status: "coming_soon",
     },
+    // Discord — 1.5.3 #2749 (Phase D). The operator wires a Discord
+    // application (DISCORD_BOT_TOKEN + DISCORD_CLIENT_ID + DISCORD_PUBLIC_KEY);
+    // each customer admin clicks "Install" in /admin/integrations,
+    // authorizes the Atlas bot in their Discord server, and Discord
+    // redirects back to `/api/v1/integrations/discord/callback` with
+    // the `guild_id`. `DiscordStaticBotInstallHandler` verifies the
+    // bot's membership in that guild before persisting.
+    //
+    // `guild_id` is NOT marked `secret: true` — Discord snowflakes are
+    // routing identifiers that leak in every interaction envelope.
+    // Same posture as Telegram's `chat_id`.
     {
       slug: "discord",
       type: "chat",
       install_model: "static-bot",
       enabled: true,
       saas_eligible: true,
-      implementation_status: "coming_soon",
+      implementation_status: "available",
+      name: "Discord",
+      description:
+        "Chat with Atlas inside a Discord server. The operator wires a shared bot (DISCORD_BOT_TOKEN + DISCORD_CLIENT_ID); customer admins authorize the bot per-server through Discord's OAuth bot-install flow.",
+      min_plan: "starter",
+      configSchema: [
+        {
+          key: "guild_id",
+          type: "string",
+          label: "Server ID",
+          description:
+            "Discord server (guild) snowflake. Captured automatically from Discord's OAuth bot-install redirect — admins don't paste this manually.",
+          required: true,
+        },
+        {
+          key: "guild_name",
+          type: "string",
+          label: "Server name",
+          description:
+            "Optional admin-friendly label. Defaults to the guild name returned by Discord's API at install time.",
+          required: false,
+        },
+      ],
     },
     {
       slug: "gchat",
@@ -404,6 +437,17 @@ export default defineConfig({
         // `catalog` above for every chat-type row.
         {
           slug: "telegram",
+          type: "chat",
+          install_model: "static-bot",
+          enabled: true,
+          saas_eligible: true,
+        },
+        // Discord — 1.5.3 #2749 (Phase D). Same AdapterRegistry +
+        // webhook-route mount story as Telegram; the install flow
+        // diverges (OAuth-shaped redirect instead of pasted identifier)
+        // and lives in `routes/integrations-discord.ts`.
+        {
+          slug: "discord",
           type: "chat",
           install_model: "static-bot",
           enabled: true,

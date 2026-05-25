@@ -79,7 +79,7 @@ These don't ride on `chat_cache` — Atlas owns the schema and the writers. They
 | Platform | Slot reserved | Issue | Status |
 |---|---|---|---|
 | Teams | yes (catalog placeholder) | #2662 | ○ pending — 1.5.3 |
-| Discord | yes | #2749 | ○ pending — 1.5.3 (rides Telegram's StaticBotInstallHandler interface) |
+| Discord | yes | #2749 | ✓ verified — static-bot install via `DiscordStaticBotInstallHandler`; per-Workspace `guild_id` in `workspace_plugins.config`; no per-Workspace credential store; OAuth-shaped bot-install redirect at `/api/v1/integrations/discord/{install,callback}` (lives in `routes/integrations-discord.ts`); reachability verified via `GET /api/v10/guilds/{guild_id}` at install time |
 | gchat | yes | #2754 | ○ pending — 1.5.3 (rides Telegram's interface) |
 | Telegram | yes | #2748 | ✓ verified — static-bot install via `TelegramStaticBotInstallHandler`; per-Workspace `chat_id` in `workspace_plugins.config`; no per-Workspace credential store; reachability verified via Bot API `getChat` at install time |
 | GitHub | yes | #2662 | ○ pending — 1.5.3 |

@@ -9,9 +9,12 @@
  *     installation → `org_id`. Mirrors the legacy `routes/slack.ts` paths.
  *   - **Telegram** (1.5.3 slice 10 / #2748 — keystone for Phase D) —
  *     resolves `message.chat.id` → `workspace_plugins.config->>'chat_id'`
- *     → `workspace_id` via the static-bot install record. Future
- *     static-bot platforms (Discord #2749, gchat #2754, WhatsApp #2753)
- *     extend this branch as their slices land.
+ *     → `workspace_id` via the static-bot install record.
+ *   - **Discord** (1.5.3 slice 11 / #2749) — resolves `guild_id` →
+ *     `workspace_plugins.config->>'guild_id'` → `workspace_id`. Same
+ *     fail-closed contract as Telegram. Remaining static-bot platforms
+ *     (gchat #2754, WhatsApp #2753) extend this dispatch as their
+ *     slices land.
  *
  * Without a per-platform tenant binding, `checkApprovalRequired`
  * short-circuits on a missing `orgId` and the approval gate silently
@@ -111,6 +114,24 @@ interface TelegramRawEvent {
 }
 
 /**
+ * Minimum shape we read from a Discord interaction envelope. The Chat
+ * SDK's `@chat-adapter/discord` passes the raw interaction payload through
+ * the `rawMessage` slot; the discriminator we use is `guild_id` (set on
+ * server interactions; absent on DMs, which we don't wire).
+ *
+ * Discord's interaction payload also includes `channel_id` and `id`
+ * (interaction id). We use the channel/interaction pair to anchor
+ * conversation persistence.
+ */
+interface DiscordRawEvent {
+  id?: string;
+  guild_id?: string;
+  channel_id?: string;
+  member?: { user?: { id?: string; username?: string } };
+  user?: { id?: string; username?: string };
+}
+
+/**
  * Normalize a Slack id field that may arrive as a bare string (events_api)
  * or as a `{ id, ... }` object (interactive `block_actions` payloads).
  */
@@ -144,6 +165,18 @@ function extractTelegramChatId(raw: TelegramRawEvent): string | undefined {
 }
 
 /**
+ * Extract the Discord guild id. Returns undefined for DM interactions
+ * (no `guild_id`) — Atlas's static-bot install model is per-server, so
+ * DM-only interactions intentionally have no tenant binding and
+ * short-circuit the dispatcher with an actionable 4xx.
+ */
+function extractDiscordGuildId(raw: DiscordRawEvent): string | undefined {
+  const id = raw.guild_id;
+  if (typeof id !== "string" || id.length === 0) return undefined;
+  return id;
+}
+
+/**
  * Build the chat plugin's `executeQuery` callback.
  *
  * Multi-platform dispatch lives inside `runExecuteQuery`. Each chat
@@ -171,6 +204,9 @@ export async function runExecuteQuery(
   }
   if (adapter.name === "telegram") {
     return runTelegramExecuteQuery(question, ctx, requestId);
+  }
+  if (adapter.name === "discord") {
+    return runDiscordExecuteQuery(question, ctx, requestId);
   }
 
   log.warn(
@@ -479,6 +515,160 @@ async function resolveTelegramWorkspaceId(chatId: string): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
+// Discord branch — 1.5.3 #2749 (Phase D)
+// ---------------------------------------------------------------------------
+
+async function runDiscordExecuteQuery(
+  question: string,
+  ctx: ChatExecuteQueryContext,
+  requestId: string,
+): Promise<ChatQueryResult> {
+  const { threadId, priorMessages, rawMessage } = ctx;
+  const raw = (rawMessage ?? {}) as DiscordRawEvent;
+
+  // 1. Resolve tenant — guild_id is the routing identifier persisted
+  //    by `DiscordStaticBotInstallHandler` into `workspace_plugins.config`.
+  //    DM interactions have no `guild_id` and aren't bound to a workspace.
+  const guildId = extractDiscordGuildId(raw);
+  if (!guildId) {
+    log.warn(
+      { threadId, requestId },
+      "Chat plugin executeQuery received Discord event without guild_id — refusing (DMs are not supported)",
+    );
+    throw new Error(
+      "Atlas does not respond in Discord direct messages — interact with the bot inside a server where Atlas has been installed.",
+    );
+  }
+
+  // 2. Rate limit — keyed per-guild (one install row == one rate-limit
+  //    bucket). Same posture as Telegram's per-chat key.
+  const rateCheck = checkRateLimit(`discord:${guildId}`);
+  if (!rateCheck.allowed) {
+    log.info(
+      { guildIdFingerprint: fingerprintGuildId(guildId), threadId, requestId },
+      "Chat plugin executeQuery rate-limited",
+    );
+    throw new Error("Rate limit exceeded. Please wait before trying again.");
+  }
+
+  // 3. F-55 actor — resolve guild_id → workspace_id via the install row.
+  //    Same fail-closed contract as Slack / Telegram: unknown tenant or
+  //    DB outage MUST throw before the agent runs.
+  let orgId: string;
+  try {
+    orgId = await resolveDiscordWorkspaceId(guildId);
+  } catch (err) {
+    if (err instanceof DiscordUnknownTenantError) {
+      log.warn(
+        { guildIdFingerprint: fingerprintGuildId(guildId), threadId, requestId },
+        "Unknown Discord guild_id — refusing",
+      );
+      throw new Error(
+        "This Discord server is not connected to Atlas. Ask your admin to install Discord in the Atlas integrations console.",
+        { cause: err },
+      );
+    }
+    log.error(
+      {
+        guildIdFingerprint: fingerprintGuildId(guildId),
+        threadId,
+        requestId,
+        err,
+      },
+      "Failed to resolve Discord guild_id → workspace — refusing query",
+    );
+    throw new Error(
+      "Atlas could not resolve the Discord workspace right now. Please try again in a moment.",
+      { cause: err },
+    );
+  }
+
+  const externalUserId =
+    raw.member?.user?.id ??
+    raw.user?.id ??
+    undefined;
+  const actor = botActorUser({
+    platform: "discord",
+    externalId: guildId,
+    orgId,
+    ...(externalUserId ? { externalUserId } : {}),
+  });
+
+  // 4. Conversation persistence keyed on (guild_id, channel_id). Discord
+  //    doesn't have a thread-of-threads model like Telegram's forum
+  //    topics — channel_id is the right granularity. Falls back to the
+  //    interaction id when channel_id is missing (rare — should always
+  //    be present on guild interactions).
+  const channelAnchor =
+    typeof raw.channel_id === "string" && raw.channel_id.length > 0
+      ? raw.channel_id
+      : typeof raw.id === "string" && raw.id.length > 0
+        ? raw.id
+        : "";
+  const conversationId = await loadOrCreateConversation(
+    guildId,
+    channelAnchor,
+    question,
+    "discord",
+    requestId,
+  );
+
+  return runAgentAndMap({
+    question,
+    requestId,
+    actor,
+    approvalSurface: "discord",
+    conversationId,
+    priorMessages: priorMessages ?? null,
+    presentationMode: ctx.presentationMode,
+    tenantLabel: {
+      guildIdFingerprint: fingerprintGuildId(guildId),
+      threadId,
+    },
+  });
+}
+
+/**
+ * Log-safe guild_id fingerprint — last 4 chars only.
+ */
+function fingerprintGuildId(guildId: string): string {
+  return guildId.length <= 4 ? guildId : `…${guildId.slice(-4)}`;
+}
+
+/** Unknown-tenant marker for the Discord branch's fail-closed path. */
+class DiscordUnknownTenantError extends Error {
+  constructor(guildIdFingerprint: string) {
+    super(`No Atlas workspace bound to Discord guild …${guildIdFingerprint}`);
+    this.name = "DiscordUnknownTenantError";
+  }
+}
+
+/**
+ * Resolve a Discord guild_id → Atlas workspace_id via the static-bot
+ * install record. Reads `workspace_plugins.config->>'guild_id'` for the
+ * catalog row `catalog:discord`. Throws {@link DiscordUnknownTenantError}
+ * on no-row, propagates DB errors verbatim for caller-side logging.
+ *
+ * Same rationale as the Telegram resolver — the install row IS the
+ * tenant lookup (no parallel store to keep in sync). See ADR-0007.
+ */
+async function resolveDiscordWorkspaceId(guildId: string): Promise<string> {
+  const rows = await internalQuery<{ workspace_id: string }>(
+    `SELECT workspace_id
+       FROM workspace_plugins
+      WHERE catalog_id = $1
+        AND enabled = true
+        AND config->>'guild_id' = $2
+      LIMIT 1`,
+    ["catalog:discord", guildId],
+  );
+  if (rows.length === 0) {
+    throw new DiscordUnknownTenantError(fingerprintGuildId(guildId));
+  }
+  return rows[0].workspace_id;
+}
+
+// ---------------------------------------------------------------------------
 // Shared conversation persistence + agent invocation
 // ---------------------------------------------------------------------------
 
@@ -492,7 +682,7 @@ async function loadOrCreateConversation(
   channel: string,
   threadAnchor: string,
   question: string,
-  surface: "slack" | "telegram",
+  surface: "slack" | "telegram" | "discord",
   requestId: string,
 ): Promise<string | null> {
   if (!channel || !threadAnchor) return null;
@@ -698,5 +888,5 @@ async function runAgentAndMap(args: RunAgentArgs): Promise<ChatQueryResult> {
 // Compile-time guard that the platforms wired here all exist in
 // `CHAT_BOT_PLATFORMS`. Adding a new branch above without extending the
 // actor enum surfaces here as a TS error.
-const _platformGuard: ChatBotPlatform = "telegram";
-void _platformGuard;
+const _platformGuards: ReadonlyArray<ChatBotPlatform> = ["telegram", "discord"];
+void _platformGuards;

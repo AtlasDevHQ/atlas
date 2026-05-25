@@ -344,6 +344,7 @@ describe("migrateAuthTables", () => {
             { name: "0096_drop_connections_table.sql" },
             { name: "0097_fix_0096_us_constraint_order.sql" },
             { name: "0098_twenty_integrations.sql" },
+            { name: "0099_approval_surface_discord.sql" },
           ],
         };
       }

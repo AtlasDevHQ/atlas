@@ -186,23 +186,40 @@ describe("buildChatAdapterRegistry — catalog filters", () => {
     expect(errors.some((l) => l.msg.includes("required env vars missing"))).toBe(true);
   });
 
-  it("does not register a static-bot Platform whose builder isn't shipped yet (Discord — #2749)", () => {
-    // Discord's install handler + adapter builder land in #2749. Until
-    // then, an enabled discord catalog row surfaces as an unrecognized
-    // slug warning, mirroring the operator-typo branch.
-    const { logger, warns } = makeLogger();
+  it("registers Discord when DISCORD_BOT_TOKEN + DISCORD_CLIENT_ID + DISCORD_PUBLIC_KEY are present (Phase D — #2749)", () => {
+    const { logger, infos } = makeLogger();
     const result = buildChatAdapterRegistry({
       catalog: [entry({ slug: "discord", install_model: "static-bot", enabled: true })],
       env: {
         DISCORD_BOT_TOKEN: "fake-discord-token",
-        DISCORD_APPLICATION_ID: "fake",
-        DISCORD_PUBLIC_KEY: "fake",
+        DISCORD_CLIENT_ID: "fake-application-id",
+        DISCORD_PUBLIC_KEY: "fake-public-key",
       },
       logger,
     });
-    expect(result.adapters.slack).toBeUndefined();
-    expect(result.diagnostics.unrecognizedSlugs).toEqual(["discord"]);
-    expect(warns.some((l) => l.msg.includes("no builder registered"))).toBe(true);
+    expect(result.adapters.discord).toBeDefined();
+    expect(result.diagnostics.unrecognizedSlugs).toEqual([]);
+    expect(result.diagnostics.missingCredSlugs).toEqual([]);
+    expect(
+      infos.some((l) => l.msg.includes("chat adapter registered")),
+    ).toBe(true);
+  });
+
+  it("skips Discord + logs error when any required env var is missing (entry enabled)", () => {
+    const { logger, errors } = makeLogger();
+    const result = buildChatAdapterRegistry({
+      catalog: [entry({ slug: "discord", install_model: "static-bot", enabled: true })],
+      env: {
+        // DISCORD_BOT_TOKEN intentionally missing — entry enabled but
+        // env half-wired should fail loud per #2673 silent-degradation precedent.
+        DISCORD_CLIENT_ID: "fake-application-id",
+        DISCORD_PUBLIC_KEY: "fake-public-key",
+      },
+      logger,
+    });
+    expect(result.adapters.discord).toBeUndefined();
+    expect(result.diagnostics.missingCredSlugs).toEqual(["discord"]);
+    expect(errors.some((l) => l.msg.includes("required env vars missing"))).toBe(true);
   });
 
   it("ignores integration-type entries (slice 3 will own them)", () => {

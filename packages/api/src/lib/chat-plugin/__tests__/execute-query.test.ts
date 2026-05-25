@@ -339,13 +339,32 @@ describe("chat-plugin executeQuery host helper", () => {
   it("refuses unknown platforms cleanly without invoking the agent", async () => {
     const { runExecuteQuery } = await import("../executeQuery");
 
+    // Teams stays on the placeholder branch in 1.5.3 — its install
+    // handler hasn't shipped yet. (Discord moved off this branch in
+    // #2749 — see the discord-specific tests below.)
+    await expect(
+      runExecuteQuery("q", {
+        threadId: "teams:abc",
+        adapter: { name: "teams" },
+        rawMessage: { team_id: "T0" },
+      }),
+    ).rejects.toThrow(/not yet supported/);
+    expect(capturedAgentCalls).toHaveLength(0);
+  });
+
+  it("refuses Discord DM interactions (no guild_id) without invoking the agent — 1.5.3 #2749", async () => {
+    const { runExecuteQuery } = await import("../executeQuery");
+
     await expect(
       runExecuteQuery("q", {
         threadId: "discord:abc",
         adapter: { name: "discord" },
-        rawMessage: { team_id: "T0" },
+        // DM interactions have no `guild_id` — the static-bot install
+        // model is per-server, so DMs intentionally have no tenant
+        // binding and short-circuit before the agent runs.
+        rawMessage: { id: "interaction-1", channel_id: "C1" },
       }),
-    ).rejects.toThrow(/not yet supported/);
+    ).rejects.toThrow(/direct messages/i);
     expect(capturedAgentCalls).toHaveLength(0);
   });
 

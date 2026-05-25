@@ -197,13 +197,11 @@ interface ConnectionRow {
 interface ConnectionsResp { connections?: ConnectionRow[] }
 
 /**
- * Resolve a group by name. Post-#2744 cutover the `connection_groups`
- * table is gone — groups are derived from distinct non-null
- * `groupId` values on the connections list. Since the wire returns
- * `groupName === groupId` (the string IS the name), the synthesized
- * `GroupRow.id` is that same string. The seed provisions `dev`,
- * `staging`, `prod`; any other name is treated as a spec-created
- * throwaway and `null` is a legitimate result.
+ * Resolve a seeded group by name. `groupName === groupId` on the wire
+ * (the string IS the name), so the synthesized `GroupRow.id` is that
+ * string. `primaryConnectionId` is the first matching install — not an
+ * elected primary, since the post-cutover schema has no separate group
+ * row to carry one. Empty / archived-only groups resolve to `null`.
  */
 export async function findGroupByName(
   request: APIRequestContext,

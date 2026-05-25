@@ -602,6 +602,34 @@ describe("createApprovalRequest", () => {
     expect(result.surface).toBeNull();
   });
 
+  it("writes literal NULL when both connectionGroupId and connectionId are absent", async () => {
+    // Third branch in approval.ts: neither explicit group nor inline
+    // resolution available — groupExpression collapses to the SQL
+    // literal `NULL`. Without this test the legacy sentinel-call-site
+    // path could regress to a $8 placeholder mismatch that crashes at
+    // runtime against a real Postgres.
+    ee.queueMockRows([makeQueueRow({ connection_group_id: null, connection_id: null })]);
+    const result = await run(createApprovalRequest({
+      orgId: "org-1",
+      ruleId: "rule-1",
+      ruleName: "Sentinel rule",
+      requesterId: "user-1",
+      requesterEmail: null,
+      querySql: "SELECT * FROM users",
+      explanation: null,
+      connectionId: null,
+      tablesAccessed: ["users"],
+      columnsAccessed: ["id"],
+    }));
+    expect(result.connectionGroupId).toBeNull();
+    const insert = ee.capturedQueries.find((q) => q.sql.includes("INSERT INTO approval_queue"));
+    expect(insert).toBeDefined();
+    expect(insert!.sql).not.toContain("FROM workspace_plugins");
+    // Param at position 7 (groupParam) is null — verifies the slot isn't
+    // accidentally bound to a string when groupExpression is the literal.
+    expect(insert!.params[7]).toBeNull();
+  });
+
   it("#2072: rejects a surface value that isn't in the request enum (typo)", async () => {
     try {
       await run(createApprovalRequest({
@@ -996,6 +1024,11 @@ describe("createApprovalRequest — group-scoped (#2344)", () => {
     expect(insert!.sql).toContain("FROM workspace_plugins");
     expect(insert!.sql).toContain("pillar = 'datasource'");
     expect(insert!.params).toContain("conn-us");
+    // Overlay branches are both load-bearing: the workspace's own row
+    // wins over `__global__`, and the LIMIT 1 collapses any tie.
+    // Dropping either turns demo-install resolution flaky.
+    expect(insert!.sql).toContain("'__global__'");
+    expect(insert!.sql).toContain("LIMIT 1");
   });
 });
 

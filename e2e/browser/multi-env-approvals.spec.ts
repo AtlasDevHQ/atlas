@@ -67,9 +67,7 @@ test.describe("multi-env approvals — group pointer round-trips through queue r
     const ruleNameDev = `${SYNTH_PREFIX}rule_${stamp}_dev`;
     const ruleNameStaging = `${SYNTH_PREFIX}rule_${stamp}_staging`;
 
-    // Post-#2744 cutover: `connection_groups` is gone. The org owning a
-    // named group is any workspace_plugins row whose `config.group_id`
-    // matches; pick one and pull `workspace_id` off it.
+    // Any install in the group works — they all share workspace_id.
     const orgRow = await withInternalDb(async (c) => {
       const { rows } = await c.query<{ org_id: string }>(
         `SELECT workspace_id AS org_id

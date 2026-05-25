@@ -76,9 +76,7 @@ test.describe("multi-env PII — per-group filter does not bleed across groups",
     const tableDev = `${SYNTH_PREFIX}t_${stamp}_dev`;
     const tableStaging = `${SYNTH_PREFIX}t_${stamp}_staging`;
 
-    // Post-#2744 cutover: `connection_groups` is gone. The org owning a
-    // named group is any workspace_plugins row whose `config.group_id`
-    // matches; pull `workspace_id` off one such install.
+    // Any install in the group works — they all share workspace_id.
     const orgRow = await withInternalDb(async (c) => {
       const { rows } = await c.query<{ org_id: string }>(
         `SELECT workspace_id AS org_id

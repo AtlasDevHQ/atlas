@@ -35207,6 +35207,7 @@
                                   "telegram",
                                   "discord",
                                   "whatsapp",
+                                  "gchat",
                                   "webhook"
                                 ]
                               },
@@ -35272,6 +35273,7 @@
                                   "telegram",
                                   "discord",
                                   "whatsapp",
+                                  "gchat",
                                   "webhook"
                                 ]
                               },
@@ -35334,6 +35336,7 @@
                                   "telegram",
                                   "discord",
                                   "whatsapp",
+                                  "gchat",
                                   "webhook"
                                 ]
                               },
@@ -35539,6 +35542,7 @@
                           "telegram",
                           "discord",
                           "whatsapp",
+                          "gchat",
                           "webhook"
                         ],
                         "description": "Origin surface this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072.",
@@ -35597,6 +35601,7 @@
                           "telegram",
                           "discord",
                           "whatsapp",
+                          "gchat",
                           "webhook"
                         ],
                         "description": "Origin surface this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072.",
@@ -35651,6 +35656,7 @@
                                 "telegram",
                                 "discord",
                                 "whatsapp",
+                                "gchat",
                                 "webhook"
                               ]
                             },
@@ -35716,6 +35722,7 @@
                                 "telegram",
                                 "discord",
                                 "whatsapp",
+                                "gchat",
                                 "webhook"
                               ]
                             },
@@ -35778,6 +35785,7 @@
                                 "telegram",
                                 "discord",
                                 "whatsapp",
+                                "gchat",
                                 "webhook"
                               ]
                             },
@@ -35966,6 +35974,7 @@
                       "telegram",
                       "discord",
                       "whatsapp",
+                      "gchat",
                       "webhook"
                     ],
                     "description": "Origin surface this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072.",
@@ -36013,6 +36022,7 @@
                                 "telegram",
                                 "discord",
                                 "whatsapp",
+                                "gchat",
                                 "webhook"
                               ]
                             },
@@ -36078,6 +36088,7 @@
                                 "telegram",
                                 "discord",
                                 "whatsapp",
+                                "gchat",
                                 "webhook"
                               ]
                             },
@@ -36140,6 +36151,7 @@
                                 "telegram",
                                 "discord",
                                 "whatsapp",
+                                "gchat",
                                 "webhook"
                               ]
                             },
@@ -36514,6 +36526,7 @@
                                   "telegram",
                                   "discord",
                                   "whatsapp",
+                                  "gchat",
                                   "webhook",
                                   null
                                 ]
@@ -36630,6 +36643,7 @@
                                   "telegram",
                                   "discord",
                                   "whatsapp",
+                                  "gchat",
                                   "webhook",
                                   null
                                 ]
@@ -36752,6 +36766,7 @@
                                   "telegram",
                                   "discord",
                                   "whatsapp",
+                                  "gchat",
                                   "webhook",
                                   null
                                 ]
@@ -36874,6 +36889,7 @@
                                   "telegram",
                                   "discord",
                                   "whatsapp",
+                                  "gchat",
                                   "webhook",
                                   null
                                 ]
@@ -37144,6 +37160,7 @@
                                 "telegram",
                                 "discord",
                                 "whatsapp",
+                                "gchat",
                                 "webhook",
                                 null
                               ]
@@ -37260,6 +37277,7 @@
                                 "telegram",
                                 "discord",
                                 "whatsapp",
+                                "gchat",
                                 "webhook",
                                 null
                               ]
@@ -37382,6 +37400,7 @@
                                 "telegram",
                                 "discord",
                                 "whatsapp",
+                                "gchat",
                                 "webhook",
                                 null
                               ]
@@ -37504,6 +37523,7 @@
                                 "telegram",
                                 "discord",
                                 "whatsapp",
+                                "gchat",
                                 "webhook",
                                 null
                               ]
@@ -37775,6 +37795,7 @@
                                 "telegram",
                                 "discord",
                                 "whatsapp",
+                                "gchat",
                                 "webhook",
                                 null
                               ]
@@ -37891,6 +37912,7 @@
                                 "telegram",
                                 "discord",
                                 "whatsapp",
+                                "gchat",
                                 "webhook",
                                 null
                               ]
@@ -38013,6 +38035,7 @@
                                 "telegram",
                                 "discord",
                                 "whatsapp",
+                                "gchat",
                                 "webhook",
                                 null
                               ]
@@ -38135,6 +38158,7 @@
                                 "telegram",
                                 "discord",
                                 "whatsapp",
+                                "gchat",
                                 "webhook",
                                 null
                               ]

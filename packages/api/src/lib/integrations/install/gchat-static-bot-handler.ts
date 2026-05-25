@@ -1,7 +1,8 @@
 /**
- * `GchatStaticBotInstallHandler` — slice 16 of 1.5.3 Phase D (issue
- * #2754). Fourth concrete implementation of {@link StaticBotInstallHandler}
- * after Telegram (#2748), Discord (#2749), and Teams (#2752).
+ * `GchatStaticBotInstallHandler` — Google Chat install handler (issue
+ * #2754, Phase D). Concrete implementation of
+ * {@link StaticBotInstallHandler} alongside Telegram (#2748), Discord
+ * (#2749), and Teams (#2752).
  *
  * Google Chat follows the same operator-shared static-bot pattern as the
  * other Phase D platforms: one operator-owned Google Workspace
@@ -33,9 +34,10 @@
  *      `client_email`, `aud` is the token endpoint, scope is
  *      `pubsub`). Returns a short-lived access token.
  *   2. POST `https://pubsub.googleapis.com/v1/<topic>:publish` with one
- *      base64'd message containing the workspace_id under verification
- *      so a log scraper can correlate the round-trip to the install
- *      attempt. Success ⇒ Pub/Sub round-trip confirmed.
+ *      base64'd message containing the workspace_id *fingerprint*
+ *      (last 4 chars) so a log scraper can correlate the round-trip to
+ *      the install attempt without exfiltrating the full customer id.
+ *      Success ⇒ Pub/Sub round-trip confirmed.
  *
  * Either failure surfaces Google's verbatim `error.message` to the
  * admin so the actionable text (e.g. "User not authorized to perform
@@ -111,39 +113,58 @@ const GCHAT_TOKEN_SCOPE = "https://www.googleapis.com/auth/pubsub";
 
 /**
  * Validated subset of the service-account JSON file an operator
- * downloads from the GCP Console. The full file has ~10 fields (project
- * id, private key id, token uri, etc.); we capture the three that gate
- * the JWT bearer flow and reject any other shape at construction time.
+ * downloads from the GCP Console. The full file has ~10 fields (private
+ * key id, token uri, etc.); we capture the two that gate the JWT-bearer
+ * flow.
+ *
+ * Branded so the *only* constructor is {@link parseServiceAccountJson}
+ * — direct object literals can't satisfy the `__brand` field, which
+ * means a future caller (test, future programmatic install path) can't
+ * hand the handler an unvalidated SA shape. Mirrors the `WorkspaceId`
+ * brand pattern from `@useatlas/types/proactive`.
  */
-export interface GchatServiceAccount {
+export type GchatServiceAccount = {
   readonly client_email: string;
   /** PEM-encoded RSA private key — `-----BEGIN PRIVATE KEY-----` block. */
   readonly private_key: string;
-  /** Optional — falls back to whatever's encoded in `pubsubTopic`. */
-  readonly project_id?: string;
-}
+} & { readonly __brand: "GchatServiceAccount" };
+
+/**
+ * Branded Pub/Sub topic path — `projects/<project>/topics/<topic>`.
+ * Sole constructor is {@link asPubsubTopicPath}, which runs the same
+ * shape gate {@link assertValidPubsubTopic} used to provide as a side-
+ * effect-only call. The brand lets `verifyReachability` interpolate
+ * `this.pubsubTopic` into the URL with no re-validation — the type
+ * itself carries the contract forward.
+ */
+export type PubsubTopicPath = string & { readonly __brand: "PubsubTopicPath" };
 
 /**
  * Per-deploy operator config. Read once from env by `register.ts` and
- * passed in here. The constructor refuses to build without a parseable
- * service account JSON OR a topic — both gate the Pub/Sub round-trip, so
- * a half-wired deploy must fail at construction rather than at first
- * install attempt.
+ * passed in here. Both required fields are branded — direct construction
+ * with a plain string / object literal is a TS error, so a half-wired
+ * deploy must fail at the `parseServiceAccountJson` / `asPubsubTopicPath`
+ * gate rather than at first install attempt.
  */
 export interface GchatStaticBotHandlerConfig {
   /** Parsed contents of `GCHAT_SERVICE_ACCOUNT_JSON`. */
   readonly serviceAccount: GchatServiceAccount;
   /**
    * Fully-qualified Pub/Sub topic path the operator's Workspace Events
-   * subscription publishes to. Format:
-   * `projects/<project>/topics/<topic>`. The verification round-trip
-   * publishes one synthetic message here and reads back the messageId.
+   * subscription publishes to. The verification round-trip publishes
+   * one synthetic message here and reads back the messageId.
    */
-  readonly pubsubTopic: string;
+  readonly pubsubTopic: PubsubTopicPath;
   /** Test-only injection of the install id generator. */
   readonly idGenerator?: () => string;
-  /** Test-only injection of the access-token mint (skips real JWT signing). */
-  readonly accessTokenForTests?: () => Promise<string>;
+  /**
+   * Production-and-test seam for minting the Google OAuth2 access token.
+   * Defaults to the real JWT-bearer mint via `jose` + the OAuth2 token
+   * endpoint. Tests inject a fake so they don't need a real RSA key or
+   * network access. `register.ts` doesn't pass this — production runs
+   * the default impl.
+   */
+  readonly accessTokenProvider?: () => Promise<string>;
 }
 
 /** Shape persisted into `workspace_plugins.config` JSONB. */
@@ -165,10 +186,27 @@ export function parseServiceAccountJson(raw: string): GchatServiceAccount {
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    throw new Error(
-      `GCHAT_SERVICE_ACCOUNT_JSON is not valid JSON (${err instanceof Error ? err.message : String(err)}).`,
-      { cause: err },
+    // SECURITY: deliberately do NOT attach `cause: err` and aggressively
+    // sanitize `err.message` before interpolation. `raw` is the full
+    // service-account JSON (including `private_key`), and on modern V8
+    // `JSON.parse` errors include an excerpt of the input near the
+    // parse-failure offset. With `cause: err` set, pino's default `err`
+    // serializer (used by `register.ts`'s log call when this throws at
+    // boot) walks the cause chain and can surface that excerpt — which
+    // may contain bytes from the PEM private key — into operator log
+    // streams. Mirrors the bot-token redaction posture in
+    // `telegram-static-bot-handler.ts` / `discord-static-bot-handler.ts`,
+    // strengthened here because the env value is multi-kB and the
+    // parse-error excerpt is much more likely to land inside the key body.
+    const safeMessage = sanitizeParseError(
+      err instanceof Error ? err.message : String(err),
     );
+    // SECURITY (see comment block above): attaching `cause: err` here
+    // would let pino's default `err` serializer walk the chain and
+    // surface the raw `SyntaxError.input` (which contains the SA
+    // private key) in operator log streams.
+    // eslint-disable-next-line preserve-caught-error
+    throw new Error(`GCHAT_SERVICE_ACCOUNT_JSON is not valid JSON (${safeMessage}).`);
   }
   if (typeof parsed !== "object" || parsed === null) {
     throw new Error(
@@ -183,48 +221,111 @@ export function parseServiceAccountJson(raw: string): GchatServiceAccount {
   }
   if (typeof obj.private_key !== "string" || !obj.private_key.includes("BEGIN PRIVATE KEY")) {
     throw new Error(
-      "GCHAT_SERVICE_ACCOUNT_JSON is missing or malformed `private_key` (expected PEM with `-----BEGIN PRIVATE KEY-----`).",
+      "GCHAT_SERVICE_ACCOUNT_JSON is missing or malformed `private_key` (expected PKCS#8 PEM with `-----BEGIN PRIVATE KEY-----`).",
     );
   }
-  const result: { -readonly [K in keyof GchatServiceAccount]: GchatServiceAccount[K] } = {
+  // The brand cast is safe here — this is the only point in the
+  // codebase where a `GchatServiceAccount` is constructed, and the two
+  // load-bearing fields have been validated above.
+  return {
     client_email: obj.client_email,
     private_key: obj.private_key,
-  };
-  if (typeof obj.project_id === "string" && obj.project_id.length > 0) {
-    result.project_id = obj.project_id;
-  }
-  return result;
+  } as GchatServiceAccount;
 }
 
 /**
- * Validate the operator-supplied Pub/Sub topic path. Google's canonical
+ * Sole constructor for {@link PubsubTopicPath}. Google's canonical
  * format is `projects/<project>/topics/<topic>`; bare topic names are a
  * common admin mistake that produces a 404 at publish time with a
  * confusing message. Reject up front so the env-gate at register.ts
  * fails loudly on boot.
  */
-export function assertValidPubsubTopic(topic: string): void {
-  if (!topic.startsWith("projects/") || !topic.includes("/topics/")) {
+export function asPubsubTopicPath(raw: string): PubsubTopicPath {
+  if (!raw || !raw.startsWith("projects/") || !raw.includes("/topics/")) {
     throw new Error(
-      `GCHAT_PUBSUB_TOPIC must be a fully-qualified topic path (projects/<project>/topics/<topic>) — got "${topic}".`,
+      `GCHAT_PUBSUB_TOPIC must be a fully-qualified topic path (projects/<project>/topics/<topic>) — got "${raw}".`,
     );
   }
+  return raw as PubsubTopicPath;
 }
 
-interface GoogleTokenResponse {
-  readonly access_token?: string;
-  readonly token_type?: string;
-  readonly expires_in?: number;
-  readonly error?: string;
-  readonly error_description?: string;
+/**
+ * Discriminated union for the OAuth2 token-endpoint response. Modeled
+ * the same way as Discord's `parseDiscordGuildResponse` — HTTP status
+ * is the primary discriminator (2xx → ok, 4xx/5xx → err) because
+ * Google's wire shape can carry an `error` field even on success
+ * responses in some legacy contexts, so absence-of-`error` is NOT a
+ * safe discriminator on its own.
+ */
+type GoogleTokenResponse =
+  | { readonly kind: "ok"; readonly accessToken: string }
+  | { readonly kind: "err"; readonly status: number; readonly description: string };
+
+/** Parse the OAuth2 token-endpoint response into a {@link GoogleTokenResponse}. */
+function parseGoogleTokenResponse(raw: unknown, httpStatus: number): GoogleTokenResponse {
+  const body =
+    typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+  if (httpStatus >= 200 && httpStatus < 300) {
+    const accessToken = typeof body.access_token === "string" ? body.access_token : "";
+    if (accessToken.length > 0) {
+      return { kind: "ok" as const, accessToken };
+    }
+  }
+  const description =
+    typeof body.error_description === "string" && body.error_description.length > 0
+      ? body.error_description
+      : typeof body.error === "string" && body.error.length > 0
+        ? body.error
+        : "unknown error";
+  return { kind: "err" as const, status: httpStatus, description };
 }
 
-interface PubsubPublishResponse {
-  readonly messageIds?: ReadonlyArray<string>;
-  readonly error?: {
-    readonly code?: number;
-    readonly message?: string;
-    readonly status?: string;
+/**
+ * Discriminated union for the Pub/Sub `topics.publish` response. Same
+ * HTTP-status-primary parsing pattern as the token response above.
+ * `errorStatus` preserves Google's typed status string
+ * (`PERMISSION_DENIED`, `NOT_FOUND`, `UNAUTHENTICATED`, etc.) so the
+ * thrown {@link GchatReachabilityError} carries it forward — see the
+ * type's JSDoc for why that matters.
+ */
+type PubsubPublishResponse =
+  | { readonly kind: "ok"; readonly messageIds: ReadonlyArray<string> }
+  | {
+      readonly kind: "err";
+      readonly status: number;
+      readonly message: string;
+      readonly errorStatus: string | undefined;
+    };
+
+/** Parse the Pub/Sub publish response into a {@link PubsubPublishResponse}. */
+function parsePubsubPublishResponse(
+  raw: unknown,
+  httpStatus: number,
+): PubsubPublishResponse {
+  const body =
+    typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+  if (httpStatus >= 200 && httpStatus < 300) {
+    const messageIds = Array.isArray(body.messageIds)
+      ? body.messageIds.filter((m): m is string => typeof m === "string")
+      : [];
+    if (messageIds.length > 0) {
+      return { kind: "ok" as const, messageIds };
+    }
+  }
+  const errorObj =
+    typeof body.error === "object" && body.error !== null
+      ? (body.error as Record<string, unknown>)
+      : {};
+  const message = typeof errorObj.message === "string" ? errorObj.message : "unknown error";
+  const errorStatus =
+    typeof errorObj.status === "string" && errorObj.status.length > 0
+      ? errorObj.status
+      : undefined;
+  return {
+    kind: "err" as const,
+    status: httpStatus,
+    message,
+    errorStatus,
   };
 }
 
@@ -232,26 +333,21 @@ export class GchatStaticBotInstallHandler implements StaticBotInstallHandler {
   readonly kind = "static-bot" as const;
 
   private readonly serviceAccount: GchatServiceAccount;
-  private readonly pubsubTopic: string;
+  private readonly pubsubTopic: PubsubTopicPath;
   private readonly newId: () => string;
-  private readonly accessTokenForTests: (() => Promise<string>) | undefined;
+  private readonly accessTokenProvider: () => Promise<string>;
 
   constructor(config: GchatStaticBotHandlerConfig) {
-    if (!config.serviceAccount?.client_email || !config.serviceAccount?.private_key) {
-      throw new Error(
-        "GchatStaticBotInstallHandler requires a parsed serviceAccount with client_email + private_key — set GCHAT_SERVICE_ACCOUNT_JSON in the deploy env and re-register via registerBuiltinInstallHandlers().",
-      );
-    }
-    if (!config.pubsubTopic || config.pubsubTopic.length === 0) {
-      throw new Error(
-        "GchatStaticBotInstallHandler requires a non-empty pubsubTopic — set GCHAT_PUBSUB_TOPIC in the deploy env and re-register via registerBuiltinInstallHandlers().",
-      );
-    }
-    assertValidPubsubTopic(config.pubsubTopic);
+    // No truthiness re-checks on serviceAccount / pubsubTopic: the
+    // brands on those fields mean a TS-compiled call site has already
+    // gone through `parseServiceAccountJson` / `asPubsubTopicPath`,
+    // both of which throw on invalid input. Keeping the checks here
+    // would duplicate the parser's contract and silently drift.
     this.serviceAccount = config.serviceAccount;
     this.pubsubTopic = config.pubsubTopic;
     this.newId = config.idGenerator ?? (() => crypto.randomUUID());
-    this.accessTokenForTests = config.accessTokenForTests;
+    this.accessTokenProvider =
+      config.accessTokenProvider ?? (() => this.mintAccessTokenViaJwtBearer());
   }
 
   async confirmInstall(
@@ -351,9 +447,12 @@ export class GchatStaticBotInstallHandler implements StaticBotInstallHandler {
   /**
    * Two-call Pub/Sub round-trip:
    *
-   *   1. Mint a Google OAuth2 access token via JWT-bearer (`mintAccessToken`)
+   *   1. Mint a Google OAuth2 access token (via the constructor-injected
+   *      {@link GchatStaticBotHandlerConfig.accessTokenProvider} — the
+   *      default impl is {@link mintAccessTokenViaJwtBearer}).
    *   2. POST a synthetic verification message to the topic; require a
-   *      non-empty `messageIds` array in the response
+   *      non-empty `messageIds` array in the response (a `2xx` with no
+   *      messageIds is an upstream contract violation).
    *
    * Either failure surfaces a tagged error carrying Google's verbatim
    * `error.message` so the admin sees the actionable text. We
@@ -363,7 +462,7 @@ export class GchatStaticBotInstallHandler implements StaticBotInstallHandler {
    * bearer access token through to log serializers.
    */
   private async verifyReachability(workspaceIdentifier: string): Promise<void> {
-    const accessToken = await this.mintAccessToken();
+    const accessToken = await this.accessTokenProvider();
     const publishUrl = `https://pubsub.googleapis.com/v1/${this.pubsubTopic}:publish`;
     const payloadJson = JSON.stringify({
       messages: [
@@ -371,7 +470,10 @@ export class GchatStaticBotInstallHandler implements StaticBotInstallHandler {
           // Base64-encode per Pub/Sub's `PubsubMessage.data` contract.
           // Keep the synthetic payload small + correlation-friendly: a
           // log scraper can grep for `atlas.install.verify` and tie a
-          // publish-time observation back to the install attempt.
+          // publish-time observation back to the install attempt. We
+          // send only the workspace_id *fingerprint* (last 4 chars), not
+          // the raw id, so an exfiltrated topic doesn't leak the full
+          // customer-id catalog.
           data: Buffer.from(
             JSON.stringify({
               kind: "atlas.install.verify",
@@ -413,9 +515,9 @@ export class GchatStaticBotInstallHandler implements StaticBotInstallHandler {
       });
     }
 
-    let parsed: PubsubPublishResponse;
+    let rawBody: unknown;
     try {
-      parsed = (await response.json()) as PubsubPublishResponse;
+      rawBody = await response.json();
     } catch (err) {
       const message = redactBearerTokens(
         err instanceof Error ? err.message : String(err),
@@ -433,39 +535,56 @@ export class GchatStaticBotInstallHandler implements StaticBotInstallHandler {
       });
     }
 
-    if (response.status < 200 || response.status >= 300 || parsed.error) {
-      const upstream = parsed.error?.message ?? "unknown error";
-      const hint = hintForPubsubError(response.status, parsed.error?.status);
-      throw new GchatReachabilityError({
-        message: `Google rejected the Pub/Sub round-trip for workspace_id "${workspaceIdentifier}": ${upstream}${hint ? ` — ${hint}` : ""}`,
-        status: response.status,
-      });
-    }
-
-    if (!parsed.messageIds || parsed.messageIds.length === 0) {
-      // 2xx with no messageIds is an upstream contract violation —
-      // Google's `topics.publish` API always echoes the message ids when
-      // the publish succeeds. Treat as unavailable so the admin retries.
-      throw new GchatApiUnavailableError({
-        message: `Google Pub/Sub returned 2xx but no messageIds when publishing install-verification message to "${this.pubsubTopic}" — likely an upstream contract drift. Retry, or contact support if persistent.`,
-      });
+    const parsed = parsePubsubPublishResponse(rawBody, response.status);
+    switch (parsed.kind) {
+      case "ok":
+        return;
+      case "err": {
+        if (parsed.status >= 200 && parsed.status < 300) {
+          // 2xx with no messageIds — upstream contract violation. Google's
+          // `topics.publish` always echoes message ids on success. Treat
+          // as unavailable so the admin retries instead of seeing a
+          // misleading 4xx admin-correctable surface.
+          throw new GchatApiUnavailableError({
+            message: `Google Pub/Sub returned 2xx but no messageIds when publishing install-verification message to "${this.pubsubTopic}" — likely an upstream contract drift. Retry, or contact support if persistent.`,
+          });
+        }
+        // 5xx → upstream outage (retryable), NOT user-correctable.
+        // Misclassifying a transient Google 503 as a 400 Reachability
+        // error sends operators down the wrong remediation path and
+        // suppresses retry behavior. 4xx auth/config failures stay on
+        // the reachability path because they ARE admin-correctable
+        // (re-grant pubsub.publisher, fix the topic id, etc.).
+        if (parsed.status >= 500) {
+          throw new GchatApiUnavailableError({
+            message: `Google Pub/Sub returned a transient ${parsed.status} when publishing install-verification message: ${parsed.message}. Retry; this is an upstream Google outage, not an operator-side misconfig.`,
+          });
+        }
+        const hint = hintForPubsubError(parsed.status, parsed.errorStatus);
+        throw new GchatReachabilityError({
+          message: `Google rejected the Pub/Sub round-trip for workspace_id "${workspaceIdentifier}": ${parsed.message}${hint ? ` — ${hint}` : ""}`,
+          status: parsed.status,
+          errorStatus: parsed.errorStatus,
+        });
+      }
     }
   }
 
   /**
+   * Production default for {@link GchatStaticBotHandlerConfig.accessTokenProvider}.
+   *
    * Mint a short-lived Google OAuth2 access token via the JWT-bearer
    * grant. The JWT is signed with the SA's RSA private key (RS256) and
    * carries `iss=client_email`, `aud=token_url`, `scope=pubsub`, plus
-   * `exp/iat` per Google's spec.
+   * `exp/iat` per Google's spec. The handler's constructor wires this
+   * method as the `accessTokenProvider` when none is supplied — tests
+   * supply a fake provider via the constructor arg instead, avoiding
+   * the need for a real RSA key or network access.
    *
-   * Test seam: the constructor's `accessTokenForTests` short-circuits
-   * the real signing + fetch — handler unit tests inject a fake token
-   * function so they don't need a real RSA key or network access.
+   * Same `cause`-omission posture as {@link verifyReachability} — see
+   * that method's JSDoc for the operator-credential redaction rationale.
    */
-  private async mintAccessToken(): Promise<string> {
-    if (this.accessTokenForTests) {
-      return this.accessTokenForTests();
-    }
+  private async mintAccessTokenViaJwtBearer(): Promise<string> {
     const now = Math.floor(Date.now() / 1000);
     const claims = {
       iss: this.serviceAccount.client_email,
@@ -483,10 +602,16 @@ export class GchatStaticBotInstallHandler implements StaticBotInstallHandler {
         .setProtectedHeader({ alg: "RS256", typ: "JWT" })
         .sign(privateKey);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      // SECURITY: jose's `importPKCS8` errors may echo bytes from the
+      // offending PEM body (e.g. "Invalid key data at offset N"). Run
+      // the same PEM-aware sanitization as `sanitizeParseError` before
+      // the message reaches a log line or admin-visible HTTP response.
       // Signing failures are operator-misconfig (bad private key) —
       // they're not Pub/Sub-side, so surface as an unavailable rather
       // than a reachability error.
+      const message = sanitizeParseError(
+        err instanceof Error ? err.message : String(err),
+      );
       log.error(
         { signError: message },
         "Failed to sign Google service-account JWT — check GCHAT_SERVICE_ACCOUNT_JSON private_key shape",
@@ -518,9 +643,9 @@ export class GchatStaticBotInstallHandler implements StaticBotInstallHandler {
       });
     }
 
-    let parsed: GoogleTokenResponse;
+    let rawBody: unknown;
     try {
-      parsed = (await response.json()) as GoogleTokenResponse;
+      rawBody = await response.json();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       throw new GchatApiUnavailableError({
@@ -528,19 +653,27 @@ export class GchatStaticBotInstallHandler implements StaticBotInstallHandler {
       });
     }
 
-    if (response.status < 200 || response.status >= 300 || parsed.error) {
-      const desc = parsed.error_description ?? parsed.error ?? "unknown error";
-      throw new GchatReachabilityError({
-        message: `Google rejected the service-account JWT bearer exchange: ${desc} — verify GCHAT_SERVICE_ACCOUNT_JSON belongs to a service account with pubsub.publisher on the configured topic.`,
-        status: response.status,
-      });
+    const parsed = parseGoogleTokenResponse(rawBody, response.status);
+    switch (parsed.kind) {
+      case "ok":
+        return parsed.accessToken;
+      case "err":
+        // 5xx → transient Google outage; surface as unavailable so
+        // retry semantics are correct. 4xx is genuinely admin-
+        // correctable (revoked SA key, missing scope, invalid grant)
+        // — those stay on the reachability path. Same posture as the
+        // Pub/Sub branch above.
+        if (parsed.status >= 500) {
+          throw new GchatApiUnavailableError({
+            message: `Google OAuth2 token endpoint returned a transient ${parsed.status}: ${parsed.description}. Retry; this is an upstream Google outage, not an operator-side misconfig.`,
+          });
+        }
+        throw new GchatReachabilityError({
+          message: `Google rejected the service-account JWT bearer exchange: ${parsed.description} — verify GCHAT_SERVICE_ACCOUNT_JSON belongs to a service account with pubsub.publisher on the configured topic.`,
+          status: parsed.status,
+          errorStatus: undefined,
+        });
     }
-    if (!parsed.access_token || parsed.access_token.length === 0) {
-      throw new GchatApiUnavailableError({
-        message: `Google OAuth2 token response was missing access_token (status ${response.status}).`,
-      });
-    }
-    return parsed.access_token;
   }
 }
 
@@ -617,6 +750,35 @@ function fingerprintWorkspaceId(workspaceId: string): string {
  */
 function redactBearerTokens(message: string): string {
   return message.replace(/Bearer\s+[A-Za-z0-9_.-]+/g, "Bearer <redacted>");
+}
+
+/**
+ * Sanitize an upstream error message that may have been derived from
+ * the operator's raw service-account JSON or PEM private key. Two
+ * concrete risks:
+ *
+ *   1. `JSON.parse` error messages on modern V8 include a short excerpt
+ *      of the input near the parse-failure offset. For Gchat the input
+ *      is multi-kB and includes a multi-line PEM block, so the excerpt
+ *      is likely to land *inside* `private_key`.
+ *   2. `jose.importPKCS8` errors can echo bytes from the offending PEM
+ *      body when the key fails to import for non-shape reasons (wrong
+ *      algorithm, missing OID).
+ *
+ * Both risks are mitigated by: (a) redacting any `BEGIN/END` PEM block
+ * with the body between, and (b) capping the message length so a
+ * runaway upstream message can't dump a key body even if the regex
+ * misses an unusual format. The cap of 200 chars is well under the
+ * shortest realistic PEM body (~1.2kB for RSA-2048).
+ *
+ * The function is intentionally aggressive — it's better to ship a
+ * slightly-less-informative operator log line than to leak key material
+ * through pino's default serializers.
+ */
+function sanitizeParseError(message: string): string {
+  return message
+    .replace(/-----BEGIN[\s\S]*?END[A-Z ]*-----/g, "<redacted-pem>")
+    .slice(0, 200);
 }
 
 /**

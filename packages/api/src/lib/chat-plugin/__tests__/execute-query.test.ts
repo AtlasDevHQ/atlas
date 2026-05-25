@@ -98,7 +98,19 @@ const mockGetInstallation: Mock<(teamId: string) => Promise<{ org_id: string | n
   });
 
 mock.module("@atlas/api/lib/slack/store", () => ({
+  // CLAUDE.md "mock all exports" rule — every named export from the
+  // real module gets stubbed so any cross-test importer that walks
+  // into a symbol other than `getInstallation` gets a no-op rather
+  // than a SyntaxError at module load.
+  ENV_TEAM_ID: "env" as const,
+  KEY_PREFIX: "slack:installation:" as const,
+  FIELD: {},
   getInstallation: mockGetInstallation,
+  getInstallationByOrg: mock(() => Promise.resolve(null)),
+  saveInstallation: mock(() => Promise.resolve()),
+  deleteInstallation: mock(() => Promise.resolve()),
+  deleteInstallationByOrg: mock(() => Promise.resolve(false)),
+  getBotToken: mock(() => Promise.resolve(null)),
 }));
 
 const mockGetConversationId: Mock<(channelId: string, threadTs: string) => Promise<string | null>> = mock(
@@ -927,6 +939,168 @@ describe("chat-plugin executeQuery host helper", () => {
         rawMessage: {
           phoneNumberId: "not-a-number'; DROP TABLE--",
           message: { from: "16315551234", type: "text", text: { body: "q" } },
+        },
+      }),
+    ).rejects.toThrow(/missing tenant context/i);
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(capturedAgentCalls).toHaveLength(0);
+  });
+  // Google Chat branch — 1.5.3 #2754 (Phase D)
+  // -------------------------------------------------------------------------
+
+  it("Google Chat happy path: resolves workspace_id → workspace + binds gchat actor + stamps approvalSurface='gchat'", async () => {
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("workspace_plugins")) {
+        return Promise.resolve([{ workspace_id: "org-gchat-tenant" }]);
+      }
+      return Promise.resolve([]);
+    });
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    const result = await runExecuteQuery("show me users", {
+      threadId: "gchat:spaces/AAA-AAA",
+      adapter: { name: "gchat" },
+      rawMessage: {
+        eventType: "MESSAGE",
+        space: { name: "spaces/AAA-AAA", customer: "C01abc234" },
+        message: {
+          name: "spaces/AAA-AAA/messages/M1",
+          thread: { name: "spaces/AAA-AAA/threads/T1" },
+        },
+        user: { name: "users/12345", displayName: "Test User" },
+      },
+    });
+
+    expect(result.answer).toBe("42 active users");
+    expect(capturedAgentCalls).toHaveLength(1);
+    const call = capturedAgentCalls[0]!;
+    expect(call.options?.actor?.id).toBe("gchat-bot:C01abc234:users/12345");
+    expect(call.options?.actor?.activeOrganizationId).toBe("org-gchat-tenant");
+    expect(call.options?.approvalSurface).toBe("gchat");
+    // Rate-limit key shape is `gchat:${workspaceId}` (per-Workspace bucket).
+    expect(observedRateLimitKeys).toContain("gchat:C01abc234");
+  });
+
+  it("Google Chat strips the `customers/` prefix on inbound Workspace Events envelopes", async () => {
+    // Google's Workspace Events Pub/Sub envelopes deliver
+    // `space.customer` as `customers/<id>` (canonical), distinct from
+    // the bare `<id>` the install row persists. extractGchatWorkspaceId
+    // must strip the prefix before the resolver's
+    // `config->>'workspace_id' = $2` comparison, otherwise the lookup
+    // misses the install row and the agent fail-closes spuriously.
+    let observedQueryParam: unknown;
+    mockInternalQuery.mockImplementation((sql: string, params?: unknown[]) => {
+      if (sql.includes("workspace_plugins")) {
+        observedQueryParam = params?.[1];
+        return Promise.resolve([{ workspace_id: "org-prefix-tenant" }]);
+      }
+      return Promise.resolve([]);
+    });
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await runExecuteQuery("q", {
+      threadId: "gchat:spaces/P-PFX",
+      adapter: { name: "gchat" },
+      rawMessage: {
+        eventType: "MESSAGE",
+        space: { name: "spaces/P-PFX", customer: "customers/C01abc234" },
+      },
+    });
+
+    // The resolver receives the stripped id, not the wire-shape with
+    // the `customers/` prefix.
+    expect(observedQueryParam).toBe("C01abc234");
+    expect(capturedAgentCalls).toHaveLength(1);
+  });
+
+  it("Google Chat fail-closes on unknown workspace_id (no install row) — never invokes the agent", async () => {
+    // No mock override — default returns []; resolver throws
+    // UnknownTenantError; runGchatExecuteQuery rethrows as a
+    // user-safe error. The agent must NOT be invoked.
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await expect(
+      runExecuteQuery("q", {
+        threadId: "gchat:spaces/UNK",
+        adapter: { name: "gchat" },
+        rawMessage: {
+          eventType: "MESSAGE",
+          space: { name: "spaces/UNK", customer: "C99notreg" },
+        },
+      }),
+    ).rejects.toThrow(/Google Workspace.*not connected to Atlas/i);
+    expect(capturedAgentCalls).toHaveLength(0);
+  });
+
+  it("Google Chat fail-closes on DB outage during workspace resolution — user-safe error, never invokes the agent", async () => {
+    mockInternalQuery.mockImplementation(() =>
+      Promise.reject(new Error("ECONNREFUSED postgres://internal-db:5432")),
+    );
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await expect(
+      runExecuteQuery("q", {
+        threadId: "gchat:spaces/DB-DOWN",
+        adapter: { name: "gchat" },
+        rawMessage: {
+          eventType: "MESSAGE",
+          space: { name: "spaces/DB-DOWN", customer: "C01abc234" },
+        },
+      }),
+    ).rejects.toThrow(/could not resolve the Google Workspace/i);
+    expect(capturedAgentCalls).toHaveLength(0);
+  });
+
+  it("Google Chat fail-closes when the same workspace_id maps to multiple Atlas workspaces — cross-tenant misroute defense", async () => {
+    // Same defense as Discord's duplicate-guard: the DB schema does
+    // not enforce cross-workspace uniqueness on the routing identifier,
+    // so two Atlas workspaces installing with the same Google Workspace
+    // customer id would silently let inbound events land in an
+    // arbitrary tenant. The fail-closed branch surfaces as the same
+    // user-safe "not connected" error and the operator log line names
+    // the duplicate.
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("workspace_plugins")) {
+        return Promise.resolve([
+          { workspace_id: "org-a" },
+          { workspace_id: "org-b" },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await expect(
+      runExecuteQuery("q", {
+        threadId: "gchat:spaces/DUP",
+        adapter: { name: "gchat" },
+        rawMessage: {
+          eventType: "MESSAGE",
+          space: { name: "spaces/DUP", customer: "C01abc234" },
+        },
+      }),
+    ).rejects.toThrow(/Google Workspace.*not connected to Atlas/i);
+    expect(capturedAgentCalls).toHaveLength(0);
+  });
+
+  it("Google Chat rejects events whose space.customer isn't a valid customer id — defends rate-limit cache key shape", async () => {
+    // The chat adapter's webhook signature verification (when wired)
+    // catches forgery at the adapter layer, but the dispatcher
+    // belt-and-suspenders by re-validating the customer-id shape via
+    // GCHAT_WORKSPACE_ID_RE. Garbage `space.customer` surfaces as the
+    // same missing-tenant error — no DB read, no agent.
+    mockInternalQuery.mockImplementation(() => {
+      throw new Error("internalQuery should never be reached on shape failure");
+    });
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await expect(
+      runExecuteQuery("q", {
+        threadId: "gchat:bad",
+        adapter: { name: "gchat" },
+        rawMessage: {
+          eventType: "MESSAGE",
+          space: { name: "spaces/BAD", customer: "acme.com'; DROP TABLE--" },
         },
       }),
     ).rejects.toThrow(/missing tenant context/i);

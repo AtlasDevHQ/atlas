@@ -186,12 +186,12 @@ export function registerBuiltinInstallHandlers(): void {
   registerGitHubSingleTenantOAuthHandler();
 
   // ── Static-bot platforms (1.5.3 — Phase D, #2748+) ────────────────
-  // Telegram is the keystone slice (#2748); Discord (#2749) is the
-  // second concrete Platform; gchat (#2754) and WhatsApp (#2753) will
-  // register here too as their slices land. Each Platform's env-gate
-  // guards the operator-shared bot credential set; the catalog row's
-  // `enabled` flag is the second gate (operator-side, DB-toggleable
-  // for emergency disable).
+  // Telegram (#2748 keystone), Discord (#2749), Teams (#2752), and
+  // Google Chat (#2754) are registered below. WhatsApp (#2753) is the
+  // remaining Phase D platform. Each Platform's env-gate guards the
+  // operator-shared credential set; the catalog row's `enabled` flag
+  // is the second gate (operator-side, DB-toggleable for emergency
+  // disable).
   registerTelegramStaticBotHandler();
   registerDiscordStaticBotHandler();
   registerTeamsStaticBotHandler();

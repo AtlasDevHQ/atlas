@@ -126,21 +126,27 @@ import {
   GCHAT_CATALOG_ID,
   GCHAT_SLUG,
   parseServiceAccountJson,
-  assertValidPubsubTopic,
+  asPubsubTopicPath,
 } from "../gchat-static-bot-handler";
+import type { PubsubTopicPath } from "../gchat-static-bot-handler";
 
 function buildHandler(overrides: {
-  serviceAccount?: typeof FAKE_SERVICE_ACCOUNT;
   pubsubTopic?: string;
   idGenerator?: () => string;
-  accessTokenForTests?: () => Promise<string>;
+  accessTokenProvider?: () => Promise<string>;
 } = {}): GchatStaticBotInstallHandler {
+  // Both fields are brand-protected — go through the validated minters
+  // (`parseServiceAccountJson` / `asPubsubTopicPath`) rather than
+  // unsafe casts, so tests exercise the same construction path
+  // production uses.
+  const sa = parseServiceAccountJson(JSON.stringify(FAKE_SERVICE_ACCOUNT));
+  const topic = asPubsubTopicPath(overrides.pubsubTopic ?? VALID_TOPIC);
   return new GchatStaticBotInstallHandler({
-    serviceAccount: overrides.serviceAccount ?? FAKE_SERVICE_ACCOUNT,
-    pubsubTopic: overrides.pubsubTopic ?? VALID_TOPIC,
+    serviceAccount: sa,
+    pubsubTopic: topic,
     ...(overrides.idGenerator ? { idGenerator: overrides.idGenerator } : {}),
-    accessTokenForTests:
-      overrides.accessTokenForTests ?? (async () => "ya29.fake-access-token-for-test"),
+    accessTokenProvider:
+      overrides.accessTokenProvider ?? (async () => "ya29.fake-access-token-for-test"),
   });
 }
 
@@ -153,44 +159,19 @@ describe("GchatStaticBotInstallHandler — shape", () => {
     expect(buildHandler().kind).toBe("static-bot");
   });
 
-  it("refuses to construct when the service account is missing required fields — actionable env name in the error", () => {
-    expect(
-      () =>
-        new GchatStaticBotInstallHandler({
-          serviceAccount: { client_email: "", private_key: "anything" } as never,
-          pubsubTopic: VALID_TOPIC,
-        }),
-    ).toThrow(/GCHAT_SERVICE_ACCOUNT_JSON/);
-  });
-
-  it("refuses to construct when the pubsub topic is empty — actionable env name in the error", () => {
-    expect(
-      () =>
-        new GchatStaticBotInstallHandler({
-          serviceAccount: FAKE_SERVICE_ACCOUNT,
-          pubsubTopic: "",
-        }),
-    ).toThrow(/GCHAT_PUBSUB_TOPIC/);
-  });
-
-  it("refuses to construct when the pubsub topic isn't a fully-qualified path", () => {
-    expect(
-      () =>
-        new GchatStaticBotInstallHandler({
-          serviceAccount: FAKE_SERVICE_ACCOUNT,
-          pubsubTopic: "gchat-events",
-        }),
-    ).toThrow(/fully-qualified topic path/);
-  });
-
   it("exports GCHAT_SLUG and GCHAT_CATALOG_ID — wired into register.ts + workspace-installer dispatch", () => {
     expect(GCHAT_SLUG).toBe("gchat");
     expect(GCHAT_CATALOG_ID).toBe("catalog:gchat");
   });
+
+  // Note: construction-time validation for the SA + topic now lives in
+  // the brand minters (`parseServiceAccountJson` / `asPubsubTopicPath`),
+  // tested below. The handler's constructor trusts the brands, so
+  // there's no longer a duplicate runtime guard to assert here.
 });
 
 // ---------------------------------------------------------------------------
-// parseServiceAccountJson + assertValidPubsubTopic helpers
+// Brand minters: parseServiceAccountJson + asPubsubTopicPath
 // ---------------------------------------------------------------------------
 
 describe("parseServiceAccountJson", () => {
@@ -198,7 +179,6 @@ describe("parseServiceAccountJson", () => {
     const result = parseServiceAccountJson(JSON.stringify(FAKE_SERVICE_ACCOUNT));
     expect(result.client_email).toBe(FAKE_SERVICE_ACCOUNT.client_email);
     expect(result.private_key).toBe(FAKE_SERVICE_ACCOUNT.private_key);
-    expect(result.project_id).toBe(FAKE_SERVICE_ACCOUNT.project_id);
   });
 
   it("throws a clear error when the JSON is unparseable", () => {
@@ -214,15 +194,62 @@ describe("parseServiceAccountJson", () => {
     const raw = JSON.stringify({ ...FAKE_SERVICE_ACCOUNT, private_key: "garbage" });
     expect(() => parseServiceAccountJson(raw)).toThrow(/private_key/);
   });
+
+  it("never echoes PEM bytes back through the JSON.parse error message — SECURITY guard", () => {
+    // A malformed JSON whose corruption falls inside the private_key
+    // body. On modern V8 `JSON.parse` errors include an excerpt of the
+    // input near the failure offset; without the `sanitizeParseError`
+    // step the excerpt would land in the thrown message → log lines.
+    const corruptedJson =
+      '{"client_email":"x","private_key":"-----BEGIN PRIVATE KEY-----\\nFAKE_KEY_BYTES_aBcDeF12345\\n-----END PRIVATE KEY-----\\n"' +
+      // Deliberately malformed — trailing comma + unterminated value.
+      ', "project_id": "atlas-test", }';
+    let threw = false;
+    try {
+      parseServiceAccountJson(corruptedJson);
+    } catch (err) {
+      threw = true;
+      const msg = err instanceof Error ? err.message : String(err);
+      // The sanitizer must redact the PEM block and cap the message
+      // length — neither the literal key bytes nor a multi-line PEM
+      // excerpt should survive.
+      expect(msg).not.toMatch(/FAKE_KEY_BYTES_aBcDeF12345/);
+      expect(msg).not.toMatch(/BEGIN PRIVATE KEY/);
+      // Cap at the 200-char clamp the sanitizer applies + the wrapper
+      // prose (the constructed envelope is short by design).
+      expect(msg.length).toBeLessThan(400);
+    }
+    expect(threw).toBe(true);
+  });
+
+  it("never attaches the raw err as cause — defense against pino's `err` serializer", () => {
+    try {
+      parseServiceAccountJson("not-json");
+    } catch (err) {
+      // The thrown Error must NOT carry a cause chain — pino's default
+      // `err` serializer walks `cause` and would surface the original
+      // SyntaxError's input excerpt (containing PEM bytes for real
+      // malformed-SA cases).
+      const cause = (err as Error & { cause?: unknown }).cause;
+      expect(cause).toBeUndefined();
+    }
+  });
 });
 
-describe("assertValidPubsubTopic", () => {
-  it("accepts a fully-qualified topic path", () => {
-    expect(() => assertValidPubsubTopic("projects/p/topics/t")).not.toThrow();
+describe("asPubsubTopicPath", () => {
+  it("accepts a fully-qualified topic path and returns it as a branded PubsubTopicPath", () => {
+    const t: PubsubTopicPath = asPubsubTopicPath("projects/p/topics/t");
+    // The brand is structural-only — at runtime the value is a plain
+    // string, so a coerced compare confirms the path round-trips.
+    expect(String(t)).toBe("projects/p/topics/t");
   });
 
   it("rejects bare topic names", () => {
-    expect(() => assertValidPubsubTopic("just-the-topic")).toThrow(/fully-qualified/);
+    expect(() => asPubsubTopicPath("just-the-topic")).toThrow(/fully-qualified/);
+  });
+
+  it("rejects empty topic strings", () => {
+    expect(() => asPubsubTopicPath("")).toThrow(/fully-qualified/);
   });
 });
 
@@ -329,13 +356,27 @@ describe("GchatStaticBotInstallHandler.confirmInstall — reachability verificat
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
 
-  it("propagates token-mint failures from accessTokenForTests as an unavailable error", async () => {
+  it("classifies Pub/Sub 5xx as ApiUnavailable (retryable), not Reachability (admin-correctable)", async () => {
+    // Google's `topics.publish` can return 500/503 during backend
+    // incidents — operators should see "retry" guidance, not "fix
+    // your config" guidance. The 4xx → 400 reachability path stays
+    // for genuinely user-correctable failures (PERMISSION_DENIED,
+    // NOT_FOUND).
+    setFetchPubsubError("Backend service unavailable", "UNAVAILABLE", 503);
+    const handler = buildHandler();
+    await expect(
+      handler.confirmInstall(wsid, VALID_WORKSPACE_ID),
+    ).rejects.toThrow(/transient 503/);
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+
+  it("propagates token-mint failures from accessTokenProvider as a thrown error before any DB write", async () => {
     const handler = buildHandler({
-      accessTokenForTests: async () => {
+      accessTokenProvider: async () => {
         throw new Error("token endpoint hiccup");
       },
     });
-    // The handler awaits accessTokenForTests inside verifyReachability;
+    // The handler awaits accessTokenProvider inside verifyReachability;
     // a thrown error there bubbles to the caller. The thrown shape is
     // an Error, not a tagged error, because the test injection
     // short-circuits the production token-mint path that wraps in a

@@ -22,10 +22,19 @@ import type { GoogleChatAdapterConfig } from "../config";
 export function createGoogleChatAdapter(config: GoogleChatAdapterConfig) {
   // The upstream config is a discriminated union — build the right variant
   // based on which auth fields are provided.
+  //
+  // `googleChatProjectNumber` + `pubsubAudience` ride on the base so
+  // both auth variants honor them. The upstream adapter silently
+  // degrades to "no signature verification" when these are unset (it
+  // emits a warn line per inbound webhook); we surface the env-gate
+  // through `register.ts` so operators see the gap at boot rather than
+  // hidden in webhook-handler logs.
   const base = {
     endpointUrl: config.endpointUrl,
     pubsubTopic: config.pubsubTopic,
     impersonateUser: config.impersonateUser,
+    googleChatProjectNumber: config.googleChatProjectNumber,
+    pubsubAudience: config.pubsubAudience,
   };
 
   let upstreamConfig: UpstreamConfig;

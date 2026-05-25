@@ -362,6 +362,22 @@ export interface GoogleChatAdapterConfig {
   pubsubTopic?: string;
   /** User email to impersonate for Workspace Events API (domain-wide delegation). */
   impersonateUser?: string;
+  /**
+   * Google Cloud project number — used by the adapter to verify
+   * direct-webhook JWTs Google signs with the project's identity. When
+   * unset, direct-webhook verification is disabled and the adapter
+   * logs a warning per inbound request. Required for SaaS deploys
+   * that accept Google Chat webhooks over the HTTP endpoint.
+   */
+  googleChatProjectNumber?: string;
+  /**
+   * Expected `aud` claim for Pub/Sub push-message JWTs the adapter
+   * receives via the Workspace Events subscription. When unset,
+   * Pub/Sub push verification is disabled and the adapter logs a
+   * warning per inbound message. Required for SaaS deploys that
+   * accept Pub/Sub push messages.
+   */
+  pubsubAudience?: string;
 }
 
 /** Streaming response configuration. */

@@ -93,10 +93,25 @@ GCHAT_SERVICE_ACCOUNT_JSON='{"type":"service_account","client_email":"atlas-gcha
 GCHAT_PUBSUB_TOPIC=projects/atlas-prod/topics/gchat-events
 ```
 
-Optionally set `GCHAT_IMPERSONATE_USER` (an admin email in the
-operator's Workspace) when you've granted the service account
-domain-wide delegation and need to call the Workspace Events API
-on behalf of a specific user.
+Three optional env vars:
+
+- `GCHAT_IMPERSONATE_USER` — an admin email in the operator's
+  Workspace, used when you've granted the service account domain-
+  wide delegation and need to call the Workspace Events API on
+  behalf of a specific user.
+- `GCHAT_PROJECT_NUMBER` — Google Cloud project NUMBER (not the
+  project id). When set, Atlas verifies the JWTs Google signs on
+  direct webhook POSTs to `/webhooks/gchat`. Without it,
+  direct-webhook signature verification is silently disabled and
+  Atlas logs a warn line per inbound request. **Set this on SaaS
+  deploys** — it's the only thing standing between Google and any
+  party that can reach your webhook URL.
+- `GCHAT_PUBSUB_AUDIENCE` — the expected `aud` claim on Pub/Sub
+  push-message JWTs. Typical value is your API origin (e.g.
+  `https://api.useatlas.dev`). Without it, Pub/Sub push
+  verification is silently disabled and Atlas logs a warn line per
+  inbound message. **Set this on SaaS deploys** for the same
+  reason as `GCHAT_PROJECT_NUMBER`.
 
 ### 6. Enable the catalog row
 

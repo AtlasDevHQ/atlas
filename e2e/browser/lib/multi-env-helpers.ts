@@ -188,20 +188,30 @@ export interface GroupRow {
   primaryConnectionId?: string | null;
   resolvedConnectionId?: string | null;
 }
-interface GroupsResp { groups: GroupRow[] }
+
+interface ConnectionRow {
+  id: string;
+  groupId: string | null;
+  groupName: string | null;
+}
+interface ConnectionsResp { connections?: ConnectionRow[] }
 
 /**
- * Resolve a group id by name. The seed provisions `dev`, `staging`, `prod`;
- * any other name is treated as a spec-created throwaway and `null` is a
- * legitimate result (so the caller can decide between create-or-skip).
+ * Resolve a seeded group by name. `groupName === groupId` on the wire
+ * (the string IS the name), so the synthesized `GroupRow.id` is that
+ * string. `primaryConnectionId` is the first matching install — not an
+ * elected primary, since the post-cutover schema has no separate group
+ * row to carry one. Empty / archived-only groups resolve to `null`.
  */
 export async function findGroupByName(
   request: APIRequestContext,
   name: string,
 ): Promise<GroupRow | null> {
-  const r = await adminGet<GroupsResp>(request, "/api/v1/admin/connection-groups", { query: "includeArchived=true" });
+  const r = await adminGet<ConnectionsResp>(request, "/api/v1/admin/connections");
   if (r.status !== 200 || !r.body) return null;
-  return r.body.groups.find((g) => g.name === name) ?? null;
+  const member = (r.body.connections ?? []).find((c) => c.groupId === name);
+  if (!member) return null;
+  return { id: name, name, status: "active", primaryConnectionId: member.id, resolvedConnectionId: member.id };
 }
 
 /**

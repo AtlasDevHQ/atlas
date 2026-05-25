@@ -35206,6 +35206,7 @@
                                   "teams",
                                   "telegram",
                                   "discord",
+                                  "whatsapp",
                                   "webhook"
                                 ]
                               },
@@ -35270,6 +35271,7 @@
                                   "teams",
                                   "telegram",
                                   "discord",
+                                  "whatsapp",
                                   "webhook"
                                 ]
                               },
@@ -35331,6 +35333,7 @@
                                   "teams",
                                   "telegram",
                                   "discord",
+                                  "whatsapp",
                                   "webhook"
                                 ]
                               },
@@ -35535,6 +35538,7 @@
                           "teams",
                           "telegram",
                           "discord",
+                          "whatsapp",
                           "webhook"
                         ],
                         "description": "Origin surface this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072.",
@@ -35592,6 +35596,7 @@
                           "teams",
                           "telegram",
                           "discord",
+                          "whatsapp",
                           "webhook"
                         ],
                         "description": "Origin surface this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072.",
@@ -35645,6 +35650,7 @@
                                 "teams",
                                 "telegram",
                                 "discord",
+                                "whatsapp",
                                 "webhook"
                               ]
                             },
@@ -35709,6 +35715,7 @@
                                 "teams",
                                 "telegram",
                                 "discord",
+                                "whatsapp",
                                 "webhook"
                               ]
                             },
@@ -35770,6 +35777,7 @@
                                 "teams",
                                 "telegram",
                                 "discord",
+                                "whatsapp",
                                 "webhook"
                               ]
                             },
@@ -35957,6 +35965,7 @@
                       "teams",
                       "telegram",
                       "discord",
+                      "whatsapp",
                       "webhook"
                     ],
                     "description": "Origin surface this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072.",
@@ -36003,6 +36012,7 @@
                                 "teams",
                                 "telegram",
                                 "discord",
+                                "whatsapp",
                                 "webhook"
                               ]
                             },
@@ -36067,6 +36077,7 @@
                                 "teams",
                                 "telegram",
                                 "discord",
+                                "whatsapp",
                                 "webhook"
                               ]
                             },
@@ -36128,6 +36139,7 @@
                                 "teams",
                                 "telegram",
                                 "discord",
+                                "whatsapp",
                                 "webhook"
                               ]
                             },
@@ -36501,6 +36513,7 @@
                                   "teams",
                                   "telegram",
                                   "discord",
+                                  "whatsapp",
                                   "webhook",
                                   null
                                 ]
@@ -36616,6 +36629,7 @@
                                   "teams",
                                   "telegram",
                                   "discord",
+                                  "whatsapp",
                                   "webhook",
                                   null
                                 ]
@@ -36737,6 +36751,7 @@
                                   "teams",
                                   "telegram",
                                   "discord",
+                                  "whatsapp",
                                   "webhook",
                                   null
                                 ]
@@ -36858,6 +36873,7 @@
                                   "teams",
                                   "telegram",
                                   "discord",
+                                  "whatsapp",
                                   "webhook",
                                   null
                                 ]
@@ -37127,6 +37143,7 @@
                                 "teams",
                                 "telegram",
                                 "discord",
+                                "whatsapp",
                                 "webhook",
                                 null
                               ]
@@ -37242,6 +37259,7 @@
                                 "teams",
                                 "telegram",
                                 "discord",
+                                "whatsapp",
                                 "webhook",
                                 null
                               ]
@@ -37363,6 +37381,7 @@
                                 "teams",
                                 "telegram",
                                 "discord",
+                                "whatsapp",
                                 "webhook",
                                 null
                               ]
@@ -37484,6 +37503,7 @@
                                 "teams",
                                 "telegram",
                                 "discord",
+                                "whatsapp",
                                 "webhook",
                                 null
                               ]
@@ -37754,6 +37774,7 @@
                                 "teams",
                                 "telegram",
                                 "discord",
+                                "whatsapp",
                                 "webhook",
                                 null
                               ]
@@ -37869,6 +37890,7 @@
                                 "teams",
                                 "telegram",
                                 "discord",
+                                "whatsapp",
                                 "webhook",
                                 null
                               ]
@@ -37990,6 +38012,7 @@
                                 "teams",
                                 "telegram",
                                 "discord",
+                                "whatsapp",
                                 "webhook",
                                 null
                               ]
@@ -38111,6 +38134,7 @@
                                 "teams",
                                 "telegram",
                                 "discord",
+                                "whatsapp",
                                 "webhook",
                                 null
                               ]

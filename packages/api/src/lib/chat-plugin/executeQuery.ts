@@ -62,6 +62,7 @@ import { checkRateLimit } from "@atlas/api/lib/auth/middleware";
 import { botActorUser, type ChatBotPlatform } from "@atlas/api/lib/auth/actor";
 import { getInstallation } from "@atlas/api/lib/slack/store";
 import { internalQuery } from "@atlas/api/lib/db/internal";
+import { DISCORD_GUILD_ID_RE } from "@atlas/api/lib/integrations/install/discord-static-bot-handler";
 import { getConversationId, setConversationId } from "@atlas/api/lib/slack/threads";
 import {
   createConversation,
@@ -115,16 +116,25 @@ interface TelegramRawEvent {
 
 /**
  * Minimum shape we read from a Discord interaction envelope. The Chat
- * SDK's `@chat-adapter/discord` passes the raw interaction payload through
- * the `rawMessage` slot; the discriminator we use is `guild_id` (set on
- * server interactions; absent on DMs, which we don't wire).
+ * SDK's `@chat-adapter/discord` filters out PING (type 1) interactions
+ * upstream and forwards APPLICATION_COMMAND (type 2) +
+ * MESSAGE_COMPONENT (type 3) + APPLICATION_COMMAND_AUTOCOMPLETE (type
+ * 4) + MODAL_SUBMIT (type 5) payloads through the `rawMessage` slot;
+ * we don't currently branch on `type`, but include it in the shape to
+ * document the contract.
  *
- * Discord's interaction payload also includes `channel_id` and `id`
- * (interaction id). We use the channel/interaction pair to anchor
- * conversation persistence.
+ * The discriminator we use for tenant routing is `guild_id` (set on
+ * server interactions; absent on DMs, which Atlas refuses since the
+ * static-bot install model is per-server). `member.user.id` populates
+ * on guild interactions; `user.id` is the DM fallback (unreachable
+ * here, kept for shape parity).
  */
 interface DiscordRawEvent {
+  /** Discord interaction id (snowflake). Used as a fallback channel anchor. */
   id?: string;
+  /** Discord interaction type — 2=APPLICATION_COMMAND, 3=MESSAGE_COMPONENT, 5=MODAL_SUBMIT, etc. */
+  type?: number;
+  /** Guild snowflake — present on server interactions, absent on DMs. */
   guild_id?: string;
   channel_id?: string;
   member?: { user?: { id?: string; username?: string } };
@@ -165,14 +175,22 @@ function extractTelegramChatId(raw: TelegramRawEvent): string | undefined {
 }
 
 /**
- * Extract the Discord guild id. Returns undefined for DM interactions
- * (no `guild_id`) — Atlas's static-bot install model is per-server, so
- * DM-only interactions intentionally have no tenant binding and
- * short-circuit the dispatcher with an actionable 4xx.
+ * Extract the Discord guild id from an inbound interaction envelope.
+ * Returns undefined when the field is missing (DM interactions — see
+ * the `runDiscordExecuteQuery` DM-refuse branch) OR when the value
+ * isn't a valid snowflake. Even though the Ed25519 signature gate
+ * upstream catches forgery, defending the shape here prevents an
+ * attacker-controllable string from polluting the rate-limit cache key
+ * (`discord:${guildId}`) or the workspace-resolution log fingerprint.
+ *
+ * Reuses {@link DISCORD_GUILD_ID_RE} from the install handler — single
+ * source of truth for the snowflake invariant across install + receive
+ * paths.
  */
 function extractDiscordGuildId(raw: DiscordRawEvent): string | undefined {
   const id = raw.guild_id;
   if (typeof id !== "string" || id.length === 0) return undefined;
+  if (!DISCORD_GUILD_ID_RE.test(id)) return undefined;
   return id;
 }
 
@@ -478,7 +496,18 @@ function fingerprintChatId(chatId: string): string {
   return chatId.length <= 4 ? chatId : `…${chatId.slice(-4)}`;
 }
 
-/** Unknown-tenant marker for the Telegram branch's fail-closed path. */
+/**
+ * Unknown-tenant marker for the Telegram branch's fail-closed path.
+ *
+ * Intentionally NOT a `Data.TaggedError` (the project's standard for
+ * errors that flow through `mapTaggedError` to HTTP) — this class is
+ * caught inline at its only call site and immediately rethrown as a
+ * user-safe `Error` to the chat bridge. The class exists solely as an
+ * `instanceof` sentinel that lets the catch arm distinguish "unknown
+ * tenant" (user-actionable: install Atlas) from "DB outage" (operator-
+ * actionable: retry). Promoting to `TaggedError` would only add union
+ * bookkeeping for an error that never escapes this module.
+ */
 class TelegramUnknownTenantError extends Error {
   constructor(chatIdFingerprint: string) {
     super(`No Atlas workspace bound to Telegram chat …${chatIdFingerprint}`);
@@ -635,7 +664,11 @@ function fingerprintGuildId(guildId: string): string {
   return guildId.length <= 4 ? guildId : `…${guildId.slice(-4)}`;
 }
 
-/** Unknown-tenant marker for the Discord branch's fail-closed path. */
+/**
+ * Unknown-tenant marker for the Discord branch's fail-closed path.
+ * Same posture as {@link TelegramUnknownTenantError} — an `instanceof`
+ * sentinel caught inline and rethrown user-safe, NOT a Data.TaggedError.
+ */
 class DiscordUnknownTenantError extends Error {
   constructor(guildIdFingerprint: string) {
     super(`No Atlas workspace bound to Discord guild …${guildIdFingerprint}`);
@@ -691,7 +724,12 @@ async function loadOrCreateConversation(
   try {
     conversationId = await getConversationId(channel, threadAnchor);
   } catch (err) {
-    log.debug(
+    // Promoted from debug to warn (#2749 review) so a real `chat_cache`
+    // outage surfaces in default-level logs rather than masking as
+    // "Atlas keeps losing context with no operator signal." The agent
+    // still runs without persisted history — the warn is observability,
+    // not a fail-closed gate.
+    log.warn(
       {
         err: err instanceof Error ? err.message : String(err),
         channel,
@@ -748,8 +786,9 @@ interface RunAgentArgs {
 }
 
 /**
- * Shared agent-loop invocation + result mapping. Both Slack and Telegram
- * funnel through here once their per-platform tenant resolution + actor
+ * Shared agent-loop invocation + result mapping. Slack, Telegram, and
+ * Discord all funnel through here once their per-platform tenant
+ * resolution + actor
  * binding is done. The presentation-mode default ("conversational") is
  * load-bearing for #2705; every chat-plugin path produces the
  * conversational shape unless the bridge explicitly opts out.

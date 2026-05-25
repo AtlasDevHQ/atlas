@@ -74,19 +74,30 @@ const log = createLogger("integrations.discord");
 
 /**
  * Discord OAuth2 bot-install permissions bitmask. We request the minimum
- * scope set the chat-adapter needs:
+ * scope the chat-adapter needs to read context and post agent responses
+ * with rich cards:
  *
- *   - `View Channels` (1024)        — list channels the bot is in
- *   - `Send Messages` (2048)        — post agent responses
- *   - `Send Messages in Threads` (274877906944) — thread replies
- *   - `Read Message History` (65536) — reply-in-thread context
+ *   - `View Channels`             (1 &lt;&lt; 10  =        1024) — list channels the bot is in
+ *   - `Send Messages`             (1 &lt;&lt; 11  =        2048) — post agent responses
+ *   - `Embed Links`               (1 &lt;&lt; 14  =       16384) — render result-card embeds
+ *   - `Read Message History`      (1 &lt;&lt; 16  =       65536) — reply-in-thread context
+ *   - `Send Messages in Threads`  (1 &lt;&lt; 38  = 274877906944) — thread replies
+ *
+ * Sum: 274877991936. Bots can edit/delete their *own* messages without
+ * MANAGE_MESSAGES, so we intentionally do not request that permission —
+ * granting it would let Atlas moderate other users' messages, which the
+ * agent has no use for.
  *
  * Operators who need different permissions can override via
  * `DISCORD_OAUTH_PERMISSIONS` in env. The chat-adapter handles the
  * actual permission check at message-send time; this bitmask is just
  * what we *request* at the install screen.
+ *
+ * Keep this constant in lockstep with `apps/docs/content/docs/integrations/discord.mdx`
+ * ("Pick a server and authorize") — that page lists the requested
+ * permissions verbatim so admins know what they're agreeing to.
  */
-const DEFAULT_DISCORD_PERMISSIONS = "274878000128";
+const DEFAULT_DISCORD_PERMISSIONS = "274877991936";
 
 const PlanUpgradeRequiredBodySchema = z.object({
   error: z.literal("plan_upgrade_required"),
@@ -258,6 +269,23 @@ function buildAdminIntegrationsUrl(
   return `${base}?${qs.toString()}`;
 }
 
+/**
+ * Sanitize an upstream-provided message before echoing it back in a
+ * JSON response body. Strips ASCII control chars (newlines, NUL, etc.)
+ * and caps length at 256 chars. Used on `error_description` query
+ * params — Discord's user-cancel redirect carries this field, and
+ * anyone who can craft the redirect URL controls the text.
+ *
+ * Returns null for empty / non-string input.
+ */
+function sanitizeUpstreamMessage(raw: string | undefined): string | null {
+  if (typeof raw !== "string") return null;
+  // eslint-disable-next-line no-control-regex
+  const cleaned = raw.replace(/[\x00-\x1f\x7f]/g, " ").trim();
+  if (cleaned.length === 0) return null;
+  return cleaned.length > 256 ? `${cleaned.slice(0, 253)}...` : cleaned;
+}
+
 function resolvePublicApiUrl(req: Request): string {
   const explicit = process.env.ATLAS_PUBLIC_API_URL;
   if (explicit && explicit.length > 0) return explicit.replace(/\/+$/, "");
@@ -402,10 +430,13 @@ discordIntegrations.openapi(installRoute, async (c) =>
       );
     }
     // Narrow to the concrete Discord handler so we can read clientId.
-    // Other static-bot handlers (Telegram) don't expose `applicationId`,
-    // so a same-slot misregistration surfaces here as a runtime error
-    // rather than building a broken install URL.
-    if (!("applicationId" in handler) || typeof handler.applicationId !== "string") {
+    // `applicationId` is typed as optional on the StaticBotInstallHandler
+    // interface — Telegram returns undefined here, Discord must populate
+    // it. A same-slot misregistration (e.g. Telegram's handler wired
+    // under the discord slug) surfaces as a 501 rather than building a
+    // broken install URL with an empty client_id.
+    const clientId = handler.applicationId;
+    if (typeof clientId !== "string" || clientId.length === 0) {
       log.error(
         "Discord handler missing applicationId — dispatch may have returned a non-Discord static-bot handler under the 'discord' slug",
       );
@@ -414,7 +445,6 @@ discordIntegrations.openapi(installRoute, async (c) =>
         501,
       );
     }
-    const clientId: string = handler.applicationId;
 
     // Mint state token + build the Discord bot-install URL.
     const stateToken = mintOAuthStateToken(workspaceId, DISCORD_CATALOG_ID);
@@ -436,6 +466,13 @@ discordIntegrations.openapi(installRoute, async (c) =>
 
 discordIntegrations.openapi(callbackRoute, async (c) =>
   runHandler(c, "discord callback", async () => {
+    // No plan re-check here — Discord static-bot does NOT exchange the
+    // OAuth `code` for a per-Workspace token (the bot's auth lives with
+    // the operator). There's no single-use upstream side-effect to
+    // protect, so the `/install` plan gate is the only check needed.
+    // Contrast with `integrations.ts:/callback`, which does re-check
+    // because a `oauth2/token` exchange would burn a single-use code
+    // if a plan downgrade mid-OAuth blocked persistence.
     const requestId = crypto.randomUUID();
     const query = c.req.valid("query");
 
@@ -461,6 +498,9 @@ discordIntegrations.openapi(callbackRoute, async (c) =>
     const workspaceId = verified.workspaceId as WorkspaceId;
 
     // Discord-side user cancel — `error` + `error_description` in query.
+    // `error_description` is attacker-influenceable (anyone who can craft
+    // the redirect URL controls the text), so sanitize before forwarding
+    // to JSON callers: strip control chars + cap length.
     if (query.error) {
       log.info({ workspaceId, error: query.error }, "Discord install: user cancelled authorization");
       if (prefersHtml(c.req.raw)) {
@@ -468,10 +508,11 @@ discordIntegrations.openapi(callbackRoute, async (c) =>
           buildAdminIntegrationsUrl("error", { reason: "authorization_denied" }),
         );
       }
+      const safeDescription = sanitizeUpstreamMessage(query.error_description);
       return c.json(
         {
           error: "authorization_denied",
-          message: query.error_description || "Discord authorization was not granted.",
+          message: safeDescription || "Discord authorization was not granted.",
           requestId,
         },
         400,

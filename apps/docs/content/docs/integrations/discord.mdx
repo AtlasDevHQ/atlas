@@ -58,19 +58,18 @@ Optionally also set `DISCORD_MENTION_ROLE_IDS` (comma-separated role
 ids) to extend the bot's mention-handler beyond direct `@bot`
 mentions. Mentions of any listed role trigger the same agent path.
 
-### 3. Configure the bot's permissions and intents
+### 3. Register Atlas's interaction endpoint
 
-In the Developer Portal → **Bot** tab, scroll to **Privileged Gateway
-Intents** and enable **Message Content Intent**. Without this, Discord
-strips message content from every event delivered to the bot and Atlas
-can't see what users asked.
+Atlas listens for Discord interactions over HTTP — not the Gateway
+WebSocket. Interactions are slash commands, button clicks, and
+application-command mentions; Discord delivers each as an HTTPS POST
+to a URL you configure. (Because Atlas uses HTTP Interactions, the
+**Message Content Intent** in the Bot tab does NOT need to be enabled
+— that intent only affects Gateway WebSocket deliveries and is
+inactive for HTTP-only bots.)
 
-### 4. Register Atlas's interaction endpoint
-
-Discord delivers interactions (slash commands, button clicks, mention
-events) via HTTPS POST to a URL you configure. In the Developer Portal
-→ **General Information** → **Interactions Endpoint URL**, paste your
-Atlas deploy's webhook URL:
+In the Developer Portal → **General Information** → **Interactions
+Endpoint URL**, paste your Atlas deploy's webhook URL:
 
 ```
 https://api.your-atlas-deploy.example.com/api/plugins/chat-interaction/webhooks/discord
@@ -89,7 +88,7 @@ Endpoint URL" error:
 - Confirm the URL exactly matches the chat-plugin webhook path — case
   matters; trailing slashes don't.
 
-### 5. Enable the catalog row
+### 4. Enable the catalog row
 
 Atlas ships the Discord catalog entry pre-declared in
 `deploy/api/atlas.config.ts`. If you've started from the deploy
@@ -138,9 +137,9 @@ list of servers you can add bots to.
 ### 2. Pick a server and authorize
 
 Select the server you want Atlas to listen on, review the requested
-permissions (View Channels, Send Messages, Send Messages in Threads,
-Read Message History), and click **Authorize**. Discord adds the bot
-to the server and redirects back to Atlas.
+permissions (View Channels, Send Messages, Embed Links, Read Message
+History, Send Messages in Threads), and click **Authorize**. Discord
+adds the bot to the server and redirects back to Atlas.
 
 Atlas immediately calls Discord's `GET /guilds/{guild_id}` to confirm
 the bot is now a member of the server. If it succeeds, the install
@@ -199,12 +198,15 @@ Public Key" in the Developer Portal. If Atlas's signature verification
 starts failing, copy the current Public Key from the portal and update
 the env var.
 
-### Bot doesn't respond to messages
+### Bot doesn't respond to plain messages
 
-Confirm the **Message Content Intent** privileged gateway intent is
-still enabled on the application (Developer Portal → Bot tab). Discord
-silently drops message content for bots without this intent, so the
-agent never sees the user's text.
+Atlas listens over **HTTP Interactions**, not the Gateway WebSocket.
+That means plain chat messages — even ones that `@mention` the bot —
+don't reach Atlas. Users interact via Discord's slash commands and
+application-command surfaces (a right-click menu on a user / message,
+the `/` chat-bar menu). If a user types `@AtlasBot show me users`
+and nothing happens, that's expected — point them at the slash
+command surface (e.g. `/ask`) the chat-adapter exposes.
 
 ## Disconnecting
 

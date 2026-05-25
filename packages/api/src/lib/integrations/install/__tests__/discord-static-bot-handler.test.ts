@@ -206,6 +206,28 @@ describe("DiscordStaticBotInstallHandler.confirmInstall — reachability verific
     await expect(handler.confirmInstall(wsid, "123456789012345678")).rejects.toThrow(/discord/i);
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
+
+  it("treats Discord's generic 'code: 0' error as a real failure (HTTP status is the discriminator)", async () => {
+    // Discord's code 0 is the "generic" error — using absence-of-code
+    // as the discriminator would silently narrow into the success branch
+    // and double-process. The HTTP-status-keyed parser keeps the right
+    // posture: 4xx → err regardless of code value.
+    setFetchDiscordError("Generic error from upstream", 0, 400);
+    const handler = new DiscordStaticBotInstallHandler({ botToken: "tkn", clientId: "111" });
+    await expect(handler.confirmInstall(wsid, "123456789012345678")).rejects.toThrow(
+      /Generic error from upstream/i,
+    );
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+
+  it("throws unavailable when the API returns 2xx without a guild id (contract violation)", async () => {
+    setFetchOk({ /* no id field */ name: "Orphan" });
+    const handler = new DiscordStaticBotInstallHandler({ botToken: "tkn", clientId: "111" });
+    await expect(handler.confirmInstall(wsid, "123456789012345678")).rejects.toThrow(
+      /unexpected response shape/i,
+    );
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

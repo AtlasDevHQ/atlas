@@ -63,15 +63,19 @@ export const DISCORD_CATALOG_ID = "catalog:discord";
 /**
  * Discord guild ids are unsigned 64-bit snowflakes — currently rendered
  * as 17–20 digit decimal strings ([snowflake docs](https://discord.com/developers/docs/reference#snowflakes)).
- * The 17-digit floor is the historical minimum (snowflakes minted shortly
- * after Discord's epoch); the 20-digit ceiling gives headroom for the
- * theoretical 19-digit maximum of a 64-bit unsigned integer plus one for
- * forward compatibility.
+ * Discord's earliest live snowflakes (mid-2015, ~5 months post-epoch) are
+ * 17 digits; older theoretical values are unreachable in practice. The
+ * 20-digit ceiling gives headroom for the theoretical 19-digit max of an
+ * unsigned 64-bit int plus one for forward compatibility.
  *
  * Pasted invite codes (`discord.gg/abc`), guild names, or `@server`
  * handles fail this gate before any API roundtrip.
+ *
+ * Exported so the executeQuery dispatcher can reuse the same regex on
+ * inbound webhook envelopes — keeps the snowflake invariant on a single
+ * source of truth across install + receive paths.
  */
-const DISCORD_GUILD_ID_RE = /^\d{17,20}$/;
+export const DISCORD_GUILD_ID_RE = /^\d{17,20}$/;
 
 /**
  * Reachability call timeout. Discord's API is normally sub-second; 10s
@@ -110,21 +114,58 @@ export interface DiscordInstallConfig {
 }
 
 /**
- * Discord API `GET /guilds/{id}` response envelope. The success branch
- * carries the guild's id + name (we use the name as a fallback display
- * label); the error branch is `{ message, code }`. Modeled as a
- * discriminated union via the presence of `code` so the success path
- * narrows cleanly.
+ * Discord API `GET /guilds/{id}` parsed response. The on-the-wire shape
+ * has neither an `ok` boolean (like Telegram) nor a status-only signal —
+ * Discord returns `{ id, name, ... }` on success and `{ message, code }`
+ * on failure, with overlap pitfalls (notably `code: 0` is the "generic"
+ * error code, so absence-of-`code` is NOT a safe discriminator).
  *
- * `code` is Discord's numeric error code, distinct from the HTTP
- * status. Example: HTTP 404 + `code: 10004` ("Unknown Guild"). The
- * combination is the actionable signal — bare HTTP status alone collapses
- * "guild doesn't exist" and "bot is missing the right scope" into the
- * same bucket.
+ * We normalize at the parser via {@link parseDiscordGuildResponse} into
+ * an explicit `kind: "ok" | "err"` union — the consumer narrows on the
+ * tag like a discriminated union from a TaggedError. The 2xx HTTP
+ * status is what really separates branches; `kind` carries that decision
+ * forward in a single field.
  */
 type DiscordGuildResponse =
-  | { readonly id: string; readonly name?: string; readonly code?: undefined }
-  | { readonly message: string; readonly code: number; readonly id?: undefined };
+  | { readonly kind: "ok"; readonly id: string; readonly name?: string }
+  | { readonly kind: "err"; readonly message: string; readonly code: number };
+
+/**
+ * Parse a Discord `GET /guilds/{id}` response into the
+ * {@link DiscordGuildResponse} discriminated union.
+ *
+ * The HTTP status is the primary discriminator (2xx → ok, 4xx/5xx → err)
+ * because Discord's `code: 0` "generic" error is a real value, not a
+ * sentinel, and the wire-shape overlap would otherwise force unsafe
+ * narrowing. Returns `null` when the body doesn't fit either branch
+ * (e.g. a 2xx with no `id`, or a 4xx with no `message`) — the caller
+ * surfaces this as a contract violation via `DiscordApiUnavailableError`.
+ */
+function parseDiscordGuildResponse(
+  raw: unknown,
+  httpStatus: number,
+): DiscordGuildResponse | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const body = raw as Record<string, unknown>;
+  if (httpStatus >= 200 && httpStatus < 300) {
+    if (typeof body.id !== "string" || body.id.length === 0) return null;
+    return {
+      kind: "ok" as const,
+      id: body.id,
+      ...(typeof body.name === "string" && body.name.length > 0
+        ? { name: body.name }
+        : {}),
+    };
+  }
+  const message = typeof body.message === "string" ? body.message : "";
+  const code = typeof body.code === "number" ? body.code : 0;
+  if (message.length === 0 && code === 0 && httpStatus >= 200 && httpStatus < 600) {
+    // Empty error body with no signal — let the caller treat as upstream
+    // contract violation rather than fabricating an err envelope.
+    return null;
+  }
+  return { kind: "err" as const, message, code };
+}
 
 export class DiscordStaticBotInstallHandler implements StaticBotInstallHandler {
   readonly kind = "static-bot" as const;
@@ -280,9 +321,9 @@ export class DiscordStaticBotInstallHandler implements StaticBotInstallHandler {
       });
     }
 
-    let parsed: DiscordGuildResponse;
+    let rawBody: unknown;
     try {
-      parsed = (await response.json()) as DiscordGuildResponse;
+      rawBody = await response.json();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.warn(
@@ -298,26 +339,23 @@ export class DiscordStaticBotInstallHandler implements StaticBotInstallHandler {
       });
     }
 
-    if (parsed.code !== undefined) {
-      const desc = parsed.message || "unknown error";
-      const code = parsed.code;
-      const hint = hintForDiscordError(code, response.status, desc);
-      throw new DiscordReachabilityError({
-        message: `Discord rejected guild_id "${guildId}": ${desc}${hint ? ` — ${hint}` : ""}`,
-        errorCode: code,
-      });
-    }
-
-    if (typeof parsed.id !== "string") {
-      // 2xx success envelope but no `id` field — Discord's contract says
-      // every guild payload includes `id`, so this is an upstream
-      // contract violation. Surface as unavailable; admin can retry.
+    const parsed = parseDiscordGuildResponse(rawBody, response.status);
+    if (parsed === null) {
+      // 2xx with no id, or non-2xx with empty body — upstream contract
+      // violation. Surface as unavailable; admin can retry.
       throw new DiscordApiUnavailableError({
-        message: `Discord API returned a 2xx response without a guild id for "${guildId}" (status ${response.status}).`,
+        message: `Discord API returned an unexpected response shape when verifying guild_id "${guildId}" (status ${response.status}).`,
+      });
+    }
+    if (parsed.kind === "err") {
+      const hint = hintForDiscordError(parsed.code, response.status, parsed.message);
+      throw new DiscordReachabilityError({
+        message: `Discord rejected guild_id "${guildId}": ${parsed.message || "unknown error"}${hint ? ` — ${hint}` : ""}`,
+        errorCode: parsed.code,
       });
     }
 
-    return typeof parsed.name === "string" && parsed.name.length > 0 ? parsed.name : null;
+    return parsed.name ?? null;
   }
 }
 
@@ -374,8 +412,10 @@ function hintForDiscordError(
   httpStatus: number,
   description: string,
 ): string | null {
-  // 0 is Discord's "generic" code — often auth failures don't carry a
-  // specific code, so fall through to the HTTP-status branch below.
+  // Code 0 is Discord's "generic" error tag — it carries no semantic
+  // signal of its own, so we deliberately do NOT branch on it. Any
+  // failure carrying `code: 0` is keyed by its HTTP status in the
+  // checks below.
   if (code === 10004) {
     return "double-check the snowflake id — enable Developer Mode in Discord and Copy Server ID from the right-click menu";
   }

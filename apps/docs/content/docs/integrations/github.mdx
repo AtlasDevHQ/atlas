@@ -39,21 +39,7 @@ fits their deploy posture and access model:
   (token tied to one user) is acceptable.
 </Callout>
 
-<Callout type="warn" title="GitHub App modes are not yet implemented">
-  Both **GitHub (App)** and **GitHub (App, single-tenant)** ship with
-  `implementation_status: "coming_soon"` in the catalog. The cards
-  render in **Admin → Integrations** as inert "Coming soon" badges
-  until the App install handler lands in a follow-up PR (JWT minting
-  for installation tokens is its own slice). Until then, **GitHub
-  (Personal Access Token)** is the only working install mode — and it's
-  self-host only.
-</Callout>
-
-## Mode 1 — GitHub App, multi-tenant (`github` catalog row) <span data-coming-soon>Coming soon</span>
-
-The multi-tenant GitHub App ships in a follow-up PR. This section
-documents the planned shape for operator setup so self-host deploys can
-prepare environment values now.
+## Mode 1 — GitHub App, multi-tenant (`github` catalog row)
 
 ### Operator setup (one-time, per deploy)
 
@@ -69,8 +55,15 @@ create a new App:
 - **GitHub App name**: "Atlas" (or whatever brand makes sense for your
   deploy)
 - **Homepage URL**: your Atlas marketing URL or `https://useatlas.dev`
-- **Callback URL**: `${ATLAS_PUBLIC_API_URL}/api/v1/integrations/github/callback`
-- **Request user authorization (OAuth) during installation**: enable
+- **Setup URL**: `${ATLAS_PUBLIC_API_URL}/api/v1/integrations/github/callback`
+  (and enable **Redirect on update**)
+- **Callback URL**: the same as the Setup URL
+- **Request user authorization (OAuth) during installation**: **enable
+  this** — Atlas requires the user-OAuth code on the callback to verify
+  that the installing GitHub user actually has access to the
+  `installation_id` they're claiming (cross-tenant binding defense).
+  Without this option enabled, the install dance will fail with
+  `missing_code`.
 - **Webhook → Active**: disable (Atlas does not need webhook events for
   Action-target use cases)
 - **Repository permissions**: `Issues: Read & write`, `Pull requests:
@@ -84,28 +77,132 @@ After creation:
   anyone with it can act as your App
 - Note the **App slug** from the App's public URL
   (`https://github.com/apps/<your-app-slug>`)
+- Note the **Client ID** and **Client secret** — these appear on the
+  settings page after you enable "Request user authorization (OAuth)
+  during installation". They are required for the installation-
+  ownership check Atlas runs on every install.
 
 #### 2. Set the env vars
 
-Set all three on every Atlas API service in your deploy:
+Set all five on every Atlas API service in your deploy:
 
 ```bash
 GITHUB_APP_ID=<App ID from step 1>
 GITHUB_APP_SLUG=<App slug from step 1>
 GITHUB_APP_PRIVATE_KEY=<contents of the downloaded .pem file>
+GITHUB_APP_CLIENT_ID=<Client ID from step 1>
+GITHUB_APP_CLIENT_SECRET=<Client secret from step 1>
 ```
 
 `ATLAS_PUBLIC_API_URL` must already be set on the same services — it's
 required by every OAuth-based integration to build the callback URL.
 
-## Mode 2 — GitHub App, single-tenant (`github-single-tenant` catalog row) <span data-coming-soon>Coming soon</span>
+The boot log emits `Registered GitHubOAuthInstallHandler` when all three
+env vars are present. If any is missing, the boot log emits a `warn`
+or `error` line (depending on whether the catalog row is enabled) and
+the install route returns 501.
 
-Wire shape is identical to Mode 1; the only difference is the GitHub App
-registration's **Where can this GitHub App be installed?** setting is
-**Only on this account**. Use when you don't want to publish a
-multi-tenant registration. **`saas_eligible: false`** — one org's App
-installation cannot serve multiple Atlas workspaces, so this row is
-hidden from the SaaS catalog.
+### Customer install (per workspace)
+
+Workspace admins install GitHub from **Admin → Integrations → GitHub
+(App)**:
+
+1. Click **Install** on the **GitHub (App)** card.
+2. Atlas redirects to `https://github.com/apps/<your-app-slug>/installations/new`
+   with a signed state token. The customer's GitHub session picks the
+   org and (optionally) the repositories they want to grant Atlas
+   access to.
+3. After granting, GitHub redirects back to Atlas's callback URL with
+   `?code=<user_oauth_code>&installation_id=<id>&setup_action=install&state=<token>`.
+4. Atlas verifies the state, exchanges the user OAuth code for a user
+   access token, and calls `GET /user/installations` to confirm the
+   `installation_id` is actually in the authorizing user's accessible
+   installations. **If the installation_id was tampered to point at a
+   different org's install, this check fails and the install is
+   rejected with `installation_not_owned`** — the security gate that
+   prevents a workspace admin from binding their workspace to
+   someone else's installation.
+5. The installation_id (and the discovered account login + type)
+   persist encrypted into `workspace_plugins.config` (selective-field
+   encryption per
+   [ADR-0007](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0007-unified-install-pipeline.md)).
+6. Admin lands back on **Admin → Integrations** with the card flipped
+   to **Installed**.
+
+### Disconnecting (App mode)
+
+Open **Admin → Integrations → GitHub (App)** and click **Disconnect**.
+Atlas deletes the `workspace_plugins` row containing the encrypted
+installation_id; there's no separate credential store to clean up
+(installation tokens are short-lived JWTs, minted on demand and never
+persisted).
+
+To revoke from GitHub's side: in your GitHub org's **Settings →
+Integrations → Applications**, uninstall the App. Atlas's next mint
+call will surface `Bad credentials` from the GitHub API.
+
+## Mode 2 — GitHub App, single-tenant (`github-single-tenant` catalog row)
+
+Wire shape is identical to Mode 1 from the persistence perspective; the
+practical difference is the GitHub App registration's **Where can this
+GitHub App be installed?** setting is **Only on this account**. **The
+operator installs the App into their one GitHub org once at deploy time,
+captures the resulting installation_id, and bakes it into env.**
+
+**`saas_eligible: false`** — one org's App installation cannot serve
+multiple Atlas workspaces in any meaningful multi-tenant sense (every
+workspace would write to the same repos). The catalog row is hidden
+from the SaaS catalog by the integrations-catalog `saas_eligible`
+filter.
+
+### Operator setup (one-time, per deploy)
+
+<Callout type="info" title="Setup URL is unused in single-tenant mode">
+  Single-tenant install **does not round-trip through github.com** — the
+  customer admin click triggers a self-redirect through Atlas's own
+  callback URL with the env-baked `installation_id` pre-attached. The
+  Setup URL on your single-tenant App registration is therefore
+  ignored by Atlas; you can leave it blank or set it to a placeholder.
+  This differs from Mode 1, where Setup URL must point at Atlas's
+  multi-tenant `github` callback.
+</Callout>
+
+1. **Register the App** the same way as Mode 1, but choose **Only on
+   this account** for the "Where can this GitHub App be installed?"
+   setting.
+2. **Install the App** into your GitHub org from the App's public URL
+   (`https://github.com/apps/<slug>`). After installing, the URL bar
+   shows the installation page —
+   `https://github.com/organizations/<org>/settings/installations/<installation_id>`.
+   Note the `<installation_id>`.
+3. **Set the env vars** on every Atlas API service:
+
+   ```bash
+   GITHUB_APP_ID=<App ID>
+   GITHUB_APP_SLUG=<App slug>
+   GITHUB_APP_PRIVATE_KEY=<contents of the .pem file>
+   GITHUB_APP_INSTALLATION_ID=<installation_id from step 2>
+   ```
+
+The boot log emits `Registered GitHubSingleTenantOAuthInstallHandler`
+when all four env vars are present.
+
+### Customer install (per workspace)
+
+Workspace admins install from **Admin → Integrations → GitHub (App,
+single-tenant)**:
+
+1. Click **Install** on the card.
+2. Atlas self-redirects through its own callback URL with the env-baked
+   installation_id pre-attached and a signed state token. There is no
+   GitHub-side round-trip — the customer never sees github.com — because
+   the App is already installed in the operator's one org.
+3. Atlas persists the installation_id encrypted into
+   `workspace_plugins.config` and the card flips to **Installed**.
+
+If a tampered redirect tries to substitute a different installation_id,
+Atlas ignores the supplied value and persists the operator-baked one
+(env is the source of truth in single-tenant mode).
 
 ## Mode 3 — Personal Access Token (`github-pat` catalog row)
 
@@ -172,11 +269,30 @@ Atlas Cloud (`saas_eligible` deploys) only surfaces the GitHub App
 | `github-single-tenant` | false | **no** | yes |
 | `github-pat` | false | **no** | yes |
 
-The filter lives in [`PillarCatalogQuery`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/effect/pillar-catalog-query.ts) —
-generic across every catalog row, not GitHub-specific. Operators who
-need to override the gate (e.g. an enterprise self-host deploy that
-wants to expose all three modes) can flip `ATLAS_DEPLOY_MODE` away from
-`saas` at the deploy level.
+The filter is generic — applied to every catalog row, not GitHub-
+specific. Operators who need to override the gate (e.g. an enterprise
+self-host deploy that wants to expose all three modes) can flip
+`ATLAS_DEPLOY_MODE` away from `saas` at the deploy level.
+
+## Storage layout
+
+All three modes persist their credential inline on
+`workspace_plugins.config` using selective-field encryption per
+[ADR-0007](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0007-unified-install-pipeline.md).
+The `secret: true` field set differs per mode:
+
+| Mode | `workspace_plugins.config.<secret-field>` | Other fields |
+| :--- | :--- | :--- |
+| `github` (App, multi-tenant) | `installation_id` (encrypted) | `status` |
+| `github-single-tenant` (App, baked) | `installation_id` (encrypted) | `status` |
+| `github-pat` (PAT) | `pat` (encrypted) | `default_owner`, `status` |
+
+The App-private-key is operator-owned and lives in env
+(`GITHUB_APP_PRIVATE_KEY`); it never reaches the database. Installation
+tokens are minted on demand at agent-tool-call time by signing a
+short-lived JWT with that key and POSTing it to
+`/app/installations/<installation_id>/access_tokens` — covered in the
+follow-up PR that ships the GitHub action plugin.
 
 ## Troubleshooting
 
@@ -193,11 +309,34 @@ the organization, or the token expired. Generate a fresh token in
 and re-submit the install form via **Admin → Integrations → GitHub
 (Personal Access Token)**.
 
-### "GitHub App install handler not registered"
+### "GitHub App install handler not registered" (App mode)
 
 The operator hasn't set `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, and
-`GITHUB_APP_PRIVATE_KEY`, or one is empty on the API process handling
-the install. The App-based install handler ships in a follow-up PR;
-until then, the install routes for `github` and `github-single-tenant`
-return 501. The PAT mode (`github-pat`) does not depend on these env
-vars and is always available on self-host deploys.
+`GITHUB_APP_PRIVATE_KEY` (multi-tenant) or those three plus
+`GITHUB_APP_INSTALLATION_ID` (single-tenant), or one is empty on the
+API process handling the install. Check the boot log for the
+`Registered GitHubOAuthInstallHandler` / `Registered
+GitHubSingleTenantOAuthInstallHandler` line; if it's missing, the
+preceding `warn`/`error` line names the missing env vars.
+
+### "The GitHub user authorizing this install does not have access to the supplied installation" (App mode)
+
+Atlas's installation-ownership check rejected the callback. The user
+authenticating with the OAuth code does not appear in the
+`/user/installations` list for the supplied `installation_id`. Two
+common causes:
+
+1. **Tampered callback URL** — someone modified the `installation_id`
+   query param in the redirect. This is the security gate working as
+   designed; restart the install and grant access through your own
+   org.
+2. **Wrong user account** — the customer admin signed in to GitHub as
+   a user who isn't a member of the org receiving the install. Have
+   them sign in to GitHub as the org owner / member and retry.
+
+### "GitHub returned an unexpected installation_id" (App mode)
+
+The OAuth callback delivered an `installation_id` that isn't a positive
+integer — typically a tampered or truncated redirect URL. Restart the
+install from **Admin → Integrations**; if it repeats, check whether
+your GitHub App's Setup URL matches `${ATLAS_PUBLIC_API_URL}/api/v1/integrations/github/callback`.

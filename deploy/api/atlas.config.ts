@@ -322,16 +322,17 @@ export default defineConfig({
     // documented in ADR-0006 but out of scope for this milestone.
     //
     //   - `github` (App, multi-tenant OAuth): workspace admins grant a
-    //     GitHub App per Atlas Workspace. Installation tokens are minted
-    //     on demand by signing a JWT with the App's private key. The
-    //     primary SaaS-eligible mode. Currently `coming_soon` — handler
-    //     ships in a follow-up PR (JWT minting + installation-token
-    //     lifecycle is its own slice).
+    //     GitHub App per Atlas Workspace. Install handler persists the
+    //     `installation_id` to `workspace_plugins.config` (encrypted via
+    //     selective-field encryption). Installation tokens are minted
+    //     on demand by the lazy builder (follow-up PR) signing a JWT
+    //     with the App's private key. The primary SaaS-eligible mode.
     //   - `github-single-tenant` (App, single-tenant): identical wire
     //     shape to multi-tenant, but the App's install is pinned to one
     //     GitHub org (the operator's). `saas_eligible: false` because
     //     one org's install cannot serve multiple Atlas workspaces.
-    //     Also `coming_soon` — same follow-up PR.
+    //     `GITHUB_APP_INSTALLATION_ID` is operator-baked into env;
+    //     "install" is a self-redirect through the callback URL.
     //   - `github-pat` (form): workspace admin pastes a Personal Access
     //     Token from https://github.com/settings/tokens. The token
     //     encrypts inline into `workspace_plugins.config.pat` via
@@ -348,7 +349,6 @@ export default defineConfig({
       install_model: "oauth",
       enabled: true,
       saas_eligible: true,
-      implementation_status: "coming_soon",
       name: "GitHub (App)",
       description:
         "Create GitHub issues and open pull requests from agent findings. Connects through your operator's GitHub App and mints short-lived installation tokens automatically.",
@@ -360,7 +360,6 @@ export default defineConfig({
       install_model: "oauth",
       enabled: true,
       saas_eligible: false,
-      implementation_status: "coming_soon",
       name: "GitHub (App, single-tenant)",
       description:
         "Self-host only. Operator-baked GitHub App pinned to one GitHub organization. Use when you don't want to publish a multi-tenant App registration.",

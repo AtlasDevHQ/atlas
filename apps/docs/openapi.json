@@ -71530,7 +71530,7 @@
           "Integrations"
         ],
         "summary": "Platform OAuth callback",
-        "description": "Handles the OAuth callback from the Platform: verifies the state token, exchanges the code for credentials, and writes the install record + per-Platform credential. Returns a 302 to /admin/integrations on success.",
+        "description": "Handles the OAuth callback from the Platform: verifies the state token, exchanges the code for credentials, and writes the install record + per-Platform credential. Returns a 302 to /admin/integrations on success. GitHub App installs deliver `installation_id` instead of `code` — the route accepts either and forwards whichever is present to the handler.",
         "parameters": [
           {
             "schema": {
@@ -71545,11 +71545,21 @@
           {
             "schema": {
               "type": "string",
-              "description": "OAuth authorization code"
+              "description": "OAuth authorization code (standard OAuth 2.0 flows)"
             },
-            "required": true,
-            "description": "OAuth authorization code",
+            "required": false,
+            "description": "OAuth authorization code (standard OAuth 2.0 flows)",
             "name": "code",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "GitHub App installation id (GitHub App install flow)"
+            },
+            "required": false,
+            "description": "GitHub App installation id (GitHub App install flow)",
+            "name": "installation_id",
             "in": "query"
           },
           {

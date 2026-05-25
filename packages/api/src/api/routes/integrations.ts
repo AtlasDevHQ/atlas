@@ -78,6 +78,49 @@ import type { CatalogInstallModel } from "@atlas/api/lib/config";
 const log = createLogger("integrations");
 
 /**
+ * Catalog slugs whose OAuth callback carries `installation_id` instead
+ * of (or alongside) the standard OAuth 2.0 `code` parameter — i.e. the
+ * GitHub App install flow. Other platforms get a 400 if a caller
+ * smuggles `installation_id` into their callback URL: it's never
+ * legitimate (no upstream provider for those platforms emits it) and
+ * forwarding it to the per-Platform handler would surface as a
+ * misleading "upstream OAuth exchange refused" envelope.
+ *
+ * Adding a future Platform whose callback uses installation_id-shaped
+ * credentials (e.g. a future GitHub-data row) is one entry here.
+ */
+const INSTALLATION_ID_PLATFORMS: ReadonlySet<string> = new Set([
+  "github",
+  "github-single-tenant",
+]);
+
+/**
+ * Catalog slugs whose credentials live INLINE in
+ * `workspace_plugins.config` (encrypted via selective-field encryption,
+ * ADR-0007 unified install pipeline) — i.e. no separate
+ * `integration_credentials` / `chat_cache` row. Disconnect for these
+ * slugs is two DB ops total: a no-op credential-store teardown +
+ * the workspace_plugins DELETE that `WorkspaceInstaller.uninstall`
+ * already runs. The route's per-Platform 501 gate admits them so the
+ * facade isn't blocked.
+ *
+ * github-pat (form-install) was the first inline-cred slug — it shipped
+ * via #2807 without disconnect wiring, which has now been folded in.
+ * github / github-single-tenant land here for the same reason.
+ *
+ * Future inline-cred form/static-bot slugs (email, webhook, obsidian,
+ * linear-apikey, telegram, discord, teams) live behind their own
+ * separate credential-store dispatches today and are NOT covered by
+ * this set — adding them is a follow-up that requires matching
+ * `WorkspaceInstaller.deleteCredentialStoreForSlug` branches.
+ */
+const INLINE_CREDENTIAL_SLUGS: ReadonlySet<string> = new Set([
+  "github",
+  "github-single-tenant",
+  "github-pat",
+]);
+
+/**
  * OpenAPI schema for the 403 {@link PlanUpgradeRequiredBody}. Pins the
  * wire shape — both plan fields are PlanTier (the same union used
  * everywhere else) — and the `z.ZodType<PlanUpgradeRequiredBody>`
@@ -225,13 +268,22 @@ const callbackRoute = createRoute({
   description:
     "Handles the OAuth callback from the Platform: verifies the state token, exchanges the " +
     "code for credentials, and writes the install record + per-Platform credential. Returns " +
-    "a 302 to /admin/integrations on success.",
+    "a 302 to /admin/integrations on success. " +
+    "GitHub App installs deliver `installation_id` instead of `code` — the route accepts " +
+    "either and forwards whichever is present to the handler.",
   request: {
     params: z.object({
       platform: z.string().openapi({ description: "Catalog slug" }),
     }),
     query: z.object({
-      code: z.string().openapi({ description: "OAuth authorization code" }),
+      code: z
+        .string()
+        .optional()
+        .openapi({ description: "OAuth authorization code (standard OAuth 2.0 flows)" }),
+      installation_id: z
+        .string()
+        .optional()
+        .openapi({ description: "GitHub App installation id (GitHub App install flow)" }),
       state: z.string().openapi({ description: "Signed state token from install" }),
     }),
   },
@@ -788,8 +840,104 @@ integrations.openapi(installFormRoute, async (c) =>
 integrations.openapi(callbackRoute, async (c) =>
   runHandler(c, "platform callback", async () => {
     const { platform } = c.req.valid("param");
-    const { code, state } = c.req.valid("query");
+    const { code, installation_id: installationId, state } = c.req.valid("query");
     const requestId = crypto.randomUUID();
+
+    // GitHub App installs deliver `installation_id`; standard OAuth 2.0
+    // flows deliver `code`. The credential identifier the per-Platform
+    // handler consumes is one or the other — never both in practice.
+    //
+    // **Platform-scoped acceptance.** Only the two GitHub catalog rows
+    // accept `installation_id`; sending it to any other Platform's
+    // callback URL is unambiguously a tampered redirect (no upstream
+    // OAuth provider for those platforms ever emits the field) and gets
+    // a 400 here rather than being forwarded to the handler. Forwarding
+    // an `installation_id` into Jira's / Salesforce's / Linear's
+    // `handleCallback` would surface as a misleading "upstream OAuth
+    // exchange refused" message — the platform-scoped reject is clearer
+    // and matches the principle that the route knows the slug semantics
+    // before the handler does.
+    if (installationId !== undefined && !INSTALLATION_ID_PLATFORMS.has(platform)) {
+      log.warn(
+        { platform },
+        "Callback received installation_id for a non-GitHub Platform — rejecting (tampered redirect)",
+      );
+      return c.json(
+        {
+          error: "unexpected_installation_id",
+          message: `Platform "${platform}" does not use the GitHub App installation_id flow. Restart the install.`,
+          requestId,
+        },
+        400,
+      );
+    }
+    // Platform-aware callback dispatch:
+    //   - `github` (multi-tenant) needs BOTH `code` (user OAuth, for
+    //     installation-ownership verification) and `installation_id`
+    //     (the credential identifier). The handler verifies ownership
+    //     before persisting.
+    //   - `github-single-tenant` needs `installation_id` (operator-
+    //     baked; ignored by the handler in favor of the env value).
+    //   - All other OAuth handlers consume `code` for the standard
+    //     OAuth 2.0 code → token exchange.
+    //
+    // The route picks the first positional arg per platform; the
+    // optional third `extras` arg carries `installation_id` for
+    // GitHub multi-tenant. Other handlers ignore extras.
+    let handlerPositionalCode: string;
+    let handlerExtras: { installationId?: string } | undefined;
+    if (platform === "github") {
+      if (typeof code !== "string" || code.length === 0) {
+        return c.json(
+          {
+            error: "missing_credential_identifier",
+            message:
+              "GitHub App callback missing `code` — ensure the App has \"Request user authorization (OAuth) during installation\" enabled and restart.",
+            requestId,
+          },
+          400,
+        );
+      }
+      if (typeof installationId !== "string" || installationId.length === 0) {
+        return c.json(
+          {
+            error: "missing_credential_identifier",
+            message: "GitHub App callback missing `installation_id`.",
+            requestId,
+          },
+          400,
+        );
+      }
+      handlerPositionalCode = code;
+      handlerExtras = { installationId };
+    } else if (platform === "github-single-tenant") {
+      if (typeof installationId !== "string" || installationId.length === 0) {
+        return c.json(
+          {
+            error: "missing_credential_identifier",
+            message: "GitHub single-tenant callback missing `installation_id`.",
+            requestId,
+          },
+          400,
+        );
+      }
+      handlerPositionalCode = installationId;
+      handlerExtras = { installationId };
+    } else {
+      if (typeof code !== "string" || code.length === 0) {
+        return c.json(
+          {
+            error: "missing_credential_identifier",
+            message:
+              "Callback is missing `code` — the upstream Platform did not deliver an OAuth credential.",
+            requestId,
+          },
+          400,
+        );
+      }
+      handlerPositionalCode = code;
+      handlerExtras = undefined;
+    }
 
     const row = await getInstallableCatalogRowBySlug(platform);
     if (!row) {
@@ -911,7 +1059,7 @@ integrations.openapi(callbackRoute, async (c) =>
 
     let result: Awaited<ReturnType<typeof handler.handleCallback>>;
     try {
-      result = await handler.handleCallback(code, state);
+      result = await handler.handleCallback(handlerPositionalCode, state, handlerExtras);
     } catch (err) {
       // ONLY `PlatformOAuthExchangeError` is a user-actionable
       // "the upstream Platform refused the code exchange" — those get
@@ -1115,11 +1263,17 @@ integrations.openapi(disconnectRoute, async (c) =>
     // The facade's `uninstall` is general but the route layer keeps
     // the "is this platform supported by this deploy" gate so the
     // pre-cutover 501 envelope (for non-wired chat/action platforms)
-    // stays stable. Slack and the lazy-OAuth set are the universe of
-    // chat/action installs the disconnect path can handle today.
+    // stays stable. Three slug classes are wired:
+    //   - `slack` → chat_cache two-store teardown
+    //   - `INTEGRATION_CREDENTIALS_SLUGS` (salesforce / jira / linear)
+    //     → integration_credentials teardown
+    //   - `INLINE_CREDENTIAL_SLUGS` (github / github-single-tenant /
+    //     github-pat) → no separate credential store; the
+    //     workspace_plugins DELETE is the credential teardown
     const isSlack = platform === "slack";
     const isIntegrationCredentials = INTEGRATION_CREDENTIALS_SLUGS.has(platform);
-    if (!isSlack && !isIntegrationCredentials) {
+    const isInlineCredential = INLINE_CREDENTIAL_SLUGS.has(platform);
+    if (!isSlack && !isIntegrationCredentials && !isInlineCredential) {
       // Cheap pre-check: catalog lookup so the 404 still fires before
       // the 501. Otherwise an attacker probing unknown slugs would
       // learn whether the slug exists (501 vs 404).

@@ -62,6 +62,14 @@ import {
   createLinearApiKeyLazyBuilder,
 } from "@atlas/api/lib/integrations/linear/lazy-builder";
 import { GitHubPatFormInstallHandler } from "./github-pat-form-handler";
+import {
+  GitHubOAuthInstallHandler,
+  GITHUB_SLUG,
+} from "./github-oauth-handler";
+import {
+  GitHubSingleTenantOAuthInstallHandler,
+  GITHUB_SINGLE_TENANT_SLUG,
+} from "./github-single-tenant-oauth-handler";
 
 const log = createLogger("integrations.install.register");
 
@@ -164,6 +172,8 @@ export function registerBuiltinInstallHandlers(): void {
   registerJiraOAuthHandler();
   registerLinearOAuthHandler();
   registerSalesforceOAuthHandler();
+  registerGitHubAppOAuthHandler();
+  registerGitHubSingleTenantOAuthHandler();
 
   // ── Static-bot platforms (1.5.3 — Phase D, #2748+) ────────────────
   // Telegram is the keystone slice (#2748); Discord (#2749) is the
@@ -476,6 +486,158 @@ function registerTeamsStaticBotHandler(): void {
       appPasswordFingerprint: fingerprintToken(appPassword),
     },
     "Registered TeamsStaticBotInstallHandler",
+  );
+}
+
+/**
+ * Register the multi-tenant GitHub App OAuth handler when the operator
+ * env is wired (#2751, Phase D App-OAuth mode).
+ *
+ * Five env vars gate registration:
+ *   - `GITHUB_APP_ID` — numeric App ID from the App settings page.
+ *     Used at install-token mint time by the lazy builder (ships in a
+ *     follow-up PR); recorded on the handler instance for consistency
+ *     with the single-tenant sibling.
+ *   - `GITHUB_APP_SLUG` — App slug from `https://github.com/apps/<slug>`.
+ *     Used to build the install URL (`/apps/<slug>/installations/new`).
+ *   - `GITHUB_APP_PRIVATE_KEY` — App private key (`.pem` contents).
+ *     Used at install-token mint time by the lazy builder.
+ *   - `GITHUB_APP_CLIENT_ID` + `GITHUB_APP_CLIENT_SECRET` — App OAuth
+ *     credentials surfaced on the settings page after "Request user
+ *     authorization (OAuth) during installation" is enabled. Required
+ *     for the user-OAuth-flow ownership verification step (see
+ *     `GitHubOAuthInstallHandler` JSDoc for the threat model — without
+ *     this check a workspace admin can bind their workspace to a
+ *     different org's installation_id).
+ *
+ * `GITHUB_APP_INSTALLATION_ID` is intentionally NOT checked here — it's
+ * the single-tenant marker, distinct from the multi-tenant App config.
+ * The single-tenant handler registers separately.
+ */
+function registerGitHubAppOAuthHandler(): void {
+  const appId = process.env.GITHUB_APP_ID;
+  const appSlug = process.env.GITHUB_APP_SLUG;
+  const privateKey = process.env.GITHUB_APP_PRIVATE_KEY;
+  const clientId = process.env.GITHUB_APP_CLIENT_ID;
+  const clientSecret = process.env.GITHUB_APP_CLIENT_SECRET;
+  const publicApiUrl = resolvePublicApiUrl();
+
+  const required = {
+    GITHUB_APP_ID: appId,
+    GITHUB_APP_SLUG: appSlug,
+    GITHUB_APP_PRIVATE_KEY: privateKey,
+    GITHUB_APP_CLIENT_ID: clientId,
+    GITHUB_APP_CLIENT_SECRET: clientSecret,
+  };
+  const missing = Object.entries(required)
+    .filter(([, v]) => !v)
+    .map(([k]) => k);
+
+  if (missing.length > 0) {
+    if (isCatalogSlugEnabled("github")) {
+      log.error(
+        {
+          slug: "github",
+          requiredEnv: Object.keys(required),
+          missing,
+        },
+        "GitHub catalog row is enabled but one of GITHUB_APP_ID / GITHUB_APP_SLUG / GITHUB_APP_PRIVATE_KEY / GITHUB_APP_CLIENT_ID / GITHUB_APP_CLIENT_SECRET is unset — /api/v1/integrations/github/install will return 501 until configured.",
+      );
+    } else {
+      log.info(
+        "GitHub App OAuth handler not registered — required env unset and the 'github' catalog row is not enabled (operator hasn't opted in).",
+      );
+    }
+    return;
+  }
+  if (!publicApiUrl) {
+    log.warn(
+      "GitHub App OAuth handler not registered — ATLAS_PUBLIC_API_URL is unset, so the redirect URI cannot be resolved.",
+    );
+    return;
+  }
+
+  registerOAuthHandler(
+    GITHUB_SLUG,
+    new GitHubOAuthInstallHandler({
+      appId: appId!,
+      appSlug: appSlug!,
+      clientId: clientId!,
+      clientSecret: clientSecret!,
+      redirectUri: `${publicApiUrl}/api/v1/integrations/github/callback`,
+    }),
+  );
+  log.info(
+    { publicApiUrl, appSlug },
+    "Registered GitHubOAuthInstallHandler (no lazy builder yet — agent tool ships in follow-up)",
+  );
+}
+
+/**
+ * Register the single-tenant GitHub App OAuth handler when the operator
+ * env is wired (#2751, Phase D single-tenant mode). Mirrors the multi-
+ * tenant register but additionally requires `GITHUB_APP_INSTALLATION_ID`
+ * — the env-baked id the operator obtained when installing their App
+ * into their one GitHub org.
+ *
+ * Self-host only: the matching catalog row carries `saas_eligible:
+ * false`. The handler registers regardless of deploy mode if the env
+ * is set, but the integrations-catalog route hides the row on SaaS so
+ * customers never see the card.
+ */
+function registerGitHubSingleTenantOAuthHandler(): void {
+  const appId = process.env.GITHUB_APP_ID;
+  const appSlug = process.env.GITHUB_APP_SLUG;
+  const privateKey = process.env.GITHUB_APP_PRIVATE_KEY;
+  const installationId = process.env.GITHUB_APP_INSTALLATION_ID;
+  const publicApiUrl = resolvePublicApiUrl();
+
+  if (!appId || !appSlug || !privateKey || !installationId) {
+    if (isCatalogSlugEnabled("github-single-tenant")) {
+      log.error(
+        {
+          slug: "github-single-tenant",
+          requiredEnv: [
+            "GITHUB_APP_ID",
+            "GITHUB_APP_SLUG",
+            "GITHUB_APP_PRIVATE_KEY",
+            "GITHUB_APP_INSTALLATION_ID",
+          ],
+          missing: [
+            ...(!appId ? ["GITHUB_APP_ID"] : []),
+            ...(!appSlug ? ["GITHUB_APP_SLUG"] : []),
+            ...(!privateKey ? ["GITHUB_APP_PRIVATE_KEY"] : []),
+            ...(!installationId ? ["GITHUB_APP_INSTALLATION_ID"] : []),
+          ],
+        },
+        "GitHub single-tenant catalog row is enabled but one of GITHUB_APP_ID / GITHUB_APP_SLUG / GITHUB_APP_PRIVATE_KEY / GITHUB_APP_INSTALLATION_ID is unset — install route will return 501 until configured.",
+      );
+    } else {
+      log.info(
+        "GitHub single-tenant handler not registered — required env unset and the 'github-single-tenant' catalog row is not enabled (operator hasn't opted in).",
+      );
+    }
+    return;
+  }
+  if (!publicApiUrl) {
+    log.warn(
+      "GitHub single-tenant handler not registered — ATLAS_PUBLIC_API_URL is unset, so the redirect URI cannot be resolved.",
+    );
+    return;
+  }
+
+  registerOAuthHandler(
+    GITHUB_SINGLE_TENANT_SLUG,
+    new GitHubSingleTenantOAuthInstallHandler({
+      appId,
+      appSlug,
+      installationId,
+      redirectUri: `${publicApiUrl}/api/v1/integrations/github-single-tenant/callback`,
+    }),
+  );
+  log.info(
+    { publicApiUrl, appSlug },
+    "Registered GitHubSingleTenantOAuthInstallHandler (no lazy builder yet — agent tool ships in follow-up)",
   );
 }
 

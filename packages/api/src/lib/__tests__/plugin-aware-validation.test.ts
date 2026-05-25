@@ -8,12 +8,21 @@
  * - Custom validate() completely bypasses the standard pipeline
  * - wireDatasourcePlugins passes parserDialect + forbiddenPatterns through
  */
-import { describe, test, expect, beforeEach } from "bun:test";
-import { ConnectionRegistry } from "@atlas/api/lib/db/connection";
+import { describe, test, expect, beforeEach, afterAll } from "bun:test";
+import { ConnectionRegistry, connections } from "@atlas/api/lib/db/connection";
 import type { DBConnection, ConnectionPluginMeta } from "@atlas/api/lib/db/connection";
 import { PluginRegistry } from "@atlas/api/lib/plugins/registry";
 import type { PluginLike, PluginContextLike } from "@atlas/api/lib/plugins/registry";
 import { wireDatasourcePlugins } from "@atlas/api/lib/plugins/wiring";
+
+// `parserDatabase` + `validateSQL` (exercised below) read from the production
+// global `connections` singleton, so this file must mutate it rather than
+// provide a scoped `createConnectionTestLayer`. Reset on file exit so sibling
+// tests sharing the bun worker under `bun test --parallel` (1.5.4 / #2800)
+// don't inherit our `registerDirect` entries.
+afterAll(() => {
+  connections._reset();
+});
 
 // --- Helpers ---
 

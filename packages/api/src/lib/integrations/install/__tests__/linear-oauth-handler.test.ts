@@ -186,14 +186,16 @@ describe("LinearOAuthInstallHandler.startInstall", () => {
     expect(parsed.searchParams.get("prompt")).toBe("consent");
   });
 
-  it("requests the read + write + issues:create scopes", async () => {
+  it("requests the read + write + issues:create scopes as a comma-separated list", async () => {
+    // Linear's authorize endpoint is Linear-specific: scopes are
+    // **comma-separated**, not space-separated like Slack/Atlassian. A
+    // space-delimited value here returns `invalid_scope` and blocks
+    // every install. Pin the exact format so a refactor can't regress it.
     const handler = new LinearOAuthInstallHandler(LINEAR_CONFIG);
     const { redirectUrl } = await handler.startInstall(WSID);
 
     const scope = new URL(redirectUrl).searchParams.get("scope") ?? "";
-    expect(scope).toContain("read");
-    expect(scope).toContain("write");
-    expect(scope).toContain("issues:create");
+    expect(scope).toBe("read,write,issues:create");
   });
 
   it("mints a state token that verifies back to (workspaceId, 'linear')", async () => {

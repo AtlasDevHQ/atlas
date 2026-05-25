@@ -90,8 +90,17 @@ const GRAPHQL_URL = "https://api.linear.app/graphql";
  * If the operator's App is configured with a tighter scope set, Linear
  * rejects the install with `invalid_scope`; the admin sees the effective
  * scope list in `workspace_plugins.config.scopes`.
+ *
+ * Format note: Linear's `/oauth/authorize` expects the `scope` param as a
+ * **comma-separated** list (Linear-specific — distinct from the OAuth 2.0
+ * spec's space-separated convention used by Slack/Atlassian). Linear's
+ * `/oauth/token` response, conversely, echoes scopes as a **space-separated**
+ * string (per their docs, for apps created after Dec 1 2023). We keep one
+ * source of truth and serialize per-side.
  */
-const LINEAR_SCOPES = "read write issues:create";
+const LINEAR_SCOPES = ["read", "write", "issues:create"] as const;
+const LINEAR_AUTHORIZE_SCOPE = LINEAR_SCOPES.join(",");
+const LINEAR_DEFAULT_TOKEN_SCOPE = LINEAR_SCOPES.join(" ");
 
 /**
  * Operator-side Linear OAuth App config. Read once from env in
@@ -386,7 +395,7 @@ export class LinearOAuthInstallHandler implements OAuthPlatformInstallHandler {
     url.searchParams.set("client_id", this.config.clientId);
     url.searchParams.set("redirect_uri", this.config.redirectUri);
     url.searchParams.set("response_type", "code");
-    url.searchParams.set("scope", LINEAR_SCOPES);
+    url.searchParams.set("scope", LINEAR_AUTHORIZE_SCOPE);
     url.searchParams.set("state", stateToken);
     // `prompt=consent` forces Linear's consent screen on every install —
     // even for an admin who has previously granted Atlas access. Without
@@ -436,7 +445,7 @@ export class LinearOAuthInstallHandler implements OAuthPlatformInstallHandler {
     // granting workspace, so no routing identifier is needed.
     const viewer = await fetchLinearViewer(tokens.access_token);
 
-    const scopes = tokens.scope ?? LINEAR_SCOPES;
+    const scopes = tokens.scope ?? LINEAR_DEFAULT_TOKEN_SCOPE;
     const tokenType = tokens.token_type ?? "Bearer";
     const expiresAt =
       typeof tokens.expires_in === "number" && Number.isFinite(tokens.expires_in)

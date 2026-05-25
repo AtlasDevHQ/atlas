@@ -6,7 +6,14 @@ description: Slack is now wired through the @useatlas/chat plugin. This page red
 import { Callout } from "fumadocs-ui/components/callout";
 
 <Callout type="warn" title="Moved — @useatlas/slack is no longer published">
-The standalone `@useatlas/slack` package was removed in Atlas 1.5.2 ([#2650](https://github.com/AtlasDevHQ/atlas/pull/2650)). Slack is now a first-class adapter inside the unified **[Chat SDK bridge plugin (`@useatlas/chat`)](/plugins/interactions/chat)** — same routes, same env vars, plus multi-platform support (Teams, Discord, gchat, Telegram, GitHub, Linear, WhatsApp) and built-in state management.
+The standalone `@useatlas/slack` package was removed in Atlas 1.5.2 ([#2650](https://github.com/AtlasDevHQ/atlas/pull/2650)). Slack is now a first-class adapter inside the unified **[Chat SDK bridge plugin (`@useatlas/chat`)](/plugins/interactions/chat)**, which adds multi-platform support (Teams, Discord, gchat, Telegram, GitHub, Linear, WhatsApp) and built-in state management.
+
+**Routes and OAuth endpoints changed** — update your Slack app configuration:
+
+- Slash commands, events, and interactions → consolidated under `/api/plugins/chat-interaction/webhooks/slack` (was `/commands`, `/events`, `/interactions`)
+- OAuth install / callback → `/api/v1/integrations/slack/{install,callback}` (was `/install`, `/callback`)
+
+The Slack-side env vars (`SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN`) carry over; `SLACK_ENCRYPTION_KEY` is now required to encrypt per-workspace bot tokens at rest in `chat_cache`.
 </Callout>
 
 ## Where things live now

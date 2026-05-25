@@ -71,24 +71,25 @@ Stable adapters are bundled as dependencies of `@useatlas/chat` — no separate 
 ## Configuration
 
 <Callout type="info" title="Catalog-driven activation (1.5.2+)">
-The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650) (1.5.2). Adapter activation is now driven by the `catalog` rows declared in `atlas.config.ts` plus per-Platform env vars; `chatPlugin()` itself takes no credentials. The chat plugin reads the chat-type subset of the catalog inside `buildChatAdapterRegistry` and reads credentials from `process.env`.
+The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650) (1.5.2). Adapter activation is now driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. **You must pass the chat-relevant catalog entries through to `chatPlugin({ catalog })`** — the plugin's route gate, webhook mounts, and `AdapterRegistry` all read from `config.catalog` of the `chatPlugin(...)` call itself (not from the top-level `atlas.config.ts`). Credentials are read from `process.env`.
 </Callout>
 
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
 import { chatPlugin } from "@useatlas/chat";
 
+// Declared once and passed through to chatPlugin — see the Callout above.
+const catalog = [
+  { slug: "slack", type: "chat", install_model: "oauth",
+    enabled: true, saas_eligible: true },
+] as const;
+
 export default defineConfig({
-  // Operator declares which Platforms are wired + their install model.
-  // The chat plugin filters this to `type === "chat"` entries.
-  catalog: [
-    { slug: "slack", type: "chat", install_model: "oauth",
-      enabled: true, saas_eligible: true },
-  ],
+  catalog,
   plugins: [
     chatPlugin({
-      // No `adapters:` — credentials live in env vars (SLACK_CLIENT_ID etc.).
-      executeQuery: myQueryFunction,
+      catalog,                       // REQUIRED — the plugin reads it from here.
+      executeQuery: myQueryFunction, // credentials live in env vars (SLACK_CLIENT_ID etc.).
     }),
   ],
 });
@@ -97,15 +98,18 @@ export default defineConfig({
 ### Multi-Platform with State Persistence
 
 ```typescript
+const catalog = [
+  { slug: "slack",    type: "chat", install_model: "oauth",
+    enabled: true, saas_eligible: true },
+  { slug: "telegram", type: "chat", install_model: "static-bot",
+    enabled: true, saas_eligible: true },
+] as const;
+
 export default defineConfig({
-  catalog: [
-    { slug: "slack",    type: "chat", install_model: "oauth",
-      enabled: true, saas_eligible: true },
-    { slug: "telegram", type: "chat", install_model: "static-bot",
-      enabled: true, saas_eligible: true },
-  ],
+  catalog,
   plugins: [
     chatPlugin({
+      catalog,
       state: { backend: "pg" },
       executeQuery: myQueryFunction,
       actions: myActionCallbacks,
@@ -133,7 +137,7 @@ Per-Platform credentials come from environment variables — see [Environment Va
 
 | Option | Type | Required | Description |
 |--------|------|----------|-------------|
-| `catalog` | `ChatCatalogEntryInput[]` | No | Chat-type subset of `atlas.config.ts:catalog`. Pass through when the host wants to scope which catalog rows the plugin sees (e.g. in tests). Omit to let the plugin read from the host's resolved config. |
+| `catalog` | `ChatCatalogEntryInput[]` | Yes | Chat-relevant subset of `atlas.config.ts:catalog`. Pass the same `catalog` entries you declared at the host (non-chat entries pass through harmlessly — the registry filters by `type === "chat"`). **Required:** the route gate, webhook mounts, and `AdapterRegistry` all read from `config.catalog` of this `chatPlugin(...)` call itself — omitting it leaves no chat adapter activated and the plugin's health check reports unhealthy. |
 | `state` | `object` | No | State backend config (default: `{ backend: "memory" }`). |
 | `state.backend` | `"memory" \| "pg" \| "redis"` | No | State backend to use. Default: `"memory"`. |
 | `state.tablePrefix` | `string` | No | Table name prefix for PG backend. Must be a valid SQL identifier. Default: `"chat_"`. |
@@ -156,7 +160,7 @@ Per-Platform credentials come from environment variables — see [Environment Va
 | `reactions.customEmoji` | `object` | No | Override default emoji for each lifecycle stage (`received`, `processing`, `complete`, `error`). |
 
 <Callout type="info">
-At least one `catalog` row with `type: "chat"`, `enabled: true`, and a supported `install_model` must be present — otherwise no adapter activates and the plugin's health check reports unhealthy. Per-Platform credentials come from env vars (see [Environment Variables](#environment-variables)); Slack additionally requires both `SLACK_CLIENT_ID` and `SLACK_CLIENT_SECRET` together for the OAuth install path.
+At least one `catalog` row with `type: "chat"`, `enabled: true`, and a supported `install_model` must be present (and threaded through to `chatPlugin({ catalog })`) — otherwise no adapter activates and the plugin's health check reports unhealthy. Per-Platform credentials come from env vars (see [Environment Variables](#environment-variables)). For Slack OAuth specifically you need **all four**: `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_SIGNING_SECRET`, and `SLACK_ENCRYPTION_KEY` — the install will be skipped (and the chat plugin reported unhealthy) if any one is missing.
 </Callout>
 
 ## State Adapters
@@ -580,13 +584,15 @@ slackPlugin({ signingSecret: "...", botToken: "xoxb-...", executeQuery })
 import { defineConfig } from "@atlas/api/lib/config";
 import { chatPlugin } from "@useatlas/chat";
 
+const catalog = [
+  { slug: "slack", type: "chat", install_model: "oauth",
+    enabled: true, saas_eligible: true },
+] as const;
+
 export default defineConfig({
-  catalog: [
-    { slug: "slack", type: "chat", install_model: "oauth",
-      enabled: true, saas_eligible: true },
-  ],
+  catalog,
   plugins: [
-    chatPlugin({ executeQuery }),
+    chatPlugin({ catalog, executeQuery }),
   ],
 });
 
@@ -616,13 +622,15 @@ teamsPlugin({ appId: "...", appPassword: "...", executeQuery })
 import { defineConfig } from "@atlas/api/lib/config";
 import { chatPlugin } from "@useatlas/chat";
 
+const catalog = [
+  { slug: "teams", type: "chat", install_model: "static-bot",
+    enabled: true, saas_eligible: true },
+] as const;
+
 export default defineConfig({
-  catalog: [
-    { slug: "teams", type: "chat", install_model: "static-bot",
-      enabled: true, saas_eligible: true },
-  ],
+  catalog,
   plugins: [
-    chatPlugin({ executeQuery }),
+    chatPlugin({ catalog, executeQuery }),
   ],
 });
 

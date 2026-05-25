@@ -3,6 +3,8 @@ title: React Hooks Reference
 description: Headless React hooks for building custom Atlas chat UIs.
 ---
 
+import { Callout } from "fumadocs-ui/components/callout";
+
 The `@useatlas/react` package provides headless React hooks and a pre-built chat component for embedding Atlas into React applications. Use the hooks to build a fully custom UI, or drop in the `AtlasChat` component for a ready-made experience.
 
 ## Installation
@@ -478,14 +480,26 @@ Wraps the SDK's `beginConnect` + `completeConnect` with a popup-or-redirect life
 ```tsx
 "use client";
 
+import { useEffect, useState } from "react";
 import { useMcpConnect } from "@useatlas/react";
 import { buildConfig } from "@useatlas/sdk";
 
 export function ConnectAgentButton() {
+  // `useMcpConnect` runs in the browser, but the surrounding component
+  // can be rendered server-side under Next.js / RSC. Resolve the
+  // `redirectUri` from `window.location.origin` inside an effect so the
+  // first render doesn't crash with `window is not defined`.
+  const [redirectUri, setRedirectUri] = useState<string | null>(null);
+  useEffect(() => {
+    setRedirectUri(`${window.location.origin}/oauth/callback`);
+  }, []);
+
   const { connect, status, error, accessToken, workspaceId } = useMcpConnect({
     apiUrl: "https://mcp.useatlas.dev",
     clientName: "My SaaS — Atlas",
-    redirectUri: `${window.location.origin}/oauth/callback`,
+    // Pass a stable placeholder until the effect resolves the real origin.
+    // The button below is disabled while `redirectUri` is null.
+    redirectUri: redirectUri ?? "https://placeholder.invalid/oauth/callback",
     mode: "popup",
   });
 
@@ -501,7 +515,10 @@ export function ConnectAgentButton() {
 
   return (
     <>
-      <button onClick={() => void connect()} disabled={status !== "idle"}>
+      <button
+        onClick={() => void connect()}
+        disabled={status !== "idle" || redirectUri === null}
+      >
         Connect your AI agent
       </button>
       {error && <p style={{ color: "crimson" }}>{error.message}</p>}
@@ -509,6 +526,10 @@ export function ConnectAgentButton() {
   );
 }
 ```
+
+<Callout type="info">
+The example resolves `redirectUri` inside `useEffect` because `window` is undefined during server-side render (Next.js RSC, Remix loaders, etc.). If your component tree is browser-only — e.g. the page is statically exported and the button only mounts on the client — you can drop the effect and pass a template literal off `window.location.origin` directly.
+</Callout>
 
 ### useMcpConnect options
 

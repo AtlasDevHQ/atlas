@@ -133,15 +133,6 @@ export function createEEMock(overrides?: EEMockOverrides): EEMock {
       if (decryptThrows) throw new Error("mocked decrypt failure (key-rotation drift)");
       return v.startsWith("encrypted:") ? v.slice(10) : v;
     },
-    // Deprecated re-exports preserved post-#2285 — declared so any
-    // partial-mock consumer still importing the alias from
-    // `@atlas/api/lib/db/internal` doesn't trip the loader's
-    // `Export not found` guard. Same behavior as the canonical pair.
-    encryptUrl: (v: string) => `encrypted:${v}`,
-    decryptUrl: (v: string) => {
-      if (decryptThrows) throw new Error("mocked decrypt failure (key-rotation drift)");
-      return v.startsWith("encrypted:") ? v.slice(10) : v;
-    },
     getEncryptionKey: () => Buffer.from("test-key-32-bytes-long-enough!!!"),
     closeInternalDB: async () => {},
     migrateInternalDB: async () => {},

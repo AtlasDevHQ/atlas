@@ -21,8 +21,6 @@ import {
   _resetCircuitBreaker,
   encryptSecret,
   decryptSecret,
-  encryptUrl,
-  decryptUrl,
   getEncryptionKey,
   isPlaintextUrl,
   _resetEncryptionKeyCache,
@@ -923,18 +921,6 @@ describe("connection URL encryption", () => {
       expect(enc1).not.toBe(enc2); // Different IVs
       expect(decryptSecret(enc1)).toBe(url);
       expect(decryptSecret(enc2)).toBe(url);
-    });
-  });
-
-  describe("deprecated encryptUrl / decryptUrl re-exports", () => {
-    it("alias resolves to the same function reference as the canonical export", () => {
-      // Reference equality is the load-bearing assertion: it pins that
-      // the alias is `export const encryptUrl = encryptSecret` (not a
-      // wrapper), so any test that mocks the canonical name also stubs
-      // the alias automatically. A future "wrap, don't alias" refactor
-      // would break this and silently divert calls past mocks.
-      expect(encryptUrl).toBe(encryptSecret);
-      expect(decryptUrl).toBe(decryptSecret);
     });
   });
 

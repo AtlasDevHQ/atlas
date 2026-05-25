@@ -33,23 +33,6 @@
 
 import { Pool, type PoolClient } from "pg";
 import { createLogger } from "@atlas/api/lib/logger";
-// `internal.ts` and `secret-encryption.ts` both export `encryptSecret` /
-// `decryptSecret` post-#2285 (the internal pair is the URL-aware helper,
-// the secret-encryption pair is the versioned-prefix helper for
-// integration credentials). The local aliases (`*UrlSecret`) keep the
-// two paths visually distinct in the import block; the branded return
-// types (`URLSecret` / `OpaqueSecret`, #2370) make them structurally
-// distinct so the `case "url"` arm cannot compile-time bind to the
-// opaque helper. Pre-brand, swapping the import would have silently
-// re-encrypted plaintext `postgres://…` rows through the wrong helper
-// — the opaque helper lacks the URL-passthrough that the rotation
-// script relies on for first-time encryption of legacy plaintext rows.
-import {
-  decryptSecret as decryptUrlSecret,
-  encryptSecret as encryptUrlSecret,
-  isPlaintextUrl,
-  type URLSecret,
-} from "@atlas/api/lib/db/internal";
 import {
   activeKeyVersion,
   getEncryptionKeyset,
@@ -57,6 +40,7 @@ import {
 import {
   decryptSecret,
   encryptSecret,
+  hasVersionedPrefix,
   type OpaqueSecret,
 } from "@atlas/api/lib/db/secret-encryption";
 import {
@@ -71,28 +55,27 @@ const log = createLogger("rotate-encryption-key");
 // ---------------------------------------------------------------------------
 
 /**
- * A column whose ciphertext the rotation script should re-encrypt. The
- * shape extends `IntegrationTable` (the F-41 catalog) with a `kind`
- * discriminator that picks the right cipher helper pair:
+ * A column whose ciphertext the rotation script should re-encrypt. Every
+ * rotation target uses the `db/secret-encryption.ts` helper pair
+ * (versioned-prefix-only `encryptSecret` / `decryptSecret`).
  *
- *   `url`    → `db/internal.ts` pair (aliased `encryptUrlSecret` /
- *              `decryptUrlSecret`) — connection URL, with plaintext
- *              `postgres://…` fallback for pre-encryption rows
- *   `secret` → `db/secret-encryption.ts` pair (`encryptSecret` /
- *              `decryptSecret`) — every F-41 integration column plus
- *              the workspace model-config API key, which historically
- *              used the URL helper but reads identically now that both
- *              helpers share the versioned-keyset decryptor
+ * Pre-1.5.3 the script also rotated `connections.url` via the URL-aware
+ * `db/internal.ts` helper (with plaintext `postgres://…` first-time
+ * encryption fallback). That table was dropped in 0096 / #2744 per
+ * ADR-0007; datasource URLs now live inside `workspace_plugins.config`
+ * JSONB and are not in scope for this column-oriented rotation pass.
+ * The two remaining `db/internal.ts` consumers (`workspace_model_config`,
+ * `sso_providers`) read identically through the versioned-prefix
+ * decryptor — ciphertext format is shared across both helper pairs.
  */
-type RotateTarget = IntegrationTable & { kind: "url" | "secret" };
+type RotateTarget = IntegrationTable;
 
 const ROTATION_TABLES: readonly RotateTarget[] = [
-  { table: "connections", pk: "id", encrypted: "url", keyVersionColumn: "url_key_version", kind: "url" },
-  { table: "workspace_model_config", pk: "id", encrypted: "api_key_encrypted", keyVersionColumn: "api_key_key_version", kind: "secret" },
+  { table: "workspace_model_config", pk: "id", encrypted: "api_key_encrypted", keyVersionColumn: "api_key_key_version" },
   // Derive from F-41's INTEGRATION_TABLES so adding a new integration
   // in one place covers rotation, audit, and any future column-walking
   // tooling — matches the "single source of truth" convention.
-  ...INTEGRATION_TABLES.map((t): RotateTarget => ({ ...t, kind: "secret" })),
+  ...INTEGRATION_TABLES,
 ];
 
 // Parameterize table / column names into validated identifiers — we
@@ -111,40 +94,36 @@ function assertIdentifier(name: string, role: string): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Decrypt the stored ciphertext (under whichever keyset entry its
- * prefix names) and re-encrypt with the active key. Each arm returns
- * the brand owned by the helper it called:
- *   • `secret` — `db/secret-encryption.ts` pair → `OpaqueSecret`.
- *     `decryptSecret` passthrough for un-prefixed plaintext +
- *     re-encrypt under the active key.
- *   • `url` — `db/internal.ts` pair → `URLSecret`. Plaintext URLs
- *     (`postgres://…`) get encrypted for the first time;
- *     versioned/unversioned ciphertext is decrypted + re-encrypted.
- * Rotation is a convenient moment to close out the pre-encryption
- * back-compat window, so plaintext rows land encrypted on the other
- * side. Throws on decryption failure (caller handles orphan counting).
+ * Raised by `rotateValue` when the stored ciphertext does not carry the
+ * `enc:v<N>:` prefix. Surfaces separately from the generic decrypt
+ * failure path so the operator log distinguishes "dropped legacy key
+ * from ATLAS_ENCRYPTION_KEYS" (orphaned) from "row never had a
+ * prefix" (unprefixed — could be legitimate legacy plaintext, could be
+ * a corrupted/truncated `enc:v<N>:` prefix). Both are refusals: the
+ * script never silently re-encrypts an un-prefixed value, because a
+ * corrupted prefix round-tripped through `decryptSecret`/`encryptSecret`
+ * would emerge as ciphertext-of-the-broken-string with no way to
+ * recover the original.
  */
-function rotateValue(kind: RotateTarget["kind"], stored: string): URLSecret | OpaqueSecret {
-  switch (kind) {
-    case "url": {
-      if (isPlaintextUrl(stored)) {
-        return encryptUrlSecret(stored);
-      }
-      const decoded = decryptUrlSecret(stored);
-      return encryptUrlSecret(decoded);
-    }
-    case "secret": {
-      const decoded = decryptSecret(stored);
-      return encryptSecret(decoded);
-    }
-    default: {
-      // Exhaustiveness check — adding a third `kind` value forces a
-      // compile error here, so a new variant can't silently fall through
-      // to either cipher pair.
-      const _exhaustive: never = kind;
-      throw new Error(`Unhandled rotation kind: ${String(_exhaustive)}`);
-    }
+export class UnprefixedSecretError extends Error {
+  readonly _tag = "UnprefixedSecretError" as const;
+  constructor() {
+    super("Stored secret does not carry an enc:v<N>: prefix — rotation refused");
+    this.name = "UnprefixedSecretError";
   }
+}
+
+/**
+ * Decrypt the stored ciphertext (under whichever keyset entry its
+ * prefix names) and re-encrypt with the active key. Returns an
+ * `OpaqueSecret` brand. Throws on decryption failure (caller handles
+ * orphan counting), and refuses to operate on values that don't carry
+ * a `enc:v<N>:` prefix (`UnprefixedSecretError`).
+ */
+function rotateValue(stored: string): OpaqueSecret {
+  if (!hasVersionedPrefix(stored)) throw new UnprefixedSecretError();
+  const decoded = decryptSecret(stored);
+  return encryptSecret(decoded);
 }
 
 export interface RotateResult {
@@ -155,6 +134,15 @@ export interface RotateResult {
   skippedEmpty: number;
   /** Rows that failed to decrypt under the current keyset — operator misconfig (dropped legacy key). */
   orphaned: number;
+  /**
+   * Rows whose ciphertext does not carry the `enc:v<N>:` prefix. Either
+   * legitimate legacy plaintext predating F-47 OR a corrupted/truncated
+   * prefix; either way the rotation script refuses to touch the row.
+   * Operator must inspect and re-save the credential through the
+   * admin UI (which writes a fresh `enc:v<active>:` value) before the
+   * legacy key can be dropped.
+   */
+  unprefixed: number;
 }
 
 /**
@@ -186,6 +174,7 @@ export async function rotateTable(
     let updated = 0;
     let skippedEmpty = 0;
     let orphaned = 0;
+    let unprefixed = 0;
     for (const row of rows) {
       if (typeof row.encrypted !== "string" || row.encrypted.length === 0) {
         skippedEmpty += 1;
@@ -193,8 +182,22 @@ export async function rotateTable(
       }
       let re: string;
       try {
-        re = rotateValue(target.kind, row.encrypted);
+        re = rotateValue(row.encrypted);
       } catch (err) {
+        if (err instanceof UnprefixedSecretError) {
+          // Un-prefixed: either legitimate legacy plaintext (predates F-47)
+          // or a corrupted/truncated `enc:v<N>:` prefix. Distinct from
+          // `orphaned` because the remediation differs — the operator
+          // can't fix this by adding a legacy key back to the keyset;
+          // they have to inspect the row and re-save through the admin
+          // UI (which writes a fresh `enc:v<active>:` value).
+          log.error(
+            { table: target.table, pk: row.pk },
+            "Row missing enc:v<N>: prefix — manual intervention required (re-save via admin UI)",
+          );
+          unprefixed += 1;
+          continue;
+        }
         // Orphan: the row's ciphertext references a key version that
         // isn't in the current keyset (or decryption failed outright).
         // The operator needs to add the legacy key back before we can
@@ -202,11 +205,7 @@ export async function rotateTable(
         // the final summary distinguishes "nothing to rotate" from
         // "partial-success rotation". main() exits non-zero on orphans.
         log.error(
-          {
-            table: target.table,
-            pk: row.pk,
-            err: err instanceof Error ? err.message : String(err),
-          },
+          { table: target.table, pk: row.pk, err },
           "Failed to rotate row — legacy key likely dropped from ATLAS_ENCRYPTION_KEYS",
         );
         orphaned += 1;
@@ -222,7 +221,7 @@ export async function rotateTable(
     }
 
     await client.query("COMMIT");
-    return { table: target.table, scanned: rows.length, updated, skippedEmpty, orphaned };
+    return { table: target.table, scanned: rows.length, updated, skippedEmpty, orphaned, unprefixed };
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {
       // Rollback failure is secondary — the original error is what matters.
@@ -261,9 +260,35 @@ async function main(): Promise<void> {
   try {
     await lockClient.query("SELECT pg_advisory_lock($1)", [LOCK_KEY]);
 
+    // Pre-flight: verify every table in ROTATION_TABLES actually exists
+    // in the connected DB before we start mutating anything. Without
+    // this, a stale `INTEGRATION_TABLES` entry (e.g. an integration
+    // removed without dropping its table, or vice-versa) surfaces as a
+    // raw `relation "x" does not exist` mid-loop — operator gets no
+    // signal that prior tables already committed at the new key
+    // version. Bail before BEGIN so partial-rotation is impossible.
+    const missingTables: string[] = [];
+    for (const target of ROTATION_TABLES) {
+      const { rows } = await lockClient.query(
+        "SELECT to_regclass($1) AS exists",
+        [target.table],
+      );
+      if (rows[0]?.exists == null) missingTables.push(target.table);
+    }
+    if (missingTables.length > 0) {
+      log.error(
+        { missingTables, tableCount: ROTATION_TABLES.length },
+        "Rotation aborted: ROTATION_TABLES references table(s) missing from the connected DB. " +
+        "Either the migrations are out of date or INTEGRATION_TABLES is stale — investigate before rotating.",
+      );
+      process.exit(1);
+    }
+
     let totalUpdated = 0;
     let totalSkippedEmpty = 0;
     let totalOrphaned = 0;
+    let totalUnprefixed = 0;
+    const failedTables: Array<{ table: string; err: unknown }> = [];
     for (const target of ROTATION_TABLES) {
       const client = await pool.connect();
       try {
@@ -272,6 +297,7 @@ async function main(): Promise<void> {
         totalUpdated += result.updated;
         totalSkippedEmpty += result.skippedEmpty;
         totalOrphaned += result.orphaned;
+        totalUnprefixed += result.unprefixed;
         log.info(
           {
             table: result.table,
@@ -279,24 +305,55 @@ async function main(): Promise<void> {
             updated: result.updated,
             skippedEmpty: result.skippedEmpty,
             orphaned: result.orphaned,
+            unprefixed: result.unprefixed,
           },
           "rotate complete",
         );
+      } catch (err) {
+        // Per-table failure (rolled back inside rotateTable). Capture
+        // and continue — do NOT propagate, because tables earlier in
+        // the loop already committed at the new key version and the
+        // operator needs the full picture (which tables landed, which
+        // tables need a re-run). The accumulator + summary below makes
+        // the partial-success state legible; without it the script
+        // would exit with a single error line and no record of what
+        // already succeeded.
+        log.error(
+          { table: target.table, err },
+          "rotate failed for table — continuing with remaining tables; see summary below",
+        );
+        failedTables.push({ table: target.table, err });
       } finally {
         client.release();
       }
     }
 
-    if (totalOrphaned > 0) {
+    const partialFailure =
+      totalOrphaned > 0 || totalUnprefixed > 0 || failedTables.length > 0;
+
+    if (partialFailure) {
       // Loud summary-line error — the per-row log.errors above are easy
       // to miss in a long log tail. An operator walking the runbook
       // should not be able to exit this command and believe rotation
-      // completed when in fact `totalOrphaned` rows stayed at the
-      // legacy version and will 500 when `#1832` drops the plaintext.
+      // completed when in fact rows stayed at the legacy version (and
+      // will 500 once the legacy key is dropped from the keyset).
       log.error(
-        { active, totalUpdated, totalSkippedEmpty, totalOrphaned, tableCount: ROTATION_TABLES.length },
-        `Rotation finished with ${totalOrphaned} orphaned row(s) — their ciphertext references a key version ` +
-        "missing from ATLAS_ENCRYPTION_KEYS. Add the legacy key(s) back under the correct v<N>: label and re-run.",
+        {
+          active,
+          totalUpdated,
+          totalSkippedEmpty,
+          totalOrphaned,
+          totalUnprefixed,
+          failedTableCount: failedTables.length,
+          failedTables: failedTables.map((f) => f.table),
+          tableCount: ROTATION_TABLES.length,
+        },
+        `Rotation finished with partial failure: ` +
+        `${totalOrphaned} orphaned row(s), ${totalUnprefixed} un-prefixed row(s), ` +
+        `${failedTables.length} failed table(s). ` +
+        "Orphans: add the missing legacy key(s) back under the correct v<N>: label and re-run. " +
+        "Un-prefixed: re-save through admin UI to write a fresh enc:v<active>: value. " +
+        "Failed tables: see per-table error logs above; tables earlier in the loop already committed.",
       );
     } else {
       log.info(
@@ -304,9 +361,10 @@ async function main(): Promise<void> {
         "Rotation complete across all tables",
       );
     }
-    if (totalOrphaned > 0) {
-      // Exit code 2 distinguishes "ran to completion with orphans" from
-      // exit 1 (script bailed early: no DATABASE_URL / no keyset).
+    if (partialFailure) {
+      // Exit code 2 distinguishes "ran to completion with partial
+      // failure" from exit 1 (script bailed early: no DATABASE_URL /
+      // no keyset / pre-flight to_regclass found missing tables).
       process.exit(2);
     }
   } finally {
@@ -323,7 +381,11 @@ async function main(): Promise<void> {
 // `main()` side effects.
 if (import.meta.main) {
   main().catch((err) => {
-    log.error({ err: err instanceof Error ? err.message : String(err) }, "Rotation failed");
+    // Pass `err` directly so pino's `err` serializer (logger.ts:185)
+    // preserves the stack — a rotation failure may surface a deeply
+    // nested pg error, and the stack is the primary debugging
+    // artifact. Collapsing to `.message` here would drop it.
+    log.error({ err }, "Rotation failed");
     process.exit(1);
   });
 }

@@ -62,8 +62,6 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   initializeInternalDB: mock(() => Promise.resolve()),
   closeInternalDB: mock(() => Promise.resolve()),
   hasInternalDB: mock(() => true),
-  encryptUrl: mock((v: string) => v),
-  decryptUrl: mock((v: string) => v),
   encryptSecret: mock((v: string) => v),
   decryptSecret: mock((v: string) => v),
   MANAGED_AUTH_MIGRATIONS: new Set<string>(),

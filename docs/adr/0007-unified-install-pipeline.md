@@ -110,7 +110,7 @@ Replace `chat_cache` (chat tokens) and `integration_credentials` (OAuth tokens) 
 
 **For credential encryption (CLAUDE.md update needed):**
 - The "use `db/internal.ts` when the column is a URL" rule narrows to "for the legacy non-`workspace_plugins` columns that still use it (`workspace_model_config`, `sso_providers`)." New Datasource credentials use selective-field encryption inside `config`.
-- The `encryptUrl` / `decryptUrl` deprecated re-exports stay until 1.5.0 per existing schedule; no new call sites.
+- The `encryptUrl` / `decryptUrl` deprecated re-exports were removed in 1.5.3 closeout (#2755) per the original #2285 schedule.
 
 **For `/admin/connections`:**
 - The "Add Connection" dialog renders per-catalog-row install models. URL-form for Postgres/MySQL/ClickHouse/etc., OAuth for Salesforce (delegating to the existing `SalesforceOAuthInstallHandler`), service-account-JSON form for BigQuery.

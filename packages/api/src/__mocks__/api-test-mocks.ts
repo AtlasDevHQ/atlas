@@ -342,12 +342,6 @@ export function createApiTestMocks(
     _setInternalCircuitOpenForTests: mock(() => {}),
     encryptSecret: (url: string) => url,
     decryptSecret: (url: string) => url,
-    // Deprecated re-exports preserved post-#2285 — declared here so any
-    // partial-mock consumer that still imports `encryptUrl` / `decryptUrl`
-    // from `@atlas/api/lib/db/internal` doesn't blow up the loader with
-    // `Export not found`.
-    encryptUrl: (url: string) => url,
-    decryptUrl: (url: string) => url,
     getEncryptionKey: () => null,
     // F-47 keyset resolver — mocked as `null` so the passthrough contract
     // in both `encryptSecret` helpers (the URL-aware one in `db/internal.ts`

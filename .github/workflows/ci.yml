@@ -92,6 +92,9 @@ jobs:
       - name: Check no legacy `connections` / `connection_groups` SQL outside migrations (#2744)
         run: bash scripts/check-no-legacy-connections-sql.sh
 
+      - name: Check test-file discipline (1.5.4 / #2796)
+        run: bash scripts/check-test-discipline.sh
+
   lint:
     name: lint
     runs-on: ubuntu-latest

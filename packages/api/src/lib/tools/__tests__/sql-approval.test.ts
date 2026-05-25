@@ -157,7 +157,13 @@ const mockHasApprovedRequest = mock(() => Effect.succeed(false));
 // Force enterprise on so `ConditionalEELayer` lazy-imports `@atlas/ee/layers`
 // — without this, the no-op `ApprovalGate` fires and every test sees
 // `required: false` instead of the mock behaviour.
-process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+// Module-top env setup — must be set before the dynamic imports below
+// (the imported modules read env at module-load time). `??=` keeps the
+// assignment hoisted; cross-file leakage under `bun test --parallel`
+// (1.5.4 #2797) is bounded — the first file to load wins, no sibling
+// overwrites. Files that need to restore env do so in their own
+// afterAll; the `??=` here is the module-load contract, not teardown.
+process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
 
 // Core ApprovalError stub so the route's `instanceof ApprovalError` /
 // `domainError` mapping sees the same class the test layer constructs.
@@ -229,7 +235,7 @@ mock.module("@atlas/ee/governance/approval", () => ({
 
 const { executeSQL } = await import("@atlas/api/lib/tools/sql");
 
-process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
+process.env.ATLAS_DATASOURCE_URL ??= "postgresql://test:test@localhost:5432/test";
 
 type ToolResult = { success: boolean; error?: string; [key: string]: unknown };
 const executeTool = executeSQL.execute as unknown as (

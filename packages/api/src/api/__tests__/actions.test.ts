@@ -177,7 +177,13 @@ mock.module("@atlas/ee/auth/ip-allowlist", () => ({
 }));
 
 // Enable actions route before importing the app — the route mounts conditionally
-process.env.ATLAS_ACTIONS_ENABLED = "true";
+// Module-top env setup — must be set before the dynamic imports below
+// (the imported modules read env at module-load time). `??=` keeps the
+// assignment hoisted; cross-file leakage under `bun test --parallel`
+// (1.5.4 #2797) is bounded — the first file to load wins, no sibling
+// overwrites. Files that need to restore env do so in their own
+// afterAll; the `??=` here is the module-load contract, not teardown.
+process.env.ATLAS_ACTIONS_ENABLED ??= "true";
 
 // Import after mocks
 const { app } = await import("../index");

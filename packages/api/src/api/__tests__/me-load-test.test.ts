@@ -70,6 +70,13 @@ const mocks = createApiTestMocks({
 });
 
 const TEST_SECRET = "test-secret-must-be-at-least-32-characters-long";
+// Module-top env setup — must be set before the dynamic imports below
+// (the imported modules read env at module-load time). Unconditional `=`
+// is intentional: this test encrypts/decrypts with `TEST_SECRET` directly
+// in-file, so the in-flight `process.env.BETTER_AUTH_SECRET` MUST equal
+// `TEST_SECRET` for the crypto to round-trip. `??=` would let a developer's
+// `.env`-exported `BETTER_AUTH_SECRET` win and break the test (post-#2813
+// code-review fix).
 process.env.BETTER_AUTH_SECRET = TEST_SECRET;
 
 interface KeyFixture {

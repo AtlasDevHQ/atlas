@@ -69,6 +69,11 @@ const emptyCanonicalDir = fs.mkdtempSync(
 );
 const emptyCanonicalFixture = path.join(emptyCanonicalDir, "questions.yml");
 fs.writeFileSync(emptyCanonicalFixture, "questions: []\n");
+// Module-top env setup — must be set before the dynamic imports below
+// (the imported modules read env at module-load time). Unconditional `=`
+// is intentional: this test owns `emptyCanonicalFixture`, so a parent-env
+// value would break hermetic isolation (post-#2813 codex fix). For
+// path-typed test-owned vars, the override behavior is required.
 process.env.ATLAS_CANONICAL_QUESTIONS_PATH = emptyCanonicalFixture;
 
 // Import after mocks

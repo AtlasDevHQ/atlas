@@ -137,7 +137,13 @@ mock.module("@atlas/ee/auth/ip-allowlist", () => ({
 // --- Enterprise gate: flip the env var so the real `isEnterpriseEnabled`
 // resolves true without having to mock (and thereby reshape) the whole
 // `@atlas/ee/index` module surface that other EE modules depend on. ---
-process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+// Module-top env setup — must be set before the dynamic imports below
+// (the imported modules read env at module-load time). `??=` keeps the
+// assignment hoisted; cross-file leakage under `bun test --parallel`
+// (1.5.4 #2797) is bounded — the first file to load wins, no sibling
+// overwrites. Files that need to restore env do so in their own
+// afterAll; the `??=` here is the module-load contract, not teardown.
+process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
 
 // --- Audit mock: capture logAdminAction calls. Pass ADMIN_ACTIONS
 // through so the handler gets the real enum (including ip_allowlist.*). ---

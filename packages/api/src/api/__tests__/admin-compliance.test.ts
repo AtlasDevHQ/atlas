@@ -25,7 +25,13 @@ import { ADMIN_ACTIONS as REAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/action
 // `@atlas/ee/layers` aggregator below (otherwise the no-op default
 // fires and the masking + reports tests would hit the fail-closed
 // EnterpriseError path instead of the mocked Live impls).
-process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+// Module-top env setup — must be set before the dynamic imports below
+// (the imported modules read env at module-load time). `??=` keeps the
+// assignment hoisted; cross-file leakage under `bun test --parallel`
+// (1.5.4 #2797) is bounded — the first file to load wins, no sibling
+// overwrites. Files that need to restore env do so in their own
+// afterAll; the `??=` here is the module-load contract, not teardown.
+process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
 
 // ── Auth + DB stubs ────────────────────────────────────────────────
 

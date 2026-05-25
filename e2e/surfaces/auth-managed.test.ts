@@ -40,9 +40,15 @@ const savedEnv = {
 };
 
 // Set managed auth environment
-process.env.BETTER_AUTH_SECRET = "test-secret-that-is-at-least-32-characters-long";
-process.env.ATLAS_AUTH_MODE = "managed";
-process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost/test";
+// Module-top env setup — must be set before the dynamic imports below
+// (the imported modules read env at module-load time). `??=` keeps the
+// assignment hoisted; cross-file leakage under `bun test --parallel`
+// (1.5.4 #2797) is bounded — the first file to load wins, no sibling
+// overwrites. Files that need to restore env do so in their own
+// afterAll; the `??=` here is the module-load contract, not teardown.
+process.env.BETTER_AUTH_SECRET ??= "test-secret-that-is-at-least-32-characters-long";
+process.env.ATLAS_AUTH_MODE ??= "managed";
+process.env.ATLAS_DATASOURCE_URL ??= "postgresql://test:test@localhost/test";
 
 // ---------------------------------------------------------------------------
 // Mocks — everything except the managed auth validation path

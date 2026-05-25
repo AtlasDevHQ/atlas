@@ -20,6 +20,12 @@ const CHANNEL_ID = "C_TEST_CHANNEL";
 const USER_ID = "U_TEST_USER";
 
 // Set env before any module imports
+// Module-top env setup — must be set before the dynamic imports below
+// (the imported modules read env at module-load time). Unconditional `=`
+// is intentional: this test signs HMAC requests with `SIGNING_SECRET`
+// in-file, and the route handler validates against the env. They MUST
+// match; a developer's real `SLACK_SIGNING_SECRET` would 401 every
+// request (post-#2813 code-review fix). Same for `SLACK_BOT_TOKEN`.
 process.env.SLACK_SIGNING_SECRET = SIGNING_SECRET;
 process.env.SLACK_BOT_TOKEN = BOT_TOKEN;
 

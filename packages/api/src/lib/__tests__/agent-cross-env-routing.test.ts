@@ -32,7 +32,13 @@ import { createConnectionMock } from "@atlas/api/testing/connection";
 // Environment — must be set before module imports
 // ---------------------------------------------------------------------------
 
-process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
+// Module-top env setup — must be set before the dynamic imports below
+// (the imported modules read env at module-load time). `??=` keeps the
+// assignment hoisted; cross-file leakage under `bun test --parallel`
+// (1.5.4 #2797) is bounded — the first file to load wins, no sibling
+// overwrites. Files that need to restore env do so in their own
+// afterAll; the `??=` here is the module-load contract, not teardown.
+process.env.ATLAS_DATASOURCE_URL ??= "postgresql://test:test@localhost:5432/test";
 
 // ---------------------------------------------------------------------------
 // Module-level mock model — each test assigns its own MockLanguageModelV3

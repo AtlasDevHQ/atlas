@@ -21,7 +21,7 @@
  * These tests pin the idempotency contract for all three guards.
  */
 
-import { describe, expect, it, beforeEach, mock } from "bun:test";
+import { describe, expect, it, beforeEach, afterAll, mock } from "bun:test";
 import { plugins } from "../registry";
 import { pluginMcpToolRegistry } from "../mcp-tools";
 
@@ -47,6 +47,17 @@ beforeEach(() => {
   plugins._reset();
   pluginMcpToolRegistry._reset();
   configPlugins = [];
+});
+
+// `bootPluginsForMcp` is wired to the production `plugins` / `pluginMcpToolRegistry`
+// singletons by design (see mcp-boot.ts), so this file must mutate them rather
+// than provide a scoped `createPluginRegistryTestLayer`. Reset on file exit so
+// sibling tests sharing the bun worker under `bun test --parallel` (1.5.4 / #2799)
+// don't inherit our plugins or wired MCP tools.
+afterAll(() => {
+  plugins._reset();
+  pluginMcpToolRegistry._reset();
+  mock.restore();
 });
 
 describe("bootPluginsForMcp", () => {

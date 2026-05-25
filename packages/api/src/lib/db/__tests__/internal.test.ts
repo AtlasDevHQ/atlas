@@ -4,7 +4,7 @@
  * Uses _resetPool(mockPool) to inject a mock pool instance, avoiding
  * the need to mock the pg module (which is require()'d lazily).
  */
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, afterAll } from "bun:test";
 import { Effect } from "effect";
 import {
   hasInternalDB,
@@ -29,6 +29,15 @@ import {
   type URLSecret,
 } from "../internal";
 import { connections } from "../connection";
+
+// `loadSavedConnections` mutates the production global `connections` singleton
+// by design (it's the boot wiring path). The per-describe `afterEach` cleanups
+// below cover within-file isolation; this file-level reset covers cross-file
+// isolation when sibling tests share the bun worker under `bun test --parallel`
+// (1.5.4 / #2800).
+afterAll(() => {
+  connections._reset();
+});
 
 /** Mirrors migration 0093's `postgres` catalog `config_schema`. Pinned
  *  here so `loadSavedConnections` test fixtures stay close to the

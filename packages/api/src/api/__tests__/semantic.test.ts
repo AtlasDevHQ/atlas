@@ -89,6 +89,13 @@ dimensions: [invalid: yaml: structure
 setupFixtures();
 
 // Point semantic routes to our temp directory
+// Module-top env setup — must be set before the dynamic imports below
+// (the imported modules read env at module-load time). Unconditional `=`
+// is intentional: this test owns `tmpRoot`, so a parent-env value would
+// break hermetic isolation (post-#2813 codex fix). The
+// `packages/api/src/test-setup.ts` preload strips `ATLAS_*` per-file so
+// cross-file leakage under `bun test --parallel` (#2797) stays bounded
+// — for path-typed test-owned vars, the override behavior is required.
 process.env.ATLAS_SEMANTIC_ROOT = tmpRoot;
 
 // --- Mocks (before any import that touches the modules) ---

@@ -65,7 +65,13 @@ const mockExpireStaleRequests: Mock<(orgId: string) => Effect.Effect<unknown, un
 
 // Force enterprise on so `ConditionalEELayer` lazy-imports the mocked
 // `@atlas/ee/layers` aggregator below.
-process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+// Module-top env setup — must be set before the dynamic imports below
+// (the imported modules read env at module-load time). `??=` keeps the
+// assignment hoisted; cross-file leakage under `bun test --parallel`
+// (1.5.4 #2797) is bounded — the first file to load wins, no sibling
+// overwrites. Files that need to restore env do so in their own
+// afterAll; the `??=` here is the module-load contract, not teardown.
+process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
 
 // Core error stubs — the EnterpriseLayer's no-op defaults lazy-require
 // every governance/compliance/residency/model-routing errors module

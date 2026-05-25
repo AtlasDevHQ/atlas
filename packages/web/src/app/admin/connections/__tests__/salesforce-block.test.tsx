@@ -246,6 +246,59 @@ describe("SalesforceProviderBlock", () => {
     ).not.toBeNull();
   });
 
+  test("upsell branch → renders locked Upgrade CTA, hides OAuth Connect link", async () => {
+    // The wire row carries the pre-#2701 fields the schema transforms
+    // into `access.kind === "upgrade"`. `accessible: false` /
+    // `upgradeRequired: "business"` is the canonical "below-plan"
+    // shape returned by the API for a workspace whose plan tier
+    // doesn't include Salesforce.
+    mockCatalog([
+      salesforceRow({
+        installed: false,
+        upsellOnly: true,
+        accessible: false,
+        upgradeRequired: "business",
+        minPlan: "business",
+      }),
+    ]);
+
+    const { container } = render(
+      <SalesforceProviderBlock demoReadOnly={false} onChange={() => undefined} />,
+    );
+
+    // Locked CTA renders with the same `data-testid` shape the
+    // `CatalogCard` upsell branch uses (`salesforce-locked-cta`) so a
+    // future refactor that conflates the two paths stays consistent.
+    const lockedBtn = await waitFor(() => {
+      const el = container.querySelector<HTMLButtonElement>(
+        'button[data-testid="salesforce-locked-cta"]',
+      );
+      if (!el) throw new Error("locked Upgrade CTA not rendered yet");
+      return el;
+    });
+    expect(lockedBtn.disabled).toBe(true);
+    expect(lockedBtn.textContent).toContain("Upgrade");
+
+    // The OAuth Connect anchor MUST NOT render under upsell — otherwise
+    // a click here would start OAuth only to be rejected server-side
+    // with `plan_upgrade_required`, the exact UX the PR review (P2)
+    // called out as broken.
+    expect(
+      container.querySelector('a[href*="/api/v1/integrations/salesforce/install"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('a[data-testid="salesforce-connect"]'),
+    ).toBeNull();
+
+    // Plan badge surfaces the required tier so the admin knows why
+    // they're locked out.
+    const badge = container.querySelector(
+      '[data-testid="salesforce-plan-badge"]',
+    );
+    expect(badge).not.toBeNull();
+    expect(badge!.textContent).toContain("business");
+  });
+
   test("coming_soon → inert Coming soon CTA, no Connect link", async () => {
     mockCatalog([
       salesforceRow({ implementationStatus: "coming_soon" }),

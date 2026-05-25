@@ -42,7 +42,9 @@ import {
   ExternalLink,
   HardDrive,
   Loader2,
+  Lock,
   Plus,
+  Sparkles,
 } from "lucide-react";
 import {
   AlertDialog,
@@ -212,6 +214,57 @@ export function SalesforceProviderBlock({
 
   // ── Disconnected branch ──────────────────────────────────────────
   if (!installed) {
+    // Plan-gate the Connect CTA: when the catalog row reports
+    // `access.kind === "upgrade"`, the backend `/install` endpoint will
+    // refuse with `plan_upgrade_required` (`integrations.ts` plan-tier
+    // gate). Mirror the upgrade-gated UI from `CatalogCard` so the user
+    // sees the lock and required plan up front instead of bouncing
+    // through OAuth to a 403 redirect. The downgraded-while-installed
+    // case is handled separately by the connected branch — its
+    // Reconnect button keeps working even on a downgraded plan
+    // (matching the DELETE path's "must let downgraded customers
+    // clean up" posture in #2701).
+    if (entry.access.kind === "upgrade") {
+      const requiredPlan = entry.access.requiredPlan ?? entry.minPlan;
+      return (
+        <CompactRow
+          icon={HardDrive}
+          title={entry.name}
+          description={entry.description ?? `Premium — requires ${requiredPlan}`}
+          status="unavailable"
+          statusLabel={`Premium — requires ${requiredPlan}`}
+          action={
+            <div className="flex items-center gap-1.5">
+              <Lock
+                className="size-3.5 text-muted-foreground"
+                aria-label="Premium integration"
+                data-testid="salesforce-lock-icon"
+              />
+              <Badge
+                variant="outline"
+                className="gap-1 text-[10px]"
+                data-testid="salesforce-plan-badge"
+              >
+                <Sparkles className="size-3" />
+                Premium — requires {requiredPlan}
+              </Badge>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled
+                aria-label={`Available on ${requiredPlan} plans and above`}
+                title={`Available on ${requiredPlan} plans and above`}
+                data-testid="salesforce-locked-cta"
+              >
+                <Lock className="mr-1 size-3" />
+                Upgrade
+              </Button>
+            </div>
+          }
+        />
+      );
+    }
+
     const installHref = `${getApiUrl()}/api/v1/integrations/${SALESFORCE_SLUG}/install`;
     return (
       <CompactRow

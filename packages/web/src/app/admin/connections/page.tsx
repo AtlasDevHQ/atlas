@@ -100,6 +100,7 @@ import {
 } from "@/ui/lib/types";
 import { ConnectionsResponseSchema } from "@/ui/lib/admin-schemas";
 import { SalesforceProviderBlock } from "./salesforce-block";
+import { useRouter, useSearchParams } from "next/navigation";
 
 // ── Connection Form Dialog ───────────────────────────────────────
 
@@ -485,11 +486,21 @@ function ConnectionFormDialog({
                     </SelectTrigger>
                   </FormControl>
                   <SelectContent>
-                    {DB_TYPES.map((t) => (
+                    {DB_TYPES.filter((t) => t.value !== "salesforce").map((t) => (
                       <SelectItem key={t.value} value={t.value}>
                         {t.label}
                       </SelectItem>
                     ))}
+                    {/*
+                      Salesforce intentionally not listed: it's not a URL-form
+                      connection — installs happen via the OAuth dance on the
+                      Salesforce row above (#2745). Picking it here would
+                      create a `connections` row that immediately disappears
+                      from the page (the Salesforce slot renders the OAuth
+                      block instead) and that's never queryable because the
+                      Salesforce adapter reads its install from
+                      `workspace_plugins`, not `connections`.
+                    */}
                   </SelectContent>
                 </Select>
                 <FormMessage />
@@ -1052,6 +1063,54 @@ export default function ConnectionsPage() {
     { schema: ConnectionsResponseSchema },
   );
 
+  // ── OAuth callback toast handling for Salesforce (#2745) ────────────
+  //
+  // The Salesforce OAuth callback at `/api/v1/integrations/salesforce/callback`
+  // redirects browsers here with `?installed=salesforce`, `?reconnect=salesforce`,
+  // or `?error=salesforce&reason=<code>` (see `adminDestinationForPlatform`
+  // in `packages/api/src/api/routes/integrations.ts`). Mirror the toast +
+  // URL-cleanup pattern from `/admin/integrations` so the user sees a
+  // success / reconnect / error toast and a refresh doesn't replay it.
+  // Other platforms still land on `/admin/integrations`, so this handler
+  // is intentionally scoped to the `salesforce` slug only.
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  useEffect(() => {
+    const installed = searchParams.get("installed");
+    const reconnect = searchParams.get("reconnect");
+    const errParam = searchParams.get("error");
+    const reason = searchParams.get("reason");
+    if (!installed && !reconnect && !errParam) return;
+
+    if (installed === "salesforce") {
+      toast.success("Salesforce connected");
+      refetch();
+    }
+    if (reconnect === "salesforce") {
+      toast.warning("Salesforce install completed but credentials didn't persist", {
+        description: "Click Reconnect on the Salesforce row to retry the OAuth dance.",
+      });
+      refetch();
+    }
+    if (errParam === "salesforce") {
+      const description =
+        reason === "plan_upgrade_required"
+          ? "Your workspace plan doesn't include Salesforce. Upgrade and try again."
+          : reason === "invalid_state"
+            ? "The install link expired. Click Connect on the Salesforce row to start again."
+            : reason === "upstream_error"
+              ? "Salesforce refused the OAuth code. Click Connect to retry — if the problem persists, check the connected-app credentials."
+              : "Click Connect on the Salesforce row to retry.";
+      toast.error("Couldn't connect Salesforce", { description });
+    }
+
+    // Strip the four callback keys; preserve any other params for future use.
+    const next = new URLSearchParams(searchParams);
+    for (const key of ["installed", "reconnect", "error", "reason"]) next.delete(key);
+    const url = next.size > 0 ? `/admin/connections?${next.toString()}` : "/admin/connections";
+    router.replace(url, { scroll: false });
+  }, [searchParams, refetch, router]);
+
   // Post-0096 cutover (#2744 / ADR-0007): `/api/v1/admin/connection-groups`
   // is gone (collapsed into JSONB strings on each install). Derive the
   // env dropdown choices inline from the same connections list the page
@@ -1289,15 +1348,34 @@ export default function ConnectionsPage() {
                     // doesn't surface it, so the generic ProviderBlock
                     // would always render "Add connection" pointing at a
                     // URL-form dialog that has no input shape for the
-                    // OAuth flow. Render the dedicated block instead
-                    // (slice 7 of 1.5.3, #2745).
+                    // OAuth flow. Render the dedicated block, AND fall
+                    // through to render any legacy `connections` rows
+                    // with `db_type = salesforce` via `ProviderBlock`
+                    // so admins can still see + delete pre-cutover rows
+                    // (slice 7 of 1.5.3, #2745 — see PR review).
                     if (dbType === "salesforce") {
+                      const legacyConns = byType.get(dbType) ?? [];
                       return (
-                        <SalesforceProviderBlock
-                          key={dbType}
-                          demoReadOnly={demoReadOnly}
-                          onChange={handleMutationSuccess}
-                        />
+                        <div key={dbType} className="space-y-2">
+                          <SalesforceProviderBlock
+                            demoReadOnly={demoReadOnly}
+                            onChange={handleMutationSuccess}
+                          />
+                          {legacyConns.length > 0 ? (
+                            <ProviderBlock
+                              dbType={dbType}
+                              connections={legacyConns}
+                              demoReadOnly={demoReadOnly}
+                              loadingDetail={loadingDetail}
+                              testMutation={testMutation}
+                              testStatus={testStatus}
+                              onTest={testConnection}
+                              onEdit={handleEdit}
+                              onDelete={handleDelete}
+                              onAdd={handleAdd}
+                            />
+                          ) : null}
+                        </div>
                       );
                     }
                     const conns = byType.get(dbType) ?? [];

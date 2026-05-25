@@ -174,10 +174,17 @@ export class TelegramStaticBotInstallHandler implements StaticBotInstallHandler 
 
     let persistedId: string;
     try {
+      // Schema: `pillar` + `install_id` became NOT NULL in 0092 (#2739)
+      // and the auto-fill trigger was dropped in 0096 (#2744). The
+      // ON CONFLICT inference targets the `workspace_plugins_singleton`
+      // partial unique index. See discord-static-bot-handler.ts for the
+      // full rationale — identical schema, identical UPSERT shape.
       const rows = await internalQuery<{ id: string }>(
-        `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, enabled, installed_at)
-         VALUES ($1, $2, $3, $4::jsonb, true, NOW())
-         ON CONFLICT (workspace_id, catalog_id) DO UPDATE
+        `INSERT INTO workspace_plugins
+           (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
+         VALUES ($1, $2, $3, $1, 'chat', $4::jsonb, true, NOW())
+         ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action')
+         DO UPDATE
            SET config = EXCLUDED.config,
                enabled = true
          RETURNING id`,

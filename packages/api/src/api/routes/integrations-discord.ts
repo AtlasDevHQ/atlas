@@ -466,13 +466,6 @@ discordIntegrations.openapi(installRoute, async (c) =>
 
 discordIntegrations.openapi(callbackRoute, async (c) =>
   runHandler(c, "discord callback", async () => {
-    // No plan re-check here — Discord static-bot does NOT exchange the
-    // OAuth `code` for a per-Workspace token (the bot's auth lives with
-    // the operator). There's no single-use upstream side-effect to
-    // protect, so the `/install` plan gate is the only check needed.
-    // Contrast with `integrations.ts:/callback`, which does re-check
-    // because a `oauth2/token` exchange would burn a single-use code
-    // if a plan downgrade mid-OAuth blocked persistence.
     const requestId = crypto.randomUUID();
     const query = c.req.valid("query");
 
@@ -536,6 +529,83 @@ discordIntegrations.openapi(callbackRoute, async (c) =>
         },
         400,
       );
+    }
+
+    // ── Defensive catalog reload (#2790 codex P1) ────────────────
+    // /install already gated on `plugin_catalog.enabled = true` + plan
+    // eligibility, but the OAuth round-trip is async — an operator
+    // kill-switch flipped after /install AND before /callback would
+    // otherwise still persist the install row. Re-load the catalog
+    // here with the same `enabled = true` predicate; missing-row →
+    // 404 (admin UI surfaces the right toast).
+    const catalogRow = await loadDiscordCatalogRow();
+    if (!catalogRow) {
+      log.warn(
+        { workspaceId },
+        "Discord callback: catalog row missing or disabled — refusing install",
+      );
+      if (prefersHtml(c.req.raw)) {
+        return c.redirect(buildAdminIntegrationsUrl("error", { reason: "catalog_unavailable" }));
+      }
+      return c.json(
+        { error: "not_found", message: `Discord integration is no longer available.`, requestId },
+        404,
+      );
+    }
+
+    // ── Defensive plan re-check (#2790 codex P1) ─────────────────
+    // No single-use OAuth code is burned by Discord static-bot, but
+    // persisting an install row for a workspace that no longer admits
+    // the integration creates an admin-facing inconsistency (Installed
+    // card + upsell banner). Re-read entitlement, deny on downgrade.
+    //
+    // Asymmetric DB-blip handling vs `/install`: a 500 here would
+    // strand the user with a half-completed OAuth round-trip and no
+    // recovery path (the next /install attempt mints a fresh state
+    // token, so retry IS the recovery — but only after the DB is back).
+    // We log + let the install land if the entitlement read throws,
+    // matching the integrations.ts callback's posture.
+    if (workspaceId !== "self-hosted") {
+      let entitlement: Awaited<ReturnType<typeof getWorkspaceEntitlement>> | undefined;
+      try {
+        entitlement = await getWorkspaceEntitlement(workspaceId);
+      } catch (err) {
+        log.warn(
+          {
+            workspaceId,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "Discord callback plan re-check failed — skipping and letting install land (original /install already plan-checked)",
+        );
+      }
+      if (entitlement && !entitlement.isOperator) {
+        const requiredPlan = parsePlanTier(catalogRow.min_plan);
+        if (requiredPlan && !isPlanEligible(entitlement.planTier, requiredPlan)) {
+          const currentPlan = entitlement.planTier ?? "free";
+          log.info(
+            { workspaceId, requiredPlan, currentPlan },
+            "Discord callback denied: workspace plan changed mid-OAuth — install not written",
+          );
+          if (prefersHtml(c.req.raw)) {
+            return c.redirect(
+              buildAdminIntegrationsUrl("error", {
+                reason: "plan_upgrade_required",
+                required_plan: requiredPlan,
+              }),
+            );
+          }
+          return c.json(
+            {
+              error: "plan_upgrade_required" as const,
+              message: `Installing discord requires the "${requiredPlan}" plan. Your workspace is on the "${currentPlan}" plan.`,
+              required_plan: requiredPlan,
+              current_plan: currentPlan,
+              requestId,
+            },
+            403,
+          );
+        }
+      }
     }
 
     // Dispatch into the handler — UPSERT + reachability verification.

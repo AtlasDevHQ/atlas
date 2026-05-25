@@ -348,6 +348,48 @@ describe("/api/v1/integrations/discord", () => {
       expect(body.error).toBe("missing_guild_id");
     });
 
+    it("returns 404 when the catalog row is kill-switched between /install and /callback (codex P1)", async () => {
+      // /install gates on `enabled = true`; if ops disables the row
+      // mid-OAuth, /callback must refuse to write the install. The
+      // catalog reload at callback time enforces this.
+      catalogRowResponse = []; // no row matches `WHERE enabled = true`
+      const state = await mintValidState();
+      const app = await getApp();
+      const resp = await app.request(
+        `/api/v1/integrations/discord/callback?state=${encodeURIComponent(state)}&guild_id=123456789012345678`,
+        { method: "GET", headers: { accept: "application/json" } },
+      );
+      expect(resp.status).toBe(404);
+      const body = (await resp.json()) as Record<string, unknown>;
+      expect(body.error).toBe("not_found");
+    });
+
+    it("returns 403 plan_upgrade_required when the workspace plan was downgraded mid-OAuth (codex P1)", async () => {
+      // Simulate a starter→free downgrade between /install (which
+      // plan-checked successfully) and /callback. The defensive
+      // re-check refuses to persist; admin UI surfaces the upgrade
+      // prompt on redirect.
+      entitlementRowResponse = [FREE_ENTITLEMENT];
+      mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("FROM plugin_catalog")) {
+          return Promise.resolve(catalogRowResponse);
+        }
+        if (sql.includes("FROM organization")) {
+          return Promise.resolve(entitlementRowResponse);
+        }
+        return Promise.resolve([]);
+      });
+      const state = await mintValidState();
+      const app = await getApp();
+      const resp = await app.request(
+        `/api/v1/integrations/discord/callback?state=${encodeURIComponent(state)}&guild_id=123456789012345678`,
+        { method: "GET", headers: { accept: "application/json" } },
+      );
+      expect(resp.status).toBe(403);
+      const body = (await resp.json()) as Record<string, unknown>;
+      expect(body.error).toBe("plan_upgrade_required");
+    });
+
     it("dispatches into the Discord handler on the happy path and redirects to ?installed=discord", async () => {
       // The handler is registered at boot via
       // `registerBuiltinInstallHandlers` (env-gated on DISCORD_BOT_TOKEN +

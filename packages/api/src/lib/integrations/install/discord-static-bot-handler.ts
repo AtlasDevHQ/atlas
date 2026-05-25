@@ -234,10 +234,26 @@ export class DiscordStaticBotInstallHandler implements StaticBotInstallHandler {
 
     let persistedId: string;
     try {
+      // Schema notes:
+      //   - `pillar` + `install_id` became NOT NULL in migration 0092
+      //     (#2739) and the auto-fill trigger was dropped in 0096
+      //     (#2744). Every writer must name both columns explicitly.
+      //   - Chat-pillar installs are singletons per (workspace, catalog),
+      //     enforced by the `workspace_plugins_singleton` partial unique
+      //     index (`WHERE pillar IN ('chat','action')` from migration
+      //     0092). We target it via the inference clause
+      //     `ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat','action')`
+      //     so re-install lands on the existing row (idempotent UPSERT).
+      //   - For chat-pillar there's only one install per (workspace,
+      //     catalog), so `install_id` mirrors `id` — Workspaceinstaller's
+      //     datasource path uses a caller-supplied installId; static-bot
+      //     chat installs don't have that surface, so we reuse the row id.
       const rows = await internalQuery<{ id: string }>(
-        `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, enabled, installed_at)
-         VALUES ($1, $2, $3, $4::jsonb, true, NOW())
-         ON CONFLICT (workspace_id, catalog_id) DO UPDATE
+        `INSERT INTO workspace_plugins
+           (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
+         VALUES ($1, $2, $3, $1, 'chat', $4::jsonb, true, NOW())
+         ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action')
+         DO UPDATE
            SET config = EXCLUDED.config,
                enabled = true
          RETURNING id`,

@@ -715,6 +715,39 @@ describe("chat-plugin executeQuery host helper", () => {
     expect(capturedAgentCalls).toHaveLength(0);
   });
 
+  it("Discord fail-closes when the same guild_id maps to multiple workspaces — cross-tenant misroute defense (codex P1)", async () => {
+    // The DB schema doesn't enforce global cross-workspace uniqueness
+    // on the routing identifier today. Without the duplicate guard in
+    // the resolver, two workspaces installing the same guild_id would
+    // silently let inbound interactions land in an arbitrary workspace
+    // — a cross-tenant data exposure risk. The fail-closed branch
+    // surfaces as the same user-safe error as "unknown guild," and an
+    // operator log line points at the duplicate.
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("workspace_plugins")) {
+        return Promise.resolve([
+          { workspace_id: "org-a" },
+          { workspace_id: "org-b" },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await expect(
+      runExecuteQuery("q", {
+        threadId: "discord:gdup",
+        adapter: { name: "discord" },
+        rawMessage: {
+          id: "interaction-dup",
+          guild_id: "123456789012345678",
+          channel_id: "C1",
+        },
+      }),
+    ).rejects.toThrow(/not connected to Atlas/i);
+    expect(capturedAgentCalls).toHaveLength(0);
+  });
+
   it("Discord rejects events whose guild_id isn't a valid snowflake — defends rate-limit cache key shape", async () => {
     // Even though the Ed25519 signature gate catches forgery at the
     // adapter layer, the dispatcher belt-and-suspenders by re-validating

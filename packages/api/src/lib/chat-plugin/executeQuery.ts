@@ -528,16 +528,31 @@ class TelegramUnknownTenantError extends Error {
  * install row IS the tenant lookup — no parallel store to keep in sync.
  */
 async function resolveTelegramWorkspaceId(chatId: string): Promise<string> {
+  // No LIMIT — fail-closed when the same chat_id maps to >1 workspace.
+  // The DB schema doesn't currently enforce global uniqueness across
+  // workspaces for the routing identifier (workspace_plugins_singleton
+  // is per-workspace, not cross-workspace). Without this guard, two
+  // workspaces installing the same chat_id would silently misroute
+  // inbound messages — cross-tenant data exposure.
   const rows = await internalQuery<{ workspace_id: string }>(
     `SELECT workspace_id
        FROM workspace_plugins
       WHERE catalog_id = $1
         AND enabled = true
-        AND config->>'chat_id' = $2
-      LIMIT 1`,
+        AND config->>'chat_id' = $2`,
     ["catalog:telegram", chatId],
   );
   if (rows.length === 0) {
+    throw new TelegramUnknownTenantError(fingerprintChatId(chatId));
+  }
+  if (rows.length > 1) {
+    log.error(
+      {
+        chatIdFingerprint: fingerprintChatId(chatId),
+        matchCount: rows.length,
+      },
+      "Telegram chat_id maps to multiple workspaces — refusing query (cross-tenant misroute risk). Operator must disconnect the duplicate install.",
+    );
     throw new TelegramUnknownTenantError(fingerprintChatId(chatId));
   }
   return rows[0].workspace_id;
@@ -686,16 +701,29 @@ class DiscordUnknownTenantError extends Error {
  * tenant lookup (no parallel store to keep in sync). See ADR-0007.
  */
 async function resolveDiscordWorkspaceId(guildId: string): Promise<string> {
+  // No LIMIT — fail-closed when the same guild_id maps to >1 workspace.
+  // Same rationale as Telegram's resolver: the schema doesn't enforce
+  // cross-workspace guild_id uniqueness today, and silently picking
+  // one match is a cross-tenant data exposure risk.
   const rows = await internalQuery<{ workspace_id: string }>(
     `SELECT workspace_id
        FROM workspace_plugins
       WHERE catalog_id = $1
         AND enabled = true
-        AND config->>'guild_id' = $2
-      LIMIT 1`,
+        AND config->>'guild_id' = $2`,
     ["catalog:discord", guildId],
   );
   if (rows.length === 0) {
+    throw new DiscordUnknownTenantError(fingerprintGuildId(guildId));
+  }
+  if (rows.length > 1) {
+    log.error(
+      {
+        guildIdFingerprint: fingerprintGuildId(guildId),
+        matchCount: rows.length,
+      },
+      "Discord guild_id maps to multiple workspaces — refusing query (cross-tenant misroute risk). Operator must disconnect the duplicate install.",
+    );
     throw new DiscordUnknownTenantError(fingerprintGuildId(guildId));
   }
   return rows[0].workspace_id;

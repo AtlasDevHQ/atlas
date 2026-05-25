@@ -243,8 +243,17 @@ describe("DiscordStaticBotInstallHandler.confirmInstall — persistence", () => 
 
     expect(mockInternalQuery).toHaveBeenCalledTimes(1);
     const [sql, params] = mockInternalQuery.mock.calls[0];
-    expect(String(sql)).toMatch(/INSERT INTO workspace_plugins/);
-    expect(String(sql)).toMatch(/ON CONFLICT.*workspace_id.*catalog_id.*DO UPDATE/s);
+    const sqlText = String(sql);
+    expect(sqlText).toMatch(/INSERT INTO workspace_plugins/);
+    // Required NOT NULL columns post-0092 / 0096 (codex P0 regression
+    // catcher) — the INSERT must name pillar + install_id explicitly,
+    // and chat-pillar installs target the partial singleton index via
+    // the WHERE clause on the conflict target so re-install is
+    // idempotent.
+    expect(sqlText).toMatch(/install_id/);
+    expect(sqlText).toMatch(/pillar/);
+    expect(sqlText).toMatch(/'chat'/);
+    expect(sqlText).toMatch(/ON CONFLICT.*workspace_id.*catalog_id.*WHERE.*pillar.*DO UPDATE/s);
 
     const paramsArr = params as unknown[];
     expect(paramsArr).toContain(wsid);

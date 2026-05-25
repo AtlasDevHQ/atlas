@@ -203,8 +203,15 @@ describe("TelegramStaticBotInstallHandler.confirmInstall — persistence", () =>
 
     expect(mockInternalQuery).toHaveBeenCalledTimes(1);
     const [sql, params] = mockInternalQuery.mock.calls[0];
-    expect(String(sql)).toMatch(/INSERT INTO workspace_plugins/);
-    expect(String(sql)).toMatch(/ON CONFLICT.*workspace_id.*catalog_id.*DO UPDATE/s);
+    const sqlText = String(sql);
+    expect(sqlText).toMatch(/INSERT INTO workspace_plugins/);
+    // Required NOT NULL columns post-0092 / 0096 — INSERT must name
+    // pillar + install_id; chat-pillar installs target the partial
+    // singleton index for idempotent re-install (codex P0).
+    expect(sqlText).toMatch(/install_id/);
+    expect(sqlText).toMatch(/pillar/);
+    expect(sqlText).toMatch(/'chat'/);
+    expect(sqlText).toMatch(/ON CONFLICT.*workspace_id.*catalog_id.*WHERE.*pillar.*DO UPDATE/s);
 
     expect(Array.isArray(params)).toBe(true);
     const paramsArr = params as unknown[];

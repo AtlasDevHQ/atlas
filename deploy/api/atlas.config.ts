@@ -214,6 +214,70 @@ export default defineConfig({
       saas_eligible: true,
       implementation_status: "coming_soon",
     },
+    // ── Linear (1.5.3 #2750 — Phase D, Action Target) ──────────────
+    // Two catalog rows, one per install mode (per CONTEXT.md
+    // "Multi-mode integrations" — each install model is its own row so
+    // the admin sees the real trade-off in /admin/integrations cards).
+    // Both rows are pillar='action' (Atlas creates Linear issues; this
+    // is NOT a chat platform — users don't talk to Atlas through Linear).
+    // A future `linear-data` row for Linear-as-Datasource is documented
+    // in ADR-0006 but out of scope for this milestone.
+    //
+    //   - `linear` (OAuth): Atlas OAuth App (per-deploy LINEAR_CLIENT_ID
+    //     + LINEAR_CLIENT_SECRET); workspace admins grant Atlas access
+    //     to one Linear workspace; refresh tokens persist in
+    //     `integration_credentials`. Mirrors the Jira/Salesforce shape.
+    //   - `linear-apikey` (form): workspace admin pastes a Personal API
+    //     Key from Linear settings; the key encrypts inline into
+    //     `workspace_plugins.config.api_key` via selective-field
+    //     encryption (keyed on `secret: true` below).
+    //
+    // SaaS-eligible note: API-key mode is acceptable on SaaS for entry-
+    // tier workspaces (low blast radius — a per-workspace personal key
+    // can be rotated unilaterally). OAuth is the recommended path for
+    // every other workspace. Self-host operators who'd rather not
+    // register an OAuth App can use API-key mode exclusively.
+    {
+      slug: "linear",
+      type: "integration",
+      install_model: "oauth",
+      enabled: true,
+      saas_eligible: true,
+      name: "Linear (OAuth)",
+      description:
+        "Create Linear issues from agent findings. Connects through your operator's Linear OAuth App and refreshes access tokens automatically.",
+      min_plan: "starter",
+    },
+    {
+      slug: "linear-apikey",
+      type: "integration",
+      install_model: "form",
+      enabled: true,
+      saas_eligible: true,
+      name: "Linear (API Key)",
+      description:
+        "Create Linear issues from agent findings using a personal API key from Linear settings. The simplest install — no OAuth App registration required — but the key is tied to one Linear user.",
+      min_plan: "starter",
+      configSchema: [
+        {
+          key: "api_key",
+          type: "string",
+          label: "Linear Personal API Key",
+          description:
+            "Generate one at https://linear.app/settings/api → \"Personal API keys\". Stored encrypted at rest.",
+          required: true,
+          secret: true,
+        },
+        {
+          key: "workspace_name",
+          type: "string",
+          label: "Workspace name",
+          description:
+            "Optional admin-friendly label for which Linear workspace this key belongs to. Defaults to the workspace name returned by Linear's API at first use.",
+          required: false,
+        },
+      ],
+    },
     // ── Lazy OAuth integrations (1.5.2 slice 8 — #2658 / #2659) ─────
     // Salesforce (#2658) established the pattern; Jira (#2659) proves
     // the abstraction by riding the same shared infra:

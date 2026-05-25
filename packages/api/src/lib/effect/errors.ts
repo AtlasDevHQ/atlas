@@ -395,6 +395,31 @@ export class JiraReconnectRequiredError extends Data.TaggedError(
   readonly upstreamError: string;
 }> {}
 
+/**
+ * Linear OAuth refresh-token rotation failed permanently — Linear returned
+ * `invalid_grant` / `invalid_client`, the stored refresh token was rejected,
+ * or the OAuth App's `actor=app` scope was revoked. The install row's
+ * `workspace_plugins.config.status` has already been flipped to
+ * `"reconnect_needed"` by the refresh flow.
+ *
+ * Maps to HTTP 409 Conflict — same wire shape as
+ * {@link JiraReconnectRequiredError}. Third consumer of the pattern.
+ * The {@link IntegrationReconnectRequiredError} extraction (filed as a
+ * follow-up at #2659 review time) becomes justified at three; this
+ * Linear addition makes the rule of three concrete, so the extraction
+ * issue can land in a follow-up PR.
+ *
+ * @see packages/api/src/lib/integrations/install/linear-token-refresh.ts
+ */
+export class LinearReconnectRequiredError extends Data.TaggedError(
+  "LinearReconnectRequiredError",
+)<{
+  readonly message: string;
+  readonly workspaceId: string;
+  /** Raw Linear error code (`invalid_grant`, etc.). Forensic-only. */
+  readonly upstreamError: string;
+}> {}
+
 // ── Telegram static-bot install (#2748 — 1.5.3 Phase D keystone) ────
 
 /**
@@ -642,6 +667,7 @@ export type AtlasError =
   | PlatformOAuthExchangeError
   | SalesforceReconnectRequiredError
   | JiraReconnectRequiredError
+  | LinearReconnectRequiredError
   | TelegramChatIdInvalidError
   | TelegramReachabilityError
   | TelegramApiUnavailableError
@@ -707,6 +733,7 @@ export const ATLAS_ERROR_TAG_LIST = [
   "PlatformOAuthExchangeError",
   "SalesforceReconnectRequiredError",
   "JiraReconnectRequiredError",
+  "LinearReconnectRequiredError",
   "TelegramChatIdInvalidError",
   "TelegramReachabilityError",
   "TelegramApiUnavailableError",

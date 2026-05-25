@@ -7,6 +7,7 @@
     "llm-providers",
     "telegram",
     "discord",
+    "linear",
     "sub-processor-feed"
   ]
 }

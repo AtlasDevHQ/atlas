@@ -47,6 +47,16 @@ import { createJiraLazyBuilder } from "@atlas/api/lib/integrations/jira/lazy-bui
 import { createSalesforceLazyBuilder } from "@atlas/api/lib/integrations/salesforce/lazy-builder";
 import { createEmailLazyBuilder } from "@atlas/api/lib/integrations/email-tool";
 import { EMAIL_CATALOG_ID } from "./email-secret-schema";
+import {
+  LinearOAuthInstallHandler,
+  LINEAR_CATALOG_ID,
+} from "./linear-oauth-handler";
+import { LinearApiKeyFormInstallHandler } from "./linear-apikey-form-handler";
+import { LINEAR_APIKEY_CATALOG_ID } from "./linear-apikey-secret-schema";
+import {
+  createLinearOAuthLazyBuilder,
+  createLinearApiKeyLazyBuilder,
+} from "@atlas/api/lib/integrations/linear/lazy-builder";
 
 const log = createLogger("integrations.install.register");
 
@@ -113,6 +123,19 @@ export function registerBuiltinInstallHandlers(): void {
   log.info("Registered ObsidianFormInstallHandler");
   registerFormHandler("webhook", new WebhookFormInstallHandler());
   log.info("Registered WebhookFormInstallHandler");
+  // Linear API-key form-install (#2750). Pairs with the lazy builder
+  // for `catalog:linear-apikey` registered below — same "register both
+  // halves together so a half-wired deploy can't end up with an
+  // installable card whose first tool call fails with builder_missing"
+  // rule as Email's pairing above.
+  registerFormHandler("linear-apikey", new LinearApiKeyFormInstallHandler());
+  if (!lazyPluginLoader.hasBuilder(LINEAR_APIKEY_CATALOG_ID)) {
+    lazyPluginLoader.registerBuilder(
+      LINEAR_APIKEY_CATALOG_ID,
+      createLinearApiKeyLazyBuilder(),
+    );
+  }
+  log.info("Registered LinearApiKeyFormInstallHandler + LazyPluginLoader builder");
 
   // ── Slack OAuth ───────────────────────────────────────────────────
   registerSlackOAuthHandler();
@@ -125,6 +148,7 @@ export function registerBuiltinInstallHandlers(): void {
   // operator install doesn't end up with an installable card that
   // breaks on the first tool call.
   registerJiraOAuthHandler();
+  registerLinearOAuthHandler();
   registerSalesforceOAuthHandler();
 
   // ── Static-bot platforms (1.5.3 — Phase D, #2748+) ────────────────
@@ -200,6 +224,41 @@ function registerJiraOAuthHandler(): void {
     );
   }
   log.info({ publicApiUrl }, "Registered JiraOAuthInstallHandler + LazyPluginLoader builder");
+}
+
+function registerLinearOAuthHandler(): void {
+  const clientId = process.env.LINEAR_CLIENT_ID;
+  const clientSecret = process.env.LINEAR_CLIENT_SECRET;
+  const publicApiUrl = resolvePublicApiUrl();
+
+  if (!clientId || !clientSecret) {
+    log.info(
+      "Linear OAuth handler not registered — LINEAR_CLIENT_ID / LINEAR_CLIENT_SECRET unset. /api/v1/integrations/linear/install will return 501 until configured. (linear-apikey form-install path remains available — no env gate.)",
+    );
+    return;
+  }
+  if (!publicApiUrl) {
+    log.warn(
+      "Linear OAuth handler not registered — ATLAS_PUBLIC_API_URL is unset, so the redirect URI cannot be resolved.",
+    );
+    return;
+  }
+
+  registerOAuthHandler(
+    "linear",
+    new LinearOAuthInstallHandler({
+      clientId,
+      clientSecret,
+      redirectUri: `${publicApiUrl}/api/v1/integrations/linear/callback`,
+    }),
+  );
+  if (!lazyPluginLoader.hasBuilder(LINEAR_CATALOG_ID)) {
+    lazyPluginLoader.registerBuilder(
+      LINEAR_CATALOG_ID,
+      createLinearOAuthLazyBuilder({ clientId, clientSecret }),
+    );
+  }
+  log.info({ publicApiUrl }, "Registered LinearOAuthInstallHandler + LazyPluginLoader builder");
 }
 
 function registerSalesforceOAuthHandler(): void {

@@ -33,12 +33,20 @@ echo ""
 echo "Running with --parallel --max-workers=1 (forces all files into one worker)..."
 echo ""
 
-# Run with --parallel --max-workers=1 to force shared worker. --pass-with-no-tests
-# guards against the glob coming up empty (e.g. files renamed).
-# Note: `bun test` matches `**/*.test.{ts,tsx,js,jsx}` by default; fixtures use
-# `.experiment.ts` so they're skipped — invoke explicitly by directory.
+# `bun test` only matches `*.test.{ts,tsx,js,jsx}` by default — our
+# fixtures use `.experiment.ts` so they're skipped if we pass the dir.
+# Enumerate explicit file paths instead, prefixed with `./` so bun
+# treats them as paths (not name filters), and drop --pass-with-no-tests
+# so a missing/renamed fixture fails loudly (post-#2813
+# silent-failure-hunter fix).
+EXPERIMENT_FILES=$(find "$EXPERIMENT_DIR" -name '*.experiment.ts' -type f | sort | sed 's|^|./|')
+if [ -z "$EXPERIMENT_FILES" ]; then
+  echo "::error::No *.experiment.ts files found under $EXPERIMENT_DIR" >&2
+  exit 2
+fi
 set +e
-bun test --parallel --max-workers=1 --pass-with-no-tests "$EXPERIMENT_DIR"
+# shellcheck disable=SC2086
+bun test --parallel --max-workers=1 $EXPERIMENT_FILES
 EXIT=$?
 set -e
 

@@ -48,13 +48,12 @@ let mockResolveFn: (...args: any[]) => RegionResult = () => null;
 // `isEnterpriseEnabledLocal()` returns false and the conditional layer
 // falls through to `Layer.empty`, leaving the no-op `ResidencyResolver`
 // in effect — the test would always see `available: false`.
-// Module-top env setup — these have to be set before the dynamic imports
-// below (the imported modules read env at module-load time). `??=` keeps
-// the assignment hoisted but bounds the cross-file leak under
-// `bun test --parallel` (1.5.4 #2797): the first test file to load
-// wins, and no sibling overwrites. afterAll cleanup is intentionally
-// omitted because the imports already captured the value — clearing it
-// would un-sync them.
+// Module-top env setup — must be set before the dynamic imports below
+// (the imported modules read env at module-load time). `??=` keeps the
+// assignment hoisted; cross-file leakage under `bun test --parallel`
+// (1.5.4 #2797) is bounded — the first file to load wins, no sibling
+// overwrites. Files that need to restore env do so in their own
+// afterAll; the `??=` here is the module-load contract, not teardown.
 process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
 
 // Stub the EE residency module so a transitive `import("@atlas/ee/layers")`

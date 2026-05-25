@@ -117,20 +117,21 @@ dimensions:
 
 // Silence console output during the suite so CI logs stay clean.
 // Errors from process.exit are still thrown and caught per-test.
-// Separate hook so it's clear this teardown is independent of the
-// OS-state teardown above.
+// Bun's `beforeAll` does NOT execute a returned cleanup function (unlike
+// React's `useEffect`); only `afterAll` does. Capture originals at module
+// scope and restore in the existing afterAll below — otherwise under the
+// eventual `bun test --parallel` cutover (#2802) the muting would leak
+// across sibling files in the same worker (post-#2813 code-review fix).
+const origConsoleLog = console.log;
+const origConsoleErr = console.error;
 beforeAll(() => {
-  const origLog = console.log;
-  const origErr = console.error;
   console.log = () => {};
   console.error = () => {};
-  return () => {
-    console.log = origLog;
-    console.error = origErr;
-  };
 });
 
 afterAll(() => {
+  console.log = origConsoleLog;
+  console.error = origConsoleErr;
   if (origCwd) process.chdir(origCwd);
   if (origDatabaseUrl === undefined) delete process.env.DATABASE_URL;
   else process.env.DATABASE_URL = origDatabaseUrl;

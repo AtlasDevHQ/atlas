@@ -55,14 +55,12 @@ const emptyCanonicalDir = fs.mkdtempSync(
 );
 const emptyCanonicalFixture = path.join(emptyCanonicalDir, "questions.yml");
 fs.writeFileSync(emptyCanonicalFixture, "questions: []\n");
-// Module-top env setup — these have to be set before the dynamic imports
-// below (the imported modules read env at module-load time). `??=` keeps
-// the assignment hoisted but bounds the cross-file leak under
-// `bun test --parallel` (1.5.4 #2797): the first test file to load
-// wins, and no sibling overwrites. afterAll cleanup is intentionally
-// omitted because the imports already captured the value — clearing it
-// would un-sync them.
-process.env.ATLAS_CANONICAL_QUESTIONS_PATH ??= emptyCanonicalFixture;
+// Module-top env setup — must be set before the dynamic imports below
+// (the imported modules read env at module-load time). Unconditional `=`
+// is intentional: this test owns `emptyCanonicalFixture`, so a parent-env
+// value would break hermetic isolation (post-#2813 codex fix). For
+// path-typed test-owned vars, the override behavior is required.
+process.env.ATLAS_CANONICAL_QUESTIONS_PATH = emptyCanonicalFixture;
 
 const { listMcpPrompts } = await import("../../prompts/listing.js");
 

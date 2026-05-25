@@ -157,13 +157,12 @@ const mockHasApprovedRequest = mock(() => Effect.succeed(false));
 // Force enterprise on so `ConditionalEELayer` lazy-imports `@atlas/ee/layers`
 // — without this, the no-op `ApprovalGate` fires and every test sees
 // `required: false` instead of the mock behaviour.
-// Module-top env setup — these have to be set before the dynamic imports
-// below (the imported modules read env at module-load time). `??=` keeps
-// the assignment hoisted but bounds the cross-file leak under
-// `bun test --parallel` (1.5.4 #2797): the first test file to load
-// wins, and no sibling overwrites. afterAll cleanup is intentionally
-// omitted because the imports already captured the value — clearing it
-// would un-sync them.
+// Module-top env setup — must be set before the dynamic imports below
+// (the imported modules read env at module-load time). `??=` keeps the
+// assignment hoisted; cross-file leakage under `bun test --parallel`
+// (1.5.4 #2797) is bounded — the first file to load wins, no sibling
+// overwrites. Files that need to restore env do so in their own
+// afterAll; the `??=` here is the module-load contract, not teardown.
 process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
 
 // Core ApprovalError stub so the route's `instanceof ApprovalError` /

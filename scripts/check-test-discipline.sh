@@ -44,18 +44,28 @@ fi
 
 # Build the candidate file list once (fast path), then run the two
 # rule greps. `--exclude-dir` covers vendored deps and build artifacts.
-TEST_FILES=$(grep -rln '' --include='*.test.ts' \
+TEST_FILES=$(grep -rln '' --include='*.test.ts' --include='*.test.tsx' \
   --exclude-dir=node_modules \
   --exclude-dir=dist \
   --exclude-dir=.next \
   --exclude-dir=.turbo \
   --exclude-dir=coverage \
-  . 2>/dev/null | sed 's|^\./||' | sort -u || true)
+  . 2>/dev/null | sed 's|^\./||' | sort -u)
+
+# Sanity check — if we found zero test files the script is running in
+# the wrong place (or the repo lost its tests). Either way, silently
+# passing would defeat the point of the gate (post-#2813 fix).
+if [ -z "$TEST_FILES" ]; then
+  echo "::error::No *.test.ts/*.test.tsx files found — running from $(pwd). Wrong cwd?" >&2
+  exit 2
+fi
 
 # Strip comments + the allowlist into a normalized lookup. The lookup
 # is a sorted list of `<rule>\t<path>` lines; both `comm -23` (rule
-# diff) and plain grep work against it.
-ALLOWED=$(grep -vE '^\s*#|^\s*$' "$ALLOWLIST" | sort -u || true)
+# diff) and plain grep work against it. Let `set -e` propagate any
+# real read failure (corrupt allowlist, permission errors, etc.) —
+# silently empty would mask offenders.
+ALLOWED=$(grep -vE '^\s*#|^\s*$' "$ALLOWLIST" | sort -u)
 
 # ---- Rule: env ----
 # Matches `process.env.X = ...` at the very start of a line (no
@@ -120,8 +130,8 @@ fi
 if [ "$EXIT" -eq 0 ]; then
   ENV_COUNT=$(printf "%s" "$ENV_OFFENDERS" | grep -c '^env	' || true)
   CHDIR_COUNT=$(printf "%s" "$CHDIR_OFFENDERS" | grep -c '^chdir	' || true)
-  echo "Test discipline check passed — env: $ENV_COUNT allowlisted, chdir: $CHDIR_COUNT allowlisted."
-  echo "Track removal in milestone 1.5.4 (#53)."
+  FILE_COUNT=$(printf "%s\n" "$TEST_FILES" | sed '/^$/d' | wc -l | tr -d ' ')
+  echo "Test discipline check passed — scanned $FILE_COUNT test files; env: $ENV_COUNT allowlisted offender(s), chdir: $CHDIR_COUNT allowlisted offender(s)."
 fi
 
 exit "$EXIT"

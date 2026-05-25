@@ -19,4 +19,28 @@
 #
 # Generated 2026-05-25 from the head of branch claude/practical-hamilton-Ycwto
 # (1.5.4 slice 0 kickoff — see #2796).
-
+#
+# Active env-rule allowlist (post-#2813 codex/code-review fix):
+#
+# Path-typed test-owned vars MUST be unconditional `=` — the test creates
+# `tmpRoot` (or similar) and the in-flight env var must point at it for
+# hermetic isolation. `??=` would let a parent-env value win and break
+# the test (see Codex review on PR #2813). The `packages/api/src/test-setup.ts`
+# preload strips `ATLAS_*` per-file, so cross-file leakage is already bounded.
+env	packages/api/src/api/__tests__/admin.test.ts
+env	packages/api/src/api/__tests__/admin-email-provider-route.test.ts
+env	packages/api/src/api/__tests__/admin-integrations.test.ts
+env	packages/api/src/api/__tests__/admin-integrations-byot.test.ts
+env	packages/api/src/api/__tests__/admin-invitations.test.ts
+env	packages/api/src/api/__tests__/semantic.test.ts
+env	packages/mcp/src/__tests__/prompts/listing.test.ts
+env	packages/mcp/src/__tests__/prompts/registry.test.ts
+#
+# Symmetric-crypto vars where the test uses the constant DIRECTLY for
+# encrypt + the SUT reads env for decrypt — both sides MUST match
+# (post-#2813 code-review fix; was `??=` and broke for devs with the var
+# pre-set in .env). `BETTER_AUTH_SECRET` is stripped per-file by the api
+# preload; `SLACK_*` are not (e2e/ has no preload), so unconditional `=`
+# is the only way to guarantee value parity.
+env	packages/api/src/api/__tests__/me-load-test.test.ts
+env	e2e/surfaces/slack.test.ts

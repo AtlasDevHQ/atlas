@@ -145,7 +145,14 @@ mock.module("@atlas/api/lib/plugins/hooks", () => ({
 const { executeSQL } = await import("@atlas/api/lib/tools/sql");
 
 // Set env for detectDBType fallback
-process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
+// Module-top env setup — these have to be set before the dynamic imports
+// below (the imported modules read env at module-load time). `??=` keeps
+// the assignment hoisted but bounds the cross-file leak under
+// `bun test --parallel` (1.5.4 #2797): the first test file to load
+// wins, and no sibling overwrites. afterAll cleanup is intentionally
+// omitted because the imports already captured the value — clearing it
+// would un-sync them.
+process.env.ATLAS_DATASOURCE_URL ??= "postgresql://test:test@localhost:5432/test";
 
 // Helper to call executeSQL.execute with proper typing
 type ToolResult = { success: boolean; error?: string; [key: string]: unknown };

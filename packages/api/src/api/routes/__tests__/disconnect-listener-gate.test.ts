@@ -200,7 +200,14 @@ mock.module("@atlas/api/lib/slack/store", () => ({
 // ── Late imports (after every mock.module() above) ────────────────────
 
 const ORIGINAL_ENV = { ...process.env };
-process.env.ATLAS_CORS_ORIGIN = "https://app.atlas.example";
+// Module-top env setup — these have to be set before the dynamic imports
+// below (the imported modules read env at module-load time). `??=` keeps
+// the assignment hoisted but bounds the cross-file leak under
+// `bun test --parallel` (1.5.4 #2797): the first test file to load
+// wins, and no sibling overwrites. afterAll cleanup is intentionally
+// omitted because the imports already captured the value — clearing it
+// would un-sync them.
+process.env.ATLAS_CORS_ORIGIN ??= "https://app.atlas.example";
 
 const { integrations } = await import("../integrations");
 const { WorkspaceInstallGate } = await import(

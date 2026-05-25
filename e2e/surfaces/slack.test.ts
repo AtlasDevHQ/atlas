@@ -20,8 +20,15 @@ const CHANNEL_ID = "C_TEST_CHANNEL";
 const USER_ID = "U_TEST_USER";
 
 // Set env before any module imports
-process.env.SLACK_SIGNING_SECRET = SIGNING_SECRET;
-process.env.SLACK_BOT_TOKEN = BOT_TOKEN;
+// Module-top env setup — these have to be set before the dynamic imports
+// below (the imported modules read env at module-load time). `??=` keeps
+// the assignment hoisted but bounds the cross-file leak under
+// `bun test --parallel` (1.5.4 #2797): the first test file to load
+// wins, and no sibling overwrites. afterAll cleanup is intentionally
+// omitted because the imports already captured the value — clearing it
+// would un-sync them.
+process.env.SLACK_SIGNING_SECRET ??= SIGNING_SECRET;
+process.env.SLACK_BOT_TOKEN ??= BOT_TOKEN;
 
 // --- Mock Slack API server ---
 

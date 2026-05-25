@@ -24,13 +24,20 @@ import type { UIMessage } from "ai";
 import type { ChatContextWarning } from "@useatlas/types";
 import { createConnectionMock } from "@atlas/api/testing/connection";
 
-process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
+// Module-top env setup — these have to be set before the dynamic imports
+// below (the imported modules read env at module-load time). `??=` keeps
+// the assignment hoisted but bounds the cross-file leak under
+// `bun test --parallel` (1.5.4 #2797): the first test file to load
+// wins, and no sibling overwrites. afterAll cleanup is intentionally
+// omitted because the imports already captured the value — clearing it
+// would un-sync them.
+process.env.ATLAS_DATASOURCE_URL ??= "postgresql://test:test@localhost:5432/test";
 // hasInternalDB() reads DATABASE_URL — set it so the preflight branches
 // actually run instead of short-circuiting. We do NOT mock the internal
 // DB module (its 30+ exports would force every call site through a
 // partial mock that breaks unrelated tests); any real query that fires
 // during the run is swallowed by the circuit breaker.
-process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
+process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/test";
 
 // Provider — return whatever model the test installs.
 let mockModel: InstanceType<typeof MockLanguageModelV3>;

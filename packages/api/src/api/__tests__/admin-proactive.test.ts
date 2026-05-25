@@ -17,7 +17,14 @@ import { ADMIN_ACTIONS as REAL_ADMIN_ACTIONS } from "@atlas/api/lib/audit/action
 //     resolves true without reshaping the @atlas/ee/index surface. Tests
 //     that need the OFF path stash + restore the original value. ---
 const ORIGINAL_EE_FLAG = process.env.ATLAS_ENTERPRISE_ENABLED;
-process.env.ATLAS_ENTERPRISE_ENABLED = "true";
+// Module-top env setup — these have to be set before the dynamic imports
+// below (the imported modules read env at module-load time). `??=` keeps
+// the assignment hoisted but bounds the cross-file leak under
+// `bun test --parallel` (1.5.4 #2797): the first test file to load
+// wins, and no sibling overwrites. afterAll cleanup is intentionally
+// omitted because the imports already captured the value — clearing it
+// would un-sync them.
+process.env.ATLAS_ENTERPRISE_ENABLED ??= "true";
 
 // --- Auth mock ---
 

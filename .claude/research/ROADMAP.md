@@ -150,7 +150,7 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
   - [x] Phase A — Foundation: schema + facades (#2739/#2756, #2740/#2758+#2759, #2741/#2763, #2742/#2764)
   - [x] Phase B — Cutover: ~~DatasourcePoolResolver (#2743/#2778)~~ + ~~drop `connections` (#2744/#2806 — migration 0096 + 0097 hotfix #2788 + admin-route pivot #2784 + test-mock backfill #2786/#2792 + review-tail #2793/#2803 + post-cutover test sweep #2806)~~. Per-(workspace, install_id) registration #2783 moved to Architecture Backlog.
   - [x] Phase C — UX consolidation: ~~Salesforce → connections (#2745/#2804)~~, ~~integrations dedup (#2746/#2791)~~, ~~coming-soon state (#2747/#2782)~~
-  - [ ] Phase D — Chat install models from #2662: ~~Telegram (#2748)~~, ~~Discord (#2749/#2790)~~, ~~Linear (#2750/#2805 — OAuth + API-key, two catalog rows)~~, GitHub (#2751), Teams (#2752), WhatsApp (#2753), gchat (#2754)
+  - [ ] Phase D — Chat install models from #2662: ~~Telegram (#2748)~~, ~~Discord (#2749/#2790)~~, ~~Linear (#2750/#2805 — OAuth + API-key, two catalog rows)~~, GitHub (#2751 — PAT shipped via #2807; App OAuth + single-tenant rows seeded as `coming_soon`, handler pending), Teams (#2752), WhatsApp (#2753), gchat (#2754)
   - [ ] Phase E — Closeout (#2755) + ~~Email agent-loop tool carry-over (#2698/#2779)~~
 
 ## Planned

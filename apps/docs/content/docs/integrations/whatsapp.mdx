@@ -287,9 +287,17 @@ Inbound WhatsApp messages carry the phone_number_id in
 `workspace_plugins.config.phone_number_id` to route to the right
 workspace. If a workspace is receiving another tenant's messages (or
 vice versa), the most common cause is two `workspace_plugins` rows
-pointing at the same `phone_number_id` — Atlas's UPSERT path makes
-this impossible at install time, but a database-level edit can
-introduce it. Check the DB:
+pointing at the same `phone_number_id`. Atlas does **not** enforce
+cross-workspace uniqueness at install time — the singleton constraint
+is `(workspace_id, catalog_id)`, not `(catalog_id, phone_number_id)`,
+so two admins pasting the same id will both succeed at install. The
+duplicate then surfaces only on the receive side, where the
+executeQuery resolver fails closed when it sees >1 match: inbound
+messages are rejected with a user-safe error and an
+`error`-severity operator log naming the matched workspace ids until
+the duplicate is removed.
+
+Check the DB:
 
 ```sql
 SELECT workspace_id, config->>'phone_number_id' AS phone_number_id
@@ -297,10 +305,10 @@ FROM workspace_plugins
 WHERE catalog_id = 'catalog:whatsapp';
 ```
 
-Phone number IDs must be unique across the column. Resolve the
-duplicate manually before re-installing. (Atlas's executeQuery
-resolver fails-closed when it sees >1 match — inbound messages will
-be rejected with a user-safe error until the duplicate is fixed.)
+Disconnect the duplicate from `/admin/integrations → WhatsApp →
+Disconnect` on the wrong workspace (or `DELETE` the row directly if
+the admin UI is unreachable), then re-install on the correct
+workspace.
 
 ## Disconnecting
 

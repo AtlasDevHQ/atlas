@@ -333,6 +333,92 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — reachability verifi
     );
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
+
+  it("refuses 2xx responses that ALSO carry an error envelope — silent-success defense (P0 from review)", async () => {
+    // Meta has been observed to ship 200/204 responses with a populated
+    // `error` object on partial-batch traversals / debug-payload opt-ins
+    // / proxy-injected envelopes. Treating those as success would write
+    // a workspace_plugins row for a phone number Meta is actively
+    // rejecting. Parser refuses; caller surfaces upstream-contract
+    // violation. The previous version of this parser would silently
+    // succeed here.
+    globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
+      fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+      return new Response(
+        JSON.stringify({
+          id: SAMPLE_PHONE_NUMBER_ID,
+          error: { message: "Partial batch failure", type: "Exception", code: 200 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    const handler = new WhatsAppStaticBotInstallHandler({ accessToken: "t", appId: "id" });
+    await expect(handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID)).rejects.toThrow(
+      /unexpected response shape/,
+    );
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+
+  it("refuses non-2xx responses with an empty error envelope — upstream contract violation", async () => {
+    // The `{ message: "", code: 0 }` empty-body branch in the parser
+    // forces this path through `WhatsAppApiUnavailableError` rather
+    // than fabricating a WhatsAppReachabilityError with an empty
+    // message (which would surface as "Meta rejected …:  — " with no
+    // hint for the admin).
+    globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
+      fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+      return new Response(JSON.stringify({ error: {} }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const handler = new WhatsAppStaticBotInstallHandler({ accessToken: "t", appId: "id" });
+    await expect(handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID)).rejects.toThrow(
+      /unexpected response shape/,
+    );
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+
+  it("does NOT attach the underlying fetch error as `cause` — preserves the no-leak posture on Authorization headers", async () => {
+    // A future pino serializer walking through `cause` could otherwise
+    // dump the request headers (which include `Authorization: Bearer
+    // <token>`). The keystone family preserves `cause: undefined`
+    // explicitly; this test locks the invariant on the WhatsApp
+    // handler so a well-intentioned refactor can't silently
+    // re-introduce the leak.
+    setFetchNetworkError();
+    const handler = new WhatsAppStaticBotInstallHandler({
+      accessToken: "EAA-secret-do-not-leak",
+      appId: "id",
+    });
+    let caught: Error | undefined;
+    try {
+      await handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID);
+    } catch (err) {
+      caught = err instanceof Error ? err : new Error(String(err));
+    }
+    expect(caught).toBeDefined();
+    expect(caught?.cause).toBeUndefined();
+    // Belt-and-suspenders: the surface message must not contain the
+    // raw token either.
+    expect(caught?.message).not.toContain("EAA-secret-do-not-leak");
+  });
+
+  it("does NOT attach `cause` on the reachability-error path (Meta returned 4xx)", async () => {
+    setFetchMetaError("Tried accessing nonexisting field", 100, 400);
+    const handler = new WhatsAppStaticBotInstallHandler({
+      accessToken: "EAA-secret-do-not-leak",
+      appId: "id",
+    });
+    let caught: Error | undefined;
+    try {
+      await handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID);
+    } catch (err) {
+      caught = err instanceof Error ? err : new Error(String(err));
+    }
+    expect(caught?.cause).toBeUndefined();
+    expect(caught?.message).not.toContain("EAA-secret-do-not-leak");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -404,6 +490,15 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — persistence", () =>
   });
 
   it("drops display_phone when extras supplies the wrong type (number / null) — logs but doesn't throw", async () => {
+    // Isolate the "wrong-type drop" behavior from the fallback chain
+    // by giving Meta nothing to fall back through.
+    globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
+      fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+      return new Response(JSON.stringify({ id: SAMPLE_PHONE_NUMBER_ID }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
     const handler = new WhatsAppStaticBotInstallHandler({ accessToken: "t", appId: "id" });
     await handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID, undefined, {
       display_phone: 12345 as unknown as string,
@@ -413,7 +508,47 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — persistence", () =>
       (p): p is string => typeof p === "string" && p.includes("phone_number_id"),
     );
     const parsed = JSON.parse(configJson as string) as Record<string, unknown>;
-    // Falls back to the API-provided value, not the malformed extras.
+    // With no API fallback either, the field is omitted entirely.
+    expect("display_phone" in parsed).toBe(false);
+  });
+
+  it("falls back to Meta's verified_name when display_phone_number is absent (third-tier fallback)", async () => {
+    globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
+      fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+      return new Response(
+        JSON.stringify({ id: SAMPLE_PHONE_NUMBER_ID, verified_name: "Acme Test Co" }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    const handler = new WhatsAppStaticBotInstallHandler({ accessToken: "t", appId: "id" });
+    await handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID);
+    const [, params] = mockInternalQuery.mock.calls[0];
+    const configJson = (params as unknown[]).find(
+      (p): p is string => typeof p === "string" && p.includes("phone_number_id"),
+    );
+    const parsed = JSON.parse(configJson as string) as Record<string, unknown>;
+    expect(parsed.display_phone).toBe("Acme Test Co");
+  });
+
+  it("prefers display_phone_number over verified_name when both are present", async () => {
+    globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
+      fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+      return new Response(
+        JSON.stringify({
+          id: SAMPLE_PHONE_NUMBER_ID,
+          display_phone_number: "+1 415 555 0100",
+          verified_name: "Acme Test Co",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    const handler = new WhatsAppStaticBotInstallHandler({ accessToken: "t", appId: "id" });
+    await handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID);
+    const [, params] = mockInternalQuery.mock.calls[0];
+    const configJson = (params as unknown[]).find(
+      (p): p is string => typeof p === "string" && p.includes("phone_number_id"),
+    );
+    const parsed = JSON.parse(configJson as string) as Record<string, unknown>;
     expect(parsed.display_phone).toBe("+1 415 555 0100");
   });
 

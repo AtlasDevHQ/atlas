@@ -26,9 +26,11 @@
  * A 200 confirms the phone number is owned by the operator's Meta
  * Business Account and the token has the requisite
  * `whatsapp_business_management` scope; the response also returns
- * `display_phone_number` and `verified_name`, which the install row uses
- * as the optional `display_phone` fallback when `extras` doesn't supply
- * one (mirrors Discord's `GET /guilds/{id}` → `guild_name` fallback).
+ * `display_phone_number` and `verified_name`, which the install row
+ * uses as the optional `display_phone` fallback chain when `extras`
+ * doesn't supply one (`extras.display_phone` → Meta's
+ * `display_phone_number` → Meta's `verified_name` → omit). Mirrors
+ * Discord's `GET /guilds/{id}` → `guild_name` fallback.
  *
  * Why this scoping matters: Meta's Cloud API lets one System User token
  * access every phone number under the Business Account it was minted
@@ -90,13 +92,13 @@ const META_GRAPH_API_VERSION = "v21.0";
 
 /**
  * WhatsApp Business phone number ids are decimal strings — Meta assigns
- * them when a phone is added to a WhatsApp Business Account. Documented
- * shape is "a numeric id"; current production values are 15–17 digits but
- * Meta's docs don't bound this. The 10–30 range here is defensive — wide
- * enough that a future Meta-side change doesn't reject valid input, tight
- * enough to reject the obvious paste mistakes (human-readable phone
- * numbers like `+1 415 555 0100`, the human display string, or a Meta
- * WhatsApp Business Account ID which is a different identifier).
+ * them when a phone is added to a WhatsApp Business Account. Meta's
+ * docs describe them as "a numeric id" without an explicit length bound.
+ * The 10–30 range here is defensive — wide enough that a future
+ * Meta-side change doesn't reject valid input, tight enough to reject
+ * the obvious paste mistakes (human-readable phone numbers like
+ * `+1 415 555 0100`, the human display string, or a WhatsApp Business
+ * Account ID which is a different identifier).
  *
  * Exported so the executeQuery dispatcher can reuse the same regex on
  * inbound webhook envelopes — keeps the phone_number_id invariant on a
@@ -131,17 +133,15 @@ export interface WhatsAppStaticBotHandlerConfig {
   readonly accessToken: string;
   /**
    * Operator's Meta App ID (`META_BUSINESS_APP_ID`). Captured at
-   * construction even though `confirmInstall` doesn't use it directly —
-   * the chat adapter and the manifest / setup-link routes need it, and
-   * the handler is the single source of truth for "WhatsApp is wired"
-   * so the env-gate at construction time fails loud if either var is
-   * missing. Mirrors Teams's `appId` capture posture.
+   * construction even though `confirmInstall` doesn't use it directly:
+   * the chat adapter consumes it via env, and the handler is the
+   * single source of truth for "WhatsApp is wired" so the env-gate at
+   * construction time fails loud if either var is missing. Mirrors
+   * Teams's `appId` capture posture.
    */
   readonly appId: string;
   /** Test-only injection of the install id generator. */
   readonly idGenerator?: () => string;
-  /** Test-only override of the Meta Graph API base URL. */
-  readonly metaGraphBaseUrl?: string;
 }
 
 /** Shape persisted into `workspace_plugins.config` JSONB. */
@@ -160,10 +160,17 @@ export interface WhatsAppInstallConfig {
  * Meta Graph API `GET /{phone_number_id}` parsed response. Success returns
  * `{ id, verified_name?, display_phone_number?, ... }`; failure returns
  * `{ error: { message, type, code, fbtrace_id } }`. Normalized at parse
- * time into an explicit `kind: "ok" | "err"` discriminated union — same
- * shape Discord's handler uses, same rationale (Meta's `error.code` is a
- * real value where `0` doesn't mean "no error", so absence-of-`code` is
- * NOT a safe discriminator).
+ * time into an explicit `kind: "ok" | "err"` discriminated union.
+ *
+ * Discriminator is HTTP status: 2xx → ok, non-2xx → err. We never key on
+ * `code` presence because Meta uses `error.code: 0` for some generic
+ * failure modes (so `code === 0` doesn't mean "no error"). A 2xx
+ * response that *also* carries an `error` object (Meta has been
+ * observed to do this on partial-batch traversals / debug payloads)
+ * is treated as an upstream contract violation, not a success — the
+ * 2xx branch refuses it via `null` so the caller surfaces
+ * `WhatsAppApiUnavailableError` rather than writing an install row
+ * for a phone number Meta is actively rejecting.
  */
 type WhatsAppPhoneNumberResponse =
   | {
@@ -186,6 +193,13 @@ function parseWhatsAppPhoneNumberResponse(
   const body = raw as Record<string, unknown>;
   if (httpStatus >= 200 && httpStatus < 300) {
     if (typeof body.id !== "string" || body.id.length === 0) return null;
+    // Meta has been observed to ship 2xx responses carrying a populated
+    // `error` object on partial-batch traversals / debug-payload opt-ins
+    // / proxy-injected envelopes. Treating those as success would write
+    // a workspace_plugins row for a phone number Meta is actively
+    // rejecting — refuse and surface as upstream-contract-violation
+    // via the caller's `null`-handling branch.
+    if (typeof body.error === "object" && body.error !== null) return null;
     const displayPhoneNumber =
       typeof body.display_phone_number === "string" && body.display_phone_number.length > 0
         ? body.display_phone_number
@@ -201,9 +215,12 @@ function parseWhatsAppPhoneNumberResponse(
       ...(verifiedName !== undefined ? { verifiedName } : {}),
     };
   }
-  // Meta's failure envelope nests under `error`. A bare top-level
-  // `{ message, code }` is not what Graph API ever returns, so we don't
-  // accept it — the upstream-contract-violation path covers it.
+  // Non-2xx: Meta's failure envelope nests under `error`. A bare
+  // top-level `{ message, code }` is not what Graph API ever returns,
+  // so we don't accept it — the upstream-contract-violation path
+  // (returning `null`) covers it. The 2xx branch above returned early,
+  // so we don't need to re-guard the `message.length === 0 && code === 0`
+  // check on status.
   const err = body.error;
   if (typeof err !== "object" || err === null) return null;
   const errObj = err as Record<string, unknown>;
@@ -222,7 +239,6 @@ export class WhatsAppStaticBotInstallHandler implements StaticBotInstallHandler 
 
   private readonly accessToken: string;
   private readonly appId: string;
-  private readonly metaGraphBaseUrl: string;
   private readonly newId: () => string;
 
   constructor(config: WhatsAppStaticBotHandlerConfig) {
@@ -238,15 +254,15 @@ export class WhatsAppStaticBotInstallHandler implements StaticBotInstallHandler 
     }
     this.accessToken = config.accessToken;
     this.appId = config.appId;
-    this.metaGraphBaseUrl =
-      config.metaGraphBaseUrl ?? `https://graph.facebook.com/${META_GRAPH_API_VERSION}`;
     this.newId = config.idGenerator ?? (() => crypto.randomUUID());
   }
 
   /**
-   * Operator's Meta App ID. Exposed so the install route can build setup
-   * deep-links / manifest download URLs without re-reading env. Mirrors
-   * `TeamsStaticBotInstallHandler.applicationId`.
+   * Operator's Meta App ID. Exposed for parity with the sibling static-
+   * bot handlers' `applicationId` getter (Discord, Teams) — a future
+   * WhatsApp install route can consume it to build a setup deep-link
+   * without re-reading env. No consumer in this PR; the getter exists
+   * to keep the structural contract consistent across the family.
    */
   get applicationId(): string {
     return this.appId;
@@ -274,8 +290,10 @@ export class WhatsAppStaticBotInstallHandler implements StaticBotInstallHandler 
     // ── 2. Reachability via Meta Graph API ──────────────────────────
     // Throws on Graph API errors / network failures *before* any DB
     // write, so a failed verification never leaves a half-installed
-    // row behind.
-    const apiDisplayPhone = await this.verifyReachability(routingIdentifier);
+    // row behind. Returns the (display_phone_number, verified_name)
+    // pair so extractDisplayPhone can fall back through both before
+    // omitting the label entirely.
+    const apiFallback = await this.verifyReachability(routingIdentifier);
 
     // ── 3. Persist install row — UPSERT keyed on (workspace, catalog) ─
     // Mirrors the email-form-handler / discord-static-bot-handler /
@@ -285,7 +303,7 @@ export class WhatsAppStaticBotInstallHandler implements StaticBotInstallHandler 
     const candidateId = this.newId();
     const configPayload: WhatsAppInstallConfig = {
       phone_number_id: routingIdentifier,
-      ...extractDisplayPhone(extras, apiDisplayPhone, workspaceId),
+      ...extractDisplayPhone(extras, apiFallback, workspaceId),
     };
 
     let persistedId: string;
@@ -359,10 +377,11 @@ export class WhatsAppStaticBotInstallHandler implements StaticBotInstallHandler 
   }
 
   /**
-   * Round-trip Meta Graph API to confirm the phone_number_id is owned by
-   * the operator's Meta Business Account and the access token has the
-   * required scopes. Returns Meta's `display_phone_number` when present
-   * so the install row can fall back to it when extras don't supply one.
+   * Round-trip Meta Graph API to confirm the phone_number_id is owned
+   * by the operator's Meta Business Account and the access token has
+   * the required scopes. Returns the `(displayPhoneNumber, verifiedName)`
+   * pair when present so the install row can fall through them before
+   * omitting the label.
    *
    * Token redaction: the access token rides in the `Authorization: Bearer`
    * header — NOT in the URL path — so URL-based redaction (the kind
@@ -370,9 +389,17 @@ export class WhatsAppStaticBotInstallHandler implements StaticBotInstallHandler 
    * `cause` to preserve symmetry with the sibling static-bot handlers'
    * safe-by-default posture (a future pino serializer walking through
    * `cause` could otherwise dump the request headers).
+   *
+   * Forensic anchors: when Meta returns a non-JSON body or a non-2xx
+   * status, we capture the `x-fb-trace-id` response header into the
+   * structured log payload. Operator-facing support tickets with Meta
+   * require this id to anchor the request on Meta's side; without it,
+   * triaging a persistent Meta-side gateway issue requires a tcpdump.
    */
-  private async verifyReachability(phoneNumberId: string): Promise<string | null> {
-    const url = `${this.metaGraphBaseUrl}/${encodeURIComponent(
+  private async verifyReachability(
+    phoneNumberId: string,
+  ): Promise<WhatsAppReachabilityFallback> {
+    const url = `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${encodeURIComponent(
       phoneNumberId,
     )}?fields=verified_name,display_phone_number`;
     let response: Response;
@@ -394,6 +421,8 @@ export class WhatsAppStaticBotInstallHandler implements StaticBotInstallHandler 
       });
     }
 
+    const fbTraceId = response.headers.get("x-fb-trace-id") ?? undefined;
+
     let rawBody: unknown;
     try {
       rawBody = await response.json();
@@ -403,6 +432,7 @@ export class WhatsAppStaticBotInstallHandler implements StaticBotInstallHandler 
         {
           phoneNumberIdFingerprint: fingerprintPhoneNumberId(phoneNumberId),
           status: response.status,
+          fbTraceId,
           parseError: message,
         },
         "Meta Graph API returned non-JSON response",
@@ -414,6 +444,14 @@ export class WhatsAppStaticBotInstallHandler implements StaticBotInstallHandler 
 
     const parsed = parseWhatsAppPhoneNumberResponse(rawBody, response.status);
     if (parsed === null) {
+      log.warn(
+        {
+          phoneNumberIdFingerprint: fingerprintPhoneNumberId(phoneNumberId),
+          status: response.status,
+          fbTraceId,
+        },
+        "Meta Graph API returned an unexpected response shape — upstream contract violation",
+      );
       throw new WhatsAppApiUnavailableError({
         message: `Meta Graph API returned an unexpected response shape when verifying phone_number_id "${phoneNumberId}" (status ${response.status}).`,
       });
@@ -426,17 +464,37 @@ export class WhatsAppStaticBotInstallHandler implements StaticBotInstallHandler 
       });
     }
 
-    return parsed.displayPhoneNumber ?? null;
+    return {
+      displayPhoneNumber: parsed.displayPhoneNumber ?? null,
+      verifiedName: parsed.verifiedName ?? null,
+    };
   }
 }
 
 /**
+ * Result of a successful reachability round-trip. Both fields are
+ * Meta-provided and may be null when Meta omits them on the wire (rare
+ * but documented — verified names are gated on Meta's business
+ * verification flow). Threaded through {@link extractDisplayPhone} as
+ * a two-tier fallback (display_phone_number → verified_name → omit).
+ */
+interface WhatsAppReachabilityFallback {
+  readonly displayPhoneNumber: string | null;
+  readonly verifiedName: string | null;
+}
+
+/**
  * Extract the optional `display_phone` field. Order of preference:
- *   1. `extras.display_phone` if supplied by the install caller (admin UI
- *      override, or a future install flow forwarding a custom label).
+ *   1. `extras.display_phone` if supplied by the install caller (admin
+ *      UI override, or a future install flow forwarding a custom
+ *      label).
  *   2. The `display_phone_number` returned by Meta Graph API at
  *      verification time (e.g. `+1 415 555 0100`).
- *   3. Omit — the admin UI renders the phone_number_id alone.
+ *   3. The `verified_name` returned by Meta Graph API at verification
+ *      time (e.g. `"Acme Test Co"`) — only present when Meta has
+ *      completed business verification on the number; gives a more
+ *      descriptive admin-UI label than the raw phone when available.
+ *   4. Omit — the admin UI renders the phone_number_id alone.
  *
  * Drops any other keys from `extras` silently — the catalog
  * `config_schema` declares the contract; new fields land via a new
@@ -446,7 +504,7 @@ export class WhatsAppStaticBotInstallHandler implements StaticBotInstallHandler 
  */
 function extractDisplayPhone(
   extras: Record<string, unknown> | undefined,
-  apiFallback: string | null,
+  apiFallback: WhatsAppReachabilityFallback,
   workspaceId: WorkspaceId,
 ): { display_phone?: string } {
   if (extras !== undefined && "display_phone" in extras) {
@@ -463,7 +521,12 @@ function extractDisplayPhone(
       }
     }
   }
-  if (apiFallback && apiFallback.length > 0) return { display_phone: apiFallback };
+  if (apiFallback.displayPhoneNumber && apiFallback.displayPhoneNumber.length > 0) {
+    return { display_phone: apiFallback.displayPhoneNumber };
+  }
+  if (apiFallback.verifiedName && apiFallback.verifiedName.length > 0) {
+    return { display_phone: apiFallback.verifiedName };
+  }
   return {};
 }
 

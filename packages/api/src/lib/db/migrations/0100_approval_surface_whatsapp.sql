@@ -16,7 +16,7 @@
 -- gchat (the remaining Phase D static-bot platform — #2754) will land
 -- analogous nudges in its own slice.
 --
--- All four statements are idempotent — same shape as 0095 / 0099.
+-- All statements are idempotent — same shape as 0095 / 0099.
 
 -- ── Approval-surface enum extension ──────────────────────────────────
 

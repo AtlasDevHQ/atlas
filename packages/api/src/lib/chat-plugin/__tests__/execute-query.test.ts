@@ -870,7 +870,8 @@ describe("chat-plugin executeQuery host helper", () => {
     // platform, so a duplicate here is operator misconfig (manual DB
     // edit). The fail-closed branch surfaces as the same user-safe
     // error as "unknown number," and an operator log line points at
-    // the duplicate.
+    // the duplicate (including the matched workspace_ids — see the
+    // handler resolver, the fingerprint-only log was insufficient).
     mockInternalQuery.mockImplementation((sql: string) => {
       if (sql.includes("workspace_plugins")) {
         return Promise.resolve([
@@ -893,6 +894,19 @@ describe("chat-plugin executeQuery host helper", () => {
       }),
     ).rejects.toThrow(/not connected to Atlas/i);
     expect(capturedAgentCalls).toHaveLength(0);
+    // SQL filter shape: the duplicate-match defense MUST scope its
+    // lookup to (catalog_id = catalog:whatsapp, enabled = true,
+    // config->>'phone_number_id'). A refactor that genericized the
+    // resolver and dropped any of these filters would silently widen
+    // the cross-tenant boundary.
+    const installQueryCalls = mockInternalQuery.mock.calls.filter(([sql]) =>
+      String(sql).includes("workspace_plugins"),
+    );
+    const [sql, params] = installQueryCalls[0];
+    expect(String(sql)).toMatch(/catalog_id\s*=\s*\$1/);
+    expect(String(sql)).toMatch(/enabled\s*=\s*true/);
+    expect(String(sql)).toMatch(/config->>'phone_number_id'/);
+    expect(params).toEqual(["catalog:whatsapp", "1098765432109876"]);
   });
 
   it("WhatsApp rejects events whose phoneNumberId isn't a valid Meta routing id — defends rate-limit cache key shape", async () => {

@@ -12,9 +12,14 @@
  *     → `workspace_id` via the static-bot install record.
  *   - **Discord** (1.5.3 slice 11 / #2749) — resolves `guild_id` →
  *     `workspace_plugins.config->>'guild_id'` → `workspace_id`. Same
- *     fail-closed contract as Telegram. Remaining static-bot platforms
- *     (gchat #2754, WhatsApp #2753) extend this dispatch as their
- *     slices land.
+ *     fail-closed contract as Telegram.
+ *   - **WhatsApp** (1.5.3 slice 15 / #2753) — resolves the inbound
+ *     webhook's normalized `phoneNumberId` →
+ *     `workspace_plugins.config->>'phone_number_id'` → `workspace_id`.
+ *     The user-side `wa_id` anchors per-user conversation persistence
+ *     (WhatsApp has no thread / channel concept; every conversation is
+ *     1:1). Remaining static-bot platform (gchat #2754) extends this
+ *     dispatch when its slice lands.
  *
  * Without a per-platform tenant binding, `checkApprovalRequired`
  * short-circuits on a missing `orgId` and the approval gate silently
@@ -1095,6 +1100,24 @@ async function runWhatsAppExecuteQuery(
       : typeof raw.message?.from === "string" && raw.message.from.length > 0
         ? raw.message.from
         : undefined;
+  if (!externalUserId) {
+    // Meta sometimes routes status events (delivered / read receipts)
+    // through the same webhook with no `contact` payload — the chat
+    // adapter forwards them here without a wa_id. The actor binding
+    // narrows from per-user (`whatsapp-bot:<phone>:<wa>`) to per-tenant
+    // (`whatsapp-bot:<phone>`), F-55 approval rules keyed on the
+    // per-user actor silently widen to the per-tenant actor, AND
+    // conversation persistence below disables (no wa_id thread anchor).
+    // Warn so the silent degradation is observable in operator logs.
+    log.warn(
+      {
+        phoneNumberIdFingerprint: fingerprintPhoneNumberId(phoneNumberId),
+        threadId,
+        requestId,
+      },
+      "WhatsApp event missing wa_id — actor narrows to per-tenant granularity and conversation persistence disables for this event",
+    );
+  }
   const actor = botActorUser({
     platform: "whatsapp",
     externalId: phoneNumberId,
@@ -1108,7 +1131,8 @@ async function runWhatsAppExecuteQuery(
   //    wa_id is the only thread anchor available. The chat plugin
   //    bridge encodes this in `WhatsAppThreadId` as
   //    `whatsapp:{phoneNumberId}:{userWaId}`; here we just persist
-  //    by the (phoneNumberId, wa_id) pair.
+  //    by the (phoneNumberId, wa_id) pair. Empty wa_id disables
+  //    persistence — see the warn above.
   const userWaId = externalUserId ?? "";
   const conversationId = await loadOrCreateConversation(
     phoneNumberId,
@@ -1184,10 +1208,17 @@ async function resolveWhatsAppWorkspaceId(phoneNumberId: string): Promise<string
     throw new WhatsAppUnknownTenantError(fingerprintPhoneNumberId(phoneNumberId));
   }
   if (rows.length > 1) {
+    // Surface the matched workspace_ids so the operator can disconnect
+    // the duplicate without dumping the table. Meta phone_number_ids
+    // are sequentially assigned in batches, so last-4-char
+    // fingerprints have a meaningfully higher collision rate than
+    // Discord snowflakes — the explicit list is what makes the cross-
+    // tenant misroute warning actually triagable.
     log.error(
       {
         phoneNumberIdFingerprint: fingerprintPhoneNumberId(phoneNumberId),
         matchCount: rows.length,
+        matchedWorkspaceIds: rows.map((r) => r.workspace_id),
       },
       "WhatsApp phone_number_id maps to multiple workspaces — refusing query (cross-tenant misroute risk). Operator must disconnect the duplicate install.",
     );

@@ -3,6 +3,7 @@
   "pages": [
     "index",
     "email",
-    "jira"
+    "jira",
+    "webhook-action"
   ]
 }

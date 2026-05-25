@@ -471,6 +471,85 @@ const AUTH_MODES: readonly ["none", "simple-key", "managed", "byot"];
 
 ---
 
+## useMcpConnect
+
+Wraps the SDK's `beginConnect` + `completeConnect` with a popup-or-redirect lifecycle so React embedders can drop a "Connect your AI agent" button into their app without owning OAuth bookkeeping. Exported from the root entry point (`@useatlas/react`), not the `/hooks` subpath.
+
+```tsx
+"use client";
+
+import { useMcpConnect } from "@useatlas/react";
+import { buildConfig } from "@useatlas/sdk";
+
+export function ConnectAgentButton() {
+  const { connect, status, error, accessToken, workspaceId } = useMcpConnect({
+    apiUrl: "https://mcp.useatlas.dev",
+    clientName: "My SaaS — Atlas",
+    redirectUri: `${window.location.origin}/oauth/callback`,
+    mode: "popup",
+  });
+
+  if (accessToken && workspaceId) {
+    const config = buildConfig({
+      client: "claude-desktop",
+      apiUrl: "https://mcp.useatlas.dev",
+      accessToken,
+      workspaceId,
+    });
+    return <pre>{JSON.stringify(config, null, 2)}</pre>;
+  }
+
+  return (
+    <>
+      <button onClick={() => void connect()} disabled={status !== "idle"}>
+        Connect your AI agent
+      </button>
+      {error && <p style={{ color: "crimson" }}>{error.message}</p>}
+    </>
+  );
+}
+```
+
+### useMcpConnect options
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `apiUrl` | `string` | Yes | — | Atlas API base (e.g. `https://mcp.useatlas.dev`) |
+| `clientName` | `string` | Yes | — | Human-readable name registered via DCR |
+| `redirectUri` | `string` | Yes | — | Where the OAuth server should redirect the user |
+| `scopes` | `ReadonlyArray<string>` | No | `["mcp:read", "offline_access"]` | OAuth scopes to request |
+| `mode` | `"popup" \| "redirect"` | No | `"popup"` | Flow mode (see below) |
+| `storageId` | `string` | No | `redirectUri` | Override the `sessionStorage` key suffix when running multiple flows on the same origin |
+
+### Flow modes
+
+- **`mode: "popup"`** — `connect()` opens a centered popup at the authorize URL. The `redirectUri` must be a page hosted by the embedder that calls `window.opener.postMessage({ type: "atlas-mcp-callback", code, state }, "<your-origin>")`. The hook listens for that message, runs the token exchange, and exposes the resulting `accessToken` + `workspaceId`. The popup closes itself on receipt.
+- **`mode: "redirect"`** — `connect()` redirects the current window to the authorize URL. On the callback page, mount the same hook with the same options — when it sees `?code` + `?state` in the URL it reads the persisted state from `sessionStorage` and completes the exchange automatically.
+
+### useMcpConnect return value
+
+The return type is **discriminated by `status`** so consumers don't need to write `if (accessToken)` guards — the type already proves the token fields are non-null when `status === "success"`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | `UseMcpConnectStatus` | `"idle"`, `"starting"`, `"awaiting_callback"`, `"exchanging"`, `"success"`, or `"error"` |
+| `connect` | `() => Promise<void>` | Kick off the OAuth flow (opens popup or redirects) |
+| `reset` | `() => void` | Clear all state — returns to `"idle"` and wipes the persisted sessionStorage entry |
+| `accessToken` | `string \| null` | Bearer token. Non-null only when `status === "success"` |
+| `refreshToken` | `string \| null` | Refresh token. Non-null only when `status === "success"` and the issuer returned one |
+| `workspaceId` | `string \| null` | Singular workspace claim from the token. Non-null on `"success"` |
+| `workspaces` | `ReadonlyArray<string> \| null` | Plural `workspace_ids` claim. Use `workspaces.length > 1` to gate a post-onboarding workspace picker |
+| `expiresAt` | `number \| null` | Unix-seconds expiry. Non-null on `"success"` |
+| `error` | `AtlasMcpError \| Error \| null` | Set when `status === "error"` |
+
+### What survives across the round-trip
+
+In both modes the hook persists `state`, `codeVerifier`, `clientId`, `tokenEndpoint`, and `issuer` under a single `sessionStorage` key (`atlas-mcp-connect:<storageId>`). `storageId` defaults to the `redirectUri`; pass an explicit `storageId` if you run multiple onboarding flows on the same origin so they don't trample each other.
+
+See the full embedded-onboarding walkthrough at [MCP onboarding (SDK)](/sdk/mcp), including a worked Next.js example with the popup callback page that posts back to the opener.
+
+---
+
 ## useAtlasTheme
 
 Manages light/dark/system theme mode with localStorage persistence.
@@ -1136,6 +1215,7 @@ The `AtlasChat` component uses the same hooks internally — you can start with 
 
 - [Embedding Widget](/guides/embedding-widget) — Script-tag widget embedding (no React required)
 - [SDK Reference](/reference/sdk) — Typed TypeScript client for server-side and headless usage
+- [MCP onboarding (SDK)](/sdk/mcp) — Full embedded-onboarding walkthrough that the [`useMcpConnect`](#usemcpconnect) hook wraps
 - [Error Codes](/reference/error-codes) — Full catalog of `ChatErrorCode` and `ClientErrorCode` values
 - [Authentication](/deployment/authentication) — Auth mode setup (affects `useAtlasAuth` behavior)
 - [Choosing an Integration](/guides/choosing-an-integration) — Compare widget, hooks, SDK, and REST API

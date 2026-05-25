@@ -77,6 +77,7 @@ Guidance for Codex when working in this repository.
 - [ ] **Mock all exports** — When using `mock.module()`, mock every named export. Partial mocks cause `SyntaxError` in other files
 - [ ] **Use shared mock factory** — Connection mocks use `createConnectionMock()` from `packages/api/src/__mocks__/connection.ts`. Don't create inline connection mocks
 - [ ] **Effect test layers preferred** — For new tests, prefer `createConnectionTestLayer()` / `TestAppLayer` / `buildTestLayer()` from `packages/api/src/__test-utils__/layers.ts` over `mock.module()`. Composable Layers are type-safe and don't leak state between tests
+- [ ] **Tests are self-contained** — No top-level `process.env.X = ...`, `process.chdir(...)`, or unmatched `mock.module()` at module scope. Wrap mutations in `beforeAll` + restore in `afterAll`; pair every `mock.module()` with `mock.restore()` (or an `afterAll` cleanup). The custom `scripts/test-isolated.ts` subprocess-per-file runner has been silently providing OS-level process isolation that the test suite depends on; `bun test --parallel` (the 1.5.4 / #2802 cutover target) reuses workers across files, so env / cwd / signal listeners leak. `scripts/check-test-discipline.sh` runs in the `drift` CI job with an allowlist of current offenders (`scripts/test-discipline-allowlist.txt`) — adding a new offender fails the gate. Track removal in milestone 1.5.4 (#53)
 
 ### Agent Tools
 - [ ] **Tools return structured data** — `executeSQL` returns `{ columns, rows }`

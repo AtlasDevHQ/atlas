@@ -42,6 +42,10 @@ import {
   DiscordStaticBotInstallHandler,
   DISCORD_SLUG,
 } from "./discord-static-bot-handler";
+import {
+  TeamsStaticBotInstallHandler,
+  TEAMS_SLUG,
+} from "./teams-static-bot-handler";
 import { lazyPluginLoader } from "@atlas/api/lib/plugins/lazy-loader";
 import { createJiraLazyBuilder } from "@atlas/api/lib/integrations/jira/lazy-builder";
 import { createSalesforceLazyBuilder } from "@atlas/api/lib/integrations/salesforce/lazy-builder";
@@ -170,6 +174,7 @@ export function registerBuiltinInstallHandlers(): void {
   // for emergency disable).
   registerTelegramStaticBotHandler();
   registerDiscordStaticBotHandler();
+  registerTeamsStaticBotHandler();
 }
 
 function registerSlackOAuthHandler(): void {
@@ -415,6 +420,62 @@ function registerDiscordStaticBotHandler(): void {
       tokenFingerprint: fingerprintToken(botToken),
     },
     "Registered DiscordStaticBotInstallHandler",
+  );
+}
+
+/**
+ * Register the Teams static-bot install handler when the operator env
+ * is wired (#2752). Mirrors {@link registerDiscordStaticBotHandler}
+ * exactly — same severity-escalation contract when the catalog row says
+ * `enabled: true` but a required env var is missing.
+ *
+ * Two env vars gate registration: `TEAMS_APP_ID` (Microsoft App ID /
+ * client id from the operator's Azure Bot registration) and
+ * `TEAMS_APP_PASSWORD` (Microsoft App Password / client secret). Both
+ * are required because the chat adapter and the manifest download path
+ * each need them — the install route would otherwise 501 in a confusing
+ * half-wired way.
+ *
+ * `TEAMS_TENANT_ID` is an optional operator-side single-tenant override
+ * consumed by the chat adapter (`appType: "SingleTenant"` vs
+ * `"MultiTenant"`), not this handler — install always validates the
+ * customer-supplied tenant_id regardless. Single-tenant deploys pin one
+ * customer tenant up-front; MultiTenant deploys (the default) accept any
+ * customer tenant that passes OIDC discovery.
+ */
+function registerTeamsStaticBotHandler(): void {
+  const appId = process.env.TEAMS_APP_ID;
+  const appPassword = process.env.TEAMS_APP_PASSWORD;
+  if (!appId || appId.length === 0 || !appPassword || appPassword.length === 0) {
+    if (isCatalogSlugEnabled("teams")) {
+      log.error(
+        {
+          slug: "teams",
+          requiredEnv: ["TEAMS_APP_ID", "TEAMS_APP_PASSWORD"],
+          missing: [
+            ...(!appId ? ["TEAMS_APP_ID"] : []),
+            ...(!appPassword ? ["TEAMS_APP_PASSWORD"] : []),
+          ],
+        },
+        "Teams catalog row is enabled but TEAMS_APP_ID and/or TEAMS_APP_PASSWORD is unset — install route will return 501 and AdapterRegistry will skip the adapter. Set both per-service. See #2673 for the same-class silent-degradation precedent.",
+      );
+    } else {
+      log.info(
+        "Teams static-bot handler not registered — TEAMS_APP_ID and/or TEAMS_APP_PASSWORD unset and the 'teams' catalog row is not enabled (operator hasn't opted in).",
+      );
+    }
+    return;
+  }
+  registerStaticBotHandler(
+    TEAMS_SLUG,
+    new TeamsStaticBotInstallHandler({ appId, appPassword }),
+  );
+  log.info(
+    {
+      appIdFingerprint: fingerprintToken(appId),
+      appPasswordFingerprint: fingerprintToken(appPassword),
+    },
+    "Registered TeamsStaticBotInstallHandler",
   );
 }
 

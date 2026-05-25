@@ -182,6 +182,14 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
     case "DiscordGuildIdInvalidError":
     case "DiscordReachabilityError":
       return { status: 400, code: "bad_request", message: error.message };
+    // #2752 — Teams install rejected at the input or upstream-
+    // verification layer. Both are admin-correctable (re-paste the
+    // GUID, set the tenant up in Microsoft Entra ID) so 400 is the right
+    // surface. `TeamsReachabilityError`'s message preserves Microsoft's
+    // verbatim error text when present; the route does not translate.
+    case "TeamsTenantIdInvalidError":
+    case "TeamsReachabilityError":
+      return { status: 400, code: "bad_request", message: error.message };
     // #2742 — catalog `config_schema` violation. Surface per-field
     // detail in the response body so the admin UI's form can highlight
     // the wrong inputs without a follow-up roundtrip. Field names are
@@ -338,6 +346,13 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
     // doesn't surface in fetch error messages the way Telegram's
     // URL-embedded token can).
     case "DiscordApiUnavailableError":
+      return { status: 502, code: "upstream_error", message: error.message };
+    // #2752 — Microsoft tenant discovery endpoint unreachable at the
+    // network layer (DNS, TLS, timeout). Same upstream posture as Telegram/
+    // Discord; the message is admin-safe (operator-side TEAMS_APP_ID /
+    // TEAMS_APP_PASSWORD never reach the discovery endpoint, so they
+    // can't leak in fetch error messages).
+    case "TeamsApiUnavailableError":
       return { status: 502, code: "upstream_error", message: error.message };
 
     // ── 503 Service Unavailable ──────────────────────────────────

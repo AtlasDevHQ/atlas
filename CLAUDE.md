@@ -59,7 +59,7 @@ Guidance for Claude Code when working in this repository.
 - [ ] **Layer.effect vs Layer.scoped** — Use `Layer.scoped` when the service has a finalizer (cleanup on shutdown). Use `Layer.effect` for stateless services
 - [ ] **Tagged errors via Data.TaggedError** — Never use plain `Error` subclasses with `_tag`. Use `Data.TaggedError("ErrorName")<{ ... }>` from Effect
 - [ ] **runHandler for route handlers** — All route handlers use `runHandler(c, "label", async () => { ... })` which bridges Hono context → Effect Context and centralizes error-to-HTTP mapping
-- [ ] **Effect test layers** — Use `createXxxTestLayer()` from `services.ts` or `__test-utils__/layers.ts` for tests. Prefer `Layer.provide` over `mock.module()` for new Effect-based tests
+- [ ] **Effect test layers** — Use `createXxxTestLayer()` from `services.ts` or `__test-utils__/layers.ts` for tests. Prefer `Layer.provide` over `mock.module()` for new Effect-based tests. **Never mutate a registry / singleton at test module top-level** (`plugins.register(...)`, `connections.set(...)`, etc.) — that state survives across files sharing a bun worker under `bun test --parallel` (1.5.4 / #2796). Use `createPluginRegistryTestLayer()` / `createConnectionTestLayer()` to get a fresh scoped instance, or fall back to an explicit `afterAll(() => singleton._reset())` when the production code path reads the global singleton directly (see `mcp-boot.test.ts` for that pattern)
 - [ ] **No `catch: (err) => err`** — In `Effect.tryPromise`, always normalize: `catch: (err) => err instanceof Error ? err : new Error(String(err))`
 - [ ] **satisfies on service returns** — Always use `satisfies FooShape` on returned service objects for compile-time verification
 

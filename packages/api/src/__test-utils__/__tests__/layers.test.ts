@@ -286,6 +286,70 @@ describe("PluginRegistry re-export", () => {
   });
 });
 
+// ── createPluginRegistryTestLayer ──────────────────────────────────
+
+describe("createPluginRegistryTestLayer", () => {
+  test("wraps a real PluginRegistry instance", async () => {
+    const { createPluginRegistryTestLayer, PluginRegistry } = await import("../layers");
+
+    const layer = createPluginRegistryTestLayer();
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const registry = yield* PluginRegistry;
+        registry.register({
+          id: "fixture",
+          types: ["context"],
+          version: "1.0.0",
+        });
+        return { size: registry.size, ids: registry.getAll().map((p) => p.id) };
+      }).pipe(Effect.provide(layer)),
+    );
+
+    expect(result.size).toBe(1);
+    expect(result.ids).toEqual(["fixture"]);
+  });
+
+  test("each Layer instance gets its own registry (no cross-test leak)", async () => {
+    const { createPluginRegistryTestLayer, PluginRegistry } = await import("../layers");
+
+    const program = Effect.gen(function* () {
+      const registry = yield* PluginRegistry;
+      registry.register({ id: "iso", types: ["context"], version: "1.0.0" });
+      return registry.size;
+    });
+
+    const first = await Effect.runPromise(
+      program.pipe(Effect.provide(createPluginRegistryTestLayer())),
+    );
+    const second = await Effect.runPromise(
+      program.pipe(Effect.provide(createPluginRegistryTestLayer())),
+    );
+
+    // If the layer leaked the registry across runs, the second
+    // register call would throw "already registered".
+    expect(first).toBe(1);
+    expect(second).toBe(1);
+  });
+
+  test("seed callback runs before service is exposed", async () => {
+    const { createPluginRegistryTestLayer, PluginRegistry } = await import("../layers");
+
+    const layer = createPluginRegistryTestLayer((registry) => {
+      registry.register({ id: "seeded", types: ["context"], version: "1.0.0" });
+    });
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const registry = yield* PluginRegistry;
+        return registry.get("seeded")?.id;
+      }).pipe(Effect.provide(layer)),
+    );
+
+    expect(result).toBe("seeded");
+  });
+});
+
 // ── Proxy fail-fast behavior ───────────────────────────────────────
 
 describe("Proxy stub fail-fast", () => {

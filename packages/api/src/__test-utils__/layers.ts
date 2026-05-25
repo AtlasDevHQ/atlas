@@ -39,6 +39,7 @@ import {
   createPluginTestLayer,
   type PluginRegistryShape,
 } from "@atlas/api/lib/effect/services";
+import { PluginRegistry as PluginRegistryClass } from "@atlas/api/lib/plugins/registry";
 import {
   AnswerMeter,
   createAnswerMeterTestLayer,
@@ -73,6 +74,66 @@ export {
   type AnswerMeterShape,
   type PillarCatalogQueryShape,
 };
+
+// ── Plugin registry test layer (real instance) ──────────────────────
+
+/**
+ * Create a test Layer backed by a real, fresh PluginRegistry instance.
+ *
+ * Unlike `createPluginTestLayer` (Proxy stub — methods throw unless
+ * provided in `partial`), this wraps an actual `PluginRegistry` class
+ * so tests that call `register` / `initializeAll` / `enable` / etc. get
+ * real behaviour. Each call creates a new instance, so files using this
+ * layer cannot leak plugin state into sibling files sharing the bun
+ * worker under `bun test --parallel` (1.5.4 / #2799).
+ *
+ * Tests that mutate the production global `plugins` singleton (because
+ * the production code path reads it directly — `bootPluginsForMcp`,
+ * `wireMcpToolPlugins` callers in `server.ts`) cannot use this layer
+ * and must instead add an `afterAll` that calls `_reset()` on the
+ * shared singletons. The Layer is for Effect-based call sites where
+ * `yield* PluginRegistry` is feasible.
+ *
+ * @example
+ * ```ts
+ * const TestLayer = createPluginRegistryTestLayer();
+ * await Effect.runPromise(
+ *   Effect.gen(function* () {
+ *     const registry = yield* PluginRegistry;
+ *     registry.register(myPlugin);
+ *     return registry.size;
+ *   }).pipe(Effect.provide(TestLayer)),
+ * );
+ * ```
+ */
+export function createPluginRegistryTestLayer(
+  seed?: (registry: PluginRegistryClass) => void,
+): Layer.Layer<PluginRegistry> {
+  return Layer.sync(PluginRegistry, () => {
+    const impl = new PluginRegistryClass();
+    seed?.(impl);
+    const service: PluginRegistryShape = {
+      register: (p) => impl.register(p),
+      initializeAll: (ctx) => impl.initializeAll(ctx),
+      healthCheckAll: () => impl.healthCheckAll(),
+      teardownAll: () => impl.teardownAll(),
+      get: (id) => impl.get(id),
+      getStatus: (id) => impl.getStatus(id),
+      getByType: (type) => impl.getByType(type),
+      getAll: () => impl.getAll(),
+      getAllHealthy: () => impl.getAllHealthy(),
+      describe: () => impl.describe(),
+      enable: (id) => impl.enable(id),
+      disable: (id) => impl.disable(id),
+      isEnabled: (id) => impl.isEnabled(id),
+      get size() {
+        return impl.size;
+      },
+      _reset: () => impl._reset(),
+    };
+    return service;
+  });
+}
 
 // ── Default connection layer ────────────────────────────────────────
 

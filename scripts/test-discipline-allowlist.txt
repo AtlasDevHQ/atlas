@@ -194,7 +194,6 @@ mock	packages/api/src/lib/learn/__tests__/suggestions.test.ts
 mock	packages/api/src/lib/linear/__tests__/store.test.ts
 mock	packages/api/src/lib/plugins/__tests__/hooks-integration.test.ts
 mock	packages/api/src/lib/plugins/__tests__/lazy-loader.test.ts
-mock	packages/api/src/lib/plugins/__tests__/mcp-boot.test.ts
 mock	packages/api/src/lib/plugins/__tests__/registry.test.ts
 mock	packages/api/src/lib/plugins/__tests__/tool-call-hooks-integration.test.ts
 mock	packages/api/src/lib/plugins/__tests__/validation.test.ts

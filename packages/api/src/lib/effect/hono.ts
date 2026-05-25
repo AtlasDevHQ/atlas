@@ -199,6 +199,17 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
     case "WhatsAppPhoneNumberIdInvalidError":
     case "WhatsAppReachabilityError":
       return { status: 400, code: "bad_request", message: error.message };
+    // #2754 — Google Chat install rejected at the input or Pub/Sub
+    // round-trip layer. Both are admin-correctable (re-paste the
+    // workspace_id, install the Atlas Marketplace listing, grant
+    // pubsub.publisher on the topic) so 400 is the right surface.
+    // `GchatReachabilityError`'s message preserves Google's verbatim
+    // error text when present; the route does not translate. (5xx
+    // upstream failures are classified as `GchatApiUnavailableError`
+    // below so retry semantics stay correct.)
+    case "GchatWorkspaceIdInvalidError":
+    case "GchatReachabilityError":
+      return { status: 400, code: "bad_request", message: error.message };
     // #2742 — catalog `config_schema` violation. Surface per-field
     // detail in the response body so the admin UI's form can highlight
     // the wrong inputs without a follow-up roundtrip. Field names are
@@ -369,6 +380,14 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
     // rides in `Authorization: Bearer`, not in the URL path, so it
     // can't surface in fetch error messages).
     case "WhatsAppApiUnavailableError":
+      return { status: 502, code: "upstream_error", message: error.message };
+    // #2754 — Google's OAuth2 token endpoint or Pub/Sub API unreachable
+    // at the network layer (DNS, TLS, timeout), or upstream 5xx. Same
+    // upstream posture as Telegram / Discord / Teams / WhatsApp; the
+    // message is admin-safe (the service-account private key is signed
+    // into the JWT bearer assertion but never appears in fetch error
+    // messages, and we redact the bearer access token defensively).
+    case "GchatApiUnavailableError":
       return { status: 502, code: "upstream_error", message: error.message };
 
     // ── 503 Service Unavailable ──────────────────────────────────

@@ -69,6 +69,7 @@ import { getInstallation } from "@atlas/api/lib/slack/store";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { DISCORD_GUILD_ID_RE } from "@atlas/api/lib/integrations/install/discord-static-bot-handler";
 import { WHATSAPP_PHONE_NUMBER_ID_RE } from "@atlas/api/lib/integrations/install/whatsapp-static-bot-handler";
+import { GCHAT_WORKSPACE_ID_RE } from "@atlas/api/lib/integrations/install/gchat-static-bot-handler";
 import { getConversationId, setConversationId } from "@atlas/api/lib/slack/threads";
 import {
   createConversation,
@@ -177,6 +178,41 @@ interface WhatsAppRawEvent {
 }
 
 /**
+ * Minimum shape we read from a Google Chat raw event envelope. The Chat
+ * SDK's `@chat-adapter/gchat` forwards Google Chat MESSAGE events
+ * delivered via either the HTTP endpoint or the Workspace Events
+ * Pub/Sub subscription; in both shapes the routing identifier is
+ * `space.customer`, which carries the Google Workspace customer id
+ * once the subscription is bound to a Workspace install.
+ *
+ * `message.thread.name` is the per-thread anchor for conversation
+ * persistence. `user.name` and `user.displayName` populate when the
+ * sender is a human; bot-to-bot messages are filtered upstream.
+ */
+interface GchatRawEvent {
+  /** Google Chat event type — `MESSAGE`, `ADDED_TO_SPACE`, etc. */
+  eventType?: string;
+  message?: {
+    name?: string;
+    thread?: { name?: string };
+    space?: { name?: string };
+  };
+  space?: {
+    /**
+     * Google Workspace customer id. Canonical wire format is
+     * `customers/<id>` (the Workspace Events Pub/Sub envelope) but
+     * the direct webhook surface sometimes ships the bare `<id>`.
+     * {@link extractGchatWorkspaceId} normalizes both into the bare
+     * id stored on the install row.
+     */
+    customer?: string;
+    /** `spaces/<id>` — anchor for per-space rate-limit + conversation continuity. */
+    name?: string;
+  };
+  user?: { name?: string; displayName?: string };
+}
+
+/**
  * Normalize a Slack id field that may arrive as a bare string (events_api)
  * or as a `{ id, ... }` object (interactive `block_actions` payloads).
  */
@@ -251,6 +287,28 @@ function extractWhatsAppPhoneNumberId(raw: WhatsAppRawEvent): string | undefined
 }
 
 /**
+ * Extract the Google Workspace customer id from `space.customer`. The
+ * Workspace Events subscription stamps the field as `customers/<id>` or
+ * the bare alphanumeric id depending on Pub/Sub event shape; this
+ * normalizes both into the alphanumeric id the install row stored.
+ *
+ * Reuses {@link GCHAT_WORKSPACE_ID_RE} from the install handler — single
+ * source of truth for the customer-id invariant across install + receive
+ * paths (mirrors the Discord branch's `DISCORD_GUILD_ID_RE` reuse).
+ */
+function extractGchatWorkspaceId(raw: GchatRawEvent): string | undefined {
+  const customer = raw.space?.customer;
+  if (typeof customer !== "string" || customer.length === 0) return undefined;
+  // Strip the `customers/` prefix if present so the value matches what
+  // GchatStaticBotInstallHandler persists into workspace_plugins.config.
+  const id = customer.startsWith("customers/")
+    ? customer.slice("customers/".length)
+    : customer;
+  if (!GCHAT_WORKSPACE_ID_RE.test(id)) return undefined;
+  return id;
+}
+
+/**
  * Build the chat plugin's `executeQuery` callback.
  *
  * Multi-platform dispatch lives inside `runExecuteQuery`. Each chat
@@ -284,6 +342,9 @@ export async function runExecuteQuery(
   }
   if (adapter.name === "whatsapp") {
     return runWhatsAppExecuteQuery(question, ctx, requestId);
+  }
+  if (adapter.name === "gchat") {
+    return runGchatExecuteQuery(question, ctx, requestId);
   }
 
   log.warn(
@@ -789,6 +850,180 @@ async function resolveDiscordWorkspaceId(guildId: string): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
+// Google Chat branch — 1.5.3 #2754 (Phase D)
+// ---------------------------------------------------------------------------
+
+async function runGchatExecuteQuery(
+  question: string,
+  ctx: ChatExecuteQueryContext,
+  requestId: string,
+): Promise<ChatQueryResult> {
+  const { threadId, priorMessages, rawMessage } = ctx;
+  const raw = (rawMessage ?? {}) as GchatRawEvent;
+
+  // 1. Resolve tenant — workspace_id is the routing identifier persisted
+  //    by `GchatStaticBotInstallHandler` into `workspace_plugins.config`.
+  //    Pub/Sub envelopes without `space.customer` shouldn't reach here
+  //    (the Marketplace install binds the subscription per-Workspace)
+  //    but the defensive check keeps the failure mode a clear 4xx.
+  const workspaceIdent = extractGchatWorkspaceId(raw);
+  if (!workspaceIdent) {
+    log.warn(
+      { threadId, requestId },
+      "Chat plugin executeQuery received Google Chat event without space.customer — refusing",
+    );
+    throw new Error(
+      "This Google Chat event is missing tenant context (space.customer). Please try again.",
+    );
+  }
+
+  // 2. Rate limit — keyed per-Workspace (one install row == one rate-
+  //    limit bucket). Same posture as Telegram's per-chat / Discord's
+  //    per-guild key.
+  const rateCheck = checkRateLimit(`gchat:${workspaceIdent}`);
+  if (!rateCheck.allowed) {
+    log.info(
+      { workspaceIdFingerprint: fingerprintGchatWorkspaceId(workspaceIdent), threadId, requestId },
+      "Chat plugin executeQuery rate-limited",
+    );
+    throw new Error("Rate limit exceeded. Please wait before trying again.");
+  }
+
+  // 3. F-55 actor — resolve workspace_id → Atlas workspace via the
+  //    install row. Same fail-closed contract as Slack / Telegram /
+  //    Discord: unknown tenant or DB outage MUST throw before the
+  //    agent runs.
+  let orgId: string;
+  try {
+    orgId = await resolveGchatWorkspaceId(workspaceIdent);
+  } catch (err) {
+    if (err instanceof GchatUnknownTenantError) {
+      log.warn(
+        { workspaceIdFingerprint: fingerprintGchatWorkspaceId(workspaceIdent), threadId, requestId },
+        "Unknown Google Workspace customer id — refusing",
+      );
+      throw new Error(
+        "This Google Workspace is not connected to Atlas. Ask your admin to install Atlas from the Google Workspace Marketplace.",
+        { cause: err },
+      );
+    }
+    log.error(
+      {
+        workspaceIdFingerprint: fingerprintGchatWorkspaceId(workspaceIdent),
+        threadId,
+        requestId,
+        err,
+      },
+      "Failed to resolve Google Workspace customer id → workspace — refusing query",
+    );
+    throw new Error(
+      "Atlas could not resolve the Google Workspace right now. Please try again in a moment.",
+      { cause: err },
+    );
+  }
+
+  const externalUserId =
+    typeof raw.user?.name === "string" && raw.user.name.length > 0
+      ? raw.user.name
+      : undefined;
+  const actor = botActorUser({
+    platform: "gchat",
+    externalId: workspaceIdent,
+    orgId,
+    ...(externalUserId ? { externalUserId } : {}),
+  });
+
+  // 4. Conversation persistence keyed on (space.name, thread.name).
+  //    Google Chat threads are first-class — `message.thread.name` is
+  //    the canonical anchor. Falls back to the space name when the
+  //    event is a top-level post outside a thread (DM-style).
+  const spaceAnchor = raw.space?.name ?? raw.message?.space?.name ?? "";
+  const threadAnchor =
+    raw.message?.thread?.name ?? raw.message?.name ?? spaceAnchor;
+  const conversationId = await loadOrCreateConversation(
+    spaceAnchor,
+    threadAnchor,
+    question,
+    "gchat",
+    requestId,
+  );
+
+  return runAgentAndMap({
+    question,
+    requestId,
+    actor,
+    approvalSurface: "gchat",
+    conversationId,
+    priorMessages: priorMessages ?? null,
+    presentationMode: ctx.presentationMode,
+    tenantLabel: {
+      workspaceIdFingerprint: fingerprintGchatWorkspaceId(workspaceIdent),
+      threadId,
+    },
+  });
+}
+
+/**
+ * Log-safe fingerprint of the Google Workspace customer id — last 4
+ * chars only. Mirrors the helper in `gchat-static-bot-handler.ts`; kept
+ * inline here to avoid a cross-module import for one 2-line helper.
+ */
+function fingerprintGchatWorkspaceId(workspaceId: string): string {
+  return workspaceId.length <= 4 ? workspaceId : `…${workspaceId.slice(-4)}`;
+}
+
+/**
+ * Unknown-tenant marker for the Google Chat branch's fail-closed path.
+ * Same posture as {@link TelegramUnknownTenantError} — an `instanceof`
+ * sentinel caught inline and rethrown user-safe, NOT a Data.TaggedError.
+ */
+class GchatUnknownTenantError extends Error {
+  constructor(workspaceIdFingerprint: string) {
+    super(`No Atlas workspace bound to Google Workspace …${workspaceIdFingerprint}`);
+    this.name = "GchatUnknownTenantError";
+  }
+}
+
+/**
+ * Resolve a Google Workspace customer id → Atlas workspace_id via the
+ * static-bot install record. Reads `workspace_plugins.config->>'workspace_id'`
+ * for the catalog row `catalog:gchat`. Throws
+ * {@link GchatUnknownTenantError} on no-row, propagates DB errors
+ * verbatim for caller-side logging.
+ *
+ * Same rationale as the Telegram / Discord resolvers — the install row
+ * IS the tenant lookup (no parallel store to keep in sync). See ADR-0007.
+ */
+async function resolveGchatWorkspaceId(workspaceIdent: string): Promise<string> {
+  // No LIMIT — fail-closed when the same customer id maps to >1
+  // workspace. Same rationale as Telegram / Discord: the schema doesn't
+  // enforce cross-workspace customer-id uniqueness today, and silently
+  // picking one match is a cross-tenant data exposure risk.
+  const rows = await internalQuery<{ workspace_id: string }>(
+    `SELECT workspace_id
+       FROM workspace_plugins
+      WHERE catalog_id = $1
+        AND enabled = true
+        AND config->>'workspace_id' = $2`,
+    ["catalog:gchat", workspaceIdent],
+  );
+  if (rows.length === 0) {
+    throw new GchatUnknownTenantError(fingerprintGchatWorkspaceId(workspaceIdent));
+  }
+  if (rows.length > 1) {
+    log.error(
+      {
+        workspaceIdFingerprint: fingerprintGchatWorkspaceId(workspaceIdent),
+        matchCount: rows.length,
+      },
+      "Google Workspace customer id maps to multiple workspaces — refusing query (cross-tenant misroute risk). Operator must disconnect the duplicate install.",
+    );
+    throw new GchatUnknownTenantError(fingerprintGchatWorkspaceId(workspaceIdent));
+  }
+  return rows[0].workspace_id;
+}
+
+// ---------------------------------------------------------------------------
 // Shared conversation persistence + agent invocation
 // ---------------------------------------------------------------------------
 
@@ -802,7 +1037,7 @@ async function loadOrCreateConversation(
   channel: string,
   threadAnchor: string,
   question: string,
-  surface: "slack" | "telegram" | "discord" | "whatsapp",
+  surface: "slack" | "telegram" | "discord" | "whatsapp" | "gchat",
   requestId: string,
 ): Promise<string | null> {
   if (!channel || !threadAnchor) return null;
@@ -1229,6 +1464,16 @@ async function resolveWhatsAppWorkspaceId(phoneNumberId: string): Promise<string
 
 // Compile-time guard that the platforms wired here all exist in
 // `CHAT_BOT_PLATFORMS`. Adding a new branch above without extending the
-// actor enum surfaces here as a TS error.
-const _platformGuards: ReadonlyArray<ChatBotPlatform> = ["telegram", "discord", "whatsapp"];
+// actor enum surfaces here as a TS error. Slack is included even
+// though it uses `getInstallation` for tenancy rather than the
+// static-bot install row — every platform that calls `botActorUser`
+// must appear in `CHAT_BOT_PLATFORMS`, and Slack is the original
+// member.
+const _platformGuards: ReadonlyArray<ChatBotPlatform> = [
+  "slack",
+  "telegram",
+  "discord",
+  "whatsapp",
+  "gchat",
+];
 void _platformGuards;

@@ -637,6 +637,75 @@ export class WhatsAppApiUnavailableError extends Data.TaggedError(
   readonly message: string;
 }> {}
 
+// ── Google Chat static-bot install (#2754 — 1.5.3 Phase D) ──────────
+
+/**
+ * Google Chat install rejected the supplied `workspace_id` at the input-
+ * shape layer — not a Google Workspace customer id (typically `C` followed
+ * by 8 alphanumeric chars, e.g. `C01abc234`), empty, or pasted as a
+ * primary domain. Maps to HTTP 400. The constructor message is admin-
+ * actionable verbatim; the route does not translate.
+ *
+ * Fifth subclass of the static-bot input-validation family alongside
+ * {@link TelegramChatIdInvalidError}, {@link DiscordGuildIdInvalidError},
+ * {@link TeamsTenantIdInvalidError}, and
+ * {@link WhatsAppPhoneNumberIdInvalidError}.
+ *
+ * @see packages/api/src/lib/integrations/install/gchat-static-bot-handler.ts
+ */
+export class GchatWorkspaceIdInvalidError extends Data.TaggedError(
+  "GchatWorkspaceIdInvalidError",
+)<{
+  readonly message: string;
+}> {}
+
+/**
+ * Google Pub/Sub publish round-trip failed when verifying that the
+ * operator-shared service account can reach the topic the Workspace
+ * Events subscription publishes to. Common causes are admin-correctable
+ * (Workspace blocked the Atlas Marketplace install, the SA lacks
+ * `roles/pubsub.publisher` on the topic, the topic id is wrong) so the
+ * surface is HTTP 400. The `message` field carries Google's verbatim
+ * error text when present so the admin sees the actionable description.
+ *
+ * Distinct from {@link GchatApiUnavailableError} (502 — operator/upstream)
+ * because Google's 4xx envelopes are user-side and must not auto-retry.
+ * 5xx envelopes are classified as {@link GchatApiUnavailableError} so
+ * retry semantics stay correct.
+ */
+export class GchatReachabilityError extends Data.TaggedError(
+  "GchatReachabilityError",
+)<{
+  /** Admin-facing message — includes Google's verbatim error text when available. */
+  readonly message: string;
+  /** HTTP status returned by the Pub/Sub or token endpoint. Forensic-only. */
+  readonly status: number;
+  /**
+   * Google's typed `error.status` string when present
+   * (`UNAUTHENTICATED`, `PERMISSION_DENIED`, `NOT_FOUND`,
+   * `RESOURCE_EXHAUSTED`, etc.). Carried alongside `status` because
+   * Google's gRPC-transcoded REST conveys the actionable categorization
+   * here, not in the HTTP code — a future retry/categorization policy
+   * can switch on this without re-parsing the message string.
+   * `undefined` for the OAuth2 token-endpoint failure path, which
+   * doesn't return this field.
+   */
+  readonly errorStatus: string | undefined;
+}> {}
+
+/**
+ * Google's OAuth2 token endpoint or Pub/Sub API was unreachable at the
+ * network layer (DNS, TLS, timeout) or returned a 5xx upstream error.
+ * Maps to HTTP 502. The thrown message is admin-safe (no service
+ * account private key, no internal hostnames); the underlying error is
+ * logged with the structured `requestId` for operator forensics.
+ */
+export class GchatApiUnavailableError extends Data.TaggedError(
+  "GchatApiUnavailableError",
+)<{
+  readonly message: string;
+}> {}
+
 // ── Workspace Installer (#2742) ────────────────────────────────────
 
 /**
@@ -790,6 +859,9 @@ export type AtlasError =
   | WhatsAppPhoneNumberIdInvalidError
   | WhatsAppReachabilityError
   | WhatsAppApiUnavailableError
+  | GchatWorkspaceIdInvalidError
+  | GchatReachabilityError
+  | GchatApiUnavailableError
   | AlreadyInstalledError
   | ConfigSchemaError
   | CatalogNotFoundError
@@ -862,6 +934,9 @@ export const ATLAS_ERROR_TAG_LIST = [
   "WhatsAppPhoneNumberIdInvalidError",
   "WhatsAppReachabilityError",
   "WhatsAppApiUnavailableError",
+  "GchatWorkspaceIdInvalidError",
+  "GchatReachabilityError",
+  "GchatApiUnavailableError",
   "AlreadyInstalledError",
   "ConfigSchemaError",
   "CatalogNotFoundError",

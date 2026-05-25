@@ -68,6 +68,20 @@ function clearWhatsAppEnv(): void {
   delete process.env.META_BUSINESS_APP_ID;
 }
 
+function clearGchatEnv(): void {
+  delete process.env.GCHAT_SERVICE_ACCOUNT_JSON;
+  delete process.env.GCHAT_PUBSUB_TOPIC;
+}
+
+const FAKE_GCHAT_SA_JSON = JSON.stringify({
+  client_email: "atlas-sa@atlas-test.iam.gserviceaccount.com",
+  private_key:
+    "-----BEGIN PRIVATE KEY-----\nfake-test-key-not-used-at-registration\n-----END PRIVATE KEY-----\n",
+  project_id: "atlas-test",
+});
+const FAKE_GCHAT_PUBSUB_TOPIC = "projects/atlas-test/topics/gchat-events";
+
+
 beforeEach(() => {
   // Reset the env to a known-clean state; each test sets only what it needs.
   process.env = { ...ORIGINAL_ENV };
@@ -75,6 +89,7 @@ beforeEach(() => {
   clearDiscordEnv();
   clearTeamsEnv();
   clearWhatsAppEnv();
+  clearGchatEnv();
   delete process.env.SLACK_CLIENT_ID;
   delete process.env.SLACK_CLIENT_SECRET;
   delete process.env.JIRA_CLIENT_ID;
@@ -318,6 +333,83 @@ describe("registerBuiltinInstallHandlers — WhatsApp env gate (#2753)", () => {
   });
 
   it("does not throw when the catalog has no whatsapp row at all (operator hasn't opted in)", () => {
+    mockedConfig = { catalog: [{ slug: "slack", enabled: true }] };
+    expect(() => registerBuiltinInstallHandlers()).not.toThrow();
+  });
+});
+
+describe("registerBuiltinInstallHandlers — Google Chat env gate (#2754)", () => {
+  it("does not register the Google Chat handler when GCHAT_SERVICE_ACCOUNT_JSON is unset", () => {
+    process.env.GCHAT_PUBSUB_TOPIC = FAKE_GCHAT_PUBSUB_TOPIC;
+    registerBuiltinInstallHandlers();
+    expect(() =>
+      getInstallHandler({ slug: "gchat", install_model: "static-bot" }),
+    ).toThrow(/No static-bot install handler registered/);
+  });
+
+  it("does not register the Google Chat handler when GCHAT_PUBSUB_TOPIC is unset", () => {
+    process.env.GCHAT_SERVICE_ACCOUNT_JSON = FAKE_GCHAT_SA_JSON;
+    registerBuiltinInstallHandlers();
+    expect(() =>
+      getInstallHandler({ slug: "gchat", install_model: "static-bot" }),
+    ).toThrow(/No static-bot install handler registered/);
+  });
+
+  it("does not register when either Google Chat env var is an empty string", () => {
+    process.env.GCHAT_SERVICE_ACCOUNT_JSON = "";
+    process.env.GCHAT_PUBSUB_TOPIC = "";
+    registerBuiltinInstallHandlers();
+    expect(() =>
+      getInstallHandler({ slug: "gchat", install_model: "static-bot" }),
+    ).toThrow(/No static-bot install handler registered/);
+  });
+
+  it("does not register when GCHAT_SERVICE_ACCOUNT_JSON is malformed JSON — fails loudly at boot", () => {
+    process.env.GCHAT_SERVICE_ACCOUNT_JSON = "not-a-json-blob";
+    process.env.GCHAT_PUBSUB_TOPIC = FAKE_GCHAT_PUBSUB_TOPIC;
+    // The handler's parser throws; register catches + logs at error and
+    // skips. From the dispatch's perspective, nothing was registered.
+    expect(() => registerBuiltinInstallHandlers()).not.toThrow();
+    expect(() =>
+      getInstallHandler({ slug: "gchat", install_model: "static-bot" }),
+    ).toThrow(/No static-bot install handler registered/);
+  });
+
+  it("does not register when GCHAT_PUBSUB_TOPIC is a bare topic name (not a fully-qualified path)", () => {
+    process.env.GCHAT_SERVICE_ACCOUNT_JSON = FAKE_GCHAT_SA_JSON;
+    process.env.GCHAT_PUBSUB_TOPIC = "just-the-topic";
+    expect(() => registerBuiltinInstallHandlers()).not.toThrow();
+    expect(() =>
+      getInstallHandler({ slug: "gchat", install_model: "static-bot" }),
+    ).toThrow(/No static-bot install handler registered/);
+  });
+
+  it("registers the Google Chat handler when both GCHAT_SERVICE_ACCOUNT_JSON and GCHAT_PUBSUB_TOPIC are valid", () => {
+    process.env.GCHAT_SERVICE_ACCOUNT_JSON = FAKE_GCHAT_SA_JSON;
+    process.env.GCHAT_PUBSUB_TOPIC = FAKE_GCHAT_PUBSUB_TOPIC;
+    registerBuiltinInstallHandlers();
+    const handler = getInstallHandler({
+      slug: "gchat",
+      install_model: "static-bot",
+    });
+    expect(handler.kind).toBe("static-bot");
+  });
+
+  it("logs (but does not throw) when the catalog says gchat is enabled but the env is half-wired — #2673 escalation", () => {
+    process.env.GCHAT_SERVICE_ACCOUNT_JSON = FAKE_GCHAT_SA_JSON;
+    // GCHAT_PUBSUB_TOPIC missing — operator opted in via catalog but
+    // half-wired the env. Same severity-escalation contract as the
+    // other Phase D platforms.
+    mockedConfig = {
+      catalog: [{ slug: "gchat", enabled: true }],
+    };
+    expect(() => registerBuiltinInstallHandlers()).not.toThrow();
+    expect(() =>
+      getInstallHandler({ slug: "gchat", install_model: "static-bot" }),
+    ).toThrow(/No static-bot install handler registered/);
+  });
+
+  it("does not throw when the catalog has no gchat row at all (operator hasn't opted in)", () => {
     mockedConfig = { catalog: [{ slug: "slack", enabled: true }] };
     expect(() => registerBuiltinInstallHandlers()).not.toThrow();
   });

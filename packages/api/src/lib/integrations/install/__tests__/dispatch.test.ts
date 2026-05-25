@@ -140,11 +140,13 @@ describe("getInstallHandler — install_model: 'static-bot'", () => {
     expect(resolved).toBe(handler);
   });
 
-  it("dispatches per-slug — telegram and discord are independent slots", () => {
+  it("dispatches per-slug — telegram, discord, and gchat are independent slots", () => {
     const tg = makeStaticBotHandler("telegram");
     const discord = makeStaticBotHandler("discord");
+    const gchat = makeStaticBotHandler("gchat");
     registerStaticBotHandler("telegram", tg);
     registerStaticBotHandler("discord", discord);
+    registerStaticBotHandler("gchat", gchat);
 
     expect(
       getInstallHandler({ slug: "telegram", install_model: "static-bot" }),
@@ -152,6 +154,9 @@ describe("getInstallHandler — install_model: 'static-bot'", () => {
     expect(
       getInstallHandler({ slug: "discord", install_model: "static-bot" }),
     ).toBe(discord);
+    expect(
+      getInstallHandler({ slug: "gchat", install_model: "static-bot" }),
+    ).toBe(gchat);
   });
 
   it("throws an actionable error when no static-bot handler is registered for the slug", () => {

@@ -298,6 +298,29 @@ function catalogHasWhatsAppStaticBot(
   );
 }
 
+/**
+ * Google Chat (1.5.3 #2754) mirrors Telegram / Discord's static-bot
+ * mount story — declared + enabled in the catalog mounts the webhook
+ * route at `/api/plugins/chat-interaction/webhooks/gchat`. Env-var
+ * presence (and therefore the actual adapter wiring) is checked inside
+ * `initialize()` by the `AdapterRegistry`. Google Chat events typically
+ * arrive via the Workspace Events Pub/Sub subscription that the adapter
+ * binds at boot; the HTTP endpoint is the fallback for legacy
+ * `/atlas`-style slash command invocations.
+ */
+function catalogHasGchatStaticBot(
+  catalog: ReadonlyArray<ChatCatalogEntryInput> | undefined,
+): boolean {
+  if (!catalog) return false;
+  return catalog.some(
+    (e) =>
+      e.slug === "gchat" &&
+      e.type === "chat" &&
+      e.install_model === "static-bot" &&
+      e.enabled === true,
+  );
+}
+
 function buildChatPlugin(
   config: ChatPluginConfig,
 ): AtlasInteractionPlugin<ChatPluginConfig> {
@@ -307,6 +330,7 @@ function buildChatPlugin(
   let telegramAdapterInstance: Adapter | null = null;
   let discordAdapterInstance: Adapter | null = null;
   let whatsappAdapterInstance: Adapter | null = null;
+  let gchatAdapterInstance: Adapter | null = null;
   let log: PluginLogger | null = null;
   let initialized = false;
   /**
@@ -327,6 +351,7 @@ function buildChatPlugin(
   const telegramStaticBotDeclared = catalogHasTelegramStaticBot(config.catalog);
   const discordStaticBotDeclared = catalogHasDiscordStaticBot(config.catalog);
   const whatsappStaticBotDeclared = catalogHasWhatsAppStaticBot(config.catalog);
+  const gchatStaticBotDeclared = catalogHasGchatStaticBot(config.catalog);
 
   return {
     id: "chat-interaction",
@@ -442,6 +467,53 @@ function buildChatPlugin(
             (log ?? console).error(
               { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "discord" },
               "Discord webhook handler threw unexpectedly",
+            );
+            return c.json({ error: "Webhook processing failed", requestId }, 500);
+          }
+        });
+      }
+
+      // Google Chat (1.5.3 #2754 — fourth static-bot webhook). Most
+      // production traffic arrives via the Workspace Events Pub/Sub
+      // subscription the adapter binds at boot — the HTTP endpoint is
+      // the fallback for slash-command invocations from the Google Chat
+      // app config screen.
+      if (gchatStaticBotDeclared) {
+        app.post("/webhooks/gchat", async (c) => {
+          const requestId = crypto.randomUUID();
+          if (!bridge) {
+            return c.json({ error: "Chat plugin not yet initialized", requestId }, 503);
+          }
+          const handler = bridge.webhooks.gchat;
+          if (!handler) {
+            // Catalog declared gchat + enabled, but the AdapterRegistry
+            // didn't wire the adapter — almost always means
+            // GCHAT_SERVICE_ACCOUNT_JSON and/or GCHAT_PUBSUB_TOPIC is
+            // unset (or malformed JSON). Same fail-loud posture as
+            // Telegram / Discord (#2748 / #2749 review + #2673
+            // silent-degradation precedent).
+            (log ?? console).error(
+              { requestId, adapter: "gchat" },
+              "Google Chat webhook received but adapter not configured — check GCHAT_SERVICE_ACCOUNT_JSON + GCHAT_PUBSUB_TOPIC and AdapterRegistry boot logs",
+            );
+            return c.json({ error: "Google Chat adapter not configured", requestId }, 404);
+          }
+          try {
+            const response = await handler(c.req.raw, {
+              waitUntil: (task: Promise<unknown>) => {
+                task.catch((err: unknown) => {
+                  (log ?? console).error(
+                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "gchat" },
+                    "Chat SDK Google Chat webhook background task failed",
+                  );
+                });
+              },
+            });
+            return response;
+          } catch (err) {
+            (log ?? console).error(
+              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "gchat" },
+              "Google Chat webhook handler threw unexpectedly",
             );
             return c.json({ error: "Webhook processing failed", requestId }, 500);
           }
@@ -607,10 +679,13 @@ function buildChatPlugin(
         slackAdapterInstance = registry.adapters.slack ?? null;
         // Telegram (1.5.3 #2748 — first static-bot adapter wired here);
         // Discord (1.5.3 #2749 — second); WhatsApp (1.5.3 #2753 —
-        // fourth). gchat (#2754) follows.
+        // third); Google Chat (1.5.3 #2754 — fourth). (Teams #2752
+        // ships its install handler in packages/api but no chat-adapter
+        // builder here.)
         telegramAdapterInstance = (registry.adapters.telegram ?? null) as Adapter | null;
         discordAdapterInstance = (registry.adapters.discord ?? null) as Adapter | null;
         whatsappAdapterInstance = (registry.adapters.whatsapp ?? null) as Adapter | null;
+        gchatAdapterInstance = (registry.adapters.gchat ?? null) as Adapter | null;
         adapterDiagnostics = registry.diagnostics;
 
         // Bridge takes pre-built instances per-platform; unwired slots
@@ -621,6 +696,7 @@ function buildChatPlugin(
           telegram: telegramAdapterInstance,
           discord: discordAdapterInstance,
           whatsapp: whatsappAdapterInstance,
+          gchat: gchatAdapterInstance,
         });
       } catch (err) {
         ctx.logger.error(
@@ -641,6 +717,7 @@ function buildChatPlugin(
         telegramAdapterInstance = null;
         discordAdapterInstance = null;
         whatsappAdapterInstance = null;
+        gchatAdapterInstance = null;
         throw err;
       }
 
@@ -649,6 +726,7 @@ function buildChatPlugin(
       if (telegramAdapterInstance) enabledAdapters.push("telegram");
       if (discordAdapterInstance) enabledAdapters.push("discord");
       if (whatsappAdapterInstance) enabledAdapters.push("whatsapp");
+      if (gchatAdapterInstance) enabledAdapters.push("gchat");
 
       const backend = config.state?.backend ?? "memory";
       const initFailedSilently =
@@ -697,6 +775,7 @@ function buildChatPlugin(
       if (telegramAdapterInstance) enabledAdapters.push("telegram");
       if (discordAdapterInstance) enabledAdapters.push("discord");
       if (whatsappAdapterInstance) enabledAdapters.push("whatsapp");
+      if (gchatAdapterInstance) enabledAdapters.push("gchat");
 
       if (enabledAdapters.length === 0) {
         // Use the diagnostics captured at init to point operators at the
@@ -777,6 +856,7 @@ function buildChatPlugin(
       telegramAdapterInstance = null;
       discordAdapterInstance = null;
       whatsappAdapterInstance = null;
+      gchatAdapterInstance = null;
       log = null;
       initialized = false;
     },

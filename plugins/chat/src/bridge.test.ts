@@ -2223,6 +2223,60 @@ describe("chatPlugin webhook routes", () => {
       await plugin.teardown!();
     }
   });
+
+  // ── Google Chat webhook route gate (1.5.3 #2754) ─────────────────
+  // Mirrors the Telegram block above for parity — same mount-on-catalog
+  // shape, same 503 / 404 / requestId contract.
+
+  const GCHAT_CATALOG: ReadonlyArray<ChatCatalogEntryInput> = [
+    {
+      slug: "gchat",
+      type: "chat",
+      install_model: "static-bot",
+      enabled: true,
+      saas_eligible: true,
+    },
+  ];
+
+  it("does NOT mount /webhooks/gchat when the catalog omits gchat", async () => {
+    const { app } = await mountPlugin([]);
+    const resp = await app.request("/webhooks/gchat", { method: "POST" });
+    expect(resp.status).toBe(404);
+  });
+
+  it("mounts /webhooks/gchat when the catalog declares gchat static-bot enabled, returns 503 pre-initialize", async () => {
+    const { app } = await mountPlugin(GCHAT_CATALOG);
+    const resp = await app.request("/webhooks/gchat", { method: "POST", body: "{}" });
+    expect(resp.status).toBe(503);
+    const body = (await resp.json()) as { error: string };
+    expect(body.error).toContain("not yet initialized");
+  });
+
+  it("returns 404 with a requestId when the bridge is initialized but the gchat adapter wasn't wired", async () => {
+    // No GCHAT_SERVICE_ACCOUNT_JSON / GCHAT_PUBSUB_TOPIC in the env, so
+    // AdapterRegistry returns null for the gchat slot. The runtime 404
+    // branch should fire on a real webhook delivery.
+    delete process.env.GCHAT_SERVICE_ACCOUNT_JSON;
+    delete process.env.GCHAT_PUBSUB_TOPIC;
+    const { app, plugin } = await mountPlugin(GCHAT_CATALOG);
+    await plugin.initialize!({
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      config: {},
+    });
+    try {
+      const resp = await app.request("/webhooks/gchat", { method: "POST", body: "{}" });
+      expect(resp.status).toBe(404);
+      const body = (await resp.json()) as { error: string; requestId?: string };
+      expect(body.error).toContain("Google Chat adapter not configured");
+      expect(typeof body.requestId).toBe("string");
+      expect(body.requestId!.length).toBeGreaterThan(0);
+    } finally {
+      await plugin.teardown!();
+    }
+  });
 });
 
 describe("executeQuery context contract", () => {

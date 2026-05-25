@@ -133,7 +133,7 @@ export function getInstallHandler(
       const handler = staticBotHandlers.get(catalogRow.slug);
       if (!handler) {
         throw new Error(
-          `No static-bot install handler registered for catalog slug "${catalogRow.slug}". Register via registerStaticBotHandler() at module load (set the operator env vars the handler needs — TELEGRAM_BOT_TOKEN for telegram; DISCORD_BOT_TOKEN + DISCORD_CLIENT_ID for discord; TEAMS_APP_ID + TEAMS_APP_PASSWORD for teams; META_BUSINESS_ACCESS_TOKEN + META_BUSINESS_APP_ID for whatsapp).`,
+          `No static-bot install handler registered for catalog slug "${catalogRow.slug}". Register via registerStaticBotHandler() at module load (set the operator env vars the handler needs — TELEGRAM_BOT_TOKEN for telegram; DISCORD_BOT_TOKEN + DISCORD_CLIENT_ID for discord; TEAMS_APP_ID + TEAMS_APP_PASSWORD for teams; META_BUSINESS_ACCESS_TOKEN + META_BUSINESS_APP_ID for whatsapp; GCHAT_SERVICE_ACCOUNT_JSON + GCHAT_PUBSUB_TOPIC for gchat).`,
         );
       }
       return handler;

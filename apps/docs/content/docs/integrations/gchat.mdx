@@ -1,0 +1,232 @@
+---
+title: Google Chat
+description: Connect Atlas to Google Chat via the Google Workspace Marketplace. The operator wires one shared service account; each Workspace admin installs Atlas from their Workspace's Marketplace.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas's Google Chat integration follows the **static-bot** install
+model: one operator-owned Google Workspace Marketplace listing serves
+every Workspace in your deploy, and each customer Workspace admin
+installs Atlas from their own Workspace's Marketplace. The shared
+service account authenticates outbound Google Chat API calls and
+subscribes to a single Pub/Sub topic that receives Workspace Events
+from every installed Workspace; per-Workspace routing is the only
+thing a customer admin configures.
+
+This is in contrast to Slack, where each workspace runs its own
+OAuth dance. Google Chat's bot model is operator-shared because
+Google Chat apps are published once to the Workspace Marketplace and
+installed per-Workspace under a single application registration.
+
+## Operator setup (one-time, per deploy)
+
+These steps wire your deploy to a Google Cloud project + Workspace
+Marketplace listing. Self-hosted operators run them once during
+initial deployment; Atlas Cloud customers don't — the Atlas Cloud
+team has already done this on the hosted regions.
+
+### 1. Create a Google Cloud project and enable APIs
+
+In the [Google Cloud Console](https://console.cloud.google.com/),
+create a project (or select an existing one) and enable:
+
+- **Google Chat API** — required for outbound message + card delivery.
+- **Cloud Pub/Sub API** — required for the Workspace Events
+  subscription that streams every installed Workspace's events to
+  Atlas.
+- **Workspace Events API** — required to bind subscriptions to the
+  customer Workspaces that installed Atlas.
+
+### 2. Create a Pub/Sub topic for incoming events
+
+Under **Pub/Sub → Topics**, create a topic (e.g. `gchat-events`). The
+fully-qualified topic name (`projects/<project>/topics/<topic>`) goes
+into the `GCHAT_PUBSUB_TOPIC` env var below. Atlas publishes
+verification messages here at install time and reads incoming
+Workspace Events from a subscription bound to the same topic.
+
+### 3. Create a service account and download its JSON key
+
+Under **IAM → Service Accounts**, create a service account (e.g.
+`atlas-gchat-bot`). Grant it:
+
+- **Pub/Sub Publisher** (`roles/pubsub.publisher`) on the topic from
+  step 2 — required for the install-time verification round-trip.
+- **Chat Bot** (`roles/chat.bot`) — required for the Google Chat
+  app to send messages and post cards.
+
+Click **Keys → Add Key → Create New Key → JSON** to download the
+service account's private key as a JSON file. Treat this file as a
+secret — anyone with it can act as your Google Chat app.
+
+### 4. Publish a Google Workspace Marketplace listing
+
+Atlas's Google Chat install path depends on a live Marketplace
+listing — that's what customer admins install from their Workspaces.
+In the Google Cloud Console under **Google Workspace Marketplace SDK**:
+
+1. Configure the **App Configuration** to use the service account
+   from step 3 as the authentication method.
+2. Point the Chat app's **Connection settings** at Pub/Sub and select
+   the topic from step 2.
+3. Publish the listing (private to your domain for a single-tenant
+   deploy, or public for multi-tenant).
+
+<Callout type="warn" title="Listing must be live before customer installs">
+  The customer-side install needs the Marketplace listing to be live
+  in the configured visibility scope. If you haven't published yet,
+  customer admins will see a "Marketplace listing not found" error
+  when they try to install Atlas from their Workspace.
+</Callout>
+
+### 5. Set the env vars
+
+Set both on every Atlas API service in your deploy:
+
+```bash
+# Raw contents of the JSON file downloaded in step 3 — keep newlines
+# intact (use `printf '%s' "$(cat key.json)"` to load into env safely).
+GCHAT_SERVICE_ACCOUNT_JSON='{"type":"service_account","client_email":"atlas-gchat-bot@...","private_key":"-----BEGIN PRIVATE KEY-----\n..."}'
+
+# Fully-qualified Pub/Sub topic from step 2.
+GCHAT_PUBSUB_TOPIC=projects/atlas-prod/topics/gchat-events
+```
+
+Optionally set `GCHAT_IMPERSONATE_USER` (an admin email in the
+operator's Workspace) when you've granted the service account
+domain-wide delegation and need to call the Workspace Events API
+on behalf of a specific user.
+
+### 6. Enable the catalog row
+
+Atlas ships the Google Chat catalog entry pre-declared in
+`deploy/api/atlas.config.ts`. If you've started from the deploy
+template, the row is already `enabled: true` — no change needed.
+
+Once both env vars are set and the catalog row is enabled, the boot
+log should include:
+
+```
+Registered GchatStaticBotInstallHandler
+AdapterRegistry: chat adapter registered  { slug: 'gchat', platform: 'gchat' }
+```
+
+If either line is missing, see [troubleshooting](#troubleshooting) below.
+
+## Customer install (per Workspace)
+
+Once the operator has wired the Marketplace listing, Workspace admins
+can install Atlas from **Admin → Integrations** OR directly from the
+Google Workspace Marketplace.
+
+### 1. Click Install on the Google Chat card
+
+In **Admin → Integrations → Google Chat**, click **Install**. Atlas
+opens a modal explaining the Marketplace install flow and links to
+the operator's Workspace Marketplace listing.
+
+### 2. Install from the Workspace Marketplace
+
+In your Workspace's Marketplace, find the Atlas listing and click
+**Install**. You'll be prompted to grant the bot the scopes it
+needs (typically `chat.bot` and `chat.spaces`). Confirm the
+installation at the Workspace level.
+
+<Callout type="info" title="Workspace-level vs individual install">
+  Atlas requires a **Workspace-level** install — installing as an
+  individual user won't bind the Pub/Sub subscription correctly. If
+  the Marketplace defaults to individual install, your admin can
+  reconfigure the listing's deployment scope under Marketplace
+  settings.
+</Callout>
+
+### 3. Verification round-trip
+
+After the Marketplace install completes, Google sends a webhook to
+Atlas with your Workspace's customer id. Atlas immediately publishes
+a synthetic verification message to the operator's Pub/Sub topic
+using the service account credentials. A successful publish (Google
+returns `messageIds` in the response) confirms that:
+
+- The service account can authenticate to Google
+- The configured topic exists
+- The service account has `roles/pubsub.publisher` on the topic
+
+If verification succeeds, the install row is persisted and the card
+flips to "Installed". If it fails, Google's error message bubbles up
+verbatim — see the next section.
+
+## Troubleshooting
+
+### "Google rejected the Pub/Sub round-trip … User not authorized to perform this action"
+
+The service account lacks `roles/pubsub.publisher` on the configured
+topic. In the GCP Console under **Pub/Sub → Topics → \<your topic\>**,
+click **Permissions** and grant the service account the
+**Pub/Sub Publisher** role. Re-run the install — Atlas will retry
+the round-trip.
+
+### "Google rejected the Pub/Sub round-trip … Topic not found"
+
+`GCHAT_PUBSUB_TOPIC` points at a topic that doesn't exist. Verify the
+fully-qualified path: it must be `projects/<project>/topics/<topic>`,
+not just `<topic>`. Bare topic names fail the env-gate at boot, but a
+typo in the project id or topic name still passes that gate and
+surfaces here.
+
+### "Google rejected the service-account JWT bearer exchange"
+
+The service account credentials are wrong, revoked, or from a deleted
+service account. Verify `GCHAT_SERVICE_ACCOUNT_JSON` matches the
+currently-active key in the GCP Console under **IAM → Service Accounts
+→ \<your SA\> → Keys**. If you've rotated the key, regenerate the env
+var and redeploy.
+
+### "Google Pub/Sub API unreachable"
+
+A network failure between Atlas and `pubsub.googleapis.com`. Check
+operator-side egress (firewall, region routing, DNS) and retry.
+Atlas does not retry automatically — install attempts are user-
+initiated and a transient failure surfaces back to the admin to retry.
+
+### "No static-bot install handler registered for catalog slug 'gchat'"
+
+The operator hasn't set `GCHAT_SERVICE_ACCOUNT_JSON` and
+`GCHAT_PUBSUB_TOPIC`, one is empty on the API process handling the
+install, or the JSON is malformed. Both env vars are required. Ops
+sets both per-service and restarts the API. On the next boot, log
+streams should include `Registered GchatStaticBotInstallHandler` —
+if not, check the API logs for a `gchat` line explaining the parse
+failure.
+
+### Marketplace install completes but Atlas never receives messages
+
+Most often the Workspace Events subscription wasn't bound when the
+Marketplace install ran. From the Google Cloud Console, manually
+bind a subscription to the topic, scoped to the customer Workspace's
+customer id. The Atlas Chat SDK adapter will pick up the
+subscription on the next boot. If the issue persists, confirm the
+service account has `roles/chat.bot` and the listing's Connection
+settings point at the right topic.
+
+### "This Google Workspace is not connected to Atlas"
+
+Incoming Google Chat events refer to a Workspace customer id that
+doesn't have an install row in Atlas. Either the customer admin
+hasn't installed Atlas from the Marketplace yet, or they
+disconnected via **Admin → Integrations → Google Chat → Disconnect**.
+The user should ask their admin to install from the Marketplace.
+
+## Disconnecting
+
+To disconnect a Workspace from Google Chat, open **Admin → Integrations
+→ Google Chat** and click **Disconnect**. Atlas clears the
+`workspace_plugins` row via `WorkspaceInstaller.uninstall` — the
+Marketplace listing stays installed in the customer Workspace (Atlas
+doesn't have permission to uninstall itself), but incoming events
+are no longer routed to the workspace.
+
+To fully remove Atlas from the customer Workspace, a Workspace admin
+opens the Google Workspace Marketplace, finds the Atlas listing, and
+clicks **Uninstall**.

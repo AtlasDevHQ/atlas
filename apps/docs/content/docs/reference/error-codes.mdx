@@ -100,6 +100,121 @@ These codes surface from the `ContentModeRegistry` service that drives the draft
 These codes aren't part of the exhaustively-typed `ChatErrorCode` catalog, so the SDK's `isChatErrorCode()` / `isRetryableError()` guards return `false` / `undefined` for them. Parse the raw `error` field yourself when calling endpoints that may return them: `POST /api/v1/starter-prompts/favorites`, `/api/v1/admin/connections/*`, `/api/v1/admin/semantic/*`, and any write request that hits the regional-routing or migration middleware (including the chat stream itself for `workspace_migrating` / `misdirected_request`).
 </Callout>
 
+### Install & OAuth (#2742, #2659)
+
+The workspace installer (`POST /api/v1/admin/installs`, `DELETE /api/v1/admin/installs/:catalogSlug`, `PATCH .../config`) and the lazy-OAuth refresh flow that backs Salesforce, Jira, and Linear surface the codes below. Tags are defined in [`packages/api/src/lib/effect/errors.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/effect/errors.ts); per-status mapping lives in [`mapTaggedError`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/effect/hono.ts).
+
+| Code | `_tag` | HTTP Status | Trigger | Fix | Retryable |
+|------|--------|-------------|---------|-----|-----------|
+| `conflict` | `AlreadyInstalledError` | 409 | Pillar-singleton violation — a `chat` or `action` install already exists for `(workspaceId, catalogSlug)`, or a `datasource` install with the same `installId` already exists. Body carries `catalogSlug` and `pillar`. Backed by the `workspace_plugins_singleton` partial unique index as the defensive backstop | Uninstall the existing row before reinstalling, or pick a different `installId` for datasource installs. The admin UI surfaces "already installed; disconnect first to reinstall" | No |
+| `bad_request` | `ConfigSchemaError` | 400 | Submitted `config` failed validation against `plugin_catalog.config_schema`. Body carries `fieldErrors` (per-field message arrays) and `formErrors` (top-level issues) so the admin form can highlight wrong inputs without a follow-up roundtrip | Fix the highlighted fields in the install form. Missing required fields and wrong-typed values are catalog-declared and surface here before the per-handler Zod layer runs | No |
+| `not_found` | `CatalogNotFoundError` | 404 | The requested catalog row is missing or kill-switched. Body carries `catalogSlug` | Verify the slug. Kill-switched catalogs require an operator to re-enable the row in `plugin_catalog` | No |
+| `not_found` | `InstallNotFoundError` | 404 | `uninstall` or `updateConfig` targeted an install row that doesn't exist for `(workspaceId, catalogSlug)`. Body carries `catalogSlug`. Distinct from `CatalogNotFoundError` (the catalog itself is missing) so the admin UI can render the right toast | Refresh the installs list — the row may have been removed by another admin | No |
+| `bad_request` | `InvalidInstallIdError` | 400 | Datasource install's user-facing `installId` slug failed validation. Body carries `installId` and `reason` (`"pattern"` for invalid characters, `"reserved"` for sentinel collisions like `default`) | Use `^[a-z][a-z0-9_-]*$`. The `__demo__` sentinel is the only pre-cutover exception preserved by migration 0094 | No |
+| `upstream_error` | `PlatformOAuthExchangeError` | 502 | OAuth code-for-token exchange failed at the upstream Platform (Slack's `oauth.v2.access`, Jira's `oauth/token`, etc.) — non-OK response, network failure, or malformed payload. Raw upstream error code stays in logs only; the response message is translated | Check the Platform's status page. Restart the install flow once it recovers. If the failure is persistent and the Platform is healthy, verify the Connected App / OAuth App credentials in operator config | Yes |
+| `conflict` | `SalesforceReconnectRequiredError` | 409 | Salesforce refresh-token rotation failed permanently — `invalid_grant`, `invalid_client`, `inactive_user`, `org_locked`, or `inactive_org`. The install's `workspace_plugins.config.status` has already been flipped to `"reconnect_needed"` | Re-run the Salesforce OAuth flow from the admin Installs page. The stored refresh token is no longer accepted by Salesforce and no amount of retrying will recover it | No |
+| `conflict` | `JiraReconnectRequiredError` | 409 | Jira refresh-token rotation failed permanently — Atlassian returned `invalid_grant`, the stored refresh token was rejected, or the Connected App scopes no longer include `offline_access` | Re-run the Jira OAuth flow from the admin Installs page. Verify `offline_access` is still in the Connected App's scope list before reinstalling | No |
+| `conflict` | `LinearReconnectRequiredError` | 409 | Linear refresh-token rotation failed permanently — `invalid_grant` / `invalid_client`, the stored refresh token was rejected, or the OAuth App's `actor=app` scope was revoked | Re-run the Linear OAuth flow from the admin Installs page. Verify the OAuth App still grants `actor=app` before reinstalling | No |
+
+<Callout>
+The `conflict` wire code is reused across the three `*ReconnectRequiredError` tags rather than introducing a `reconnect_required` code — the `_tag` in error logs and the admin UI's install-status surface (`workspace_plugins.config.status === "reconnect_needed"`) disambiguate. The pattern will collapse to a single `IntegrationReconnectRequiredError(platform)` once a fourth consumer arrives — see #2659.
+</Callout>
+
+### Platform reachability — Telegram, Discord, Teams (#2748, #2749, #2752)
+
+Static-bot install handlers verify the supplied routing identifier (Telegram `chat_id`, Discord `guild_id`, Teams `tenant_id`) against the upstream Platform before persisting the install. Input-shape failures and reachability failures map to 400 because both are admin-correctable; only network-layer outages get the 502 retryable surface.
+
+| Code | `_tag` | HTTP Status | Trigger | Fix | Retryable |
+|------|--------|-------------|---------|-----|-----------|
+| `bad_request` | `TelegramChatIdInvalidError` | 400 | `chat_id` is not a numeric integer, empty, or pasted as `@username` | Re-paste the chat id as a signed integer (negative for groups, positive for users). The Telegram bot dialog shows the id when you message `/start` to `@RawDataBot` | No |
+| `bad_request` | `TelegramReachabilityError` | 400 | Telegram Bot API returned a non-OK envelope to `getChat` — chat not found, bot not a member, or wrong chat type. Message includes Telegram's verbatim `description` | Re-paste the id, add the bot to the chat, or fix the bot token. The verbatim Telegram message is in `message` | No |
+| `upstream_error` | `TelegramApiUnavailableError` | 502 | Telegram Bot API was unreachable at the network layer — DNS, TLS, timeout, or malformed response | Retry after a short delay. If persistent, check Telegram's status page | Yes |
+| `bad_request` | `DiscordGuildIdInvalidError` | 400 | `guild_id` is not a 17–20 digit snowflake — pasted as an invite code or server name | Enable Developer Mode in Discord, right-click the server, and copy the numeric server ID | No |
+| `bad_request` | `DiscordReachabilityError` | 400 | Discord API returned a non-OK envelope to `GET /api/v10/guilds/{guild_id}` — Unknown Guild, Missing Access, bot not in guild. Message includes Discord's verbatim text | Re-paste the id, re-run the bot install link to grant the bot access, or fix the bot token | No |
+| `upstream_error` | `DiscordApiUnavailableError` | 502 | Discord API was unreachable at the network layer | Retry after a short delay. If persistent, check Discord's status page | Yes |
+| `bad_request` | `TeamsTenantIdInvalidError` | 400 | `tenant_id` is not a Microsoft Entra ID tenant GUID (8-4-4-4-12 hex digits), empty, or pasted as a domain like `contoso.onmicrosoft.com` | Paste the tenant GUID from the Entra ID admin portal, not the verified domain | No |
+| `bad_request` | `TeamsReachabilityError` | 400 | Microsoft tenant discovery returned a non-OK response — the tenant doesn't exist, has been deleted, or is unresolvable. Body carries the upstream `status` for forensics | Verify the tenant GUID in the Entra ID admin portal. Wrong GUIDs are the most common cause | No |
+| `upstream_error` | `TeamsApiUnavailableError` | 502 | Microsoft tenant discovery endpoint unreachable at the network layer | Retry after a short delay. If persistent, check Azure status | Yes |
+
+### Scheduler & Delivery
+
+The scheduler runs proactive prompts and report deliveries on workspace cron schedules. Per-task errors surface to the admin scheduler page; delivery errors surface to the recipient channel's history view.
+
+| Code | `_tag` | HTTP Status | Trigger | Fix | Retryable |
+|------|--------|-------------|---------|-----|-----------|
+| `timeout` | `SchedulerTaskTimeoutError` | 504 | Scheduled task exceeded its wall-clock budget. Body carries `taskId` and `timeoutMs` | Reduce the work the task performs (narrower window, fewer rows) or raise the per-task timeout in scheduler config. Long-running deliveries should be split into batches | Yes |
+| `upstream_error` | `SchedulerExecutionError` | 500 | Scheduled task threw during execution — agent loop failed, query failed, or template rendering crashed. Body carries `taskId` and optionally `runId` | Check the task's run history for the failed `runId` and the structured log with that `requestId`. Re-run manually from the scheduler page once the underlying issue (datasource down, prompt change, etc.) is resolved | Yes |
+| `upstream_error` | `DeliveryError` | 502 | Delivery to a recipient channel failed — Slack/Teams/Discord/email/webhook adapter returned an error. Body carries `channel`, `recipient`, and `permanent` (true = no auto-retry, e.g. bot kicked from channel; false = transient, e.g. 503 from upstream) | When `permanent: true`, fix the channel state (re-add the bot, fix the webhook URL) and re-run. When `permanent: false`, the scheduler will auto-retry on the next tick | Yes if `permanent: false`; No if `permanent: true` |
+
+### Region migration
+
+| Code | `_tag` | HTTP Status | Trigger | Fix | Retryable |
+|------|--------|-------------|---------|-----|-----------|
+| `conflict` | `UnsafeRegionMigrationResetError` | 409 | Operator attempted to reset a region migration that had already passed Phase 3 (cutover). Re-running Phase 1 on a workspace that already moved would re-export stale data and corrupt the destination. Body carries `migrationId`, `workspaceId`, `targetRegion`, and `sourceRegion` | Follow the data-residency manual-intervention runbook in [Data Residency](/platform-ops/data-residency). The code path is closed by design; this is not retryable | No |
+
+### Connection-group entity resolution (#2412)
+
+| Code | `_tag` | HTTP Status | Trigger | Fix | Retryable |
+|------|--------|-------------|---------|-----|-----------|
+| `entity_ambiguous` | `AmbiguousEntityError` | 409 | `getEntity(orgId, type, name)` matched more than one row because the same `(org, entity_type, name)` triple exists in multiple `connection_group_id` scopes. Body carries `entityName`, `entityType` (`"entity"` / `"metric"` / `"glossary"` / `"catalog"`), and the candidate `groups` array | POST the same request again with `connectionGroupId` set to one of the returned candidates. The admin UI renders the candidates as a picker | No |
+
+### Governance & Enterprise
+
+These cover the always-403 governance gates and the 503 fallback raised when an enterprise feature is enabled but its EE Layer failed to bind. See [Enterprise & SaaS Gating](/platform-ops/enterprise) for the broader feature-flag model.
+
+| Code | `_tag` | HTTP Status | Trigger | Fix | Retryable |
+|------|--------|-------------|---------|-----|-----------|
+| `forbidden` | `EnterpriseGateError` | 403 | Caller tried to use an enterprise feature on a self-hosted install. Body carries `feature` (e.g. `"sso"`, `"residency"`) | Enable enterprise (`ATLAS_ENTERPRISE_ENABLED=true` with the `/ee` module present) or remove the call site. Self-hosted users get the full core product without enterprise governance | No |
+| `forbidden` | `ApprovalRequiredError` | 403 | Query matched one or more approval rules and must be reviewed before execution. Body carries the matched rule ids | Submit the query for approval via the admin Approvals page, or rewrite to avoid the matched rules (e.g. narrower row count, different tables) | No |
+| `enterprise_load_failed` | `EnterpriseUnavailableError` | 503 | `ATLAS_ENTERPRISE_ENABLED=true` but the consumer Tag still reports `available: false` — the `@atlas/ee/layers` dynamic import in `ConditionalEELayer` failed at boot. Body carries `tag` so operators can correlate with the `enterprise.load_failed` structured log. Distinct wire code from `service_unavailable` so SaaS monitoring can split this signal from generic infra outages | Operator-side: check boot logs for `event: "enterprise.load_failed"` and the underlying import error (typically a missing dep or a build that didn't include `/ee`). Self-hosted installs never raise this — they leave `ATLAS_ENTERPRISE_ENABLED` unset and the no-op default short-circuits cleanly | Yes (transient — clears once EE binds) |
+
+<Callout>
+`EnterpriseError` (the `requireEnterprise()` / `requireEnterpriseEffect()` guard) is **not** in `ATLAS_ERROR_TAG_LIST` — `lib/effect/hono.ts:isEnterpriseError` duck-types on `err.name === "EnterpriseError"` and maps the response to 403 with `code: "enterprise_required"` before `mapTaggedError` runs. Treat it as equivalent to `EnterpriseGateError` for client-side handling.
+</Callout>
+
+### Other tagged errors mapped by `mapTaggedError`
+
+Tags below are part of `ATLAS_ERROR_TAG_LIST` but surface through routes already documented under [Server Error Codes](#server-error-codes-chaterrorcode) (chat agent loop, SQL validation, rate limiting, query execution). Listed here for completeness so the catalog stays exhaustive against the source-of-truth list.
+
+| `_tag` | HTTP | Wire code | Surface |
+|--------|------|-----------|---------|
+| `EmptyQueryError` | 400 | `bad_request` | Chat agent SQL validation (layer 0) |
+| `ParseError` | 400 | `bad_request` | Chat agent SQL validation (layer 2 — AST parse / non-SELECT) |
+| `ForbiddenPatternError` | 403 | `forbidden` | Chat agent SQL validation (layer 1 — DML/DDL guard) |
+| `WhitelistError` | 403 | `forbidden` | Chat agent SQL validation (layer 3 — table not in semantic layer) |
+| `RLSError` | 403 | `forbidden` | Row-level security injection (extraction, filter resolution, or injection phase) |
+| `ConnectionNotFoundError` | 404 | `not_found` | `ConnectionRegistry` lookup failed |
+| `RateLimitExceededError` | 429 | `rate_limited` | Datasource QPM exceeded — includes `Retry-After` header |
+| `ConcurrencyLimitError` | 429 | `rate_limited` | Concurrent query cap reached for a datasource |
+| `PoolExhaustedError` | 429 | `rate_limited` | Org pool would exceed `maxTotalConnections` |
+| `ConversationBudgetExceededError` | 429 | `conversation_budget_exceeded` | Per-conversation step cap (F-77) — already documented under [Permanent Errors](#permanent-errors) |
+| `QueryExecutionError` | 502 | `upstream_error` | Database returned an error during query execution |
+| `NoDatasourceError` | 503 | `service_unavailable` | No analytics datasource configured |
+| `QueryTimeoutError` | 504 | `timeout` | Statement timeout exceeded (`ATLAS_QUERY_TIMEOUT`) |
+| `ActionTimeoutError` | 504 | `timeout` | Action handler wall-clock budget exceeded |
+| `PluginRejectedError` | 422 | `unprocessable_entity` | Plugin `beforeQuery` hook rejected the query |
+| `CustomValidatorError` | 422 | `unprocessable_entity` | Custom validator threw or returned an invalid shape |
+| `PublishPhaseError` | 500 | `upstream_error` | Already documented under [Content-mode registry](#content-mode-registry-1515) |
+| `UnknownTableError` | 500 | `upstream_error` | Already documented under [Content-mode registry](#content-mode-registry-1515) |
+| `ExoticReadFilterUnavailableError` | 500 | `upstream_error` | Already documented under [Content-mode registry](#content-mode-registry-1515) |
+
+### EE-domain errors — `mapTaggedError` safety net (#2593)
+
+The ten EE-domain tags below flow through per-route `domainErrors: [...]` opt-ins under normal operation. They're also folded into the `mapTaggedError` exhaustive switch as a safety net so a route that yields an EE Tag without listing its `domainError` mapping still produces a 4xx envelope instead of a generic 500. Wire codes on the safety-net path use the `HttpErrorCode` vocabulary (e.g. `"conflict"` for `ApprovalError(expired)`); per-route paths use the literal `error.code` (e.g. `"expired"`). Status codes match across both paths.
+
+| `_tag` | HTTP range | Per-code mapping |
+|--------|------------|------------------|
+| `RetentionError` | 400 / 404 | `not_found` → 404; everything else → 400 `bad_request` |
+| `RoleError` | 400 / 403 / 404 / 409 | `not_found` → 404; `conflict` → 409; `builtin_protected` → 403; `validation` → 400 |
+| `ApprovalError` | 400 / 404 / 409 / 410 | `not_found` → 404; `conflict` → 409; `expired` → 410 (wire `conflict`); `validation` → 400 |
+| `ResidencyError` | 400 / 404 / 409 / 503 | `not_configured` / `workspace_not_found` → 404; `invalid_region` → 400; `already_assigned` → 409; `no_internal_db` → 503 |
+| `BrandingError` | 400 / 404 | `not_found` → 404; everything else → 400 |
+| `DomainError` | 400 / 404 / 409 / 500 / 502 / 503 | `domain_not_found` → 404; `invalid_domain` → 400; `duplicate_domain` → 409; `railway_error` → 502; `no_internal_db` / `railway_not_configured` → 503; `data_integrity` → 500 |
+| `ComplianceError` | 400 / 404 / 409 | `not_found` → 404; `conflict` → 409; `validation` → 400 |
+| `ReportError` | 400 / 404 | `not_available` → 404; everything else → 400 |
+| `ModelConfigError` | 400 / 404 / 422 | `not_found` → 404; `test_failed` → 422; `validation` → 400 |
+| `ModelConfigDecryptError` | 422 | `unprocessable_entity` — admin must re-enter the API key on the AI Provider page |
+
 ---
 
 ## Client Error Codes (ClientErrorCode)

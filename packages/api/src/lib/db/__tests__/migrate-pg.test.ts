@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Pool } from "pg";
 import { z } from "zod";
@@ -1442,11 +1442,410 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     // `workspace_plugins` config blob with bit-exact URL ciphertext)
     // can't run here because by the time the migration set replays, the
     // `connections` table is already gone — so the source data is
-    // unobservable. The fail-loud `DO $$` guard inside 0096.sql is the
-    // in-migration assertion of "every row produced an output"; an
-    // additional integration test against a pre-0096 snapshot DB is
-    // tracked as a follow-up.
+    // unobservable. The dedicated pre-0096 fixture describe block below
+    // covers the post-state invariants against a hand-seeded pre-cutover
+    // schema.
+
+    // Type and pillar are orthogonal post-0096; the legacy 0092 BEFORE
+    // UPDATE trigger (`plugin_catalog_sync_pillar_on_type_change`) that
+    // coupled them was dropped in 0096 step 7.
+    it("admin marketplace PATCH of plugin_catalog.type does not mutate pillar (#2793 gap 2)", async () => {
+      const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+      const id = `cat-decouple-${stamp}`;
+      const slug = `decouple-${stamp}`;
+
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model)
+         VALUES ($1, 'Decouple Smoke', $2, 'chat', 'chat', 'oauth')`,
+        [id, slug],
+      );
+
+      // Mirrors the admin marketplace PATCH shape — a single-column UPDATE
+      // on `type` that omits `pillar`. Pre-0096 the trigger would have
+      // overwritten pillar to 'datasource' to match the new type; post-0096
+      // pillar must be left untouched.
+      await pool.query(
+        `UPDATE plugin_catalog SET type = 'datasource' WHERE id = $1`,
+        [id],
+      );
+
+      const { rows } = await pool.query<{ type: string; pillar: string }>(
+        `SELECT type, pillar FROM plugin_catalog WHERE id = $1`,
+        [id],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.type).toBe("datasource");
+      expect(rows[0]?.pillar).toBe("chat");
+    }, PG_TEST_TIMEOUT_MS);
+
+    // Companion to the gap-2 orthogonality assertion. The "only-type"
+    // case proves there's no trigger silently re-deriving pillar; this
+    // case proves the schema CHECK still admits independent values when
+    // a caller names both columns — i.e. a hypothetical future
+    // generated-column or CHECK coupling type↔pillar would fail here.
+    it("admin marketplace PATCH that names both type and pillar lands both values verbatim (#2793 gap 2)", async () => {
+      const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+      const id = `cat-both-${stamp}`;
+      const slug = `both-${stamp}`;
+
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model)
+         VALUES ($1, 'Both Axes Smoke', $2, 'chat', 'chat', 'oauth')`,
+        [id, slug],
+      );
+
+      await pool.query(
+        `UPDATE plugin_catalog SET type = 'datasource', pillar = 'action' WHERE id = $1`,
+        [id],
+      );
+
+      const { rows } = await pool.query<{ type: string; pillar: string }>(
+        `SELECT type, pillar FROM plugin_catalog WHERE id = $1`,
+        [id],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.type).toBe("datasource");
+      expect(rows[0]?.pillar).toBe("action");
+    }, PG_TEST_TIMEOUT_MS);
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// #2793 gap 1 — pre-0096 snapshot fixture for the backfill replay.
+//
+// The main describeIfPg above runs the full migration set (including
+// 0096) once, then asserts post-state. By that point the `connections`
+// table is gone, so any 1.5.4 schema change that alters `workspace_plugins`
+// columns or `plugin_catalog` shape in a way that breaks the
+// connections-to-workspace_plugins backfill (0096 step 2) would pass the
+// main smoke silently. This block isolates the BACKFILL semantics:
+//   1. runs every migration UP TO 0095 against a fresh per-test schema
+//      (so `connections` / `connection_groups` / pre-0096 workspace_plugins
+//      all exist),
+//   2. seeds representative pre-0096 rows whose post-state is well-known,
+//   3. executes 0096 + 0097 verbatim from the migration files,
+//   4. asserts the post-state — URL ciphertext is copied byte-for-byte,
+//      `status` and derived `enabled` survive, the two legacy tables are
+//      dropped, and 0097's no-op skip path fires cleanly.
+//
+// A 1.5.4 migration that drops `workspace_plugins.config`, renames
+// `workspace_plugins.install_id`, or changes `plugin_catalog.slug`
+// shape will fail this test instead of landing a broken backfill on a
+// fresh self-host install.
+// ─────────────────────────────────────────────────────────────────────
+
+describeIfPg("migrate-pg: pre-0096 snapshot fixture (#2793 gap 1)", () => {
+  let pool: Pool;
+  const schemaName = `pre_0096_smoke_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+  const migrationsDir = join(import.meta.dir, "..", "migrations");
+
+  beforeAll(async () => {
+    pool = new Pool({ connectionString: TEST_DB_URL });
+    pool.on("connect", (client) => {
+      void client.query(`SET search_path TO "${schemaName}"`).catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `migrate-pg pre-0096: SET search_path failed on new connection: ${message}`,
+        );
+      });
+    });
+    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+  });
+
+  afterAll(async () => {
+    if (!pool) return;
+    await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
+    await pool.end();
+  });
+
+  it("replays 0096 backfill against a pre-0096 schema and lands the documented post-state", async () => {
+    // 1. Apply every migration up to 0095. Computing `post0096` from the
+    // on-disk migration set keeps this stable as 1.5.4 migrations land —
+    // anything lexically >= "0096_" gets skipped here and applied below.
+    const allFiles = readdirSync(migrationsDir)
+      .filter((f) => f.endsWith(".sql"))
+      .sort();
+    const post0096 = allFiles.filter((f) => f.localeCompare("0096_") >= 0);
+    // Sanity — if the partition is empty, the test is testing nothing.
+    expect(post0096).toContain("0096_drop_connections_table.sql");
+    expect(post0096).toContain("0097_fix_0096_us_constraint_order.sql");
+
+    const applied = await runMigrations(pool, {
+      skip: [...MANAGED_AUTH_MIGRATIONS, ...post0096],
+    });
+    expect(applied).toBeGreaterThan(0);
+
+    // 2. Seed pre-0096 fixture data. Three cases worth pinning:
+    //   - a `published` postgres connection with non-trivial config
+    //     (description, schema_name, group_id) — exercises the full
+    //     jsonb_build_object payload in 0096 step 2.
+    //   - an `archived` mysql connection — exercises the `enabled =
+    //     (status != 'archived')` derivation and the `status` carry-through.
+    //   - URL ciphertext in the `enc:v1:iv:tag:ct` shape that
+    //     `decryptSecretFields` recognises — verifies 0096 copies the
+    //     ciphertext byte-for-byte rather than re-encrypting (which
+    //     would land a different IV on the post-state row).
+    //
+    // `connections.group_id` is NOT NULL post-0069 with a composite FK
+    // to `connection_groups (id, org_id)`. Seed two distinct groups so
+    // the test exercises the `config->>'group_id'` carry-through that
+    // the no-FK `connection_group_id` columns rely on post-cutover.
+    const orgId = `ws-pre0096-${Date.now()}`;
+    const ciphertextPg = "enc:v1:aaaa-iv:bbbb-tag:cccc-postgres-payload";
+    const ciphertextMy = "enc:v1:dddd-iv:eeee-tag:ffff-mysql-payload";
+
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name) VALUES
+         ('grp-prod',     $1, 'Prod'),
+         ('grp-reporting', $1, 'Reporting')`,
+      [orgId],
+    );
+
+    await pool.query(
+      `INSERT INTO connections (id, url, type, description, schema_name, org_id, status, group_id)
+       VALUES
+         ('conn-pg', $1, 'postgres', 'production read replica', 'public', $2, 'published', 'grp-prod'),
+         ('conn-my', $3, 'mysql',    'reporting copy',          NULL,     $2, 'archived',  'grp-reporting')`,
+      [ciphertextPg, orgId, ciphertextMy],
+    );
+
+    // Pre-cutover sanity: the legacy global unique constraint that 0096
+    // step 6 drops must exist on the pre-0096 schema. If 1.5.4 ever
+    // re-introduces a column rename that loses this index, the test
+    // catches it here rather than in production at cutover time.
+    const { rows: preLegacy } = await pool.query<{ indexname: string }>(
+      `SELECT indexname FROM pg_indexes
+        WHERE schemaname = current_schema()
+          AND tablename = 'workspace_plugins'
+          AND indexname IN ('workspace_plugins_workspace_id_catalog_id_key', 'idx_workspace_plugins_unique')`,
+    );
+    expect(preLegacy.length).toBeGreaterThan(0);
+
+    // 3. Read 0096 + 0097 SQL verbatim and execute them. Loading via
+    // `readFileSync` (not a hand-rolled copy) means any drift in the
+    // migration files surfaces here as actual production-equivalent
+    // behavior.
+    const sql0096 = readFileSync(
+      join(migrationsDir, "0096_drop_connections_table.sql"),
+      "utf-8",
+    );
+    await pool.query(sql0096);
+
+    // 4. Assert post-state — the four invariants the cutover guarantees.
+
+    // (a) Legacy tables are gone.
+    const { rows: legacy } = await pool.query<{ table_name: string }>(
+      `SELECT table_name FROM information_schema.tables
+        WHERE table_schema = current_schema()
+          AND table_name IN ('connections', 'connection_groups')`,
+    );
+    expect(legacy).toHaveLength(0);
+
+    // (b) The postgres row backfilled with verbatim URL ciphertext +
+    // the full jsonb_build_object payload (schema, description, db_type,
+    // group_id). status='published' carries through; enabled=true.
+    const { rows: pgRows } = await pool.query<{
+      install_id: string;
+      pillar: string;
+      status: string;
+      enabled: boolean;
+      config: {
+        url: string;
+        schema?: string;
+        description?: string;
+        db_type?: string;
+        group_id?: string;
+      };
+    }>(
+      `SELECT install_id, pillar, status, enabled, config
+         FROM workspace_plugins
+        WHERE workspace_id = $1 AND install_id = 'conn-pg'`,
+      [orgId],
+    );
+    expect(pgRows).toHaveLength(1);
+    expect(pgRows[0]!.pillar).toBe("datasource");
+    expect(pgRows[0]!.status).toBe("published");
+    expect(pgRows[0]!.enabled).toBe(true);
+    // Bit-exact ciphertext copy is the load-bearing assertion — a future
+    // refactor that re-encrypts (different IV, different ciphertext) would
+    // break this and silently invalidate every existing connection.
+    expect(pgRows[0]!.config.url).toBe(ciphertextPg);
+    expect(pgRows[0]!.config.db_type).toBe("postgres");
+    expect(pgRows[0]!.config.schema).toBe("public");
+    expect(pgRows[0]!.config.description).toBe("production read replica");
+    expect(pgRows[0]!.config.group_id).toBe("grp-prod");
+
+    // (c) The archived mysql row backfilled with status='archived',
+    // enabled=false (derived), and the NULL `schema_name` stripped by
+    // jsonb_strip_nulls — `group_id` survives because it's NOT NULL
+    // post-0069 and is the field that keeps the no-FK
+    // `connection_group_id` columns matching post-cutover.
+    const { rows: myRows } = await pool.query<{
+      status: string;
+      enabled: boolean;
+      config: { url: string; schema?: string; group_id?: string };
+    }>(
+      `SELECT status, enabled, config
+         FROM workspace_plugins
+        WHERE workspace_id = $1 AND install_id = 'conn-my'`,
+      [orgId],
+    );
+    expect(myRows).toHaveLength(1);
+    expect(myRows[0]!.status).toBe("archived");
+    expect(myRows[0]!.enabled).toBe(false);
+    expect(myRows[0]!.config.url).toBe(ciphertextMy);
+    expect(myRows[0]!.config.group_id).toBe("grp-reporting");
+    // jsonb_strip_nulls dropped the NULL schema_name field.
+    expect(myRows[0]!.config.schema).toBeUndefined();
+
+    // (d) The legacy global unique is gone post-cutover. Datasource
+    // installs are legitimately multi-instance per (workspace, catalog)
+    // from here on; the pillar-aware partial unique on chat/action
+    // (`workspace_plugins_singleton`) is the sole singleton gate.
+    const { rows: postLegacy } = await pool.query<{ indexname: string }>(
+      `SELECT indexname FROM pg_indexes
+        WHERE schemaname = current_schema()
+          AND tablename = 'workspace_plugins'
+          AND indexname IN ('workspace_plugins_workspace_id_catalog_id_key', 'idx_workspace_plugins_unique')`,
+    );
+    expect(postLegacy).toHaveLength(0);
+    const { rows: singleton } = await pool.query<{ indexname: string }>(
+      `SELECT indexname FROM pg_indexes
+        WHERE schemaname = current_schema()
+          AND tablename = 'workspace_plugins'
+          AND indexname = 'workspace_plugins_singleton'`,
+    );
+    expect(singleton).toHaveLength(1);
+
+    // 5. 0097 against a post-0096 state is a documented no-op (RAISE
+    // NOTICE skip path because `connections` is gone). Running it must
+    // not throw and must not duplicate the backfilled rows.
+    const sql0097 = readFileSync(
+      join(migrationsDir, "0097_fix_0096_us_constraint_order.sql"),
+      "utf-8",
+    );
+    await pool.query(sql0097);
+
+    const { rows: afterCounts } = await pool.query<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM workspace_plugins WHERE workspace_id = $1`,
+      [orgId],
+    );
+    expect(afterCounts[0]?.count).toBe(2);
+  }, PG_TEST_TIMEOUT_MS);
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// #2793 gap 1 follow-up — 0096 step 3 per-workspace demo backfill.
+//
+// Step 3 of 0096 is the largest in-migration code path (~140 lines of
+// `DO $$` with four `RAISE EXCEPTION` guards: demo_url_count,
+// conflicting_demo_count, missing_demo_count, excess_demo_count) and the
+// other fixture block above can't exercise it because it intentionally
+// has no `organization` table (so step 3 self-defers). This block stubs
+// the minimum `organization` shape, seeds the `__global__`/`__demo__`
+// connection row plus two orgs, then replays 0096 and asserts every org
+// owns exactly one `demo-postgres` install with `install_id='__demo__'`.
+// A future refactor that breaks the `WHERE NOT EXISTS` + `ON CONFLICT`
+// combo (silently dropping rows) fails here instead of landing in prod.
+// ─────────────────────────────────────────────────────────────────────
+
+describeIfPg("migrate-pg: 0096 step 3 demo backfill fixture (#2793 gap 1 follow-up)", () => {
+  let pool: Pool;
+  const schemaName = `pre_0096_demo_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+  const migrationsDir = join(import.meta.dir, "..", "migrations");
+
+  beforeAll(async () => {
+    pool = new Pool({ connectionString: TEST_DB_URL });
+    pool.on("connect", (client) => {
+      void client.query(`SET search_path TO "${schemaName}"`).catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `migrate-pg pre-0096 demo: SET search_path failed on new connection: ${message}`,
+        );
+      });
+    });
+    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+  });
+
+  afterAll(async () => {
+    if (!pool) return;
+    await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
+    await pool.end();
+  });
+
+  it("step 3 backfills exactly one demo-postgres install per organization with install_id='__demo__'", async () => {
+    const allFiles = readdirSync(migrationsDir)
+      .filter((f) => f.endsWith(".sql"))
+      .sort();
+    const post0096 = allFiles.filter((f) => f.localeCompare("0096_") >= 0);
+
+    await runMigrations(pool, {
+      skip: [...MANAGED_AUTH_MIGRATIONS, ...post0096],
+    });
+
+    // Minimal `organization` stub. 0096 step 3's `SELECT 1 FROM
+    // information_schema.tables WHERE table_name = 'organization'` guard
+    // only checks for table presence; the body reads `o.id` and nothing
+    // else. A single-column stub keeps the fixture decoupled from Better
+    // Auth's full organization schema (which lives outside the migration
+    // set under MANAGED_AUTH_MIGRATIONS).
+    await pool.query(`CREATE TABLE organization (id TEXT PRIMARY KEY)`);
+    await pool.query(
+      `INSERT INTO organization (id) VALUES ('ws-demo-alpha'), ('ws-demo-beta')`,
+    );
+
+    // The `__demo__`/`__global__` connection row is the source the step 3
+    // SELECT copies `url` from. Without it, the migration's `demo_url_count`
+    // branch logs a NOTICE and skips — which is a different code path.
+    // group_id is NOT NULL post-0069; seed a matching group row.
+    const demoUrl = "enc:v1:demo-iv:demo-tag:demo-ciphertext";
+    await pool.query(
+      `INSERT INTO connection_groups (id, org_id, name)
+       VALUES ('grp-global-demo', '__global__', 'Global Demo')`,
+    );
+    await pool.query(
+      `INSERT INTO connections (id, url, type, description, org_id, status, group_id)
+       VALUES ('__demo__', $1, 'postgres', 'shared demo', '__global__', 'published', 'grp-global-demo')`,
+      [demoUrl],
+    );
+
+    // Replay 0096 verbatim. Step 2 skips the (`__global__`, `__demo__`)
+    // row explicitly; step 3 should INSERT one row per organization.
+    const sql0096 = readFileSync(
+      join(migrationsDir, "0096_drop_connections_table.sql"),
+      "utf-8",
+    );
+    await pool.query(sql0096);
+
+    // Each org owns exactly one demo-postgres install, all with
+    // `install_id='__demo__'`, all sharing the operator-shared URL
+    // ciphertext bit-for-bit.
+    const { rows } = await pool.query<{
+      workspace_id: string;
+      install_id: string;
+      pillar: string;
+      enabled: boolean;
+      status: string;
+      config: { url: string; description?: string; db_type?: string };
+    }>(
+      `SELECT wp.workspace_id, wp.install_id, wp.pillar, wp.enabled, wp.status, wp.config
+         FROM workspace_plugins wp
+         JOIN plugin_catalog pc ON pc.id = wp.catalog_id
+        WHERE pc.slug = 'demo-postgres'
+        ORDER BY wp.workspace_id`,
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.workspace_id)).toEqual(["ws-demo-alpha", "ws-demo-beta"]);
+    for (const row of rows) {
+      expect(row.install_id).toBe("__demo__");
+      expect(row.pillar).toBe("datasource");
+      expect(row.enabled).toBe(true);
+      expect(row.status).toBe("published");
+      expect(row.config.url).toBe(demoUrl);
+      expect(row.config.db_type).toBe("postgres");
+      expect(row.config.description).toBe("Atlas-managed demo Postgres dataset");
+    }
+  }, PG_TEST_TIMEOUT_MS);
 });
 
 // #2606 — source-level revert guard for the integration-store SQL formatter.

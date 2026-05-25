@@ -99,6 +99,7 @@ import {
   type PoolMetrics,
 } from "@/ui/lib/types";
 import { ConnectionsResponseSchema } from "@/ui/lib/admin-schemas";
+import { SalesforceProviderBlock } from "./salesforce-block";
 
 // ── Connection Form Dialog ───────────────────────────────────────
 
@@ -1282,6 +1283,23 @@ export default function ConnectionsPage() {
                 <SectionHeading title="Datasources" description="Providers Atlas can read from" />
                 <div className="space-y-2">
                   {providerOrder.map((dbType) => {
+                    // Salesforce is plugin-managed and lives in
+                    // `workspace_plugins WHERE pillar = 'datasource'`
+                    // post-#2744 cutover — `connections.describe()`
+                    // doesn't surface it, so the generic ProviderBlock
+                    // would always render "Add connection" pointing at a
+                    // URL-form dialog that has no input shape for the
+                    // OAuth flow. Render the dedicated block instead
+                    // (slice 7 of 1.5.3, #2745).
+                    if (dbType === "salesforce") {
+                      return (
+                        <SalesforceProviderBlock
+                          key={dbType}
+                          demoReadOnly={demoReadOnly}
+                          onChange={handleMutationSuccess}
+                        />
+                      );
+                    }
                     const conns = byType.get(dbType) ?? [];
                     return (
                       <ProviderBlock

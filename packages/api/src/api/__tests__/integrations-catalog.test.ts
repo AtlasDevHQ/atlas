@@ -247,6 +247,7 @@ describe("GET /api/v1/integrations/catalog", () => {
           installedBy: "user-42",
           status: "reconnect_needed",
           disabled: false,
+          config: {},
         },
       });
       mockWithInstallStatusFor.mockReturnValueOnce(Effect.succeed([row]));
@@ -260,6 +261,107 @@ describe("GET /api/v1/integrations/catalog", () => {
       expect(entry.installedAt).toBe("2026-05-20T10:00:00.000Z");
       expect(entry.installedBy).toBe("user-42");
       expect(entry.installStatus).toBe("reconnect_needed");
+    });
+
+    // Slice 7 of 1.5.3 (#2745): `installConfig` projects the
+    // non-secret subset of `workspace_plugins.config` to the wire so
+    // /admin/connections can render Salesforce-specific detail rows
+    // (instance URL, org ID) without a second round-trip.
+    it("projects installConfig from the install row's config JSONB", async () => {
+      const row = makeRichRow({
+        slug: "salesforce",
+        type: "integration",
+        pillar: "datasource",
+        state: "connected",
+        planAccessible: true,
+        install: {
+          id: "install-sf",
+          catalogId: "catalog:salesforce",
+          installId: "install-sf",
+          workspaceId: "org-1",
+          pillar: "datasource",
+          installedAt: "2026-05-20T10:00:00.000Z",
+          installedBy: "user-42",
+          status: "ok",
+          disabled: false,
+          config: {
+            instance_url: "https://na139.my.salesforce.com",
+            org_id: "00DAB000000ZmU8",
+            scopes: "api refresh_token offline_access",
+            status: "ok",
+          },
+        },
+      });
+      mockWithInstallStatusFor.mockReturnValueOnce(Effect.succeed([row]));
+
+      const app = buildApp();
+      const res = await app.request("/integrations/catalog");
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      const entry = body.catalog[0];
+      // The catalog row has no `config_schema` (Salesforce OAuth has no
+      // form fields), so `maskSecretFields` passes the whole object
+      // through. The detail-row admin UI relies on `instance_url` and
+      // `org_id` being readable as plain strings.
+      expect(entry.installConfig).toEqual({
+        instance_url: "https://na139.my.salesforce.com",
+        org_id: "00DAB000000ZmU8",
+        scopes: "api refresh_token offline_access",
+        status: "ok",
+      });
+    });
+
+    it("scrubs secret-marked config fields via maskSecretFields", async () => {
+      // Defense-in-depth: when a future integration's catalog row marks
+      // a field `secret: true`, the wire must replace it with the
+      // masked placeholder so plaintext never crosses to the admin UI.
+      const row = makeRichRow({
+        slug: "future-oauth",
+        type: "integration",
+        pillar: "action",
+        state: "connected",
+        planAccessible: true,
+        configSchema: [
+          { key: "api_token", secret: true, type: "string" },
+          { key: "tenant_id", type: "string" },
+        ],
+        install: {
+          id: "install-future",
+          catalogId: "catalog:future-oauth",
+          installId: "install-future",
+          workspaceId: "org-1",
+          pillar: "action",
+          installedAt: "2026-05-20T10:00:00.000Z",
+          installedBy: "user-42",
+          status: "ok",
+          disabled: false,
+          config: {
+            api_token: "supersecret",
+            tenant_id: "tenant-abc",
+          },
+        },
+      });
+      mockWithInstallStatusFor.mockReturnValueOnce(Effect.succeed([row]));
+
+      const app = buildApp();
+      const res = await app.request("/integrations/catalog");
+      const body = await json(res);
+      const entry = body.catalog[0];
+      // The secret-marked field is masked; the operational field
+      // passes through unchanged.
+      expect(entry.installConfig.api_token).not.toBe("supersecret");
+      expect(entry.installConfig.api_token).toMatch(/•/);
+      expect(entry.installConfig.tenant_id).toBe("tenant-abc");
+    });
+
+    it("emits installConfig=null when not installed", async () => {
+      const row = makeRichRow({ state: "accessible", planAccessible: true });
+      mockWithInstallStatusFor.mockReturnValueOnce(Effect.succeed([row]));
+
+      const app = buildApp();
+      const res = await app.request("/integrations/catalog");
+      const body = await json(res);
+      expect(body.catalog[0].installConfig).toBeNull();
     });
 
     it("flags above-plan rows as upsellOnly with upgradeRequired carrying the catalog min_plan", async () => {

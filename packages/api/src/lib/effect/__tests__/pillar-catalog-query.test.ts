@@ -62,6 +62,7 @@ function makeInstall(overrides: Partial<WorkspaceInstall> = {}): WorkspaceInstal
     installedBy: "user-1",
     status: null,
     disabled: false,
+    config: {},
     ...overrides,
   };
 }

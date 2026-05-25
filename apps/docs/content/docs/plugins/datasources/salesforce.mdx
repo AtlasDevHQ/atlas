@@ -1,19 +1,49 @@
 ---
 title: Salesforce
-description: Connect Atlas to Salesforce CRM for SOQL queries via the jsforce library.
+description: Connect Atlas to Salesforce CRM for SOQL queries via OAuth-managed jsforce sessions.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
 Connects to Salesforce via the `jsforce` library. Unlike the other datasource plugins, Salesforce uses SOQL (Salesforce Object Query Language) instead of SQL. The plugin registers a dedicated `querySalesforce` agent tool -- the agent uses this tool instead of `executeSQL` when querying Salesforce data.
 
-## Installation
+## Connecting (admin UI)
+
+Salesforce installs through the OAuth flow under **Admin → Connections**. The connection lifecycle (connect, reconnect, disconnect) is unified with the other datasources -- the Salesforce row sits next to PostgreSQL and MySQL on the same page.
+
+1. Sign in as an Atlas admin and open **Admin → Connections**.
+2. Find the Salesforce provider row and click **Connect**.
+3. Approve the OAuth consent screen on the Salesforce side. Atlas requests `api refresh_token offline_access` so it can hold a refresh token after the initial dance.
+4. After the redirect lands back on Atlas, the row flips to "Live" and shows the connected org's instance URL and org ID.
+
+Disconnecting removes the install record from `workspace_plugins` and deletes the stored OAuth refresh token from `integration_credentials` in a single atomic teardown (per [ADR-0007](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0007-unified-install-pipeline.md)). Reconnecting reuses the same OAuth flow -- the callback upserts the install record in place, so a transient refresh-token revocation heals without an admin-side cleanup step.
+
+<Callout type="info">
+The pre-#2745 URL-form configuration (`salesforce://user:password@host?token=...`) is no longer surfaced in the admin UI. Operators on self-hosted who want a static, env-driven install can still wire the legacy plugin through `atlas.config.ts` -- see [Self-hosted (static config)](#self-hosted-static-config) below.
+</Callout>
+
+## Operator setup (Connected App)
+
+Connecting Salesforce requires a Salesforce Connected App with these settings:
+
+| Setting | Value |
+|---------|-------|
+| Callback URL | `https://<atlas-host>/api/v1/integrations/salesforce/callback` |
+| OAuth Scopes | `Access and manage your data (api)`, `Perform requests on your behalf at any time (refresh_token, offline_access)` |
+| Login URL | `https://login.salesforce.com` for production orgs, `https://test.salesforce.com` for sandboxes |
+
+Set these env vars on the Atlas API server:
 
 ```bash
-bun add @useatlas/salesforce jsforce
+SALESFORCE_CLIENT_ID=<consumer key from Connected App>
+SALESFORCE_CLIENT_SECRET=<consumer secret>
+# Optional - defaults to https://login.salesforce.com. Set for sandboxes.
+SALESFORCE_LOGIN_URL=https://test.salesforce.com
 ```
 
-## Configuration
+Without `SALESFORCE_CLIENT_ID` and `SALESFORCE_CLIENT_SECRET` the install handler is not registered and the Connect button on `/admin/connections` returns 501.
+
+## Self-hosted (static config)
 
 ```typescript
 // atlas.config.ts

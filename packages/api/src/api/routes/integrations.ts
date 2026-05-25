@@ -78,6 +78,23 @@ import type { CatalogInstallModel } from "@atlas/api/lib/config";
 const log = createLogger("integrations");
 
 /**
+ * Catalog slugs whose OAuth callback carries `installation_id` instead
+ * of (or alongside) the standard OAuth 2.0 `code` parameter — i.e. the
+ * GitHub App install flow. Other platforms get a 400 if a caller
+ * smuggles `installation_id` into their callback URL: it's never
+ * legitimate (no upstream provider for those platforms emits it) and
+ * forwarding it to the per-Platform handler would surface as a
+ * misleading "upstream OAuth exchange refused" envelope.
+ *
+ * Adding a future Platform whose callback uses installation_id-shaped
+ * credentials (e.g. a future GitHub-data row) is one entry here.
+ */
+const INSTALLATION_ID_PLATFORMS: ReadonlySet<string> = new Set([
+  "github",
+  "github-single-tenant",
+]);
+
+/**
  * OpenAPI schema for the 403 {@link PlanUpgradeRequiredBody}. Pins the
  * wire shape — both plan fields are PlanTier (the same union used
  * everywhere else) — and the `z.ZodType<PlanUpgradeRequiredBody>`
@@ -800,13 +817,34 @@ integrations.openapi(callbackRoute, async (c) =>
     const { code, installation_id: installationId, state } = c.req.valid("query");
     const requestId = crypto.randomUUID();
 
-    // GitHub App installs return `installation_id`; standard OAuth 2.0
-    // flows return `code`. Either satisfies the credential identifier
-    // the per-Platform handler needs — pass whichever arrived. We never
-    // see both in practice; if a GitHub App is configured with
-    // "Request user authorization (OAuth) during installation",
-    // `installation_id` carries the App install we care about and we
-    // ignore the supplementary user-OAuth `code` field.
+    // GitHub App installs deliver `installation_id`; standard OAuth 2.0
+    // flows deliver `code`. The credential identifier the per-Platform
+    // handler consumes is one or the other — never both in practice.
+    //
+    // **Platform-scoped acceptance.** Only the two GitHub catalog rows
+    // accept `installation_id`; sending it to any other Platform's
+    // callback URL is unambiguously a tampered redirect (no upstream
+    // OAuth provider for those platforms ever emits the field) and gets
+    // a 400 here rather than being forwarded to the handler. Forwarding
+    // an `installation_id` into Jira's / Salesforce's / Linear's
+    // `handleCallback` would surface as a misleading "upstream OAuth
+    // exchange refused" message — the platform-scoped reject is clearer
+    // and matches the principle that the route knows the slug semantics
+    // before the handler does.
+    if (installationId !== undefined && !INSTALLATION_ID_PLATFORMS.has(platform)) {
+      log.warn(
+        { platform },
+        "Callback received installation_id for a non-GitHub Platform — rejecting (tampered redirect)",
+      );
+      return c.json(
+        {
+          error: "unexpected_installation_id",
+          message: `Platform "${platform}" does not use the GitHub App installation_id flow. Restart the install.`,
+          requestId,
+        },
+        400,
+      );
+    }
     const credentialIdentifier = installationId ?? code;
     if (typeof credentialIdentifier !== "string" || credentialIdentifier.length === 0) {
       return c.json(

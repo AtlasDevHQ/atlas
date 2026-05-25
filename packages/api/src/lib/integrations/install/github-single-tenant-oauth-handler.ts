@@ -61,6 +61,16 @@ export const GITHUB_SINGLE_TENANT_SLUG: CatalogId = "github-single-tenant";
 export { GITHUB_SINGLE_TENANT_CATALOG_ID };
 
 export interface GitHubSingleTenantHandlerConfig {
+  /**
+   * App ID + slug — read by the lazy builder (follow-up PR) at
+   * install-token mint time. Neither is consumed by this install
+   * handler directly: single-tenant's `startInstall` self-redirects
+   * through the callback URL (no `github.com/apps/<slug>` hop), and
+   * `handleCallback` reads only `installationId` from the config. We
+   * still gate registration on both env vars in `register.ts` so a
+   * half-wired deploy can't install cleanly then fail at first tool
+   * call.
+   */
   readonly appId: string;
   readonly appSlug: string;
   /**

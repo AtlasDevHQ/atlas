@@ -139,6 +139,16 @@ filter.
 
 ### Operator setup (one-time, per deploy)
 
+<Callout type="info" title="Setup URL is unused in single-tenant mode">
+  Single-tenant install **does not round-trip through github.com** — the
+  customer admin click triggers a self-redirect through Atlas's own
+  callback URL with the env-baked `installation_id` pre-attached. The
+  Setup URL on your single-tenant App registration is therefore
+  ignored by Atlas; you can leave it blank or set it to a placeholder.
+  This differs from Mode 1, where Setup URL must point at Atlas's
+  multi-tenant `github` callback.
+</Callout>
+
 1. **Register the App** the same way as Mode 1, but choose **Only on
    this account** for the "Where can this GitHub App be installed?"
    setting.

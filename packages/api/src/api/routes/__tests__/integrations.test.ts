@@ -315,8 +315,22 @@ function request(path: string, init?: RequestInit) {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
+// GitHub-shaped OAuth handler — exercises the route's installation_id
+// branch (#2751). Same stub mechanism as the slack handler above, with
+// the catalog slug pin so the route's `INSTALLATION_ID_PLATFORMS` set
+// accepts the field for this callback URL.
+const fakeGithubHandler: OAuthPlatformInstallHandler = {
+  kind: "oauth" as const,
+  startInstall: async () => ({
+    redirectUrl: "https://github.com/apps/atlas-test/installations/new?state=stub",
+    stateToken: "stub",
+  }),
+  handleCallback: async () => callbackImpl(),
+};
+
 beforeAll(() => {
   registerOAuthHandler("slack", fakeHandler);
+  registerOAuthHandler("github", fakeGithubHandler);
   registerFormHandler("email", fakeFormHandler);
 });
 
@@ -527,6 +541,81 @@ describe("GET /api/v1/integrations/slack/callback — non-OAuth-exchange failure
     const body = (await res.json()) as { requestId?: string };
     // 500 responses always include a requestId for log correlation
     // (runHandler bridge invariant).
+    expect(body.requestId).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GitHub App callback — installation_id query-param branch (#2751).
+// ---------------------------------------------------------------------------
+
+describe("GET /api/v1/integrations/github/callback — installation_id flow", () => {
+  beforeEach(() => {
+    // The catalog row lookup defaults to slack — override for this
+    // suite so the route resolves the github catalog row.
+    mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("FROM organization")) {
+        return [{ plan_tier: "business", is_operator_workspace: false }];
+      }
+      return [{ slug: "github", install_model: "oauth", enabled: true, min_plan: "starter" }];
+    });
+  });
+
+  it("accepts installation_id and redirects to /admin/integrations?installed=github on success", async () => {
+    callbackImpl = async () => ({
+      workspaceId: "ws-1" as never,
+      catalogId: "github",
+      installRecord: {
+        id: "install-github-1",
+        workspaceId: "ws-1" as never,
+        catalogId: "github",
+      },
+      credentialResult: { written: true },
+    });
+
+    const res = await request(
+      "/api/v1/integrations/github/callback?installation_id=123456789&state=stub",
+      { headers: { Accept: "text/html" } },
+    );
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe(
+      "https://app.atlas.example/admin/integrations?installed=github",
+    );
+  });
+
+  it("rejects callbacks without `code` and without `installation_id` with 400 missing_credential_identifier", async () => {
+    // Pin the route's defense against a forged callback URL stripped of
+    // both credential identifiers — runHandler must NOT forward an
+    // empty string to handler.handleCallback (would surface a confusing
+    // upstream-OAuth error instead of the 400 the contract requires).
+    const res = await request(
+      "/api/v1/integrations/github/callback?state=stub",
+      { headers: { Accept: "application/json" } },
+    );
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; requestId?: string };
+    expect(body.error).toBe("missing_credential_identifier");
+    expect(body.requestId).toBeDefined();
+  });
+});
+
+describe("GET /api/v1/integrations/slack/callback — installation_id rejection", () => {
+  it("rejects installation_id on a non-GitHub callback URL with 400 unexpected_installation_id", async () => {
+    // Defense against a tampered redirect: no upstream provider for
+    // non-GitHub Platforms emits installation_id, so seeing it on a
+    // Slack/Jira/etc. callback is unambiguously malicious. The route
+    // must 400 before forwarding to the handler (which would otherwise
+    // surface a misleading "Slack rejected the OAuth code" envelope).
+    const res = await request(
+      "/api/v1/integrations/slack/callback?installation_id=123&code=abc&state=stub",
+      { headers: { Accept: "application/json" } },
+    );
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; requestId?: string };
+    expect(body.error).toBe("unexpected_installation_id");
     expect(body.requestId).toBeDefined();
   });
 });

@@ -52,6 +52,17 @@ export const GITHUB_SINGLE_TENANT_CATALOG_ID = "catalog:github-single-tenant";
  */
 export const GITHUB_INSTALLATION_ID_RE = /^[1-9][0-9]{0,18}$/;
 
+// `account_login` / `account_type` are declared on the schema but NOT
+// populated by the install handler today — the OAuth callback only
+// carries `installation_id`. Both fields are reserved for a future
+// post-install enrichment hop (GET `/app/installations/<id>` to fetch
+// the owning org's login + type) so admin-UI cards can render
+// "Connected to <org_name>" without a per-render API round-trip. The
+// schema declares them now so the `encryptSecretFields` /
+// `decryptSecretFields` walkers stay in lockstep when the enrichment
+// lands — adding a field to the schema later is the F-42 audit's
+// canonical failure mode (write-side and read-side schemas diverging
+// across PRs).
 export const GitHubInstallationConfigSchema = z
   .object({
     installation_id: z
@@ -61,7 +72,9 @@ export const GitHubInstallationConfigSchema = z
         GITHUB_INSTALLATION_ID_RE,
         "installation_id must be a positive integer — GitHub returned an unexpected shape",
       ),
+    /** Reserved — populated by future post-install enrichment. */
     account_login: z.string().max(255).optional(),
+    /** Reserved — populated by future post-install enrichment. */
     account_type: z.string().max(64).optional(),
     status: z.string().max(64).optional(),
   })

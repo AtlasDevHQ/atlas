@@ -86,13 +86,23 @@ const APP_INSTALL_URL_BASE = "https://github.com/apps";
 
 /**
  * Operator-side GitHub App config. Read once from env in `register.ts`
- * and passed in. `appId` is informational here — the actual install URL
- * uses `appSlug` (the human-readable handle in
- * `https://github.com/apps/<slug>`); `appId` is needed at install-token
- * mint time by the lazy builder.
+ * and passed in.
+ *
+ * `appId` is NOT consumed by the install handler itself — it's needed
+ * at install-token mint time by the lazy builder (follow-up PR) when
+ * signing the App JWT. We carry it on the install handler's config so
+ * the env-gate seam in `register.ts` validates both halves of the pair
+ * at once: a deploy missing `GITHUB_APP_ID` would otherwise install
+ * cleanly and fail at first tool call. Keeping `appId` on the config
+ * also lets the install + builder share one type rather than diverging
+ * shapes across PRs.
  */
 export interface GitHubOAuthHandlerConfig {
-  /** App ID from the App settings page — numeric, but kept as a string. */
+  /**
+   * App ID from the App settings page — numeric, kept as a string.
+   * Read by the lazy builder, NOT by this install handler. See type
+   * JSDoc above for the rationale.
+   */
   readonly appId: string;
   /** App slug from the public URL `https://github.com/apps/<slug>`. */
   readonly appSlug: string;

@@ -188,20 +188,32 @@ export interface GroupRow {
   primaryConnectionId?: string | null;
   resolvedConnectionId?: string | null;
 }
-interface GroupsResp { groups: GroupRow[] }
+
+interface ConnectionRow {
+  id: string;
+  groupId: string | null;
+  groupName: string | null;
+}
+interface ConnectionsResp { connections?: ConnectionRow[] }
 
 /**
- * Resolve a group id by name. The seed provisions `dev`, `staging`, `prod`;
- * any other name is treated as a spec-created throwaway and `null` is a
- * legitimate result (so the caller can decide between create-or-skip).
+ * Resolve a group by name. Post-#2744 cutover the `connection_groups`
+ * table is gone — groups are derived from distinct non-null
+ * `groupId` values on the connections list. Since the wire returns
+ * `groupName === groupId` (the string IS the name), the synthesized
+ * `GroupRow.id` is that same string. The seed provisions `dev`,
+ * `staging`, `prod`; any other name is treated as a spec-created
+ * throwaway and `null` is a legitimate result.
  */
 export async function findGroupByName(
   request: APIRequestContext,
   name: string,
 ): Promise<GroupRow | null> {
-  const r = await adminGet<GroupsResp>(request, "/api/v1/admin/connection-groups", { query: "includeArchived=true" });
+  const r = await adminGet<ConnectionsResp>(request, "/api/v1/admin/connections");
   if (r.status !== 200 || !r.body) return null;
-  return r.body.groups.find((g) => g.name === name) ?? null;
+  const member = (r.body.connections ?? []).find((c) => c.groupId === name);
+  if (!member) return null;
+  return { id: name, name, status: "active", primaryConnectionId: member.id, resolvedConnectionId: member.id };
 }
 
 /**

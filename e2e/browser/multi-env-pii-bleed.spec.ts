@@ -76,11 +76,16 @@ test.describe("multi-env PII — per-group filter does not bleed across groups",
     const tableDev = `${SYNTH_PREFIX}t_${stamp}_dev`;
     const tableStaging = `${SYNTH_PREFIX}t_${stamp}_staging`;
 
-    // Grab the org id off the group row — `connection_groups` carries it,
-    // and we've already resolved both target groups in this org.
+    // Post-#2744 cutover: `connection_groups` is gone. The org owning a
+    // named group is any workspace_plugins row whose `config.group_id`
+    // matches; pull `workspace_id` off one such install.
     const orgRow = await withInternalDb(async (c) => {
       const { rows } = await c.query<{ org_id: string }>(
-        `SELECT org_id FROM connection_groups WHERE id = $1 LIMIT 1`,
+        `SELECT workspace_id AS org_id
+           FROM workspace_plugins
+          WHERE config->>'group_id' = $1
+            AND pillar = 'datasource'
+          LIMIT 1`,
         [dev.id],
       );
       return rows[0];

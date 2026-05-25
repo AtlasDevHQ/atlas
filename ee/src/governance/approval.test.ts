@@ -534,16 +534,16 @@ describe("checkApprovalRequired", () => {
 
 // ── Queue Management Tests ──────────────────────────────────────────
 
-// TODO(#2744 step 5 — test sweep): mock queue assumes the pre-cutover
-// mirror-global-connection-group SQL sequence + the `FROM connections`
-// inline group resolution. Both shapes were rewritten in step 5 to
-// pivot to `workspace_plugins (pillar='datasource')`. Rewrite the
-// mock fixtures to match the new query shape — tracked in #2786.
-describe.skip("createApprovalRequest", () => {
+// Post-#2744 (0096 cutover): `createApprovalRequest` is a single
+// INSERT with the group_id resolved inline via a scalar subquery
+// against `workspace_plugins (pillar='datasource')`. No SELECT-then-
+// INSERT race, no tenant-mirror step — fixtures queue one batch (the
+// RETURNING row).
+describe("createApprovalRequest", () => {
   beforeEach(resetMocks);
 
   it("creates an approval request", async () => {
-    ee.queueMockRows([], [makeQueueRow()]);
+    ee.queueMockRows([makeQueueRow()]);
     const result = await run(createApprovalRequest({
       orgId: "org-1",
       ruleId: "rule-1",
@@ -563,7 +563,7 @@ describe.skip("createApprovalRequest", () => {
   });
 
   it("#2072: stamps surface on the queued row when caller provides it", async () => {
-    ee.queueMockRows([], [makeQueueRow({ surface: "mcp" })]);
+    ee.queueMockRows([makeQueueRow({ surface: "mcp" })]);
     const result = await run(createApprovalRequest({
       orgId: "org-1",
       ruleId: "rule-1",
@@ -586,7 +586,7 @@ describe.skip("createApprovalRequest", () => {
   });
 
   it("#2072: stores surface as null when the caller does not provide it (legacy shape)", async () => {
-    ee.queueMockRows([], [makeQueueRow({ surface: null })]);
+    ee.queueMockRows([makeQueueRow({ surface: null })]);
     const result = await run(createApprovalRequest({
       orgId: "org-1",
       ruleId: "rule-1",
@@ -942,19 +942,15 @@ describe("hasApprovedRequest — group-scoped (#2344)", () => {
 // #2344 — group-scoped createApprovalRequest. The approval row carries
 // `connection_group_id` so the lookup above can filter on it. The
 // caller may pass it explicitly (preferred — sql.ts has the connection
-// in hand), and the service resolves it inline via the connections
-// 1:1 group map when omitted, mirroring `inlineConnectionGroupSql` in
-// `semantic/entities.ts`.
-//
-// TODO(#2744 step 5 — test sweep): post-cutover the inline group
-// resolution reads from `workspace_plugins.config->>'group_id'`, not
-// the dropped `connections.group_id`. Mock fixtures need the new
-// query shape — tracked in #2786.
-describe.skip("createApprovalRequest — group-scoped (#2344)", () => {
+// in hand), and the service resolves it inline via a scalar subquery
+// against `workspace_plugins.config->>'group_id'` when omitted (post-
+// #2744 cutover; mirrors `inlineConnectionGroupSql` in
+// `semantic/entities.ts`).
+describe("createApprovalRequest — group-scoped (#2344)", () => {
   beforeEach(resetMocks);
 
   it("stamps connection_group_id on the queued row when caller passes one", async () => {
-    ee.queueMockRows([], [], [makeQueueRow({ connection_group_id: "g-prod" })]);
+    ee.queueMockRows([makeQueueRow({ connection_group_id: "g-prod" })]);
     const result = await run(createApprovalRequest({
       orgId: "org-1",
       ruleId: "rule-1",
@@ -979,7 +975,7 @@ describe.skip("createApprovalRequest — group-scoped (#2344)", () => {
     // Mirrors the inline scalar-subquery shape used by
     // `inlineConnectionGroupSql`. The returned queue row carries the
     // group resolved by the subquery rather than the caller passing it.
-    ee.queueMockRows([], [makeQueueRow({ connection_group_id: "g-prod", connection_id: "conn-us" })]);
+    ee.queueMockRows([makeQueueRow({ connection_group_id: "g-prod", connection_id: "conn-us" })]);
     const result = await run(createApprovalRequest({
       orgId: "org-1",
       ruleId: "rule-1",
@@ -995,9 +991,11 @@ describe.skip("createApprovalRequest — group-scoped (#2344)", () => {
     expect(result.connectionGroupId).toBe("g-prod");
     const insert = ee.capturedQueries.find((q) => q.sql.includes("INSERT INTO approval_queue"));
     expect(insert).toBeDefined();
-    // Inline subquery against connections — the SQL contains both the
-    // connection_id parameter and the inline group lookup.
-    expect(insert!.sql).toContain("FROM connections");
+    // Post-#2744 cutover: inline scalar subquery against workspace_plugins
+    // (pillar='datasource'), keyed on install_id = $8 (= connection_id).
+    expect(insert!.sql).toContain("FROM workspace_plugins");
+    expect(insert!.sql).toContain("pillar = 'datasource'");
+    expect(insert!.params).toContain("conn-us");
   });
 });
 

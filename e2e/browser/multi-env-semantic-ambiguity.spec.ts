@@ -73,9 +73,16 @@ test.describe("multi-env semantic — 409 ambiguity surface", () => {
     // to assert the 409 surface specifically, planting two rows directly
     // is the most reliable way to set up the ambiguity precondition.
     // The route's read-path 409 contract is then exercised by the GET.
+    // Post-#2744 cutover: `connection_groups` is gone. The org owning a
+    // named group is any workspace_plugins row whose `config.group_id`
+    // matches; pull `workspace_id` off one such install.
     const orgRow = await withInternalDb(async (c) => {
       const { rows } = await c.query<{ org_id: string }>(
-        `SELECT org_id FROM connection_groups WHERE id = $1 LIMIT 1`,
+        `SELECT workspace_id AS org_id
+           FROM workspace_plugins
+          WHERE config->>'group_id' = $1
+            AND pillar = 'datasource'
+          LIMIT 1`,
         [dev.id],
       );
       return rows[0];

@@ -1022,7 +1022,7 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     // Reproduces the dharma symptom — connection had been committed BEFORE
     // the import attempt, so a failed import left a half-state. Phase order
     // is now: import first, connection last. A throwing import must mean
-    // zero `INSERT INTO connections` calls.
+    // zero `INSERT INTO workspace_plugins` calls (post-#2744 cutover).
     mockImportFromDisk.mockImplementation(async () => {
       throw new Error("simulated disk failure");
     });

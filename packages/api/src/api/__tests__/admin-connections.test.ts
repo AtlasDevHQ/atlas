@@ -192,19 +192,34 @@ const sqlIs = {
   catalogLookup: (sql: string): boolean =>
     sql.includes("FROM plugin_catalog") &&
     sql.includes("install_model"),
-  /** Installer's singleton pre-check during installDatasource. */
+  /**
+   * Installer's singleton pre-check during installDatasource — distinguished
+   * from the chat/action `findInstallRow` SELECT (which projects
+   * `config->>'team_id' AS team_id`) by the bare `SELECT install_id`
+   * projection. Matching on column names rather than param positions so
+   * a future param-list reshuffle in the installer doesn't silently break
+   * the dispatch and let tests fall through to the empty default.
+   */
   installerSingleton: (sql: string): boolean =>
-    sql.includes("FROM workspace_plugins") &&
-    sql.includes("catalog_id = $2") &&
-    sql.includes("install_id = $3"),
+    /SELECT\s+install_id\s+FROM workspace_plugins/i.test(sql) &&
+    sql.includes("catalog_id") &&
+    sql.includes("install_id"),
   /** Installer's existing-row read during updateDatasourceConfig. */
   installerLoadForUpdate: (sql: string): boolean =>
     sql.includes("SELECT id, install_id, config, status") &&
     sql.includes("FROM workspace_plugins"),
-  /** Installer's INSERT during installDatasource. */
+  /**
+   * Installer's INSERT during installDatasource. Other call sites
+   * (`onboarding.ts`, `cli/seed.ts`, `auth/migrate.ts`) emit the same
+   * column list but hard-code `'published'` for status; the installer
+   * is the only one parameterising status as `$6`. The `NOW(), $6)`
+   * suffix uniquely identifies the installer's INSERT — important so
+   * that `param[5] === "draft"` assertions never silently misread a
+   * different-INSERT's params.
+   */
   installerInsert: (sql: string): boolean =>
     sql.includes("INSERT INTO workspace_plugins") &&
-    sql.includes("'datasource'"),
+    sql.includes("NOW(), $6)"),
   /** Installer's UPDATE during updateDatasourceConfig. */
   installerUpdate: (sql: string): boolean =>
     sql.includes("UPDATE workspace_plugins") &&
@@ -270,7 +285,10 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       const params = insertCall![1] as unknown[];
       expect(params[1]).toBe("org-alpha"); // workspace_id
       expect(params[3]).toBe("analytics"); // install_id
-      expect(params[5]).toBe("draft");      // status — always 'draft' per #2177
+      // POST always passes atlasMode='draft' to the installer (#2177) — the
+      // route-level invariant, not a universal installer property. The
+      // installer itself happily writes any status the caller supplies.
+      expect(params[5]).toBe("draft");
     });
 
     it("stores a different workspace_id for a different workspace admin", async () => {
@@ -1836,8 +1854,8 @@ describe("admin connections — org scoping (workspace_plugins)", () => {
       // CatalogNotFoundError → tagged InstallError → 404 → rollback path.
       expect(res.status).toBe(404);
       // register call sequence on a urlChanged + tagged-error path:
-      //   1. register(id, { url: newUrl, ... })  — line 1196 in admin-connections.ts
-      //   2. register(id, { url: currentUrl, ... })  — rollback at line 1265
+      //   1. register(id, { url: newUrl, ... })           — fresh URL for the test-connect
+      //   2. register(id, { url: currentUrl, ... })       — rollback after installer rejects
       const registerCalls = mockRegister.mock.calls;
       expect(registerCalls.length).toBeGreaterThanOrEqual(2);
       const rollbackCall = registerCalls[registerCalls.length - 1] as Array<unknown>;

@@ -1310,6 +1310,25 @@ describeIfPg("migrate-pg (real Postgres)", () => {
   // invariants (workspace_plugins shape, status column, demo per-workspace
   // backfill) live in the `0096: cutover` describe at the bottom of
   // this file.
+  //
+  // 0092 pillar+install_id describe also removed in #2786. It asserted:
+  //   (a) trigger-derived `pillar` defaulting on plugin_catalog INSERT,
+  //   (b) trigger non-clobber on caller-supplied pillar (INSERT + UPDATE),
+  //   (c) `workspace_plugins` BEFORE INSERT trigger filling `pillar` +
+  //       `install_id` when callers omit them,
+  //   (d) the partial unique `workspace_plugins_singleton` index + the
+  //       global `(workspace_id, catalog_id)` unique,
+  //   (e) the prod-critical fresh-self-host backfill UPDATE chain.
+  // 0096 step 7 drops all three triggers; 0096 step 6 collapses the
+  // unique indexes into the composite PK `(workspace_id, catalog_id,
+  // install_id)`. None of (a)–(d) describe behavior that survives 0096,
+  // so replay would either trip 23514 (CHECK on now-required pillar)
+  // or 23505 against the new PK. (e) was a one-shot upgrade-path
+  // assertion that doesn't apply once the schema is stable. The
+  // post-cutover schema shape (CHECK constraints on pillar, NOT NULL
+  // on pillar+install_id, composite PK, demo per-workspace backfill,
+  // `status` column) is covered structurally by the `0096: cutover`
+  // describe + the full migration replay at `beforeAll`.
 
 
   // ─────────────────────────────────────────────────────────────────────

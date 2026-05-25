@@ -4,6 +4,10 @@ import { explore } from "./explore";
 import { executeSQL } from "./sql";
 import { createDashboard } from "./create-dashboard";
 import { sendEmailTool, SEND_EMAIL_DESCRIPTION } from "@atlas/api/lib/integrations/email-tool";
+import {
+  createLinearIssueTool,
+  CREATE_LINEAR_ISSUE_DESCRIPTION,
+} from "@atlas/api/lib/integrations/linear-tool";
 
 export type { AtlasAction };
 export { isAction };
@@ -186,6 +190,17 @@ defaultRegistry.register({
   tool: sendEmailTool,
 });
 
+// #2750 — Linear action target. Registered globally for the same reason
+// as `sendEmail` above: workspace + install check happens at execute
+// time, tool stays discoverable across all Workspaces, and the dual-
+// catalog (`catalog:linear` OAuth + `catalog:linear-apikey` form) dispatch
+// lives inside the tool's execute path.
+defaultRegistry.register({
+  name: "createLinearIssue",
+  description: CREATE_LINEAR_ISSUE_DESCRIPTION,
+  tool: createLinearIssueTool,
+});
+
 defaultRegistry.freeze();
 
 interface BuildRegistryResult {
@@ -230,6 +245,12 @@ export async function buildRegistry(options?: {
     name: "sendEmail",
     description: SEND_EMAIL_DESCRIPTION,
     tool: sendEmailTool,
+  });
+
+  registry.register({
+    name: "createLinearIssue",
+    description: CREATE_LINEAR_ISSUE_DESCRIPTION,
+    tool: createLinearIssueTool,
   });
 
   if (process.env.ATLAS_PYTHON_ENABLED === "true") {

@@ -252,6 +252,7 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
     // the integration_credentials platforms.
     case "SalesforceReconnectRequiredError":
     case "JiraReconnectRequiredError":
+    case "LinearReconnectRequiredError":
       return {
         status: 409,
         code: "conflict",

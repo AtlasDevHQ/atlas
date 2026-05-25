@@ -153,6 +153,7 @@ describe("defaultRegistry", () => {
     const all = defaultRegistry.getAll();
     expect(Object.keys(all).sort()).toEqual([
       "createDashboard",
+      "createLinearIssue",
       "executeSQL",
       "explore",
       "sendEmail",
@@ -203,6 +204,7 @@ describe("buildRegistry", () => {
       const names = Object.keys(registry.getAll()).sort();
       expect(names).toEqual([
         "createDashboard",
+        "createLinearIssue",
         "executePython",
         "executeSQL",
         "explore",
@@ -220,7 +222,13 @@ describe("buildRegistry", () => {
   it("returns core tools by default", async () => {
     const { registry } = await buildRegistry();
     const names = Object.keys(registry.getAll()).sort();
-    expect(names).toEqual(["createDashboard", "executeSQL", "explore", "sendEmail"]);
+    expect(names).toEqual([
+      "createDashboard",
+      "createLinearIssue",
+      "executeSQL",
+      "explore",
+      "sendEmail",
+    ]);
   });
 
   it("with includeActions includes createJiraTicket and sendEmailReport alongside core tools", async () => {
@@ -229,6 +237,7 @@ describe("buildRegistry", () => {
     expect(names).toEqual([
       "createDashboard",
       "createJiraTicket",
+      "createLinearIssue",
       "executeSQL",
       "explore",
       "sendEmail",

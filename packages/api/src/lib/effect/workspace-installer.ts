@@ -387,6 +387,13 @@ export type InstallResult =
 export const INTEGRATION_CREDENTIALS_SLUGS: ReadonlySet<string> = new Set<string>([
   "salesforce",
   "jira",
+  // #2750 — Linear OAuth mode. The API-key mode (`linear-apikey`)
+  // intentionally is NOT in this set: its credentials live inline in
+  // `workspace_plugins.config` via selective-field encryption, so the
+  // standard `workspace_plugins` DELETE teardown is sufficient. Only
+  // OAuth installs that hydrate `integration_credentials` need
+  // dual-store teardown.
+  "linear",
 ]);
 
 interface CatalogRow {

@@ -1,0 +1,218 @@
+---
+title: Linear
+description: Create Linear issues from Atlas agent findings. Two install modes — OAuth (recommended, refreshes automatically) and Personal API Key (simplest, no OAuth App registration required).
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas's Linear integration is an **Action Target**: Atlas creates Linear
+issues from agent findings (e.g. "file a Linear ticket for every failing
+test in the dashboard"). It is NOT a chat platform — users don't talk to
+Atlas through Linear.
+
+Linear ships with **two install modes**, surfaced as two distinct cards
+in **Admin → Integrations → Actions**. Workspace admins pick whichever
+fits their access model:
+
+- **Linear (OAuth)** — the operator registers a Linear OAuth Application
+  once; each workspace admin authorizes Atlas through Linear's OAuth
+  consent screen. Access tokens refresh automatically.
+- **Linear (API Key)** — no operator setup. The workspace admin
+  generates a Personal API Key in their own Linear settings and pastes
+  it into Atlas. Simplest install; the key is tied to one Linear user.
+
+<Callout type="info" title="Which mode should I use?">
+  **OAuth** is the recommended path for production workspaces and any
+  workspace that wants installs to survive a Linear user being
+  deactivated. **API Key** is the right choice for self-hosted operators
+  who don't want to register an OAuth Application and for entry-tier
+  SaaS workspaces where the OAuth dance feels like overkill.
+</Callout>
+
+## Mode 1 — OAuth (`linear` catalog row)
+
+### Operator setup (one-time, per deploy)
+
+Self-hosted operators run these steps once during initial deployment;
+Atlas Cloud customers don't — the Atlas Cloud team has already done
+this on the hosted regions.
+
+#### 1. Create a Linear OAuth Application
+
+In [Linear settings → API → OAuth Applications](https://linear.app/settings/api/applications/new),
+create a new application:
+
+- **Application name**: "Atlas" (or whatever brand makes sense for
+  your deploy)
+- **Developer URL / Callback URLs**: `${ATLAS_PUBLIC_API_URL}/api/v1/integrations/linear/callback`
+- **Scopes**: enable `read`, `write`, and `issues:create`
+- **Public**: leave off — Atlas's OAuth App is private to your deploy
+
+Linear shows the Client ID and Client Secret on the application page
+after creation. Treat the Client Secret as a credential — anyone with
+it can act as your OAuth App.
+
+#### 2. Set the env vars
+
+Set both on every Atlas API service in your deploy:
+
+```bash
+LINEAR_CLIENT_ID=<Client ID from step 1>
+LINEAR_CLIENT_SECRET=<Client Secret from step 1>
+```
+
+`ATLAS_PUBLIC_API_URL` must already be set on the same services — it's
+required by every OAuth-based integration to build the callback URL.
+
+#### 3. Verify boot wiring
+
+After restart, the API service logs should include:
+
+```
+Registered LinearOAuthInstallHandler + LazyPluginLoader builder
+```
+
+If you see `Linear OAuth handler not registered — LINEAR_CLIENT_ID /
+LINEAR_CLIENT_SECRET unset` instead, double check the env vars aren't
+empty / whitespace-only.
+
+### Customer install (per workspace)
+
+Once the operator has wired the OAuth Application, workspace admins
+can install the OAuth mode from **Admin → Integrations → Linear (OAuth)**.
+
+1. Click **Install** on the Linear (OAuth) card. Atlas redirects to
+   Linear's OAuth consent screen.
+2. Pick the Linear workspace you want Atlas to act in, review the
+   requested scopes (`read`, `write`, `issues:create`), and click
+   **Authorize Atlas**.
+3. Linear redirects back. Atlas confirms the install by calling
+   Linear's GraphQL `viewer` query and persists the workspace's
+   organization id + display name. The card flips to **Installed**.
+
+After install, agent findings can trigger `createLinearIssue` calls.
+Issues attribute to the workspace admin who installed (Atlas uses
+`actor=user` — see [Attribution](#attribution) below).
+
+### Disconnecting (OAuth mode)
+
+Open **Admin → Integrations → Linear (OAuth)** and click **Disconnect**.
+Atlas deletes the `integration_credentials` row FIRST, then the
+`workspace_plugins` row — per ADR-0003's two-store teardown order. The
+Linear-side OAuth grant is NOT revoked automatically; workspace admins
+who want to fully revoke can do so in
+[Linear settings → API → OAuth Applications](https://linear.app/settings/api/applications)
+under **Authorized apps**.
+
+## Mode 2 — Personal API Key (`linear-apikey` catalog row)
+
+### Customer install (per workspace, no operator setup)
+
+The API-key install has no operator-side prerequisites — every Atlas
+deploy supports it. Workspace admins install it from **Admin →
+Integrations → Linear (API Key)**.
+
+1. In Linear, open [Linear settings → API → Personal API keys](https://linear.app/settings/api).
+   Click **Create key**, name it (e.g. "Atlas integration"), and copy
+   the value — it's shown once.
+2. Back in Atlas, click **Install** on the Linear (API Key) card and
+   paste the key into the **Linear Personal API Key** field. Optionally
+   add a **Workspace name** label to help disambiguate when multiple
+   Linear workspaces are involved.
+3. Click **Save**. Atlas encrypts the key at rest (selective-field
+   encryption per ADR-0007) and the card flips to **Installed**.
+
+<Callout type="warn" title="API keys are tied to a single Linear user">
+  A Personal API Key carries the same access as the Linear user who
+  generated it — if that user is deactivated or removed from a Linear
+  workspace, Atlas's access dies and `createLinearIssue` calls fail
+  with `apikey_rejected`. Rotate by generating a new key in Linear
+  settings and re-submitting the install form.
+</Callout>
+
+### Disconnecting (API Key mode)
+
+Open **Admin → Integrations → Linear (API Key)** and click
+**Disconnect**. Atlas deletes the `workspace_plugins` row containing
+the encrypted key — there's no separate credential store to clean up
+in this mode.
+
+You can also revoke the key from Linear's side: open
+[Linear settings → API → Personal API keys](https://linear.app/settings/api)
+and delete the entry. Atlas's next `createLinearIssue` call will return
+`reconnect_required` and surface the "rotate your key" copy to the
+agent and admin.
+
+## Both modes — using the integration
+
+Once either install mode is enabled, the agent can call
+`createLinearIssue`. The tool accepts:
+
+- **title** (required) — issue title, up to 255 characters
+- **description** (optional) — issue body; markdown supported
+- **teamKey** (optional) — team identifier like `"ENG"`; resolved to a
+  Linear team UUID at call time
+- **teamId** (optional) — team UUID directly; takes precedence over
+  `teamKey`
+- **priority** (optional) — Linear priority code (0=no priority,
+  1=urgent, 2=high, 3=medium, 4=low)
+- **labelIds** (optional) — array of Linear label UUIDs
+
+If neither `teamKey` nor `teamId` is supplied, Linear picks the
+bearer's default team. Agent prompts that target a specific team
+should pass `teamKey` for predictability.
+
+The tool tries the OAuth install first and falls back to the API-key
+install. If both are installed (uncommon but allowed), OAuth wins.
+
+## Attribution
+
+Atlas uses Linear's `actor=user` OAuth scope, so issues created via
+OAuth mode attribute to the workspace admin who completed the install
+— not to a separate "Atlas Bot" user that customers would have to
+discover and manage permissions for. Trade-off: if that admin is
+deactivated in Linear, the OAuth install dies and the workspace needs
+to re-install with a new admin.
+
+API-key mode follows the same shape: issues attribute to whoever
+generated the Personal API Key.
+
+## Troubleshooting
+
+### "Install the Linear integration at /admin/integrations" from the agent
+
+Neither catalog row is installed for the workspace. Open
+**Admin → Integrations** and pick the install mode that fits.
+
+### "Linear install needs to be reconnected" (OAuth mode)
+
+The stored refresh token was rejected by Linear — typically because
+the granting user revoked Atlas's access in
+[Linear settings → API → OAuth Applications](https://linear.app/settings/api/applications)
+or was deactivated from the Linear workspace. Click **Reconnect** on
+the Linear (OAuth) card in **Admin → Integrations**.
+
+### "Linear rejected the stored API key" (API Key mode)
+
+The Personal API Key was revoked or its owning user was deactivated.
+Generate a fresh key in
+[Linear settings → API → Personal API keys](https://linear.app/settings/api)
+and re-submit the install form via **Admin → Integrations → Linear
+(API Key)**.
+
+### "No OAuth install handler registered for catalog slug 'linear'"
+
+The operator hasn't set `LINEAR_CLIENT_ID` and `LINEAR_CLIENT_SECRET`,
+or one is empty on the API process handling the install. Ops sets both
+per-service and restarts the API. The boot log should then include
+`Registered LinearOAuthInstallHandler + LazyPluginLoader builder`. If
+the operator never plans to register a Linear OAuth Application, point
+admins at the API-key card instead — that path needs no operator env.
+
+### Linear GraphQL errors with `team … not found`
+
+The `teamKey` or `teamId` passed to `createLinearIssue` doesn't match a
+team the install's bearer can see. Retry with a `teamKey` you can
+confirm exists in the Linear workspace (the agent can usually call
+`createLinearIssue` again with an adjusted `teamKey` based on the
+error message).

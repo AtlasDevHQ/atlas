@@ -11,23 +11,27 @@
 # has been silently doing process isolation; once we cut over to native,
 # every implicit coupling becomes a real failure.
 #
-# Three rules, each independently allowlisted in
-# `scripts/test-discipline-allowlist.txt` so slices 1/2/(3-4-5) can land
-# in any order and each clears its own category by deleting its lines:
+# Two rules, each independently allowlisted in
+# `scripts/test-discipline-allowlist.txt` so slices 1/2 can land in any
+# order and each clears its own category by deleting its lines:
 #
 #   env   — top-level `process.env.X = ...` assignment. Fix: wrap in
 #           `beforeAll` + save/restore in `afterAll`. Exception: when a
 #           top-level import itself reads env, use a hoisted
 #           `process.env.X ??= ...` block with an explanatory comment.
 #   chdir — top-level `process.chdir(...)`. Fix: move into `beforeAll`.
-#   mock  — file uses `mock.module(...)` but has neither `mock.restore`
-#           nor an `afterAll(` hook. Slice 5 (#2801) will empirically
-#           verify what bun's `--isolate` actually resets and either
-#           drop this rule or sweep the offenders.
 #
-# Why a single allowlist file (not three): one file = one place to grep
+# A third `mock` rule existed through slices 0–5a, gating any
+# `mock.module()` call lacking a paired `mock.restore` / `afterAll`.
+# The empirical experiment in #2801 (slice 5a — fixtures in
+# `packages/api/src/__tests__/_bun-isolation-experiment/`) proved bun's
+# `--isolate` (and `--parallel`, which implies it) DOES reset module
+# mocks between files in the same worker, so the 279 mock-rule entries
+# were noise. Slice 5b dropped both the rule and the entries.
+#
+# Why a single allowlist file (not two): one file = one place to grep
 # when wondering "is this expected?" The `<rule>\t<path>` format lets
-# `grep -v "^<rule>"` clear a rule wholesale without touching the others.
+# `grep -v "^<rule>"` clear a rule wholesale without touching the other.
 
 set -euo pipefail
 
@@ -38,7 +42,7 @@ if [ ! -f "$ALLOWLIST" ]; then
   exit 2
 fi
 
-# Build the candidate file list once (fast path), then run the three
+# Build the candidate file list once (fast path), then run the two
 # rule greps. `--exclude-dir` covers vendored deps and build artifacts.
 TEST_FILES=$(grep -rln '' --include='*.test.ts' \
   --exclude-dir=node_modules \
@@ -73,19 +77,7 @@ while IFS= read -r f; do
   fi
 done <<<"$TEST_FILES"
 
-# ---- Rule: mock ----
-# A file is OK if it has no `mock.module(`, OR it has at least one of
-# `mock.restore` / `afterAll(`. Heuristic — slice 5 will refine.
-MOCK_OFFENDERS=""
-while IFS= read -r f; do
-  [ -z "$f" ] && continue
-  if grep -qE 'mock\.module\(' "$f" \
-    && ! grep -qE 'mock\.restore|afterAll\(' "$f"; then
-    MOCK_OFFENDERS="${MOCK_OFFENDERS}mock	${f}"$'\n'
-  fi
-done <<<"$TEST_FILES"
-
-ALL_OFFENDERS=$(printf "%s%s%s" "$ENV_OFFENDERS" "$CHDIR_OFFENDERS" "$MOCK_OFFENDERS" | sed '/^$/d' | sort -u || true)
+ALL_OFFENDERS=$(printf "%s%s" "$ENV_OFFENDERS" "$CHDIR_OFFENDERS" | sed '/^$/d' | sort -u || true)
 
 # Diff offenders against allowlist. `comm -23 a b` = lines in a but not in b.
 UNEXPECTED=$(comm -23 <(printf "%s\n" "$ALL_OFFENDERS" | sed '/^$/d') <(printf "%s\n" "$ALLOWED" | sed '/^$/d') || true)
@@ -111,15 +103,13 @@ if [ -n "$UNEXPECTED" ]; then
   echo "Fix patterns:"
   echo "  env   — wrap in \`beforeAll\` + save/restore in \`afterAll\` (see #2797)."
   echo "  chdir — move into \`beforeAll\` (see #2798)."
-  echo "  mock  — pair every \`mock.module()\` with \`mock.restore()\` in \`afterAll\`,"
-  echo "          or migrate to a test-scoped Effect Layer (see #2799/#2800/#2801)."
 fi
 
 if [ -n "$STALE" ]; then
   EXIT=1
   echo "::error::$ALLOWLIST has stale entries — files no longer match the rule."
   echo ""
-  echo "Each slice (#2797-#2801) must delete its allowlist lines as the offenders"
+  echo "Each slice (#2797/#2798) must delete its allowlist lines as the offenders"
   echo "are fixed. A stale line here means the gate is no longer guarding what it"
   echo "thinks it is."
   echo ""
@@ -130,8 +120,7 @@ fi
 if [ "$EXIT" -eq 0 ]; then
   ENV_COUNT=$(printf "%s" "$ENV_OFFENDERS" | grep -c '^env	' || true)
   CHDIR_COUNT=$(printf "%s" "$CHDIR_OFFENDERS" | grep -c '^chdir	' || true)
-  MOCK_COUNT=$(printf "%s" "$MOCK_OFFENDERS" | grep -c '^mock	' || true)
-  echo "Test discipline check passed — env: $ENV_COUNT allowlisted, chdir: $CHDIR_COUNT allowlisted, mock: $MOCK_COUNT allowlisted."
+  echo "Test discipline check passed — env: $ENV_COUNT allowlisted, chdir: $CHDIR_COUNT allowlisted."
   echo "Track removal in milestone 1.5.4 (#53)."
 fi
 

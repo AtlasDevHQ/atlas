@@ -33,23 +33,6 @@
 
 import { Pool, type PoolClient } from "pg";
 import { createLogger } from "@atlas/api/lib/logger";
-// `internal.ts` and `secret-encryption.ts` both export `encryptSecret` /
-// `decryptSecret` post-#2285 (the internal pair is the URL-aware helper,
-// the secret-encryption pair is the versioned-prefix helper for
-// integration credentials). The local aliases (`*UrlSecret`) keep the
-// two paths visually distinct in the import block; the branded return
-// types (`URLSecret` / `OpaqueSecret`, #2370) make them structurally
-// distinct so the `case "url"` arm cannot compile-time bind to the
-// opaque helper. Pre-brand, swapping the import would have silently
-// re-encrypted plaintext `postgres://…` rows through the wrong helper
-// — the opaque helper lacks the URL-passthrough that the rotation
-// script relies on for first-time encryption of legacy plaintext rows.
-import {
-  decryptSecret as decryptUrlSecret,
-  encryptSecret as encryptUrlSecret,
-  isPlaintextUrl,
-  type URLSecret,
-} from "@atlas/api/lib/db/internal";
 import {
   activeKeyVersion,
   getEncryptionKeyset,
@@ -71,28 +54,27 @@ const log = createLogger("rotate-encryption-key");
 // ---------------------------------------------------------------------------
 
 /**
- * A column whose ciphertext the rotation script should re-encrypt. The
- * shape extends `IntegrationTable` (the F-41 catalog) with a `kind`
- * discriminator that picks the right cipher helper pair:
+ * A column whose ciphertext the rotation script should re-encrypt. Every
+ * rotation target uses the `db/secret-encryption.ts` helper pair
+ * (versioned-prefix-only `encryptSecret` / `decryptSecret`).
  *
- *   `url`    → `db/internal.ts` pair (aliased `encryptUrlSecret` /
- *              `decryptUrlSecret`) — connection URL, with plaintext
- *              `postgres://…` fallback for pre-encryption rows
- *   `secret` → `db/secret-encryption.ts` pair (`encryptSecret` /
- *              `decryptSecret`) — every F-41 integration column plus
- *              the workspace model-config API key, which historically
- *              used the URL helper but reads identically now that both
- *              helpers share the versioned-keyset decryptor
+ * Pre-1.5.3 the script also rotated `connections.url` via the URL-aware
+ * `db/internal.ts` helper (with plaintext `postgres://…` first-time
+ * encryption fallback). That table was dropped in 0096 / #2744 per
+ * ADR-0007; datasource URLs now live inside `workspace_plugins.config`
+ * JSONB and are not in scope for this column-oriented rotation pass.
+ * The two remaining `db/internal.ts` consumers (`workspace_model_config`,
+ * `sso_providers`) read identically through the versioned-prefix
+ * decryptor — ciphertext format is shared across both helper pairs.
  */
-type RotateTarget = IntegrationTable & { kind: "url" | "secret" };
+type RotateTarget = IntegrationTable;
 
 const ROTATION_TABLES: readonly RotateTarget[] = [
-  { table: "connections", pk: "id", encrypted: "url", keyVersionColumn: "url_key_version", kind: "url" },
-  { table: "workspace_model_config", pk: "id", encrypted: "api_key_encrypted", keyVersionColumn: "api_key_key_version", kind: "secret" },
+  { table: "workspace_model_config", pk: "id", encrypted: "api_key_encrypted", keyVersionColumn: "api_key_key_version" },
   // Derive from F-41's INTEGRATION_TABLES so adding a new integration
   // in one place covers rotation, audit, and any future column-walking
   // tooling — matches the "single source of truth" convention.
-  ...INTEGRATION_TABLES.map((t): RotateTarget => ({ ...t, kind: "secret" })),
+  ...INTEGRATION_TABLES,
 ];
 
 // Parameterize table / column names into validated identifiers — we
@@ -112,39 +94,13 @@ function assertIdentifier(name: string, role: string): void {
 
 /**
  * Decrypt the stored ciphertext (under whichever keyset entry its
- * prefix names) and re-encrypt with the active key. Each arm returns
- * the brand owned by the helper it called:
- *   • `secret` — `db/secret-encryption.ts` pair → `OpaqueSecret`.
- *     `decryptSecret` passthrough for un-prefixed plaintext +
- *     re-encrypt under the active key.
- *   • `url` — `db/internal.ts` pair → `URLSecret`. Plaintext URLs
- *     (`postgres://…`) get encrypted for the first time;
- *     versioned/unversioned ciphertext is decrypted + re-encrypted.
- * Rotation is a convenient moment to close out the pre-encryption
- * back-compat window, so plaintext rows land encrypted on the other
- * side. Throws on decryption failure (caller handles orphan counting).
+ * prefix names) and re-encrypt with the active key. Returns an
+ * `OpaqueSecret` brand. Throws on decryption failure (caller handles
+ * orphan counting).
  */
-function rotateValue(kind: RotateTarget["kind"], stored: string): URLSecret | OpaqueSecret {
-  switch (kind) {
-    case "url": {
-      if (isPlaintextUrl(stored)) {
-        return encryptUrlSecret(stored);
-      }
-      const decoded = decryptUrlSecret(stored);
-      return encryptUrlSecret(decoded);
-    }
-    case "secret": {
-      const decoded = decryptSecret(stored);
-      return encryptSecret(decoded);
-    }
-    default: {
-      // Exhaustiveness check — adding a third `kind` value forces a
-      // compile error here, so a new variant can't silently fall through
-      // to either cipher pair.
-      const _exhaustive: never = kind;
-      throw new Error(`Unhandled rotation kind: ${String(_exhaustive)}`);
-    }
-  }
+function rotateValue(stored: string): OpaqueSecret {
+  const decoded = decryptSecret(stored);
+  return encryptSecret(decoded);
 }
 
 export interface RotateResult {
@@ -193,7 +149,7 @@ export async function rotateTable(
       }
       let re: string;
       try {
-        re = rotateValue(target.kind, row.encrypted);
+        re = rotateValue(row.encrypted);
       } catch (err) {
         // Orphan: the row's ciphertext references a key version that
         // isn't in the current keyset (or decryption failed outright).

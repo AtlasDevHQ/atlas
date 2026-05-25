@@ -66,7 +66,6 @@ describe("rotateTable (F-47 re-encryption)", () => {
       pk: "team_id",
       encrypted: "bot_token_encrypted",
       keyVersionColumn: "bot_token_key_version",
-      kind: "secret",
     }, 2);
 
     expect(result.table).toBe("slack_installations");
@@ -99,65 +98,12 @@ describe("rotateTable (F-47 re-encryption)", () => {
       pk: "team_id",
       encrypted: "bot_token_encrypted",
       keyVersionColumn: "bot_token_key_version",
-      kind: "secret",
     }, 2);
 
     const select = queries.find((q) => q.sql.startsWith("SELECT"));
     expect(select).toBeDefined();
     expect(select!.sql).toMatch(/bot_token_key_version\s*<\s*\$1/);
     expect(select!.params).toEqual([2]);
-  });
-
-  it("rotates a pre-F-47 unversioned connection URL ciphertext to versioned", async () => {
-    // Build an unversioned ciphertext by stripping the `enc:v1:` prefix
-    // from a v1 write — simulates rows that predate F-47.
-    process.env.ATLAS_ENCRYPTION_KEYS = "v1:old-raw";
-    _resetEncryptionKeyCache();
-    const v1Ciphertext = encryptSecret("postgresql://admin:pw@host/db");
-    expect(v1Ciphertext.startsWith("enc:v1:")).toBe(true);
-    const unversionedCiphertext = v1Ciphertext.replace(/^enc:v1:/, "");
-
-    // Bump to v2. The rotation script must:
-    //  • decrypt the unversioned form via the legacy-fallback path;
-    //  • re-encrypt under v2; stamp key_version=2.
-    process.env.ATLAS_ENCRYPTION_KEYS = "v2:new-raw,v1:old-raw";
-    _resetEncryptionKeyCache();
-
-    const { client, queries } = createMockClient([{ pk: "conn-1", encrypted: unversionedCiphertext }]);
-    const result = await rotateTable(client, {
-      table: "connections",
-      pk: "id",
-      encrypted: "url",
-      keyVersionColumn: "url_key_version",
-      kind: "url",
-    }, 2);
-
-    expect(result.updated).toBe(1);
-    const updates = queries.filter((q) => q.sql.startsWith("UPDATE"));
-    expect(String(updates[0].params![0])).toMatch(/^enc:v2:/);
-    expect(decryptSecret(String(updates[0].params![0]))).toBe("postgresql://admin:pw@host/db");
-  });
-
-  it("encrypts a plaintext connection URL for the first time under the active key", async () => {
-    // Legacy self-hosted deployments may carry rows with
-    // `postgres://…` (no prior encryption at all). The rotation script
-    // is a natural moment to close out the pre-encryption back-compat
-    // window.
-    process.env.ATLAS_ENCRYPTION_KEYS = "v2:new-raw";
-    _resetEncryptionKeyCache();
-
-    const plaintextUrl = "postgresql://user:pass@host/db";
-    const { client, queries } = createMockClient([{ pk: "conn-legacy", encrypted: plaintextUrl }]);
-    const result = await rotateTable(client, {
-      table: "connections",
-      pk: "id",
-      encrypted: "url",
-      keyVersionColumn: "url_key_version",
-      kind: "url",
-    }, 2);
-    expect(result.updated).toBe(1);
-    const updates = queries.filter((q) => q.sql.startsWith("UPDATE"));
-    expect(String(updates[0].params![0])).toMatch(/^enc:v2:/);
   });
 
   it("skips rows whose ciphertext fails to decrypt (missing legacy key) without aborting the batch", async () => {
@@ -184,7 +130,6 @@ describe("rotateTable (F-47 re-encryption)", () => {
       pk: "team_id",
       encrypted: "bot_token_encrypted",
       keyVersionColumn: "bot_token_key_version",
-      kind: "secret",
     }, 5);
 
     expect(result.scanned).toBe(2);
@@ -215,7 +160,6 @@ describe("rotateTable (F-47 re-encryption)", () => {
       pk: "team_id",
       encrypted: "bot_token_encrypted",
       keyVersionColumn: "bot_token_key_version",
-      kind: "secret",
     }, 2);
     expect(result.updated).toBe(0);
     expect(result.skippedEmpty).toBe(2);
@@ -232,7 +176,6 @@ describe("rotateTable (F-47 re-encryption)", () => {
         pk: "team_id",
         encrypted: "bot_token_encrypted",
         keyVersionColumn: "bot_token_key_version",
-        kind: "secret",
       }, 1),
     ).rejects.toThrow(/not a valid SQL identifier/);
   });
@@ -272,7 +215,6 @@ describe("rotateTable (F-47 re-encryption)", () => {
         pk: "team_id",
         encrypted: "bot_token_encrypted",
         keyVersionColumn: "bot_token_key_version",
-        kind: "secret",
       }, 2),
     ).rejects.toThrow("disk full");
 

@@ -59,8 +59,6 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   internalExecute: async () => {},
   encryptSecret: (s: string) => s,
   decryptSecret: (s: string) => s,
-  encryptUrl: (u: string) => u,
-  decryptUrl: (u: string) => u,
   getInternalDB: () => {
     throw new Error("not configured");
   },

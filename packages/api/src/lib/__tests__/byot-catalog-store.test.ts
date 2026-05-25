@@ -34,8 +34,6 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   // test suite ever does.
   encryptSecret: () => "",
   decryptSecret: () => "",
-  encryptUrl: () => "",
-  decryptUrl: () => "",
   getInternalDB: () => null,
   getEncryptionKey: () => null,
   getEncryptionKeyVersions: () => ({ active: 1, keys: new Map() }),

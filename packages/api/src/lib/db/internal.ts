@@ -139,8 +139,11 @@ export type RawSecret = string & { readonly __brand?: never };
  * for the picking guide. The brand types (`URLSecret` here vs
  * `OpaqueSecret` there) make a misrouted call a compile error.
  *
- * The historic name `encryptUrl` is preserved as a deprecated
- * re-export at the bottom of this file.
+ * Post-1.5.3 closeout (#2755) this helper is reserved for the two
+ * surviving legacy columns (`workspace_model_config.api_key_encrypted`,
+ * `sso_providers.config.clientSecret`). All other call sites use
+ * `db/secret-encryption.ts`. The deprecated `encryptUrl` / `decryptUrl`
+ * aliases were removed per the original #2285 schedule.
  */
 export function encryptSecret(plaintext: string): URLSecret {
   const keyset = getEncryptionKeyset();
@@ -251,25 +254,6 @@ export function decryptSecret(stored: URLSecret | RawSecret): string {
     throw new Error("Failed to decrypt stored secret", { cause: err });
   }
 }
-
-/**
- * @deprecated Use `encryptSecret`. Kept as a re-export only so external
- *   `@useatlas/sdk` / `@useatlas/react` consumers pinned to pre-#2285
- *   versions don't break on a same-PR upgrade. **Remove in milestone
- *   1.5.0** — by then the published SDK has shipped a release that
- *   uses the canonical name. Tracked: #2285.
- *
- * Branding (#2370): aliases preserve `URLSecret` so callers migrating
- * piecewise still get the misrouted-helper type errors.
- */
-export const encryptUrl: (plaintext: string) => URLSecret = encryptSecret;
-
-/**
- * @deprecated Use `decryptSecret`. See `encryptUrl` above for the
- *   removal trigger (milestone 1.5.0, after the SDK consumer surface
- *   migrates). Tracked: #2285.
- */
-export const decryptUrl: (stored: URLSecret | RawSecret) => string = decryptSecret;
 
 /**
  * Returns true when the value looks like a plaintext URL. Rejects

@@ -3,11 +3,15 @@ title: Encryption Key Rotation
 description: Rotate Atlas's at-rest encryption key without orphaning encrypted rows
 ---
 
-Atlas encrypts 12 credential columns at rest using AES-256-GCM: the
-datasource connection URL (`connections.url`), the workspace LLM API
-key (`workspace_model_config.api_key_encrypted`), and ten integration
-credential columns added in F-41 (Slack, Teams, Discord, Telegram,
-Google Chat, GitHub, Linear, WhatsApp, Email, Sandbox).
+Atlas encrypts every credential column in the internal DB at rest using
+AES-256-GCM: the workspace LLM API key
+(`workspace_model_config.api_key_encrypted`), the F-41 integration
+credential columns (Teams, Discord, Telegram, Google Chat, GitHub,
+Linear, WhatsApp, Email, Sandbox, sub-processor subscriptions,
+integration_credentials, Twenty CRM), and the datasource install
+credentials inside `workspace_plugins.config` JSONB (selective-field
+encryption post-#2744; the legacy `connections.url` column was dropped
+by migration 0096).
 
 This runbook walks through **rotating the encryption key** — either on
 a planned schedule (SOC 2 CC6.1 typically requires an annual cycle) or
@@ -98,22 +102,14 @@ silently destroys every encrypted credential. Set a dedicated
    `<col>_key_version < $active`, so re-runs after partial progress
    pick up where the previous run left off.
 
-5. **Verify.** Atlas has 12 encrypted columns, each with a companion
-   `*_key_version` column. The script should have left every row at
-   the active version (here `2`). Run this once across every table:
+5. **Verify.** Each column-rotated table has a companion `*_key_version`
+   column. The script should have left every row at the active version
+   (here `2`). Run this once across every table:
 
    ```sql
-   SELECT 'connections.url' AS col,
-          COUNT(*) FILTER (WHERE url_key_version < 2) AS below_active
-     FROM connections
-   UNION ALL
-   SELECT 'workspace_model_config.api_key_encrypted',
-          COUNT(*) FILTER (WHERE api_key_key_version < 2)
+   SELECT 'workspace_model_config.api_key_encrypted' AS col,
+          COUNT(*) FILTER (WHERE api_key_key_version < 2) AS below_active
      FROM workspace_model_config
-   UNION ALL
-   SELECT 'slack_installations.bot_token_encrypted',
-          COUNT(*) FILTER (WHERE bot_token_key_version < 2)
-     FROM slack_installations
    UNION ALL
    SELECT 'teams_installations.app_password_encrypted',
           COUNT(*) FILTER (WHERE app_password_key_version < 2)
@@ -149,9 +145,27 @@ silently destroys every encrypted credential. Set a dedicated
    UNION ALL
    SELECT 'sandbox_credentials.credentials_encrypted',
           COUNT(*) FILTER (WHERE credentials_key_version < 2)
-     FROM sandbox_credentials;
+     FROM sandbox_credentials
+   UNION ALL
+   SELECT 'sub_processor_subscriptions.token_encrypted',
+          COUNT(*) FILTER (WHERE token_key_version < 2)
+     FROM sub_processor_subscriptions
+   UNION ALL
+   SELECT 'integration_credentials.credentials_encrypted',
+          COUNT(*) FILTER (WHERE credentials_key_version < 2)
+     FROM integration_credentials
+   UNION ALL
+   SELECT 'twenty_integrations.api_key_encrypted',
+          COUNT(*) FILTER (WHERE api_key_key_version < 2)
+     FROM twenty_integrations;
    -- Every row should report `below_active = 0`.
    ```
+
+   Note: datasource credentials live inside `workspace_plugins.config`
+   JSONB via selective-field encryption (post-#2744 cutover). They are
+   not column-rotated by this script — operators re-save the install
+   from `/admin/connections` to re-encrypt under the active key, or
+   wait for the next admin write to migrate organically.
 
    The rotation script also exits `2` if any row was orphaned (stored
    ciphertext references a version missing from the keyset); if you
@@ -243,8 +257,8 @@ the escrow copy is a compromise target too.
   under the active key. The `enc:v<N>:` prefix keeps the ciphertext
   readable as long as the legacy key stays in `ATLAS_ENCRYPTION_KEYS`.
 - **Dev-mode rows (no key configured) stamp `_key_version = 1`.** When
-  no key is set, `encryptSecret` (and the deprecated `encryptUrl` alias) pass plaintext through
-  unchanged, but the companion `_key_version` column still defaults to
+  no key is set, `encryptSecret` passes plaintext through unchanged,
+  but the companion `_key_version` column still defaults to
   `1` via the schema-side `DEFAULT 1 NOT NULL` constraint. The
   observability consequence: a post-install audit query that counts
   rows at version 1 cannot distinguish "genuinely encrypted under v1"

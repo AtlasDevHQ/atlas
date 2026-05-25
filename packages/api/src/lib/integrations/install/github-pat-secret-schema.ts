@@ -48,12 +48,14 @@ const GITHUB_PAT_RE = /^[A-Za-z0-9_]+$/;
 
 /**
  * GitHub owner names (users + organizations) are constrained to
- * 1–39 chars of alphanumerics and single hyphens. We don't enforce the
+ * 1–39 chars of alphanumerics and single hyphens. We enforce the
+ * length ceiling locally so a typo'd 40+ char value surfaces as a
+ * deterministic form error instead of a confusing GitHub-side 404
+ * later when the agent tries to create an issue. We don't enforce the
  * hyphen rules here (no leading/trailing/double hyphens) — that's a
- * GitHub-side 404 the agent surfaces clearly. We DO bound the length so
- * a copy-paste accident doesn't store a 50KB blob.
+ * GitHub-side 404 the agent surfaces clearly.
  */
-const GITHUB_OWNER_MAX = 64;
+const GITHUB_OWNER_MAX = 39;
 const GITHUB_OWNER_RE = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
 
 export const GitHubPatFormDataSchema = z.object({
@@ -67,20 +69,25 @@ export const GitHubPatFormDataSchema = z.object({
     ),
   /**
    * Optional default owner (user or organization) the agent falls back
-   * to when an `issueCreate`-style call doesn't specify one. Empty
-   * string is rejected — admins who don't want a default should omit
-   * the field entirely rather than submit an empty value (which would
-   * later surface as a confusing GitHub-side error).
+   * to when an `issueCreate`-style call doesn't specify one. The
+   * preprocess step normalizes the admin form's empty-string default
+   * (`buildDefaultValues` in form-install-modal initializes optional
+   * string fields to `""`) to `undefined` so leaving the field blank
+   * round-trips as "no default" instead of failing validation.
    */
   default_owner: z
-    .string()
-    .min(1)
-    .max(GITHUB_OWNER_MAX)
-    .regex(
-      GITHUB_OWNER_RE,
-      "default_owner must start with an alphanumeric and contain only alphanumerics and hyphens (GitHub user/org name rules)",
-    )
-    .optional(),
+    .preprocess(
+      (v) => (v === "" ? undefined : v),
+      z
+        .string()
+        .min(1)
+        .max(GITHUB_OWNER_MAX, `default_owner must be ${GITHUB_OWNER_MAX} characters or fewer (GitHub's user/org name limit)`)
+        .regex(
+          GITHUB_OWNER_RE,
+          "default_owner must start with an alphanumeric and contain only alphanumerics and hyphens (GitHub user/org name rules)",
+        )
+        .optional(),
+    ),
 }).strict();
 
 export type GitHubPatFormData = z.infer<typeof GitHubPatFormDataSchema>;

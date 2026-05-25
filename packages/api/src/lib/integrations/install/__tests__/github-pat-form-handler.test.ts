@@ -134,6 +134,41 @@ describe("GitHubPatFormInstallHandler.validateConfig — input validation", () =
     const result = await handler.validateConfig(WSID, { pat: "ghp_only_token_no_owner" });
     expect(result.credentialWritten).toBe(true);
   });
+
+  it("accepts blank-string default_owner (preprocess normalizes to undefined)", async () => {
+    // The admin form-install-modal's `buildDefaultValues` initializes
+    // optional string fields to `""`. Without the preprocess hop, the
+    // `.min(1)` constraint would reject the empty default and the
+    // admin would have to manually clear the field to install. Codex
+    // P2 #1: keep this path passing.
+    const handler = new GitHubPatFormInstallHandler();
+    const result = await handler.validateConfig(WSID, validForm({ default_owner: "" }));
+    expect(result.credentialWritten).toBe(true);
+    // The stored config should NOT carry a blank-string owner.
+    const [, params] = mockInternalQuery.mock.calls[0];
+    const configJson = (params as unknown[]).find(
+      (p) => typeof p === "string" && p.startsWith("{"),
+    ) as string;
+    const persisted = JSON.parse(configJson) as Record<string, unknown>;
+    expect(persisted.default_owner).toBeUndefined();
+  });
+
+  it("rejects default_owner exceeding GitHub's 39-char ceiling", async () => {
+    // GitHub user/org names cap at 39 chars. Enforce locally so a
+    // typo'd 40-char value surfaces as a deterministic form error
+    // instead of a confusing 404 from the upstream create-issue call.
+    const handler = new GitHubPatFormInstallHandler();
+    await expect(
+      handler.validateConfig(WSID, validForm({ default_owner: "a".repeat(40) })),
+    ).rejects.toBeInstanceOf(FormInstallValidationError);
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+
+  it("accepts default_owner at the 39-char boundary", async () => {
+    const handler = new GitHubPatFormInstallHandler();
+    const result = await handler.validateConfig(WSID, validForm({ default_owner: "a".repeat(39) }));
+    expect(result.credentialWritten).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

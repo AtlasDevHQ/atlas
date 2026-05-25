@@ -11,14 +11,7 @@
  * false`. Failure mode is too sharp for SaaS — a PAT is tied to one
  * GitHub user and dies if that user leaves the org or rotates the
  * token. The integrations-catalog route filters this row out on SaaS
- * deploys; admins on SaaS only see the GitHub App mode (currently
- * `coming_soon`).
- *
- * The GitHub App OAuth flow (multi-tenant `github` + single-tenant
- * `github-single-tenant` catalog rows) ships in a follow-up PR — JWT
- * minting for installation tokens is its own slice. Until then, those
- * rows carry `implementation_status: 'coming_soon'` and the catalog
- * route renders them inert.
+ * deploys.
  *
  * Connection liveness: NOT probed at install time. A failed GitHub API
  * round-trip at install would surface as a misleading "couldn't reach
@@ -59,10 +52,8 @@ export { FormInstallValidationError };
 
 const log = createLogger("integrations.install.github-pat");
 
-/** Catalog slug — the dispatch key in {@link registerFormHandler}. */
 const GITHUB_PAT_SLUG: CatalogId = "github-pat";
 
-/** Test-only injection of the install id generator. */
 export interface GitHubPatFormInstallHandlerOptions {
   readonly idGenerator?: () => string;
 }
@@ -134,14 +125,23 @@ export class GitHubPatFormInstallHandler implements FormBasedInstallHandler {
       );
       const returned = rows[0]?.id;
       if (typeof returned !== "string" || returned.length === 0) {
-        log.warn(
+        // INSERT ... ON CONFLICT ... DO UPDATE RETURNING is guaranteed
+        // by Postgres to emit exactly one row on both paths. Reaching
+        // here means a structural anomaly (driver rewrite, RLS hiding
+        // the result, partial-index miss). Falling back to candidateId
+        // would silently return a WRONG id on the DO UPDATE path
+        // (persisted row keeps its existing id, not the candidate),
+        // and downstream lookups would create phantom updates. Fail
+        // loud so the operator sees the invariant break with a 500.
+        log.error(
           { workspaceId, candidateId },
-          "workspace_plugins upsert returned no id — falling back to candidate",
+          "workspace_plugins upsert returned no id — Postgres invariant violation",
         );
-        persistedId = candidateId;
-      } else {
-        persistedId = returned;
+        throw new Error(
+          "workspace_plugins upsert returned no id from RETURNING — likely a driver/RLS/query-rewrite anomaly",
+        );
       }
+      persistedId = returned;
     } catch (err) {
       log.error(
         { workspaceId, err: err instanceof Error ? err.message : String(err) },

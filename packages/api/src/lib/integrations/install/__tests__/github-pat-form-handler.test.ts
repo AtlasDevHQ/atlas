@@ -181,6 +181,62 @@ describe("GitHubPatFormInstallHandler.validateConfig — happy path", () => {
 });
 
 // ---------------------------------------------------------------------------
+// RETURNING-id invariant — fail loud when Postgres returns no row
+// ---------------------------------------------------------------------------
+
+describe("GitHubPatFormInstallHandler.validateConfig — RETURNING invariant", () => {
+  it("throws when the upsert returns no row (driver/RLS/rewrite anomaly)", async () => {
+    // INSERT ... ON CONFLICT ... DO UPDATE RETURNING is guaranteed by
+    // Postgres to emit one row. If the mock returns []  (simulating a
+    // structural anomaly), the handler must surface a 500 rather than
+    // silently fall back to candidateId — falling back would return a
+    // WRONG id on the DO UPDATE path and corrupt downstream lookups.
+    mockInternalQuery.mockImplementation(async () => []);
+    const handler = new GitHubPatFormInstallHandler();
+    await expect(handler.validateConfig(WSID, validForm())).rejects.toThrow(
+      /upsert returned no id/,
+    );
+  });
+
+  it("throws when the returned id is an empty string", async () => {
+    mockInternalQuery.mockImplementation(async () => [{ id: "" }]);
+    const handler = new GitHubPatFormInstallHandler();
+    await expect(handler.validateConfig(WSID, validForm())).rejects.toThrow(
+      /upsert returned no id/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lazy-loader evict — fire-and-forget posture survives evict failures
+// ---------------------------------------------------------------------------
+
+describe("GitHubPatFormInstallHandler.validateConfig — evict resilience", () => {
+  it("returns credentialWritten: true even when lazy-loader evict throws", async () => {
+    // The DB row is the authoritative install record; an evict failure
+    // on a likely-empty cache must NOT roll back a successful credential
+    // write. A future refactor that moves the evict before the INSERT
+    // or removes the catch wrapper would break this contract.
+    const { lazyPluginLoader } = await import("@atlas/api/lib/plugins/lazy-loader");
+    const originalEvict = lazyPluginLoader.evict.bind(lazyPluginLoader);
+    const evictSpy = mock(async () => {
+      throw new Error("simulated cache layer failure");
+    });
+    (lazyPluginLoader as unknown as { evict: typeof evictSpy }).evict = evictSpy;
+    try {
+      const handler = new GitHubPatFormInstallHandler();
+      const result = await handler.validateConfig(WSID, validForm());
+      expect(result.credentialWritten).toBe(true);
+      expect(evictSpy).toHaveBeenCalledTimes(1);
+      // The INSERT still ran — the credential is persisted regardless.
+      expect(mockInternalQuery).toHaveBeenCalledTimes(1);
+    } finally {
+      (lazyPluginLoader as unknown as { evict: typeof originalEvict }).evict = originalEvict;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // SaaS keyset gate — defense in depth even though catalog hides this row
 // ---------------------------------------------------------------------------
 

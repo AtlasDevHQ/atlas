@@ -22,7 +22,6 @@ import { z } from "zod";
 import type { ConfigSchema } from "@atlas/api/lib/plugins/secrets";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 
-/** Stable `plugin_catalog.id` for the GitHub PAT install mode. */
 export const GITHUB_PAT_CATALOG_ID = "catalog:github-pat";
 
 /**

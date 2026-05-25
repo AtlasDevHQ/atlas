@@ -144,7 +144,7 @@ The scheduler runs proactive prompts and report deliveries on workspace cron sch
 |------|--------|-------------|---------|-----|-----------|
 | `timeout` | `SchedulerTaskTimeoutError` | 504 | Scheduled task exceeded its wall-clock budget. Body carries `taskId` and `timeoutMs` | Reduce the work the task performs (narrower window, fewer rows) or raise the per-task timeout in scheduler config. Long-running deliveries should be split into batches | Yes |
 | `upstream_error` | `SchedulerExecutionError` | 500 | Scheduled task threw during execution — agent loop failed, query failed, or template rendering crashed. Body carries `taskId` and optionally `runId` | Check the task's run history for the failed `runId` and the structured log with that `requestId`. Re-run manually from the scheduler page once the underlying issue (datasource down, prompt change, etc.) is resolved | Yes |
-| `upstream_error` | `DeliveryError` | 502 | Delivery to a recipient channel failed — Slack/Teams/Discord/email/webhook adapter returned an error. Body carries `channel`, `recipient`, and `permanent` (true = no auto-retry, e.g. bot kicked from channel; false = transient, e.g. 503 from upstream) | When `permanent: true`, fix the channel state (re-add the bot, fix the webhook URL) and re-run. When `permanent: false`, the scheduler will auto-retry on the next tick | Yes if `permanent: false`; No if `permanent: true` |
+| `upstream_error` | `DeliveryError` | 502 | Delivery to a recipient channel failed — Slack/Teams/Discord/email/webhook adapter returned an error. Body carries `channel`, `recipient`, and `permanent` (true = no auto-retry, e.g. bot kicked from channel; false = transient, e.g. 503 from upstream) | When `permanent: true`, fix the channel state (re-add the bot, fix the webhook URL) and re-run. When `permanent: false`, the scheduler will auto-retry on the next tick | Conditional — see the `permanent` flag |
 
 ### Region migration
 
@@ -166,7 +166,7 @@ These cover the always-403 governance gates and the 503 fallback raised when an 
 |------|--------|-------------|---------|-----|-----------|
 | `forbidden` | `EnterpriseGateError` | 403 | Caller tried to use an enterprise feature on a self-hosted install. Body carries `feature` (e.g. `"sso"`, `"residency"`) | Enable enterprise (`ATLAS_ENTERPRISE_ENABLED=true` with the `/ee` module present) or remove the call site. Self-hosted users get the full core product without enterprise governance | No |
 | `forbidden` | `ApprovalRequiredError` | 403 | Query matched one or more approval rules and must be reviewed before execution. Body carries the matched rule ids | Submit the query for approval via the admin Approvals page, or rewrite to avoid the matched rules (e.g. narrower row count, different tables) | No |
-| `enterprise_load_failed` | `EnterpriseUnavailableError` | 503 | `ATLAS_ENTERPRISE_ENABLED=true` but the consumer Tag still reports `available: false` — the `@atlas/ee/layers` dynamic import in `ConditionalEELayer` failed at boot. Body carries `tag` so operators can correlate with the `enterprise.load_failed` structured log. Distinct wire code from `service_unavailable` so SaaS monitoring can split this signal from generic infra outages | Operator-side: check boot logs for `event: "enterprise.load_failed"` and the underlying import error (typically a missing dep or a build that didn't include `/ee`). Self-hosted installs never raise this — they leave `ATLAS_ENTERPRISE_ENABLED` unset and the no-op default short-circuits cleanly | Yes (transient — clears once EE binds) |
+| `enterprise_load_failed` | `EnterpriseUnavailableError` | 503 | `ATLAS_ENTERPRISE_ENABLED=true` but the consumer Tag still reports `available: false` — the `@atlas/ee/layers` dynamic import in `ConditionalEELayer` failed at boot. Body carries `tag` so operators can correlate with the `enterprise.load_failed` structured log. Distinct wire code from `service_unavailable` so SaaS monitoring can split this signal from generic infra outages | Operator-side: check boot logs for `event: "enterprise.load_failed"` and the underlying import error (typically a missing dep or a build that didn't include `/ee`). Self-hosted installs never raise this — they leave `ATLAS_ENTERPRISE_ENABLED` unset and the no-op default short-circuits cleanly | Yes — after operator intervention; client retry without operator action is futile |
 
 <Callout>
 `EnterpriseError` (the `requireEnterprise()` / `requireEnterpriseEffect()` guard) is **not** in `ATLAS_ERROR_TAG_LIST` — `lib/effect/hono.ts:isEnterpriseError` duck-types on `err.name === "EnterpriseError"` and maps the response to 403 with `code: "enterprise_required"` before `mapTaggedError` runs. Treat it as equivalent to `EnterpriseGateError` for client-side handling.
@@ -174,29 +174,29 @@ These cover the always-403 governance gates and the 503 fallback raised when an 
 
 ### Other tagged errors mapped by `mapTaggedError`
 
-Tags below are part of `ATLAS_ERROR_TAG_LIST` but surface through routes already documented under [Server Error Codes](#server-error-codes-chaterrorcode) (chat agent loop, SQL validation, rate limiting, query execution). Listed here for completeness so the catalog stays exhaustive against the source-of-truth list.
+Tags below are part of `ATLAS_ERROR_TAG_LIST` and surface through the wire codes mapped by [`mapTaggedError`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/effect/hono.ts). Some wire codes (`rate_limited`, `not_found`, `conversation_budget_exceeded`) overlap with the `ChatErrorCode` catalog above; the rest (`bad_request`, `forbidden`, `conflict`, `entity_ambiguous`, `timeout`, `upstream_error`, `service_unavailable`, `unprocessable_entity`, `enterprise_load_failed`) are part of the broader `HttpErrorCode` vocabulary used by route responses. Listed here for completeness so the catalog stays exhaustive against the source-of-truth list.
 
 | `_tag` | HTTP | Wire code | Surface |
 |--------|------|-----------|---------|
-| `EmptyQueryError` | 400 | `bad_request` | Chat agent SQL validation (layer 0) |
-| `ParseError` | 400 | `bad_request` | Chat agent SQL validation (layer 2 — AST parse / non-SELECT) |
-| `ForbiddenPatternError` | 403 | `forbidden` | Chat agent SQL validation (layer 1 — DML/DDL guard) |
-| `WhitelistError` | 403 | `forbidden` | Chat agent SQL validation (layer 3 — table not in semantic layer) |
+| `EmptyQueryError` | 400 | `bad_request` | SQL validation pipeline (layer 0 — empty input) |
+| `ParseError` | 400 | `bad_request` | SQL validation pipeline (layer 2 — AST parse / non-SELECT) |
+| `ForbiddenPatternError` | 403 | `forbidden` | SQL validation pipeline (layer 1 — DML/DDL guard) |
+| `WhitelistError` | 403 | `forbidden` | SQL validation pipeline (layer 3 — table not in semantic layer) |
 | `RLSError` | 403 | `forbidden` | Row-level security injection (extraction, filter resolution, or injection phase) |
 | `ConnectionNotFoundError` | 404 | `not_found` | `ConnectionRegistry` lookup failed |
 | `RateLimitExceededError` | 429 | `rate_limited` | Datasource QPM exceeded — includes `Retry-After` header |
 | `ConcurrencyLimitError` | 429 | `rate_limited` | Concurrent query cap reached for a datasource |
 | `PoolExhaustedError` | 429 | `rate_limited` | Org pool would exceed `maxTotalConnections` |
-| `ConversationBudgetExceededError` | 429 | `conversation_budget_exceeded` | Per-conversation step cap (F-77) — already documented under [Permanent Errors](#permanent-errors) |
+| `ConversationBudgetExceededError` | 429 | `conversation_budget_exceeded` | Per-conversation step cap (F-77) — also surfaced via `ChatErrorCode` (see Permanent Errors above) |
 | `QueryExecutionError` | 502 | `upstream_error` | Database returned an error during query execution |
 | `NoDatasourceError` | 503 | `service_unavailable` | No analytics datasource configured |
 | `QueryTimeoutError` | 504 | `timeout` | Statement timeout exceeded (`ATLAS_QUERY_TIMEOUT`) |
 | `ActionTimeoutError` | 504 | `timeout` | Action handler wall-clock budget exceeded |
 | `PluginRejectedError` | 422 | `unprocessable_entity` | Plugin `beforeQuery` hook rejected the query |
 | `CustomValidatorError` | 422 | `unprocessable_entity` | Custom validator threw or returned an invalid shape |
-| `PublishPhaseError` | 500 | `upstream_error` | Already documented under [Content-mode registry](#content-mode-registry-1515) |
-| `UnknownTableError` | 500 | `upstream_error` | Already documented under [Content-mode registry](#content-mode-registry-1515) |
-| `ExoticReadFilterUnavailableError` | 500 | `upstream_error` | Already documented under [Content-mode registry](#content-mode-registry-1515) |
+| `PublishPhaseError` | 500 | `upstream_error` | See the **Content-mode registry** section above |
+| `UnknownTableError` | 500 | `upstream_error` | See the **Content-mode registry** section above |
+| `ExoticReadFilterUnavailableError` | 500 | `upstream_error` | See the **Content-mode registry** section above |
 
 ### EE-domain errors — `mapTaggedError` safety net (#2593)
 

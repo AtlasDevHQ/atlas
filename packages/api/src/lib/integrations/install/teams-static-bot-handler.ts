@@ -342,7 +342,13 @@ export class TeamsStaticBotInstallHandler implements StaticBotInstallHandler {
       );
     }
 
-    const hint = hintForTeamsStatus(response.status);
+    // Only append a hint when Microsoft didn't give us an
+    // `error_description` — the AADSTS strings ("Tenant '…' not
+    // found.") already carry the actionable text the admin needs, so
+    // duplicating it via a paraphrased hint just adds noise. The hint
+    // is the fallback voice for status-only failures (non-JSON bodies,
+    // 5xx outages), not a unilateral postscript.
+    const hint = upstreamMessage.length === 0 ? hintForTeamsStatus(response.status) : null;
     throw new TeamsReachabilityError({
       message: `Microsoft rejected tenant_id "${tenantId}": ${upstreamMessage || `HTTP ${response.status}`}${hint ? ` — ${hint}` : ""}`,
       status: response.status,

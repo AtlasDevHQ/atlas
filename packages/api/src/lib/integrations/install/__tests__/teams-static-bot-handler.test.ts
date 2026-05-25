@@ -312,6 +312,55 @@ describe("TeamsStaticBotInstallHandler.confirmInstall — reachability verificat
     await expect(handler.confirmInstall(wsid, SAMPLE_TENANT)).rejects.toThrow(/HTTP 503/);
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
+
+  it("treats any 2xx as success even with an empty body — 200 is the only signal we use", async () => {
+    // Pins the documented "skip JSON parse on 2xx" branch
+    // (teams-static-bot-handler.ts: `if (response.status >= 200 ...`).
+    // Microsoft's OIDC discovery payload is informational only — the
+    // handler doesn't read any field from it, so a contract change that
+    // ever returned an empty 200 should still resolve. If a future
+    // refactor adds field validation, this test will fail and force a
+    // rethink.
+    globalThis.fetch = (async (input: FetchInput, init?: RequestInit) => {
+      fetchCalls.push({ url: String(input), ...(init ? { init } : {}) });
+      return new Response("", { status: 200 });
+    }) as unknown as typeof fetch;
+    const handler = new TeamsStaticBotInstallHandler({ appId: "id", appPassword: "pwd" });
+    const result = await handler.confirmInstall(wsid, SAMPLE_TENANT);
+    expect(result.installRecord.catalogId).toBe(TEAMS_SLUG);
+    expect(mockInternalQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it("appends a hint when Microsoft returns a non-JSON 5xx (the actionable status-only voice)", async () => {
+    // Counterpart to "no hint when upstreamMessage is present" — when
+    // Microsoft returns a non-JSON body and we fall back to
+    // `HTTP {status}`, the hint IS appended because it's the only
+    // actionable text the admin gets.
+    setFetchNonJson(500);
+    const handler = new TeamsStaticBotInstallHandler({ appId: "id", appPassword: "pwd" });
+    await expect(handler.confirmInstall(wsid, SAMPLE_TENANT)).rejects.toThrow(
+      /Microsoft's identity platform is degraded/,
+    );
+  });
+
+  it("does NOT append a hint when Microsoft's error_description already carries actionable text (no duplication)", async () => {
+    // AADSTS90002 already says "Tenant '…' not found" — the 400 hint
+    // ("double-check the tenant_id …") would just paraphrase that.
+    // Keep the surface message clean.
+    setFetchMicrosoftError(
+      "AADSTS90002: Tenant 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' not found.",
+      400,
+    );
+    const handler = new TeamsStaticBotInstallHandler({ appId: "id", appPassword: "pwd" });
+    let caught: Error | undefined;
+    try {
+      await handler.confirmInstall(wsid, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+    } catch (err) {
+      caught = err instanceof Error ? err : new Error(String(err));
+    }
+    expect(caught?.message).toMatch(/AADSTS90002/);
+    expect(caught?.message).not.toMatch(/double-check the tenant_id/);
+  });
 });
 
 // ---------------------------------------------------------------------------

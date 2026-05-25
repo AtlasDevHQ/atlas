@@ -70,20 +70,26 @@ Stable adapters are bundled as dependencies of `@useatlas/chat` — no separate 
 
 ## Configuration
 
+<Callout type="info" title="Catalog-driven activation (1.5.2+)">
+The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650) (1.5.2). Adapter activation is now driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. **You must pass the chat-relevant catalog entries through to `chatPlugin({ catalog })`** — the plugin's route gate, webhook mounts, and `AdapterRegistry` all read from `config.catalog` of the `chatPlugin(...)` call itself (not from the top-level `atlas.config.ts`). Credentials are read from `process.env`.
+</Callout>
+
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
 import { chatPlugin } from "@useatlas/chat";
 
+// Declared once and passed through to chatPlugin — see the Callout above.
+const catalog = [
+  { slug: "slack", type: "chat", install_model: "oauth",
+    enabled: true, saas_eligible: true },
+] as const;
+
 export default defineConfig({
+  catalog,
   plugins: [
     chatPlugin({
-      adapters: {
-        slack: {
-          botToken: process.env.SLACK_BOT_TOKEN!,
-          signingSecret: process.env.SLACK_SIGNING_SECRET!,
-        },
-      },
-      executeQuery: myQueryFunction,
+      catalog,                       // REQUIRED — the plugin reads it from here.
+      executeQuery: myQueryFunction, // credentials live in env vars (SLACK_CLIENT_ID etc.).
     }),
   ],
 });
@@ -92,22 +98,18 @@ export default defineConfig({
 ### Multi-Platform with State Persistence
 
 ```typescript
+const catalog = [
+  { slug: "slack",    type: "chat", install_model: "oauth",
+    enabled: true, saas_eligible: true },
+  { slug: "telegram", type: "chat", install_model: "static-bot",
+    enabled: true, saas_eligible: true },
+] as const;
+
 export default defineConfig({
+  catalog,
   plugins: [
     chatPlugin({
-      adapters: {
-        slack: {
-          botToken: process.env.SLACK_BOT_TOKEN!,
-          signingSecret: process.env.SLACK_SIGNING_SECRET!,
-          clientId: process.env.SLACK_CLIENT_ID,
-          clientSecret: process.env.SLACK_CLIENT_SECRET,
-        },
-        teams: {
-          appId: process.env.TEAMS_APP_ID!,
-          appPassword: process.env.TEAMS_APP_PASSWORD!,
-          tenantId: process.env.TEAMS_TENANT_ID,
-        },
-      },
+      catalog,
       state: { backend: "pg" },
       executeQuery: myQueryFunction,
       actions: myActionCallbacks,
@@ -117,47 +119,25 @@ export default defineConfig({
 });
 ```
 
-### Options
+### Catalog entry fields
+
+Each chat-row in `catalog` is the shape `AdapterRegistry` consumes — the chat-relevant subset of `CatalogEntry` from `@atlas/api/lib/config`. Non-chat entries (e.g. datasource rows) pass through harmlessly because the registry filters by `type === "chat"`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `slug` | `string` | Stable platform key — `"slack"`, `"telegram"`, etc. |
+| `type` | `"chat"` | Required for chat dispatch — the registry skips non-chat entries. |
+| `install_model` | `"oauth" \| "static-bot"` | `"oauth"` activates today (Slack); `"static-bot"` activates the static-bot install handler (Telegram from 1.5.3, the rest of Phase D following). |
+| `enabled` | `boolean` | Customer can install this row? Ops can flip false without removing the row. |
+| `saas_eligible` | `boolean` | Visible to the SaaS admin UI. |
+
+Per-Platform credentials come from environment variables — see [Environment Variables](#environment-variables) below for the full list.
+
+### chatPlugin options
 
 | Option | Type | Required | Description |
 |--------|------|----------|-------------|
-| `adapters` | `object` | Yes | Platform adapter credentials (at least one required). |
-| `adapters.slack.botToken` | `string` | Yes* | Slack bot token (`xoxb-...`). |
-| `adapters.slack.signingSecret` | `string` | Yes* | Slack signing secret for request verification. |
-| `adapters.slack.clientId` | `string` | No | Client ID for multi-workspace OAuth. |
-| `adapters.slack.clientSecret` | `string` | No | Client secret for multi-workspace OAuth. |
-| `adapters.teams.appId` | `string` | Yes* | Microsoft App ID from Azure Bot registration. |
-| `adapters.teams.appPassword` | `string` | Yes* | Microsoft App Password from Azure Bot registration. |
-| `adapters.teams.tenantId` | `string` | No | Restrict to a specific Microsoft Entra ID tenant. |
-| `adapters.discord.botToken` | `string` | Yes* | Discord bot token. |
-| `adapters.discord.applicationId` | `string` | Yes* | Discord application ID. |
-| `adapters.discord.publicKey` | `string` | Yes* | 64-character hex string (Ed25519 public key from Discord Developer Portal). |
-| `adapters.discord.mentionRoleIds` | `string[]` | No | Role IDs that trigger mention handlers (in addition to direct @mentions). |
-| `adapters.gchat.credentials` | `object` | No* | Service account credentials (`client_email`, `private_key`, optional `project_id`). |
-| `adapters.gchat.useApplicationDefaultCredentials` | `true` | No* | Use Application Default Credentials. |
-| `adapters.gchat.endpointUrl` | `string` | No | HTTP endpoint URL for card button click actions. |
-| `adapters.gchat.pubsubTopic` | `string` | No | Pub/Sub topic for Workspace Events (`projects/{project}/topics/{topic}`). |
-| `adapters.gchat.impersonateUser` | `string` | No | User email for domain-wide delegation. |
-| `adapters.telegram.botToken` | `string` | Yes* | Telegram bot token from BotFather. |
-| `adapters.telegram.secretToken` | `string` | No | Webhook secret token for request verification. |
-| `adapters.github.appId` | `string` | Yes* | GitHub App ID. Required for App-based auth. |
-| `adapters.github.privateKey` | `string` | Yes* | GitHub App private key (PEM format). |
-| `adapters.github.installationId` | `number` | No | Installation ID for single-tenant mode. |
-| `adapters.github.token` | `string` | Yes* | Personal Access Token (alternative to App auth). |
-| `adapters.github.webhookSecret` | `string` | No | Webhook secret for HMAC-SHA256 verification. |
-| `adapters.github.userName` | `string` | No | Bot username for @-mention detection. |
-| `adapters.linear.apiKey` | `string` | Yes* | Personal API key from Linear Settings. |
-| `adapters.linear.accessToken` | `string` | Yes* | Pre-obtained OAuth access token. |
-| `adapters.linear.clientId` | `string` | Yes* | OAuth application client ID. |
-| `adapters.linear.clientSecret` | `string` | Yes* | OAuth application client secret. Required with `clientId`. |
-| `adapters.linear.webhookSecret` | `string` | No | Webhook signing secret for HMAC-SHA256 verification. |
-| `adapters.linear.userName` | `string` | No | Bot display name for @-mention detection. |
-| `adapters.whatsapp.phoneNumberId` | `string` | Yes* | WhatsApp Business phone number ID. |
-| `adapters.whatsapp.accessToken` | `string` | Yes* | System User access token for Cloud API. |
-| `adapters.whatsapp.verifyToken` | `string` | Yes* | Verify token for webhook challenge-response. |
-| `adapters.whatsapp.appSecret` | `string` | Yes* | Meta App Secret for HMAC-SHA256 signature verification. |
-| `adapters.whatsapp.userName` | `string` | No | Bot display name. |
-| `adapters.whatsapp.apiVersion` | `string` | No | Meta Graph API version (default: `"v21.0"`). |
+| `catalog` | `ChatCatalogEntryInput[]` | Yes | Chat-relevant subset of `atlas.config.ts:catalog`. Pass the same `catalog` entries you declared at the host (non-chat entries pass through harmlessly — the registry filters by `type === "chat"`). **Required:** the route gate, webhook mounts, and `AdapterRegistry` all read from `config.catalog` of this `chatPlugin(...)` call itself — omitting it leaves no chat adapter activated and the plugin's health check reports unhealthy. |
 | `state` | `object` | No | State backend config (default: `{ backend: "memory" }`). |
 | `state.backend` | `"memory" \| "pg" \| "redis"` | No | State backend to use. Default: `"memory"`. |
 | `state.tablePrefix` | `string` | No | Table name prefix for PG backend. Must be a valid SQL identifier. Default: `"chat_"`. |
@@ -180,9 +160,7 @@ export default defineConfig({
 | `reactions.customEmoji` | `object` | No | Override default emoji for each lifecycle stage (`received`, `processing`, `complete`, `error`). |
 
 <Callout type="info">
-\* Required when that adapter is configured. At least one adapter must be present.
-
-For Slack OAuth, `clientId` and `clientSecret` must both be provided together.
+At least one `catalog` row with `type: "chat"`, `enabled: true`, and a supported `install_model` must be present (and threaded through to `chatPlugin({ catalog })`) — otherwise no adapter activates and the plugin's health check reports unhealthy. Per-Platform credentials come from env vars (see [Environment Variables](#environment-variables)). For Slack OAuth specifically you need **all four**: `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_SIGNING_SECRET`, and `SLACK_ENCRYPTION_KEY` — the install will be skipped (and the chat plugin reported unhealthy) if any one is missing.
 </Callout>
 
 ## State Adapters
@@ -197,7 +175,7 @@ The state backend controls how thread subscriptions, conversation history, and d
 
 ```typescript
 chatPlugin({
-  adapters: { slack: { /* ... */ } },
+  // catalog rows + env-var credentials declared at the host (see Configuration above).
   state: {
     backend: "pg",
     tablePrefix: "chat_", // default — customize to avoid conflicts
@@ -240,7 +218,7 @@ By default, the bridge registers `/atlas` as the slash command. To use a custom 
 
 ```typescript
 chatPlugin({
-  adapters: { slack: { /* ... */ } },
+  // catalog rows + env-var credentials declared at the host (see Configuration above).
   slashCommandName: "/data-query",
   executeQuery: myQueryFunction,
 })
@@ -284,7 +262,7 @@ On platforms without file upload support, a "View full results" link to the Atla
 
 ```typescript
 chatPlugin({
-  adapters: { /* ... */ },
+  // catalog rows + env-var credentials declared at the host (see Configuration above).
   executeQuery: myQueryFunction,
   fileUpload: {
     autoAttachThreshold: 50,        // attach CSV when > 50 rows (default: 20)
@@ -358,7 +336,7 @@ Reactions are enabled by default. To disable or customize:
 import { emoji } from "chat";
 
 chatPlugin({
-  adapters: { slack: { /* ... */ } },
+  // catalog rows + env-var credentials declared at the host (see Configuration above).
   executeQuery: myQueryFunction,
   reactions: {
     enabled: true, // default — set to false to disable
@@ -387,7 +365,7 @@ Set `reactions.enabled` to `false` to skip all reaction lifecycle calls:
 
 ```typescript
 chatPlugin({
-  adapters: { /* ... */ },
+  // catalog rows + env-var credentials declared at the host (see Configuration above).
   executeQuery: myQueryFunction,
   reactions: { enabled: false },
 })
@@ -415,10 +393,7 @@ import { chatPlugin } from "@useatlas/chat";
 import type { StreamChunk } from "@useatlas/chat";
 
 chatPlugin({
-  adapters: {
-    slack: { botToken: "xoxb-...", signingSecret: "..." },
-    teams: { appId: "...", appPassword: "..." },
-  },
+  // catalog rows + env-var credentials declared at the host (see Configuration above).
   executeQuery: myQueryFunction, // always required — used when streaming is disabled
   streaming: {
     enabled: true,        // default: true
@@ -562,7 +537,7 @@ Configure via the `ephemeral` option:
 
 ```typescript
 chatPlugin({
-  adapters: { slack: { /* ... */ } },
+  // catalog rows + env-var credentials declared at the host (see Configuration above).
   executeQuery,
   ephemeral: {
     // Default: true — errors shown only to requesting user
@@ -605,14 +580,25 @@ if (result) {
 import { slackPlugin } from "@useatlas/slack";
 slackPlugin({ signingSecret: "...", botToken: "xoxb-...", executeQuery })
 
-// After:
+// After (1.5.2+):
+import { defineConfig } from "@atlas/api/lib/config";
 import { chatPlugin } from "@useatlas/chat";
-chatPlugin({
-  adapters: {
-    slack: { botToken: "xoxb-...", signingSecret: "..." },
-  },
-  executeQuery,
-})
+
+const catalog = [
+  { slug: "slack", type: "chat", install_model: "oauth",
+    enabled: true, saas_eligible: true },
+] as const;
+
+export default defineConfig({
+  catalog,
+  plugins: [
+    chatPlugin({ catalog, executeQuery }),
+  ],
+});
+
+// env vars:
+//   SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, SLACK_SIGNING_SECRET, SLACK_ENCRYPTION_KEY
+//   SLACK_BOT_TOKEN (optional — single-workspace only)
 ```
 
 Update your Slack app webhook URLs:
@@ -632,14 +618,24 @@ Update your Slack app webhook URLs:
 import { teamsPlugin } from "@useatlas/teams";
 teamsPlugin({ appId: "...", appPassword: "...", executeQuery })
 
-// After:
+// After (1.5.2+):
+import { defineConfig } from "@atlas/api/lib/config";
 import { chatPlugin } from "@useatlas/chat";
-chatPlugin({
-  adapters: {
-    teams: { appId: "...", appPassword: "..." },
-  },
-  executeQuery,
-})
+
+const catalog = [
+  { slug: "teams", type: "chat", install_model: "static-bot",
+    enabled: true, saas_eligible: true },
+] as const;
+
+export default defineConfig({
+  catalog,
+  plugins: [
+    chatPlugin({ catalog, executeQuery }),
+  ],
+});
+
+// env vars:
+//   TEAMS_APP_ID, TEAMS_APP_PASSWORD, TEAMS_TENANT_ID (optional)
 ```
 
 Update the **messaging endpoint** in your Azure Bot Configuration:

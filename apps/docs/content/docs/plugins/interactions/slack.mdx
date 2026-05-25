@@ -1,132 +1,32 @@
 ---
-title: Slack Bot
-description: Integrate Slack as a full interaction surface for Atlas with slash commands, threads, and OAuth.
+title: Slack Bot (moved)
+description: Slack is now wired through the @useatlas/chat plugin. This page redirects to the canonical chat-plugin docs.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-<Callout type="warn">
-**`@useatlas/slack` is deprecated.** Use [`@useatlas/chat`](/plugins/interactions/chat) with the Slack adapter instead.
-The Chat SDK bridge plugin provides the same Slack functionality plus multi-platform support (Teams, Discord, etc.) and built-in state management. See the [migration guide](#migrating-to-useatlas-chat) below.
+<Callout type="warn" title="Moved — @useatlas/slack is no longer published">
+The standalone `@useatlas/slack` package was removed in Atlas 1.5.2 ([#2650](https://github.com/AtlasDevHQ/atlas/pull/2650)). Slack is now a first-class adapter inside the unified **[Chat SDK bridge plugin (`@useatlas/chat`)](/plugins/interactions/chat)**, which adds multi-platform support (Teams, Discord, gchat, Telegram, GitHub, Linear, WhatsApp) and built-in state management.
+
+**Routes and OAuth endpoints changed** — update your Slack app configuration:
+
+- Slash commands, events, and interactions → consolidated under `/api/plugins/chat-interaction/webhooks/slack` (was `/commands`, `/events`, `/interactions`)
+- OAuth install / callback → `/api/v1/integrations/slack/{install,callback}` (was `/install`, `/callback`)
+
+The Slack-side env vars (`SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN`) carry over; `SLACK_ENCRYPTION_KEY` is now required to encrypt per-workspace bot tokens at rest in `chat_cache`.
 </Callout>
 
-The Slack interaction plugin integrates Slack as a full interaction surface for Atlas. Users can ask questions via slash commands (`/atlas`), continue conversations in threads, approve or deny actions via Block Kit buttons, and install the bot across multiple workspaces via OAuth.
+## Where things live now
 
-This plugin uses the `routes()` interface to mount Hono routes directly into the Atlas API server, and receives runtime dependencies (agent execution, conversation persistence, action approval) via config callbacks rather than importing from `@atlas/api`.
+| Topic | Page |
+|-------|------|
+| Wiring Slack via the chat plugin | [`@useatlas/chat` — Configuration](/plugins/interactions/chat#configuration) |
+| Catalog entry shape | [`@useatlas/chat` — Catalog entry fields](/plugins/interactions/chat#catalog-entry-fields) |
+| Slack-specific env vars | [`@useatlas/chat` — Environment Variables](/plugins/interactions/chat#environment-variables) |
+| Mounted webhook + OAuth routes | [`@useatlas/chat` — Mounted Routes](/plugins/interactions/chat#mounted-routes) |
+| Migration from pre-1.5.2 | [`@useatlas/chat` — Migrating from @useatlas/slack](/plugins/interactions/chat#migrating-from-useatlas-slack) |
 
-## Installation
-
-> **Removed.** The standalone `@useatlas/slack` package no longer ships — Slack support is built into `@useatlas/chat` (see the migration section below). The historical config below is preserved for migrators still on pre-1.5.2.
-
-```bash
-# Historical (pre-1.5.2) — package no longer published:
-# bun add @useatlas/slack
-```
-
-### Prerequisites
-
-- A Slack app configured with slash commands and Events API subscriptions
-- Either a bot token (single-workspace) or OAuth credentials (multi-workspace)
-
-## Configuration
-
-```typescript
-import { defineConfig } from "@atlas/api/lib/config";
-import { executeAgentQuery } from "@atlas/api/lib/agent-query";
-import { slackPlugin } from "@useatlas/slack";
-
-export default defineConfig({
-  plugins: [
-    slackPlugin({
-      signingSecret: process.env.SLACK_SIGNING_SECRET!,
-      botToken: process.env.SLACK_BOT_TOKEN,
-      executeQuery: executeAgentQuery,
-    }),
-  ],
-});
-```
-
-For multi-workspace OAuth with conversation persistence and action approval:
-
-```typescript
-export default defineConfig({
-  plugins: [
-    slackPlugin({
-      signingSecret: process.env.SLACK_SIGNING_SECRET!,
-      clientId: process.env.SLACK_CLIENT_ID!,
-      clientSecret: process.env.SLACK_CLIENT_SECRET!,
-      executeQuery: executeAgentQuery,
-      conversations: myConversationCallbacks,
-      actions: myActionCallbacks,
-    }),
-  ],
-});
-```
-
-### Options
-
-| Option | Type | Required | Description |
-|--------|------|----------|-------------|
-| `signingSecret` | `string` | Yes | Slack signing secret for request verification. Found in your Slack app's Basic Information page. |
-| `botToken` | `string` | Conditional | Bot token for single-workspace mode (`xoxb-...`). Required if `clientId`/`clientSecret` are not set. |
-| `clientId` | `string` | Conditional | Client ID for multi-workspace OAuth. Required (with `clientSecret`) if `botToken` is not set. |
-| `clientSecret` | `string` | Conditional | Client secret for multi-workspace OAuth. Required (with `clientId`) if `botToken` is not set. |
-| `executeQuery` | `function` | Yes | Callback that runs the Atlas agent on a question and returns structured results. |
-| `checkRateLimit` | `function` | No | Optional rate limiting callback. |
-| `conversations` | `ConversationCallbacks` | No | Optional conversation persistence callbacks (`create`, `addMessage`, `get`, `generateTitle`). |
-| `actions` | `ActionCallbacks` | No | Optional action framework callbacks (`approve`, `deny`, `get`). |
-| `scrubError` | `function` | No | Optional error scrubbing callback to strip sensitive information from error messages. |
-
-<Callout type="warn">
-Either `botToken` (single-workspace) or both `clientId` and `clientSecret` (multi-workspace OAuth) must be provided. The config schema validates this constraint at factory call time.
-</Callout>
-
-## Mounted Routes
-
-The plugin mounts the following Hono routes under the plugin's base path:
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/commands` | Slash command handler (`/atlas`) |
-| `POST` | `/events` | Slack Events API (thread follow-ups, `url_verification`) |
-| `POST` | `/interactions` | Block Kit action buttons (approve/deny actions) |
-| `GET` | `/install` | OAuth install redirect (multi-workspace mode) |
-| `GET` | `/callback` | OAuth callback (multi-workspace mode) |
-
-## Database Schema
-
-The Slack plugin uses two Atlas internal-database tables:
-
-- **`chat_cache`** -- Created by Atlas migration `0085_consolidate_slack_installations.sql`. Rows keyed `slack:installation:<teamId>` hold per-workspace OAuth installs (`botToken`, `botUserId`, `teamName`, `orgId`). The same store backs the chat-plugin's multi-workspace adapter — there is no separate `slack_installations` table post-#2634. Bot tokens are encrypted at rest via AES-256-GCM when `SLACK_ENCRYPTION_KEY` is set.
-- **`slack_threads`** -- Created by Atlas migration `0000_baseline.sql`. Maps Slack threads to Atlas conversations (`channel_id`, `thread_ts`, `conversation_id`).
-
-<Callout type="info">
-The `executeQuery` callback is the bridge between the Slack plugin and the Atlas agent. It receives the user's question and optional prior messages (for threaded conversations), runs the agent, and returns structured results that the plugin formats into Block Kit messages.
-</Callout>
-
-See the [Slack guide](/guides/slack) for full Slack app setup instructions.
-
-## Troubleshooting
-
-### Signature verification failures
-
-Ensure `SLACK_SIGNING_SECRET` matches the signing secret from your Slack app's Basic Information page. Clock skew between your server and Slack can also cause verification failures.
-
-### Bot not responding to slash commands
-
-Verify the slash command URL in your Slack app configuration points to your Atlas API's `/commands` endpoint. For local development, use a tunnel service like ngrok.
-
-### OAuth callback errors
-
-For multi-workspace OAuth, the callback URL must be registered in your Slack app's OAuth & Permissions page. Ensure it matches the route where the plugin is mounted.
-
-## Migrating to @useatlas/chat
-
-Replace `@useatlas/slack` with the Chat SDK bridge plugin. As of Atlas
-1.5.2, adapter activation is **catalog-driven** — declare Slack in
-`atlas.config.ts:catalog`, set per-Platform credentials in env vars,
-and pass the chat-type subset through to `chatPlugin`. See the
-[Plugin Catalog](/deployment/plugin-catalog) page for the data model.
+## TL;DR migration
 
 ```typescript
 // Before (pre-1.5.2):
@@ -143,25 +43,12 @@ export default defineConfig({
       enabled: true, saas_eligible: true },
   ],
   plugins: [
-    chatPlugin({
-      catalog: [
-        { slug: "slack", type: "chat", install_model: "oauth",
-          enabled: true, saas_eligible: true },
-      ],
-      executeQuery,
-    }),
+    chatPlugin({ executeQuery }),
   ],
 });
 
-// env vars:
-//   SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, SLACK_SIGNING_SECRET, SLACK_ENCRYPTION_KEY
-//   SLACK_BOT_TOKEN (optional — single-workspace only)
+// env vars: SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, SLACK_SIGNING_SECRET,
+//           SLACK_ENCRYPTION_KEY, SLACK_BOT_TOKEN (optional)
 ```
 
-| Feature | @useatlas/slack | @useatlas/chat |
-|---------|----------------|----------------|
-| Webhook | `/commands`, `/events`, `/interactions` | `/webhooks/slack` |
-| OAuth | `/install`, `/callback` | `/api/v1/integrations/slack/install`, `/api/v1/integrations/slack/callback` |
-| Block Kit | Hand-rolled builders | Automatic via Chat SDK |
-| State | Custom DB tables | State adapter (memory/PG/Redis) |
-| Multi-platform | Slack only | Slack, Teams, Discord, etc. |
+See the [chat-plugin × Atlas contract](https://github.com/AtlasDevHQ/atlas/blob/main/docs/architecture/chat-plugin-atlas-contract.md) for the canonical boundary between `@useatlas/chat`, `@chat-adapter/*`, and the Atlas host.

@@ -1,6 +1,6 @@
 ---
 title: CLI Reference
-description: Complete reference for the Atlas CLI — init, diff, migrate, import, export, migrate-import, index, learn, improve, query, doctor, validate, mcp, eval, canonical-eval, smoke, completions, and more.
+description: Complete reference for the Atlas CLI — init, diff, migrate, import, export, migrate-import, index, learn, improve, query, doctor, validate, mcp, eval, canonical-eval, smoke, completions, and operator subcommands (proactive / seed / ops).
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -751,6 +751,90 @@ echo 'eval "$(atlas completions zsh)"' >> ~/.zshrc
 # Install fish completions (saved to file, auto-loaded by fish)
 bun run atlas -- completions fish > ~/.config/fish/completions/atlas.fish
 ```
+
+---
+
+## Operator subcommands
+
+Operator-only tools for tenant-data ops, promoted from the gitignored `internal/` directory in [#2635](https://github.com/AtlasDevHQ/atlas/pull/2635) so they're type-checked, unit-tested, and discoverable. All subcommands target the tenant Postgres at `ATLAS_TEAM_PG_URL`, falling back to `DATABASE_URL` when unset. `--workspace` accepts either a literal `org_*` id or an `organization.slug`.
+
+The CLAUDE.md "Operator subcommands (destructive)" block is the source of truth for these — keep this page and CLAUDE.md aligned when adding subcommands.
+
+### proactive enable
+
+Turn proactive chat on for a workspace and opt one or more channels into the allowlist. Idempotent — re-running upserts `workspace_proactive_config` plus every channel row.
+
+```bash
+bun run atlas -- proactive enable --workspace <id|slug> --channels <c1,c2,...>
+```
+
+| Flag | Description |
+|------|-------------|
+| `--workspace <id\|slug>` | Required. Org id (`org_*`) or `organization.slug`. |
+| `--channels <c1,c2,...>` | Required. Comma-separated channel ids (Slack `C…` etc.) to allow. |
+
+### proactive disable
+
+Flip the workspace toggle off. Channel rows are preserved so a later `enable` doesn't lose channel configs.
+
+```bash
+bun run atlas -- proactive disable --workspace <id|slug>
+```
+
+| Flag | Description |
+|------|-------------|
+| `--workspace <id\|slug>` | Required. Same shape as `proactive enable`. |
+
+### seed prompts
+
+Seed a prompt-library collection + items from a YAML file. Replaces any prior collection with the same `(org_id, name)` and pins the org's demo industry so the starter-prompt resolver matches.
+
+```bash
+bun run atlas -- seed prompts --workspace <id|slug> --library ./prompts/library.yml
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--workspace <id\|slug>` | — | Required. |
+| `--library <path>` | `./prompts/library.yml` | YAML file with `collection: { name, industry, description }` and `categories: [{ name, prompts: [...] }]`. |
+
+### seed workspace
+
+Provision a connection group, member connections, and the accompanying semantic entities for that group. The `--connections` argument is a comma-separated list of `id=urlEnv:type[:primary]` entries — exactly one entry must carry `:primary`. Connection URLs are read from `process.env[urlEnv]` and encrypted at rest with the active `ATLAS_ENCRYPTION_KEYS` version.
+
+```bash
+bun run atlas -- seed workspace \
+  --workspace <id|slug> \
+  --group prod \
+  --connections us-prod=US_DB_URL:postgres:primary,eu-prod=EU_DB_URL:postgres
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--workspace <id\|slug>` | — | Required. |
+| `--group <name>` | — | Required. Human-readable group name. |
+| `--group-id <id>` | `g_<group>` | Override the stable group id. |
+| `--connections <list>` | — | Required. `id=urlEnv:type[:primary],...`. Exactly one `:primary` per group. |
+| `--semantic <path>` | — | Optional root with `entities/`, `metrics/`, `glossary/` subdirs to seed alongside the group. |
+
+### ops wipe
+
+<Callout type="warn" title="Destructive — double-confirm gate">
+`ops wipe` `TRUNCATE`s every public table in the tenant DB (excluding migration bookkeeping) with `RESTART IDENTITY CASCADE`. It requires **both** `ATLAS_WIPE_OK=1` in the env **and** `--confirm` on the command line. No backup is taken — wrap the call with `pg_dump` yourself if you might want the data back. Operates on one DB per invocation by design: wiping multiple regional clusters means running it once per cluster.
+</Callout>
+
+```bash
+ATLAS_WIPE_OK=1 bun run atlas -- ops wipe --confirm [--database-url <url>]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--confirm` | Required. Acknowledges the second half of the double-confirm gate. |
+| `--database-url <url>` | Optional. Explicit URL wins over `ATLAS_TEAM_PG_URL` / `DATABASE_URL`. |
+
+**Exit codes:** `0` = tables truncated; `1` = gate failed or wipe errored; `2` = zero tables matched the exclusion query (almost always a wrong-DB typo — nothing was truncated).
+
+The exclusion list (`__atlas_migrations`, `region_migrations`) lives next to the SQL in `packages/cli/src/commands/ops.ts:WIPE_EXCLUDED_TABLES`.
 
 ---
 

@@ -1,0 +1,110 @@
+---
+title: Obsidian Reader
+description: Read-only access to an Obsidian vault via the Obsidian Local REST API — give the agent a tool to look up notes, definitions, and prior analysis.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The Obsidian Reader plugin (`@useatlas/obsidian-reader`) gives the Atlas agent a read-only `readObsidianVault` tool backed by the [Obsidian Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api) community plugin. The agent uses it to search the user's vault for reference material — definitions, decisions, prior analysis — without ever writing to the vault.
+
+Read-only by construction: the plugin only calls `/search/simple/`, so there is no write endpoint exposed to the agent even by mistake.
+
+<Callout type="info">
+This plugin is registered under **Datasources** because it surfaces a knowledge store the agent reads to ground answers — same role as a database connection. Mechanically, the plugin ships an action-shaped `readObsidianVault` tool (read-only, `defaultApproval: "auto"`), mirroring the existing read-only patterns used by the SQL `executeSQL` and JIRA `readJiraTicket` paths.
+</Callout>
+
+## Installation
+
+```bash
+bun add @useatlas/obsidian-reader
+```
+
+### Prerequisites
+
+- An Obsidian vault with the [Local REST API plugin](https://github.com/coddingtonbear/obsidian-local-rest-api) installed and enabled
+- The Bearer API key issued by the REST API plugin's settings tab
+- Atlas reachable from the machine running Obsidian (default: `http://127.0.0.1:27123`)
+
+## Configuration
+
+```typescript
+// atlas.config.ts
+import { defineConfig } from "@atlas/api/lib/config";
+import { obsidianReaderPlugin } from "@useatlas/obsidian-reader";
+
+export default defineConfig({
+  plugins: [
+    obsidianReaderPlugin({
+      api_url: "http://127.0.0.1:27123",
+      api_key: process.env.OBSIDIAN_API_KEY!,
+    }),
+  ],
+});
+```
+
+### Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `api_key` | `string` | Yes | — | Bearer API key issued by the Obsidian Local REST API plugin's settings tab |
+| `api_url` | `string` | No | `http://127.0.0.1:27123` | Base URL of the REST API. Override when Obsidian runs on a different host or port |
+
+<Callout type="warn">
+Never commit the Obsidian API key. Pass it via `process.env.OBSIDIAN_API_KEY` and add `.env` to `.gitignore`.
+</Callout>
+
+## Tool Details
+
+| Property | Value |
+|----------|-------|
+| **Tool name** | `readObsidianVault` |
+| **Action type** | `obsidian:read` |
+| **Reversible** | Yes (read-only) |
+| **Default approval** | `auto` (mirrors `executeSQL`) |
+
+The agent tool accepts a single parameter:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `query` | `string` | Free-text search query matched against note bodies and titles |
+
+The tool returns `{ hits: [{ filename, excerpt, score }] }` — one entry per matching note, with the REST API's match-window excerpts joined by `\n---\n`. Higher `score` means more relevant. Excerpts are taken from the REST API's `contextLength=100` window so whole files don't flow into the agent context.
+
+## Example
+
+```
+User: What did we decide about the canonical question set?
+
+Agent calls readObsidianVault({ query: "canonical question set" })
+  → hits[0].filename = "decisions/2025-12-10-canonical-questions.md"
+  → hits[0].excerpt   = "…we chose to ship NovaMart as the single seed because…"
+
+Agent: According to your note from 2025-12-10, you chose to ship NovaMart as
+the single seed because…
+```
+
+## How It Works
+
+1. The agent calls `readObsidianVault({ query })` when it needs vault content to ground an answer
+2. The plugin POSTs to `GET ${api_url}/search/simple/?query=...&contextLength=100` with a `Bearer ${api_key}` header
+3. The REST API returns an array of `{ filename, matches[], score }` rows
+4. The plugin flattens `matches[].context` into a single excerpt string per hit so the agent doesn't have to parse the per-match window structure
+5. The agent receives `{ hits: [{ filename, excerpt, score }] }` and quotes / synthesizes from it
+
+<Callout type="info">
+The health check probes `GET /` on the configured `api_url`. A `200` is healthy; a `401` is also reported as reachable-but-misconfigured (the REST API plugin is running, just the API key is wrong) so transient install retries aren't blocked by a single typo. Other non-2xx responses report as unhealthy.
+</Callout>
+
+## Troubleshooting
+
+### `Obsidian REST API rejected the API key (401)`
+
+The Local REST API plugin is reachable, but the Bearer key in `api_key` doesn't match the one shown in the plugin's settings tab. Regenerate the key in Obsidian → Settings → Community Plugins → Local REST API and update the env var.
+
+### Plugin unreachable / timeout
+
+The default `http://127.0.0.1:27123` assumes Atlas runs on the same machine as Obsidian. If Atlas runs in Docker or on a remote host, set `api_url` to the host-accessible address (e.g. `http://host.docker.internal:27123` on Docker Desktop) and make sure the REST API plugin is configured to listen on a routable interface.
+
+### Empty `hits` array
+
+The query simply didn't match. Try broader terms — `/search/simple/` does case-insensitive substring matching, not full-text relevance, so very specific multi-word queries can miss.

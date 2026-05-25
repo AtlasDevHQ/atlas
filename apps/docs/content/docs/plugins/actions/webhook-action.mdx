@@ -1,0 +1,146 @@
+---
+title: Webhook
+description: Let the Atlas agent POST signed JSON payloads to an outbound webhook with HMAC-SHA256 verification and configurable retry.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The webhook action plugin (`@useatlas/webhook-action`) lets the Atlas agent POST a JSON payload to a configured HTTPS endpoint. Bodies are signed with HMAC-SHA256 (sent in the `X-Atlas-Signature` header) so the receiver can verify the request really came from Atlas using a shared signing secret. The signing shape mirrors Stripe / GitHub / Shopify webhook conventions.
+
+Use this to fire alerts into PagerDuty / Opsgenie / Slack-compatible inbound webhooks, push findings into an internal queue, or trigger downstream automations from agent analyses.
+
+## Installation
+
+```bash
+bun add @useatlas/webhook-action
+```
+
+### Prerequisites
+
+- An outbound HTTPS endpoint that accepts JSON POSTs (HTTP is rejected — see [Security](#security) below)
+- A shared signing secret for HMAC verification (any high-entropy string)
+
+## Configuration
+
+```typescript
+// atlas.config.ts
+import { defineConfig } from "@atlas/api/lib/config";
+import { webhookActionPlugin } from "@useatlas/webhook-action";
+
+export default defineConfig({
+  plugins: [
+    webhookActionPlugin({
+      url: "https://hooks.example.com/atlas",
+      signing_secret: process.env.WEBHOOK_SIGNING_SECRET!,
+      retry_policy: "exponential",
+    }),
+  ],
+});
+```
+
+### Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `url` | `string` | Yes | — | Destination URL. Must be a well-formed `https://` URL (the config schema rejects `http://` and malformed URLs at factory call time) |
+| `signing_secret` | `string` | Yes | — | HMAC-SHA256 signing secret shared with the receiver |
+| `retry_policy` | `"none" \| "exponential"` | No | `"exponential"` | Retry on 5xx / network errors. `"exponential"` uses `[250ms, 1s, 4s]` between 4 attempts (total budget ~5.25s) |
+| `approvalMode` | `"auto" \| "manual" \| "admin-only"` | No | `"admin-only"` | Who can approve a webhook send |
+
+<Callout type="warn">
+Never commit the signing secret. Pass it via `process.env.WEBHOOK_SIGNING_SECRET` and add `.env` to `.gitignore`.
+</Callout>
+
+## Action Details
+
+| Property | Value |
+|----------|-------|
+| **Action name** | `postWebhook` |
+| **Action type** | `webhook:post` |
+| **Reversible** | No |
+| **Default approval** | `admin-only` (configurable via `approvalMode`) |
+
+The agent tool accepts a single parameter:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `payload` | `unknown` | JSON-serializable payload. Stringified to a stable form, signed, and sent as the POST body |
+
+On success the tool returns `{ status, signature }` — the destination's HTTP status and the hex-encoded HMAC of the body (surfaced for audit / debugging).
+
+## Example
+
+```
+User: Open a Pager when revenue drops more than 10% week-over-week.
+
+Agent calls postWebhook({
+  payload: {
+    severity: "warning",
+    summary: "Revenue ↓ 12.4% WoW",
+    details: { week: "2026-04-13", delta_pct: -12.4 }
+  }
+})
+  → 202 from PagerDuty Events API
+  → X-Atlas-Signature = 7f3c...
+```
+
+## Security
+
+### `https://` only
+
+The Zod schema rejects any `url` that isn't a well-formed `https://` URL. This is deliberate — exfiltrating an HMAC signature over cleartext HTTP would defeat the integrity guarantee. Run the receiver behind TLS; for local development against a non-TLS service, use a tunnel like ngrok that gives you an HTTPS URL.
+
+### HMAC-SHA256 signature verification
+
+The plugin computes `HMAC_SHA256(signing_secret, raw_body)` and sends the hex digest in the `X-Atlas-Signature` header. Receivers verify by computing the same MAC over the raw request body and **constant-time** comparing against the header. Constant-time compare is required — naive `==` makes the receiver vulnerable to timing attacks that recover the secret one byte at a time.
+
+#### Node.js receiver template
+
+```typescript
+import crypto from "node:crypto";
+
+function verifyAtlasWebhook(rawBody: string, headerSig: string, secret: string) {
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(rawBody)
+    .digest("hex");
+  const a = Buffer.from(expected, "hex");
+  const b = Buffer.from(headerSig, "hex");
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+```
+
+Read the raw request body **before** any JSON parsing — if the body is reserialized via `JSON.stringify(JSON.parse(...))`, byte-for-byte equality breaks and signatures stop matching.
+
+### Approval mode defaults to `admin-only`
+
+Outbound writes are irreversible — once Atlas has POSTed the payload, you can't unsend it. The default `admin-only` mode means only workspace admins approve agent-proposed webhook calls. Set `approvalMode: "manual"` to let any conversation participant approve; `"auto"` to skip approval entirely (only safe when the destination is idempotent and you trust the agent loop end-to-end).
+
+## How It Works
+
+1. The agent calls `postWebhook({ payload })` with a JSON-serializable object
+2. The plugin `JSON.stringify`s the payload, computes `HMAC_SHA256(signing_secret, body)`, and POSTs it to `url` with `X-Atlas-Signature: <hex>` and `Content-Type: application/json`
+3. On a network error or 5xx response under `retry_policy: "exponential"`, the plugin retries with `[250ms, 1s, 4s]` backoff (4 attempts total, ~5.25s budget). 4xx responses surface immediately — they're destination-side rejections, not transient
+4. On success, the tool returns `{ status, signature }`. On any 4xx (or after the exponential ramp), the tool throws and the agent surfaces the error
+
+<Callout type="info">
+The health check unconditionally returns healthy because webhook destinations don't have a standard liveness endpoint — a `HEAD` probe could 405 on receivers that only accept POST, and Atlas won't send a real signed payload at boot. Real failures surface on first send, same approach the email plugin uses.
+</Callout>
+
+## Troubleshooting
+
+### `url must be a well-formed https:// URL`
+
+The config schema rejects HTTP and malformed URLs at startup. Switch the receiver to HTTPS (or front it with a TLS-terminating proxy / ngrok tunnel) and pass that URL instead.
+
+### Receiver rejects signature
+
+Make sure the receiver verifies HMAC over the **raw** request body, not a reparsed-and-restringified copy. Frameworks that auto-parse JSON (Express's `express.json()`, Hono's `c.req.json()`) reformat whitespace, which breaks byte-equality. Read the raw body first, verify, then parse.
+
+### Retries blasting the destination
+
+If you don't want exponential retry behavior — e.g. the destination is non-idempotent and a duplicate POST is worse than a missed one — set `retry_policy: "none"`. The plugin will give up after the first failure and surface the error to the agent.
+
+### `Webhook POST failed: HTTP 4xx`
+
+The destination accepted the TCP connection but rejected the payload. The error message includes up to 200 characters of the response body — check that excerpt for the receiver's specific complaint (auth header missing, schema mismatch, signature header missing, etc.).

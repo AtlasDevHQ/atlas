@@ -31,7 +31,7 @@ permissions:
   pull-requests: write
 
 env:
-  BUN_VERSION: "1.3.11"
+  BUN_VERSION: "1.3.14"
   LHCI_VERSION: "0.15.1"
 
 jobs:

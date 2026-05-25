@@ -64,6 +64,26 @@ export type {
   DiscordInstallConfig,
 } from "./discord-static-bot-handler";
 export {
+  TeamsStaticBotInstallHandler,
+  TEAMS_CATALOG_ID,
+  TEAMS_SLUG,
+  TEAMS_TENANT_ID_RE,
+} from "./teams-static-bot-handler";
+export type {
+  TeamsStaticBotHandlerConfig,
+  TeamsInstallConfig,
+} from "./teams-static-bot-handler";
+export {
+  WhatsAppStaticBotInstallHandler,
+  WHATSAPP_CATALOG_ID,
+  WHATSAPP_SLUG,
+  WHATSAPP_PHONE_NUMBER_ID_RE,
+} from "./whatsapp-static-bot-handler";
+export type {
+  WhatsAppStaticBotHandlerConfig,
+  WhatsAppInstallConfig,
+} from "./whatsapp-static-bot-handler";
+export {
   EmailFormInstallHandler,
   EmailFormDataSchema,
   EmailFormValidationError,

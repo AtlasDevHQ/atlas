@@ -84,7 +84,7 @@ These don't ride on `chat_cache` — Atlas owns the schema and the writers. They
 | Telegram | yes | #2748 | ✓ verified — static-bot install via `TelegramStaticBotInstallHandler`; per-Workspace `chat_id` in `workspace_plugins.config`; no per-Workspace credential store; reachability verified via Bot API `getChat` at install time |
 | GitHub | yes | #2662 | ○ pending — 1.5.3 |
 | Linear | yes | #2662 | ○ pending — 1.5.3 |
-| WhatsApp | yes | #2753 | ○ pending — 1.5.3 (rides Telegram's interface) |
+| WhatsApp | yes | #2753 | ✓ verified — static-bot install via `WhatsAppStaticBotInstallHandler`; per-Workspace `phone_number_id` in `workspace_plugins.config`; no per-Workspace credential store (operator-shared `META_BUSINESS_ACCESS_TOKEN` does all sends + reads); reachability verified via Meta Graph API `GET /v21.0/{phone_number_id}` at install time |
 
 ## Structural prevention
 

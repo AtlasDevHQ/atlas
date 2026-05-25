@@ -32,10 +32,12 @@ import type { Adapter } from "chat";
 import { createSlackAdapter } from "./adapters/slack";
 import { createTelegramAdapter } from "./adapters/telegram";
 import { createDiscordAdapter } from "./adapters/discord";
+import { createWhatsAppAdapter } from "./adapters/whatsapp";
 import type {
   DiscordAdapterConfig,
   SlackAdapterConfig,
   TelegramAdapterConfig,
+  WhatsAppAdapterConfig,
 } from "./config";
 
 // ---------------------------------------------------------------------------
@@ -88,7 +90,9 @@ type ChatAdapterInstance<K extends ChatAdapterName> = K extends "slack"
     ? Adapter
     : K extends "discord"
       ? Adapter
-      : { readonly name: K };
+      : K extends "whatsapp"
+        ? Adapter
+        : { readonly name: K };
 
 /**
  * Returned alongside `ChatAdapterSet` so `healthCheck` and admin
@@ -234,10 +238,72 @@ const DISCORD_BUILDER: ChatAdapterBuilder<Adapter> = {
   },
 };
 
+/**
+ * WhatsApp — fourth static-bot Platform to ship a real adapter (1.5.3
+ * #2753). Four env vars gate the chat adapter:
+ *   - `META_BUSINESS_ACCESS_TOKEN` — operator's System User access token
+ *     for Meta Cloud API calls (whatsapp_business_management +
+ *     whatsapp_business_messaging scopes). Same value the install
+ *     handler uses for `phone_number_id` reachability verification.
+ *   - `META_BUSINESS_APP_ID` — operator's Meta App ID; not strictly
+ *     required by `@chat-adapter/whatsapp` at activation time, but
+ *     gating the adapter on it keeps boot semantics consistent with the
+ *     install handler (operator-half-wires the env and the adapter
+ *     refuses to activate, mirroring the Discord + Teams pattern).
+ *   - `WHATSAPP_APP_SECRET` — Meta App Secret for HMAC-SHA256 webhook
+ *     signature verification (`X-Hub-Signature-256`).
+ *   - `WHATSAPP_VERIFY_TOKEN` — the random string the operator pasted
+ *     into the Meta webhook configuration; mirrored back in the GET
+ *     challenge handshake.
+ *
+ * `WHATSAPP_DEFAULT_PHONE_NUMBER_ID` is an optional convenience for
+ * single-tenant deploys (only one phone number on the operator's
+ * Business Account); when omitted, per-Workspace routing lives entirely
+ * in `workspace_plugins.config->>'phone_number_id'` and the adapter's
+ * inbound dispatcher pulls it from the webhook envelope. Atlas's host
+ * `executeQuery` resolves the right workspace by matching the inbound
+ * `metadata.phone_number_id` against the install rows; same
+ * fail-closed posture as Discord's `guild_id` / Telegram's `chat_id`
+ * resolvers.
+ */
+const WHATSAPP_BUILDER: ChatAdapterBuilder<Adapter> = {
+  slug: "whatsapp",
+  platform: "whatsapp",
+  requiredEnv: [
+    "META_BUSINESS_ACCESS_TOKEN",
+    "META_BUSINESS_APP_ID",
+    "WHATSAPP_APP_SECRET",
+    "WHATSAPP_VERIFY_TOKEN",
+  ],
+  build(env) {
+    const accessToken = env.META_BUSINESS_ACCESS_TOKEN;
+    const appId = env.META_BUSINESS_APP_ID;
+    const appSecret = env.WHATSAPP_APP_SECRET;
+    const verifyToken = env.WHATSAPP_VERIFY_TOKEN;
+    if (!accessToken || !appId || !appSecret || !verifyToken) return null;
+    // `phoneNumberId` is part of the @chat-adapter/whatsapp config but
+    // per-Workspace routing replaces the static value at receive time —
+    // see executeQuery's WhatsApp branch. The optional
+    // WHATSAPP_DEFAULT_PHONE_NUMBER_ID env supplies a fallback for
+    // single-tenant deploys; multi-tenant deploys leave it empty and
+    // route from the inbound envelope's metadata.phone_number_id.
+    const phoneNumberId = env.WHATSAPP_DEFAULT_PHONE_NUMBER_ID ?? "";
+    const config: WhatsAppAdapterConfig = {
+      accessToken,
+      appSecret,
+      verifyToken,
+      phoneNumberId,
+      ...(env.WHATSAPP_API_VERSION ? { apiVersion: env.WHATSAPP_API_VERSION } : {}),
+    };
+    return createWhatsAppAdapter(config);
+  },
+};
+
 const BUILDERS_BY_SLUG: Readonly<Record<string, ChatAdapterBuilder<unknown>>> = {
   slack: SLACK_BUILDER,
   telegram: TELEGRAM_BUILDER,
   discord: DISCORD_BUILDER,
+  whatsapp: WHATSAPP_BUILDER,
 };
 
 /**
@@ -383,10 +449,16 @@ export function buildChatAdapterRegistry(
         { slug: entry.slug, platform: builder.platform },
         "AdapterRegistry: chat adapter registered",
       );
+    } else if (entry.slug === "whatsapp") {
+      adapters.whatsapp = adapter as Adapter;
+      logger.info(
+        { slug: entry.slug, platform: builder.platform },
+        "AdapterRegistry: chat adapter registered",
+      );
     }
-    // Other static-bot adapters (gchat #2754, WhatsApp #2753) slot in
-    // here as their slices land. The `Partial<Record>` shape of
-    // `ChatAdapterSet` admits them without a type change.
+    // Other static-bot adapters (gchat #2754) slot in here as their
+    // slices land. The `Partial<Record>` shape of `ChatAdapterSet`
+    // admits them without a type change.
   }
 
   return {

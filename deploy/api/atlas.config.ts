@@ -242,13 +242,58 @@ export default defineConfig({
         },
       ],
     },
+    // WhatsApp — 1.5.3 #2753 (Phase D). The operator wires a Meta
+    // Business / WhatsApp Business Cloud API account
+    // (META_BUSINESS_ACCESS_TOKEN + META_BUSINESS_APP_ID, plus
+    // WHATSAPP_APP_SECRET + WHATSAPP_VERIFY_TOKEN for the webhook
+    // envelope verification). Each customer admin pastes their
+    // WhatsApp Business phone number id (Meta's numeric routing id,
+    // distinct from the human phone number) into the install modal.
+    // `WhatsAppStaticBotInstallHandler` verifies the id is reachable
+    // through the operator's Meta credentials via Graph API before
+    // persisting.
+    //
+    // `phone_number_id` is NOT marked `secret: true` — Meta-issued
+    // phone number ids are routing identifiers that leak in every
+    // webhook envelope's `value.metadata.phone_number_id`. Same
+    // posture as Discord's `guild_id` / Telegram's `chat_id` / Teams's
+    // `tenant_id`.
+    //
+    // Plan gating: `min_plan: "business"` — Meta charges the operator
+    // per-conversation for user-initiated (24h customer-service window)
+    // and template-initiated conversations. The economics only work for
+    // workspaces on the highest tier; lower-tier installs would unbound
+    // operator spend in a way the rest of the static-bot family
+    // (Telegram / Discord / Teams — free per-message) doesn't.
     {
       slug: "whatsapp",
       type: "chat",
       install_model: "static-bot",
       enabled: true,
       saas_eligible: true,
-      implementation_status: "coming_soon",
+      implementation_status: "available",
+      name: "WhatsApp",
+      description:
+        "Chat with Atlas inside WhatsApp. The operator wires a shared Meta Business / WhatsApp Business Cloud API account (META_BUSINESS_ACCESS_TOKEN + META_BUSINESS_APP_ID); each workspace admin points Atlas at one WhatsApp Business phone number by its Meta phone_number_id. Higher plan tier — Meta charges the operator per-conversation.",
+      min_plan: "business",
+      configSchema: [
+        {
+          key: "phone_number_id",
+          type: "string",
+          label: "Phone Number ID",
+          description:
+            "Meta's numeric phone number id (NOT the human-readable phone number, e.g. \"+1 415 555 0100\"). Find it in the Meta Business Suite under WhatsApp Manager → Phone numbers → API Setup → copy the \"Phone number ID\" field.",
+          required: true,
+        },
+        {
+          key: "display_phone",
+          type: "string",
+          label: "Display phone",
+          description:
+            "Optional admin-friendly label for this number. Defaults to the display_phone_number Meta returns at install time.",
+          required: false,
+        },
+      ],
     },
     // ── Linear (1.5.3 #2750 — Phase D, Action Target) ──────────────
     // Two catalog rows, one per install mode (per CONTEXT.md

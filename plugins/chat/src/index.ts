@@ -278,6 +278,26 @@ function catalogHasDiscordStaticBot(
   );
 }
 
+/**
+ * WhatsApp (1.5.3 #2753) mirrors Discord's / Telegram's static-bot mount
+ * story — declared + enabled in the catalog mounts the webhook route at
+ * `/api/plugins/chat-interaction/webhooks/whatsapp`. Env-var presence
+ * (and therefore the actual adapter wiring) is checked inside
+ * `initialize()` by the `AdapterRegistry`.
+ */
+function catalogHasWhatsAppStaticBot(
+  catalog: ReadonlyArray<ChatCatalogEntryInput> | undefined,
+): boolean {
+  if (!catalog) return false;
+  return catalog.some(
+    (e) =>
+      e.slug === "whatsapp" &&
+      e.type === "chat" &&
+      e.install_model === "static-bot" &&
+      e.enabled === true,
+  );
+}
+
 function buildChatPlugin(
   config: ChatPluginConfig,
 ): AtlasInteractionPlugin<ChatPluginConfig> {
@@ -286,6 +306,7 @@ function buildChatPlugin(
   let slackAdapterInstance: SlackAdapter | null = null;
   let telegramAdapterInstance: Adapter | null = null;
   let discordAdapterInstance: Adapter | null = null;
+  let whatsappAdapterInstance: Adapter | null = null;
   let log: PluginLogger | null = null;
   let initialized = false;
   /**
@@ -305,6 +326,7 @@ function buildChatPlugin(
   const slackOauthDeclared = catalogHasSlackOauth(config.catalog);
   const telegramStaticBotDeclared = catalogHasTelegramStaticBot(config.catalog);
   const discordStaticBotDeclared = catalogHasDiscordStaticBot(config.catalog);
+  const whatsappStaticBotDeclared = catalogHasWhatsAppStaticBot(config.catalog);
 
   return {
     id: "chat-interaction",
@@ -469,6 +491,89 @@ function buildChatPlugin(
           }
         });
       }
+
+      // WhatsApp (1.5.3 #2753 — fourth static-bot webhook). The Chat
+      // SDK WhatsApp adapter verifies the HMAC-SHA256 signature on
+      // every incoming webhook (`X-Hub-Signature-256`) using
+      // `WHATSAPP_APP_SECRET`, and handles the GET verify-token
+      // handshake using `WHATSAPP_VERIFY_TOKEN`. Per-Workspace routing
+      // by `phone_number_id` lives downstream in executeQuery's
+      // WhatsApp branch. Meta sends a GET to verify the webhook URL +
+      // verify_token at setup time, then POSTs all event deliveries —
+      // both verbs are mounted so the verify handshake can succeed.
+      if (whatsappStaticBotDeclared) {
+        // The two handlers share identical code paths but are
+        // registered separately so Hono's path-typed Context generic
+        // narrows cleanly (one `H<BlankEnv, "/webhooks/whatsapp", …>`
+        // overload per verb, mirroring how the Telegram + Discord
+        // branches register their single POST handler inline). Folding
+        // both into one shared closure broke type inference (the
+        // captured Context generic ended up `never`).
+        app.get("/webhooks/whatsapp", async (c) => {
+          const requestId = crypto.randomUUID();
+          if (!bridge) {
+            return c.json({ error: "Chat plugin not yet initialized", requestId }, 503);
+          }
+          const handler = bridge.webhooks.whatsapp;
+          if (!handler) {
+            (log ?? console).error(
+              { requestId, adapter: "whatsapp" },
+              "WhatsApp webhook received but adapter not configured — check META_BUSINESS_ACCESS_TOKEN + META_BUSINESS_APP_ID + WHATSAPP_APP_SECRET + WHATSAPP_VERIFY_TOKEN and AdapterRegistry boot logs",
+            );
+            return c.json({ error: "WhatsApp adapter not configured", requestId }, 404);
+          }
+          try {
+            return await handler(c.req.raw, {
+              waitUntil: (task: Promise<unknown>) => {
+                task.catch((err: unknown) => {
+                  (log ?? console).error(
+                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "whatsapp" },
+                    "Chat SDK WhatsApp webhook background task failed",
+                  );
+                });
+              },
+            });
+          } catch (err) {
+            (log ?? console).error(
+              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "whatsapp" },
+              "WhatsApp webhook handler threw unexpectedly",
+            );
+            return c.json({ error: "Webhook processing failed", requestId }, 500);
+          }
+        });
+        app.post("/webhooks/whatsapp", async (c) => {
+          const requestId = crypto.randomUUID();
+          if (!bridge) {
+            return c.json({ error: "Chat plugin not yet initialized", requestId }, 503);
+          }
+          const handler = bridge.webhooks.whatsapp;
+          if (!handler) {
+            (log ?? console).error(
+              { requestId, adapter: "whatsapp" },
+              "WhatsApp webhook received but adapter not configured — check META_BUSINESS_ACCESS_TOKEN + META_BUSINESS_APP_ID + WHATSAPP_APP_SECRET + WHATSAPP_VERIFY_TOKEN and AdapterRegistry boot logs",
+            );
+            return c.json({ error: "WhatsApp adapter not configured", requestId }, 404);
+          }
+          try {
+            return await handler(c.req.raw, {
+              waitUntil: (task: Promise<unknown>) => {
+                task.catch((err: unknown) => {
+                  (log ?? console).error(
+                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "whatsapp" },
+                    "Chat SDK WhatsApp webhook background task failed",
+                  );
+                });
+              },
+            });
+          } catch (err) {
+            (log ?? console).error(
+              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "whatsapp" },
+              "WhatsApp webhook handler threw unexpectedly",
+            );
+            return c.json({ error: "Webhook processing failed", requestId }, 500);
+          }
+        });
+      }
     },
 
     async initialize(ctx: AtlasPluginContext) {
@@ -501,9 +606,11 @@ function buildChatPlugin(
         });
         slackAdapterInstance = registry.adapters.slack ?? null;
         // Telegram (1.5.3 #2748 — first static-bot adapter wired here);
-        // Discord (1.5.3 #2749 — second). gchat / WhatsApp follow.
+        // Discord (1.5.3 #2749 — second); WhatsApp (1.5.3 #2753 —
+        // fourth). gchat (#2754) follows.
         telegramAdapterInstance = (registry.adapters.telegram ?? null) as Adapter | null;
         discordAdapterInstance = (registry.adapters.discord ?? null) as Adapter | null;
+        whatsappAdapterInstance = (registry.adapters.whatsapp ?? null) as Adapter | null;
         adapterDiagnostics = registry.diagnostics;
 
         // Bridge takes pre-built instances per-platform; unwired slots
@@ -513,6 +620,7 @@ function buildChatPlugin(
           slack: slackAdapterInstance,
           telegram: telegramAdapterInstance,
           discord: discordAdapterInstance,
+          whatsapp: whatsappAdapterInstance,
         });
       } catch (err) {
         ctx.logger.error(
@@ -532,6 +640,7 @@ function buildChatPlugin(
         slackAdapterInstance = null;
         telegramAdapterInstance = null;
         discordAdapterInstance = null;
+        whatsappAdapterInstance = null;
         throw err;
       }
 
@@ -539,6 +648,7 @@ function buildChatPlugin(
       if (slackAdapterInstance) enabledAdapters.push("slack");
       if (telegramAdapterInstance) enabledAdapters.push("telegram");
       if (discordAdapterInstance) enabledAdapters.push("discord");
+      if (whatsappAdapterInstance) enabledAdapters.push("whatsapp");
 
       const backend = config.state?.backend ?? "memory";
       const initFailedSilently =
@@ -586,6 +696,7 @@ function buildChatPlugin(
       if (slackAdapterInstance) enabledAdapters.push("slack");
       if (telegramAdapterInstance) enabledAdapters.push("telegram");
       if (discordAdapterInstance) enabledAdapters.push("discord");
+      if (whatsappAdapterInstance) enabledAdapters.push("whatsapp");
 
       if (enabledAdapters.length === 0) {
         // Use the diagnostics captured at init to point operators at the
@@ -665,6 +776,7 @@ function buildChatPlugin(
       slackAdapterInstance = null;
       telegramAdapterInstance = null;
       discordAdapterInstance = null;
+      whatsappAdapterInstance = null;
       log = null;
       initialized = false;
     },

@@ -46,6 +46,10 @@ import {
   TeamsStaticBotInstallHandler,
   TEAMS_SLUG,
 } from "./teams-static-bot-handler";
+import {
+  WhatsAppStaticBotInstallHandler,
+  WHATSAPP_SLUG,
+} from "./whatsapp-static-bot-handler";
 import { lazyPluginLoader } from "@atlas/api/lib/plugins/lazy-loader";
 import { createJiraLazyBuilder } from "@atlas/api/lib/integrations/jira/lazy-builder";
 import { createSalesforceLazyBuilder } from "@atlas/api/lib/integrations/salesforce/lazy-builder";
@@ -185,6 +189,7 @@ export function registerBuiltinInstallHandlers(): void {
   registerTelegramStaticBotHandler();
   registerDiscordStaticBotHandler();
   registerTeamsStaticBotHandler();
+  registerWhatsAppStaticBotHandler();
 }
 
 function registerSlackOAuthHandler(): void {
@@ -486,6 +491,69 @@ function registerTeamsStaticBotHandler(): void {
       appPasswordFingerprint: fingerprintToken(appPassword),
     },
     "Registered TeamsStaticBotInstallHandler",
+  );
+}
+
+/**
+ * Register the WhatsApp static-bot install handler when the operator env
+ * is wired (#2753). Mirrors {@link registerTeamsStaticBotHandler} exactly
+ * — same severity-escalation contract when the catalog row says
+ * `enabled: true` but a required env var is missing.
+ *
+ * Two env vars gate registration: `META_BUSINESS_ACCESS_TOKEN` (the
+ * operator's WhatsApp Business Cloud API System User token) and
+ * `META_BUSINESS_APP_ID` (the operator's Meta App ID, used by the
+ * install routes / manifest deep-link to be the single source of truth
+ * for "WhatsApp is wired"). Both are required because the install flow
+ * can't proceed without either — the route would otherwise 501 in a
+ * confusing half-wired way.
+ *
+ * `WHATSAPP_APP_SECRET` (HMAC-SHA256 webhook signature) and
+ * `WHATSAPP_VERIFY_TOKEN` (webhook challenge handshake) are required by
+ * the chat adapter (the inbound webhook path needs both) but are NOT
+ * required here — the install handler itself doesn't process webhooks.
+ * An operator who wires install creds but forgets the webhook envelope
+ * would get a working install + a non-functional receive path; the
+ * AdapterRegistry's missing-env log is the signal for that gap.
+ */
+function registerWhatsAppStaticBotHandler(): void {
+  const accessToken = process.env.META_BUSINESS_ACCESS_TOKEN;
+  const appId = process.env.META_BUSINESS_APP_ID;
+  if (
+    !accessToken ||
+    accessToken.length === 0 ||
+    !appId ||
+    appId.length === 0
+  ) {
+    if (isCatalogSlugEnabled("whatsapp")) {
+      log.error(
+        {
+          slug: "whatsapp",
+          requiredEnv: ["META_BUSINESS_ACCESS_TOKEN", "META_BUSINESS_APP_ID"],
+          missing: [
+            ...(!accessToken ? ["META_BUSINESS_ACCESS_TOKEN"] : []),
+            ...(!appId ? ["META_BUSINESS_APP_ID"] : []),
+          ],
+        },
+        "WhatsApp catalog row is enabled but META_BUSINESS_ACCESS_TOKEN and/or META_BUSINESS_APP_ID is unset — install route will return 501 and AdapterRegistry will skip the adapter. Set both per-service. See #2673 for the same-class silent-degradation precedent.",
+      );
+    } else {
+      log.info(
+        "WhatsApp static-bot handler not registered — META_BUSINESS_ACCESS_TOKEN and/or META_BUSINESS_APP_ID unset and the 'whatsapp' catalog row is not enabled (operator hasn't opted in).",
+      );
+    }
+    return;
+  }
+  registerStaticBotHandler(
+    WHATSAPP_SLUG,
+    new WhatsAppStaticBotInstallHandler({ accessToken, appId }),
+  );
+  log.info(
+    {
+      appIdFingerprint: fingerprintToken(appId),
+      accessTokenFingerprint: fingerprintToken(accessToken),
+    },
+    "Registered WhatsAppStaticBotInstallHandler",
   );
 }
 

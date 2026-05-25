@@ -12,9 +12,14 @@
  *     → `workspace_id` via the static-bot install record.
  *   - **Discord** (1.5.3 slice 11 / #2749) — resolves `guild_id` →
  *     `workspace_plugins.config->>'guild_id'` → `workspace_id`. Same
- *     fail-closed contract as Telegram. Remaining static-bot platforms
- *     (gchat #2754, WhatsApp #2753) extend this dispatch as their
- *     slices land.
+ *     fail-closed contract as Telegram.
+ *   - **WhatsApp** (1.5.3 slice 15 / #2753) — resolves the inbound
+ *     webhook's normalized `phoneNumberId` →
+ *     `workspace_plugins.config->>'phone_number_id'` → `workspace_id`.
+ *     The user-side `wa_id` anchors per-user conversation persistence
+ *     (WhatsApp has no thread / channel concept; every conversation is
+ *     1:1). Remaining static-bot platform (gchat #2754) extends this
+ *     dispatch when its slice lands.
  *
  * Without a per-platform tenant binding, `checkApprovalRequired`
  * short-circuits on a missing `orgId` and the approval gate silently
@@ -63,6 +68,7 @@ import { botActorUser, type ChatBotPlatform } from "@atlas/api/lib/auth/actor";
 import { getInstallation } from "@atlas/api/lib/slack/store";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { DISCORD_GUILD_ID_RE } from "@atlas/api/lib/integrations/install/discord-static-bot-handler";
+import { WHATSAPP_PHONE_NUMBER_ID_RE } from "@atlas/api/lib/integrations/install/whatsapp-static-bot-handler";
 import { getConversationId, setConversationId } from "@atlas/api/lib/slack/threads";
 import {
   createConversation,
@@ -142,6 +148,35 @@ interface DiscordRawEvent {
 }
 
 /**
+ * Minimum shape we read from a WhatsApp raw message envelope. The chat
+ * adapter passes `WhatsAppRawMessage` (from `@chat-adapter/whatsapp`)
+ * through the `rawMessage` slot — the per-message normalized shape, NOT
+ * the unwrapped Meta webhook envelope. Documented at
+ * https://developers.facebook.com/docs/whatsapp/cloud-api/webhooks/payload-examples.
+ *
+ * `phoneNumberId` is the per-Workspace routing identifier persisted by
+ * {@link WhatsAppStaticBotInstallHandler} into
+ * `workspace_plugins.config->>'phone_number_id'`. The user-side wa_id
+ * (`contact.wa_id` or `message.from`) anchors per-user conversation
+ * persistence — WhatsApp has no thread or channel concept; every
+ * conversation is a 1:1 between the operator's business phone and a
+ * single user, so wa_id is the only thread anchor available.
+ */
+interface WhatsAppRawEvent {
+  /** Phone number id that received the message (per-Workspace routing). */
+  phoneNumberId?: string;
+  /** Contact info from the webhook. */
+  contact?: { profile?: { name?: string }; wa_id?: string };
+  /** The raw inbound message. */
+  message?: {
+    id?: string;
+    from?: string;
+    type?: string;
+    text?: { body?: string };
+  };
+}
+
+/**
  * Normalize a Slack id field that may arrive as a bare string (events_api)
  * or as a `{ id, ... }` object (interactive `block_actions` payloads).
  */
@@ -195,6 +230,27 @@ function extractDiscordGuildId(raw: DiscordRawEvent): string | undefined {
 }
 
 /**
+ * Extract the WhatsApp phone_number_id from an inbound message envelope.
+ * Returns undefined when the field is missing OR when the value isn't a
+ * valid Meta phone-number id (per {@link WHATSAPP_PHONE_NUMBER_ID_RE}).
+ * Even though the HMAC-SHA256 webhook signature gate upstream catches
+ * forgery, defending the shape here prevents an attacker-controllable
+ * string from polluting the rate-limit cache key
+ * (`whatsapp:${phoneNumberId}`) or the workspace-resolution log
+ * fingerprint.
+ *
+ * Reuses {@link WHATSAPP_PHONE_NUMBER_ID_RE} from the install handler —
+ * single source of truth for the routing-id invariant across install +
+ * receive paths.
+ */
+function extractWhatsAppPhoneNumberId(raw: WhatsAppRawEvent): string | undefined {
+  const id = raw.phoneNumberId;
+  if (typeof id !== "string" || id.length === 0) return undefined;
+  if (!WHATSAPP_PHONE_NUMBER_ID_RE.test(id)) return undefined;
+  return id;
+}
+
+/**
  * Build the chat plugin's `executeQuery` callback.
  *
  * Multi-platform dispatch lives inside `runExecuteQuery`. Each chat
@@ -225,6 +281,9 @@ export async function runExecuteQuery(
   }
   if (adapter.name === "discord") {
     return runDiscordExecuteQuery(question, ctx, requestId);
+  }
+  if (adapter.name === "whatsapp") {
+    return runWhatsAppExecuteQuery(question, ctx, requestId);
   }
 
   log.warn(
@@ -743,7 +802,7 @@ async function loadOrCreateConversation(
   channel: string,
   threadAnchor: string,
   question: string,
-  surface: "slack" | "telegram" | "discord",
+  surface: "slack" | "telegram" | "discord" | "whatsapp",
   requestId: string,
 ): Promise<string | null> {
   if (!channel || !threadAnchor) return null;
@@ -952,8 +1011,224 @@ async function runAgentAndMap(args: RunAgentArgs): Promise<ChatQueryResult> {
   };
 }
 
+// ---------------------------------------------------------------------------
+// WhatsApp branch — 1.5.3 #2753 (Phase D)
+// ---------------------------------------------------------------------------
+
+async function runWhatsAppExecuteQuery(
+  question: string,
+  ctx: ChatExecuteQueryContext,
+  requestId: string,
+): Promise<ChatQueryResult> {
+  const { threadId, priorMessages, rawMessage } = ctx;
+  const raw = (rawMessage ?? {}) as WhatsAppRawEvent;
+
+  // 1. Resolve tenant — phone_number_id is the routing identifier
+  //    persisted by `WhatsAppStaticBotInstallHandler` into
+  //    `workspace_plugins.config`. Meta tags every inbound message
+  //    envelope with the phone_number_id that received it; the chat
+  //    adapter normalizes that field onto `rawMessage.phoneNumberId`.
+  const phoneNumberId = extractWhatsAppPhoneNumberId(raw);
+  if (!phoneNumberId) {
+    log.warn(
+      { threadId, requestId },
+      "Chat plugin executeQuery received WhatsApp event without phoneNumberId — refusing",
+    );
+    throw new Error(
+      "This WhatsApp event is missing tenant context. Please try again.",
+    );
+  }
+
+  // 2. Rate limit — keyed per-phone_number_id (one install row == one
+  //    rate-limit bucket). Same posture as Discord's per-guild key.
+  //    Per-user keying isn't right here because WhatsApp doesn't have
+  //    a multi-user channel concept — every conversation is 1:1, so
+  //    "one user owns the bucket" already.
+  const rateCheck = checkRateLimit(`whatsapp:${phoneNumberId}`);
+  if (!rateCheck.allowed) {
+    log.info(
+      {
+        phoneNumberIdFingerprint: fingerprintPhoneNumberId(phoneNumberId),
+        threadId,
+        requestId,
+      },
+      "Chat plugin executeQuery rate-limited",
+    );
+    throw new Error("Rate limit exceeded. Please wait before trying again.");
+  }
+
+  // 3. F-55 actor — resolve phone_number_id → workspace_id via the
+  //    install row. Same fail-closed contract as Slack / Telegram /
+  //    Discord: unknown tenant or DB outage MUST throw before the agent
+  //    runs.
+  let orgId: string;
+  try {
+    orgId = await resolveWhatsAppWorkspaceId(phoneNumberId);
+  } catch (err) {
+    if (err instanceof WhatsAppUnknownTenantError) {
+      log.warn(
+        {
+          phoneNumberIdFingerprint: fingerprintPhoneNumberId(phoneNumberId),
+          threadId,
+          requestId,
+        },
+        "Unknown WhatsApp phone_number_id — refusing",
+      );
+      throw new Error(
+        "This WhatsApp number is not connected to Atlas. Ask your admin to install WhatsApp in the Atlas integrations console.",
+        { cause: err },
+      );
+    }
+    log.error(
+      {
+        phoneNumberIdFingerprint: fingerprintPhoneNumberId(phoneNumberId),
+        threadId,
+        requestId,
+        err,
+      },
+      "Failed to resolve WhatsApp phone_number_id → workspace — refusing query",
+    );
+    throw new Error(
+      "Atlas could not resolve the WhatsApp workspace right now. Please try again in a moment.",
+      { cause: err },
+    );
+  }
+
+  const externalUserId =
+    typeof raw.contact?.wa_id === "string" && raw.contact.wa_id.length > 0
+      ? raw.contact.wa_id
+      : typeof raw.message?.from === "string" && raw.message.from.length > 0
+        ? raw.message.from
+        : undefined;
+  if (!externalUserId) {
+    // Meta sometimes routes status events (delivered / read receipts)
+    // through the same webhook with no `contact` payload — the chat
+    // adapter forwards them here without a wa_id. The actor binding
+    // narrows from per-user (`whatsapp-bot:<phone>:<wa>`) to per-tenant
+    // (`whatsapp-bot:<phone>`), F-55 approval rules keyed on the
+    // per-user actor silently widen to the per-tenant actor, AND
+    // conversation persistence below disables (no wa_id thread anchor).
+    // Warn so the silent degradation is observable in operator logs.
+    log.warn(
+      {
+        phoneNumberIdFingerprint: fingerprintPhoneNumberId(phoneNumberId),
+        threadId,
+        requestId,
+      },
+      "WhatsApp event missing wa_id — actor narrows to per-tenant granularity and conversation persistence disables for this event",
+    );
+  }
+  const actor = botActorUser({
+    platform: "whatsapp",
+    externalId: phoneNumberId,
+    orgId,
+    ...(externalUserId ? { externalUserId } : {}),
+  });
+
+  // 4. Conversation persistence keyed on (phone_number_id, user wa_id).
+  //    WhatsApp has no thread or channel concept — conversations are
+  //    1:1 between the operator's business phone and a single user, so
+  //    wa_id is the only thread anchor available. The chat plugin
+  //    bridge encodes this in `WhatsAppThreadId` as
+  //    `whatsapp:{phoneNumberId}:{userWaId}`; here we just persist
+  //    by the (phoneNumberId, wa_id) pair. Empty wa_id disables
+  //    persistence — see the warn above.
+  const userWaId = externalUserId ?? "";
+  const conversationId = await loadOrCreateConversation(
+    phoneNumberId,
+    userWaId,
+    question,
+    "whatsapp",
+    requestId,
+  );
+
+  return runAgentAndMap({
+    question,
+    requestId,
+    actor,
+    approvalSurface: "whatsapp",
+    conversationId,
+    priorMessages: priorMessages ?? null,
+    presentationMode: ctx.presentationMode,
+    tenantLabel: {
+      phoneNumberIdFingerprint: fingerprintPhoneNumberId(phoneNumberId),
+      threadId,
+    },
+  });
+}
+
+/**
+ * Log-safe phone_number_id fingerprint — last 4 chars only. Mirrors the
+ * helper in `whatsapp-static-bot-handler.ts`; kept inline here to avoid
+ * a cross-module import for one 2-line helper.
+ */
+function fingerprintPhoneNumberId(phoneNumberId: string): string {
+  return phoneNumberId.length <= 4 ? phoneNumberId : `…${phoneNumberId.slice(-4)}`;
+}
+
+/**
+ * Unknown-tenant marker for the WhatsApp branch's fail-closed path.
+ * Same posture as {@link DiscordUnknownTenantError} — an `instanceof`
+ * sentinel caught inline and rethrown user-safe, NOT a Data.TaggedError.
+ */
+class WhatsAppUnknownTenantError extends Error {
+  constructor(phoneNumberIdFingerprint: string) {
+    super(`No Atlas workspace bound to WhatsApp number …${phoneNumberIdFingerprint}`);
+    this.name = "WhatsAppUnknownTenantError";
+  }
+}
+
+/**
+ * Resolve a WhatsApp phone_number_id → Atlas workspace_id via the
+ * static-bot install record. Reads
+ * `workspace_plugins.config->>'phone_number_id'` for the catalog row
+ * `catalog:whatsapp`. Throws {@link WhatsAppUnknownTenantError} on
+ * no-row, propagates DB errors verbatim for caller-side logging.
+ *
+ * Same rationale as the Telegram / Discord resolvers — the install row
+ * IS the tenant lookup (no parallel store to keep in sync). See
+ * ADR-0007.
+ */
+async function resolveWhatsAppWorkspaceId(phoneNumberId: string): Promise<string> {
+  // No LIMIT — fail-closed when the same phone_number_id maps to >1
+  // workspace. Meta's Cloud API issues each phone_number_id exactly
+  // once across the entire WhatsApp Business platform, so a duplicate
+  // here is operator misconfig (manual DB edit) rather than a
+  // legitimate routing case — silently picking one match is a
+  // cross-tenant data exposure risk.
+  const rows = await internalQuery<{ workspace_id: string }>(
+    `SELECT workspace_id
+       FROM workspace_plugins
+      WHERE catalog_id = $1
+        AND enabled = true
+        AND config->>'phone_number_id' = $2`,
+    ["catalog:whatsapp", phoneNumberId],
+  );
+  if (rows.length === 0) {
+    throw new WhatsAppUnknownTenantError(fingerprintPhoneNumberId(phoneNumberId));
+  }
+  if (rows.length > 1) {
+    // Surface the matched workspace_ids so the operator can disconnect
+    // the duplicate without dumping the table. Meta phone_number_ids
+    // are sequentially assigned in batches, so last-4-char
+    // fingerprints have a meaningfully higher collision rate than
+    // Discord snowflakes — the explicit list is what makes the cross-
+    // tenant misroute warning actually triagable.
+    log.error(
+      {
+        phoneNumberIdFingerprint: fingerprintPhoneNumberId(phoneNumberId),
+        matchCount: rows.length,
+        matchedWorkspaceIds: rows.map((r) => r.workspace_id),
+      },
+      "WhatsApp phone_number_id maps to multiple workspaces — refusing query (cross-tenant misroute risk). Operator must disconnect the duplicate install.",
+    );
+    throw new WhatsAppUnknownTenantError(fingerprintPhoneNumberId(phoneNumberId));
+  }
+  return rows[0].workspace_id;
+}
+
 // Compile-time guard that the platforms wired here all exist in
 // `CHAT_BOT_PLATFORMS`. Adding a new branch above without extending the
 // actor enum surfaces here as a TS error.
-const _platformGuards: ReadonlyArray<ChatBotPlatform> = ["telegram", "discord"];
+const _platformGuards: ReadonlyArray<ChatBotPlatform> = ["telegram", "discord", "whatsapp"];
 void _platformGuards;

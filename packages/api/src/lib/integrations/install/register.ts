@@ -57,6 +57,7 @@ import {
   createLinearOAuthLazyBuilder,
   createLinearApiKeyLazyBuilder,
 } from "@atlas/api/lib/integrations/linear/lazy-builder";
+import { GitHubPatFormInstallHandler } from "./github-pat-form-handler";
 
 const log = createLogger("integrations.install.register");
 
@@ -136,6 +137,15 @@ export function registerBuiltinInstallHandlers(): void {
     );
   }
   log.info("Registered LinearApiKeyFormInstallHandler + LazyPluginLoader builder");
+  // GitHub PAT form-install (#2751, Phase D PAT mode). No paired lazy
+  // builder yet — the GitHub action tool ships in a follow-up PR
+  // (alongside the GitHub App OAuth handler). The form handler still
+  // registers so the install path works end-to-end: the credential
+  // persists, and the tool dispatch will find it once the builder
+  // lands. Self-host only — the catalog row carries `saas_eligible:
+  // false`, so the integrations-catalog route hides this on SaaS.
+  registerFormHandler("github-pat", new GitHubPatFormInstallHandler());
+  log.info("Registered GitHubPatFormInstallHandler (no lazy builder yet — agent tool ships in follow-up)");
 
   // ── Slack OAuth ───────────────────────────────────────────────────
   registerSlackOAuthHandler();

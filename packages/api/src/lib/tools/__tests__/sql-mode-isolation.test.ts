@@ -146,8 +146,7 @@ const runQuery = (sql: string, connectionId?: string) =>
 // Tests
 // ---------------------------------------------------------------------------
 
-// TODO(#2744 step 5 — test sweep): mocks reference dropped `connections` / `connection_groups` SQL; rewrite to workspace_plugins (pillar='datasource') shape.
-describe.skip("executeSQL mode isolation gate", () => {
+describe("executeSQL mode isolation gate", () => {
   const origDatasource = process.env.ATLAS_DATASOURCE_URL;
 
   beforeEach(() => {

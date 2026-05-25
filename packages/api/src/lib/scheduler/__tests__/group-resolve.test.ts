@@ -123,8 +123,17 @@ function setResults(...results: Array<{ rows: Record<string, unknown>[] }>): voi
 
 const origDbUrl = process.env.DATABASE_URL;
 
-// TODO(#2744 step 5 — test sweep): mocks reference dropped `connections` / `connection_groups` SQL; rewrite to workspace_plugins (pillar='datasource') shape.
-describe.skip("loadScheduledTaskGroupSnapshot (SQL path)", () => {
+describe("loadScheduledTaskGroupSnapshot (SQL path, post-cutover)", () => {
+  // Post-#2744 the loader's two-stage probe runs against `workspace_plugins`:
+  //   1. `SELECT EXISTS (...) AS exists_flag` — group_id appears under
+  //      any status for this workspace.
+  //   2. Member query filtered to `status != 'archived'` —
+  //      `SELECT install_id AS id, installed_at AS created_at`.
+  // Stage 1 returning `false` is the "group not found" hard error;
+  // stage 2 returning empty is the "every member archived" empty-snapshot
+  // shape that the executor's empty-group handler then surfaces. The
+  // legacy `connection_groups.primary_connection_id` column is gone —
+  // `primaryConnectionId` is always null in the snapshot.
   beforeEach(() => {
     queryCalls = [];
     queryResults = [];
@@ -148,7 +157,7 @@ describe.skip("loadScheduledTaskGroupSnapshot (SQL path)", () => {
   it("returns a snapshot with all non-archived members for a tenant group", async () => {
     enableInternalDB();
     setResults(
-      { rows: [{ primary_connection_id: "us-int" }] },
+      { rows: [{ exists_flag: true }] },
       {
         rows: [
           { id: "us-int", created_at: "2026-04-01T00:00:00Z" },
@@ -160,7 +169,8 @@ describe.skip("loadScheduledTaskGroupSnapshot (SQL path)", () => {
     const snap = await loadScheduledTaskGroupSnapshot("g_prod", "org-1");
     expect(snap).not.toBeNull();
     expect(snap!.orgId).toBe("org-1");
-    expect(snap!.primaryConnectionId).toBe("us-int");
+    // primaryConnectionId is always null post-cutover.
+    expect(snap!.primaryConnectionId).toBeNull();
     expect(snap!.members.map((m) => m.id)).toEqual(["us-int", "eu"]);
 
     // Every query must scope to the tenant org. NO __global__ widening.
@@ -169,13 +179,14 @@ describe.skip("loadScheduledTaskGroupSnapshot (SQL path)", () => {
       expect(call.params).toContain("org-1");
       expect(call.params).not.toContain("__global__");
       expect(call.sql).not.toContain("'__global__'");
+      expect(call.sql).toContain("workspace_plugins");
     }
   });
 
   it("returns an empty-members snapshot when a tenant's group has zero non-archived members — does NOT cross into __global__", async () => {
     enableInternalDB();
     setResults(
-      { rows: [{ primary_connection_id: null }] },
+      { rows: [{ exists_flag: true }] },
       { rows: [] }, // every member archived in this tenant
     );
 
@@ -195,7 +206,7 @@ describe.skip("loadScheduledTaskGroupSnapshot (SQL path)", () => {
   it("selectScheduledTaskGroupMember on an empty-members snapshot throws NoScheduledTaskGroupMembersError", async () => {
     enableInternalDB();
     setResults(
-      { rows: [{ primary_connection_id: null }] },
+      { rows: [{ exists_flag: true }] },
       { rows: [] },
     );
 
@@ -207,7 +218,7 @@ describe.skip("loadScheduledTaskGroupSnapshot (SQL path)", () => {
   it("resolveScheduledTaskConnection throws NoScheduledTaskGroupMembersError when the tenant's group is empty (no __global__ peek)", async () => {
     enableInternalDB();
     setResults(
-      { rows: [{ primary_connection_id: null }] },
+      { rows: [{ exists_flag: true }] },
       { rows: [] },
     );
 
@@ -228,10 +239,10 @@ describe.skip("loadScheduledTaskGroupSnapshot (SQL path)", () => {
     }
   });
 
-  it("falls back to first-member (created_at ASC, id ASC) when primary_connection_id is null — in-org fallback", async () => {
+  it("falls back to first-member (created_at ASC, id ASC) — primary is always null post-cutover", async () => {
     enableInternalDB();
     setResults(
-      { rows: [{ primary_connection_id: null }] },
+      { rows: [{ exists_flag: true }] },
       {
         rows: [
           { id: "us-int", created_at: "2026-04-01T00:00:00Z" },
@@ -253,10 +264,10 @@ describe.skip("loadScheduledTaskGroupSnapshot (SQL path)", () => {
     }
   });
 
-  it("__global__ caller (orgId = null) reads __global__ group rows directly — the legitimate path", async () => {
+  it("__global__ caller (orgId = null) reads __global__ workspace_plugins rows directly — the legitimate path", async () => {
     enableInternalDB();
     setResults(
-      { rows: [{ primary_connection_id: "g-conn" }] },
+      { rows: [{ exists_flag: true }] },
       { rows: [{ id: "g-conn", created_at: "2026-04-01T00:00:00Z" }] },
     );
 
@@ -278,7 +289,7 @@ describe.skip("loadScheduledTaskGroupSnapshot (SQL path)", () => {
     // silently splitting the global-org path in two.
     enableInternalDB();
     setResults(
-      { rows: [{ primary_connection_id: "g-conn" }] },
+      { rows: [{ exists_flag: true }] },
       { rows: [{ id: "g-conn", created_at: "2026-04-01T00:00:00Z" }] },
     );
 
@@ -292,12 +303,13 @@ describe.skip("loadScheduledTaskGroupSnapshot (SQL path)", () => {
     }
   });
 
-  it("returns null when the group does not exist for this org — no cross-org peek", async () => {
+  it("returns null when the EXISTS probe says the group does not exist for this org — no member query fires", async () => {
     enableInternalDB();
-    setResults({ rows: [] });
+    setResults({ rows: [{ exists_flag: false }] });
 
     const snap = await loadScheduledTaskGroupSnapshot("g_missing", "org-1");
     expect(snap).toBeNull();
+    // Short-circuit: only the EXISTS probe ran; no member SELECT followed.
     expect(queryCalls.length).toBe(1);
     expect(queryCalls[0].params).not.toContain("__global__");
   });

@@ -379,12 +379,7 @@ describe("POST /api/v1/wizard/save — audit emission (F-34)", () => {
 // shape for the same canonical `{ name, dbType }` contract.
 // ---------------------------------------------------------------------------
 
-// TODO(#2744 step 5): the admin-connections side of this parity check
-// now flows through WorkspaceInstaller, which needs a `plugin_catalog`
-// lookup mock the legacy fixtures don't stage. Audit semantics are
-// unchanged (route still emits `connection.create` with `{name,dbType}`)
-// — the test just needs new mock SQL. `.skip` until step 5 rewrites.
-describe.skip("wizard.ts vs admin-connections.ts — audit parity (F-29 + F-34)", () => {
+describe("wizard.ts vs admin-connections.ts — audit parity (F-29 + F-34)", () => {
   it("produces structurally identical connection.create rows for the same payload", async () => {
     // ── Call 1: wizard /save for connection "warehouse" ────────
     mockConnectionDescribe.mockReturnValue([
@@ -404,12 +399,43 @@ describe.skip("wizard.ts vs admin-connections.ts — audit parity (F-29 + F-34)"
     const wizardEntry = wizardEntries[0]!;
 
     // ── Call 2: admin-connections POST / for the same id ───────
-    // Stage the DB mocks so the create path lands on the happy-path
-    // INSERT branch (not revive-archived, not plan-limit, not conflict).
+    // Stage the DB mocks for the post-#2744 happy path: plan-count empty,
+    // archive-check empty (no existing install), installer's plugin_catalog
+    // lookup returns a valid postgres datasource row, and the singleton
+    // pre-check is empty. Audit semantics are unchanged — the route still
+    // emits `connection.create` with `{ name, dbType }` regardless of which
+    // table holds the row.
     mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
-      if (sql.includes("COUNT(*)")) return [{ count: 0 }];
-      if (sql.includes("SELECT status FROM connections")) return [];
-      // INSERT / UPDATE — no rows expected back
+      if (sql.includes("COUNT(*)") && sql.includes("workspace_plugins")) {
+        return [{ count: 0 }];
+      }
+      if (sql.includes("SELECT status FROM workspace_plugins")) return [];
+      // Installer: plugin_catalog lookup
+      if (sql.includes("FROM plugin_catalog") && sql.includes("install_model")) {
+        return [
+          {
+            id: "cat_postgres",
+            slug: "postgres",
+            install_model: "form",
+            pillar: "datasource",
+            config_schema: [
+              { key: "url", type: "string", required: true, secret: true },
+              { key: "schema", type: "string" },
+              { key: "description", type: "string" },
+            ],
+            enabled: true,
+          },
+        ];
+      }
+      // Installer: singleton pre-check on (workspace, catalog, install_id)
+      if (
+        sql.includes("FROM workspace_plugins") &&
+        sql.includes("catalog_id = $2") &&
+        sql.includes("install_id = $3")
+      ) {
+        return [];
+      }
+      // INSERT — no rows back
       return [];
     });
     // Connections registry: let create see a fresh id, then report the

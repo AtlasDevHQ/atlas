@@ -158,8 +158,7 @@ const executeTool = executeSQL.execute as unknown as (
 // Tests
 // ---------------------------------------------------------------------------
 
-// TODO(#2744 step 5 — test sweep): mocks reference dropped `connections` / `connection_groups` SQL; rewrite to workspace_plugins (pillar='datasource') shape.
-describe.skip("executeSQL org-scoped routing", () => {
+describe("executeSQL org-scoped routing", () => {
   beforeEach(() => {
     mockOrgPoolingEnabled = false;
     mockRequestContext = undefined;

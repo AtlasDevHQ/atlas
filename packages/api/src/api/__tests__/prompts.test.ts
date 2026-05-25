@@ -135,10 +135,12 @@ beforeEach(() => {
 });
 
 // Drive `resolvePromptDemoContext`: returns true when the mocked query asks
-// whether `__demo__` exists for this org. Other queries resolve to `[]`.
+// whether `__demo__` exists for this org. Post-#2744 the query reads
+// `workspace_plugins JOIN plugin_catalog (slug='demo-postgres')` and SELECTs
+// `EXISTS (...) AS active`. Other queries resolve to `[]`.
 function mockDemoActive(active: boolean): void {
   mocks.mockInternalQuery.mockImplementation((sql: string) => {
-    if (sql.includes("FROM connections") && sql.includes("__demo__")) {
+    if (sql.includes("FROM workspace_plugins wp") && sql.includes("'__demo__'")) {
       return Promise.resolve([{ active }]);
     }
     return Promise.resolve([]);
@@ -244,8 +246,8 @@ describe("user-facing prompt routes", () => {
 
     // ─── Mode-aware demo scoping (#1438) ────────────────────────────
 
-    // TODO(#2744 step 5 — test sweep): mocks reference dropped `connections` / `connection_groups` SQL; rewrite to workspace_plugins (pillar='datasource') shape.
-    describe.skip("mode + demo scoping (#1438)", () => {
+    
+    describe("mode + demo scoping (#1438)", () => {
       function findListCall() {
         return mocks.mockInternalQuery.mock.calls.find(
           ([sql]) =>
@@ -448,8 +450,8 @@ describe("admin prompt routes", () => {
 
     // ─── Mode-aware demo scoping for admin list (#1438) ─────────────
 
-    // TODO(#2744 step 5 — test sweep): mocks reference dropped `connections` / `connection_groups` SQL; rewrite to workspace_plugins (pillar='datasource') shape.
-    describe.skip("mode + demo scoping (#1438)", () => {
+    
+    describe("mode + demo scoping (#1438)", () => {
       function findListCall() {
         return mocks.mockInternalQuery.mock.calls.find(
           ([sql]) =>

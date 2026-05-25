@@ -527,6 +527,59 @@ export class DiscordApiUnavailableError extends Data.TaggedError(
   readonly message: string;
 }> {}
 
+// ── Teams static-bot install (#2752 — 1.5.3 Phase D) ────────────────
+
+/**
+ * Teams install rejected the supplied `tenant_id` at the input-shape
+ * layer — not a Microsoft Entra ID tenant GUID (8-4-4-4-12 hex digits),
+ * empty, or pasted as a domain (`contoso.onmicrosoft.com`). Maps to HTTP
+ * 400. The constructor message is admin-actionable verbatim; the route
+ * does not translate.
+ *
+ * Third subclass of the static-bot input-validation family alongside
+ * {@link TelegramChatIdInvalidError} and {@link DiscordGuildIdInvalidError}.
+ *
+ * @see packages/api/src/lib/integrations/install/teams-static-bot-handler.ts
+ */
+export class TeamsTenantIdInvalidError extends Data.TaggedError(
+  "TeamsTenantIdInvalidError",
+)<{
+  readonly message: string;
+}> {}
+
+/**
+ * Microsoft tenant discovery returned a non-OK response when verifying
+ * the supplied `tenant_id` — the tenant doesn't exist in Microsoft Entra
+ * ID, has been deleted, or is otherwise unresolvable. Maps to HTTP 400
+ * because the common failure mode (admin pasted the wrong GUID) is
+ * admin-correctable. The thrown message is admin-safe.
+ *
+ * Distinct from {@link TeamsApiUnavailableError} (502 — operator/upstream)
+ * because a 400 from the OIDC discovery endpoint is user-side and
+ * must not auto-retry.
+ */
+export class TeamsReachabilityError extends Data.TaggedError(
+  "TeamsReachabilityError",
+)<{
+  /** Admin-facing message — includes Microsoft's verbatim error text when available. */
+  readonly message: string;
+  /** HTTP status returned by the tenant discovery endpoint. Forensic-only. */
+  readonly status: number;
+}> {}
+
+/**
+ * Microsoft tenant discovery was unreachable at the network layer — DNS,
+ * TLS, timeout, or a malformed response. Maps to HTTP 502. The thrown
+ * message is admin-safe (no operator credentials, no internal hostnames);
+ * the underlying error is logged with the structured `requestId` for
+ * operator forensics.
+ */
+export class TeamsApiUnavailableError extends Data.TaggedError(
+  "TeamsApiUnavailableError",
+)<{
+  readonly message: string;
+}> {}
+
 // ── Workspace Installer (#2742) ────────────────────────────────────
 
 /**
@@ -674,6 +727,9 @@ export type AtlasError =
   | DiscordGuildIdInvalidError
   | DiscordReachabilityError
   | DiscordApiUnavailableError
+  | TeamsTenantIdInvalidError
+  | TeamsReachabilityError
+  | TeamsApiUnavailableError
   | AlreadyInstalledError
   | ConfigSchemaError
   | CatalogNotFoundError
@@ -740,6 +796,9 @@ export const ATLAS_ERROR_TAG_LIST = [
   "DiscordGuildIdInvalidError",
   "DiscordReachabilityError",
   "DiscordApiUnavailableError",
+  "TeamsTenantIdInvalidError",
+  "TeamsReachabilityError",
+  "TeamsApiUnavailableError",
   "AlreadyInstalledError",
   "ConfigSchemaError",
   "CatalogNotFoundError",

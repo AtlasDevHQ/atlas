@@ -103,13 +103,49 @@ export default defineConfig({
     // machine short-circuits ahead of the install-handler dispatch.
     // Each row flips to `implementation_status: 'available'` in its
     // own slice (10–16) when the handler ships.
+    // Microsoft Teams — 1.5.3 #2752 (Phase D). The operator wires an
+    // Azure Bot registration (TEAMS_APP_ID + TEAMS_APP_PASSWORD); each
+    // customer admin uploads the Atlas Teams app manifest to their
+    // tenant (or installs from AppSource), then pastes their Microsoft
+    // Entra ID tenant GUID into the install modal. The bot is
+    // operator-shared in MultiTenant mode — Bot Framework token
+    // acquisition is keyed on the app credentials, not on the customer
+    // tenant — and `tenant_id` is the per-Workspace routing identifier
+    // that scopes inbound activities.
+    //
+    // `tenant_id` is NOT marked `secret: true` — Microsoft tenant GUIDs
+    // are routing identifiers that leak in every Bot Framework activity
+    // envelope's `channelData.tenant.id`. Same posture as Discord's
+    // `guild_id` and Telegram's `chat_id`.
     {
       slug: "teams",
       type: "chat",
       install_model: "static-bot",
       enabled: true,
       saas_eligible: true,
-      implementation_status: "coming_soon",
+      implementation_status: "available",
+      name: "Microsoft Teams",
+      description:
+        "Chat with Atlas inside Microsoft Teams. The operator wires a shared Azure Bot (TEAMS_APP_ID + TEAMS_APP_PASSWORD); customer admins upload the Atlas Teams manifest to their tenant (or install from AppSource), then point Atlas at their Microsoft Entra ID tenant GUID.",
+      min_plan: "starter",
+      configSchema: [
+        {
+          key: "tenant_id",
+          type: "string",
+          label: "Tenant ID",
+          description:
+            "Microsoft Entra ID tenant GUID (8-4-4-4-12 hex digits, e.g. 72f988bf-86f1-41af-91ab-2d7cd011db47). Find it in the Microsoft Entra admin center under Overview → Tenant ID, or run `az account show --query tenantId` in the Azure CLI.",
+          required: true,
+        },
+        {
+          key: "tenant_name",
+          type: "string",
+          label: "Tenant name",
+          description:
+            "Optional admin-friendly label for this tenant. Shown on the integrations card.",
+          required: false,
+        },
+      ],
     },
     // Discord — 1.5.3 #2749 (Phase D). The operator wires a Discord
     // application (DISCORD_BOT_TOKEN + DISCORD_CLIENT_ID + DISCORD_PUBLIC_KEY);

@@ -8,6 +8,18 @@ This document is the rolling findings report for the 1.2.3 security sweep.
 Each phase appends a section. P0/P1/P2 findings file their own GH issues;
 P3s stay here for the cleanup tail.
 
+> **Postscript — 1.5.3 nomenclature note (#2819):** the historical
+> references throughout this doc to `encryptUrl` / `decryptUrl` and to
+> `connections.url` describe the audit-time state (2026-04-20). Both
+> APIs were retired in 1.5.3: `encryptUrl` / `decryptUrl` deprecated
+> re-exports removed from `packages/api/src/lib/db/internal.ts`, and
+> the `connections` table dropped in migration 0096 (#2744 / ADR-0007).
+> The "precedent" referenced in F-41 now lives at
+> `packages/api/src/lib/db/secret-encryption.ts` (`encryptSecret` /
+> `decryptSecret`); the F-47 rotation tooling lives at
+> `packages/api/scripts/rotate-encryption-key.ts`. The audit findings
+> themselves stay valid — only the symbol names moved.
+
 ---
 
 ## Phase 1 — Auth config + middleware coverage

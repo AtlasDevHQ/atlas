@@ -1543,6 +1543,8 @@ A new `boot-smoke` job in `.github/workflows/deploy-validation.yml` builds `depl
 
 **Category:** Type-system tightening that lifts a previously prose-only invariant (two helpers, same name, different read semantics) to a compile-time guarantee. Same family as wins #41 (`ApprovalRule` discriminated union), #42 (`RegionMigration` discriminated union), #50 (`PromptListEntry` per-source discriminated union, #2193), #52 (`CanonicalPrompt` discriminated union, #2185) — every "you can't construct this state" or "you can't conflate these two surfaces" rule belongs in the type, not in a docstring or a `DO NOT` comment. The `string & { __brand?: never }` companion type is the canonical Atlas pattern for "accept plain strings from a typed boundary without giving the alternative brand a structural backdoor."
 
+**Postscript (1.5.3, #2819):** the deprecation timeline slipped from 1.5.0 to 1.5.3 — `encryptUrl` / `decryptUrl` re-exports were retired in #2819, not at 1.5.0 as this entry forecasts. The URL-aware call-site cluster also shrank from three to two: `connections.url` was dropped in migration 0096 (#2744 / ADR-0007), so only `workspace_model_config.api_key_encrypted` and `sso_providers.config.clientSecret` still annotate with `URLSecret`. The brand discipline itself is unchanged — `URLSecret` / `OpaqueSecret` still fence the two helpers at the type level — only the deprecated-alias migration ramp and the third URL column went away.
+
 ---
 
 ## 56. `WorkspaceCredentials` discriminated union — typed BYOT cred boundary (#2282)

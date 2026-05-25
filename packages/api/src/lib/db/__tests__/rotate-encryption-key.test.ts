@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { rotateTable } from "../../../../scripts/rotate-encryption-key";
+import { rotateTable, UnprefixedSecretError } from "../../../../scripts/rotate-encryption-key";
 import { _resetEncryptionKeyCache } from "../internal";
 import {
   encryptSecret,
@@ -72,6 +72,7 @@ describe("rotateTable (F-47 re-encryption)", () => {
     expect(result.updated).toBe(1);
     expect(result.skippedEmpty).toBe(0);
     expect(result.orphaned).toBe(0);
+    expect(result.unprefixed).toBe(0);
 
     const updates = queries.filter((q) => q.sql.startsWith("UPDATE"));
     expect(updates).toHaveLength(1);
@@ -137,6 +138,7 @@ describe("rotateTable (F-47 re-encryption)", () => {
     // Orphan path bumps `orphaned`, not `skippedEmpty` — ops need to
     // distinguish "bad data drift" from "you dropped a legacy key".
     expect(result.orphaned).toBe(1);
+    expect(result.unprefixed).toBe(0);
     expect(result.skippedEmpty).toBe(0);
 
     const updates = queries.filter((q) => q.sql.startsWith("UPDATE"));
@@ -164,6 +166,53 @@ describe("rotateTable (F-47 re-encryption)", () => {
     expect(result.updated).toBe(0);
     expect(result.skippedEmpty).toBe(2);
     expect(result.orphaned).toBe(0);
+    expect(result.unprefixed).toBe(0);
+  });
+
+  it("counts un-prefixed rows as `unprefixed` (refuses to silently re-encrypt)", async () => {
+    // A corrupted/truncated `enc:v<N>:` prefix would silently round-trip
+    // through decryptSecret → encryptSecret as if it were plaintext —
+    // emerging as ciphertext-of-the-broken-string with no way to
+    // recover the original. The rotation script refuses the operation;
+    // operator must inspect and re-save through the admin UI. Tracked
+    // separately from `orphaned` because the remediation differs (adding
+    // a legacy key back to the keyset won't fix this).
+    process.env.ATLAS_ENCRYPTION_KEYS = "v2:new,v1:old";
+    _resetEncryptionKeyCache();
+
+    const { client, queries } = createMockClient([
+      // Either legacy plaintext (predates F-47) or a corrupted prefix —
+      // both refuse rotation. We don't distinguish because we *can't*
+      // distinguish: either way, the safe response is to refuse.
+      { pk: "legacy_plaintext", encrypted: "sk-just-a-raw-key" },
+      { pk: "corrupted_prefix", encrypted: "nc:v1:iv:tag:body" }, // missing leading 'e'
+    ]);
+
+    const result = await rotateTable(client, {
+      table: "workspace_model_config",
+      pk: "id",
+      encrypted: "api_key_encrypted",
+      keyVersionColumn: "api_key_key_version",
+    }, 2);
+
+    expect(result.scanned).toBe(2);
+    expect(result.updated).toBe(0);
+    expect(result.unprefixed).toBe(2);
+    expect(result.orphaned).toBe(0);
+    expect(result.skippedEmpty).toBe(0);
+
+    // Sanity: no UPDATEs issued — the script refused to touch either row.
+    expect(queries.filter((q) => q.sql.startsWith("UPDATE"))).toHaveLength(0);
+  });
+
+  it("UnprefixedSecretError is exported with a stable tag", () => {
+    // The tag is part of the script's contract for callers that want
+    // to route on it (currently only rotateTable internally). Pin it
+    // so a future rename surfaces as a test failure rather than a
+    // silent reclassification of un-prefixed rows as generic orphans.
+    const err = new UnprefixedSecretError();
+    expect(err._tag).toBe("UnprefixedSecretError");
+    expect(err).toBeInstanceOf(Error);
   });
 
   it("rejects unvetted SQL identifiers to prevent injection", async () => {

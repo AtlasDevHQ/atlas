@@ -121,7 +121,7 @@ export const releases: Release[] = [
     highlights: [
       "Scheduler-driven BYOT catalog refresh — daily cron walks every encrypted credential, surfaces success/failure counts in `/admin/scheduler/tasks`, and exposes admin-only `POST /api/v1/admin/scheduler/tasks/byot-catalog-refresh/run` for manual triggers; runbook at `platform-ops/byot-catalog-refresh`",
       "`WorkspaceCredentials` discriminated union + `ByotAdapter<Cred>` parameterized dispatch — Bedrock joins the same typed adapter table as Anthropic and OpenAI; folds the S25 + S26 BYOT review threads into one PR",
-      "Branded `encryptSecret` return types — `URLSecret` and `OpaqueSecret` brands enforce the picking guide at compile time; the deprecated `encryptUrl` / `decryptUrl` aliases stay branded so external SDK consumers pinned pre-#2285 keep their migration ramp through 1.5.0",
+      "Branded `encryptSecret` return types — `URLSecret` and `OpaqueSecret` brands enforce the picking guide at compile time. (The deprecated `encryptUrl` / `decryptUrl` re-exports forecast for retirement at 1.5.0 actually retired in 1.5.3 / #2819 once the `connections` table drop landed.)",
       "`@useatlas/sdk@0.0.14` multi-workspace MCP shape — `completeConnect` surfaces the plural `workspace_ids` claim, `buildConfig` opts into a multi-workspace env-hint block, `useMcpConnect` exposes a `workspaces` array for picker UX",
       "AWS Bedrock BYOT IAM + region guide — minimum IAM policy snippet, model availability per region, and the key rotation flow at `integrations/llm-providers/bedrock`",
       "Direct-provider BYOT model picker docs — Anthropic + OpenAI + Bedrock searchable picker over the live provider catalog with the L1 + Postgres L2 cache story at `guides/model-routing`",

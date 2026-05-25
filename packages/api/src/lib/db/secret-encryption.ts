@@ -13,9 +13,11 @@
  * Picking guide:
  *   • New integration credential column / opaque secret blob → use
  *     this module (`db/secret-encryption.ts`).
- *   • URL column, or a column matching one of the legacy `db/internal.ts`
- *     call sites (`connections.url`, `workspace_model_config.api_key_encrypted`,
+ *   • URL column, or a column matching one of the two surviving legacy
+ *     `db/internal.ts` call sites (`workspace_model_config.api_key_encrypted`,
  *     `sso_providers.config.clientSecret`) → use `db/internal.ts`.
+ *     The third historical call site (`connections.url`) was dropped in
+ *     migration 0096 / #2744 per ADR-0007.
  *
  * Why two helpers exist: `db/internal.ts`'s `decryptSecret` gates
  * plaintext detection on a URL-scheme regex (`^<scheme>://`) plus a
@@ -88,8 +90,15 @@ export class UnknownKeyVersionError extends Error {
  */
 const PREFIXED_RE = /^enc:v(\d+):(.+)$/s;
 
-/** Check for any `enc:v<N>:` prefix without buying into a specific version. */
-function hasVersionedPrefix(stored: string): boolean {
+/**
+ * Check for any `enc:v<N>:` prefix without buying into a specific version.
+ *
+ * Exported so rotation tooling can refuse to round-trip un-prefixed
+ * values through `decryptSecret`/`encryptSecret` (which would silently
+ * re-encrypt a corrupted/truncated prefix as if it were plaintext).
+ * Production read paths still gate inside `decryptSecret` itself.
+ */
+export function hasVersionedPrefix(stored: string): boolean {
   return PREFIXED_RE.test(stored);
 }
 

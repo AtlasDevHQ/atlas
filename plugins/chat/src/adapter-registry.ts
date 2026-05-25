@@ -31,7 +31,12 @@ import type {
 import type { Adapter } from "chat";
 import { createSlackAdapter } from "./adapters/slack";
 import { createTelegramAdapter } from "./adapters/telegram";
-import type { SlackAdapterConfig, TelegramAdapterConfig } from "./config";
+import { createDiscordAdapter } from "./adapters/discord";
+import type {
+  DiscordAdapterConfig,
+  SlackAdapterConfig,
+  TelegramAdapterConfig,
+} from "./config";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -81,7 +86,9 @@ type ChatAdapterInstance<K extends ChatAdapterName> = K extends "slack"
   ? SlackAdapter
   : K extends "telegram"
     ? Adapter
-    : { readonly name: K };
+    : K extends "discord"
+      ? Adapter
+      : { readonly name: K };
 
 /**
  * Returned alongside `ChatAdapterSet` so `healthCheck` and admin
@@ -190,9 +197,47 @@ const TELEGRAM_BUILDER: ChatAdapterBuilder<Adapter> = {
   },
 };
 
+/**
+ * Discord — second static-bot Platform to ship a real adapter (1.5.3
+ * #2749). The chat adapter needs three env vars: `DISCORD_BOT_TOKEN`
+ * (bot auth for outgoing API calls), `DISCORD_CLIENT_ID` (application
+ * id, also used by the install flow to build the bot-install URL),
+ * and `DISCORD_PUBLIC_KEY` (Ed25519 verification key for Discord's
+ * webhook signatures — mandatory).
+ *
+ * Per-Workspace `guild_id` routing lives in `workspace_plugins.config`
+ * (written by `DiscordStaticBotInstallHandler`); the adapter itself is
+ * operator-shared and stateless across Workspaces.
+ *
+ * Optional `DISCORD_MENTION_ROLE_IDS` (comma-separated) extends the
+ * adapter's mention handling beyond direct `@user`.
+ */
+const DISCORD_BUILDER: ChatAdapterBuilder<Adapter> = {
+  slug: "discord",
+  platform: "discord",
+  requiredEnv: ["DISCORD_BOT_TOKEN", "DISCORD_CLIENT_ID", "DISCORD_PUBLIC_KEY"],
+  build(env) {
+    const botToken = env.DISCORD_BOT_TOKEN;
+    const applicationId = env.DISCORD_CLIENT_ID;
+    const publicKey = env.DISCORD_PUBLIC_KEY;
+    if (!botToken || !applicationId || !publicKey) return null;
+    const mentionRoleIds = env.DISCORD_MENTION_ROLE_IDS
+      ? env.DISCORD_MENTION_ROLE_IDS.split(",").map((s) => s.trim()).filter((s) => s.length > 0)
+      : undefined;
+    const config: DiscordAdapterConfig = {
+      botToken,
+      applicationId,
+      publicKey,
+      ...(mentionRoleIds && mentionRoleIds.length > 0 ? { mentionRoleIds } : {}),
+    };
+    return createDiscordAdapter(config);
+  },
+};
+
 const BUILDERS_BY_SLUG: Readonly<Record<string, ChatAdapterBuilder<unknown>>> = {
   slack: SLACK_BUILDER,
   telegram: TELEGRAM_BUILDER,
+  discord: DISCORD_BUILDER,
 };
 
 /**
@@ -332,10 +377,16 @@ export function buildChatAdapterRegistry(
         { slug: entry.slug, platform: builder.platform },
         "AdapterRegistry: chat adapter registered",
       );
+    } else if (entry.slug === "discord") {
+      adapters.discord = adapter as Adapter;
+      logger.info(
+        { slug: entry.slug, platform: builder.platform },
+        "AdapterRegistry: chat adapter registered",
+      );
     }
-    // Other static-bot adapters (Discord #2749, gchat #2754, WhatsApp
-    // #2753) slot in here as their slices land. The `Partial<Record>`
-    // shape of `ChatAdapterSet` admits them without a type change.
+    // Other static-bot adapters (gchat #2754, WhatsApp #2753) slot in
+    // here as their slices land. The `Partial<Record>` shape of
+    // `ChatAdapterSet` admits them without a type change.
   }
 
   return {

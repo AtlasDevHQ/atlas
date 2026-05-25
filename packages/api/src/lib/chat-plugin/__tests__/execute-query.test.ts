@@ -143,6 +143,19 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   checkRateLimit: mockCheckRateLimit,
 }));
 
+// `internalQuery` is used by the Telegram + Discord branches to
+// resolve `chat_id` / `guild_id` → workspace_id. Mocked at the boundary
+// (per CLAUDE.md "mock all exports" — spread the real exports and
+// override only what each test needs).
+const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<Record<string, unknown>[]>> = mock(
+  () => Promise.resolve([]),
+);
+const realInternal = await import("@atlas/api/lib/db/internal");
+mock.module("@atlas/api/lib/db/internal", () => ({
+  ...realInternal,
+  internalQuery: mockInternalQuery,
+}));
+
 // --- Tests ---
 
 describe("chat-plugin executeQuery host helper", () => {
@@ -153,6 +166,8 @@ describe("chat-plugin executeQuery host helper", () => {
     mockGetConversationId.mockClear();
     mockSetConversationId.mockClear();
     mockCreateConversation.mockClear();
+    mockInternalQuery.mockClear();
+    mockInternalQuery.mockImplementation(() => Promise.resolve([]));
     mockAddMessage.mockClear();
     mockGetConversation.mockClear();
     mockCheckRateLimit.mockClear();
@@ -339,13 +354,32 @@ describe("chat-plugin executeQuery host helper", () => {
   it("refuses unknown platforms cleanly without invoking the agent", async () => {
     const { runExecuteQuery } = await import("../executeQuery");
 
+    // Teams stays on the placeholder branch in 1.5.3 — its install
+    // handler hasn't shipped yet. (Discord moved off this branch in
+    // #2749 — see the discord-specific tests below.)
+    await expect(
+      runExecuteQuery("q", {
+        threadId: "teams:abc",
+        adapter: { name: "teams" },
+        rawMessage: { team_id: "T0" },
+      }),
+    ).rejects.toThrow(/not yet supported/);
+    expect(capturedAgentCalls).toHaveLength(0);
+  });
+
+  it("refuses Discord DM interactions (no guild_id) without invoking the agent — 1.5.3 #2749", async () => {
+    const { runExecuteQuery } = await import("../executeQuery");
+
     await expect(
       runExecuteQuery("q", {
         threadId: "discord:abc",
         adapter: { name: "discord" },
-        rawMessage: { team_id: "T0" },
+        // DM interactions have no `guild_id` — the static-bot install
+        // model is per-server, so DMs intentionally have no tenant
+        // binding and short-circuit before the agent runs.
+        rawMessage: { id: "interaction-1", channel_id: "C1" },
       }),
-    ).rejects.toThrow(/not yet supported/);
+    ).rejects.toThrow(/direct messages/i);
     expect(capturedAgentCalls).toHaveLength(0);
   });
 
@@ -605,5 +639,137 @@ describe("chat-plugin executeQuery host helper", () => {
     expect(actor).toBeDefined();
     expect(actor!.id).toBe("slack-bot:T0ABC");
     expect(actor!.id.endsWith(":")).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // Discord branch — 1.5.3 #2749 (Phase D)
+  // -------------------------------------------------------------------------
+
+  it("Discord happy path: resolves guild_id → workspace + binds discord actor + stamps approvalSurface='discord'", async () => {
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("workspace_plugins")) {
+        return Promise.resolve([{ workspace_id: "org-discord-tenant" }]);
+      }
+      return Promise.resolve([]);
+    });
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    const result = await runExecuteQuery("show me users", {
+      threadId: "discord:g123-c456",
+      adapter: { name: "discord" },
+      rawMessage: {
+        id: "interaction-1",
+        guild_id: "123456789012345678",
+        channel_id: "987654321098765432",
+        member: { user: { id: "U_DC" } },
+      },
+    });
+
+    expect(result.answer).toBe("42 active users");
+    expect(capturedAgentCalls).toHaveLength(1);
+    const call = capturedAgentCalls[0]!;
+    expect(call.options?.actor?.id).toBe("discord-bot:123456789012345678:U_DC");
+    expect(call.options?.actor?.activeOrganizationId).toBe("org-discord-tenant");
+    expect(call.options?.approvalSurface).toBe("discord");
+    // Rate-limit key shape is `discord:${guildId}` (per-server bucket).
+    expect(observedRateLimitKeys).toContain("discord:123456789012345678");
+  });
+
+  it("Discord fail-closes on unknown guild_id (no install row) — never invokes the agent", async () => {
+    // No mock override — default returns []; resolver throws
+    // DiscordUnknownTenantError; runDiscordExecuteQuery rethrows as a
+    // user-safe error. The agent must NOT be invoked.
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await expect(
+      runExecuteQuery("q", {
+        threadId: "discord:g999",
+        adapter: { name: "discord" },
+        rawMessage: {
+          id: "interaction-2",
+          guild_id: "999999999999999999",
+          channel_id: "C1",
+        },
+      }),
+    ).rejects.toThrow(/not connected to Atlas/i);
+    expect(capturedAgentCalls).toHaveLength(0);
+  });
+
+  it("Discord fail-closes on DB outage during workspace resolution — user-safe error, never invokes the agent", async () => {
+    mockInternalQuery.mockImplementation(() =>
+      Promise.reject(new Error("ECONNREFUSED postgres://internal-db:5432")),
+    );
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await expect(
+      runExecuteQuery("q", {
+        threadId: "discord:g123",
+        adapter: { name: "discord" },
+        rawMessage: {
+          id: "interaction-3",
+          guild_id: "123456789012345678",
+          channel_id: "C1",
+        },
+      }),
+    ).rejects.toThrow(/could not resolve the Discord workspace/i);
+    expect(capturedAgentCalls).toHaveLength(0);
+  });
+
+  it("Discord fail-closes when the same guild_id maps to multiple workspaces — cross-tenant misroute defense (codex P1)", async () => {
+    // The DB schema doesn't enforce global cross-workspace uniqueness
+    // on the routing identifier today. Without the duplicate guard in
+    // the resolver, two workspaces installing the same guild_id would
+    // silently let inbound interactions land in an arbitrary workspace
+    // — a cross-tenant data exposure risk. The fail-closed branch
+    // surfaces as the same user-safe error as "unknown guild," and an
+    // operator log line points at the duplicate.
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("workspace_plugins")) {
+        return Promise.resolve([
+          { workspace_id: "org-a" },
+          { workspace_id: "org-b" },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await expect(
+      runExecuteQuery("q", {
+        threadId: "discord:gdup",
+        adapter: { name: "discord" },
+        rawMessage: {
+          id: "interaction-dup",
+          guild_id: "123456789012345678",
+          channel_id: "C1",
+        },
+      }),
+    ).rejects.toThrow(/not connected to Atlas/i);
+    expect(capturedAgentCalls).toHaveLength(0);
+  });
+
+  it("Discord rejects events whose guild_id isn't a valid snowflake — defends rate-limit cache key shape", async () => {
+    // Even though the Ed25519 signature gate catches forgery at the
+    // adapter layer, the dispatcher belt-and-suspenders by re-validating
+    // the snowflake shape. Garbage guild_id surfaces as the same
+    // DM-refuse error (missing tenant context) — no DB read, no agent.
+    mockInternalQuery.mockImplementation(() => {
+      throw new Error("internalQuery should never be reached on shape failure");
+    });
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await expect(
+      runExecuteQuery("q", {
+        threadId: "discord:bad",
+        adapter: { name: "discord" },
+        rawMessage: {
+          id: "interaction-4",
+          guild_id: "not-a-snowflake'; DROP TABLE--",
+          channel_id: "C1",
+        },
+      }),
+    ).rejects.toThrow(/direct messages/i);
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(capturedAgentCalls).toHaveLength(0);
   });
 });

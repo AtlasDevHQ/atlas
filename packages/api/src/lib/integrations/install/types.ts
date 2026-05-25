@@ -215,6 +215,20 @@ export interface FormBasedInstallHandler {
 export interface StaticBotInstallHandler {
   readonly kind: "static-bot";
 
+  /**
+   * Operator-side application id, when the Platform's bot-install flow
+   * is OAuth-shaped (Discord) and the route needs to build the
+   * authorize URL. `undefined` for Platforms whose install captures the
+   * routing identifier directly without an OAuth redirect (Telegram —
+   * the admin pastes the `chat_id` into a form).
+   *
+   * Typed on the interface so the route's narrow (`if (!handler.applicationId)`)
+   * is a type-checked contract rather than a `"applicationId" in handler`
+   * runtime duck-type. A future static-bot Platform that uses an OAuth
+   * shape must populate this; one that doesn't can omit it.
+   */
+  readonly applicationId?: string;
+
   confirmInstall(
     workspaceId: WorkspaceId,
     routingIdentifier: string,

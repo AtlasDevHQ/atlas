@@ -6,6 +6,7 @@
     "admin-console",
     "llm-providers",
     "telegram",
+    "discord",
     "sub-processor-feed"
   ]
 }

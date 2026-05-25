@@ -450,6 +450,58 @@ export class TelegramApiUnavailableError extends Data.TaggedError(
   readonly message: string;
 }> {}
 
+// ── Discord static-bot install (#2749 — 1.5.3 Phase D) ──────────────
+
+/**
+ * Discord install rejected the supplied `guild_id` at the input-shape
+ * layer — not a 17–20 digit snowflake, empty, or pasted as an invite
+ * code / server name. Maps to HTTP 400. The constructor message is
+ * admin-actionable verbatim; the route does not translate.
+ *
+ * Peers with {@link TelegramChatIdInvalidError}; defined as the second
+ * concrete subclass of the static-bot input-validation family.
+ *
+ * @see packages/api/src/lib/integrations/install/discord-static-bot-handler.ts
+ */
+export class DiscordGuildIdInvalidError extends Data.TaggedError(
+  "DiscordGuildIdInvalidError",
+)<{
+  readonly message: string;
+}> {}
+
+/**
+ * Discord API returned a non-OK envelope when verifying guild
+ * reachability via `GET /api/v10/guilds/{guild_id}`. Maps to HTTP 400
+ * because the common failure modes (Unknown Guild, Missing Access, bot
+ * not in guild) are admin-correctable: re-paste the id, re-run the
+ * install link. The `message` field carries Discord's verbatim text so
+ * the admin sees the actionable description rather than a generic
+ * "install failed".
+ *
+ * Distinct from {@link DiscordApiUnavailableError} (502 — operator/
+ * upstream) because user-correctable errors must not auto-retry.
+ */
+export class DiscordReachabilityError extends Data.TaggedError(
+  "DiscordReachabilityError",
+)<{
+  /** Admin-facing message — includes Discord's `message` verbatim. */
+  readonly message: string;
+  /** Discord-side numeric error code (10004 "Unknown Guild", etc.). Forensic-only. */
+  readonly errorCode: number;
+}> {}
+
+/**
+ * Discord API was unreachable at the network layer — DNS, TLS, timeout,
+ * or a malformed response. Maps to HTTP 502. The thrown message is
+ * admin-safe (no bot token, no internal hostnames); the underlying
+ * error is logged with the structured `requestId` for operator forensics.
+ */
+export class DiscordApiUnavailableError extends Data.TaggedError(
+  "DiscordApiUnavailableError",
+)<{
+  readonly message: string;
+}> {}
+
 // ── Workspace Installer (#2742) ────────────────────────────────────
 
 /**
@@ -593,6 +645,9 @@ export type AtlasError =
   | TelegramChatIdInvalidError
   | TelegramReachabilityError
   | TelegramApiUnavailableError
+  | DiscordGuildIdInvalidError
+  | DiscordReachabilityError
+  | DiscordApiUnavailableError
   | AlreadyInstalledError
   | ConfigSchemaError
   | CatalogNotFoundError
@@ -655,6 +710,9 @@ export const ATLAS_ERROR_TAG_LIST = [
   "TelegramChatIdInvalidError",
   "TelegramReachabilityError",
   "TelegramApiUnavailableError",
+  "DiscordGuildIdInvalidError",
+  "DiscordReachabilityError",
+  "DiscordApiUnavailableError",
   "AlreadyInstalledError",
   "ConfigSchemaError",
   "CatalogNotFoundError",

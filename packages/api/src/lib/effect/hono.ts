@@ -174,6 +174,14 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
     case "TelegramChatIdInvalidError":
     case "TelegramReachabilityError":
       return { status: 400, code: "bad_request", message: error.message };
+    // #2749 — Discord install rejected at the input or upstream-
+    // verification layer. Both are admin-correctable (re-paste the id,
+    // re-run the bot install link, fix the token) so 400 is the right
+    // surface. The message carries Discord's verbatim `message` field
+    // for `DiscordReachabilityError`; the route does not translate.
+    case "DiscordGuildIdInvalidError":
+    case "DiscordReachabilityError":
+      return { status: 400, code: "bad_request", message: error.message };
     // #2742 — catalog `config_schema` violation. Surface per-field
     // detail in the response body so the admin UI's form can highlight
     // the wrong inputs without a follow-up roundtrip. Field names are
@@ -322,6 +330,13 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
     // TLS, timeout). Mirrors `PlatformOAuthExchangeError`'s upstream
     // posture — the message is admin-safe (no token, no internal host).
     case "TelegramApiUnavailableError":
+      return { status: 502, code: "upstream_error", message: error.message };
+    // #2749 — Discord API unreachable at the network layer (DNS, TLS,
+    // timeout). Same upstream posture as Telegram's; the message is
+    // admin-safe (bot token rides in the `Authorization` header so it
+    // doesn't surface in fetch error messages the way Telegram's
+    // URL-embedded token can).
+    case "DiscordApiUnavailableError":
       return { status: 502, code: "upstream_error", message: error.message };
 
     // ── 503 Service Unavailable ──────────────────────────────────

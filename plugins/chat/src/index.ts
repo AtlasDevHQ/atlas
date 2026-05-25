@@ -258,6 +258,26 @@ function catalogHasTelegramStaticBot(
   );
 }
 
+/**
+ * Discord (1.5.3 #2749) mirrors Telegram's static-bot mount story —
+ * declared + enabled in the catalog mounts the webhook route at
+ * `/api/plugins/chat-interaction/webhooks/discord`. Env-var presence
+ * (and therefore the actual adapter wiring) is checked inside
+ * `initialize()` by the `AdapterRegistry`.
+ */
+function catalogHasDiscordStaticBot(
+  catalog: ReadonlyArray<ChatCatalogEntryInput> | undefined,
+): boolean {
+  if (!catalog) return false;
+  return catalog.some(
+    (e) =>
+      e.slug === "discord" &&
+      e.type === "chat" &&
+      e.install_model === "static-bot" &&
+      e.enabled === true,
+  );
+}
+
 function buildChatPlugin(
   config: ChatPluginConfig,
 ): AtlasInteractionPlugin<ChatPluginConfig> {
@@ -265,6 +285,7 @@ function buildChatPlugin(
   let stateAdapter: StateAdapter | null = null;
   let slackAdapterInstance: SlackAdapter | null = null;
   let telegramAdapterInstance: Adapter | null = null;
+  let discordAdapterInstance: Adapter | null = null;
   let log: PluginLogger | null = null;
   let initialized = false;
   /**
@@ -283,6 +304,7 @@ function buildChatPlugin(
 
   const slackOauthDeclared = catalogHasSlackOauth(config.catalog);
   const telegramStaticBotDeclared = catalogHasTelegramStaticBot(config.catalog);
+  const discordStaticBotDeclared = catalogHasDiscordStaticBot(config.catalog);
 
   return {
     id: "chat-interaction",
@@ -360,6 +382,50 @@ function buildChatPlugin(
       // setWebhook call must match `TELEGRAM_WEBHOOK_SECRET` when set.
       // Remaining static-bot platforms (Discord #2749, gchat #2754,
       // WhatsApp #2753) ride the same pattern.
+      // Discord (1.5.3 #2749 — second static-bot webhook). The Chat
+      // SDK Discord adapter verifies the Ed25519 signature on every
+      // incoming interaction internally using DISCORD_PUBLIC_KEY.
+      if (discordStaticBotDeclared) {
+        app.post("/webhooks/discord", async (c) => {
+          const requestId = crypto.randomUUID();
+          if (!bridge) {
+            return c.json({ error: "Chat plugin not yet initialized", requestId }, 503);
+          }
+          const handler = bridge.webhooks.discord;
+          if (!handler) {
+            // Catalog declared discord + enabled, but the AdapterRegistry
+            // didn't wire the adapter — almost always means one of
+            // DISCORD_BOT_TOKEN / DISCORD_CLIENT_ID / DISCORD_PUBLIC_KEY
+            // is unset. Same fail-loud posture as the Telegram branch
+            // (#2748 review + #2673 silent-degradation precedent).
+            (log ?? console).error(
+              { requestId, adapter: "discord" },
+              "Discord webhook received but adapter not configured — check DISCORD_BOT_TOKEN + DISCORD_CLIENT_ID + DISCORD_PUBLIC_KEY and AdapterRegistry boot logs",
+            );
+            return c.json({ error: "Discord adapter not configured", requestId }, 404);
+          }
+          try {
+            const response = await handler(c.req.raw, {
+              waitUntil: (task: Promise<unknown>) => {
+                task.catch((err: unknown) => {
+                  (log ?? console).error(
+                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "discord" },
+                    "Chat SDK Discord webhook background task failed",
+                  );
+                });
+              },
+            });
+            return response;
+          } catch (err) {
+            (log ?? console).error(
+              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "discord" },
+              "Discord webhook handler threw unexpectedly",
+            );
+            return c.json({ error: "Webhook processing failed", requestId }, 500);
+          }
+        });
+      }
+
       if (telegramStaticBotDeclared) {
         app.post("/webhooks/telegram", async (c) => {
           const requestId = crypto.randomUUID();
@@ -434,9 +500,10 @@ function buildChatPlugin(
           logger: ctx.logger,
         });
         slackAdapterInstance = registry.adapters.slack ?? null;
-        // Telegram (1.5.3 #2748 — first static-bot adapter to wire here).
-        // Discord / gchat / WhatsApp follow as their Phase D slices land.
+        // Telegram (1.5.3 #2748 — first static-bot adapter wired here);
+        // Discord (1.5.3 #2749 — second). gchat / WhatsApp follow.
         telegramAdapterInstance = (registry.adapters.telegram ?? null) as Adapter | null;
+        discordAdapterInstance = (registry.adapters.discord ?? null) as Adapter | null;
         adapterDiagnostics = registry.diagnostics;
 
         // Bridge takes pre-built instances per-platform; unwired slots
@@ -445,6 +512,7 @@ function buildChatPlugin(
         bridge = createChatBridge(config, ctx.logger, stateAdapter, {
           slack: slackAdapterInstance,
           telegram: telegramAdapterInstance,
+          discord: discordAdapterInstance,
         });
       } catch (err) {
         ctx.logger.error(
@@ -463,12 +531,14 @@ function buildChatPlugin(
         stateAdapter = null;
         slackAdapterInstance = null;
         telegramAdapterInstance = null;
+        discordAdapterInstance = null;
         throw err;
       }
 
       const enabledAdapters: string[] = [];
       if (slackAdapterInstance) enabledAdapters.push("slack");
       if (telegramAdapterInstance) enabledAdapters.push("telegram");
+      if (discordAdapterInstance) enabledAdapters.push("discord");
 
       const backend = config.state?.backend ?? "memory";
       const initFailedSilently =
@@ -515,6 +585,7 @@ function buildChatPlugin(
       const enabledAdapters: string[] = [];
       if (slackAdapterInstance) enabledAdapters.push("slack");
       if (telegramAdapterInstance) enabledAdapters.push("telegram");
+      if (discordAdapterInstance) enabledAdapters.push("discord");
 
       if (enabledAdapters.length === 0) {
         // Use the diagnostics captured at init to point operators at the
@@ -593,6 +664,7 @@ function buildChatPlugin(
       }
       slackAdapterInstance = null;
       telegramAdapterInstance = null;
+      discordAdapterInstance = null;
       log = null;
       initialized = false;
     },

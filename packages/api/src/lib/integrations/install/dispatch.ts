@@ -133,7 +133,7 @@ export function getInstallHandler(
       const handler = staticBotHandlers.get(catalogRow.slug);
       if (!handler) {
         throw new Error(
-          `No static-bot install handler registered for catalog slug "${catalogRow.slug}". Register via registerStaticBotHandler() at module load (set the operator env vars the handler needs — e.g. TELEGRAM_BOT_TOKEN for telegram).`,
+          `No static-bot install handler registered for catalog slug "${catalogRow.slug}". Register via registerStaticBotHandler() at module load (set the operator env vars the handler needs — TELEGRAM_BOT_TOKEN for telegram; DISCORD_BOT_TOKEN + DISCORD_CLIENT_ID for discord).`,
         );
       }
       return handler;

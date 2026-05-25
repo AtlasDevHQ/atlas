@@ -1,0 +1,221 @@
+---
+title: Discord
+description: Connect Atlas to a Discord server. The operator wires a single shared Discord application; each workspace authorizes the bot into one server through Discord's OAuth bot-install flow.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas's Discord integration follows the **static-bot** install model:
+one operator-owned Discord application serves every workspace in your
+deploy, and each workspace admin grants the Atlas bot access to one
+Discord server (also called a "guild") via Discord's OAuth bot-install
+page. The bot itself authenticates once at deploy time; per-workspace
+routing is the only thing a customer admin configures.
+
+This is in contrast to Slack, where each workspace runs its own OAuth
+dance and gets its own bot token. Discord's model is operator-shared
+because Discord bots don't have a per-workspace install concept —
+adding the bot to a server is the install, and the bot uses a single
+operator-owned token for every server it's been added to.
+
+## Operator setup (one-time, per deploy)
+
+These steps wire your deploy to a Discord application. Self-hosted
+operators run them once during initial deployment; Atlas Cloud
+customers don't — the Atlas Cloud team has already done this on the
+hosted regions.
+
+### 1. Create a Discord application
+
+In the [Discord Developer Portal](https://discord.com/developers/applications),
+click **New Application**, give it a name (e.g. "Atlas"), and confirm.
+You'll land on the application's General Information page.
+
+Three values from this page need to go into your Atlas deploy:
+
+- **Application ID** (top of the General Information page) →
+  `DISCORD_CLIENT_ID`
+- **Public Key** (Developer Portal: General Information → Public Key)
+  → `DISCORD_PUBLIC_KEY`
+- **Bot Token** (Developer Portal: Bot tab → Reset Token, then copy)
+  → `DISCORD_BOT_TOKEN`
+
+Treat the bot token and public key as secrets — anyone with the bot
+token can act as your bot on every server it's been added to. The
+application id is public; it appears in the OAuth bot-install URL.
+
+### 2. Set the env vars
+
+Set all three on every Atlas API service in your deploy:
+
+```bash
+DISCORD_BOT_TOKEN=<bot token from step 1>
+DISCORD_CLIENT_ID=<application id from step 1>
+DISCORD_PUBLIC_KEY=<public key from step 1>
+```
+
+Optionally also set `DISCORD_MENTION_ROLE_IDS` (comma-separated role
+ids) to extend the bot's mention-handler beyond direct `@bot`
+mentions. Mentions of any listed role trigger the same agent path.
+
+### 3. Register Atlas's interaction endpoint
+
+Atlas listens for Discord interactions over HTTP — not the Gateway
+WebSocket. Interactions are slash commands, button clicks, and
+application-command mentions; Discord delivers each as an HTTPS POST
+to a URL you configure. (Because Atlas uses HTTP Interactions, the
+**Message Content Intent** in the Bot tab does NOT need to be enabled
+— that intent only affects Gateway WebSocket deliveries and is
+inactive for HTTP-only bots.)
+
+In the Developer Portal → **General Information** → **Interactions
+Endpoint URL**, paste your Atlas deploy's webhook URL:
+
+```
+https://api.your-atlas-deploy.example.com/api/plugins/chat-interaction/webhooks/discord
+```
+
+Discord verifies the URL by sending a `PING` request signed with the
+application's Ed25519 public key. Atlas's Chat SDK adapter verifies
+this signature using `DISCORD_PUBLIC_KEY`; the registration succeeds
+when the signature checks out. If Discord shows an "Invalid Interactions
+Endpoint URL" error:
+
+- Confirm `DISCORD_PUBLIC_KEY` matches the Public Key on the same
+  application's General Information page.
+- Confirm the URL is publicly reachable (try `curl` from outside your
+  network).
+- Confirm the URL exactly matches the chat-plugin webhook path — case
+  matters; trailing slashes don't.
+
+### 4. Enable the catalog row
+
+Atlas ships the Discord catalog entry pre-declared in
+`deploy/api/atlas.config.ts`. If you've started from the deploy
+template, the row is already `enabled: true` — no change needed. For
+custom configs, mirror the shape:
+
+```ts
+{
+  slug: "discord",
+  type: "chat",
+  install_model: "static-bot",
+  enabled: true,
+  saas_eligible: true,
+  // (configSchema omitted here — see atlas.config.ts for the full row)
+}
+```
+
+Once the env vars are set and the catalog row is enabled, the boot
+log should include:
+
+```
+Registered DiscordStaticBotInstallHandler
+AdapterRegistry: chat adapter registered  { slug: 'discord', platform: 'discord' }
+```
+
+If either line is missing, see [troubleshooting](#troubleshooting) below.
+
+## Customer install (per workspace)
+
+Once the operator has wired the application, workspace admins can
+install Discord from **Admin → Integrations**.
+
+### 1. Click Install on the Discord card
+
+In **Admin → Integrations → Discord**, click **Install**. Atlas
+redirects to Discord's OAuth bot-install page, where you'll see the
+list of servers you can add bots to.
+
+<Callout type="info" title="You need Manage Server permission">
+  Discord only shows servers where you have **Manage Server**
+  permission. If you don't see the server you want, ask an admin of
+  that server to install Atlas instead — they can grant you Manage
+  Server first, or run the install themselves.
+</Callout>
+
+### 2. Pick a server and authorize
+
+Select the server you want Atlas to listen on, review the requested
+permissions (View Channels, Send Messages, Embed Links, Read Message
+History, Send Messages in Threads), and click **Authorize**. Discord
+adds the bot to the server and redirects back to Atlas.
+
+Atlas immediately calls Discord's `GET /guilds/{guild_id}` to confirm
+the bot is now a member of the server. If it succeeds, the install
+row is persisted and the card flips to "Installed". If it fails,
+Discord's error message bubbles up verbatim — see the next section.
+
+### 3. (Optional) Customize the bot's nickname
+
+By default, the bot appears under your application's name. To change
+how it appears in a single server, anyone with Manage Nicknames in
+that server can right-click the bot and rename it — this doesn't
+affect routing or any other server.
+
+## Troubleshooting
+
+### "Discord rejected guild_id … Unknown Guild"
+
+Atlas couldn't find the guild Discord redirected with. This usually
+means Discord finished the OAuth dance but the server selection
+didn't propagate — retry the install. If it persists:
+
+- The server may have been deleted between OAuth authorize and
+  callback.
+- The bot may have been removed from the server before Atlas's
+  reachability check ran (rare).
+
+### "Discord rejected guild_id … Missing Access"
+
+The bot is no longer in the server, or has been restricted from
+reading guild metadata. Re-run the install from **Admin → Integrations
+→ Discord** to re-add the bot and grant the required scopes.
+
+### "Discord API unreachable"
+
+A network failure between Atlas and `discord.com`. Check operator-side
+egress (firewall, region routing, DNS) and retry. Atlas does not retry
+automatically — install attempts are user-initiated and a transient
+failure surfaces back to the admin to retry.
+
+### "No static-bot install handler registered for catalog slug 'discord'"
+
+The operator hasn't set `DISCORD_BOT_TOKEN` and `DISCORD_CLIENT_ID`,
+or one is empty on the API process handling the install. Both are
+required (the install flow can't proceed without either). Ops sets
+both per-service and restarts the API. On the next boot, log streams
+should include `Registered DiscordStaticBotInstallHandler` — if not,
+double check the env values aren't empty / whitespace-only.
+
+### Webhook deliveries stop landing
+
+Discord's Interactions Endpoint URL is tied to the Discord application,
+not to a server, so re-registering it is rare. The most common cause
+is `DISCORD_PUBLIC_KEY` getting out of sync with the application's
+Public Key — Discord rotates the public key when you click "Reset
+Public Key" in the Developer Portal. If Atlas's signature verification
+starts failing, copy the current Public Key from the portal and update
+the env var.
+
+### Bot doesn't respond to plain messages
+
+Atlas listens over **HTTP Interactions**, not the Gateway WebSocket.
+That means plain chat messages — even ones that `@mention` the bot —
+don't reach Atlas. Users interact via Discord's slash commands and
+application-command surfaces (a right-click menu on a user / message,
+the `/` chat-bar menu). If a user types `@AtlasBot show me users`
+and nothing happens, that's expected — point them at the slash
+command surface (e.g. `/ask`) the chat-adapter exposes.
+
+## Disconnecting
+
+To disconnect a workspace from Discord, open **Admin → Integrations
+→ Discord** and click **Disconnect**. Atlas clears the
+`workspace_plugins` row via `WorkspaceInstaller.uninstall` — the bot
+stays in the Discord server (Atlas doesn't have permission to remove
+itself), but incoming interactions are no longer routed to the
+workspace.
+
+To remove the bot from the server itself, a server admin opens the
+member list, right-clicks the bot, and chooses **Kick**.

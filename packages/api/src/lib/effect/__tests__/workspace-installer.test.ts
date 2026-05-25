@@ -109,6 +109,13 @@ type DispatchHandler =
     }
   | {
       kind: "static-bot";
+      /**
+       * Optional applicationId for OAuth-shaped static-bot installs
+       * (Discord — #2749). Telegram-style direct installs omit it.
+       * Mirrors the optional field on the production
+       * `StaticBotInstallHandler` interface.
+       */
+      applicationId?: string;
       confirmInstall: (
         workspaceId: WorkspaceId,
         routingIdentifier: string,
@@ -648,6 +655,51 @@ describe("WorkspaceInstaller.install", () => {
     );
     expect(receivedExtras).toBeUndefined();
     expect(receivedProof).toBeUndefined();
+  });
+
+  // Discord (1.5.3 #2749) rides the same static-bot dispatch — pin
+  // the contract by slug so a future regression in slug routing (e.g.
+  // a typo collapsing discord onto telegram's handler) surfaces here.
+  it("dispatches static-bot install by slug — discord and telegram are independent handler slots", async () => {
+    queueCatalogLookup("discord", { pillar: "chat", install_model: "static-bot" });
+    queueInstallLookup(WSID, "catalog:discord", null);
+    const calledHandlers: string[] = [];
+    dispatchHandlers.set("discord", {
+      kind: "static-bot",
+      applicationId: "fake-discord-app-id",
+      confirmInstall: async (workspaceId) => {
+        calledHandlers.push("discord");
+        return {
+          installRecord: {
+            id: "install-dc-1",
+            workspaceId,
+            catalogId: "discord",
+          },
+        };
+      },
+    });
+    dispatchHandlers.set("telegram", {
+      kind: "static-bot",
+      confirmInstall: async () => {
+        calledHandlers.push("telegram");
+        return {
+          installRecord: { id: "install-tg-wrong", workspaceId: WSID, catalogId: "telegram" },
+        };
+      },
+    });
+    const installer = await getLiveService();
+    const result = await runEffect(
+      installer.install(WSID, "discord", {
+        kind: "static-bot",
+        routingIdentifier: "123456789012345678",
+      }),
+    );
+    expect(calledHandlers).toEqual(["discord"]);
+    expect(result.kind).toBe("static-bot");
+    if (result.kind === "static-bot") {
+      expect(result.row.catalogSlug).toBe("discord");
+      expect(result.row.installId).toBe("install-dc-1");
+    }
   });
 
   it("rejects second static-bot install with AlreadyInstalledError → 409 (pillar singleton applies to chat pillar regardless of install_model)", async () => {

@@ -38,6 +38,10 @@ import {
   TelegramStaticBotInstallHandler,
   TELEGRAM_SLUG,
 } from "./telegram-static-bot-handler";
+import {
+  DiscordStaticBotInstallHandler,
+  DISCORD_SLUG,
+} from "./discord-static-bot-handler";
 import { lazyPluginLoader } from "@atlas/api/lib/plugins/lazy-loader";
 import { createJiraLazyBuilder } from "@atlas/api/lib/integrations/jira/lazy-builder";
 import { createSalesforceLazyBuilder } from "@atlas/api/lib/integrations/salesforce/lazy-builder";
@@ -124,13 +128,14 @@ export function registerBuiltinInstallHandlers(): void {
   registerSalesforceOAuthHandler();
 
   // ── Static-bot platforms (1.5.3 — Phase D, #2748+) ────────────────
-  // Telegram is the keystone slice (#2748); Discord (#2749), gchat
-  // (#2754), and WhatsApp (#2753) register here too as their slices
-  // land. Each Platform's env-gate guards a single env var (the
-  // operator-shared bot token); the catalog row's `enabled` flag is
-  // the second gate (operator-side, DB-toggleable for emergency
-  // disable).
+  // Telegram is the keystone slice (#2748); Discord (#2749) is the
+  // second concrete Platform; gchat (#2754) and WhatsApp (#2753) will
+  // register here too as their slices land. Each Platform's env-gate
+  // guards the operator-shared bot credential set; the catalog row's
+  // `enabled` flag is the second gate (operator-side, DB-toggleable
+  // for emergency disable).
   registerTelegramStaticBotHandler();
+  registerDiscordStaticBotHandler();
 }
 
 function registerSlackOAuthHandler(): void {
@@ -284,6 +289,63 @@ function registerTelegramStaticBotHandler(): void {
   log.info(
     { tokenFingerprint: fingerprintToken(botToken) },
     "Registered TelegramStaticBotInstallHandler",
+  );
+}
+
+/**
+ * Register the Discord static-bot install handler when the operator
+ * env is wired (#2749). Mirrors {@link registerTelegramStaticBotHandler}
+ * exactly — same severity-escalation contract when the catalog row says
+ * `enabled: true` but a required env var is missing.
+ *
+ * Two env vars gate registration: `DISCORD_BOT_TOKEN` (for the
+ * reachability roundtrip and adapter outbound calls) and
+ * `DISCORD_CLIENT_ID` (the operator's Discord application id, used to
+ * build the bot-install URL the customer admin is redirected to).
+ * Both are required because the install flow can't proceed without
+ * either — the route would otherwise 501 in a confusing half-wired way.
+ *
+ * `DISCORD_PUBLIC_KEY` is required by the AdapterRegistry (the chat
+ * adapter needs it to verify Ed25519 signatures on incoming webhooks)
+ * but is NOT required here — the install handler itself doesn't
+ * verify webhooks. An operator who wires install creds but forgets
+ * the public key would get a working install flow + a non-functional
+ * webhook receive path; the AdapterRegistry's missing-env log is the
+ * signal for that gap.
+ */
+function registerDiscordStaticBotHandler(): void {
+  const botToken = process.env.DISCORD_BOT_TOKEN;
+  const clientId = process.env.DISCORD_CLIENT_ID;
+  if (!botToken || botToken.length === 0 || !clientId || clientId.length === 0) {
+    if (isCatalogSlugEnabled("discord")) {
+      log.error(
+        {
+          slug: "discord",
+          requiredEnv: ["DISCORD_BOT_TOKEN", "DISCORD_CLIENT_ID"],
+          missing: [
+            ...(!botToken ? ["DISCORD_BOT_TOKEN"] : []),
+            ...(!clientId ? ["DISCORD_CLIENT_ID"] : []),
+          ],
+        },
+        "Discord catalog row is enabled but DISCORD_BOT_TOKEN and/or DISCORD_CLIENT_ID is unset — install route will return 501 and AdapterRegistry will skip the adapter. Set both per-service. See #2673 for the same-class silent-degradation precedent.",
+      );
+    } else {
+      log.info(
+        "Discord static-bot handler not registered — DISCORD_BOT_TOKEN and/or DISCORD_CLIENT_ID unset and the 'discord' catalog row is not enabled (operator hasn't opted in).",
+      );
+    }
+    return;
+  }
+  registerStaticBotHandler(
+    DISCORD_SLUG,
+    new DiscordStaticBotInstallHandler({ botToken, clientId }),
+  );
+  log.info(
+    {
+      clientIdFingerprint: fingerprintToken(clientId),
+      tokenFingerprint: fingerprintToken(botToken),
+    },
+    "Registered DiscordStaticBotInstallHandler",
   );
 }
 

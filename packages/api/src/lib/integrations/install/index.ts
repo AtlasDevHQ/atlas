@@ -55,6 +55,15 @@ export type {
   TelegramInstallConfig,
 } from "./telegram-static-bot-handler";
 export {
+  DiscordStaticBotInstallHandler,
+  DISCORD_CATALOG_ID,
+  DISCORD_SLUG,
+} from "./discord-static-bot-handler";
+export type {
+  DiscordStaticBotHandlerConfig,
+  DiscordInstallConfig,
+} from "./discord-static-bot-handler";
+export {
   EmailFormInstallHandler,
   EmailFormDataSchema,
   EmailFormValidationError,

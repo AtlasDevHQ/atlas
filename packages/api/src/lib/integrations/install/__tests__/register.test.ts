@@ -53,10 +53,16 @@ function clearTelegramEnv(): void {
   delete process.env.TELEGRAM_BOT_TOKEN;
 }
 
+function clearDiscordEnv(): void {
+  delete process.env.DISCORD_BOT_TOKEN;
+  delete process.env.DISCORD_CLIENT_ID;
+}
+
 beforeEach(() => {
   // Reset the env to a known-clean state; each test sets only what it needs.
   process.env = { ...ORIGINAL_ENV };
   clearTelegramEnv();
+  clearDiscordEnv();
   delete process.env.SLACK_CLIENT_ID;
   delete process.env.SLACK_CLIENT_SECRET;
   delete process.env.JIRA_CLIENT_ID;
@@ -129,6 +135,63 @@ describe("registerBuiltinInstallHandlers — Telegram env gate", () => {
   });
 
   it("does not throw when the catalog has no telegram row at all (operator hasn't opted in)", () => {
+    mockedConfig = { catalog: [{ slug: "slack", enabled: true }] };
+    expect(() => registerBuiltinInstallHandlers()).not.toThrow();
+  });
+});
+
+describe("registerBuiltinInstallHandlers — Discord env gate (#2749)", () => {
+  it("does not register the Discord handler when DISCORD_BOT_TOKEN is unset", () => {
+    process.env.DISCORD_CLIENT_ID = "fake-application-id";
+    registerBuiltinInstallHandlers();
+    expect(() =>
+      getInstallHandler({ slug: "discord", install_model: "static-bot" }),
+    ).toThrow(/No static-bot install handler registered/);
+  });
+
+  it("does not register the Discord handler when DISCORD_CLIENT_ID is unset", () => {
+    process.env.DISCORD_BOT_TOKEN = "fake-token";
+    registerBuiltinInstallHandlers();
+    expect(() =>
+      getInstallHandler({ slug: "discord", install_model: "static-bot" }),
+    ).toThrow(/No static-bot install handler registered/);
+  });
+
+  it("does not register when either Discord env var is an empty string", () => {
+    process.env.DISCORD_BOT_TOKEN = "";
+    process.env.DISCORD_CLIENT_ID = "";
+    registerBuiltinInstallHandlers();
+    expect(() =>
+      getInstallHandler({ slug: "discord", install_model: "static-bot" }),
+    ).toThrow(/No static-bot install handler registered/);
+  });
+
+  it("registers the Discord handler when both DISCORD_BOT_TOKEN and DISCORD_CLIENT_ID are set", () => {
+    process.env.DISCORD_BOT_TOKEN = "fake-discord-bot-token";
+    process.env.DISCORD_CLIENT_ID = "fake-discord-application-id";
+    registerBuiltinInstallHandlers();
+    const handler = getInstallHandler({
+      slug: "discord",
+      install_model: "static-bot",
+    });
+    expect(handler.kind).toBe("static-bot");
+  });
+
+  it("logs (but does not throw) when the catalog says discord is enabled but the env is half-wired — #2673 escalation", () => {
+    // Only DISCORD_BOT_TOKEN set (DISCORD_CLIENT_ID missing) — same
+    // severity-escalation contract as Telegram's catalog-enabled +
+    // env-missing path.
+    process.env.DISCORD_BOT_TOKEN = "fake-token-only";
+    mockedConfig = {
+      catalog: [{ slug: "discord", enabled: true }],
+    };
+    expect(() => registerBuiltinInstallHandlers()).not.toThrow();
+    expect(() =>
+      getInstallHandler({ slug: "discord", install_model: "static-bot" }),
+    ).toThrow(/No static-bot install handler registered/);
+  });
+
+  it("does not throw when the catalog has no discord row at all (operator hasn't opted in)", () => {
     mockedConfig = { catalog: [{ slug: "slack", enabled: true }] };
     expect(() => registerBuiltinInstallHandlers()).not.toThrow();
   });

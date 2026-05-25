@@ -7,6 +7,11 @@
 // whether stacking mock.module() calls (10 in production) before the env
 // assignment changes the picture — e.g. by causing the module loader to
 // pre-resolve / freeze its env view.
+//
+// OBSERVED on bun 1.3.14: ✅ passed under --isolate AND --parallel.
+// Stacking mock.module() before env-set didn't change anything;
+// hypothesis rejected. Root cause is TLA in the imported module — see
+// pair-11.
 import { test, expect, mock } from "bun:test";
 
 // Stand-in mocks against the experiment's own files; values are

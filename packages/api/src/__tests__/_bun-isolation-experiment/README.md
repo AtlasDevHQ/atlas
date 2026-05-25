@@ -16,18 +16,32 @@ Two layers of evidence live in this directory:
 
 Under bun 1.3.14 `--isolate` (and therefore `--parallel`, which implies it),
 loading a module that uses top-level `await` does NOT wait for the await
-chain to settle before exposing the module's bindings. Importers read
-exports that are still in the temporal dead zone and get:
+chain to settle before exposing the module's bindings — the importer
+resumes while the target is still initializing. The observable failure
+mode depends on what the importer reads:
 
-```
-ReferenceError: Cannot access 'X' before initialization.
-```
+- **Reading a `const` exported AFTER the target's top-level await**
+  throws `ReferenceError: Cannot access 'X' before initialization`
+  (ESM TDZ semantics). This is what `pair-11` demonstrates and what
+  upstream should see in the minimal repro.
+- **Reading an object that the target mutates ACROSS top-level await
+  boundaries** (e.g. an app instance that the target keeps `.route(...)`-ing
+  after each `await import("./route-N")`) returns the object — but with
+  the post-await mutations missing. This is what `pair-10` and the
+  production `actions.test.ts` hit (`mod.app` is defined, but routes
+  registered after the await chain return 404).
 
-Affects every import shape (`await import` at top level, in `beforeAll`,
-in test bodies, static `import`). There is no in-test workaround.
+Both are surface manifestations of the same root cause: bun's `--isolate`
+does not propagate the `await` through the module-evaluation graph.
 
 `pair-11-tla-bare.experiment.ts` is the minimal repro — ~15 lines, zero
 Atlas deps. Use it as the body of the upstream filing to `oven-sh/bun`.
+
+Investigation also probed `beforeAll`-scoped, in-test-body, and static
+hoisted `import` shapes — all failed the same way. The probe fixtures
+for those (pair-12/13/14) were deleted as redundant once it was clear
+the failure is property of `--isolate`'s TLA handling, not the import
+shape. The "no in-test workaround" conclusion is empirical.
 
 ## How to run
 

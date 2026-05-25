@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  BUN_VERSION: "1.3.14"
+  BUN_VERSION: "1.3.13"
 
 jobs:
   # Detect whether scaffold-relevant paths changed so the expensive jobs

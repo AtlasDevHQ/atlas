@@ -225,13 +225,22 @@ const callbackRoute = createRoute({
   description:
     "Handles the OAuth callback from the Platform: verifies the state token, exchanges the " +
     "code for credentials, and writes the install record + per-Platform credential. Returns " +
-    "a 302 to /admin/integrations on success.",
+    "a 302 to /admin/integrations on success. " +
+    "GitHub App installs deliver `installation_id` instead of `code` — the route accepts " +
+    "either and forwards whichever is present to the handler.",
   request: {
     params: z.object({
       platform: z.string().openapi({ description: "Catalog slug" }),
     }),
     query: z.object({
-      code: z.string().openapi({ description: "OAuth authorization code" }),
+      code: z
+        .string()
+        .optional()
+        .openapi({ description: "OAuth authorization code (standard OAuth 2.0 flows)" }),
+      installation_id: z
+        .string()
+        .optional()
+        .openapi({ description: "GitHub App installation id (GitHub App install flow)" }),
       state: z.string().openapi({ description: "Signed state token from install" }),
     }),
   },
@@ -788,8 +797,28 @@ integrations.openapi(installFormRoute, async (c) =>
 integrations.openapi(callbackRoute, async (c) =>
   runHandler(c, "platform callback", async () => {
     const { platform } = c.req.valid("param");
-    const { code, state } = c.req.valid("query");
+    const { code, installation_id: installationId, state } = c.req.valid("query");
     const requestId = crypto.randomUUID();
+
+    // GitHub App installs return `installation_id`; standard OAuth 2.0
+    // flows return `code`. Either satisfies the credential identifier
+    // the per-Platform handler needs — pass whichever arrived. We never
+    // see both in practice; if a GitHub App is configured with
+    // "Request user authorization (OAuth) during installation",
+    // `installation_id` carries the App install we care about and we
+    // ignore the supplementary user-OAuth `code` field.
+    const credentialIdentifier = installationId ?? code;
+    if (typeof credentialIdentifier !== "string" || credentialIdentifier.length === 0) {
+      return c.json(
+        {
+          error: "missing_credential_identifier",
+          message:
+            "Callback is missing both `code` and `installation_id` — the upstream Platform did not deliver a credential identifier.",
+          requestId,
+        },
+        400,
+      );
+    }
 
     const row = await getInstallableCatalogRowBySlug(platform);
     if (!row) {
@@ -911,7 +940,7 @@ integrations.openapi(callbackRoute, async (c) =>
 
     let result: Awaited<ReturnType<typeof handler.handleCallback>>;
     try {
-      result = await handler.handleCallback(code, state);
+      result = await handler.handleCallback(credentialIdentifier, state);
     } catch (err) {
       // ONLY `PlatformOAuthExchangeError` is a user-actionable
       // "the upstream Platform refused the code exchange" — those get

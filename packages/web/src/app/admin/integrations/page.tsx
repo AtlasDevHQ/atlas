@@ -7,7 +7,14 @@
  * (`<SlackCard>`, `<TeamsCard>`, `<DiscordCard>`, …) and consolidated
  * install / disconnect / manage / reconnect onto the catalog flow per
  * ADR-0006 §"One user-facing surface per pillar". The page is now a thin
- * orchestrator: catalog → CatalogSection; OAuth callback toasts → here.
+ * orchestrator: catalog + status → CatalogSection; OAuth callback toasts → here.
+ *
+ * The status payload (`/api/v1/admin/integrations/status`) is fetched
+ * once here and threaded into CatalogSection. This avoids the double-fetch
+ * of an earlier draft (page.tsx and catalog-section each held their own
+ * `useAdminFetch` call), and centralizes the recovery surface for status
+ * failures: a single inline error banner here covers the live-count + the
+ * detail rows + the BYOT eligibility signal, all of which depend on it.
  *
  * Why the page keeps the OAuth callback effect even though everything
  * else moved into CatalogSection: the API callback at
@@ -23,6 +30,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { IntegrationStatusSchema } from "@/ui/lib/admin-schemas";
+import type { IntegrationStatus } from "@useatlas/types";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { CatalogSection } from "./catalog-section";
@@ -46,16 +54,23 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
- * Human-readable labels for OAuth callback query-param toasts. New
- * platforms must be appended as their slice-6 equivalent wires the
- * Connect button — TS narrowing on `data.<platform>` won't flag a
- * missing entry here, so audit when adding a row.
+ * Platforms whose OAuth install flow lands back on this page. Adding a
+ * new OAuth platform requires appending it here so the toast surfaces a
+ * human-readable label rather than the raw slug. The `as const` keeps
+ * the keys narrowed so a future `Record` keyed on this union stays
+ * exhaustive — see {@link translateInstallError} fallback for the path
+ * an unknown slug takes.
  */
-const PLATFORM_LABEL: Record<string, string> = {
+const PLATFORM_LABEL = {
   slack: "Slack",
   teams: "Microsoft Teams",
   discord: "Discord",
-};
+} as const;
+type LabeledPlatform = keyof typeof PLATFORM_LABEL;
+
+function platformLabel(slug: string): string {
+  return (PLATFORM_LABEL as Record<string, string>)[slug] ?? slug;
+}
 
 /**
  * Translate the `reason=` code from the API callback's error redirect
@@ -63,17 +78,26 @@ const PLATFORM_LABEL: Record<string, string> = {
  * `upstream_error`) emitted by `packages/api/src/api/routes/integrations.ts`
  * — keep the cases in lockstep with that file. Unknown reasons fall back
  * to a non-vague but generic message; "Something went wrong" is forbidden
- * per CLAUDE.md.
+ * per CLAUDE.md. The dev-mode `console.warn` exists so a new server-side
+ * reason code that lands without a UI update doesn't silently degrade to
+ * the generic message — same class of failure the chat-plugin contract
+ * audit (#2677) called out.
  */
 function translateInstallError(platform: string, reason: string | null): string {
-  const platformLabel = PLATFORM_LABEL[platform] ?? platform;
+  const label = platformLabel(platform);
   switch (reason) {
     case "invalid_state":
-      return `The ${platformLabel} install session expired or was tampered with. Click Connect to start a fresh install.`;
+      return `The ${label} install session expired or was tampered with. Click Connect to start a fresh install.`;
     case "upstream_error":
-      return `${platformLabel} rejected the OAuth handshake. Check the app's redirect URL matches this deploy, then retry.`;
+      return `${label} rejected the OAuth handshake. Check the app's redirect URL matches this deploy, then retry.`;
     default:
-      return `The ${platformLabel} OAuth callback failed. Click Connect to retry — if the problem persists, check the app credentials.`;
+      if (reason && process.env.NODE_ENV !== "production") {
+        console.warn(
+          "[admin/integrations] translateInstallError: unknown reason code",
+          { platform, reason },
+        );
+      }
+      return `The ${label} OAuth callback failed. Click Connect to retry — if the problem persists, check the app credentials.`;
   }
 }
 
@@ -84,26 +108,32 @@ function translateInstallError(platform: string, reason: string | null): string 
 export default function IntegrationsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  // The page only needs the status payload for the live-count badge in the
-  // hero and the delivery-channels footer — CatalogSection re-fetches its
-  // own copy for the cards. Both calls hit the same in-flight request via
-  // the SWR-style dedupe inside useAdminFetch (Cf. #1432).
-  const { data, refetch } = useAdminFetch("/api/v1/admin/integrations/status", {
+  // Single fetch of `/api/v1/admin/integrations/status` for the entire
+  // page surface. The data + error are threaded into CatalogSection so a
+  // status failure surfaces once, in one place, rather than each card
+  // silently degrading on its own.
+  const statusQuery = useAdminFetch("/api/v1/admin/integrations/status", {
     schema: IntegrationStatusSchema,
   });
+  const status = statusQuery.data ?? null;
+  // Destructure `refetch` outside the effect so the dep array references a
+  // stable function rather than the whole `statusQuery` object (which is a
+  // new identity each render and would re-fire the effect needlessly).
+  const refetchStatus = statusQuery.refetch;
 
   // Holds the platform slug whose success toast is waiting for fresh
   // data — fired in a follow-up effect once the GET reflects the new
   // Connected state (so the toast can surface the team name).
-  const [pendingSuccessPlatform, setPendingSuccessPlatform] = useState<string | null>(null);
+  const [pendingSuccessPlatform, setPendingSuccessPlatform] = useState<LabeledPlatform | null>(null);
 
   // ── OAuth callback query-param toasts ──────────────────────────────
   //
   // The API callback (`/api/v1/integrations/:platform/callback`) lands
   // here with one of `?installed=`, `?reconnect=`, or `?error=&reason=`.
-  // Strip the param after firing the toast so a refresh doesn't replay
-  // it. Success toasts pause until the fresh GET reflects the new
-  // Connected state — that's how we get the team name in the toast.
+  // Strip those four params after firing the toast so a refresh doesn't
+  // replay; preserve any other params (future tab anchors etc.). Success
+  // toasts pause until the fresh GET reflects the new Connected state —
+  // that's how we get the team name in the toast.
   useEffect(() => {
     const installed = searchParams.get("installed");
     const reconnect = searchParams.get("reconnect");
@@ -112,50 +142,52 @@ export default function IntegrationsPage() {
     if (!installed && !reconnect && !errParam) return;
 
     if (installed) {
-      setPendingSuccessPlatform(installed);
-      refetch();
+      setPendingSuccessPlatform(asLabeledPlatform(installed));
+      refetchStatus();
     }
     if (reconnect) {
-      const label = PLATFORM_LABEL[reconnect] ?? reconnect;
-      toast.warning(`${label} install completed but credentials didn't persist`, {
+      toast.warning(`${platformLabel(reconnect)} install completed but credentials didn't persist`, {
         description: "Click Reconnect on the card to retry the OAuth dance.",
       });
-      refetch();
+      refetchStatus();
     }
     if (errParam) {
-      const label = PLATFORM_LABEL[errParam] ?? errParam;
-      toast.error(`Couldn't connect ${label}`, {
+      toast.error(`Couldn't connect ${platformLabel(errParam)}`, {
         description: translateInstallError(errParam, reason),
       });
     }
-    // Strip query params so a manual refresh doesn't re-fire the toast.
-    router.replace("/admin/integrations", { scroll: false });
+    // Strip only the four callback keys, preserve everything else — no
+    // route on this page reads other params today, but future tab anchors
+    // shouldn't get wiped by a successful OAuth round-trip.
+    const next = new URLSearchParams(searchParams);
+    for (const key of ["installed", "reconnect", "error", "reason"]) next.delete(key);
+    const url = next.size > 0 ? `/admin/integrations?${next.toString()}` : "/admin/integrations";
+    router.replace(url, { scroll: false });
     // Deps narrow on the serialized search string so a transient render
-    // with an unchanged URL doesn't re-trigger. router + refetch are
-    // stable references from Next + useAdminFetch and don't need to be
-    // listed here.
-  }, [searchParams, refetch, router]);
+    // with an unchanged URL doesn't re-trigger. router + refetchStatus are
+    // stable references from Next + useAdminFetch.
+  }, [searchParams, refetchStatus, router]);
 
   // Fire the deferred success toast once the GET reports the platform
   // as connected. Reading the team name from the response keeps the
   // toast specific ("Slack connected to TestTeam") rather than generic.
   useEffect(() => {
-    if (!pendingSuccessPlatform || !data) return;
-    if (pendingSuccessPlatform === "slack" && data.slack?.connected) {
-      const workspace = data.slack.workspaceName?.trim();
+    if (!pendingSuccessPlatform || !status) return;
+    if (pendingSuccessPlatform === "slack" && status.slack.connected) {
+      const workspace = status.slack.workspaceName?.trim();
       toast.success(
         workspace ? `Slack connected to ${workspace}` : "Slack connected successfully",
       );
       setPendingSuccessPlatform(null);
     }
-  }, [pendingSuccessPlatform, data]);
+  }, [pendingSuccessPlatform, status]);
 
   // Hero live-count derives from the status payload — the catalog
   // endpoint doesn't expose per-platform `connected`, only `installed`.
   // Keep the count source consistent with the legacy chrome so the
   // 02 / 05 live badge doesn't jump around mid-deploy.
-  const stats = computeLiveStats(data);
-  const deliveryChannels = data?.deliveryChannels ?? [];
+  const stats = computeLiveStats(status);
+  const deliveryChannels = status?.deliveryChannels ?? [];
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-10">
@@ -190,7 +222,11 @@ export default function IntegrationsPage() {
           emptyDescription="Integration status could not be loaded."
           isEmpty={false}
         >
-          <CatalogSection />
+          <CatalogSection
+            status={status}
+            statusError={statusQuery.error}
+            onChange={statusQuery.refetch}
+          />
 
           {deliveryChannels.length > 0 && (
             <section className="mt-10">
@@ -226,45 +262,36 @@ interface LiveStats {
   readonly total: number;
 }
 
-function computeLiveStats(data: ReturnType<typeof useAdminFetch>["data"] | null): LiveStats {
-  if (!data || typeof data !== "object") return { live: 0, total: 0 };
-  // Narrow via duck-typing — the schema gives us a known IntegrationStatus
-  // shape, but the hook returns `unknown` until parsed. This file used to
-  // hold the typed access pattern; preserving the same arithmetic so the
-  // visible count doesn't drift across the refactor.
-  const s = data as {
-    slack?: { connected?: boolean; configurable?: boolean };
-    teams?: { connected?: boolean; configurable?: boolean };
-    discord?: { connected?: boolean; configurable?: boolean };
-    telegram?: { connected?: boolean; configurable?: boolean };
-    gchat?: { connected?: boolean; configurable?: boolean };
-    whatsapp?: { connected?: boolean; configurable?: boolean };
-    github?: { connected?: boolean; configurable?: boolean };
-    linear?: { connected?: boolean; configurable?: boolean };
-    email?: { connected?: boolean; configurable?: boolean };
-    webhooks?: { activeCount?: number; configurable?: boolean };
-    hasInternalDB?: boolean;
-  };
-  const hasDB = s.hasInternalDB ?? false;
-  const rows: Array<{ connected: boolean; usable: boolean }> = [
-    { connected: s.slack?.connected ?? false, usable: (s.slack?.configurable ?? false) || hasDB },
-    { connected: s.teams?.connected ?? false, usable: (s.teams?.configurable ?? false) || hasDB },
-    { connected: s.discord?.connected ?? false, usable: (s.discord?.configurable ?? false) || hasDB },
-    { connected: s.telegram?.connected ?? false, usable: s.telegram?.configurable ?? false },
-    { connected: s.gchat?.connected ?? false, usable: s.gchat?.configurable ?? false },
-    { connected: s.whatsapp?.connected ?? false, usable: s.whatsapp?.configurable ?? false },
-    { connected: s.github?.connected ?? false, usable: s.github?.configurable ?? false },
-    { connected: s.linear?.connected ?? false, usable: s.linear?.configurable ?? false },
-    { connected: s.email?.connected ?? false, usable: s.email?.configurable ?? false },
-    {
-      connected: (s.webhooks?.activeCount ?? 0) > 0,
-      usable: s.webhooks?.configurable ?? false,
-    },
+/**
+ * Live + total counts for the hero badge. Counts every platform whose
+ * status row says `connected` (or `activeCount > 0` for webhooks); total
+ * counts the same plus configurable-but-not-connected. Source of truth is
+ * the schema-parsed `IntegrationStatus` — adding a platform there will
+ * surface here as a missing-property type error.
+ */
+function computeLiveStats(s: IntegrationStatus | null): LiveStats {
+  if (!s) return { live: 0, total: 0 };
+  const hasDB = s.hasInternalDB;
+  const rows: ReadonlyArray<{ connected: boolean; usable: boolean }> = [
+    { connected: s.slack.connected, usable: s.slack.configurable || hasDB },
+    { connected: s.teams.connected, usable: s.teams.configurable || hasDB },
+    { connected: s.discord.connected, usable: s.discord.configurable || hasDB },
+    { connected: s.telegram.connected, usable: s.telegram.configurable },
+    { connected: s.gchat.connected, usable: s.gchat.configurable },
+    { connected: s.whatsapp.connected, usable: s.whatsapp.configurable },
+    { connected: s.github.connected, usable: s.github.configurable },
+    { connected: s.linear.connected, usable: s.linear.configurable },
+    { connected: s.email.connected, usable: s.email.configurable },
+    { connected: s.webhooks.activeCount > 0, usable: s.webhooks.configurable },
   ];
   return {
     live: rows.filter((r) => r.connected).length,
     total: rows.filter((r) => r.connected || r.usable).length,
   };
+}
+
+function asLabeledPlatform(slug: string): LabeledPlatform | null {
+  return slug in PLATFORM_LABEL ? (slug as LabeledPlatform) : null;
 }
 
 function ChannelIcon({ channel }: { channel: string }) {

@@ -294,12 +294,42 @@ export interface CatalogCardProps {
 }
 
 /**
- * Detect "legacy BYOT install" — a workspace where the per-platform store
- * has a credential row but the unified `workspace_plugins` row does not
- * yet. Pre-#2742 BYOT installs land here. The catalog flow still wants to
- * surface a Disconnect path for them; routing goes through the legacy
- * `/api/v1/admin/integrations/:slug` DELETE rather than the catalog
- * endpoint because the legacy chat_cache row is what needs to drop.
+ * Slugs whose pre-#2742 install lives in a per-platform store and is torn
+ * down via `DELETE /api/v1/admin/integrations/:slug`. Used by both
+ * {@link isLegacyConnected} (detect a chat_cache-only install) and
+ * {@link resolveDisconnectRoute} (gate the legacy DELETE so we never POST
+ * to a slug whose admin endpoint doesn't exist — e.g. `webhook`, whose
+ * "active" state is a count of scheduled tasks, not a connection).
+ *
+ * Webhook is intentionally NOT here: `webhooks.activeCount > 0` reflects
+ * scheduled-task activity managed on `/admin/scheduled-tasks`, not a
+ * disconnectable connection. Rendering Disconnect on a webhook card would
+ * 404 against `/admin/integrations/webhook` (which doesn't exist).
+ */
+const LEGACY_DISCONNECT_SLUGS: ReadonlySet<string> = new Set([
+  "slack",
+  "teams",
+  "discord",
+  "telegram",
+  "gchat",
+  "whatsapp",
+  "github",
+  "linear",
+  "email",
+]);
+
+/**
+ * Whether the per-platform status payload reports a live connection for
+ * this slug. Pre-#2742 BYOT installs land here without a corresponding
+ * `workspace_plugins` row — the catalog flow surfaces them as connected
+ * so admins can disconnect, but the DELETE routes through the legacy
+ * endpoint (see {@link resolveDisconnectRoute}).
+ *
+ * `webhook` is a structural outlier — `activeCount > 0` reports scheduled
+ * tasks fanning out to HTTPS endpoints, NOT a disconnectable connection.
+ * It's included here so the card surfaces detail rows + the deep link to
+ * `/admin/scheduled-tasks`; the disconnect path stays hidden via the
+ * {@link LEGACY_DISCONNECT_SLUGS} gate.
  */
 function isLegacyConnected(slug: string, status: IntegrationStatus | null): boolean {
   if (!status) return false;
@@ -323,19 +353,61 @@ function isLegacyConnected(slug: string, status: IntegrationStatus | null): bool
     case "email":
       return status.email.connected;
     case "webhook":
-      return (status.webhooks?.activeCount ?? 0) > 0;
+      return status.webhooks.activeCount > 0;
     default:
       return false;
   }
 }
 
 /**
- * For Slack, the legacy BYOT teardown lives at `/admin/integrations/slack`
- * — a different path from the catalog DELETE. Other chat slugs follow the
- * same `/admin/integrations/:slug` convention.
+ * Build the legacy admin DELETE path. All legacy chat slugs share the
+ * `/api/v1/admin/integrations/:slug` convention; the catalog endpoint at
+ * `/api/v1/integrations/:slug` is the post-#2740 unified path. The gate
+ * for "is this slug actually serviced by a legacy endpoint?" lives in
+ * {@link LEGACY_DISCONNECT_SLUGS}.
  */
 function legacyDisconnectPath(slug: string): string {
   return `/api/v1/admin/integrations/${encodeURIComponent(slug)}`;
+}
+
+/** Where the unified catalog DELETE lives. */
+function catalogDisconnectPath(slug: string): string {
+  return `/api/v1/integrations/${encodeURIComponent(slug)}`;
+}
+
+/**
+ * Disconnect-route resolution for the card lifecycle. Three terminal
+ * states; the caller branches on the tag.
+ *
+ *   - `catalog` — a `workspace_plugins` row exists (or, for Slack
+ *     specifically, the chat_cache row was minted by an OAuth install
+ *     and `hasOAuthInstall` is true). The catalog DELETE runs the
+ *     ADR-0003 two-store teardown.
+ *   - `legacy`  — only the per-platform store has the credential row
+ *     (pre-#2742 BYOT). DELETE drops it via the admin endpoint. Gated
+ *     by {@link LEGACY_DISCONNECT_SLUGS} so unknown / not-disconnectable
+ *     slugs (e.g. `webhook`) resolve to `none` instead.
+ *   - `none`    — no disconnect path is wired for this slug + state
+ *     pair. The card hides the Disconnect affordance entirely.
+ */
+type DisconnectRoute =
+  | { readonly kind: "catalog"; readonly path: string }
+  | { readonly kind: "legacy"; readonly path: string }
+  | { readonly kind: "none" };
+
+function resolveDisconnectRoute(
+  entry: IntegrationsCatalogEntry,
+  status: IntegrationStatus | null,
+): DisconnectRoute {
+  const slackHasOAuthInstall =
+    entry.slug === "slack" && (status?.slack.hasOAuthInstall ?? false);
+  if (entry.installed || slackHasOAuthInstall) {
+    return { kind: "catalog", path: catalogDisconnectPath(entry.slug) };
+  }
+  if (LEGACY_DISCONNECT_SLUGS.has(entry.slug) && isLegacyConnected(entry.slug, status)) {
+    return { kind: "legacy", path: legacyDisconnectPath(entry.slug) };
+  }
+  return { kind: "none" };
 }
 
 // ---------------------------------------------------------------------------
@@ -353,21 +425,27 @@ export function CatalogCard({ entry, status, onChange }: CatalogCardProps) {
   const isDowngraded = catalogInstalled && isUpsell;
   const needsReconnect = catalogInstalled && entry.installStatus === "reconnect_needed";
 
-  // Slack-specific OAuth bookkeeping. A workspace can have OAuth env vars
-  // configured AND still be connected via BYOT (the chat_cache row is the
-  // source of truth for "what token are we using"). The teardown path must
-  // match the install path, so we branch the Disconnect endpoint on
-  // `hasOAuthInstall` from the status payload — same logic the legacy
-  // SlackCard used pre-#2746.
-  const slackHasOAuth = entry.slug === "slack" && (status?.slack.hasOAuthInstall ?? false);
+  // Slack carries two extra signals the catalog endpoint doesn't expose:
+  // `envConfigured` (SLACK_BOT_TOKEN is set on this deploy) and
+  // `oauthConfigured` (SLACK_CLIENT_ID/SECRET are set). Used below for
+  // the BYOT-eligibility branch and the env-only hint copy.
   const slackEnvConfigured = entry.slug === "slack" && (status?.slack.envConfigured ?? false);
   const slackOAuthConfigured = entry.slug === "slack" && (status?.slack.oauthConfigured ?? false);
+
+  // Disconnect-route resolution — see {@link resolveDisconnectRoute} for
+  // the three-state contract (catalog / legacy / none). `disconnectRoute`
+  // drives both the click handler and whether `<DisconnectDialog>` renders
+  // at all. The previous bare `catalogInstalled || slackHasOAuth` boolean
+  // could not express the third case (active webhook with no DELETE
+  // endpoint), shipping a 404 toast — see #2746 review comments.
+  const disconnectRoute = resolveDisconnectRoute(entry, status);
 
   // BYOT eligibility — chat slugs (slack/teams/discord) where the OAuth env
   // vars aren't configured but the internal DB is. The catalog row's
   // `installModel` doesn't carry this — it's a self-host fallback that
-  // pre-dates the unified catalog. Once the dedicated /api/v1/integrations
-  // form route covers BYOT, this special-case goes away.
+  // pre-dates the unified catalog.
+  // TODO(#2742): drop this special case once `/api/v1/integrations/:slug/install-form`
+  // covers the BYOT field shapes; FormInstallModal then owns rendering.
   const hasInternalDB = status?.hasInternalDB ?? false;
   const byotSlug: ByotEligibleSlug | null = isByotEligibleSlug(entry.slug) ? entry.slug : null;
   const canByot =
@@ -380,18 +458,19 @@ export function CatalogCard({ entry, status, onChange }: CatalogCardProps) {
 
   // Form modal open state (form install_model only).
   const [formModalOpen, setFormModalOpen] = useState(false);
-  // Disconnect / install error surface — destructive inline strip inside
-  // the Shell body. Driven by whichever mutation last fired.
+  // Driven by whichever disconnect mutation last fired so the inline
+  // destructive strip inside the Shell body stays in lockstep with the
+  // toast — admin sees the error in two places (toast + persisted strip)
+  // and can dismiss the panel without losing the failure.
   const [inlineError, setInlineError] = useState<string | null>(null);
 
   // ── Mutations ────────────────────────────────────────────────────
   //
-  // Catalog-driven endpoints land at `/api/v1/integrations/:slug`. Legacy
-  // BYOT endpoints land at `/api/v1/admin/integrations/:slug`. Both shapes
-  // run through `useAdminMutation` so the admin role + MFA gate is enforced
-  // by the shared hook.
+  // Both endpoints are wired ahead of time (rather than branching at click
+  // time) because `useAdminMutation` must be called unconditionally to
+  // satisfy the Rules of Hooks. {@link disconnectRoute} picks at run-time.
   const catalogDisconnect = useAdminMutation<{ message: string }>({
-    path: `/api/v1/integrations/${encodeURIComponent(entry.slug)}`,
+    path: catalogDisconnectPath(entry.slug),
     method: "DELETE",
     invalidates: onChange,
   });
@@ -428,11 +507,16 @@ export function CatalogCard({ entry, status, onChange }: CatalogCardProps) {
   // ── Handlers ─────────────────────────────────────────────────────
   async function handleDisconnect() {
     setInlineError(null);
-    // Routing: prefer the catalog teardown when a workspace_plugins row
-    // exists; fall back to the legacy admin endpoint for chat_cache-only
-    // BYOT installs. Slack with hasOAuthInstall=true counts as catalog.
-    const useCatalog = catalogInstalled || slackHasOAuth;
-    const result = useCatalog ? await catalogDisconnect.mutate({}) : await legacyDisconnect.mutate({});
+    // `disconnectRoute.kind === "none"` is unreachable here — the Shell
+    // hides `<DisconnectDialog>` when the route is none, so this handler
+    // never fires. Guard defensively anyway so a future caller can't
+    // silently POST to a non-existent endpoint.
+    if (disconnectRoute.kind === "none") {
+      setInlineError(`Disconnecting ${entry.name} from this surface isn't supported.`);
+      return;
+    }
+    const mutation = disconnectRoute.kind === "catalog" ? catalogDisconnect : legacyDisconnect;
+    const result = await mutation.mutate({});
     if (result.ok) {
       toast.success(`${entry.name} disconnected`);
     } else {
@@ -591,6 +675,7 @@ export function CatalogCard({ entry, status, onChange }: CatalogCardProps) {
           <ShellActions
             entry={entry}
             isConnected={isConnected}
+            disconnectRoute={disconnectRoute}
             catalogInstalled={catalogInstalled}
             needsReconnect={needsReconnect}
             disconnecting={catalogDisconnect.saving || legacyDisconnect.saving}
@@ -705,11 +790,33 @@ interface CollapsedActionOptions {
  * The CTA rendered in CompactRow's `action` slot when the card is collapsed
  * and not installed. Branches on `installModel`, with the BYOT escape hatch
  * applied for chat slugs that have an internal DB but no OAuth env vars.
+ *
+ * The BYOT escape hatch fires AHEAD of the OAuth Connect branch when both
+ * are available because `canByot` already encodes "OAuth env vars are
+ * missing" — without this short-circuit a self-hoster who hasn't wired
+ * SLACK_CLIENT_ID would see a Connect button that 503s on click.
  */
 function collapsedAction(
   entry: IntegrationsCatalogEntry,
   { canByot, triggerRef, onByotToggle, onFormOpen }: CollapsedActionOptions,
 ): React.ReactNode {
+  // BYOT wins over OAuth Connect for chat slugs where the env vars are
+  // missing — see canByot derivation in CatalogCard.
+  if (canByot) {
+    return (
+      <Button
+        ref={triggerRef}
+        size="sm"
+        variant="outline"
+        aria-expanded={false}
+        onClick={onByotToggle}
+        data-testid={`catalog-card-${entry.slug}-byot-toggle`}
+      >
+        <Plus className="mr-1.5 size-3.5" />
+        Add token
+      </Button>
+    );
+  }
   if (entry.installModel === "oauth") {
     return (
       <Button
@@ -737,25 +844,9 @@ function collapsedAction(
       </Button>
     );
   }
-  // static-bot — BYOT form falls under here for slack/teams/discord when
-  // their OAuth env vars aren't set. Other static-bot slugs (telegram,
-  // gchat, whatsapp) without canByot stay inert until their install slice
-  // wires a handler.
-  if (canByot) {
-    return (
-      <Button
-        ref={triggerRef}
-        size="sm"
-        variant="outline"
-        aria-expanded={false}
-        onClick={onByotToggle}
-        data-testid={`catalog-card-${entry.slug}-byot-toggle`}
-      >
-        <Plus className="mr-1.5 size-3.5" />
-        Add token
-      </Button>
-    );
-  }
+  // static-bot without `canByot` — the install handler hasn't shipped for
+  // this slug yet (see `coming_soon` in #2747). Inert disabled button
+  // keeps the card visible without misleading the admin into clicking.
   return (
     <Button size="sm" disabled aria-label={`Connect ${entry.name}`}>
       Connect
@@ -820,6 +911,14 @@ function CardBadges({
 interface ShellActionsProps {
   readonly entry: IntegrationsCatalogEntry;
   readonly isConnected: boolean;
+  /**
+   * Resolved disconnect route. When `kind === "none"` the Disconnect
+   * button is hidden entirely — used today for webhook cards where
+   * `activeCount > 0` reads as "connected" for detail-row purposes but
+   * doesn't admit a workspace-level disconnect (tasks live on the
+   * scheduled-tasks page).
+   */
+  readonly disconnectRoute: DisconnectRoute;
   readonly catalogInstalled: boolean;
   readonly needsReconnect: boolean;
   readonly disconnecting: boolean;
@@ -829,6 +928,7 @@ interface ShellActionsProps {
 function ShellActions({
   entry,
   isConnected,
+  disconnectRoute,
   catalogInstalled,
   needsReconnect,
   disconnecting,
@@ -841,6 +941,10 @@ function ShellActions({
   // the OAuth callback upserts the install row, healing an expired install
   // in place.
   const reconnectAvailable = catalogInstalled && entry.installModel === "oauth";
+  // Hide Disconnect when no route is wired (webhook today). Without this
+  // gate the dialog would POST to a 404 endpoint and surface a confusing
+  // "Couldn't disconnect" toast.
+  const disconnectAvailable = disconnectRoute.kind !== "none";
 
   // Button hierarchy depends on whether the install needs urgent attention.
   // needsReconnect → Reconnect leads as the default-variant primary CTA so
@@ -856,25 +960,29 @@ function ShellActions({
             Reconnect
           </a>
         </Button>
-        <DisconnectDialog
-          name={entry.name}
-          variant="ghost"
-          description={`This will remove the ${entry.name} connection for this workspace. Atlas will stop using the integration until you reconnect.`}
-          onConfirm={onDisconnect}
-          disconnecting={disconnecting}
-        />
+        {disconnectAvailable && (
+          <DisconnectDialog
+            name={entry.name}
+            variant="ghost"
+            description={`This will remove the ${entry.name} connection for this workspace. Atlas will stop using the integration until you reconnect.`}
+            onConfirm={onDisconnect}
+            disconnecting={disconnecting}
+          />
+        )}
       </>
     );
   }
 
   return (
     <>
-      <DisconnectDialog
-        name={entry.name}
-        description={`This will remove the ${entry.name} connection for this workspace. Atlas will stop using the integration until you reconnect.`}
-        onConfirm={onDisconnect}
-        disconnecting={disconnecting}
-      />
+      {disconnectAvailable && (
+        <DisconnectDialog
+          name={entry.name}
+          description={`This will remove the ${entry.name} connection for this workspace. Atlas will stop using the integration until you reconnect.`}
+          onConfirm={onDisconnect}
+          disconnecting={disconnecting}
+        />
+      )}
       {reconnectAvailable && (
         <Button variant="ghost" size="sm" asChild>
           <a href={`${getApiUrl()}/api/v1/integrations/${encodeURIComponent(entry.slug)}/install`}>

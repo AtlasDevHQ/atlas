@@ -9,24 +9,30 @@
  *   - pillar="chat"       → "Chat — where customers talk to Atlas"
  *   - pillar="action"     → "Actions — what Atlas can do for you"
  *   - pillar="datasource" → filtered out (lives on `/admin/connections`
- *                          per slice 7 / ADR-0006)
+ *                          per ADR-0006 / slice 7)
+ *
+ * Status payload (`/api/v1/admin/integrations/status`) is injected from
+ * page.tsx so the page-level live-count badge and the per-card detail
+ * rows / BYOT eligibility all read from one fetch. If the status query
+ * fails (`statusError`) we surface an inline banner above the sections
+ * so admins know detail rows + BYOT may be incomplete; install/disconnect
+ * still works via the catalog endpoint, just without per-platform metadata.
  *
  * The single-card lifecycle (install / disconnect / manage / reconnect /
  * legacy-connected handling) lives in {@link CatalogCard} from
- * `./catalog-card`. This file is the orchestrator: fetches the catalog,
- * the admin status payload (for per-platform detail rows), and renders
- * the two sections.
+ * `./catalog-card`.
  */
 
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import {
   IntegrationsCatalogResponseSchema,
-  IntegrationStatusSchema,
   type IntegrationsCatalogEntry,
 } from "@/ui/lib/admin-schemas";
+import type { IntegrationStatus } from "@useatlas/types";
+import { friendlyErrorOrNull, type FetchError } from "@/ui/lib/fetch-error";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { SectionHeading } from "@/ui/components/admin/compact";
-import { Cable } from "lucide-react";
+import { Cable, TriangleAlert } from "lucide-react";
 import { CatalogCard } from "./catalog-card";
 
 // Re-export for the catalog-section.test.tsx fixtures that still import
@@ -34,6 +40,27 @@ import { CatalogCard } from "./catalog-card";
 // `./catalog-card` in slice 8 — keeping the re-export avoids a churn
 // commit in the test file.
 export { CatalogCard } from "./catalog-card";
+
+export interface CatalogSectionProps {
+  /**
+   * Aggregated platform status payload. `null` while the page-level fetch
+   * is in flight or has failed (see `statusError`). Cards degrade
+   * gracefully — they still render install paths from the catalog row but
+   * detail rows and BYOT eligibility go missing.
+   */
+  readonly status: IntegrationStatus | null;
+  /**
+   * Error from the page-level status fetch, if any. Surfaced as an inline
+   * banner above the catalog so admins know they're seeing a partial view.
+   */
+  readonly statusError: FetchError | null;
+  /**
+   * Called after install / disconnect succeeds (or when the inline banner
+   * retry fires). The parent should re-run the status fetch so detail
+   * rows + legacy-connected state repaint.
+   */
+  readonly onChange: () => void;
+}
 
 /**
  * Split catalog entries by pillar. Datasource rows are dropped — they
@@ -60,34 +87,30 @@ function legacyPillar(
   return type === "chat" ? "chat" : "action";
 }
 
-export function CatalogSection() {
+export function CatalogSection({ status, statusError, onChange }: CatalogSectionProps) {
   const catalogQuery = useAdminFetch("/api/v1/integrations/catalog", {
     schema: IntegrationsCatalogResponseSchema,
-  });
-  // The status payload is the source of truth for per-platform detail
-  // (workspaceName, tenantId, guildId, displayPhone, …) and the BYOT
-  // eligibility signal (oauthConfigured + hasInternalDB on Slack). The
-  // catalog endpoint can't currently expose either — Slack's BYOT path
-  // pre-dates the unified `workspace_plugins` model.
-  const statusQuery = useAdminFetch("/api/v1/admin/integrations/status", {
-    schema: IntegrationStatusSchema,
   });
 
   const entries = catalogQuery.data?.catalog ?? [];
   const isEmpty = !catalogQuery.loading && !catalogQuery.error && entries.length === 0;
   const { chat, action } = groupByPillar(entries);
-  const status = statusQuery.data ?? null;
 
   // Refresh both queries after a successful install / disconnect — the
-  // catalog row's `installed` flag flips and the per-platform detail
-  // rows need to repaint with the new connection state.
+  // catalog row's `installed` flag flips (handled by useAdminMutation's
+  // `invalidates` upstream) and the per-platform detail rows need to
+  // repaint with the new connection state (handled by `onChange`).
   const refresh = () => {
     catalogQuery.refetch();
-    statusQuery.refetch();
+    onChange();
   };
 
   return (
     <section data-testid="catalog-section">
+      {statusError && (
+        <StatusErrorBanner error={statusError} onRetry={onChange} />
+      )}
+
       <AdminContentWrapper
         loading={catalogQuery.loading}
         error={catalogQuery.error}
@@ -145,5 +168,47 @@ export function CatalogSection() {
         </div>
       </AdminContentWrapper>
     </section>
+  );
+}
+
+/**
+ * Inline banner shown when the status fetch failed but the catalog fetch
+ * succeeded. Tells the admin install/disconnect still works through the
+ * catalog endpoint but per-platform detail rows + BYOT eligibility may be
+ * incomplete. Retry runs the same `onChange` callback the card lifecycle
+ * uses post-mutation, so recovery is one click.
+ */
+function StatusErrorBanner({
+  error,
+  onRetry,
+}: {
+  error: FetchError;
+  onRetry: () => void;
+}) {
+  const message = friendlyErrorOrNull(error) ?? "Connection detail temporarily unavailable.";
+  return (
+    <div
+      role="alert"
+      data-testid="catalog-status-error-banner"
+      className="mb-6 flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm"
+    >
+      <TriangleAlert
+        aria-hidden
+        className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400"
+      />
+      <div className="min-w-0 flex-1">
+        <p className="font-medium text-foreground">Connection detail unavailable</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          {message} Install and disconnect still work; per-platform detail may be missing.
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="shrink-0 rounded-md border border-amber-500/30 bg-background/50 px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-background"
+      >
+        Retry
+      </button>
+    </div>
   );
 }

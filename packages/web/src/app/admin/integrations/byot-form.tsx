@@ -29,8 +29,12 @@ import { friendlyErrorOrNull } from "@/ui/lib/fetch-error";
  * The three chat slugs that today expose a BYOT path in addition to OAuth.
  * Telegram is intentionally NOT in this list — Telegram installs through
  * the dedicated `/admin/integrations/telegram` POST endpoint with its own
- * field shape, and #2748 will move it onto the catalog form route once
- * the static-bot install handler ships server-side.
+ * field shape.
+ *
+ * TODO(#2748): drop this list once Telegram (and the other static-bot
+ * chat slugs) routes through `/api/v1/integrations/:slug/install-form` —
+ * FormInstallModal will own the rendering and BYOT_FIELDS becomes dead
+ * code.
  */
 const BYOT_SLUGS = ["slack", "teams", "discord"] as const;
 export type ByotEligibleSlug = (typeof BYOT_SLUGS)[number];
@@ -43,10 +47,12 @@ export function isByotEligibleSlug(slug: string): slug is ByotEligibleSlug {
 // Field descriptors per slug
 //
 // Hard-coded here rather than driven from `entry.configSchema` because the
-// legacy BYOT endpoint contracts predate the unified `configSchema` field
-// — each takes a slug-specific JSON body shape. When the catalog form route
-// covers these slugs (post #2742 follow-ups), drop the descriptors and let
-// FormInstallModal own the rendering.
+// legacy BYOT endpoint contracts predate the unified `configSchema` field —
+// each takes a slug-specific JSON body shape.
+//
+// TODO(#2742): drop the descriptors when `/api/v1/integrations/:slug/install-form`
+// covers BYOT; FormInstallModal will render from the catalog row's
+// configSchema and this whole table becomes unused.
 // ---------------------------------------------------------------------------
 
 interface ByotField {
@@ -166,13 +172,13 @@ export function ByotForm({ slug, onSuccess, onError }: ByotFormProps) {
     method: "POST",
   });
 
-  const allFilled = fields.every((f) => values[f.key]?.trim().length > 0);
+  const allFilled = fields.every((f) => (values[f.key] ?? "").trim().length > 0);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!allFilled) return;
     const body: Record<string, string> = {};
-    for (const f of fields) body[f.key] = values[f.key]!.trim();
+    for (const f of fields) body[f.key] = (values[f.key] ?? "").trim();
     const result = await mutation.mutate({ body });
     if (result.ok) {
       onSuccess();

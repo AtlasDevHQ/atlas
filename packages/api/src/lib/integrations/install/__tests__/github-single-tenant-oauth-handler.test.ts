@@ -119,7 +119,9 @@ describe("GitHubSingleTenantOAuthInstallHandler.handleCallback", () => {
     const handler = new GitHubSingleTenantOAuthInstallHandler(HANDLER_CONFIG);
     const stateToken = mintOAuthStateToken(WSID, "github-single-tenant");
 
-    const result = await handler.handleCallback(BAKED_INSTALLATION_ID, stateToken);
+    const result = await handler.handleCallback(BAKED_INSTALLATION_ID, stateToken, {
+      installationId: BAKED_INSTALLATION_ID,
+    });
 
     expect(result).not.toBeNull();
     expect(result!.catalogId).toBe("github-single-tenant");

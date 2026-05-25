@@ -95,6 +95,32 @@ const INSTALLATION_ID_PLATFORMS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Catalog slugs whose credentials live INLINE in
+ * `workspace_plugins.config` (encrypted via selective-field encryption,
+ * ADR-0007 unified install pipeline) — i.e. no separate
+ * `integration_credentials` / `chat_cache` row. Disconnect for these
+ * slugs is two DB ops total: a no-op credential-store teardown +
+ * the workspace_plugins DELETE that `WorkspaceInstaller.uninstall`
+ * already runs. The route's per-Platform 501 gate admits them so the
+ * facade isn't blocked.
+ *
+ * github-pat (form-install) was the first inline-cred slug — it shipped
+ * via #2807 without disconnect wiring, which has now been folded in.
+ * github / github-single-tenant land here for the same reason.
+ *
+ * Future inline-cred form/static-bot slugs (email, webhook, obsidian,
+ * linear-apikey, telegram, discord, teams) live behind their own
+ * separate credential-store dispatches today and are NOT covered by
+ * this set — adding them is a follow-up that requires matching
+ * `WorkspaceInstaller.deleteCredentialStoreForSlug` branches.
+ */
+const INLINE_CREDENTIAL_SLUGS: ReadonlySet<string> = new Set([
+  "github",
+  "github-single-tenant",
+  "github-pat",
+]);
+
+/**
  * OpenAPI schema for the 403 {@link PlanUpgradeRequiredBody}. Pins the
  * wire shape — both plan fields are PlanTier (the same union used
  * everywhere else) — and the `z.ZodType<PlanUpgradeRequiredBody>`
@@ -845,17 +871,72 @@ integrations.openapi(callbackRoute, async (c) =>
         400,
       );
     }
-    const credentialIdentifier = installationId ?? code;
-    if (typeof credentialIdentifier !== "string" || credentialIdentifier.length === 0) {
-      return c.json(
-        {
-          error: "missing_credential_identifier",
-          message:
-            "Callback is missing both `code` and `installation_id` — the upstream Platform did not deliver a credential identifier.",
-          requestId,
-        },
-        400,
-      );
+    // Platform-aware callback dispatch:
+    //   - `github` (multi-tenant) needs BOTH `code` (user OAuth, for
+    //     installation-ownership verification) and `installation_id`
+    //     (the credential identifier). The handler verifies ownership
+    //     before persisting.
+    //   - `github-single-tenant` needs `installation_id` (operator-
+    //     baked; ignored by the handler in favor of the env value).
+    //   - All other OAuth handlers consume `code` for the standard
+    //     OAuth 2.0 code → token exchange.
+    //
+    // The route picks the first positional arg per platform; the
+    // optional third `extras` arg carries `installation_id` for
+    // GitHub multi-tenant. Other handlers ignore extras.
+    let handlerPositionalCode: string;
+    let handlerExtras: { installationId?: string } | undefined;
+    if (platform === "github") {
+      if (typeof code !== "string" || code.length === 0) {
+        return c.json(
+          {
+            error: "missing_credential_identifier",
+            message:
+              "GitHub App callback missing `code` — ensure the App has \"Request user authorization (OAuth) during installation\" enabled and restart.",
+            requestId,
+          },
+          400,
+        );
+      }
+      if (typeof installationId !== "string" || installationId.length === 0) {
+        return c.json(
+          {
+            error: "missing_credential_identifier",
+            message: "GitHub App callback missing `installation_id`.",
+            requestId,
+          },
+          400,
+        );
+      }
+      handlerPositionalCode = code;
+      handlerExtras = { installationId };
+    } else if (platform === "github-single-tenant") {
+      if (typeof installationId !== "string" || installationId.length === 0) {
+        return c.json(
+          {
+            error: "missing_credential_identifier",
+            message: "GitHub single-tenant callback missing `installation_id`.",
+            requestId,
+          },
+          400,
+        );
+      }
+      handlerPositionalCode = installationId;
+      handlerExtras = { installationId };
+    } else {
+      if (typeof code !== "string" || code.length === 0) {
+        return c.json(
+          {
+            error: "missing_credential_identifier",
+            message:
+              "Callback is missing `code` — the upstream Platform did not deliver an OAuth credential.",
+            requestId,
+          },
+          400,
+        );
+      }
+      handlerPositionalCode = code;
+      handlerExtras = undefined;
     }
 
     const row = await getInstallableCatalogRowBySlug(platform);
@@ -978,7 +1059,7 @@ integrations.openapi(callbackRoute, async (c) =>
 
     let result: Awaited<ReturnType<typeof handler.handleCallback>>;
     try {
-      result = await handler.handleCallback(credentialIdentifier, state);
+      result = await handler.handleCallback(handlerPositionalCode, state, handlerExtras);
     } catch (err) {
       // ONLY `PlatformOAuthExchangeError` is a user-actionable
       // "the upstream Platform refused the code exchange" — those get
@@ -1182,11 +1263,17 @@ integrations.openapi(disconnectRoute, async (c) =>
     // The facade's `uninstall` is general but the route layer keeps
     // the "is this platform supported by this deploy" gate so the
     // pre-cutover 501 envelope (for non-wired chat/action platforms)
-    // stays stable. Slack and the lazy-OAuth set are the universe of
-    // chat/action installs the disconnect path can handle today.
+    // stays stable. Three slug classes are wired:
+    //   - `slack` → chat_cache two-store teardown
+    //   - `INTEGRATION_CREDENTIALS_SLUGS` (salesforce / jira / linear)
+    //     → integration_credentials teardown
+    //   - `INLINE_CREDENTIAL_SLUGS` (github / github-single-tenant /
+    //     github-pat) → no separate credential store; the
+    //     workspace_plugins DELETE is the credential teardown
     const isSlack = platform === "slack";
     const isIntegrationCredentials = INTEGRATION_CREDENTIALS_SLUGS.has(platform);
-    if (!isSlack && !isIntegrationCredentials) {
+    const isInlineCredential = INLINE_CREDENTIAL_SLUGS.has(platform);
+    if (!isSlack && !isIntegrationCredentials && !isInlineCredential) {
       // Cheap pre-check: catalog lookup so the 404 still fires before
       // the 501. Otherwise an attacker probing unknown slugs would
       // learn whether the slug exists (501 vs 404).

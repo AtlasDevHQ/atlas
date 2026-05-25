@@ -57,9 +57,13 @@ create a new App:
 - **Homepage URL**: your Atlas marketing URL or `https://useatlas.dev`
 - **Setup URL**: `${ATLAS_PUBLIC_API_URL}/api/v1/integrations/github/callback`
   (and enable **Redirect on update**)
-- **Callback URL**: the same as the Setup URL — leave **Request user
-  authorization (OAuth) during installation** unchecked unless you
-  separately need user-OAuth identity
+- **Callback URL**: the same as the Setup URL
+- **Request user authorization (OAuth) during installation**: **enable
+  this** — Atlas requires the user-OAuth code on the callback to verify
+  that the installing GitHub user actually has access to the
+  `installation_id` they're claiming (cross-tenant binding defense).
+  Without this option enabled, the install dance will fail with
+  `missing_code`.
 - **Webhook → Active**: disable (Atlas does not need webhook events for
   Action-target use cases)
 - **Repository permissions**: `Issues: Read & write`, `Pull requests:
@@ -73,15 +77,21 @@ After creation:
   anyone with it can act as your App
 - Note the **App slug** from the App's public URL
   (`https://github.com/apps/<your-app-slug>`)
+- Note the **Client ID** and **Client secret** — these appear on the
+  settings page after you enable "Request user authorization (OAuth)
+  during installation". They are required for the installation-
+  ownership check Atlas runs on every install.
 
 #### 2. Set the env vars
 
-Set all three on every Atlas API service in your deploy:
+Set all five on every Atlas API service in your deploy:
 
 ```bash
 GITHUB_APP_ID=<App ID from step 1>
 GITHUB_APP_SLUG=<App slug from step 1>
 GITHUB_APP_PRIVATE_KEY=<contents of the downloaded .pem file>
+GITHUB_APP_CLIENT_ID=<Client ID from step 1>
+GITHUB_APP_CLIENT_SECRET=<Client secret from step 1>
 ```
 
 `ATLAS_PUBLIC_API_URL` must already be set on the same services — it's
@@ -103,12 +113,20 @@ Workspace admins install GitHub from **Admin → Integrations → GitHub
    org and (optionally) the repositories they want to grant Atlas
    access to.
 3. After granting, GitHub redirects back to Atlas's callback URL with
-   `?installation_id=<id>&setup_action=install&state=<token>`.
-4. Atlas verifies the state, validates the installation_id as a
-   positive integer, and persists it encrypted into
-   `workspace_plugins.config` (selective-field encryption per
+   `?code=<user_oauth_code>&installation_id=<id>&setup_action=install&state=<token>`.
+4. Atlas verifies the state, exchanges the user OAuth code for a user
+   access token, and calls `GET /user/installations` to confirm the
+   `installation_id` is actually in the authorizing user's accessible
+   installations. **If the installation_id was tampered to point at a
+   different org's install, this check fails and the install is
+   rejected with `installation_not_owned`** — the security gate that
+   prevents a workspace admin from binding their workspace to
+   someone else's installation.
+5. The installation_id (and the discovered account login + type)
+   persist encrypted into `workspace_plugins.config` (selective-field
+   encryption per
    [ADR-0007](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0007-unified-install-pipeline.md)).
-5. Admin lands back on **Admin → Integrations** with the card flipped
+6. Admin lands back on **Admin → Integrations** with the card flipped
    to **Installed**.
 
 ### Disconnecting (App mode)
@@ -300,6 +318,21 @@ API process handling the install. Check the boot log for the
 `Registered GitHubOAuthInstallHandler` / `Registered
 GitHubSingleTenantOAuthInstallHandler` line; if it's missing, the
 preceding `warn`/`error` line names the missing env vars.
+
+### "The GitHub user authorizing this install does not have access to the supplied installation" (App mode)
+
+Atlas's installation-ownership check rejected the callback. The user
+authenticating with the OAuth code does not appear in the
+`/user/installations` list for the supplied `installation_id`. Two
+common causes:
+
+1. **Tampered callback URL** — someone modified the `installation_id`
+   query param in the redirect. This is the security gate working as
+   designed; restart the install and grant access through your own
+   org.
+2. **Wrong user account** — the customer admin signed in to GitHub as
+   a user who isn't a member of the org receiving the install. Have
+   them sign in to GitHub as the org owner / member and retry.
 
 ### "GitHub returned an unexpected installation_id" (App mode)
 

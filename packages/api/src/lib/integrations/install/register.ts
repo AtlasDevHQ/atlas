@@ -493,7 +493,7 @@ function registerTeamsStaticBotHandler(): void {
  * Register the multi-tenant GitHub App OAuth handler when the operator
  * env is wired (#2751, Phase D App-OAuth mode).
  *
- * Three env vars gate registration:
+ * Five env vars gate registration:
  *   - `GITHUB_APP_ID` — numeric App ID from the App settings page.
  *     Used at install-token mint time by the lazy builder (ships in a
  *     follow-up PR); recorded on the handler instance for consistency
@@ -501,10 +501,14 @@ function registerTeamsStaticBotHandler(): void {
  *   - `GITHUB_APP_SLUG` — App slug from `https://github.com/apps/<slug>`.
  *     Used to build the install URL (`/apps/<slug>/installations/new`).
  *   - `GITHUB_APP_PRIVATE_KEY` — App private key (`.pem` contents).
- *     Used at install-token mint time by the lazy builder. The install
- *     handler itself doesn't read it, but we gate on its presence here
- *     so a half-wired deploy (URL works, agent tool fails on first
- *     call) is caught at boot time instead of at first GitHub call.
+ *     Used at install-token mint time by the lazy builder.
+ *   - `GITHUB_APP_CLIENT_ID` + `GITHUB_APP_CLIENT_SECRET` — App OAuth
+ *     credentials surfaced on the settings page after "Request user
+ *     authorization (OAuth) during installation" is enabled. Required
+ *     for the user-OAuth-flow ownership verification step (see
+ *     `GitHubOAuthInstallHandler` JSDoc for the threat model — without
+ *     this check a workspace admin can bind their workspace to a
+ *     different org's installation_id).
  *
  * `GITHUB_APP_INSTALLATION_ID` is intentionally NOT checked here — it's
  * the single-tenant marker, distinct from the multi-tenant App config.
@@ -514,25 +518,34 @@ function registerGitHubAppOAuthHandler(): void {
   const appId = process.env.GITHUB_APP_ID;
   const appSlug = process.env.GITHUB_APP_SLUG;
   const privateKey = process.env.GITHUB_APP_PRIVATE_KEY;
+  const clientId = process.env.GITHUB_APP_CLIENT_ID;
+  const clientSecret = process.env.GITHUB_APP_CLIENT_SECRET;
   const publicApiUrl = resolvePublicApiUrl();
 
-  if (!appId || !appSlug || !privateKey) {
+  const required = {
+    GITHUB_APP_ID: appId,
+    GITHUB_APP_SLUG: appSlug,
+    GITHUB_APP_PRIVATE_KEY: privateKey,
+    GITHUB_APP_CLIENT_ID: clientId,
+    GITHUB_APP_CLIENT_SECRET: clientSecret,
+  };
+  const missing = Object.entries(required)
+    .filter(([, v]) => !v)
+    .map(([k]) => k);
+
+  if (missing.length > 0) {
     if (isCatalogSlugEnabled("github")) {
       log.error(
         {
           slug: "github",
-          requiredEnv: ["GITHUB_APP_ID", "GITHUB_APP_SLUG", "GITHUB_APP_PRIVATE_KEY"],
-          missing: [
-            ...(!appId ? ["GITHUB_APP_ID"] : []),
-            ...(!appSlug ? ["GITHUB_APP_SLUG"] : []),
-            ...(!privateKey ? ["GITHUB_APP_PRIVATE_KEY"] : []),
-          ],
+          requiredEnv: Object.keys(required),
+          missing,
         },
-        "GitHub catalog row is enabled but one of GITHUB_APP_ID / GITHUB_APP_SLUG / GITHUB_APP_PRIVATE_KEY is unset — /api/v1/integrations/github/install will return 501 until configured.",
+        "GitHub catalog row is enabled but one of GITHUB_APP_ID / GITHUB_APP_SLUG / GITHUB_APP_PRIVATE_KEY / GITHUB_APP_CLIENT_ID / GITHUB_APP_CLIENT_SECRET is unset — /api/v1/integrations/github/install will return 501 until configured.",
       );
     } else {
       log.info(
-        "GitHub App OAuth handler not registered — GITHUB_APP_ID / GITHUB_APP_SLUG / GITHUB_APP_PRIVATE_KEY unset and the 'github' catalog row is not enabled (operator hasn't opted in).",
+        "GitHub App OAuth handler not registered — required env unset and the 'github' catalog row is not enabled (operator hasn't opted in).",
       );
     }
     return;
@@ -547,8 +560,10 @@ function registerGitHubAppOAuthHandler(): void {
   registerOAuthHandler(
     GITHUB_SLUG,
     new GitHubOAuthInstallHandler({
-      appId,
-      appSlug,
+      appId: appId!,
+      appSlug: appSlug!,
+      clientId: clientId!,
+      clientSecret: clientSecret!,
       redirectUri: `${publicApiUrl}/api/v1/integrations/github/callback`,
     }),
   );

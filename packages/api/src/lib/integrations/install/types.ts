@@ -110,16 +110,44 @@ export interface OAuthPlatformInstallHandler {
    * Bubbles a tagged error on Platform-side failures (`oauth.v2.access`
    * non-OK responses for Slack, etc.) so the route can surface an
    * actionable user error.
+   *
+   * `extras` carries Platform-specific callback query params that
+   * aren't the OAuth `code` itself. GitHub multi-tenant App installs
+   * use this to receive `installationId` alongside the user OAuth
+   * `code` — verifying the installation_id is owned by the
+   * authenticating user is what prevents the cross-tenant binding
+   * attack documented on `GitHubOAuthInstallHandler`. Other handlers
+   * ignore the field. Adding a new Platform-specific extra is one
+   * field here; if the extras shape ever grows beyond a handful, fold
+   * it into a per-Platform discriminated union.
    */
   handleCallback(
     code: string,
     stateToken: string,
+    extras?: OAuthCallbackExtras,
   ): Promise<{
     readonly workspaceId: WorkspaceId;
     readonly catalogId: CatalogId;
     readonly installRecord: InstallRecord;
     readonly credentialResult: CredentialResult;
   } | null>;
+}
+
+/**
+ * Platform-specific extras delivered on the OAuth callback query string
+ * but distinct from the OAuth 2.0 `code` field. Today only GitHub Apps
+ * use this slot (installation_id). The interface is open-ended on
+ * purpose so adding a future field (e.g. PKCE `code_verifier`) doesn't
+ * ripple across every handler implementation.
+ */
+export interface OAuthCallbackExtras {
+  /**
+   * GitHub App `installation_id` query param delivered alongside the
+   * user OAuth `code` when the App has "Request user authorization
+   * (OAuth) during installation" enabled. The handler verifies this
+   * value is owned by the user the `code` resolves to before persisting.
+   */
+  readonly installationId?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -50,6 +50,7 @@ import type {
   CatalogId,
   CredentialResult,
   InstallRecord,
+  OAuthCallbackExtras,
   OAuthPlatformInstallHandler,
 } from "./types";
 
@@ -116,8 +117,9 @@ export class GitHubSingleTenantOAuthInstallHandler implements OAuthPlatformInsta
   }
 
   async handleCallback(
-    installationId: string,
+    code: string,
     stateToken: string,
+    extras?: OAuthCallbackExtras,
   ): Promise<{
     readonly workspaceId: WorkspaceId;
     readonly catalogId: CatalogId;
@@ -135,6 +137,16 @@ export class GitHubSingleTenantOAuthInstallHandler implements OAuthPlatformInsta
     }
     const workspaceId = verified.workspaceId as WorkspaceId;
 
+    // Single-tenant accepts the supplied identifier from EITHER:
+    //   - `extras.installationId` (route passes the query-param branch
+    //     for github-single-tenant)
+    //   - `code` (legacy positional — backward compat for any direct
+    //     caller that hasn't migrated to the extras shape)
+    // Either way we IGNORE the supplied value and use the operator-
+    // baked env installation_id. See `targetInstallationId` rationale
+    // below.
+    const suppliedInstallationId = extras?.installationId ?? code;
+
     // Defense-in-depth: ignore whatever installation_id arrived on the
     // callback if it disagrees with the operator-baked env value. The
     // env is the source of truth in single-tenant mode — a callback
@@ -143,9 +155,9 @@ export class GitHubSingleTenantOAuthInstallHandler implements OAuthPlatformInsta
     // persisting anything other than the baked value would silently
     // mis-route subsequent installation-token mint calls.
     const targetInstallationId = this.config.installationId;
-    if (installationId !== targetInstallationId) {
+    if (typeof suppliedInstallationId === "string" && suppliedInstallationId !== targetInstallationId) {
       log.warn(
-        { workspaceId, suppliedFingerprint: fingerprintInstallationId(installationId) },
+        { workspaceId, suppliedFingerprint: fingerprintInstallationId(suppliedInstallationId) },
         "GitHub single-tenant callback installation_id differs from operator-baked env — falling back to env value",
       );
     }

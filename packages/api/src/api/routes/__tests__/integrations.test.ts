@@ -561,7 +561,7 @@ describe("GET /api/v1/integrations/github/callback — installation_id flow", ()
     });
   });
 
-  it("accepts installation_id and redirects to /admin/integrations?installed=github on success", async () => {
+  it("accepts code + installation_id and redirects to /admin/integrations?installed=github on success", async () => {
     callbackImpl = async () => ({
       workspaceId: "ws-1" as never,
       catalogId: "github",
@@ -574,7 +574,7 @@ describe("GET /api/v1/integrations/github/callback — installation_id flow", ()
     });
 
     const res = await request(
-      "/api/v1/integrations/github/callback?installation_id=123456789&state=stub",
+      "/api/v1/integrations/github/callback?code=user-oauth&installation_id=123456789&state=stub",
       { headers: { Accept: "text/html" } },
     );
 
@@ -584,13 +584,13 @@ describe("GET /api/v1/integrations/github/callback — installation_id flow", ()
     );
   });
 
-  it("rejects callbacks without `code` and without `installation_id` with 400 missing_credential_identifier", async () => {
-    // Pin the route's defense against a forged callback URL stripped of
-    // both credential identifiers — runHandler must NOT forward an
-    // empty string to handler.handleCallback (would surface a confusing
-    // upstream-OAuth error instead of the 400 the contract requires).
+  it("rejects github callback missing `installation_id` with 400 missing_credential_identifier", async () => {
+    // Pin the route's defense against a forged callback URL: the
+    // GitHub App install requires BOTH code (for user-OAuth ownership
+    // verification) and installation_id. A callback with only one is
+    // a tampered redirect or a misconfigured App.
     const res = await request(
-      "/api/v1/integrations/github/callback?state=stub",
+      "/api/v1/integrations/github/callback?code=user-oauth&state=stub",
       { headers: { Accept: "application/json" } },
     );
 
@@ -598,6 +598,17 @@ describe("GET /api/v1/integrations/github/callback — installation_id flow", ()
     const body = (await res.json()) as { error: string; requestId?: string };
     expect(body.error).toBe("missing_credential_identifier");
     expect(body.requestId).toBeDefined();
+  });
+
+  it("rejects github callback missing `code` with 400 missing_credential_identifier", async () => {
+    const res = await request(
+      "/api/v1/integrations/github/callback?installation_id=123456789&state=stub",
+      { headers: { Accept: "application/json" } },
+    );
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("missing_credential_identifier");
   });
 });
 

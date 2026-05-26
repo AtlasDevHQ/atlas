@@ -267,7 +267,9 @@ export async function saveTwentyIntegration(
  * a row was removed, `false` if no matching row existed (idempotent
  * delete from the caller's perspective).
  *
- * After delete, the resolver falls back to `TWENTY_API_KEY` env.
+ * After delete, `resolveWorkspaceCredentials` throws
+ * `TwentyCredentialError` for this workspace until a new row is saved
+ * — there is no env fallback (#2850).
  */
 export async function deleteTwentyIntegration(workspaceId: string): Promise<boolean> {
   if (!hasInternalDB()) {

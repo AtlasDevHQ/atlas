@@ -184,23 +184,6 @@ async function verifyCustomFields(
 }
 
 /**
- * Cache of (apiKey, baseUrl) pairs that have passed `verifyCustomFields`
- * during this process's lifetime. The dispatcher consults the cache so
- * dispatch-time credential swaps (admin UI install post-boot, or env
- * fallback after Disconnect) re-run verification exactly once per
- * unique credential pair.
- *
- * Hashing: `${apiKey}|${baseUrl ?? ""}` — apiKey already disambiguates
- * an attacker who controls only baseUrl, and the field never leaves
- * process memory. The cache is per-process; redeploys reset it (correct
- * — verification reruns).
- */
-const verifiedCredentialCache = new Set<string>();
-function credentialCacheKey(creds: ResolvedTwentyCredentials): string {
-  return `${creds.apiKey}|${creds.baseUrl ?? ""}`;
-}
-
-/**
  * The outbox-side OutboxDB adapter. We delegate to the module-level
  * `internalQuery` rather than yielding `InternalDB` from Effect
  * Context so the SaasCrm Layer requirements stay empty — the demo
@@ -435,7 +418,6 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
           "A real schema mismatch will surface as a 422 on the first dispatch (and dead-letter the row).",
       );
     } else {
-      verifiedCredentialCache.add(credentialCacheKey(bootCreds));
       log.info(
         {
           baseUrl: bootCreds.baseUrl ?? ATLAS_SAAS_TWENTY_BASE_URL,
@@ -521,9 +503,9 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
       },
       // Single-config dispatcher: env credentials are static for the
       // process lifetime, so we reuse the boot-resolved config (no
-      // per-row credential re-read needed). `verifyCustomFields` already
-      // ran at boot and stamped `verifiedCredentialCache` — the lookup
-      // here short-circuits in the common case.
+      // per-row credential re-read). `verifyCustomFields` already ran
+      // at boot — if it had failed, this Layer would have short-
+      // circuited to `available: false` above.
       dispatcher: async (row, persist) => {
         return dispatchOutboxRow(clientConfig, row, persist);
       },
@@ -537,7 +519,6 @@ export {
   buildSaasClientConfig,
   ATLAS_SAAS_TWENTY_BASE_URL,
   classifyTwentyError,
-  verifiedCredentialCache,
   STAMP_CONVERSION_EVENT_TYPE,
   REQUIRED_PERSON_FIELDS,
 };

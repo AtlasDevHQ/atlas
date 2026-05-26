@@ -92,6 +92,9 @@ jobs:
       - name: Check Twenty operator resolver is confined to ee/saas-crm (#2850)
         run: bash scripts/check-twenty-resolver-imports.sh
 
+      - name: Adversarial fixtures for the Twenty-resolver-imports gate (#2850)
+        run: bash scripts/__tests__/check-twenty-resolver-imports.test.sh
+
       - name: Check no legacy `connections` / `connection_groups` SQL outside migrations (#2744)
         run: bash scripts/check-no-legacy-connections-sql.sh
 

@@ -27,8 +27,10 @@ import { getTwentyIntegrationWithSecret } from "./store";
  * emits a structured warning on transport / decrypt failure and then
  * re-throws. This adapter does NOT log — keeping the store as the
  * single structured-error surface avoids double-logging. The resolver
- * distinguishes the two: transport errors get swallowed (env fallback),
- * decrypt errors propagate (fail closed).
+ * distinguishes the two: transport errors are swallowed and surface as
+ * the missing-credentials `TwentyCredentialError` (no env fallback per
+ * #2850; the underlying error is attached as `cause`); decrypt errors
+ * propagate as `TwentyDecryptError` so the dispatcher can fail closed.
  */
 export const lookupTwentyDbCredentials: DbCredentialLookup = async (
   workspaceId: string,

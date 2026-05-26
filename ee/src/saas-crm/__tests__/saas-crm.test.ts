@@ -466,6 +466,185 @@ describe("SaasCrmLive boot — 401 metadata response flips to permanent", () => 
   });
 });
 
+// ── SaasCrmLive.dispatcher — #2850 leak-prevention regression pin ────
+//
+// The flusher fetches the dispatcher closure via the SaasCrm Tag and
+// calls it per outbox row. Pre-#2850 this closure re-read
+// `twenty_integrations` on every invocation; post-#2850 it must use the
+// boot-resolved env client config ONLY (the cross-tenant `findLatest…`
+// helper was deleted). These tests pin two structural invariants:
+//
+//   1. The dispatcher routes with the env-baked apiKey (the value of
+//      `process.env.TWENTY_API_KEY` at Layer boot — not at dispatch
+//      time, which is the whole point of removing per-row resolution).
+//   2. Mutating `process.env.TWENTY_API_KEY` AFTER boot does NOT change
+//      what the dispatcher sends — env is frozen at boot. A future
+//      regression that reintroduced runtime env-reads would flip this
+//      assertion.
+//
+// Together these prevent both leak directions: no per-row DB read can
+// silently re-enter the dispatcher, and no late env mutation can swap
+// credentials out from under in-flight outbox rows.
+
+describe("SaasCrmLive.dispatcher — env-only config baked at boot (#2850)", () => {
+  beforeEach(resetStubs);
+
+  test("dispatcher sends the boot-resolved env apiKey on the Authorization header", async () => {
+    enterpriseEnabled = true;
+    process.env.TWENTY_API_KEY = "boot-key";
+    process.env.TWENTY_BASE_URL = "https://crm.test.local";
+
+    const seenAuthHeaders: string[] = [];
+    const fetchImpl = (async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const headers = new Headers(init?.headers ?? {});
+      const auth = headers.get("authorization");
+      if (auth) seenAuthHeaders.push(auth);
+      if (url.endsWith("/metadata")) {
+        return metadataResponse([
+          "id",
+          "atlasFirstSource",
+          "atlasLastSource",
+          "atlasStripeCustomerId",
+        ]);
+      }
+      if (url.includes("/rest/people?filter")) {
+        return new Response(JSON.stringify({ data: { people: [] } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(
+        JSON.stringify({ data: { createPerson: { id: "person_via_dispatcher" } } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+
+    try {
+      await withFetch(fetchImpl, async () => {
+        const program = Effect.gen(function* () {
+          const crm = yield* SaasCrm;
+          if (!crm.available) throw new Error("expected available=true");
+          // `dispatcher` is a plain Promise-returning function on the
+          // Tag (the flusher calls it from non-Effect code). Bridge
+          // back into Effect with Effect.promise so we can await its
+          // result inside the generator.
+          return yield* Effect.promise(() =>
+            crm.dispatcher(
+              {
+                id: "row-dispatcher-test",
+                eventType: "demo",
+                payload: { source: "demo", email: "dispatcher@test.local" },
+                attempts: 1,
+                twentyPersonId: null,
+                twentyNoteId: null,
+              },
+              {
+                setTwentyPersonId: async () => {},
+                setTwentyNoteId: async () => {},
+              },
+            ),
+          );
+        });
+        const outcome = await Effect.runPromise(
+          program.pipe(Effect.provide(SaasCrmLive)),
+        );
+        expect(outcome).toEqual({ kind: "ok" });
+      });
+      // Boot's metadata probe AND the per-row people query both use
+      // the env-resolved key. Any future regression that swapped
+      // credentials mid-flight would show different auth headers here.
+      expect(seenAuthHeaders.length).toBeGreaterThan(0);
+      for (const h of seenAuthHeaders) {
+        expect(h).toBe("Bearer boot-key");
+      }
+    } finally {
+      delete process.env.TWENTY_API_KEY;
+      delete process.env.TWENTY_BASE_URL;
+    }
+  });
+
+  test("post-boot env mutation does NOT change the dispatcher's apiKey", async () => {
+    enterpriseEnabled = true;
+    process.env.TWENTY_API_KEY = "boot-key";
+    process.env.TWENTY_BASE_URL = "https://crm.test.local";
+
+    const seenAuthHeaders: string[] = [];
+    const fetchImpl = (async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const headers = new Headers(init?.headers ?? {});
+      const auth = headers.get("authorization");
+      if (auth) seenAuthHeaders.push(auth);
+      if (url.endsWith("/metadata")) {
+        return metadataResponse([
+          "id",
+          "atlasFirstSource",
+          "atlasLastSource",
+          "atlasStripeCustomerId",
+        ]);
+      }
+      if (url.includes("/rest/people?filter")) {
+        return new Response(JSON.stringify({ data: { people: [] } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(
+        JSON.stringify({ data: { createPerson: { id: "person_post_mutation" } } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+
+    try {
+      await withFetch(fetchImpl, async () => {
+        const program = Effect.gen(function* () {
+          const crm = yield* SaasCrm;
+          if (!crm.available) throw new Error("expected available=true");
+
+          // Mutate the env AFTER boot. The boot-baked config must not
+          // pick this up. If the dispatcher ever starts reading env at
+          // call time again, this assertion will fail.
+          process.env.TWENTY_API_KEY = "swapped-out-key";
+
+          yield* Effect.promise(() =>
+            crm.dispatcher(
+              {
+                id: "row-after-mutation",
+                eventType: "demo",
+                payload: { source: "demo", email: "mutate@test.local" },
+                attempts: 1,
+                twentyPersonId: null,
+                twentyNoteId: null,
+              },
+              {
+                setTwentyPersonId: async () => {},
+                setTwentyNoteId: async () => {},
+              },
+            ),
+          );
+        });
+        await Effect.runPromise(program.pipe(Effect.provide(SaasCrmLive)));
+      });
+
+      // All requests — boot probe AND post-mutation dispatch — must
+      // use the boot key. None should leak the swapped-out value.
+      for (const h of seenAuthHeaders) {
+        expect(h).toBe("Bearer boot-key");
+        expect(h).not.toBe("Bearer swapped-out-key");
+      }
+    } finally {
+      delete process.env.TWENTY_API_KEY;
+      delete process.env.TWENTY_BASE_URL;
+    }
+  });
+});
+
 // ── dispatchOutboxRow — the flusher's per-row entry point ───────────
 
 describe("dispatchOutboxRow", () => {

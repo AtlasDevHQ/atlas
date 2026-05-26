@@ -90,8 +90,8 @@ export function assertTwentyBaseUrl(value: string): TwentyBaseUrl {
 
 /**
  * Resolved Twenty credentials, with a `source` discriminator so
- * dispatch-time consumers can attribute creds to the admin-UI override
- * vs the env fallback in structured logs and metrics.
+ * structured logs and metrics can attribute each dispatch to the
+ * actor that produced its credentials (#2850).
  *
  * Plain `string` types here (not the {@link TwentyApiKey} /
  * {@link TwentyBaseUrl} brands) because the brand's value is at the
@@ -104,9 +104,12 @@ export interface ResolvedTwentyCredentials {
   /** Undefined when neither DB row nor `TWENTY_BASE_URL` supplies one. */
   readonly baseUrl: string | undefined;
   /**
-   * Which resolution path produced this record.
-   * - `"db"` — admin-UI row in `twenty_integrations`.
-   * - `"env"` — `TWENTY_API_KEY` (+ optional `TWENTY_BASE_URL`).
+   * Which resolver produced this record.
+   * - `"db"` — per-workspace plugin install from `twenty_integrations`
+   *   (returned by {@link resolveWorkspaceCredentials}).
+   * - `"env"` — platform lead-capture from `TWENTY_API_KEY` env
+   *   (returned by {@link resolveOperatorCredentials}).
+   * Mixing sources within a single result is forbidden by #2850.
    */
   readonly source: "db" | "env";
 }
@@ -115,11 +118,19 @@ export interface ResolvedTwentyCredentials {
  * Actionable error — message tells the operator exactly which env var
  * to set OR points them at the admin UI. Distinct from a generic
  * "credentials missing" so the boot-time log makes the fix one line.
+ *
+ * Carries an optional `cause` chain so a transport-blip swallowed by
+ * the resolver still surfaces in structured logs — callers should
+ * `console.error(err)` (or pino's default `{ err }` serializer) which
+ * traverses `Error.cause` automatically.
  */
 export class TwentyCredentialError extends Error {
   override readonly name = "TwentyCredentialError";
-  constructor(message: string) {
+  constructor(message: string, options?: { cause?: unknown }) {
     super(message);
+    if (options?.cause !== undefined) {
+      (this as { cause?: unknown }).cause = options.cause;
+    }
   }
 }
 
@@ -147,7 +158,9 @@ export class TwentyDecryptError extends Error {
 }
 
 /** Type-guard for the decrypt-failure signal — accepts subclasses and structural marks. */
-export function isTwentyDecryptError(err: unknown): boolean {
+export function isTwentyDecryptError(
+  err: unknown,
+): err is TwentyDecryptError | { decryptFailed: true } {
   if (err instanceof TwentyDecryptError) return true;
   if (typeof err === "object" && err !== null && "decryptFailed" in err) {
     return (err as { decryptFailed?: unknown }).decryptFailed === true;
@@ -271,8 +284,11 @@ export function resolveOperatorCredentials(
  * key is unset. Used at boot to decide whether the SaaS CRM dispatch
  * layer should run startup verification or short-circuit to disabled.
  *
- * Same caller restriction as {@link resolveOperatorCredentials} (the
- * grep gate matches the function name's `OperatorCredentials` suffix).
+ * Same caller restriction as {@link resolveOperatorCredentials}; the
+ * grep gate in `scripts/check-twenty-resolver-imports.sh` enumerates
+ * both names (`resolveOperatorCredentials`, `tryResolveOperatorCredentials`)
+ * explicitly — a future third operator-path helper must extend the
+ * gate's pattern.
  */
 export function tryResolveOperatorCredentials(
   options: ResolveOptions = {},
@@ -330,6 +346,12 @@ export async function resolveWorkspaceCredentials(
   options: ResolveWorkspaceOptions,
 ): Promise<ResolvedTwentyCredentials> {
   let dbRow: DbCredentialLookupResult | null = null;
+  // Track the swallowed transport error so we can attach it as `cause`
+  // on the thrown TwentyCredentialError below. The lookup's own
+  // structured-warn covers the production adapter; this preserves the
+  // chain for caller-supplied lookups (tests, custom integrations)
+  // that may not log before throwing.
+  let lookupTransportError: unknown = undefined;
   if (options.lookup) {
     try {
       dbRow = await options.lookup(workspaceId);
@@ -337,12 +359,11 @@ export async function resolveWorkspaceCredentials(
       if (isTwentyDecryptError(err)) {
         throw err;
       }
-      // intentionally ignored: transport blip. Lookup emits the
-      // structured-warn before throwing; the resolver stays log-free
-      // so it remains portable (no `@atlas/api` dep). A transient
-      // failure should NOT silently fall back to env — surface the
-      // missing-credentials error so the operator sees it.
-      void err;
+      // intentionally swallowed: transport blip. A transient failure
+      // must NOT silently fall back to env (#2850) — surface the
+      // missing-credentials error, but keep the original error as the
+      // cause so it isn't lost from operator-visible logs.
+      lookupTransportError = err;
       dbRow = null;
     }
   }
@@ -359,7 +380,10 @@ export async function resolveWorkspaceCredentials(
     // DB row exists but apiKey is empty/whitespace — treat as absent.
   }
 
-  throw new TwentyCredentialError(missingCredentialsMessage(options.deployMode));
+  throw new TwentyCredentialError(
+    missingCredentialsMessage(options.deployMode),
+    lookupTransportError !== undefined ? { cause: lookupTransportError } : undefined,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────

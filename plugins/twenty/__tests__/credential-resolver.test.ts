@@ -438,6 +438,41 @@ describe("resolveWorkspaceCredentials — lookup failure modes", () => {
     }
   });
 
+  test("transport-throw lookup → attaches the underlying error as `cause`", async () => {
+    // Preserves observability through the swallow. A caller-supplied
+    // lookup that doesn't structured-warn before throwing still leaves
+    // the original error reachable via `err.cause`.
+    const underlying = new Error("pg connection refused");
+    const failingLookup: DbCredentialLookup = async () => {
+      throw underlying;
+    };
+    try {
+      await resolveWorkspaceCredentials("ws-1", {
+        deployMode: "saas",
+        lookup: failingLookup,
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TwentyCredentialError);
+      expect((err as { cause?: unknown }).cause).toBe(underlying);
+    }
+  });
+
+  test("no transport error → `cause` is not set on the missing-creds throw", async () => {
+    // Don't attach an undefined cause when the lookup returned null
+    // cleanly — keeps the error shape unambiguous in logs.
+    try {
+      await resolveWorkspaceCredentials("ws-1", {
+        deployMode: "saas",
+        lookup: lookupReturning(null),
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TwentyCredentialError);
+      expect("cause" in (err as object)).toBe(false);
+    }
+  });
+
   test("decrypt-throw lookup → propagates TwentyDecryptError (fail-CLOSED on operator misconfig)", async () => {
     const decryptFailLookup: DbCredentialLookup = async () => {
       throw new TwentyDecryptError("key version v2 missing from ATLAS_ENCRYPTION_KEYS");

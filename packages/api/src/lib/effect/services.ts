@@ -2445,7 +2445,35 @@ export type SaasCrmLeadInput =
        * allowed. Split into first/last at the normalizer seam.
        */
       readonly name?: string;
+    }
+  | {
+      /**
+       * Stripe → Twenty conversion stamping (#2737). Fired from the
+       * `onSubscriptionComplete` Better Auth hook after a paying
+       * checkout. The dispatcher stamps `customFields.atlasStripeCustomerId`
+       * on the Twenty Person matching `email`; if no Person exists,
+       * `upsertPerson` creates one with `atlasFirstSource = "CONVERSION"`
+       * so the stamp is never lost.
+       */
+      readonly source: "conversion";
+      readonly email: string;
+      /** Stripe `customer.id` (`cus_…`). */
+      readonly stripeCustomerId: string;
     };
+
+/**
+ * Inputs to `SaasCrm.stampConversion`. Separate from `SaasCrmLeadInput`
+ * so the call site (the Stripe webhook hook) stays a flat call —
+ * `crm.stampConversion({ email, stripeCustomerId })` — without needing
+ * to construct a discriminated union literal. The conversion shape lives
+ * on `SaasCrmLeadInput` too (as the `conversion` variant) because the
+ * outbox payload uses the same union as the normalizer.
+ */
+export interface SaasCrmStampConversionInput {
+  readonly email: string;
+  /** Stripe `customer.id` (`cus_…`). */
+  readonly stripeCustomerId: string;
+}
 
 /**
  * Discriminated SaasCrm shape — the two correlated facts (anticipated
@@ -2472,6 +2500,14 @@ export type SaasCrmShape =
        */
       readonly available: false;
       readonly upsertLead: (input: SaasCrmLeadInput) => Effect.Effect<void, Error>;
+      /**
+       * Stripe → Twenty conversion stamping (#2737). Noop on
+       * self-hosted / EE-disabled — same fail-soft pattern as
+       * `upsertLead`.
+       */
+      readonly stampConversion: (
+        input: SaasCrmStampConversionInput,
+      ) => Effect.Effect<void, Error>;
     }
   | {
       readonly available: true;
@@ -2484,6 +2520,18 @@ export type SaasCrmShape =
        * structured log (demo — user already has a sandbox link).
        */
       readonly upsertLead: (input: SaasCrmLeadInput) => Effect.Effect<void, Error>;
+      /**
+       * Enqueue a `stamp-conversion` row into `crm_outbox` for durable
+       * dispatch (#2737). The Stripe webhook handler calls this from
+       * `onSubscriptionComplete` and returns immediately so webhook ack
+       * latency stays unchanged. The flusher's per-row dispatcher
+       * routes the row through the same `upsertPerson` codepath as
+       * other lead variants — the `conversion` normalizer attaches
+       * `atlasStripeCustomerId` to the Person on every write path.
+       */
+      readonly stampConversion: (
+        input: SaasCrmStampConversionInput,
+      ) => Effect.Effect<void, Error>;
       /**
        * Per-row dispatcher the scheduler-backed flusher calls inside
        * `flushBatch`. Defined here (not in `@atlas/ee`) so
@@ -2503,6 +2551,7 @@ export class SaasCrm extends Context.Tag("SaasCrm")<SaasCrm, SaasCrmShape>() {}
 export const NoopSaasCrmLayer: Layer.Layer<SaasCrm> = Layer.succeed(SaasCrm, {
   available: false,
   upsertLead: () => Effect.void,
+  stampConversion: () => Effect.void,
 } satisfies SaasCrmShape);
 
 // ── Aggregate no-op default Layer ────────────────────────────────────

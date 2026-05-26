@@ -29,7 +29,8 @@ describe("twentyPlugin — shape validation", () => {
     expect(plugin.version).toBe("0.1.0");
     expect(plugin.name).toBe("Twenty CRM Action");
     expect(Array.isArray(plugin.actions)).toBe(true);
-    expect(plugin.actions).toHaveLength(1);
+    // Two actions: upsertTwentyPerson + stampStripeCustomerId (#2737).
+    expect(plugin.actions).toHaveLength(2);
   });
 
   test("definePlugin() accepts the created plugin", () => {
@@ -49,7 +50,7 @@ describe("twentyPlugin — shape validation", () => {
   });
 });
 
-describe("twentyPlugin — action metadata", () => {
+describe("twentyPlugin — upsertTwentyPerson action metadata", () => {
   test("action name is upsertTwentyPerson", () => {
     expect(twentyPlugin(VALID_CONFIG).actions[0].name).toBe("upsertTwentyPerson");
   });
@@ -72,6 +73,36 @@ describe("twentyPlugin — action metadata", () => {
 
   test("action requires apiKey credential", () => {
     expect(twentyPlugin(VALID_CONFIG).actions[0].requiredCredentials).toEqual([
+      "apiKey",
+    ]);
+  });
+});
+
+describe("twentyPlugin — stampStripeCustomerId action metadata", () => {
+  test("action name is stampStripeCustomerId", () => {
+    expect(twentyPlugin(VALID_CONFIG).actions[1].name).toBe(
+      "stampStripeCustomerId",
+    );
+  });
+
+  test("action actionType is crm:stamp-stripe-customer-id", () => {
+    expect(twentyPlugin(VALID_CONFIG).actions[1].actionType).toBe(
+      "crm:stamp-stripe-customer-id",
+    );
+  });
+
+  test("action is not reversible (stamping is a write that we don't roll back)", () => {
+    expect(twentyPlugin(VALID_CONFIG).actions[1].reversible).toBe(false);
+  });
+
+  test("action defaults to admin-only approval", () => {
+    expect(twentyPlugin(VALID_CONFIG).actions[1].defaultApproval).toBe(
+      "admin-only",
+    );
+  });
+
+  test("action requires apiKey credential", () => {
+    expect(twentyPlugin(VALID_CONFIG).actions[1].requiredCredentials).toEqual([
       "apiKey",
     ]);
   });

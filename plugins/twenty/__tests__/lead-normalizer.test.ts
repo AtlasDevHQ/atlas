@@ -4,10 +4,12 @@
  */
 import { describe, test, expect } from "bun:test";
 import {
+  normalizeConversionLead,
   normalizeDemoLead,
   normalizeLead,
   normalizeSalesFormLead,
   normalizeSignupLead,
+  type AtlasConversionLeadEvent,
   type AtlasDemoLeadEvent,
   type AtlasSalesFormLeadEvent,
   type AtlasSignupLeadEvent,
@@ -307,6 +309,76 @@ describe("normalizeSignupLead", () => {
   });
 });
 
+describe("normalizeConversionLead", () => {
+  test("maps a conversion event to a Twenty upsert payload carrying atlasStripeCustomerId", () => {
+    const event: AtlasConversionLeadEvent = {
+      source: "conversion",
+      email: "User@Example.com",
+      stripeCustomerId: "cus_NffrFeUfNV2Hib",
+    };
+
+    const result = normalizeConversionLead(event);
+
+    expect(result).toEqual({
+      person: {
+        email: "user@example.com",
+        eventSource: "CONVERSION",
+        customFields: { atlasStripeCustomerId: "cus_NffrFeUfNV2Hib" },
+      },
+      eventSource: "CONVERSION",
+    });
+  });
+
+  test("lowercases and trims the email", () => {
+    const result = normalizeConversionLead({
+      source: "conversion",
+      email: "  Bob@ACME.COM ",
+      stripeCustomerId: "cus_abc",
+    });
+    expect(result.person.email).toBe("bob@acme.com");
+  });
+
+  test("always stamps eventSource = CONVERSION", () => {
+    const result = normalizeConversionLead({
+      source: "conversion",
+      email: "u@t.com",
+      stripeCustomerId: "cus_xyz",
+    });
+    expect(result.eventSource).toBe("CONVERSION");
+    expect(result.person.eventSource).toBe("CONVERSION");
+  });
+
+  test("never attaches a Note (conversion carries no message)", () => {
+    const result = normalizeConversionLead({
+      source: "conversion",
+      email: "u@t.com",
+      stripeCustomerId: "cus_abc",
+    });
+    expect(result.note).toBeUndefined();
+  });
+
+  test("does not put atlasIp on the Person (conversion has no request context)", () => {
+    const result = normalizeConversionLead({
+      source: "conversion",
+      email: "u@t.com",
+      stripeCustomerId: "cus_abc",
+    });
+    expect(JSON.stringify(result)).not.toContain("atlasIp");
+  });
+
+  test("preserves the stripeCustomerId verbatim — no normalization", () => {
+    // Stripe customer IDs are opaque tokens — never lowercase or trim them.
+    const result = normalizeConversionLead({
+      source: "conversion",
+      email: "u@t.com",
+      stripeCustomerId: " CUS_Mixed_Case ",
+    });
+    expect(result.person.customFields?.atlasStripeCustomerId).toBe(
+      " CUS_Mixed_Case ",
+    );
+  });
+});
+
 describe("normalizeLead — dispatch", () => {
   test("dispatches demo source to the demo normalizer", () => {
     const result = normalizeLead({ source: "demo", email: "u@t.com" });
@@ -334,5 +406,15 @@ describe("normalizeLead — dispatch", () => {
     });
     expect(result.eventSource).toBe("SIGNUP");
     expect(result.note).toBeUndefined();
+  });
+
+  test("dispatches conversion source to the conversion normalizer", () => {
+    const result = normalizeLead({
+      source: "conversion",
+      email: "u@t.com",
+      stripeCustomerId: "cus_abc",
+    });
+    expect(result.eventSource).toBe("CONVERSION");
+    expect(result.person.customFields?.atlasStripeCustomerId).toBe("cus_abc");
   });
 });

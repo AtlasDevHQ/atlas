@@ -72,6 +72,7 @@ function makeAvailableSaasCrmLayer(): Layer.Layer<SaasCrmTag> {
   return Layer.succeed(SaasCrm, {
     available: true,
     upsertLead: () => Effect.void,
+    stampConversion: () => Effect.void,
     dispatcher: async () => ({ kind: "ok" as const }),
   } satisfies SaasCrmShape);
 }
@@ -142,6 +143,7 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
     const noopSaasCrm: Layer.Layer<SaasCrmTag> = Layer.succeed(SaasCrm, {
       available: false,
       upsertLead: () => Effect.void,
+      stampConversion: () => Effect.void,
     } satisfies SaasCrmShape);
 
     const config = {} as Parameters<typeof makeSchedulerLive>[0];

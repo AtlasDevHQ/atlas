@@ -76,6 +76,13 @@ export interface AtlasPersonCustomFields {
   readonly atlasFirstSource?: string;
   readonly atlasLastSource?: string;
   readonly atlasIp?: string;
+  /**
+   * Stripe `customer.id` of a paying customer. Written by
+   * `stampStripeCustomerId` (and by `upsertPerson` when the normalized
+   * payload carries it) so the read-side datasource (#2728) can
+   * filter "demo → paid" conversions with a clean SQL predicate.
+   */
+  readonly atlasStripeCustomerId?: string;
 }
 
 /**
@@ -490,6 +497,44 @@ export async function createNote(
 // ─────────────────────────────────────────────────────────────────────
 //  Public surface
 // ─────────────────────────────────────────────────────────────────────
+
+export interface StampStripeCustomerIdInput {
+  /** Email Twenty matches on. */
+  readonly email: string;
+  /** Stripe `customer.id` (`cus_…`). */
+  readonly stripeCustomerId: string;
+}
+
+/**
+ * Stamp `atlasStripeCustomerId` on the Twenty Person matching `email`.
+ * Thin wrapper around `upsertPerson` with `eventSource = "CONVERSION"`
+ * and the customer id carried through `customFields`.
+ *
+ * Behaviour matrix (matches `upsertPerson` exactly — see its docblock):
+ *  - Person absent → POST a new Person with
+ *    `atlasFirstSource = "CONVERSION"`, `atlasLastSource = "CONVERSION"`,
+ *    AND `atlasStripeCustomerId` set. Covers the edge case of a paying
+ *    customer who never demoed/signed up — the stamp is never lost.
+ *  - Person present + `atlasFirstSource` set → PATCH
+ *    `atlasLastSource = "CONVERSION"` AND `atlasStripeCustomerId`.
+ *    First-source attribution is preserved.
+ *  - Person present + `atlasFirstSource` absent → PATCH both source
+ *    fields to `"CONVERSION"` AND `atlasStripeCustomerId`.
+ *
+ * Self-hosted operators with their own Stripe + Twenty wiring can call
+ * this directly from their webhook handler — it's a general-purpose
+ * plugin action, not gated behind enterprise.
+ */
+export async function stampStripeCustomerId(
+  config: TwentyClientConfig,
+  input: StampStripeCustomerIdInput,
+): Promise<TwentyPerson> {
+  return upsertPerson(config, {
+    email: input.email,
+    eventSource: "CONVERSION",
+    customFields: { atlasStripeCustomerId: input.stripeCustomerId },
+  });
+}
 
 /**
  * Upsert a Person by email with first/last source translation.

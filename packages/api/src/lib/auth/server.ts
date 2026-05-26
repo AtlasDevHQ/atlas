@@ -298,6 +298,111 @@ export async function dispatchSignupCrmLead(args: {
 }
 
 /**
+ * Twenty CRM dispatch for a completed Stripe checkout (#2737).
+ * Enqueues a `stamp-conversion` row into `crm_outbox` via the `SaasCrm`
+ * Tag; the scheduler-backed flusher routes the row through
+ * `TwentyClient.upsertPerson` which stamps `atlasStripeCustomerId` on
+ * the matching Twenty Person (and creates a new Person with
+ * `atlasFirstSource = "CONVERSION"` if none exists).
+ *
+ * **Webhook latency:** enqueue + return immediately. The Twenty side
+ * runs out-of-band via the flusher. A Twenty outage MUST NOT 500 the
+ * Stripe webhook — Stripe retries on non-2xx for 3 weeks and a failed
+ * ack here can stack other webhook deliveries behind it. Two layers of
+ * defense, mirroring `dispatchSignupCrmLead`:
+ *  - inner `.pipe(Effect.either)` absorbs the typed `Error` channel
+ *    (e.g. a `crm_outbox` Postgres blip).
+ *  - outer `try/catch` absorbs runtime defects.
+ *
+ * **Email source:** `subscription.referenceId` is the orgId in Atlas's
+ * Better Auth wiring, not the user's email. We retrieve the Stripe
+ * customer (whose `email` is the address used at checkout) to attribute
+ * the stamp back to the same Person record demoed/signed up under that
+ * email. A Stripe customer with no email logs and skips — the row would
+ * otherwise dead-letter on the very first dispatch.
+ *
+ * @internal
+ */
+export async function dispatchConversionCrmStamp(args: {
+  stripeClient: Stripe;
+  stripeCustomerId: string;
+  orgId?: string | null;
+}): Promise<void> {
+  const { stripeClient, stripeCustomerId, orgId } = args;
+
+  let customer: Stripe.Customer | Stripe.DeletedCustomer;
+  try {
+    customer = await stripeClient.customers.retrieve(stripeCustomerId);
+  } catch (err) {
+    log.warn(
+      {
+        stripeCustomerId,
+        orgId,
+        err: errorMessage(err),
+        event: "conversion_crm.customer_retrieve_failed",
+      },
+      "Stripe customers.retrieve failed during conversion stamp — swallowed to keep webhook ack unblocked",
+    );
+    return;
+  }
+  if (customer.deleted) {
+    log.warn(
+      {
+        stripeCustomerId,
+        orgId,
+        event: "conversion_crm.customer_deleted",
+      },
+      "Stripe customer is deleted at conversion-stamp time — skipping Twenty stamp",
+    );
+    return;
+  }
+  const email = customer.email?.toLowerCase().trim();
+  if (!email) {
+    log.warn(
+      {
+        stripeCustomerId,
+        orgId,
+        event: "conversion_crm.customer_no_email",
+      },
+      "Stripe customer has no email — cannot attribute conversion stamp to a Twenty Person",
+    );
+    return;
+  }
+
+  try {
+    await runEnterprise(
+      Effect.gen(function* () {
+        const crm = yield* SaasCrm;
+        const result = yield* crm
+          .stampConversion({ email, stripeCustomerId })
+          .pipe(Effect.either);
+        if (result._tag === "Left") {
+          log.warn(
+            {
+              orgId,
+              stripeCustomerId,
+              err: errorMessage(result.left),
+              event: "conversion_crm.enqueue_failed",
+            },
+            "SaasCrm.stampConversion enqueue failed — swallowed to keep webhook ack unblocked",
+          );
+        }
+      }),
+    );
+  } catch (err) {
+    log.warn(
+      {
+        orgId,
+        stripeCustomerId,
+        err: errorMessage(err),
+        event: "conversion_crm.dispatch_defect",
+      },
+      "Unexpected SaasCrm dispatch error during conversion stamp — swallowed to keep webhook ack unblocked",
+    );
+  }
+}
+
+/**
  * Built-in rate-limit ceilings for Better Auth endpoints. Chosen to slow
  * online brute force and email-verification abuse while tolerating
  * legitimate retry patterns (user fat-fingers password 2–3 times, clicks
@@ -1363,6 +1468,20 @@ export function buildPlugins() {
                     );
                     throw err;
                   }
+                }
+
+                // #2737 — fire-and-forget Twenty CRM conversion stamp.
+                // Awaited deliberately: the helper swallows every
+                // failure internally, so the await only blocks on the
+                // outbox INSERT (a few ms). Not awaiting risks an
+                // unhandled rejection if a future change widens the
+                // error channel.
+                if (subscription.stripeCustomerId) {
+                  await dispatchConversionCrmStamp({
+                    stripeClient,
+                    stripeCustomerId: subscription.stripeCustomerId,
+                    orgId,
+                  });
                 }
               },
               async onSubscriptionCancel({ subscription }) {

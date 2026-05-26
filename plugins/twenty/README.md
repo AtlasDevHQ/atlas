@@ -1,19 +1,23 @@
 # @useatlas/twenty
 
-Atlas action plugin for [Twenty CRM](https://twenty.com). Currently ships the `upsertTwentyPerson` action only.
+Atlas action plugin for [Twenty CRM](https://twenty.com). Ships two agent-callable actions:
+
+- `upsertTwentyPerson` — upsert a Person by email with sticky first/last source attribution.
+- `stampStripeCustomerId` — stamp `atlasStripeCustomerId` on a Person matching email (CONVERSION source). Use from a Stripe webhook handler.
 
 ## Required Twenty setup
 
-Before deploy, two **custom fields** must be created on the `Person` object in Twenty:
+Before deploy, three **custom fields** must be created on the `Person` object in Twenty:
 
-| Field name         | Type    | Purpose                                                                                               |
-| ------------------ | ------- | ----------------------------------------------------------------------------------------------------- |
-| `atlasFirstSource` | Text    | Sticky first-touch attribution — set once on a Person, never overwritten thereafter (e.g. `DEMO`).    |
-| `atlasLastSource`  | Text    | Most recent touch — overwritten on every dispatch (e.g. `DEMO`, `SIGNUP`, `SALES_FORM`).              |
+| Field name              | Type    | Purpose                                                                                               |
+| ----------------------- | ------- | ----------------------------------------------------------------------------------------------------- |
+| `atlasFirstSource`      | Text    | Sticky first-touch attribution — set once on a Person, never overwritten thereafter (e.g. `DEMO`).    |
+| `atlasLastSource`       | Text    | Most recent touch — overwritten on every dispatch (e.g. `DEMO`, `SIGNUP`, `SALES_FORM`, `CONVERSION`). |
+| `atlasStripeCustomerId` | Text    | Stripe `customer.id` of a paying customer. Stamped by `stampStripeCustomerId` on conversion.          |
 
-Create both under **Settings → Data Model → Person → + Add Field** in the Twenty UI. The Atlas SaaS wiring (`/ee/src/saas-crm/`) runs a startup verification via the Twenty metadata GraphQL endpoint (`/metadata`) — if either field is missing, the layer logs an error with the exact create-instructions and disables itself; subsequent demo signups are no-ops (no dead outbox rows).
+Create all three under **Settings → Data Model → Person → + Add Field** in the Twenty UI. The Atlas SaaS wiring (`/ee/src/saas-crm/`) runs a startup verification via the Twenty metadata GraphQL endpoint (`/metadata`) — if any field is missing, the layer logs an error with the exact create-instructions and disables itself; subsequent demo signups AND conversion stamps are no-ops (no dead outbox rows).
 
-An optional third field `atlasIp` (Text) captures the client IP on demo gate submissions; absence is non-fatal.
+An optional fourth field `atlasIp` (Text) captures the client IP on demo gate submissions; absence is non-fatal.
 
 ## Install (self-hoster)
 
@@ -35,11 +39,16 @@ export default defineConfig({
 });
 ```
 
-The plugin exposes one agent tool: `upsertTwentyPerson`. The action takes `{ email, eventSource, firstName?, lastName?, atlasIp? }` and upserts the Person by `emails.primaryEmail`. The Atlas-side first/last source rule is enforced inside `TwentyClient.upsertPerson` — callers pass a single `eventSource`.
+The plugin exposes two agent tools:
+
+- `upsertTwentyPerson` — takes `{ email, eventSource, firstName?, lastName?, atlasIp? }` and upserts the Person by `emails.primaryEmail`. The first/last source rule is enforced inside `TwentyClient.upsertPerson` — callers pass a single `eventSource`.
+- `stampStripeCustomerId` — takes `{ email, stripeCustomerId }` and stamps `atlasStripeCustomerId` on the matching Person (creates a new Person with `atlasFirstSource = "CONVERSION"` if none exists). Self-hosters with their own Stripe + Twenty wiring can call this from their own webhook handler.
 
 ## Atlas SaaS wiring
 
-Atlas SaaS (`app.useatlas.dev`) does NOT register this plugin via `atlas.config.ts`. Instead, `/ee/src/saas-crm/` consumes `TwentyClient` directly through the `SaasCrm` Effect Tag. Self-hosters that want demo / signup dispatch into Twenty wire the actions themselves via this plugin's action API.
+Atlas SaaS (`app.useatlas.dev`) does NOT register this plugin via `atlas.config.ts`. Instead, `/ee/src/saas-crm/` consumes `TwentyClient` directly through the `SaasCrm` Effect Tag. Self-hosters that want demo / signup / conversion dispatch into Twenty wire the actions themselves via this plugin's action API.
+
+The SaaS-side conversion stamping (`SaasCrm.stampConversion`) is invoked from the Stripe `onSubscriptionComplete` Better Auth hook in `packages/api/src/lib/auth/server.ts`. The hook retrieves the Stripe customer's email and enqueues a `stamp-conversion` row into `crm_outbox` for durable dispatch by the scheduler-backed flusher.
 
 ## Config
 

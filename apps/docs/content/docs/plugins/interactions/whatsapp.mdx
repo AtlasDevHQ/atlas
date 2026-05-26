@@ -56,38 +56,42 @@ The webhook URL must be publicly accessible over HTTPS before you configure it i
 
 ## Configuration
 
+<Callout type="info" title="Catalog-driven activation (1.5.2+)">
+The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650) (1.5.2). Adapter activation is driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. WhatsApp's static-bot install handler landed in 1.5.3 ([#2753](https://github.com/AtlasDevHQ/atlas/pull/2753)) — the catalog row carries `install_model: "static-bot"`, and Cloud API credentials are read from `WHATSAPP_*` env vars. See the [chat plugin docs](/plugins/interactions/chat#configuration) for the canonical shape.
+</Callout>
+
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
 import { executeAgentQuery } from "@atlas/api/lib/agent-query";
 import { chatPlugin } from "@useatlas/chat";
 
+const catalog = [
+  { slug: "whatsapp", type: "chat", install_model: "static-bot",
+    enabled: true, saas_eligible: true },
+] as const;
+
 export default defineConfig({
+  catalog,
   plugins: [
     chatPlugin({
-      adapters: {
-        whatsapp: {
-          phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID!,
-          accessToken: process.env.WHATSAPP_ACCESS_TOKEN!,
-          verifyToken: process.env.WHATSAPP_VERIFY_TOKEN!,
-          appSecret: process.env.WHATSAPP_APP_SECRET!,
-        },
-      },
+      catalog,
       executeQuery: executeAgentQuery,
     }),
   ],
 });
 ```
 
-### Options
+Cloud API credentials come from env vars — see [Environment Variables](#environment-variables) below.
 
-| Option | Type | Required | Description |
-|--------|------|----------|-------------|
-| `phoneNumberId` | `string` | Yes | WhatsApp Business phone number ID from the API Setup page. |
-| `accessToken` | `string` | Yes | System User access token with `whatsapp_business_messaging` permission. |
-| `verifyToken` | `string` | Yes | Verify token for webhook challenge-response — must match the value configured in Meta. |
-| `appSecret` | `string` | Yes | Meta App Secret for HMAC-SHA256 webhook signature verification. |
-| `userName` | `string` | No | Bot display name used for identification. |
-| `apiVersion` | `string` | No | Meta Graph API version (default: `"v21.0"`). |
+### Catalog entry
+
+| Field | Value | Description |
+|-------|-------|-------------|
+| `slug` | `"whatsapp"` | Stable platform key. |
+| `type` | `"chat"` | Required for chat dispatch. |
+| `install_model` | `"static-bot"` | Activates the static-bot install handler (1.5.3+). |
+| `enabled` | `true` | Customer can install this row. Ops can flip false to disable without removing the row. |
+| `saas_eligible` | `true` | Visible to the SaaS admin UI. |
 
 ## Mounted Routes
 

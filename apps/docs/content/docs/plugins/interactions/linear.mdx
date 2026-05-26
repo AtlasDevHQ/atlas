@@ -57,74 +57,66 @@ The client secret grants full access to your Linear OAuth application's permissi
 
 ## Configuration
 
-### API Key Auth
+<Callout type="info" title="Catalog-driven activation (1.5.2+)">
+The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650) (1.5.2). Adapter activation is driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. Linear's OAuth install handler landed in 1.5.3 ([#2750](https://github.com/AtlasDevHQ/atlas/pull/2750)); a separate `linear-apikey` static-bot row covers personal-API-key deploys. Pick exactly one row per workspace — the OAuth row reads `LINEAR_CLIENT_ID` / `LINEAR_CLIENT_SECRET`, the API-key row reads `LINEAR_API_KEY`. Both share `LINEAR_WEBHOOK_SECRET`. See the [chat plugin docs](/plugins/interactions/chat#configuration) for the canonical shape.
+</Callout>
+
+### OAuth App (Recommended)
 
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
 import { executeAgentQuery } from "@atlas/api/lib/agent-query";
 import { chatPlugin } from "@useatlas/chat";
 
+const catalog = [
+  { slug: "linear", type: "chat", install_model: "oauth",
+    enabled: true, saas_eligible: true },
+] as const;
+
 export default defineConfig({
+  catalog,
   plugins: [
     chatPlugin({
-      adapters: {
-        linear: {
-          apiKey: process.env.LINEAR_API_KEY!,
-          webhookSecret: process.env.LINEAR_WEBHOOK_SECRET!,
-          userName: "atlas-bot",
-        },
-      },
+      catalog,
       executeQuery: executeAgentQuery,
     }),
   ],
 });
 ```
 
-### OAuth Access Token
+OAuth client credentials come from env vars — see [Environment Variables](#environment-variables) below.
+
+### Personal API Key
+
+For personal bots or single-workspace deploys, use the `linear-apikey` static-bot row:
 
 ```typescript
-chatPlugin({
-  adapters: {
-    linear: {
-      accessToken: process.env.LINEAR_ACCESS_TOKEN!,
-      webhookSecret: process.env.LINEAR_WEBHOOK_SECRET!,
-    },
-  },
-  executeQuery: executeAgentQuery,
-})
+const catalog = [
+  { slug: "linear-apikey", type: "chat", install_model: "static-bot",
+    enabled: true, saas_eligible: false },
+] as const;
+
+export default defineConfig({
+  catalog,
+  plugins: [
+    chatPlugin({
+      catalog,
+      executeQuery: executeAgentQuery,
+    }),
+  ],
+});
 ```
 
-### OAuth App (Client Credentials)
+API key + webhook secret come from env vars — see [Environment Variables](#environment-variables) below.
 
-```typescript
-chatPlugin({
-  adapters: {
-    linear: {
-      clientId: process.env.LINEAR_CLIENT_ID!,
-      clientSecret: process.env.LINEAR_CLIENT_SECRET!,
-      webhookSecret: process.env.LINEAR_WEBHOOK_SECRET!,
-    },
-  },
-  executeQuery: executeAgentQuery,
-})
-```
+### Catalog entries
 
-### Options
+| Row | `slug` | `install_model` | Auth mode | Notes |
+|-----|--------|-----------------|-----------|-------|
+| OAuth | `"linear"` | `"oauth"` | OAuth App client credentials | Recommended; multi-workspace via the install pipeline. |
+| API key | `"linear-apikey"` | `"static-bot"` | Personal API key | Single-workspace; not surfaced in the SaaS admin UI (`saas_eligible: false`). |
 
-| Option | Type | Required | Description |
-|--------|------|----------|-------------|
-| `apiKey` | `string` | Yes* | Personal API key from Linear Settings. |
-| `accessToken` | `string` | Yes* | Pre-obtained OAuth access token. |
-| `clientId` | `string` | Yes* | OAuth application client ID. |
-| `clientSecret` | `string` | Yes* | OAuth application client secret. Required with `clientId`. |
-| `webhookSecret` | `string` | Yes** | Webhook signing secret for HMAC-SHA256 verification. Required by the upstream adapter unless `LINEAR_WEBHOOK_SECRET` env var is set. |
-| `userName` | `string` | No | Bot display name for @-mention detection. Defaults to `LINEAR_BOT_USERNAME` env var or `"linear-bot"`. |
-
-<Callout type="info">
-\* Provide exactly one auth mode: `apiKey`, `accessToken`, or `clientId` + `clientSecret`. Do not combine them.
-
-\*\* The `webhookSecret` can be provided via config or the `LINEAR_WEBHOOK_SECRET` environment variable. The upstream `@chat-adapter/linear` requires it — initialization will fail if neither is set.
-</Callout>
+Don't enable both rows in the same deploy — pick the auth mode that matches the workspace.
 
 ## Mounted Routes
 

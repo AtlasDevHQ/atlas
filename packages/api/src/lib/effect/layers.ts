@@ -1516,23 +1516,33 @@ export function makeSchedulerLive(
           outboxTickIntervalMs * 2,
         );
 
-        const outboxTick = Effect.tryPromise({
-          try: () =>
-            runOutboxTick({
-              db: outboxDb,
-              dispatcher: outboxDispatcher,
-              batchLimit: OUTBOX_FLUSH_BATCH_LIMIT,
-              limiter: outboxWarnLimiter,
-              pendingGauge: crmOutboxPendingCount,
-              deadGauge: crmOutboxDeadCount,
-              logger: log,
-            }),
-          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        const outboxTick = Effect.sync(() => {
+          // Update liveness AT TICK START so a legitimately long tick
+          // (sequential dispatch of up to OUTBOX_FLUSH_BATCH_LIMIT rows
+          // with per-row network calls; can exceed the 15s stall
+          // threshold under real backlogs) doesn't trip the watchdog.
+          // The watchdog asks "did the fiber wake up recently", not
+          // "did a tick complete recently". (Codex P1, 2026-05-26.)
+          outboxLastTickAt = Date.now();
         }).pipe(
+          Effect.flatMap(() =>
+            Effect.tryPromise({
+              try: () =>
+                runOutboxTick({
+                  db: outboxDb,
+                  dispatcher: outboxDispatcher,
+                  batchLimit: OUTBOX_FLUSH_BATCH_LIMIT,
+                  limiter: outboxWarnLimiter,
+                  pendingGauge: crmOutboxPendingCount,
+                  deadGauge: crmOutboxDeadCount,
+                  logger: log,
+                }),
+              catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+            }),
+          ),
           Effect.tap(({ flush: result, snapshot }) =>
             Effect.sync(() => {
               outboxTickCount += 1;
-              outboxLastTickAt = Date.now();
               if (result.claimed > 0) {
                 // Active tick — fires the existing structured log so
                 // grep'ing for `tick_complete` still matches every claim
@@ -1571,12 +1581,11 @@ export function makeSchedulerLive(
           ),
           Effect.catchAll((err) =>
             Effect.sync(() => {
-              // Still bump the liveness counter even on failure so the
-              // watchdog can distinguish "fiber alive but the tick keeps
-              // erroring" (we'd see `tick_failed` every N seconds) from
-              // "fiber dead, nothing firing at all".
+              // Bump the tick counter on failure too. Liveness was
+              // already stamped at tick start, so the watchdog stays
+              // quiet — a tick that erred out is still a "fiber awake"
+              // signal.
               outboxTickCount += 1;
-              outboxLastTickAt = Date.now();
               log.warn(
                 {
                   tickCount: outboxTickCount,
@@ -1619,9 +1628,15 @@ export function makeSchedulerLive(
             `Outbox flusher fiber appears stalled — no tick in ${Math.round(sinceMs / 1000)}s (threshold ${Math.round(OUTBOX_STALL_THRESHOLD_MS / 1000)}s). Redeploy to restart; investigate the prior tick_complete / tick_failed line for the trigger.`,
           );
         });
+        // Poll the watchdog at the tick cadence (not the stall
+        // threshold). With a 5s tick and a 15s threshold, a stall that
+        // begins just after a watchdog check would otherwise wait
+        // another ~15s before being detected — making the "no tick in
+        // > 2× interval" guarantee soft. Polling at tick cadence bounds
+        // detection lag to ~one tick interval. (Codex P2, 2026-05-26.)
         const outboxWatchdogFiber = yield* Effect.fork(
           outboxWatchdog.pipe(
-            Effect.repeat(Schedule.spaced(Duration.millis(OUTBOX_STALL_THRESHOLD_MS))),
+            Effect.repeat(Schedule.spaced(Duration.millis(outboxTickIntervalMs))),
           ),
         );
         yield* Effect.addFinalizer(() =>

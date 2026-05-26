@@ -58,7 +58,6 @@ const {
   getTwentyIntegrationPublic,
   getTwentyIntegrationWithSecret,
   deleteTwentyIntegration,
-  findLatestTwentyDbCredentials,
 } = await import("../store");
 
 const originalDeployMode = process.env.ATLAS_DEPLOY_MODE;
@@ -145,64 +144,22 @@ describe("saveTwentyIntegration", () => {
   });
 });
 
-describe("saveTwentyIntegration — SaaS multi-tenant guard (#2849 follow-up)", () => {
-  it("refuses the upsert when SaaS mode + a row exists for a DIFFERENT workspace", async () => {
+describe("saveTwentyIntegration — multi-tenant safety (#2850)", () => {
+  it("does NOT consult cross-workspace state — each workspace owns its own row", async () => {
+    // Pre-#2850 the store ran a "is another workspace already installed?"
+    // SELECT before every INSERT under SaaS mode, because the operator
+    // dispatcher used findLatestTwentyDbCredentials. With the resolver
+    // split, the SaaS operator path is env-only and cross-workspace
+    // routing is gone — so the guard SELECT must NOT run.
     process.env.ATLAS_DEPLOY_MODE = "saas";
-    mockInternalQueryResultBySql = (sql: string) => {
-      if (sql.includes("workspace_id <>")) {
-        return [{ workspace_id: "ws-other" }];
-      }
-      // Should never reach the INSERT — guard refuses first.
-      return [];
-    };
-    await expect(
-      saveTwentyIntegration("ws-new", { apiKey: "k", baseUrl: "https://b" }),
-    ).rejects.toThrow(/Refusing Twenty install/);
-    // Guard ran before any INSERT.
-    expect(capturedQueries.find((q) => q.sql.includes("INSERT INTO twenty_integrations"))).toBeUndefined();
-  });
-
-  it("permits the upsert when SaaS mode but the conflicting row IS the same workspace", async () => {
-    process.env.ATLAS_DEPLOY_MODE = "saas";
-    mockInternalQueryResultBySql = (sql: string) => {
-      if (sql.includes("workspace_id <>")) {
-        return []; // No other workspace
-      }
-      if (sql.includes("INSERT INTO twenty_integrations")) {
-        return [
-          {
-            workspace_id: "ws-1",
-            base_url: "https://b",
-            updated_at: "2026-05-26T00:00:00.000Z",
-          },
-        ];
-      }
-      return [];
-    };
-    const saved = await saveTwentyIntegration("ws-1", { apiKey: "k", baseUrl: "https://b" });
-    expect(saved.workspaceId).toBe("ws-1");
-  });
-
-  it("self-hosted (no SaaS env) skips the guard entirely", async () => {
-    delete process.env.ATLAS_DEPLOY_MODE;
-    mockInternalQueryResultBySql = (sql: string) => {
-      if (sql.includes("INSERT INTO twenty_integrations")) {
-        return [
-          {
-            workspace_id: "ws-self",
-            base_url: "https://b",
-            updated_at: "2026-05-26T00:00:00.000Z",
-          },
-        ];
-      }
-      return [];
-    };
-    const saved = await saveTwentyIntegration("ws-self", {
-      apiKey: "k",
-      baseUrl: "https://b",
-    });
-    expect(saved.workspaceId).toBe("ws-self");
-    // Confirm the guard SELECT did NOT run.
+    mockInternalQueryResult = [
+      {
+        workspace_id: "ws-saas",
+        base_url: "https://b",
+        updated_at: "2026-05-26T00:00:00.000Z",
+      },
+    ];
+    await saveTwentyIntegration("ws-saas", { apiKey: "k", baseUrl: "https://b" });
     expect(capturedQueries.find((q) => q.sql.includes("workspace_id <>"))).toBeUndefined();
   });
 });
@@ -311,50 +268,6 @@ describe("getTwentyIntegrationWithSecret", () => {
     await expect(getTwentyIntegrationWithSecret("ws-1")).rejects.toBeInstanceOf(
       TwentyDecryptError,
     );
-  });
-});
-
-describe("findLatestTwentyDbCredentials", () => {
-  it("returns the latest-updated row with the decrypted api_key", async () => {
-    mockInternalQueryResult = [
-      {
-        workspace_id: "ws-1",
-        base_url: "https://crm.example.com",
-        updated_at: "2026-05-26T00:00:00.000Z",
-        api_key_encrypted: "enc:v1:test:latest-key",
-      },
-    ];
-    const row = await findLatestTwentyDbCredentials();
-    expect(row?.apiKey).toBe("latest-key");
-    expect(row?.workspaceId).toBe("ws-1");
-    const select = capturedQueries.find((q) => q.sql.includes("FROM twenty_integrations"));
-    expect(select!.sql).toMatch(/ORDER BY updated_at DESC/);
-    expect(select!.sql).toMatch(/LIMIT 1/);
-  });
-
-  it("returns null when the table is empty", async () => {
-    mockInternalQueryResult = [];
-    const row = await findLatestTwentyDbCredentials();
-    expect(row).toBeNull();
-  });
-
-  it("returns null when hasInternalDB is false", async () => {
-    mockHasDB = false;
-    const row = await findLatestTwentyDbCredentials();
-    expect(row).toBeNull();
-  });
-
-  it("throws TwentyDecryptError when the chosen row's ciphertext fails to decrypt", async () => {
-    mockInternalQueryResult = [
-      {
-        workspace_id: "ws-1",
-        base_url: "https://crm.example.com",
-        updated_at: "2026-05-26T00:00:00.000Z",
-        api_key_encrypted: "enc:v99:rotated-away:opaque",
-      },
-    ];
-    decryptSecretShouldThrow = true;
-    await expect(findLatestTwentyDbCredentials()).rejects.toBeInstanceOf(TwentyDecryptError);
   });
 });
 

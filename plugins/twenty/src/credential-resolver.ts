@@ -1,27 +1,42 @@
 /**
- * TwentyCredentialResolver — single seam for picking up Twenty creds.
+ * TwentyCredentialResolver — TWO seams, one per actor, no cross-actor
+ * fallback.
  *
- * Resolution order:
- *   1. Per-workspace row in `twenty_integrations` (admin UI override)
- *   2. `TWENTY_API_KEY` env var
- *   3. Throw with an actionable message
+ * Two functions instead of "DB → env → throw" precedence so SaaS leaks
+ * (#2850) are structurally impossible:
  *
- * The DB-row path is opt-in: callers provide a {@link DbCredentialLookup}
- * callback that returns the decrypted credential row (or `null` when no
- * row exists). The resolver itself doesn't touch Postgres — the lookup
- * lives in `@atlas/api/lib/integrations/twenty/credentials.ts` so the
- * plugin stays portable (no `@atlas/api` import).
+ *   1. {@link resolveOperatorCredentials} — env-only. Reserved for
+ *      `ee/src/saas-crm/`'s hardcoded lead-capture pipeline (Atlas
+ *      signups/demo/sales-form → Atlas's own CRM). Never consults
+ *      `twenty_integrations`.
  *
- * Fail-open on TRANSPORT errors: a transient pg blip falls back to env
- * so the SaaS demo dispatcher keeps working when the credential table
- * is temporarily unreachable. A lookup MUST distinguish transport from
- * decrypt by throwing a `decryptFailed`-flagged error (any object with
- * `decryptFailed === true` on it) for the latter — those bubble up and
- * fail closed at the dispatch boundary so a key-rotation misconfig
- * doesn't silently route credentials to the env fallback.
+ *   2. {@link resolveWorkspaceCredentials} — DB-only, scoped to a
+ *      workspace. NEVER falls back to env — `TWENTY_API_KEY` is
+ *      platform-only and never participates in a plugin install
+ *      (including Atlas's own team workspace). A missing row throws an
+ *      actionable error pointing the user at Admin → Integrations →
+ *      Twenty (or `atlas.config.ts` for self-hosted). `deployMode` is
+ *      passed in so the thrown message tailors to the operator's
+ *      install path.
  *
- * Only when BOTH the DB lookup AND env are absent do we throw — that's
- * a real misconfiguration the operator needs to see.
+ * Why the split: with a single resolver that mixed env + DB, a future
+ * change in `ee/saas-crm` consulting `twenty_integrations` would
+ * silently route Atlas's lead capture to whichever workspace last
+ * updated its Twenty row (Direction-2 leak). Symmetrically, a workspace
+ * plugin action falling back to env would route a customer install at
+ * Atlas's operator CRM (Direction-1 leak). The split makes both
+ * unrepresentable — `ee/saas-crm` can't call the workspace function
+ * (grep gate in `scripts/check-twenty-resolver-imports.sh`), and the
+ * workspace function can't read env at all.
+ *
+ * Transport vs decrypt errors:
+ *  - Transport (pg blip): swallowed; the workspace resolver throws
+ *    {@link TwentyCredentialError} (no env fallback). The lookup logs
+ *    structured-warn before throwing; this resolver stays log-free so
+ *    it remains portable (no `@atlas/api` dep).
+ *  - Decrypt (key rotation, corrupt ciphertext): always propagates as
+ *    a {@link TwentyDecryptError} — silent env fallback would route to
+ *    a different Twenty than the operator intended.
  */
 
 /**
@@ -115,11 +130,10 @@ export class TwentyCredentialError extends Error {
  * must NOT silently fall back to env, because env would route to a
  * different Twenty instance than the operator intended.
  *
- * Production lookups (`getTwentyIntegrationWithSecret`,
- * `findLatestTwentyDbCredentials` in `@atlas/api`) throw this when
- * `decryptSecret` fails. The resolver re-throws it; the dispatcher
- * fails closed (dead-letters the outbox row or marks unavailable at
- * boot).
+ * Production lookups (`getTwentyIntegrationWithSecret` in `@atlas/api`)
+ * throw this when `decryptSecret` fails. The resolver re-throws it;
+ * the dispatcher fails closed (dead-letters the outbox row or marks
+ * unavailable at boot).
  */
 export class TwentyDecryptError extends Error {
   override readonly name = "TwentyDecryptError";
@@ -164,17 +178,37 @@ export interface DbCredentialLookupResult {
  * Callback that fetches the per-workspace credential row. Returns
  * `null` when no row exists; throws on transport / decrypt failure.
  *
- * The resolver swallows TRANSPORT errors and falls back to env so a pg
- * blip doesn't take down the dispatcher (the DB-row path is an optional
- * override, not a hard requirement). Decrypt failures — flagged via
- * `TwentyDecryptError` or any error with `decryptFailed === true` —
- * bubble up so the dispatcher can fail closed.
+ * The resolver swallows TRANSPORT errors and then THROWS
+ * {@link TwentyCredentialError} (no env fallback ever). Decrypt
+ * failures — flagged via {@link TwentyDecryptError} or any error with
+ * `decryptFailed === true` — bubble up so the dispatcher can fail
+ * closed.
  */
 export type DbCredentialLookup = (
   workspaceId: string,
 ) => Promise<DbCredentialLookupResult | null>;
 
-export interface ResolveForWorkspaceOptions extends ResolveOptions {
+/**
+ * Deploy mode discriminator passed to {@link resolveWorkspaceCredentials}.
+ * Used only to tailor the "missing credentials" error message — both
+ * modes are DB-only. The caller resolves this via the
+ * `DeployModeResolver` Tag in `packages/api/src/lib/effect/services.ts`
+ * and passes the value in so the plugin stays portable (no `@atlas/api`
+ * back-import).
+ */
+export type DeployMode = "saas" | "self-hosted";
+
+export interface ResolveWorkspaceOptions {
+  /**
+   * Tailors the thrown error message:
+   *   `"saas"` — points the user at Admin → Integrations → Twenty.
+   *   `"self-hosted"` — also mentions `atlas.config.ts`.
+   *
+   * Both modes are DB-only; `deployMode` does NOT enable an env
+   * fallback. `TWENTY_API_KEY` is platform-only — no plugin install
+   * (customer or Atlas's own team) ever reads from env.
+   */
+  readonly deployMode: DeployMode;
   readonly lookup?: DbCredentialLookup;
 }
 
@@ -194,12 +228,24 @@ function trimNonEmpty(value: string | null | undefined): string | null {
   return trimmed.length === 0 ? null : trimmed;
 }
 
+// ─────────────────────────────────────────────────────────────────────
+//  Operator path — env-only, reserved for ee/src/saas-crm/
+// ─────────────────────────────────────────────────────────────────────
+
 /**
- * Resolve credentials from the environment.
+ * Resolve operator credentials from environment variables.
  *
- * @throws TwentyCredentialError if `TWENTY_API_KEY` is unset or empty.
+ * **Caller restriction:** only `ee/src/saas-crm/` may import this
+ * function. The `scripts/check-twenty-resolver-imports.sh` CI gate
+ * fails when any other file imports it. This is the seam that keeps
+ * Atlas-the-operator's `TWENTY_API_KEY` from leaking into per-workspace
+ * dispatch paths (Direction-1 leak in #2850) or workspace plugin
+ * credentials from being routed to Atlas's lead-capture pipeline
+ * (Direction-2 leak).
+ *
+ * @throws {@link TwentyCredentialError} if `TWENTY_API_KEY` is unset or empty.
  */
-export function resolveCredentialsFromEnv(
+export function resolveOperatorCredentials(
   options: ResolveOptions = {},
 ): ResolvedTwentyCredentials {
   const env = options.env ?? process.env;
@@ -207,7 +253,8 @@ export function resolveCredentialsFromEnv(
   if (typeof rawKey !== "string" || rawKey.trim().length === 0) {
     throw new TwentyCredentialError(
       "Twenty credentials missing: set TWENTY_API_KEY (and optionally TWENTY_BASE_URL) in " +
-        "the environment, or configure them under Admin → Integrations → Twenty.",
+        "the environment. This env var is reserved for Atlas's own lead-capture pipeline; " +
+        "per-workspace Twenty installs configure under Admin → Integrations → Twenty instead.",
     );
   }
   const apiKey: string = assertTwentyApiKey(rawKey);
@@ -223,67 +270,78 @@ export function resolveCredentialsFromEnv(
  * Best-effort variant — returns `null` instead of throwing when the
  * key is unset. Used at boot to decide whether the SaaS CRM dispatch
  * layer should run startup verification or short-circuit to disabled.
+ *
+ * Same caller restriction as {@link resolveOperatorCredentials} (the
+ * grep gate matches the function name's `OperatorCredentials` suffix).
  */
-export function tryResolveCredentialsFromEnv(
+export function tryResolveOperatorCredentials(
   options: ResolveOptions = {},
 ): ResolvedTwentyCredentials | null {
   try {
-    return resolveCredentialsFromEnv(options);
+    return resolveOperatorCredentials(options);
   } catch (err) {
     if (err instanceof TwentyCredentialError) return null;
     throw err;
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────
+//  Workspace path — DB-only, no env fallback
+// ─────────────────────────────────────────────────────────────────────
+
+function missingCredentialsMessage(deployMode: DeployMode): string {
+  if (deployMode === "saas") {
+    return (
+      "Twenty credentials missing for this workspace: no row in twenty_integrations. " +
+      "Configure Twenty under Admin → Integrations → Twenty. TWENTY_API_KEY is platform-only " +
+      "and never participates in a plugin install (including Atlas's own team workspace)."
+    );
+  }
+  return (
+    "Twenty credentials missing for this workspace: no row in twenty_integrations. " +
+    "Configure Twenty under Admin → Integrations → Twenty, or pass apiKey/baseUrl through " +
+    "atlas.config.ts. TWENTY_API_KEY is platform-only — plugin installs read workspace " +
+    "settings, never env."
+  );
+}
+
 /**
- * Resolve credentials for a specific workspace. Precedence:
- * DB row → env → throw.
+ * Resolve credentials for a specific workspace. DB-only — never falls
+ * back to env, regardless of `deployMode`.
  *
- * `options.lookup` is the DB seam. Production passes
- * `lookupTwentyDbCredentials` from `@atlas/api/lib/integrations/twenty/credentials`;
- * tests pass an in-memory stub.
+ *   - DB row present (valid apiKey) → returns DB creds (`source: "db"`).
+ *   - DB row missing → throws {@link TwentyCredentialError} with an
+ *     actionable message tailored to `deployMode`.
+ *   - Transport error from the lookup → throws (same as missing row).
+ *   - Decrypt error from the lookup → throws {@link TwentyDecryptError}
+ *     so the dispatcher can fail closed.
  *
- * Omitting `lookup` collapses to the env-only path, preserving the
- * back-compat shape for callers that don't (yet) have the workspace
- * context wired through.
+ * `deployMode` exists to tailor the thrown message; it does NOT enable
+ * an env fallback in either mode. `TWENTY_API_KEY` is reserved for
+ * `ee/src/saas-crm/`'s platform code path — no plugin install (customer
+ * workspace, or Atlas's own team workspace) ever reads from env.
  *
- * Decrypt failures from `options.lookup` propagate as-is so the
- * dispatcher can fail closed; transport failures (anything else) are
- * swallowed and the resolver falls through to env.
- *
- * @throws TwentyCredentialError when neither path yields a usable key.
- * @throws TwentyDecryptError when the DB row's ciphertext fails to decrypt.
- *
- * @internal Wired through to the agent-tool path lands with #2849
- *   (`crm_outbox.workspace_id`). Today's SaaS dispatch path consults
- *   `findLatestTwentyDbCredentials` directly because outbox rows don't
- *   yet carry a workspaceId.
+ * @throws {@link TwentyCredentialError} when no usable row exists.
+ * @throws {@link TwentyDecryptError} when the DB row's ciphertext fails
+ *   to decrypt.
  */
-export async function resolveCredentialsForWorkspace(
+export async function resolveWorkspaceCredentials(
   workspaceId: string,
-  options: ResolveForWorkspaceOptions = {},
+  options: ResolveWorkspaceOptions,
 ): Promise<ResolvedTwentyCredentials> {
-  // ── 1. DB row override ─────────────────────────────────────────────
-  // Fail-open on TRANSPORT errors: a pg blip falls back to env so the
-  // SaaS demo dispatcher keeps working when the credential table is
-  // briefly unreachable. Fail-CLOSED on decrypt errors: a row exists,
-  // its ciphertext doesn't decrypt, env would be the wrong destination
-  // — the operator must see that.
   let dbRow: DbCredentialLookupResult | null = null;
   if (options.lookup) {
     try {
       dbRow = await options.lookup(workspaceId);
     } catch (err) {
       if (isTwentyDecryptError(err)) {
-        // intentionally re-thrown: a decrypt failure is operator-visible
-        // misconfiguration (key rotation / corrupt ciphertext); silently
-        // falling back to env would route to the wrong Twenty.
         throw err;
       }
-      // intentionally ignored: transport blip — env is the documented
-      // fallback. The store (production lookup) emits the structured-warn
-      // before throwing; the resolver stays log-free so it remains
-      // portable (no `@atlas/api` dep).
+      // intentionally ignored: transport blip. Lookup emits the
+      // structured-warn before throwing; the resolver stays log-free
+      // so it remains portable (no `@atlas/api` dep). A transient
+      // failure should NOT silently fall back to env — surface the
+      // missing-credentials error so the operator sees it.
       void err;
       dbRow = null;
     }
@@ -293,26 +351,55 @@ export async function resolveCredentialsForWorkspace(
     const apiKey = trimNonEmpty(dbRow.apiKey);
     if (apiKey) {
       const baseUrlFromDb = trimNonEmpty(dbRow.baseUrl);
-      if (baseUrlFromDb) {
-        const baseUrl: string = assertTwentyBaseUrl(baseUrlFromDb);
-        return { apiKey, baseUrl, source: "db" };
-      }
-      // DB row's baseUrl is null/empty — fall back to env-supplied baseUrl
-      // (apiKey still comes from DB). The env apiKey is NOT consulted —
-      // the DB row's apiKey wins by design.
-      const env = options.env ?? process.env;
-      const rawBase = env.TWENTY_BASE_URL;
-      const envBase: string | undefined =
-        typeof rawBase === "string" && rawBase.trim().length > 0
-          ? assertTwentyBaseUrl(rawBase)
-          : undefined;
-      return { apiKey, baseUrl: envBase, source: "db" };
+      const baseUrl: string | undefined = baseUrlFromDb
+        ? assertTwentyBaseUrl(baseUrlFromDb)
+        : undefined;
+      return { apiKey, baseUrl, source: "db" };
     }
-    // DB row exists but apiKey is empty/whitespace — fall through to env.
+    // DB row exists but apiKey is empty/whitespace — treat as absent.
   }
 
-  // ── 2. Env fallback ───────────────────────────────────────────────
-  // `resolveCredentialsFromEnv` already throws TwentyCredentialError
-  // with the right shape when env is also unset, so we let it bubble.
-  return resolveCredentialsFromEnv(options);
+  throw new TwentyCredentialError(missingCredentialsMessage(options.deployMode));
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  Back-compat re-exports — @deprecated
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * @deprecated Use {@link resolveOperatorCredentials} (for `ee/src/saas-crm/`)
+ *   or {@link resolveWorkspaceCredentials} (for everything else). This
+ *   alias is preserved so existing self-hoster code that imports the
+ *   pre-#2850 name keeps working; new code MUST pick the explicit actor.
+ */
+export const resolveCredentialsFromEnv = resolveOperatorCredentials;
+
+/**
+ * @deprecated Use {@link tryResolveOperatorCredentials} (for
+ *   `ee/src/saas-crm/`). Preserved for back-compat only.
+ */
+export const tryResolveCredentialsFromEnv = tryResolveOperatorCredentials;
+
+/**
+ * @deprecated Use {@link ResolveWorkspaceOptions}.
+ */
+export interface ResolveForWorkspaceOptions {
+  readonly lookup?: DbCredentialLookup;
+}
+
+/**
+ * @deprecated Use {@link resolveWorkspaceCredentials} directly with an
+ *   explicit `deployMode`. This shim defaults to `"self-hosted"` and
+ *   resolves DB-only (no env fallback per #2850 — the pre-#2850
+ *   "DB → env → throw" behavior is gone, callers must configure via
+ *   admin UI or `atlas.config.ts`).
+ */
+export function resolveCredentialsForWorkspace(
+  workspaceId: string,
+  options: ResolveForWorkspaceOptions = {},
+): Promise<ResolvedTwentyCredentials> {
+  return resolveWorkspaceCredentials(workspaceId, {
+    lookup: options.lookup,
+    deployMode: "self-hosted",
+  });
 }

@@ -13,6 +13,7 @@ bash scripts/check-railway-watch.sh  # Railway watchPatterns cover Dockerfile CO
 bash scripts/check-schema-drift.sh   # Drizzle schema.ts ↔ migrations parity
 bash scripts/check-oauth-helper-drift.sh  # plugins/mcp/src/_oauth-helper ↔ packages/oauth-helper/src parity
 bash scripts/check-test-discipline.sh  # No new top-level env/chdir mutations in test files
+bash scripts/check-twenty-resolver-imports.sh  # Twenty operator resolver confined to ee/saas-crm (#2850)
 ```
 
 Use the full `bun run test` here — `/ci` is the pre-PR check, not an iteration loop. For iteration, use `cd packages/api && bun run scripts/test-isolated.ts --affected` (only tests whose source graph your branch touched — typical 10–60s vs 225s full).

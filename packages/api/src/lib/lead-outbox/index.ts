@@ -9,14 +9,22 @@ export {
   recoverInFlight,
   flushBatch,
   getTickIntervalMs,
+  computeRetryAfterTimestamp,
   FLUSH_BATCH_LIMIT,
+  STARTUP_RECOVERY_STALE_MS,
+  SHUTDOWN_RECOVERY_STALE_MS,
+  MIN_TICK_SECONDS,
+  MAX_TICK_SECONDS,
+  DEFAULT_TICK_SECONDS,
   type OutboxDB,
   type EnqueueInput,
   type ClaimedOutboxRow,
   type OutboxPersistHelpers,
   type DispatchOutcome,
   type OutboxDispatcher,
+  type OutboxStatus,
   type FlushResult,
+  type RecoveryResult,
 } from "./outbox";
 
 export {

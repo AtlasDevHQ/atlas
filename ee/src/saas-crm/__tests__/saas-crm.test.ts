@@ -526,6 +526,178 @@ describe("dispatchOutboxRow", () => {
 
     expect(outcome.kind).toBe("transient");
   });
+
+  test("upsertPerson returns 200 with no id → permanent (no silent done)", async () => {
+    // Realistic regression: a misconfigured Twenty (or a future fast-path
+    // refactor of upsertPerson) could return a 2xx with an empty body.
+    // The row must dead-letter rather than be marked done with no link.
+    const fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/rest/people?filter")) {
+        return new Response(JSON.stringify({ data: { people: [] } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      // POST createPerson — 2xx but no id.
+      return new Response(
+        JSON.stringify({ data: { createPerson: {} } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-noid",
+          eventType: "demo",
+          payload: { source: "demo", email: "noid@test.local" },
+          attempts: 1,
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {
+            throw new Error("setTwentyPersonId must NOT be called when id is missing");
+          },
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+
+    expect(outcome.kind).toBe("permanent");
+    if (outcome.kind === "permanent") {
+      expect(outcome.message).toContain("no id");
+    }
+  });
+
+  test("persist.setTwentyPersonId fails after upsertPerson succeeds → transient with persist-failure label (NOT upsertPerson)", async () => {
+    // Realistic regression: a pg pool blip between Twenty's 2xx and our
+    // UPDATE writes the wrong story in last_error. Operators triaging
+    // the row would chase a Twenty problem when the actual fault is
+    // internal — the message MUST identify the persist step.
+    const fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/rest/people?filter")) {
+        return new Response(JSON.stringify({ data: { people: [] } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(
+        JSON.stringify({ data: { createPerson: { id: "person_X" } } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-persist-blip",
+          eventType: "demo",
+          payload: { source: "demo", email: "blip@test.local" },
+          attempts: 1,
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {
+            throw new Error("pg pool exhausted");
+          },
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+
+    expect(outcome.kind).toBe("transient");
+    if (outcome.kind === "transient") {
+      expect(outcome.message).toContain("persist.setTwentyPersonId");
+      expect(outcome.message).toContain("pg pool exhausted");
+      expect(outcome.message).not.toContain("upsertPerson threw");
+    }
+  });
+
+  test("429 with Retry-After header surfaces retryAfterMs on the transient outcome", async () => {
+    // delta-seconds form per RFC 9110.
+    const fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/rest/people?filter")) {
+        return new Response(JSON.stringify({ data: { people: [] } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      // POST createPerson with Retry-After: 90.
+      return new Response(JSON.stringify({ messages: ["rate limited"] }), {
+        status: 429,
+        headers: { "Content-Type": "application/json", "Retry-After": "90" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-rate",
+          eventType: "demo",
+          payload: { source: "demo", email: "rate@test.local" },
+          attempts: 1,
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {},
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+
+    expect(outcome.kind).toBe("transient");
+    if (outcome.kind === "transient") {
+      expect(outcome.retryAfterMs).toBe(90_000);
+      expect(outcome.httpStatus).toBe(429);
+    }
+  });
+
+  test("sales-form row dead-letters today via the normalizer (sales-form not yet accepted)", async () => {
+    // The normalizer's discriminated union only accepts `demo` today;
+    // a sales-form payload throws `Unknown lead source` BEFORE the
+    // dispatcher's downstream sales-form branch runs. Either way the
+    // row dead-letters with an operator-visible message. This test
+    // pins both halves of the contract: (1) no fetch is attempted,
+    // (2) the dead-letter message identifies the offending source.
+    let fetchCalls = 0;
+    const fetchImpl = (async (): Promise<Response> => {
+      fetchCalls++;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-sales",
+          eventType: "sales-form",
+          payload: { source: "sales-form", email: "sales@test.local" },
+          attempts: 1,
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {},
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+
+    expect(fetchCalls).toBe(0);
+    expect(outcome.kind).toBe("permanent");
+    if (outcome.kind === "permanent") {
+      expect(outcome.message).toContain("sales-form");
+    }
+  });
 });
 
 // ── classifyTwentyError ─────────────────────────────────────────────

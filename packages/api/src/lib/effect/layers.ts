@@ -56,7 +56,10 @@ import {
   flushBatch as flushOutboxBatch,
   getTickIntervalMs as getOutboxTickIntervalMs,
   FLUSH_BATCH_LIMIT as OUTBOX_FLUSH_BATCH_LIMIT,
+  STARTUP_RECOVERY_STALE_MS as OUTBOX_STARTUP_STALE_MS,
+  SHUTDOWN_RECOVERY_STALE_MS as OUTBOX_SHUTDOWN_STALE_MS,
   type OutboxDB,
+  type RecoveryResult as OutboxRecoveryResult,
 } from "@atlas/api/lib/lead-outbox";
 
 const log = createLogger("effect:layers");
@@ -1404,26 +1407,36 @@ export function makeSchedulerLive(
       // Slice 2 of 1.6.0. The flusher polls `crm_outbox` for pending /
       // due rows, claims them via single-statement UPDATE … RETURNING,
       // and hands each to the dispatcher Tag-bound by `SaasCrmLive`.
-      // Skipped when SaasCrm has no dispatcher (self-hosted, missing
-      // creds, no internal DB, or boot verification failure).
+      // Skipped when SaasCrm is unavailable (self-hosted, missing
+      // creds, no internal DB, or boot verification failure) — the
+      // discriminated union narrows `dispatcher` to non-null inside
+      // the `available === true` branch.
       const saasCrm = yield* SaasCrm;
-      const outboxDispatcher = saasCrm.dispatcher;
-      if (outboxDispatcher && hasInternalDB()) {
+      if (saasCrm.available && hasInternalDB()) {
+        const outboxDispatcher = saasCrm.dispatcher;
         const outboxDb: OutboxDB = { query: internalQuery };
 
         // Startup recovery: any `in_flight` row at boot is the carcass
-        // of a crash mid-dispatch. Reset to `pending` BEFORE the tick
-        // starts so the very first claim picks them up.
+        // of a crash mid-dispatch. Reset stale rows to `pending`
+        // (preserving siblings still actively dispatched in a multi-
+        // pod deploy) and dead-letter rows that crashed past the
+        // retry budget. Runs BEFORE the tick starts.
         yield* Effect.tryPromise({
-          try: (): Promise<number> => recoverOutboxInFlight(outboxDb),
+          try: (): Promise<OutboxRecoveryResult> =>
+            recoverOutboxInFlight(outboxDb, OUTBOX_STARTUP_STALE_MS),
           catch: (err) => (err instanceof Error ? err : new Error(String(err))),
         }).pipe(
-          Effect.tap((count: number) =>
+          Effect.tap((result: OutboxRecoveryResult) =>
             Effect.sync(() => {
-              if (count > 0) {
+              if (result.reset > 0 || result.deadLettered > 0) {
                 log.warn(
-                  { recovered: count, event: "lead_outbox.startup_recovery" },
-                  "Reset stranded in_flight crm_outbox rows to pending at boot",
+                  {
+                    reset: result.reset,
+                    deadLettered: result.deadLettered,
+                    staleAgeMs: OUTBOX_STARTUP_STALE_MS,
+                    event: "lead_outbox.startup_recovery",
+                  },
+                  `Recovered crm_outbox carcasses at boot — ${result.reset} reset to pending, ${result.deadLettered} dead-lettered`,
                 );
               }
             }),
@@ -1444,6 +1457,26 @@ export function makeSchedulerLive(
             flushOutboxBatch(outboxDb, outboxDispatcher, OUTBOX_FLUSH_BATCH_LIMIT),
           catch: (err) => (err instanceof Error ? err : new Error(String(err))),
         }).pipe(
+          Effect.tap((result) =>
+            Effect.sync(() => {
+              // Only log non-empty ticks so an idle queue doesn't fill
+              // the log with `claimed: 0`. The per-row dead-letter /
+              // transient lines from `flushBatch` itself still fire
+              // separately when something interesting happens.
+              if (result.claimed > 0) {
+                log.info(
+                  {
+                    claimed: result.claimed,
+                    ok: result.ok,
+                    transient: result.transient,
+                    permanent: result.permanent,
+                    event: "lead_outbox.tick_complete",
+                  },
+                  `Outbox tick: ${result.claimed} claimed (ok=${result.ok}, transient=${result.transient}, dead=${result.permanent})`,
+                );
+              }
+            }),
+          ),
           Effect.catchAll((err) =>
             Effect.sync(() => {
               log.warn(
@@ -1464,14 +1497,20 @@ export function makeSchedulerLive(
             // here so the replacement pod picks it up on its first
             // tick rather than waiting for the next restart cycle.
             yield* Effect.tryPromise({
-              try: (): Promise<number> => recoverOutboxInFlight(outboxDb),
+              try: (): Promise<OutboxRecoveryResult> =>
+                recoverOutboxInFlight(outboxDb, OUTBOX_SHUTDOWN_STALE_MS),
               catch: (err) => (err instanceof Error ? err : new Error(String(err))),
             }).pipe(
-              Effect.tap((count: number) =>
+              Effect.tap((result: OutboxRecoveryResult) =>
                 Effect.sync(() => {
                   log.info(
-                    { recovered: count, event: "lead_outbox.shutdown_recovery" },
-                    "Outbox in_flight rows reset on shutdown",
+                    {
+                      reset: result.reset,
+                      deadLettered: result.deadLettered,
+                      staleAgeMs: OUTBOX_SHUTDOWN_STALE_MS,
+                      event: "lead_outbox.shutdown_recovery",
+                    },
+                    `Outbox shutdown sweep — ${result.reset} reset to pending, ${result.deadLettered} dead-lettered`,
                   );
                 }),
               ),
@@ -1493,7 +1532,7 @@ export function makeSchedulerLive(
       } else {
         log.debug(
           {
-            hasDispatcher: outboxDispatcher !== null,
+            saasCrmAvailable: saasCrm.available,
             hasInternalDB: hasInternalDB(),
           },
           "CRM outbox flusher not started — SaasCrm unavailable or internal DB absent",

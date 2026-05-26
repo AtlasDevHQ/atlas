@@ -252,8 +252,11 @@ describeIfPg("lead-outbox (real Postgres)", () => {
         [id],
       );
 
-      const recovered = await recoverInFlight(db);
-      expect(recovered).toBe(1);
+      // Use 0ms threshold so the just-claimed row is treated as stale
+      // for the test (in production, startup uses STARTUP_RECOVERY_STALE_MS).
+      const recovered = await recoverInFlight(db, 0);
+      expect(recovered.reset).toBe(1);
+      expect(recovered.deadLettered).toBe(0);
 
       const rows = await pool.query(
         "SELECT status FROM crm_outbox WHERE id = $1",
@@ -312,6 +315,191 @@ describeIfPg("lead-outbox (real Postgres)", () => {
       const result = await flushBatch(db, dispatcher, 10);
       expect(result.claimed).toBe(1);
       expect(calls).toBe(1);
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  // ── Concurrency: FOR UPDATE SKIP LOCKED is the load-bearing claim
+  //    invariant. Two concurrent flushBatch calls must NEVER dispatch
+  //    the same row twice — the test pins that property end-to-end.
+  it(
+    "concurrent claims — exactly one dispatcher fires per row",
+    async () => {
+      await truncateOutbox();
+      const db = dbFor();
+      await enqueue(db, {
+        eventType: "demo",
+        payload: { source: "demo", email: "race@test" },
+      });
+
+      let totalDispatched = 0;
+      const dispatcher: OutboxDispatcher = async () => {
+        totalDispatched++;
+        // Hold the lock briefly so the second flush's claim is forced
+        // to skip the locked row rather than wait for it.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return { kind: "ok" };
+      };
+
+      const [a, b] = await Promise.all([
+        flushBatch(db, dispatcher, 10),
+        flushBatch(db, dispatcher, 10),
+      ]);
+
+      // Exactly one of the two flushes claimed the row.
+      expect(a.claimed + b.claimed).toBe(1);
+      expect(a.ok + b.ok).toBe(1);
+      expect(totalDispatched).toBe(1);
+
+      const rows = await pool.query(
+        "SELECT status FROM crm_outbox WHERE event_type = 'demo'",
+      );
+      expect(rows.rows[0].status).toBe("done");
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  // ── A long-backoff row on the same table must NOT stall a fresh,
+  //    immediately-due row. The migration comment and issue body both
+  //    promise this — pin it end-to-end.
+  it(
+    "long-backoff row does NOT block a fresh row claimable in the same tick",
+    async () => {
+      await truncateOutbox();
+      const db = dbFor();
+      // Row A: high attempts, recent created_at → gated by tier delay.
+      await pool.query(
+        `INSERT INTO crm_outbox (event_type, payload, status, attempts, created_at)
+         VALUES ('demo', $1::jsonb, 'pending', 4, now())`,
+        [JSON.stringify({ source: "demo", email: "stalled@test" })],
+      );
+      // Row B: fresh, attempts=0 (no backoff) → due immediately.
+      await pool.query(
+        `INSERT INTO crm_outbox (event_type, payload, status, attempts, created_at)
+         VALUES ('demo', $1::jsonb, 'pending', 0, now())`,
+        [JSON.stringify({ source: "demo", email: "fresh@test" })],
+      );
+
+      const claimedEmails: string[] = [];
+      const dispatcher: OutboxDispatcher = async (row) => {
+        const payload = row.payload as { email: string };
+        claimedEmails.push(payload.email);
+        return { kind: "ok" };
+      };
+
+      const result = await flushBatch(db, dispatcher, 10);
+      expect(result.claimed).toBe(1);
+      expect(claimedEmails).toEqual(["fresh@test"]);
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  // ── Retry-After must override the tier-based backoff.
+  it(
+    "transient outcome with retryAfterMs stamps retry_after and gates the next claim",
+    async () => {
+      await truncateOutbox();
+      const db = dbFor();
+      await enqueue(db, {
+        eventType: "demo",
+        payload: { source: "demo", email: "retry-after@test" },
+      });
+
+      // Dispatcher returns transient with a 5-minute Retry-After.
+      const dispatcher: OutboxDispatcher = async () => ({
+        kind: "transient",
+        message: "429 rate-limited",
+        retryAfterMs: 5 * 60 * 1_000,
+      });
+
+      const first = await flushBatch(db, dispatcher, 10);
+      expect(first.transient).toBe(1);
+
+      // Confirm retry_after is stamped roughly 5 minutes out.
+      const rowsAfter = await pool.query(
+        "SELECT retry_after FROM crm_outbox WHERE event_type = 'demo'",
+      );
+      expect(rowsAfter.rows[0].retry_after).not.toBeNull();
+
+      // attempts=1 tier delay is 30s. Without retry_after this row
+      // would be claimable after backdating ~30s. WITH retry_after the
+      // 5-minute upstream-requested delay must win.
+      await pool.query(
+        `UPDATE crm_outbox SET created_at = now() - INTERVAL '40 seconds'
+         WHERE event_type = 'demo'`,
+      );
+
+      let dispatchCount = 0;
+      const noopDispatcher: OutboxDispatcher = async () => {
+        dispatchCount++;
+        return { kind: "ok" };
+      };
+      const second = await flushBatch(db, noopDispatcher, 10);
+      expect(second.claimed).toBe(0);
+      expect(dispatchCount).toBe(0);
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  // ── Real-PG dead-letter via transient budget exhaustion.
+  it(
+    "transient on the 6th attempt is dead-lettered in real Postgres",
+    async () => {
+      await truncateOutbox();
+      const db = dbFor();
+      // Insert at attempts=5 with a back-dated created_at so the next
+      // claim picks it up immediately.
+      await pool.query(
+        `INSERT INTO crm_outbox (event_type, payload, status, attempts, created_at)
+         VALUES ('demo', $1::jsonb, 'pending', 5, now() - INTERVAL '3 hours')`,
+        [JSON.stringify({ source: "demo", email: "budget-real@test" })],
+      );
+
+      const dispatcher: OutboxDispatcher = async () => ({
+        kind: "transient",
+        message: "still flaky",
+      });
+
+      await flushBatch(db, dispatcher, 10);
+      const rows = await pool.query(
+        "SELECT status, attempts, last_error FROM crm_outbox WHERE event_type = 'demo'",
+      );
+      expect(rows.rows[0].status).toBe("dead");
+      expect(rows.rows[0].attempts).toBe(6);
+      expect(rows.rows[0].last_error).toContain("transient failure after 6 attempts");
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  // ── Backoff TS/SQL lockstep at the database level.
+  it(
+    "CLAIM_DELAY_SQL evaluates to the same delays as DELAYS_MS at every tier",
+    async () => {
+      const expected = [
+        { attempts: 0, seconds: 0 },
+        { attempts: 1, seconds: 30 },
+        { attempts: 2, seconds: 120 },
+        { attempts: 3, seconds: 480 },
+        { attempts: 4, seconds: 1800 },
+        { attempts: 5, seconds: 7200 },
+      ];
+      for (const { attempts, seconds } of expected) {
+        const result = await pool.query<{ s: string }>(
+          `SELECT EXTRACT(EPOCH FROM (
+             CASE $1::int
+               WHEN 0 THEN INTERVAL '0'
+               WHEN 1 THEN INTERVAL '30 seconds'
+               WHEN 2 THEN INTERVAL '2 minutes'
+               WHEN 3 THEN INTERVAL '8 minutes'
+               WHEN 4 THEN INTERVAL '30 minutes'
+               WHEN 5 THEN INTERVAL '2 hours'
+               ELSE INTERVAL '2 hours'
+             END
+           ))::text AS s`,
+          [attempts],
+        );
+        expect(Number.parseFloat(result.rows[0].s)).toBe(seconds);
+      }
     },
     PG_TIMEOUT_MS,
   );

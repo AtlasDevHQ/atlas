@@ -9,6 +9,7 @@
  * part of the standard migration path instead of lazy ensureTable() calls.
  */
 
+import type { OutboxStatus } from "../lead-outbox/outbox";
 import {
   pgTable,
   uuid,
@@ -2250,11 +2251,16 @@ export const crmOutbox = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     eventType: text("event_type").notNull(),
     payload: jsonb("payload").notNull(),
-    status: text("status").notNull().default("pending"),
+    status: text("status").$type<OutboxStatus>().notNull().default("pending"),
     attempts: integer("attempts").notNull().default(0),
     lastError: text("last_error"),
+    // TODO(#2729-followup): rename to a generic `resource_ids JSONB` if
+    // a second SaaS CRM ever ships. The Twenty-specific names leak
+    // vendor specifics into what is otherwise a generic outbox.
     twentyPersonId: text("twenty_person_id"),
     twentyNoteId: text("twenty_note_id"),
+    retryAfter: timestamp("retry_after", { withTimezone: true }),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     processedAt: timestamp("processed_at", { withTimezone: true }),
   },

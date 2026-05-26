@@ -1,25 +1,25 @@
 /**
  * Backoff math for the `crm_outbox` flusher (#2729).
  *
- * Pure, unit-tested. Both this file and the SQL CASE expression in
- * `outbox.ts` must stay in lockstep — the SQL WHERE clause is what
- * enforces backoff (a sleep would let a long-backoff row block newer
- * pending rows), so a divergence here means rows either retry too
- * eagerly (data loss against the rate limit) or never retry at all.
+ * Pure, unit-tested. The `DELAYS_MS` array and `CLAIM_DELAY_SQL` CASE
+ * below must stay in lockstep — the SQL WHERE clause in
+ * `outbox.ts:CLAIM_SQL` is what enforces backoff (a sleep would let a
+ * long-backoff row block newer pending rows), so a divergence means
+ * rows either retry too eagerly (data loss against the rate limit) or
+ * never retry at all. `__tests__/backoff.test.ts` pins both sides;
+ * `outbox-pg.test.ts` extends the check end-to-end via Postgres.
  *
- * Delay interpretation: `delayUntilNextAttemptMs(attempts)` returns the
- * total time, measured from `created_at`, that must elapse before
- * attempt N+1 is allowed. The flusher's claim WHERE clause is
- * `created_at + delay <= now()`. With the per-tier values below,
- * inter-attempt gaps grow geometrically (30s, ~1m30s, ~6m, ~22m, ~1h30m)
- * even though the base is `created_at` — each tier is large enough that
- * a fast-failing attempt at the previous tier still leaves a real gap
- * before the next try. A row whose attempts dispatch unusually slowly
- * may see attempt N+1 fire immediately after attempt N, which is
- * acceptable: the next attempt's failure pushes the row into the next
- * tier, and the gap grows from there.
- *
- * `nextDelayMs` is an alias retained for the spec wording in #2729.
+ * Delay interpretation: `nextDelayMs(attempts)` returns the total
+ * time, measured from `created_at`, that must elapse before attempt
+ * N+1 is allowed. The flusher's claim WHERE clause is
+ * `COALESCE(retry_after, created_at + delay) <= now()` — when the
+ * upstream surfaced a `Retry-After` header the absolute `retry_after`
+ * wins; otherwise the tier-based delay applies. With the per-tier
+ * values below the inter-attempt gaps grow roughly 3–4× per tier
+ * (30s → 1m30s → 6m → 22m → 1h30m). A row whose attempts dispatch
+ * unusually slowly may see attempt N+1 fire immediately after attempt
+ * N, which is acceptable: the next attempt's failure pushes the row
+ * into the next tier, and the gap grows from there.
  */
 
 /**
@@ -51,7 +51,8 @@ const DELAYS_MS: ReadonlyArray<number> = [
  * Delay from `created_at` until the (attempts+1)th dispatch is allowed.
  *
  * Pure function — unit-tested in `__tests__/backoff.test.ts`. Mirrors
- * the SQL CASE in `OUTBOX_CLAIM_SQL`.
+ * `CLAIM_DELAY_SQL` below; both are interpolated into
+ * `outbox.ts:CLAIM_SQL`'s WHERE clause.
  */
 export function nextDelayMs(attempts: number): number {
   if (!Number.isFinite(attempts) || attempts < 0) return 0;

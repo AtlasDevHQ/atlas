@@ -202,42 +202,56 @@ export async function dispatchOutboxRow(
 
   // ── Sub-step 1: upsertPerson (always required) ────────────────────
   if (!row.twentyPersonId) {
+    let person;
     try {
-      const person = await upsertPerson(clientConfig, normalized.person);
-      if (person.id) {
-        await persist.setTwentyPersonId(person.id);
-      } else {
-        // Twenty returned a 2xx Person with no id. Treat as permanent —
-        // we have no way to reference the record on retry, so retrying
-        // would just create another duplicate-by-email upsert against
-        // an already-mutated record. Operator must inspect.
-        return {
-          kind: "permanent",
-          message: "upsertPerson succeeded but returned no id",
-        };
-      }
+      person = await upsertPerson(clientConfig, normalized.person);
     } catch (err) {
       return classifyTwentyError(err, "upsertPerson");
+    }
+    if (!person.id) {
+      // Twenty returned a 2xx Person with no id. Treat as permanent —
+      // we have no way to reference the record on retry, so retrying
+      // would just create another duplicate-by-email upsert against
+      // an already-mutated record. Operator must inspect.
+      return {
+        kind: "permanent",
+        message: "upsertPerson succeeded but returned no id",
+      };
+    }
+    // Persist the id in its own try/catch so an isolated pg blip is
+    // labelled as a persist failure, not as an `upsertPerson threw`.
+    // The next claim will see `twentyPersonId === null` and re-call
+    // upsertPerson, which is safe because `upsertPerson` itself does
+    // a find-by-email-first → PATCH-if-exists (no duplicate Person).
+    try {
+      await persist.setTwentyPersonId(person.id);
+    } catch (err) {
+      return {
+        kind: "transient",
+        message:
+          `persist.setTwentyPersonId failed after upsertPerson succeeded ` +
+          `(personId=${person.id}): ${err instanceof Error ? err.message : String(err)}`,
+      };
     }
   }
 
   // ── Sub-step 2: createNote (sales-form only — placeholder) ───────
   // The `sales-form` source is anticipated in #2729 but the
   // discriminated union in `@useatlas/twenty/lead-normalizer` only
-  // emits `demo` today. When the sales-form variant lands the
-  // dispatcher's branch below activates; until then the conditional
-  // is a no-op for every row in production.
+  // emits `demo` today. The dispatcher dead-letters any sales-form
+  // row that lands today so the failure is operator-visible (rather
+  // than silently completing at upsertPerson and dropping the note).
   if (row.eventType === "sales-form" && !row.twentyNoteId) {
-    // createNote is not yet implemented in @useatlas/twenty (#2729
-    // ships only the outbox primitive + Twenty dispatcher swap; the
-    // sales-form lead source + createNote call land in a follow-up
-    // slice). Treat the row as done — the upsertPerson sub-step
-    // already captured the lead — so we don't infinitely retry on
-    // a missing function.
-    log.debug(
-      { rowId: row.id, event: "lead_outbox.sales_form_note_skipped" },
-      "sales-form note step not yet wired — completing row at upsertPerson",
+    log.warn(
+      { rowId: row.id, event: "lead_outbox.sales_form_note_unwired" },
+      "sales-form row received but createNote is not wired — dead-lettering",
     );
+    return {
+      kind: "permanent",
+      message:
+        "sales-form createNote not yet implemented in @useatlas/twenty — " +
+        "follow-up slice will wire this. Row dead-lettered for visibility.",
+    };
   }
 
   return { kind: "ok" };
@@ -247,7 +261,15 @@ function classifyTwentyError(err: unknown, op: string): DispatchOutcome {
   if (err instanceof TwentyClientError) {
     const classification = classifyHttpStatus(err.status);
     const message = `${op} failed (status=${err.status}${err.upstreamCode ? `, code=${err.upstreamCode}` : ""}): ${err.message}`;
-    return { kind: classification, message };
+    if (classification === "transient") {
+      return {
+        kind: "transient",
+        message,
+        httpStatus: err.status,
+        retryAfterMs: err.retryAfterMs,
+      };
+    }
+    return { kind: "permanent", message, httpStatus: err.status };
   }
   const message = `${op} threw: ${err instanceof Error ? err.message : String(err)}`;
   return { kind: "transient", message };
@@ -263,7 +285,6 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
       return {
         available: false,
         upsertLead: () => Effect.void,
-        dispatcher: null,
       } satisfies SaasCrmShape;
     }
 
@@ -276,7 +297,6 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
       return {
         available: false,
         upsertLead: () => Effect.void,
-        dispatcher: null,
       } satisfies SaasCrmShape;
     }
 
@@ -288,7 +308,6 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
       return {
         available: false,
         upsertLead: () => Effect.void,
-        dispatcher: null,
       } satisfies SaasCrmShape;
     }
 
@@ -301,7 +320,6 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
       return {
         available: false,
         upsertLead: () => Effect.void,
-        dispatcher: null,
       } satisfies SaasCrmShape;
     }
     if (verifyResult.ok === "transient") {
@@ -338,9 +356,9 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
             Effect.sync(() => {
               // An enqueue failure is just a Postgres write — they
               // should be rare. Log and swallow so the demo response
-              // stays unblocked, matching the original fire-and-forget
-              // contract of `upsertLead`. The captureDemoLead caller
-              // still has its own defense-in-depth catch.
+              // stays unblocked. `captureDemoLead` already has its
+              // own defense-in-depth catch around the dispatched
+              // Effect, so the route handler never sees this error.
               log.error(
                 {
                   source: input.source,

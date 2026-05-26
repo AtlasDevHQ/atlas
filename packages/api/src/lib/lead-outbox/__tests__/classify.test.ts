@@ -16,12 +16,20 @@ describe("classifyHttpStatus", () => {
     expect(classifyHttpStatus(429)).toBe("transient");
   });
 
+  test("408 (Request Timeout) + 425 (Too Early) → transient", () => {
+    // Both are HTTP-defined as retryable. A CDN or proxy flake returning
+    // 408 once must NOT dead-letter the row; 425 is used by some
+    // upstreams during TLS replay windows.
+    expect(classifyHttpStatus(408)).toBe("transient");
+    expect(classifyHttpStatus(425)).toBe("transient");
+  });
+
   test("0 / negative / NaN → transient (transport flake)", () => {
     expect(classifyHttpStatus(0)).toBe("transient");
     expect(classifyHttpStatus(NaN)).toBe("transient");
   });
 
-  test("4xx other than 429 → permanent (deterministic misconfig)", () => {
+  test("4xx other than 408/425/429 → permanent (deterministic misconfig)", () => {
     expect(classifyHttpStatus(400)).toBe("permanent");
     expect(classifyHttpStatus(401)).toBe("permanent");
     expect(classifyHttpStatus(403)).toBe("permanent");

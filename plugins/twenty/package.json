@@ -1,7 +1,7 @@
 {
   "name": "@useatlas/twenty",
-  "version": "0.0.1",
-  "description": "Atlas Twenty CRM action plugin (upsertPerson)",
+  "version": "0.0.2",
+  "description": "Atlas Twenty CRM action plugin (upsertPerson, createNote, sales-form normalization)",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",

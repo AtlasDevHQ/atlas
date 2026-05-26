@@ -5,15 +5,18 @@ const port = parseInt(process.env.PORT || "8080");
 
 // `script-src 'unsafe-inline'` is required by Next.js's `__NEXT_DATA__` and
 // hydration runtime. `style-src 'unsafe-inline'` is required by Next.js's
-// inlined critical CSS. Operators who add analytics or third-party scripts
-// will need to extend this in their own deploy.
+// inlined critical CSS. `https://challenges.cloudflare.com` is required for
+// the Cloudflare Turnstile widget on the talk-to-sales form (script + iframe).
+// Operators who add analytics or third-party scripts will need to extend
+// this in their own deploy.
 const WWW_CSP = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
+  "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: https:",
   "font-src 'self' data:",
   "connect-src 'self' https:",
+  "frame-src https://challenges.cloudflare.com",
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",

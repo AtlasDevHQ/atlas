@@ -45,6 +45,7 @@ import {
   type ResolvedTwentyCredentials,
   type TwentyClientConfig,
 } from "@useatlas/twenty";
+import { findLatestTwentyDbCredentials } from "@atlas/api/lib/integrations/twenty/store";
 
 const log = createLogger("ee:saas-crm");
 
@@ -341,18 +342,6 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
       } satisfies SaasCrmShape;
     }
 
-    const creds = tryResolveCredentialsFromEnv();
-    if (!creds) {
-      log.warn(
-        { event: "saas_crm.credentials_absent" },
-        "TWENTY_API_KEY not set — SaasCrm.available=false. Set TWENTY_API_KEY (and optionally TWENTY_BASE_URL) to enable SaaS CRM dispatch.",
-      );
-      return {
-        available: false,
-        upsertLead: () => Effect.void,
-      } satisfies SaasCrmShape;
-    }
-
     if (!hasInternalDB()) {
       log.warn(
         { event: "saas_crm.no_internal_db" },
@@ -364,7 +353,31 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
       } satisfies SaasCrmShape;
     }
 
-    const verifyResult = yield* Effect.promise(() => verifyCustomFields(creds));
+    // Resolution order for boot-time verification (#2732 / Slice 7):
+    //   1. `twenty_integrations` DB row (admin-UI override)
+    //   2. `TWENTY_API_KEY` env var
+    //   3. unavailable — dispatch is no-op until either is configured
+    //
+    // The DB row check goes first so an operator who exclusively
+    // configures Twenty through Admin → Integrations → Twenty (no env)
+    // still gets a working SaaS CRM. The dispatcher re-resolves
+    // per-row at flush time, so live admin-UI changes apply without
+    // restart.
+    const envCreds = tryResolveCredentialsFromEnv();
+    const dbCreds = yield* Effect.promise(() => readSaasDbCredentials());
+    const bootCreds = dbCreds ?? envCreds;
+    if (!bootCreds) {
+      log.warn(
+        { event: "saas_crm.credentials_absent" },
+        "No Twenty credentials configured — SaasCrm.available=false. Set TWENTY_API_KEY in the environment, or configure under Admin → Integrations → Twenty.",
+      );
+      return {
+        available: false,
+        upsertLead: () => Effect.void,
+      } satisfies SaasCrmShape;
+    }
+
+    const verifyResult = yield* Effect.promise(() => verifyCustomFields(bootCreds));
     if (verifyResult.ok === false) {
       // Already logged inside verifyCustomFields (missing fields OR
       // deterministic misconfiguration). Surface unavailable so
@@ -384,14 +397,19 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
     } else {
       log.info(
         {
-          baseUrl: creds.baseUrl ?? ATLAS_SAAS_TWENTY_BASE_URL,
+          baseUrl: bootCreds.baseUrl ?? ATLAS_SAAS_TWENTY_BASE_URL,
+          credentialSource: dbCreds ? "db_row" : "env",
           event: "saas_crm.ready",
         },
         "SaasCrm wired up — atlasFirstSource + atlasLastSource verified on Twenty Person",
       );
     }
 
-    const clientConfig = buildSaasClientConfig(creds);
+    // Boot-time clientConfig — the fallback used when no
+    // twenty_integrations row exists at dispatch time. The dispatcher
+    // re-resolves creds per-row to pick up admin-UI overrides
+    // (#2732 / Slice 7) without a process restart.
+    const envClientConfig = buildSaasClientConfig(bootCreds);
 
     return {
       available: true,
@@ -424,10 +442,78 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
             }),
           ),
         ),
-      dispatcher: (row, persist) => dispatchOutboxRow(clientConfig, row, persist),
+      dispatcher: async (row, persist) => {
+        const clientConfig = await resolveDispatchClientConfig(envClientConfig);
+        return dispatchOutboxRow(clientConfig, row, persist);
+      },
     } satisfies SaasCrmShape;
   }),
 );
+
+/**
+ * Read the SaaS-applicable `twenty_integrations` row at boot, or
+ * return null when nothing is configured. Wrapped in a try/catch so a
+ * pg blip at boot can't crash the SaasCrmLive layer wiring — the env
+ * fallback path takes over and the dispatcher's per-row lookup will
+ * recover once the DB is reachable.
+ */
+async function readSaasDbCredentials(): Promise<ResolvedTwentyCredentials | null> {
+  try {
+    const row = await findLatestTwentyDbCredentials();
+    if (!row) return null;
+    if (row.apiKey.trim().length === 0) return null;
+    return {
+      apiKey: row.apiKey,
+      baseUrl: row.baseUrl ?? undefined,
+    };
+  } catch (err) {
+    log.warn(
+      {
+        err: err instanceof Error ? err.message : String(err),
+        event: "saas_crm.boot_db_lookup_failed",
+      },
+      "twenty_integrations lookup failed during boot — falling back to env credentials",
+    );
+    return null;
+  }
+}
+
+/**
+ * Resolve the per-dispatch TwentyClient config. Consults the
+ * `twenty_integrations` table (admin-UI override, #2732 / Slice 7);
+ * falls back to the boot-resolved env config if no row exists or the
+ * DB lookup throws transiently.
+ *
+ * Today's "pick latest row" semantic is the right call for the SaaS
+ * Atlas deployment (one operator workspace configures Twenty) and
+ * self-hosted single-workspace operators. Multi-tenant per-workspace
+ * routing requires `crm_outbox.workspace_id` (follow-up) — when that
+ * lands, this helper switches to `resolveCredentialsForWorkspace(row.workspaceId)`.
+ */
+async function resolveDispatchClientConfig(
+  envFallback: TwentyClientConfig,
+): Promise<TwentyClientConfig> {
+  try {
+    const dbRow = await findLatestTwentyDbCredentials();
+    if (dbRow && dbRow.apiKey.trim().length > 0) {
+      return {
+        apiKey: dbRow.apiKey,
+        // Prefer the DB row's baseUrl; fall back to the env-resolved
+        // value (which already encodes ATLAS_SAAS_TWENTY_BASE_URL via
+        // buildSaasClientConfig) so a row with NULL base_url still
+        // ends up dispatching against a sane host.
+        baseUrl: dbRow.baseUrl ?? envFallback.baseUrl,
+        timeoutMs: envFallback.timeoutMs,
+      };
+    }
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), event: "saas_crm.db_lookup_failed" },
+      "twenty_integrations lookup failed during dispatch — falling back to env credentials",
+    );
+  }
+  return envFallback;
+}
 
 // Re-exported for direct testing of the verification / dispatch logic.
 export {

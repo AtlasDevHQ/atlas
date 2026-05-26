@@ -67,10 +67,14 @@ export {
 
 export {
   resolveCredentialsFromEnv,
+  resolveCredentialsForWorkspace,
   tryResolveCredentialsFromEnv,
   TwentyCredentialError,
+  type DbCredentialLookup,
+  type DbCredentialLookupResult,
   type ResolvedTwentyCredentials,
   type ResolveOptions,
+  type ResolveForWorkspaceOptions,
 } from "./credential-resolver";
 
 // ─────────────────────────────────────────────────────────────────────

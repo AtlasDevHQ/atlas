@@ -17,6 +17,19 @@ An optional third field `atlasIp` (Text) captures the client IP on demo gate sub
 
 ## Install (self-hoster)
 
+Self-hosted operators have **two ways** to configure Twenty credentials:
+
+### Option 1: Admin UI (recommended)
+
+Navigate to **Admin → Integrations → Twenty** in your Atlas deployment and submit:
+
+- **Base URL** — your Twenty instance hostname (e.g. `https://crm.example.com`). **Required, no default** — the form will NOT auto-fill `https://crm.useatlas.dev` (that's Atlas's own Twenty).
+- **API key** — bearer token from Twenty → Settings → API & Webhooks.
+
+The key is encrypted at rest in the `twenty_integrations` table (AES-256-GCM via Atlas's F-41 selective-field encryption) and overrides any `TWENTY_API_KEY` environment variable when present. Deleting the row falls back to env.
+
+### Option 2: Environment variables / `atlas.config.ts`
+
 ```bash
 bun add @useatlas/twenty
 ```
@@ -34,6 +47,12 @@ export default defineConfig({
   ],
 });
 ```
+
+Both paths land at the same destination — the dispatcher resolves credentials per call with the order:
+
+1. **`twenty_integrations` DB row** (admin-UI override) — wins when present.
+2. **`TWENTY_API_KEY` env var** (+ optional `TWENTY_BASE_URL`) — fallback.
+3. Throws an actionable error when neither is configured.
 
 The plugin exposes one agent tool: `upsertTwentyPerson`. The action takes `{ email, eventSource, firstName?, lastName?, atlasIp? }` and upserts the Person by `emails.primaryEmail`. The Atlas-side first/last source rule is enforced inside `TwentyClient.upsertPerson` — callers pass a single `eventSource`.
 

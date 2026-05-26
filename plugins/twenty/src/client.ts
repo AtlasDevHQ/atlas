@@ -34,7 +34,9 @@ export type TwentyOperation =
   | "findPersonByEmail"
   | "createPerson"
   | "updatePerson"
-  | "getPersonMetadata";
+  | "getPersonMetadata"
+  | "createNote"
+  | "createNoteTarget";
 
 /** Structured error for typed routing inside SaasCrmLayer. */
 export class TwentyClientError extends Data.TaggedError("TwentyClientError")<{
@@ -357,6 +359,123 @@ async function updatePerson(
       operation: "updatePerson",
     });
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  Notes — POST /rest/notes + POST /rest/noteTargets
+// ─────────────────────────────────────────────────────────────────────
+//
+// Twenty's Note entity stores rich text under `bodyV2.markdown` (the
+// `body` field was retired in favor of the BlockNote-shaped `bodyV2`).
+// Linking a Note to a Person is a SECOND request to `/rest/noteTargets`
+// with `{ noteId, targetPersonId }` — Twenty does not expose a combined
+// create-and-link primitive. The two-step shape is mirrored in
+// `dispatchOutboxRow`'s sub-step idempotency: if the link step fails
+// after the note is created, the note is orphaned but the lead is NOT
+// lost (the row stays `in_flight` and the next claim re-runs the link
+// step against a fresh note — operator cleans up the orphan; acceptable
+// cost vs. dropping the lead).
+
+export interface CreateNoteInput {
+  /** Person id returned by upsertPerson — the note attaches to this Person. */
+  readonly personId: string;
+  /** Title surfaced in Twenty's note list view. */
+  readonly title: string;
+  /** Note body as markdown. Stored under `bodyV2.markdown`. */
+  readonly body: string;
+}
+
+export interface TwentyNote {
+  readonly id: string;
+}
+
+/**
+ * Create a Note in Twenty and link it to a Person via NoteTarget.
+ * Returns the created note's id so the caller (outbox dispatcher) can
+ * persist it for idempotent replay.
+ */
+export async function createNote(
+  config: TwentyClientConfig,
+  input: CreateNoteInput,
+): Promise<TwentyNote> {
+  const fetchImpl = config.fetchImpl ?? globalThis.fetch;
+
+  // ── Step 1: POST /rest/notes ──────────────────────────────────────
+  const noteUrl = buildRestUrl(config.baseUrl, "notes");
+  const noteResponse = await fetchImpl(noteUrl, {
+    method: "POST",
+    headers: buildAuthHeaders(config.apiKey),
+    body: JSON.stringify({
+      title: input.title,
+      bodyV2: { markdown: input.body },
+    }),
+    signal: AbortSignal.timeout(config.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+  });
+
+  if (!noteResponse.ok) {
+    const detail = await readErrorDetail(noteResponse);
+    throw new TwentyClientError({
+      message: `createNote failed: ${detail.message}`,
+      status: noteResponse.status,
+      upstreamCode: detail.code,
+      operation: "createNote",
+      retryAfterMs: parseRetryAfterMs(noteResponse.headers.get("Retry-After")),
+    });
+  }
+
+  let noteId: string | undefined;
+  try {
+    const noteBody = (await noteResponse.json()) as {
+      data?: { createNote?: TwentyNote; note?: TwentyNote };
+    };
+    noteId = noteBody.data?.createNote?.id ?? noteBody.data?.note?.id;
+  } catch (err) {
+    throw new TwentyClientError({
+      message: `createNote: unparseable success response (${err instanceof Error ? err.message : String(err)})`,
+      status: noteResponse.status,
+      operation: "createNote",
+    });
+  }
+
+  if (!noteId) {
+    // Twenty returned 2xx with no id — we can't link the noteTarget
+    // without it. Fail loud rather than silently complete; the row will
+    // retry (transient) and create a duplicate note on the next attempt,
+    // which is preferable to a missing note that the operator never
+    // notices.
+    throw new TwentyClientError({
+      message: "createNote: 2xx response had no id",
+      status: noteResponse.status,
+      operation: "createNote",
+    });
+  }
+
+  // ── Step 2: POST /rest/noteTargets ────────────────────────────────
+  const linkUrl = buildRestUrl(config.baseUrl, "noteTargets");
+  const linkResponse = await fetchImpl(linkUrl, {
+    method: "POST",
+    headers: buildAuthHeaders(config.apiKey),
+    body: JSON.stringify({
+      noteId,
+      targetPersonId: input.personId,
+    }),
+    signal: AbortSignal.timeout(config.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+  });
+
+  if (!linkResponse.ok) {
+    const detail = await readErrorDetail(linkResponse);
+    throw new TwentyClientError({
+      message: `createNoteTarget failed (note=${noteId}): ${detail.message}`,
+      status: linkResponse.status,
+      upstreamCode: detail.code,
+      operation: "createNoteTarget",
+      retryAfterMs: parseRetryAfterMs(linkResponse.headers.get("Retry-After")),
+    });
+  }
+
+  // We don't need the noteTarget id for anything — the noteId is the
+  // load-bearing identifier the outbox persists for idempotency.
+  return { id: noteId };
 }
 
 // ─────────────────────────────────────────────────────────────────────

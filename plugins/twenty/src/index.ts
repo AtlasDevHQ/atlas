@@ -38,6 +38,7 @@ import { upsertPerson, type TwentyClientConfig } from "./client";
 export {
   upsertPerson,
   getPersonMetadata,
+  createNote,
   TwentyClientError,
   type TwentyOperation,
   type TwentyClientConfig,
@@ -46,15 +47,20 @@ export {
   type AtlasPersonCustomFields,
   type PersonMetadata,
   type PersonMetadataField,
+  type CreateNoteInput,
+  type TwentyNote,
 } from "./client";
 
 export {
   normalizeDemoLead,
+  normalizeSalesFormLead,
   normalizeLead,
   type AtlasDemoLeadEvent,
+  type AtlasSalesFormLeadEvent,
   type AtlasEventSource,
   type AtlasLeadEvent,
   type NormalizedLead,
+  type NormalizedNote,
 } from "./lead-normalizer";
 
 export {

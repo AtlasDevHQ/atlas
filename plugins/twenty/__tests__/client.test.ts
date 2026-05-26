@@ -10,6 +10,7 @@ import { describe, test, expect } from "bun:test";
 import {
   upsertPerson,
   getPersonMetadata,
+  createNote,
   TwentyClientError,
   type TwentyClientConfig,
   type TwentyPerson,
@@ -645,6 +646,210 @@ describe("getPersonMetadata", () => {
     } catch (err) {
       expect(err).toBeInstanceOf(TwentyClientError);
       expect((err as TwentyClientError).status).toBe(404);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  createNote — happy path + error mapping
+// ─────────────────────────────────────────────────────────────────────
+
+describe("createNote — happy path", () => {
+  test("POSTs /rest/notes with bodyV2.markdown, then POSTs /rest/noteTargets with noteId + targetPersonId, returns the noteId", async () => {
+    const { fetch, calls } = makeScriptedFetch([
+      {
+        status: 200,
+        body: { data: { createNote: { id: "note_abc" } } },
+      },
+      {
+        status: 200,
+        body: { data: { createNoteTarget: { id: "nt_def", noteId: "note_abc", targetPersonId: "person_xyz" } } },
+      },
+    ]);
+    const config = baseConfig({ fetchImpl: fetch });
+
+    const result = await createNote(config, {
+      personId: "person_xyz",
+      title: "Talk to sales — Acme (Business)",
+      body: "We need ten seats and SSO.",
+    });
+
+    expect(result.id).toBe("note_abc");
+    expect(calls).toHaveLength(2);
+
+    // First call — create note
+    expect(calls[0].method).toBe("POST");
+    expect(calls[0].url).toBe("https://crm.test.local/rest/notes");
+    const noteBody = JSON.parse(calls[0].body ?? "{}");
+    expect(noteBody.title).toBe("Talk to sales — Acme (Business)");
+    // bodyV2.markdown is the canonical input shape — Twenty generates blocknote.
+    expect(noteBody.bodyV2).toEqual({ markdown: "We need ten seats and SSO." });
+    expect(noteBody.body).toBeUndefined();
+
+    // Second call — link to person
+    expect(calls[1].method).toBe("POST");
+    expect(calls[1].url).toBe("https://crm.test.local/rest/noteTargets");
+    const linkBody = JSON.parse(calls[1].body ?? "{}");
+    expect(linkBody).toEqual({ noteId: "note_abc", targetPersonId: "person_xyz" });
+  });
+
+  test("sends Authorization: Bearer <apiKey> on both calls", async () => {
+    const { fetch, calls } = makeScriptedFetch([
+      { status: 200, body: { data: { createNote: { id: "n1" } } } },
+      { status: 200, body: { data: { createNoteTarget: { id: "nt1" } } } },
+    ]);
+    const config = baseConfig({
+      apiKey: "twenty_secret_xyz",
+      fetchImpl: fetch,
+    });
+
+    await createNote(config, {
+      personId: "p1",
+      title: "t",
+      body: "b",
+    });
+
+    expect(calls[0].headers.Authorization).toBe("Bearer twenty_secret_xyz");
+    expect(calls[1].headers.Authorization).toBe("Bearer twenty_secret_xyz");
+  });
+});
+
+describe("createNote — error mapping", () => {
+  test("maps 401 on createNote to TwentyClientError with operation=createNote", async () => {
+    const { fetch, calls } = makeScriptedFetch([
+      { status: 401, body: { messages: ["Unauthorized"] } },
+    ]);
+    const config = baseConfig({ fetchImpl: fetch });
+
+    try {
+      await createNote(config, { personId: "p", title: "t", body: "b" });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TwentyClientError);
+      const e = err as TwentyClientError;
+      expect(e.status).toBe(401);
+      expect(e.operation).toBe("createNote");
+      expect(e.message).toContain("Unauthorized");
+    }
+    // noteTarget link must NOT be attempted when note creation fails.
+    expect(calls).toHaveLength(1);
+  });
+
+  test("maps 422 on createNote (e.g. missing required field) to TwentyClientError with upstream code", async () => {
+    const { fetch } = makeScriptedFetch([
+      {
+        status: 422,
+        body: { messages: ["title is required"], code: "FIELD_REQUIRED" },
+      },
+    ]);
+    const config = baseConfig({ fetchImpl: fetch });
+
+    try {
+      await createNote(config, { personId: "p", title: "", body: "" });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TwentyClientError);
+      const e = err as TwentyClientError;
+      expect(e.status).toBe(422);
+      expect(e.upstreamCode).toBe("FIELD_REQUIRED");
+      expect(e.operation).toBe("createNote");
+    }
+  });
+
+  test("maps 5xx on createNote to transient-friendly TwentyClientError", async () => {
+    const { fetch } = makeScriptedFetch([
+      { status: 503, body: { messages: ["upstream down"] } },
+    ]);
+    const config = baseConfig({ fetchImpl: fetch });
+
+    try {
+      await createNote(config, { personId: "p", title: "t", body: "b" });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TwentyClientError);
+      expect((err as TwentyClientError).status).toBe(503);
+    }
+  });
+
+  test("createNote succeeds but noteTarget link fails → TwentyClientError with operation=createNoteTarget", async () => {
+    // Realistic regression: the note is created but the link step fails.
+    // The caller (dispatchOutboxRow) needs to see operation=createNoteTarget
+    // so the retry policy classifies correctly. (The note is orphaned in
+    // Twenty — operator cleans up; cost is acceptable vs. dropping the lead.)
+    const { fetch, calls } = makeScriptedFetch([
+      { status: 200, body: { data: { createNote: { id: "orphan_note" } } } },
+      { status: 500, body: { messages: ["link failed"] } },
+    ]);
+    const config = baseConfig({ fetchImpl: fetch });
+
+    try {
+      await createNote(config, { personId: "p", title: "t", body: "b" });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TwentyClientError);
+      const e = err as TwentyClientError;
+      expect(e.status).toBe(500);
+      expect(e.operation).toBe("createNoteTarget");
+    }
+    expect(calls).toHaveLength(2);
+  });
+
+  test("createNote 200 with no id → TwentyClientError (no silent success)", async () => {
+    // Defense against a future Twenty fast-path that returns 2xx + empty body.
+    // Without the id we can't link the noteTarget, so this MUST fail loud
+    // rather than return a meaningless result.
+    const { fetch, calls } = makeScriptedFetch([
+      { status: 200, body: { data: { createNote: {} } } },
+    ]);
+    const config = baseConfig({ fetchImpl: fetch });
+
+    try {
+      await createNote(config, { personId: "p", title: "t", body: "b" });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TwentyClientError);
+      expect((err as TwentyClientError).operation).toBe("createNote");
+      expect((err as TwentyClientError).message).toContain("no id");
+    }
+    // No link attempt — we have no noteId.
+    expect(calls).toHaveLength(1);
+  });
+
+  test("retry-after on 429 surfaces through TwentyClientError.retryAfterMs", async () => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ messages: ["rate limited"] }), {
+        status: 429,
+        headers: { "Content-Type": "application/json", "Retry-After": "120" },
+      })) as unknown as typeof globalThis.fetch;
+    const config = baseConfig({ fetchImpl });
+
+    try {
+      await createNote(config, { personId: "p", title: "t", body: "b" });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TwentyClientError);
+      const e = err as TwentyClientError;
+      expect(e.status).toBe(429);
+      expect(e.retryAfterMs).toBe(120_000);
+    }
+  });
+
+  test("does not include the apiKey in thrown error messages", async () => {
+    const { fetch } = makeScriptedFetch([
+      { status: 401, body: { messages: ["bad key"] } },
+    ]);
+    const config = baseConfig({
+      apiKey: "twenty_secret_must_not_leak",
+      fetchImpl: fetch,
+    });
+
+    try {
+      await createNote(config, { personId: "p", title: "t", body: "b" });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TwentyClientError);
+      const msg = (err as TwentyClientError).message;
+      expect(msg).not.toContain("twenty_secret_must_not_leak");
     }
   });
 });

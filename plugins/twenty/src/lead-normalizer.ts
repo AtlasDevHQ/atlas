@@ -2,15 +2,16 @@
  * LeadNormalizer — pure mapping from Atlas lead events to the Twenty
  * upsert input shape.
  *
- * Currently ships the demo variant only — `normalizeLead`'s exhaustive
- * switch surfaces a compile error the moment a new union member lands.
+ * Ships the `demo` and `sales-form` variants. `normalizeLead`'s
+ * exhaustive switch surfaces a compile error the moment a new union
+ * member lands.
  *
  * Design rule: the normalizer outputs a single `eventSource` field;
  * the first-source / last-source translation happens INSIDE
  * `TwentyClient.upsertPerson`. That keeps this module a pure function
  * of input → payload, with no I/O and no Twenty-record-state coupling.
  *
- * Types are defined inline here for 0.0.1; they will move to
+ * Types are defined inline here for 0.1.x; they will move to
  * `@useatlas/types` in a subsequent release so the dispatch boundary
  * (`@useatlas/twenty` → SaaS CRM seam) can share one source of truth.
  */
@@ -33,18 +34,47 @@ export interface AtlasDemoLeadEvent {
 }
 
 /**
+ * Sales-form variant — captured by the Talk-to-sales dialog on
+ * `/pricing`. Carries the free-text message that becomes a Twenty Note
+ * attached to the Person.
+ */
+export interface AtlasSalesFormLeadEvent {
+  readonly source: "sales-form";
+  readonly email: string;
+  /** Full name as typed by the prospect. Split into first/last at the seam. */
+  readonly name: string;
+  readonly company: string;
+  /** Plan label they're interested in (e.g. "Starter" / "Pro" / "Business"). */
+  readonly planInterest: string;
+  /** Free-text message. Becomes the Note body verbatim. */
+  readonly message: string;
+  readonly ip?: string | null;
+  readonly userAgent?: string | null;
+}
+
+/**
  * Discriminated union over every Atlas-internal lead event.
  *
- * Extended in subsequent slices: signup hook (`source: "signup"`),
- * sales-form (`source: "sales-form"`), etc. The exhaustiveness check
- * in `normalizeLead` catches missing handlers at compile time.
+ * Extended in subsequent slices: signup hook (`source: "signup"`), etc.
+ * The exhaustiveness check in `normalizeLead` catches missing handlers
+ * at compile time.
  */
-export type AtlasLeadEvent = AtlasDemoLeadEvent;
+export type AtlasLeadEvent = AtlasDemoLeadEvent | AtlasSalesFormLeadEvent;
+
+/** Note attached to the Person — only emitted by variants that carry a message. */
+export interface NormalizedNote {
+  /** Short title surfaced in Twenty's note list view. */
+  readonly title: string;
+  /** Free-text body. Twenty stores as markdown. */
+  readonly body: string;
+}
 
 export interface NormalizedLead {
   readonly person: UpsertPersonInput;
   /** Mirror of `person.eventSource` — surfaced so the caller can log / route. */
   readonly eventSource: AtlasEventSource;
+  /** Optional Note to attach to the Person after upsert. */
+  readonly note?: NormalizedNote;
 }
 
 /** Normalize a demo lead event to a Twenty upsert payload. */
@@ -72,15 +102,65 @@ export function normalizeDemoLead(event: AtlasDemoLeadEvent): NormalizedLead {
   };
 }
 
+/**
+ * Split a single free-text name into first/last components. Whitespace
+ * runs collapse to a single space; the first token becomes firstName,
+ * everything after it becomes lastName. Single-word names emit
+ * firstName only — Twenty distinguishes "absent" from "" on its name
+ * subfield, and a stray empty lastName would clobber an existing one on
+ * PATCH.
+ */
+function splitName(raw: string): { firstName: string; lastName?: string } | undefined {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return undefined;
+  const parts = trimmed.split(/\s+/);
+  const [first, ...rest] = parts;
+  if (rest.length === 0) return { firstName: first };
+  return { firstName: first, lastName: rest.join(" ") };
+}
+
+/** Normalize a sales-form lead event to a Twenty upsert payload + note. */
+export function normalizeSalesFormLead(
+  event: AtlasSalesFormLeadEvent,
+): NormalizedLead {
+  const email = event.email.toLowerCase().trim();
+  const eventSource: AtlasEventSource = "SALES_FORM";
+
+  const customFields: { atlasIp?: string } = {};
+  if (event.ip && event.ip.length > 0) {
+    customFields.atlasIp = event.ip;
+  }
+
+  const name = splitName(event.name);
+
+  return {
+    person: {
+      email,
+      eventSource,
+      ...(name ? { name } : {}),
+      customFields,
+    },
+    eventSource,
+    note: {
+      // Title pins the triage context — company + plan label — so the
+      // sales team can scan the Note list without opening every body.
+      title: `Talk to sales — ${event.company} (${event.planInterest})`,
+      body: event.message,
+    },
+  };
+}
+
 /** Dispatch on `source`. */
 export function normalizeLead(event: AtlasLeadEvent): NormalizedLead {
   switch (event.source) {
     case "demo":
       return normalizeDemoLead(event);
+    case "sales-form":
+      return normalizeSalesFormLead(event);
     default: {
       // Exhaustiveness — when new variants are added to `AtlasLeadEvent`,
       // the absence of a case here surfaces as a tsgo compile error.
-      const _exhaustive: never = event.source;
+      const _exhaustive: never = event;
       void _exhaustive;
       throw new Error(`Unknown lead source: ${String((event as { source?: unknown }).source)}`);
     }

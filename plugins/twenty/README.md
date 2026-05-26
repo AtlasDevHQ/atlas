@@ -20,22 +20,18 @@ Create the required fields under **Settings → Data Model → Person → + Add 
 
 ## Install (self-hoster)
 
-Self-hosted operators have **two ways** to configure Twenty credentials. The dispatcher consults sources in this exact order:
+Self-hosted operators have **two ways** to configure per-workspace Twenty credentials. Both are workspace-scoped — credentials live in `twenty_integrations` (or in your `atlas.config.ts` plugin block). The `TWENTY_API_KEY` environment variable is **NOT** consulted by any plugin install (see "What about `TWENTY_API_KEY`?" below).
 
-1. **`twenty_integrations` DB row** (admin-UI override) — wins when present.
-2. **`TWENTY_API_KEY` env var** (+ optional `TWENTY_BASE_URL`) — fallback.
-3. Throws an actionable error when neither is configured.
-
-### Option 1: Admin UI (recommended — wins when present)
+### Option 1: Admin UI (recommended)
 
 Navigate to **Admin → Integrations → Twenty** in your Atlas deployment and submit:
 
 - **Base URL** — your Twenty instance hostname (e.g. `https://crm.example.com`). **Required, no default** — the form will NOT auto-fill `https://crm.useatlas.dev` (that's Atlas's own Twenty).
 - **API key** — bearer token from Twenty → Settings → API & Webhooks.
 
-The key is encrypted at rest in the `twenty_integrations` table (AES-256-GCM via Atlas's F-41 selective-field encryption) and overrides any `TWENTY_API_KEY` environment variable when present. Deleting the row falls back to env.
+The key is encrypted at rest in the `twenty_integrations` table (AES-256-GCM via Atlas's F-41 selective-field encryption). Deleting the row makes subsequent plugin actions fail with an actionable `TwentyCredentialError` until the row is restored — there is no env fallback.
 
-### Option 2: Environment variables / `atlas.config.ts` (fallback only)
+### Option 2: `atlas.config.ts`
 
 ```bash
 bun add @useatlas/twenty
@@ -48,7 +44,11 @@ import { twentyPlugin } from "@useatlas/twenty";
 export default defineConfig({
   plugins: [
     twentyPlugin({
-      apiKey: process.env.TWENTY_API_KEY!,
+      // Operator-supplied secret threaded into the plugin config. Name
+      // the env var after the workspace so multi-workspace deployments
+      // stay readable. Atlas does NOT read TWENTY_API_KEY here — that
+      // var is platform-only (see below).
+      apiKey: process.env.MY_TWENTY_API_KEY!,
       baseUrl: "https://crm.example.com", // required — point at your own Twenty
     }),
   ],
@@ -60,9 +60,22 @@ The plugin exposes two agent tools:
 - `upsertTwentyPerson` — takes `{ email, eventSource, firstName?, lastName?, atlasIp? }` and upserts the Person by `emails.primaryEmail`. The first/last source rule is enforced inside `TwentyClient.upsertPerson` — callers pass a single `eventSource`.
 - `stampStripeCustomerId` — takes `{ email, stripeCustomerId }` and stamps `atlasStripeCustomerId` on the matching Person (creates a new Person with `atlasFirstSource = "CONVERSION"` if none exists). Self-hosters with their own Stripe + Twenty wiring can call this from their own webhook handler.
 
+## What about `TWENTY_API_KEY`?
+
+`TWENTY_API_KEY` (and optional `TWENTY_BASE_URL`) are **platform-only**: they configure Atlas's own SaaS lead-capture pipeline (`ee/src/saas-crm/`), which POSTs demo / sales-form / signup events into Atlas's CRM at `crm.useatlas.dev`.
+
+No plugin install — customer workspace, or Atlas's own team workspace on `app.useatlas.dev` — reads from these env vars, even as a fallback. This split (#2850) prevents two leak scenarios structurally:
+
+- A customer install with a missing apiKey cannot silently route writes through Atlas's operator key.
+- A future change in `ee/src/saas-crm/` cannot accidentally read a customer workspace's `twenty_integrations` row.
+
+The `scripts/check-twenty-resolver-imports.sh` CI gate enforces that only `ee/src/saas-crm/` may import `resolveOperatorCredentials` from this package.
+
 ## Atlas SaaS wiring
 
-Atlas SaaS (`app.useatlas.dev`) does NOT register this plugin via `atlas.config.ts`. Instead, `/ee/src/saas-crm/` consumes `TwentyClient` directly through the `SaasCrm` Effect Tag. Self-hosters that want demo / signup / conversion dispatch into Twenty wire the actions themselves via this plugin's action API.
+Atlas SaaS (`app.useatlas.dev`) does NOT register this plugin via `atlas.config.ts`. Instead, `/ee/src/saas-crm/` consumes `TwentyClient` directly through the `SaasCrm` Effect Tag with operator credentials resolved from `TWENTY_API_KEY` env. Self-hosters that want their workspaces to fire `upsertTwentyPerson` / `stampStripeCustomerId` from their own webhook handlers wire the actions themselves via this plugin's action API.
+
+Atlas's own team workspace on `app.useatlas.dev`, when it needs Twenty as an action layer, installs the plugin via Admin → Integrations → Twenty just like any other workspace.
 
 The SaaS-side conversion stamping (`SaasCrm.stampConversion`) fires only on **actual payment**, not at trial start. All paid plans ship with a 14-day `freeTrial`, so `onSubscriptionComplete` fires with `subscription.status === "trialing"` at checkout completion — stamping then would overcount unpaid trials as paid conversions in funnel queries. The two real "paid" signals, both wired in `packages/api/src/lib/auth/server.ts`:
 

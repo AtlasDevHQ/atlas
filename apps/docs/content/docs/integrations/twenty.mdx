@@ -1,6 +1,6 @@
 ---
 title: Twenty CRM
-description: Push leads from Atlas into Twenty CRM. Configure your workspace's Twenty hostname and API key through the admin UI, or fall back to environment variables.
+description: Push leads from Atlas into Twenty CRM. Configure your workspace's Twenty hostname and API key through the admin UI or `atlas.config.ts` — plugin installs read per-workspace settings, never platform env vars.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -10,15 +10,23 @@ Target**: Atlas upserts a Person (and optionally creates a Note) in
 Twenty for each lead event — demo signups, sales-form submissions, new
 user accounts. It is not a chat platform.
 
-Self-hosted operators can wire Twenty in two ways:
+Plugin actions and queries read credentials **only** from per-workspace
+settings — `atlas.config.ts` for self-hosted, or the `twenty_integrations`
+row populated by Admin → Integrations → Twenty. The `TWENTY_API_KEY`
+environment variable is reserved for Atlas's own SaaS lead-capture
+pipeline (`ee/src/saas-crm/`), is never read by a plugin install
+(customer workspace, or Atlas's own team workspace on app.useatlas.dev),
+and never participates as a fallback (#2850).
+
+Self-hosted operators have two install paths:
 
 - **Admin UI (recommended)** — submit a `baseUrl` + `apiKey` through
   **Admin → Integrations → Twenty**. The key is encrypted at rest in
-  the dedicated `twenty_integrations` table and overrides any
-  environment variable.
-- **Environment variables** — set `TWENTY_API_KEY` (and optionally
-  `TWENTY_BASE_URL`) on the API service. Used when the admin UI row is
-  absent.
+  the dedicated `twenty_integrations` table.
+- **`atlas.config.ts`** — pass `apiKey` + `baseUrl` to `twentyPlugin({...})`
+  in your config. Useful for ops-as-code setups where the operator
+  threads `process.env.TWENTY_API_KEY_FOR_WORKSPACE_X` (or any other
+  name) into the plugin config explicitly.
 
 <Callout type="warn" title="No Atlas-SaaS default for Base URL">
   The admin UI form requires you to type your own Twenty hostname. It
@@ -58,54 +66,83 @@ demo-gate submissions; its absence is non-fatal.
    - **API key**: a bearer token from Twenty → **Settings → API &
      Webhooks**. The key is masked on submit and stored encrypted via
      AES-256-GCM (F-41 selective-field encryption).
-4. Save. The next demo / sales-form / signup event dispatches using
-   the admin-configured credentials — no restart required.
+4. Save. The next plugin action dispatches using the admin-configured
+   credentials.
 
 To remove the admin override, click **Disconnect** on the Twenty card.
 Atlas drops both the `workspace_plugins` catalog row and the
-`twenty_integrations` credential row, and falls back to environment
-variables (if set) for subsequent dispatches. If no `TWENTY_API_KEY` is
-set in the environment, subsequent dispatches will fail with
-`TwentyCredentialError` until either the admin UI is re-installed or
-the env var is set — outbox rows dead-letter with an actionable
-"configure under Admin → Integrations → Twenty" message rather than
-silently retrying.
+`twenty_integrations` credential row. Subsequent plugin actions for
+this workspace fail with an actionable `TwentyCredentialError` ("no row
+in twenty_integrations — configure under Admin → Integrations →
+Twenty") until either the admin UI is re-installed or the workspace
+config in `atlas.config.ts` supplies an `apiKey`. **There is no
+environment-variable fallback** — `TWENTY_API_KEY` is platform-only.
 
-## Option 2: Environment variable configuration
+## Option 2: `atlas.config.ts` configuration
 
-Set on your API service:
+```ts
+import { defineConfig } from "@atlas/api/lib/config";
+import { twentyPlugin } from "@useatlas/twenty";
 
-```bash
-TWENTY_API_KEY=<bearer token from Twenty Settings → API & Webhooks>
-# Required on self-hosted. The default to https://crm.useatlas.dev
-# only applies to the Atlas SaaS deployment. Self-hosted operators who
-# omit this AND don't use the admin UI will route their leads into
-# Atlas's CRM — set this OR use the admin UI.
-TWENTY_BASE_URL=https://crm.example.com
+export default defineConfig({
+  plugins: [
+    twentyPlugin({
+      // Required — point at YOUR Twenty install. There is no default;
+      // a default URL would silently route a self-hosted operator at
+      // Atlas's own internal CRM (`crm.useatlas.dev`).
+      baseUrl: "https://crm.example.com",
+      // Operator-supplied: thread your own secret through. Naming the
+      // env var after the workspace makes multi-workspace ops obvious.
+      apiKey: process.env.MY_TWENTY_API_KEY!,
+    }),
+  ],
+});
 ```
 
-The environment variables are the documented fallback. Atlas
-re-resolves credentials per dispatch, so an admin-UI row added later
-takes precedence without requiring a restart.
+This path is useful for ops-as-code workflows where install state lives
+in version control rather than the admin UI. Multiple workspaces in the
+same self-hosted deployment configure independent plugin instances.
 
-## Credential resolution order
+## What about `TWENTY_API_KEY`?
 
-The dispatcher consults sources in this exact order:
+The `TWENTY_API_KEY` (and optional `TWENTY_BASE_URL`) environment
+variables are reserved for Atlas's own SaaS lead-capture pipeline at
+`ee/src/saas-crm/` — the code that POSTs demo / sales-form / signup
+events into Atlas's CRM at `crm.useatlas.dev`. **No plugin install**
+— customer workspace, or Atlas's own team workspace on app.useatlas.dev
+— reads from this env var, including as a fallback.
 
-1. **`twenty_integrations` DB row** (admin-UI override). Encrypted with
+This split (#2850) makes two leak scenarios structurally impossible:
+
+- **Direction 1** — A customer install with a missing apiKey can never
+  silently route writes through Atlas's operator key, because plugin
+  actions don't read env.
+- **Direction 2** — A future change in `ee/src/saas-crm/` can't
+  accidentally read a customer workspace's `twenty_integrations` row,
+  because the platform path is env-only and `scripts/check-twenty-resolver-imports.sh`
+  blocks the cross-import.
+
+## Credential resolution
+
+Plugin actions resolve credentials per workspace via
+`resolveWorkspaceCredentials(workspaceId, { deployMode, lookup })`:
+
+1. **`twenty_integrations` DB row for this workspace** — decrypted via
    `db/secret-encryption.ts` (F-41 selective-field encryption). The
    table is listed in `INTEGRATION_TABLES`, so F-47 key rotation and
    F-42 residue audits cover it automatically.
-2. **`TWENTY_API_KEY` + `TWENTY_BASE_URL` env vars**.
-3. **Actionable error**: _"Twenty credentials missing: set
-   `TWENTY_API_KEY` (and optionally `TWENTY_BASE_URL`) in the
-   environment, or configure them under Admin → Integrations →
-   Twenty."_
+2. **Actionable `TwentyCredentialError`** — "no row in
+   twenty_integrations — configure under Admin → Integrations →
+   Twenty" (with a self-hosted variant that also mentions
+   `atlas.config.ts`).
+
+Decrypt failures (key rotation / corrupt ciphertext) fail closed: the
+caller (e.g. the outbox dispatcher) dead-letters the row with a clear
+message rather than silently routing to the wrong Twenty.
 
 The decrypted API key is **never** returned from any GET endpoint —
 the admin UI only displays a "configured" indicator + the (plaintext)
-base URL. The catalog status endpoint reflects "Installed" / "Not
-installed" without exposing the key.
+base URL.
 
 ## SaaS-mode encryption gate
 

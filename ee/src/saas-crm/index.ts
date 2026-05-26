@@ -17,19 +17,15 @@
  * Deterministic misconfigurations (401/403/404) flip to permanent so
  * leads aren't lost silently against a clearly-broken endpoint.
  *
- * Credential precedence — admin-UI DB row > env var > unavailable.
- * The dispatcher re-resolves credentials per outbox row so admin-UI
- * changes apply without a restart. Boot-time verification covers the
- * boot credentials; if a new credential set appears at dispatch time
- * (e.g. operator installs Twenty via admin UI post-boot), the
- * dispatcher lazily re-runs `verifyCustomFields` against the new
- * credentials and dead-letters the row on permanent-misconfig.
- *
- * Decrypt failures (key rotation / corrupted ciphertext) fail closed:
- * boot returns `available: false`; dispatch returns `kind: "permanent"`
- * so the row dead-letters with a clear error. Silent fallback to env
- * on a decrypt error would route the operator's leads to the wrong
- * Twenty.
+ * Credential source — env-only (#2850). `TWENTY_API_KEY` /
+ * `TWENTY_BASE_URL` belong to Atlas-the-operator; this Layer never
+ * reads `twenty_integrations`. That table is reserved for per-workspace
+ * plugin installs (Admin → Integrations → Twenty), which use the
+ * `resolveWorkspaceCredentials` seam — not this Layer. The split makes
+ * the Direction-2 leak structurally impossible: a future change here
+ * cannot accidentally route Atlas's leads through a customer's Twenty
+ * because the workspace function is not importable from this file
+ * (enforced by `scripts/check-twenty-resolver-imports.sh`).
  */
 
 import { Effect, Layer } from "effect";
@@ -51,16 +47,22 @@ import {
 import { isEnterpriseEnabled } from "../index";
 import {
   getPersonMetadata,
+  // Legacy name kept here until @useatlas/twenty@0.0.4 publishes. The
+  // canonical name post-#2850 is `tryResolveOperatorCredentials`, but
+  // the scaffold templates pin `@useatlas/twenty@^0.0.3` (0.0.x exact-
+  // match semver per CLAUDE.md), which only exports the legacy name.
+  // In 0.0.4 `tryResolveCredentialsFromEnv` becomes a @deprecated
+  // re-export of `tryResolveOperatorCredentials` — referentially
+  // identical, env-only. The follow-up PR that ships after publish
+  // swaps this to the canonical name and bumps template refs.
   tryResolveCredentialsFromEnv,
   normalizeLead,
   upsertPerson,
   createNote,
   TwentyClientError,
-  TwentyDecryptError,
   type ResolvedTwentyCredentials,
   type TwentyClientConfig,
 } from "@useatlas/twenty";
-import { findLatestTwentyDbCredentials } from "@atlas/api/lib/integrations/twenty/store";
 
 const log = createLogger("ee:saas-crm");
 
@@ -187,23 +189,6 @@ async function verifyCustomFields(
     const reason = err instanceof Error ? err.message : String(err);
     return { ok: "transient", reason };
   }
-}
-
-/**
- * Cache of (apiKey, baseUrl) pairs that have passed `verifyCustomFields`
- * during this process's lifetime. The dispatcher consults the cache so
- * dispatch-time credential swaps (admin UI install post-boot, or env
- * fallback after Disconnect) re-run verification exactly once per
- * unique credential pair.
- *
- * Hashing: `${apiKey}|${baseUrl ?? ""}` — apiKey already disambiguates
- * an attacker who controls only baseUrl, and the field never leaves
- * process memory. The cache is per-process; redeploys reset it (correct
- * — verification reruns).
- */
-const verifiedCredentialCache = new Set<string>();
-function credentialCacheKey(creds: ResolvedTwentyCredentials): string {
-  return `${creds.apiKey}|${creds.baseUrl ?? ""}`;
 }
 
 /**
@@ -377,25 +362,6 @@ function classifyTwentyError(err: unknown, op: string): DispatchOutcome {
   return { kind: "transient", message };
 }
 
-/** Normalize trim/whitespace on DB-sourced credentials before use. */
-function normalizeDbCredentials(row: {
-  readonly apiKey: string;
-  readonly baseUrl: string | null;
-}): ResolvedTwentyCredentials | null {
-  const apiKey = row.apiKey.trim();
-  if (apiKey.length === 0) return null;
-  const rawBase = row.baseUrl?.trim();
-  const baseUrl =
-    rawBase && rawBase.length > 0 ? stripTrailingSlashes(rawBase) : undefined;
-  return { apiKey, baseUrl, source: "db" };
-}
-
-function stripTrailingSlashes(s: string): string {
-  let end = s.length;
-  while (end > 0 && s.charCodeAt(end - 1) === 47 /* '/' */) end--;
-  return end === s.length ? s : s.slice(0, end);
-}
-
 // Boot-time verification runs once inside Layer.effect; available reflects that one check.
 export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
   SaasCrm,
@@ -422,47 +388,17 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
       } satisfies SaasCrmShape;
     }
 
-    // Resolution order for boot-time verification:
-    //   1. `twenty_integrations` DB row (admin-UI override)
-    //   2. `TWENTY_API_KEY` env var
-    //   3. unavailable — dispatch is no-op until either is configured
-    //
-    // The DB row check goes first so an operator who exclusively
-    // configures Twenty through Admin → Integrations → Twenty (no env)
-    // still gets a working SaaS CRM. The dispatcher re-resolves
-    // per-row at flush time, so live admin-UI changes apply without
-    // restart.
-    //
-    // Env config is computed independently of the DB row so a later
-    // Disconnect actually falls back to env (or fails closed) rather
-    // than caching the boot-time DB row indefinitely.
-    const envCreds = tryResolveCredentialsFromEnv();
-    let dbCreds: ResolvedTwentyCredentials | null;
-    try {
-      dbCreds = yield* Effect.promise(() => readSaasDbCredentials());
-    } catch (err) {
-      if (err instanceof TwentyDecryptError) {
-        // A DB row exists but won't decrypt — fail closed. Falling back
-        // to env here would route the operator's leads to a different
-        // Twenty than they configured.
-        log.error(
-          { err: err.message, event: "saas_crm.boot_db_decrypt_failed" },
-          "twenty_integrations row found but decryption failed — refusing to fall back to env. " +
-            "Check that ATLAS_ENCRYPTION_KEYS contains the key version that encrypted the row.",
-        );
-        return {
-          available: false,
-          upsertLead: () => Effect.void,
-          stampConversion: () => Effect.void,
-        } satisfies SaasCrmShape;
-      }
-      throw err;
-    }
-    const bootCreds = dbCreds ?? envCreds;
+    // Credential source: env-only (#2850). `twenty_integrations` is
+    // off-limits here — that table is for per-workspace plugin installs
+    // (Admin → Integrations → Twenty), and routing Atlas's lead-capture
+    // through it would create the Direction-2 leak documented in #2850.
+    // The grep gate in scripts/check-twenty-resolver-imports.sh enforces
+    // that this file cannot import resolveWorkspaceCredentials.
+    const bootCreds = tryResolveCredentialsFromEnv();
     if (!bootCreds) {
       log.warn(
         { event: "saas_crm.credentials_absent" },
-        "No Twenty credentials configured — SaasCrm.available=false. Set TWENTY_API_KEY in the environment, or configure under Admin → Integrations → Twenty.",
+        "No Twenty operator credentials configured — SaasCrm.available=false. Set TWENTY_API_KEY in the environment (this env var is reserved for Atlas's own lead-capture pipeline; per-workspace plugin installs use Admin → Integrations → Twenty).",
       );
       return {
         available: false,
@@ -490,7 +426,6 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
           "A real schema mismatch will surface as a 422 on the first dispatch (and dead-letter the row).",
       );
     } else {
-      verifiedCredentialCache.add(credentialCacheKey(bootCreds));
       log.info(
         {
           baseUrl: bootCreds.baseUrl ?? ATLAS_SAAS_TWENTY_BASE_URL,
@@ -501,14 +436,12 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
       );
     }
 
-    // The env-only fallback client config. Resolved INDEPENDENTLY of
-    // bootCreds so that a later Disconnect (DB row deleted) actually
-    // falls back to env, instead of continuing to dispatch with the
-    // boot-resolved DB credentials. Null when env is unset; the
-    // dispatcher then dead-letters with an actionable error.
-    const envClientConfig: TwentyClientConfig | null = envCreds
-      ? buildSaasClientConfig(envCreds)
-      : null;
+    // Boot-resolved env client config. Reused across every dispatch:
+    // the env-only source means TWENTY_API_KEY / TWENTY_BASE_URL are
+    // baked in at process start, and runtime mutation is not supported
+    // (admin-UI credential edits flow through the per-workspace plugin
+    // install, NOT here — see #2850).
+    const clientConfig: TwentyClientConfig = buildSaasClientConfig(bootCreds);
 
     return {
       available: true,
@@ -576,180 +509,17 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
           ),
         );
       },
-      // Per-dispatch credential resolution: re-reads twenty_integrations
-      // on every outbox flush so admin-UI credential edits (install,
-      // update, Disconnect) apply without a process restart. DO NOT
-      // hoist `clientConfig` out of this closure — the re-read is the
-      // whole point. The lazy verifyCustomFields runs on first dispatch
-      // for any unseen (apiKey, baseUrl) pair; a permanent verify
-      // failure dead-letters the row so the operator sees the misconfig.
+      // Single-config dispatcher: env credentials are static for the
+      // process lifetime, so we reuse the boot-resolved config (no
+      // per-row credential re-read). `verifyCustomFields` already ran
+      // at boot — if it had failed, this Layer would have short-
+      // circuited to `available: false` above.
       dispatcher: async (row, persist) => {
-        const resolution = await resolveDispatchClientConfig(envClientConfig);
-        if (resolution.kind === "fail_permanent") {
-          return { kind: "permanent", message: resolution.message };
-        }
-        const verifyOutcome = await ensureVerified(resolution.creds);
-        if (verifyOutcome.kind === "fail_permanent") {
-          return { kind: "permanent", message: verifyOutcome.message };
-        }
-        return dispatchOutboxRow(resolution.clientConfig, row, persist);
+        return dispatchOutboxRow(clientConfig, row, persist);
       },
     } satisfies SaasCrmShape;
   }),
 );
-
-/**
- * Read the SaaS-applicable `twenty_integrations` row at boot.
- *
- * - Returns null when no row exists OR transport fails (env fallback
- *   kicks in via the caller).
- * - THROWS `TwentyDecryptError` when a row exists but won't decrypt —
- *   caller fails closed (boot: unavailable; dispatch: dead-letter).
- *   Silently falling back on a decrypt error would route leads to the
- *   env-configured Twenty instead of the operator-intended one.
- */
-async function readSaasDbCredentials(): Promise<ResolvedTwentyCredentials | null> {
-  try {
-    const row = await findLatestTwentyDbCredentials();
-    if (!row) return null;
-    return normalizeDbCredentials(row);
-  } catch (err) {
-    if (err instanceof TwentyDecryptError) throw err;
-    log.warn(
-      {
-        err: err instanceof Error ? err.message : String(err),
-        event: "saas_crm.boot_db_lookup_failed",
-      },
-      "twenty_integrations lookup failed during boot — falling back to env credentials",
-    );
-    return null;
-  }
-}
-
-/**
- * Dispatch-time credential resolution result. `fail_permanent` means
- * the dispatcher must dead-letter the row — credentials are wholly
- * missing or unusable, and silent fallback to env would be wrong.
- */
-type DispatchResolution =
-  | { readonly kind: "ok"; readonly creds: ResolvedTwentyCredentials; readonly clientConfig: TwentyClientConfig }
-  | { readonly kind: "fail_permanent"; readonly message: string };
-
-/**
- * Resolve the per-dispatch TwentyClient config. Consults the
- * `twenty_integrations` table (admin-UI override); falls back to the
- * env-only config when no row exists; fails permanent when neither is
- * available OR when a DB row exists but won't decrypt.
- *
- * "Pick latest row" is the SaaS workaround until #2849 lands
- * `crm_outbox.workspace_id` — the matching guard in
- * `saveTwentyIntegration` refuses multi-row SaaS state, so on SaaS
- * this resolves to the single operator workspace's row.
- */
-async function resolveDispatchClientConfig(
-  envFallback: TwentyClientConfig | null,
-): Promise<DispatchResolution> {
-  let dbCreds: ResolvedTwentyCredentials | null = null;
-  try {
-    const row = await findLatestTwentyDbCredentials();
-    dbCreds = row ? normalizeDbCredentials(row) : null;
-  } catch (err) {
-    if (err instanceof TwentyDecryptError) {
-      // Decrypt failure is operator-visible misconfiguration — fail
-      // closed and let the row dead-letter with a clear message.
-      log.error(
-        { err: err.message, event: "saas_crm.dispatch_decrypt_failed" },
-        "twenty_integrations row found but decryption failed — refusing to fall back to env. " +
-          "Check that ATLAS_ENCRYPTION_KEYS contains the key version that encrypted the row.",
-      );
-      return {
-        kind: "fail_permanent",
-        message:
-          "Twenty credential decryption failed during dispatch. " +
-          "Check ATLAS_ENCRYPTION_KEYS contains the key version that encrypted the row.",
-      };
-    }
-    log.warn(
-      { err: err instanceof Error ? err.message : String(err), event: "saas_crm.db_lookup_failed" },
-      "twenty_integrations lookup failed during dispatch — falling back to env credentials",
-    );
-  }
-
-  if (dbCreds) {
-    return {
-      kind: "ok",
-      creds: dbCreds,
-      clientConfig: buildSaasClientConfig(dbCreds),
-    };
-  }
-
-  if (envFallback) {
-    // We have a verified env config from boot. Reconstruct the
-    // ResolvedTwentyCredentials shape so verifyCustomFields cache
-    // lookups stay consistent across boot + dispatch.
-    const envCreds: ResolvedTwentyCredentials = {
-      apiKey: envFallback.apiKey,
-      baseUrl:
-        envFallback.baseUrl === ATLAS_SAAS_TWENTY_BASE_URL
-          ? undefined
-          : envFallback.baseUrl,
-      source: "env",
-    };
-    return { kind: "ok", creds: envCreds, clientConfig: envFallback };
-  }
-
-  return {
-    kind: "fail_permanent",
-    message:
-      "Twenty credentials missing at dispatch. Set TWENTY_API_KEY or configure under " +
-      "Admin → Integrations → Twenty.",
-  };
-}
-
-type VerifyOutcome = { readonly kind: "ok" } | { readonly kind: "fail_permanent"; readonly message: string };
-
-/**
- * Run `verifyCustomFields` against credentials we haven't yet verified.
- * Hits the network at most once per unique (apiKey, baseUrl) pair per
- * process; cached pairs short-circuit. Permanent verify failures cause
- * the dispatcher to dead-letter the row; transient failures let the
- * row proceed (the dispatch itself will return 422 if fields really
- * are missing — which classifies as permanent and dead-letters).
- */
-async function ensureVerified(
-  creds: ResolvedTwentyCredentials,
-): Promise<VerifyOutcome> {
-  const key = credentialCacheKey(creds);
-  if (verifiedCredentialCache.has(key)) return { kind: "ok" };
-  const outcome = await verifyCustomFields(creds);
-  if (outcome.ok === true) {
-    verifiedCredentialCache.add(key);
-    log.info(
-      {
-        baseUrl: creds.baseUrl ?? ATLAS_SAAS_TWENTY_BASE_URL,
-        credentialSource: creds.source,
-        event: "saas_crm.dispatch_credentials_verified",
-      },
-      "Lazy verification passed for new Twenty credentials — adding to cache",
-    );
-    return { kind: "ok" };
-  }
-  if (outcome.ok === "transient") {
-    log.warn(
-      { err: outcome.reason, event: "saas_crm.dispatch_verify_transient" },
-      "Twenty metadata probe errored during dispatch — proceeding without cache entry; " +
-        "a real schema mismatch will surface as 422 and dead-letter the row.",
-    );
-    return { kind: "ok" };
-  }
-  return {
-    kind: "fail_permanent",
-    message:
-      "Twenty custom-field verification failed (missing atlasFirstSource / atlasLastSource " +
-      "or 401/403/404 from /metadata) — see saas_crm.custom_fields_missing or " +
-      "saas_crm.metadata_misconfigured for details.",
-  };
-}
 
 // Re-exported for direct testing of the verification / dispatch logic.
 export {
@@ -757,10 +527,6 @@ export {
   buildSaasClientConfig,
   ATLAS_SAAS_TWENTY_BASE_URL,
   classifyTwentyError,
-  normalizeDbCredentials,
-  resolveDispatchClientConfig,
-  ensureVerified,
-  verifiedCredentialCache,
   STAMP_CONVERSION_EVENT_TYPE,
   REQUIRED_PERSON_FIELDS,
 };

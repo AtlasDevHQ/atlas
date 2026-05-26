@@ -18,12 +18,13 @@
  * import `@atlas/api`) — the resolver accepts a callback, this
  * module supplies the production implementation.
  *
- * Multi-tenant safety: under `ATLAS_DEPLOY_MODE=saas`, the dispatch
- * path uses `findLatestTwentyDbCredentials` (single-row across all
- * workspaces) until per-row routing lands via #2849. To prevent a
- * second tenant from silently hijacking the first's dispatch, this
- * module REFUSES `saveTwentyIntegration` when the table already
- * contains a row for a DIFFERENT workspace.
+ * Multi-tenancy (#2850): every read here is workspace-scoped. There is
+ * NO cross-workspace "pick the latest row" helper, by design — that
+ * shape was removed when `ee/src/saas-crm/` was carved out to env-only
+ * resolution. Routing Atlas's operator lead-capture through a customer
+ * workspace's row would be the Direction-2 leak documented in #2850;
+ * the absence of a cross-tenant getter here is half of the structural
+ * prevention (the resolver split being the other half).
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -197,92 +198,9 @@ export async function getTwentyIntegrationWithSecret(
   }
 }
 
-/**
- * Pick the most-recently-updated `twenty_integrations` row across
- * every workspace, decrypted. Used by the SaaS demo-dispatch path,
- * which has no workspace context on outbox rows today — per-row
- * routing tracked in #2849.
- *
- * The companion {@link saveTwentyIntegration} guard refuses multi-row
- * SaaS state, so on SaaS this resolves to the single configured
- * operator workspace's row.
- *
- * @throws TwentyDecryptError when the chosen row's ciphertext fails to
- *   decrypt — the caller fails closed (boot: unavailable; dispatch:
- *   dead-letter the row) rather than silently routing to env.
- */
-export async function findLatestTwentyDbCredentials(): Promise<
-  TwentyIntegrationWithSecret | null
-> {
-  if (!hasInternalDB()) return null;
-  try {
-    const rows = await internalQuery<Record<string, unknown>>(
-      `SELECT ${SELECT_WITH_SECRET_COLS}
-       FROM twenty_integrations
-       ORDER BY updated_at DESC
-       LIMIT 1`,
-    );
-    if (rows.length === 0) return null;
-    return parseSecretRow(rows[0], { latest: true });
-  } catch (err) {
-    if (err instanceof TwentyDecryptError) throw err;
-    log.error(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Failed to query twenty_integrations (latest)",
-    );
-    throw err;
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Write operations
 // ---------------------------------------------------------------------------
-
-/**
- * Refuse multi-tenant SaaS state until #2849 lands per-row routing on
- * `crm_outbox`. Without that, the SaaS dispatcher picks the most-
- * recently-updated row across ALL workspaces — a second tenant
- * configuring Twenty would silently hijack the first's dispatch.
- *
- * Self-hosted is unaffected: this guard is keyed on
- * `ATLAS_DEPLOY_MODE=saas`. Self-hosted operators can configure as
- * many workspaces as they want.
- */
-async function assertNoConflictingSaasRow(workspaceId: string): Promise<void> {
-  if (process.env.ATLAS_DEPLOY_MODE !== "saas") return;
-  try {
-    const rows = await internalQuery<{ workspace_id: string }>(
-      `SELECT workspace_id FROM twenty_integrations WHERE workspace_id <> $1 LIMIT 1`,
-      [workspaceId],
-    );
-    if (rows.length > 0) {
-      const existing = rows[0]?.workspace_id ?? "<unknown>";
-      log.error(
-        {
-          requestedWorkspace: workspaceId,
-          existingWorkspace: existing,
-          event: "twenty_store.saas_multi_row_refused",
-        },
-        "Refusing twenty_integrations write: another workspace already has a row in SaaS mode.",
-      );
-      throw new Error(
-        `Refusing Twenty install: ATLAS_DEPLOY_MODE=saas allows exactly one workspace to ` +
-          `configure Twenty until per-row dispatch routing lands (#2849). Workspace ` +
-          `'${existing}' already has a row. Either delete that row first, or wait for ` +
-          `the per-workspace routing follow-up.`,
-      );
-    }
-  } catch (err) {
-    if (err instanceof Error && err.message.startsWith("Refusing Twenty install")) {
-      throw err;
-    }
-    log.error(
-      { err: err instanceof Error ? err.message : String(err), workspaceId },
-      "twenty_integrations SaaS multi-row guard query failed — refusing the write to fail closed",
-    );
-    throw err;
-  }
-}
 
 /**
  * Upsert per-workspace Twenty credentials. Returns the public row
@@ -296,8 +214,11 @@ async function assertNoConflictingSaasRow(workspaceId: string): Promise<void> {
  * so a future operator-shared deploy could omit it; the form layer
  * rejects empty baseUrl up-front.
  *
- * @throws when SaaS mode already has a row for a different workspace
- *   (see {@link assertNoConflictingSaasRow}).
+ * Multi-tenant: each workspace owns its own row, scoped by
+ * `workspace_id`. There is no longer a SaaS single-row guard — that
+ * shape existed only to protect the now-removed
+ * `findLatestTwentyDbCredentials` dispatch path (#2850). Plugin
+ * actions resolve credentials per workspaceId.
  */
 export async function saveTwentyIntegration(
   workspaceId: string,
@@ -306,7 +227,6 @@ export async function saveTwentyIntegration(
   if (!hasInternalDB()) {
     throw new Error("Cannot save Twenty integration — no internal database configured");
   }
-  await assertNoConflictingSaasRow(workspaceId);
   const apiKeyEncrypted: OpaqueSecret = encryptSecret(opts.apiKey);
   const keyVersion = activeKeyVersion();
   try {
@@ -347,7 +267,9 @@ export async function saveTwentyIntegration(
  * a row was removed, `false` if no matching row existed (idempotent
  * delete from the caller's perspective).
  *
- * After delete, the resolver falls back to `TWENTY_API_KEY` env.
+ * After delete, `resolveWorkspaceCredentials` throws
+ * `TwentyCredentialError` for this workspace until a new row is saved
+ * — there is no env fallback (#2850).
  */
 export async function deleteTwentyIntegration(workspaceId: string): Promise<boolean> {
   if (!hasInternalDB()) {

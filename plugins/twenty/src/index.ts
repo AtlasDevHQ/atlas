@@ -74,6 +74,11 @@ export {
 } from "./lead-normalizer";
 
 export {
+  // New (post-#2850) — explicit actor split. Use these in new code.
+  resolveOperatorCredentials,
+  tryResolveOperatorCredentials,
+  resolveWorkspaceCredentials,
+  // Legacy aliases (back-compat, @deprecated).
   resolveCredentialsFromEnv,
   resolveCredentialsForWorkspace,
   tryResolveCredentialsFromEnv,
@@ -86,7 +91,9 @@ export {
   type DbCredentialLookupResult,
   type ResolvedTwentyCredentials,
   type ResolveOptions,
+  type ResolveWorkspaceOptions,
   type ResolveForWorkspaceOptions,
+  type DeployMode,
   type TwentyApiKey,
   type TwentyBaseUrl,
 } from "./credential-resolver";

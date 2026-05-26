@@ -113,7 +113,6 @@ mock.module("@atlas/api/lib/integrations/twenty/store", () => ({
   saveTwentyIntegration: mock(() => Promise.resolve(null)),
   getTwentyIntegrationPublic: mock(() => Promise.resolve(null)),
   getTwentyIntegrationWithSecret: mock(() => Promise.resolve(null)),
-  findLatestTwentyDbCredentials: mock(() => Promise.resolve(null)),
 }));
 
 // Install handler dispatch — let tests inject per-slug handlers.

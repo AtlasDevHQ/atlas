@@ -501,11 +501,14 @@ describe("rotateJsonbSelectiveField (F-47 JSONB selective-field rotation)", () =
     expect(queries.filter((q) => q.sql.startsWith("UPDATE"))).toHaveLength(0);
   });
 
-  it("fail-closed on corrupt config_schema — encrypts every string field", async () => {
-    // Mirrors `encryptSecretFields` fail-closed posture: if the
-    // catalog's `config_schema` is unparseable, treat every string as
-    // a potential secret. Operator should fix the catalog row, but in
-    // the meantime over-encryption is safer than missing a credential.
+  it("corrupt config_schema — rotates already-encrypted strings, leaves plaintext non-secrets alone", async () => {
+    // The rotate path is asymmetric with the write path on corrupt
+    // schemas: the write path encrypts every string fail-closed (it
+    // has plaintext to work with), but rotate can only re-encrypt
+    // values that already carry `enc:v<N>:`. Treating plaintext
+    // non-secrets (e.g. `name`, `region`) as candidate-secrets would
+    // flag them as `unprefixed` and block the row from rotating its
+    // legitimate ciphertext. See Codex review on #2832.
     process.env.ATLAS_ENCRYPTION_KEYS = "v1:old-raw";
     _resetEncryptionKeyCache();
     const v1Token = encryptSecret("rotatable-under-v1");
@@ -516,7 +519,10 @@ describe("rotateJsonbSelectiveField (F-47 JSONB selective-field rotation)", () =
     const { client, queries } = createJsonbMockClient([
       {
         pk: "wp_corrupt",
-        config: { token: v1Token, port: 5432 },
+        // Mixed shape: one ciphertext (token), one plaintext non-secret
+        // (name), one non-string (port). Pre-fix, `name` landed in the
+        // `unprefixed` bucket and blocked the row entirely.
+        config: { token: v1Token, name: "prod-us", port: 5432 },
         // Not an array — `parseConfigSchema` flags this as `corrupt`.
         config_schema: { broken: true },
       },
@@ -526,11 +532,17 @@ describe("rotateJsonbSelectiveField (F-47 JSONB selective-field rotation)", () =
 
     expect(result.scanned).toBe(1);
     expect(result.updated).toBe(1);
+    // `name` must NOT be classified as unprefixed — it's plaintext on
+    // a corrupt-schema row and presumed to be a non-secret.
+    expect(result.unprefixed).toBe(0);
+    expect(result.orphaned).toBe(0);
     const updates = queries.filter((q) => q.sql.startsWith("UPDATE"));
     expect(updates).toHaveLength(1);
     const merged = JSON.parse(String(updates[0].params![0])) as Record<string, unknown>;
-    // String field rotated despite the schema corruption.
+    // Ciphertext rotated despite the schema corruption.
     expect(String(merged.token)).toMatch(/^enc:v2:/);
+    // Plaintext non-secret preserved verbatim by the JSONB merge.
+    expect(merged.name).toBe("prod-us");
     // Non-string field untouched.
     expect(merged.port).toBe(5432);
   });

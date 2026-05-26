@@ -351,6 +351,13 @@ export async function rotateJsonbSelectiveField(
     // for column targets — the version is embedded per-field inside
     // the JSONB blob, so we walk every row and gate per-field below.
     // Bounded by workspace × installs (sub-100k in practice).
+    //
+    // FOR UPDATE OF t holds row locks on the target table for the
+    // duration of this transaction so a concurrent admin save / OAuth
+    // token refresh can't land between our read and the whole-blob
+    // UPDATE below — without it, the stale `merged` payload would
+    // silently overwrite the concurrent change. We don't lock the
+    // catalog (`OF t` only) because catalog rows aren't being mutated.
     const rows = (
       await client.query(
         `SELECT t.${target.pk} AS pk,
@@ -358,7 +365,8 @@ export async function rotateJsonbSelectiveField(
                 c.${target.catalogSchemaColumn} AS config_schema
            FROM ${target.table} t
            JOIN ${target.catalogTable} c
-             ON c.${target.catalogPk} = t.${target.catalogIdColumn}`,
+             ON c.${target.catalogPk} = t.${target.catalogIdColumn}
+           FOR UPDATE OF t`,
       )
     ).rows as Array<{ pk: string; config: unknown; config_schema: unknown }>;
 
@@ -467,19 +475,28 @@ export async function rotateJsonbSelectiveField(
  *   • `absent` / `parsed` with no `secret: true` fields → empty (nothing
  *     to rotate; the row's config is entirely non-secret).
  *   • `parsed` with secret fields → those keys.
- *   • `corrupt` → every string-valued key in the config blob. Fail
- *     closed — the catalog schema is broken and we can't trust the
- *     `secret: true` flag, so rotate every string just like the write
- *     path encrypts every string.
+ *   • `corrupt` → every string-valued key carrying an `enc:v<N>:`
+ *     prefix. Fail closed but rotate-asymmetric: the write path
+ *     encrypts every string on a corrupt schema (it has plaintext to
+ *     work with), but the rotate path can only rotate values that are
+ *     already ciphertext. Including plaintext non-secrets (e.g.
+ *     `name`, `region`) would flag them as `unprefixed`, blocking the
+ *     whole row from rotating its legitimate ciphertext. See Codex
+ *     review on #2832 and #2820 acceptance criterion.
  */
 function pickSecretKeysForRotation(
   schema: ReturnType<typeof parseConfigSchema>,
   config: Record<string, unknown>,
 ): string[] {
   if (schema.state === "corrupt") {
-    // Every string field — broad but matches the write path's
-    // fail-closed encrypt-every-string behavior.
-    return Object.keys(config).filter((k) => typeof config[k] === "string");
+    // Only fields that are already ciphertext — plaintext non-secrets
+    // on a corrupt-schema row are not in scope for rotation. If a
+    // field genuinely was a broken secret (lost its prefix), the
+    // operator must fix the catalog schema first, then re-run.
+    return Object.keys(config).filter((k) => {
+      const v = config[k];
+      return typeof v === "string" && hasVersionedPrefix(v);
+    });
   }
   if (schema.state === "absent" || schema.fields.length === 0) return [];
   return schema.fields.filter((f) => f.secret === true).map((f) => f.key);

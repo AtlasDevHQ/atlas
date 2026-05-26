@@ -33,8 +33,10 @@ import { createSlackAdapter } from "./adapters/slack";
 import { createTelegramAdapter } from "./adapters/telegram";
 import { createDiscordAdapter } from "./adapters/discord";
 import { createWhatsAppAdapter } from "./adapters/whatsapp";
+import { createGoogleChatAdapter } from "./adapters/gchat";
 import type {
   DiscordAdapterConfig,
+  GoogleChatAdapterConfig,
   SlackAdapterConfig,
   TelegramAdapterConfig,
   WhatsAppAdapterConfig,
@@ -92,7 +94,9 @@ type ChatAdapterInstance<K extends ChatAdapterName> = K extends "slack"
       ? Adapter
       : K extends "whatsapp"
         ? Adapter
-        : { readonly name: K };
+        : K extends "gchat"
+          ? Adapter
+          : { readonly name: K };
 
 /**
  * Returned alongside `ChatAdapterSet` so `healthCheck` and admin
@@ -299,11 +303,83 @@ const WHATSAPP_BUILDER: ChatAdapterBuilder<Adapter> = {
   },
 };
 
+/**
+ * Google Chat — fifth static-bot Platform to ship a real adapter
+ * (1.5.3 #2754; after Telegram, Discord, Teams' install handler, and
+ * WhatsApp). Two required env vars: `GCHAT_SERVICE_ACCOUNT_JSON` (the
+ * raw JSON file contents for the operator's GCP service account —
+ * used to mint Pub/Sub access tokens AND to authenticate outbound
+ * Google Chat API calls from the adapter) and `GCHAT_PUBSUB_TOPIC`
+ * (the fully-qualified topic path the Workspace Events subscription
+ * publishes to — `projects/<project>/topics/<topic>`). Both are
+ * required because the adapter binds the Pub/Sub subscription at boot
+ * and the install handler publishes a synthetic verification message
+ * to the same topic.
+ *
+ * Per-Workspace `workspace_id` routing lives in `workspace_plugins.config`
+ * (written by `GchatStaticBotInstallHandler`); the adapter itself is
+ * operator-shared and stateless across Workspaces.
+ *
+ * Three optional env vars:
+ *   - `GCHAT_IMPERSONATE_USER` — extends Workspace Events subscription
+ *     auth with domain-wide delegation.
+ *   - `GCHAT_PROJECT_NUMBER` — Google Cloud project NUMBER (not id)
+ *     used to verify direct-webhook JWTs Google signs with the
+ *     project's identity. Without this, direct-webhook signature
+ *     verification is silently disabled and the chat-adapter emits a
+ *     warn line per inbound HTTP webhook. SaaS deploys should set this.
+ *   - `GCHAT_PUBSUB_AUDIENCE` — expected `aud` claim for Pub/Sub
+ *     push-message JWTs. Without this, Pub/Sub push verification is
+ *     silently disabled (warn per message). SaaS deploys should set
+ *     this. Typical value is the operator's API origin (e.g.
+ *     `https://api.useatlas.dev`).
+ */
+const GCHAT_BUILDER: ChatAdapterBuilder<Adapter> = {
+  slug: "gchat",
+  platform: "gchat",
+  requiredEnv: ["GCHAT_SERVICE_ACCOUNT_JSON", "GCHAT_PUBSUB_TOPIC"],
+  build(env) {
+    const serviceAccountRaw = env.GCHAT_SERVICE_ACCOUNT_JSON;
+    const pubsubTopic = env.GCHAT_PUBSUB_TOPIC;
+    if (!serviceAccountRaw || !pubsubTopic) return null;
+    let parsed: { client_email?: unknown; private_key?: unknown; project_id?: unknown };
+    try {
+      parsed = JSON.parse(serviceAccountRaw) as typeof parsed;
+    } catch {
+      return null;
+    }
+    if (
+      typeof parsed.client_email !== "string" ||
+      typeof parsed.private_key !== "string" ||
+      parsed.client_email.length === 0 ||
+      parsed.private_key.length === 0
+    ) {
+      return null;
+    }
+    const credentials: { client_email: string; private_key: string; project_id?: string } = {
+      client_email: parsed.client_email,
+      private_key: parsed.private_key,
+    };
+    if (typeof parsed.project_id === "string" && parsed.project_id.length > 0) {
+      credentials.project_id = parsed.project_id;
+    }
+    const config: GoogleChatAdapterConfig = {
+      credentials,
+      pubsubTopic,
+      ...(env.GCHAT_IMPERSONATE_USER ? { impersonateUser: env.GCHAT_IMPERSONATE_USER } : {}),
+      ...(env.GCHAT_PROJECT_NUMBER ? { googleChatProjectNumber: env.GCHAT_PROJECT_NUMBER } : {}),
+      ...(env.GCHAT_PUBSUB_AUDIENCE ? { pubsubAudience: env.GCHAT_PUBSUB_AUDIENCE } : {}),
+    };
+    return createGoogleChatAdapter(config);
+  },
+};
+
 const BUILDERS_BY_SLUG: Readonly<Record<string, ChatAdapterBuilder<unknown>>> = {
   slack: SLACK_BUILDER,
   telegram: TELEGRAM_BUILDER,
   discord: DISCORD_BUILDER,
   whatsapp: WHATSAPP_BUILDER,
+  gchat: GCHAT_BUILDER,
 };
 
 /**
@@ -455,10 +531,16 @@ export function buildChatAdapterRegistry(
         { slug: entry.slug, platform: builder.platform },
         "AdapterRegistry: chat adapter registered",
       );
+    } else if (entry.slug === "gchat") {
+      adapters.gchat = adapter as Adapter;
+      logger.info(
+        { slug: entry.slug, platform: builder.platform },
+        "AdapterRegistry: chat adapter registered",
+      );
     }
-    // Other static-bot adapters (gchat #2754) slot in here as their
-    // slices land. The `Partial<Record>` shape of `ChatAdapterSet`
-    // admits them without a type change.
+    // All Phase D static-bot adapters now have builders wired here.
+    // The `Partial<Record>` shape of `ChatAdapterSet` keeps the type
+    // extensible for any future platforms without a shape change.
   }
 
   return {

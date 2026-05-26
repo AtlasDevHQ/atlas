@@ -50,6 +50,12 @@ import {
   WhatsAppStaticBotInstallHandler,
   WHATSAPP_SLUG,
 } from "./whatsapp-static-bot-handler";
+import {
+  GchatStaticBotInstallHandler,
+  GCHAT_SLUG,
+  parseServiceAccountJson,
+  asPubsubTopicPath,
+} from "./gchat-static-bot-handler";
 import { lazyPluginLoader } from "@atlas/api/lib/plugins/lazy-loader";
 import { createJiraLazyBuilder } from "@atlas/api/lib/integrations/jira/lazy-builder";
 import { createSalesforceLazyBuilder } from "@atlas/api/lib/integrations/salesforce/lazy-builder";
@@ -180,16 +186,17 @@ export function registerBuiltinInstallHandlers(): void {
   registerGitHubSingleTenantOAuthHandler();
 
   // ── Static-bot platforms (1.5.3 — Phase D, #2748+) ────────────────
-  // Telegram is the keystone slice (#2748); Discord (#2749) is the
-  // second concrete Platform; gchat (#2754) and WhatsApp (#2753) will
-  // register here too as their slices land. Each Platform's env-gate
-  // guards the operator-shared bot credential set; the catalog row's
-  // `enabled` flag is the second gate (operator-side, DB-toggleable
-  // for emergency disable).
+  // Telegram (#2748 keystone), Discord (#2749), Teams (#2752), and
+  // Google Chat (#2754) are registered below. WhatsApp (#2753) is the
+  // remaining Phase D platform. Each Platform's env-gate guards the
+  // operator-shared credential set; the catalog row's `enabled` flag
+  // is the second gate (operator-side, DB-toggleable for emergency
+  // disable).
   registerTelegramStaticBotHandler();
   registerDiscordStaticBotHandler();
   registerTeamsStaticBotHandler();
   registerWhatsAppStaticBotHandler();
+  registerGchatStaticBotHandler();
 }
 
 function registerSlackOAuthHandler(): void {
@@ -554,6 +561,94 @@ function registerWhatsAppStaticBotHandler(): void {
       accessTokenFingerprint: fingerprintToken(accessToken),
     },
     "Registered WhatsAppStaticBotInstallHandler",
+  );
+}
+
+/**
+ * Register the Google Chat static-bot install handler when the operator
+ * env is wired (#2754). Mirrors {@link registerTelegramStaticBotHandler}
+ * exactly — same severity-escalation contract when the catalog row says
+ * `enabled: true` but a required env var is missing.
+ *
+ * Two env vars gate registration: `GCHAT_SERVICE_ACCOUNT_JSON` (the
+ * raw JSON file contents for the operator's GCP service account; the
+ * SA is what mints Pub/Sub access tokens for the verification round-
+ * trip and the chat adapter) and `GCHAT_PUBSUB_TOPIC` (the fully-
+ * qualified Pub/Sub topic path the Workspace Events subscription
+ * publishes to — `projects/<project>/topics/<topic>`). Both are
+ * required because verification publishes a synthetic message at
+ * install time, and the chat adapter subscribes to the same topic
+ * at boot.
+ *
+ * `GCHAT_SERVICE_ACCOUNT_JSON` is parsed up-front via
+ * {@link parseServiceAccountJson} so a malformed value fails loudly at
+ * boot (with a clear actionable message) rather than at first install
+ * attempt. Same posture for the topic path — `asPubsubTopicPath`
+ * rejects bare topic names.
+ */
+function registerGchatStaticBotHandler(): void {
+  const serviceAccountRaw = process.env.GCHAT_SERVICE_ACCOUNT_JSON;
+  const pubsubTopic = process.env.GCHAT_PUBSUB_TOPIC;
+  if (
+    !serviceAccountRaw ||
+    serviceAccountRaw.length === 0 ||
+    !pubsubTopic ||
+    pubsubTopic.length === 0
+  ) {
+    if (isCatalogSlugEnabled("gchat")) {
+      log.error(
+        {
+          slug: "gchat",
+          requiredEnv: ["GCHAT_SERVICE_ACCOUNT_JSON", "GCHAT_PUBSUB_TOPIC"],
+          missing: [
+            ...(!serviceAccountRaw ? ["GCHAT_SERVICE_ACCOUNT_JSON"] : []),
+            ...(!pubsubTopic ? ["GCHAT_PUBSUB_TOPIC"] : []),
+          ],
+        },
+        "Google Chat catalog row is enabled but GCHAT_SERVICE_ACCOUNT_JSON and/or GCHAT_PUBSUB_TOPIC is unset — install route will return 501 and AdapterRegistry will skip the adapter. Set both per-service. See #2673 for the same-class silent-degradation precedent.",
+      );
+    } else {
+      log.info(
+        "Google Chat static-bot handler not registered — GCHAT_SERVICE_ACCOUNT_JSON and/or GCHAT_PUBSUB_TOPIC unset and the 'gchat' catalog row is not enabled (operator hasn't opted in).",
+      );
+    }
+    return;
+  }
+  let serviceAccount;
+  let pubsubTopicPath;
+  try {
+    serviceAccount = parseServiceAccountJson(serviceAccountRaw);
+    pubsubTopicPath = asPubsubTopicPath(pubsubTopic);
+  } catch (err) {
+    // Parse / shape errors are operator misconfig; surface at `error`
+    // regardless of catalog enabled state so a malformed value gets
+    // immediate operator attention (silent skip here would let a typo
+    // disable Google Chat for a SaaS deploy without any log signal).
+    //
+    // SECURITY: log only `err.message`, NOT the full error object.
+    // Pino's default `err` serializer walks `cause` chains, and even
+    // though `parseServiceAccountJson` deliberately drops `cause` from
+    // its JSON.parse wrapping, defending in depth keeps a future
+    // accidental re-attachment of `cause` from leaking PEM bytes here.
+    log.error(
+      {
+        slug: "gchat",
+        errorMessage: err instanceof Error ? err.message : String(err),
+      },
+      "Google Chat static-bot handler not registered — operator env (GCHAT_SERVICE_ACCOUNT_JSON or GCHAT_PUBSUB_TOPIC) is malformed. Fix the env value and redeploy.",
+    );
+    return;
+  }
+  registerStaticBotHandler(
+    GCHAT_SLUG,
+    new GchatStaticBotInstallHandler({ serviceAccount, pubsubTopic: pubsubTopicPath }),
+  );
+  log.info(
+    {
+      clientEmailFingerprint: fingerprintToken(serviceAccount.client_email),
+      pubsubTopic: pubsubTopicPath,
+    },
+    "Registered GchatStaticBotInstallHandler",
   );
 }
 

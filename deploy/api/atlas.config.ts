@@ -188,13 +188,50 @@ export default defineConfig({
         },
       ],
     },
+    // Google Chat — 1.5.3 #2754 (Phase D). The operator wires a Google
+    // Workspace Marketplace listing (env: `GCHAT_SERVICE_ACCOUNT_JSON`
+    // + `GCHAT_PUBSUB_TOPIC`); each customer admin installs Atlas from
+    // their Workspace Marketplace at the Workspace level, and the
+    // Marketplace webhook delivers the `workspace_id`.
+    // `GchatStaticBotInstallHandler` verifies reachability via a
+    // Pub/Sub publish round-trip before persisting (a synthetic
+    // verification message is published to the operator-shared topic;
+    // a `messageIds` echo confirms the SA's `pubsub.publisher` grant
+    // and the topic existence in one call).
+    //
+    // `workspace_id` is NOT marked `secret: true` — Google Workspace
+    // customer ids are routing identifiers that leak in every Google
+    // Chat event envelope's `space.customer` field. Same posture as
+    // Discord's `guild_id` and Telegram's `chat_id`.
     {
       slug: "gchat",
       type: "chat",
       install_model: "static-bot",
       enabled: true,
       saas_eligible: true,
-      implementation_status: "coming_soon",
+      implementation_status: "available",
+      name: "Google Chat",
+      description:
+        "Chat with Atlas inside Google Chat. The operator wires a shared service account (GCHAT_SERVICE_ACCOUNT_JSON + GCHAT_PUBSUB_TOPIC) and publishes the Atlas listing in the Google Workspace Marketplace; customer admins install the listing per-Workspace, and Atlas captures the Workspace customer id from the Marketplace webhook.",
+      min_plan: "starter",
+      configSchema: [
+        {
+          key: "workspace_id",
+          type: "string",
+          label: "Workspace ID",
+          description:
+            "Google Workspace customer id. Captured automatically from the Marketplace install webhook — admins don't paste this manually. Find it in the Google Admin console under Account → Account settings → Customer ID (e.g. C01abc234) if you need to verify after install.",
+          required: true,
+        },
+        {
+          key: "workspace_domain",
+          type: "string",
+          label: "Workspace domain",
+          description:
+            "Optional admin-friendly label (e.g. acme.com). Shown on the integrations card.",
+          required: false,
+        },
+      ],
     },
     // Telegram — first static-bot Platform to ship a real install
     // handler (1.5.3 #2748 — keystone slice for Phase D). The operator
@@ -674,6 +711,19 @@ export default defineConfig({
         // and lives in `routes/integrations-discord.ts`.
         {
           slug: "discord",
+          type: "chat",
+          install_model: "static-bot",
+          enabled: true,
+          saas_eligible: true,
+        },
+        // Google Chat — 1.5.3 #2754 (Phase D). AdapterRegistry binds
+        // the Workspace Events Pub/Sub subscription at boot; the HTTP
+        // webhook is the fallback path for slash-command invocations.
+        // Install captures `workspace_id` from the Marketplace webhook
+        // and verifies it via a Pub/Sub publish round-trip (see
+        // `GchatStaticBotInstallHandler`).
+        {
+          slug: "gchat",
           type: "chat",
           install_model: "static-bot",
           enabled: true,

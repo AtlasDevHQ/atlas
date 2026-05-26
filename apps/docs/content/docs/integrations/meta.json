@@ -8,6 +8,7 @@
     "telegram",
     "discord",
     "teams",
+    "gchat",
     "linear",
     "github",
     "sub-processor-feed"

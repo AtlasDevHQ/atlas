@@ -65,7 +65,6 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 const { makeSchedulerLive } = await import("../layers");
 const { SaasCrm, NoopEnterpriseDefaultsLayer } = await import("../services");
-type SaasCrmShape = import("../services").SaasCrmShape;
 
 // ── Test layer: SaasCrm with available=true + stub dispatcher ───────
 

@@ -33,7 +33,7 @@
  * share token cleanup) that are interrupted when their Layer scope closes.
  */
 
-import { Context, Duration, Effect, Fiber, Layer, Schedule } from "effect";
+import { Context, Duration, Effect, Layer, Schedule } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { InternalDB, makeInternalDBLive, hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -979,10 +979,18 @@ export const SettingsLive: Layer.Layer<Settings> = Layer.scoped(
         ),
       );
 
-      const fiber = yield* Effect.fork(
+      // `forkScoped`, not `fork` — the bare `fork` API links the child
+      // fiber to the *parent fiber's* lifetime, and the parent here is
+      // this gen function which returns the service shape immediately
+      // after the fork. With `Effect.fork` the first scheduled iteration
+      // of `Effect.repeat(Schedule.spaced)` never runs because the child
+      // is interrupted at gen completion (verified by repro; diagnosed
+      // in #DharmaIncident). `forkScoped` binds to the Scope provided
+      // by `Layer.scoped`, so the fiber lives until layer shutdown. No
+      // companion `addFinalizer(Fiber.interrupt)` needed — scope handles it.
+      yield* Effect.forkScoped(
         tick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(intervalMs)))),
       );
-      yield* Effect.addFinalizer(() => Fiber.interrupt(fiber));
 
       log.info({ intervalMs }, "Started periodic settings refresh fiber");
     }
@@ -1086,10 +1094,10 @@ export function makeSchedulerLive(
             }),
           ),
         );
-        const emailFiber = yield* Effect.fork(
+        // forkScoped, not fork — see SettingsLive for rationale.
+        yield* Effect.forkScoped(
           emailTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS)))),
         );
-        yield* Effect.addFinalizer(() => Fiber.interrupt(emailFiber));
       } else {
         log.debug("Onboarding email scheduler not started — feature disabled");
       }
@@ -1127,10 +1135,10 @@ export function makeSchedulerLive(
             }),
           ),
         );
-        const expertFiber = yield* Effect.fork(
+        // forkScoped, not fork — see SettingsLive for rationale.
+        yield* Effect.forkScoped(
           expertTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(getExpertSchedulerIntervalMs())))),
         );
-        yield* Effect.addFinalizer(() => Fiber.interrupt(expertFiber));
         log.info({ intervalMs: getExpertSchedulerIntervalMs() }, "Semantic expert scheduler started");
       } else {
         log.debug("Semantic expert scheduler not started — feature disabled");
@@ -1193,10 +1201,10 @@ export function makeSchedulerLive(
           }),
         ),
       );
-      const oauthFiber = yield* Effect.fork(
+      // forkScoped, not fork — see SettingsLive for rationale.
+      yield* Effect.forkScoped(
         oauthTick.pipe(Effect.repeat(Schedule.spaced(Duration.minutes(10)))),
       );
-      yield* Effect.addFinalizer(() => Fiber.interrupt(oauthFiber));
 
       // ── Periodic fiber: rate-limit cleanup (#1274) — every 60s ──────
       // Interval matches WINDOW_MS in middleware.ts (sliding-window duration).
@@ -1219,10 +1227,10 @@ export function makeSchedulerLive(
           }),
         ),
       );
-      const rateLimitFiber = yield* Effect.fork(
+      // forkScoped, not fork — see SettingsLive for rationale.
+      yield* Effect.forkScoped(
         rateLimitTick.pipe(Effect.repeat(Schedule.spaced(Duration.seconds(60)))),
       );
-      yield* Effect.addFinalizer(() => Fiber.interrupt(rateLimitFiber));
 
       // ── Periodic fiber: demo rate-limit cleanup — interval from DEMO_CLEANUP_INTERVAL_MS ──
       const demoTick = Effect.try({
@@ -1248,10 +1256,10 @@ export function makeSchedulerLive(
       const { DEMO_CLEANUP_INTERVAL_MS } = require("@atlas/api/lib/demo") as {
         DEMO_CLEANUP_INTERVAL_MS: number;
       };
-      const demoFiber = yield* Effect.fork(
+      // forkScoped, not fork — see SettingsLive for rationale.
+      yield* Effect.forkScoped(
         demoTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(DEMO_CLEANUP_INTERVAL_MS)))),
       );
-      yield* Effect.addFinalizer(() => Fiber.interrupt(demoFiber));
 
       // ── Periodic fiber: contact rate-limit cleanup — every 60s ────
       // Unauthenticated public endpoint with a per-IP map; without
@@ -1276,10 +1284,10 @@ export function makeSchedulerLive(
           }),
         ),
       );
-      const contactFiber = yield* Effect.fork(
+      // forkScoped, not fork — see SettingsLive for rationale.
+      yield* Effect.forkScoped(
         contactTick.pipe(Effect.repeat(Schedule.spaced(Duration.seconds(60)))),
       );
-      yield* Effect.addFinalizer(() => Fiber.interrupt(contactFiber));
 
       // ── Periodic fiber: abuse detection cleanup — every 5 min ──────
       const abuseTick = Effect.try({
@@ -1305,10 +1313,10 @@ export function makeSchedulerLive(
       const { ABUSE_CLEANUP_INTERVAL_MS } = require("@atlas/api/lib/security/abuse") as {
         ABUSE_CLEANUP_INTERVAL_MS: number;
       };
-      const abuseFiber = yield* Effect.fork(
+      // forkScoped, not fork — see SettingsLive for rationale.
+      yield* Effect.forkScoped(
         abuseTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(ABUSE_CLEANUP_INTERVAL_MS)))),
       );
-      yield* Effect.addFinalizer(() => Fiber.interrupt(abuseFiber));
 
       // ── Periodic fiber: dashboard public rate-limit cleanup — every 60s ─
       const dashboardTick = Effect.try({
@@ -1340,10 +1348,10 @@ export function makeSchedulerLive(
       } catch {
         // intentionally ignored: use default interval if module can't be resolved
       }
-      const dashboardFiber = yield* Effect.fork(
+      // forkScoped, not fork — see SettingsLive for rationale.
+      yield* Effect.forkScoped(
         dashboardTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(dashboardCleanupIntervalMs)))),
       );
-      yield* Effect.addFinalizer(() => Fiber.interrupt(dashboardFiber));
 
       // ── Periodic fiber: conversation public rate sweep — every 60s ──
       const convSweepTick = Effect.try({
@@ -1370,10 +1378,10 @@ export function makeSchedulerLive(
         CONVERSATION_RATE_SWEEP_INTERVAL_MS: number;
         SHARE_CLEANUP_INTERVAL_MS: number;
       };
-      const convSweepFiber = yield* Effect.fork(
+      // forkScoped, not fork — see SettingsLive for rationale.
+      yield* Effect.forkScoped(
         convSweepTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(CONVERSATION_RATE_SWEEP_INTERVAL_MS)))),
       );
-      yield* Effect.addFinalizer(() => Fiber.interrupt(convSweepFiber));
 
       // ── Periodic fiber: share token cleanup — every 60 min ─────────
       const shareCleanupEffect = Effect.tryPromise({
@@ -1395,10 +1403,10 @@ export function makeSchedulerLive(
           }),
         ),
       );
-      const shareCleanupFiber = yield* Effect.fork(
+      // forkScoped, not fork — see SettingsLive for rationale.
+      yield* Effect.forkScoped(
         shareCleanupEffect.pipe(Effect.repeat(Schedule.spaced(Duration.millis(SHARE_CLEANUP_INTERVAL_MS)))),
       );
-      yield* Effect.addFinalizer(() => Fiber.interrupt(shareCleanupFiber));
 
       // ── Periodic fiber: sub-processor change-feed publisher (#1924) ──
       // Cron sweep, not build-hook: the source JSON can be hot-edited
@@ -1426,7 +1434,8 @@ export function makeSchedulerLive(
           }),
         ),
       );
-      const subProcessorFiber = yield* Effect.fork(
+      // forkScoped, not fork — see SettingsLive for rationale.
+      yield* Effect.forkScoped(
         subProcessorTick.pipe(
           Effect.repeat(
             Schedule.spaced(
@@ -1435,7 +1444,6 @@ export function makeSchedulerLive(
           ),
         ),
       );
-      yield* Effect.addFinalizer(() => Fiber.interrupt(subProcessorFiber));
 
       // ── Periodic fiber: SaaS CRM outbox flusher (#2729) ─────────────
       // Slice 2 of 1.6.0. The flusher polls `crm_outbox` for pending /
@@ -1597,7 +1605,11 @@ export function makeSchedulerLive(
             }),
           ),
         );
-        const outboxFiber = yield* Effect.fork(
+        // forkScoped, not fork — see SettingsLive for rationale.
+        // The recovery sweep still needs its own addFinalizer below
+        // because it's not a fiber interrupt — it's an orderly cleanup
+        // that must run on layer shutdown regardless.
+        yield* Effect.forkScoped(
           outboxTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(outboxTickIntervalMs)))),
         );
 
@@ -1634,15 +1646,19 @@ export function makeSchedulerLive(
         // another ~15s before being detected — making the "no tick in
         // > 2× interval" guarantee soft. Polling at tick cadence bounds
         // detection lag to ~one tick interval. (Codex P2, 2026-05-26.)
-        const outboxWatchdogFiber = yield* Effect.fork(
+        // forkScoped, not fork — see SettingsLive for rationale.
+        yield* Effect.forkScoped(
           outboxWatchdog.pipe(
             Effect.repeat(Schedule.spaced(Duration.millis(outboxTickIntervalMs))),
           ),
         );
+        // Recovery-sweep finalizer. The two forked fibers above are
+        // already cleaned up by the layer scope (forkScoped); this
+        // finalizer only owns the in_flight reset sweep, which is an
+        // orderly cleanup that must run on layer shutdown so the next
+        // pod boot doesn't see stranded `in_flight` carcasses.
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
-            yield* Fiber.interrupt(outboxWatchdogFiber);
-            yield* Fiber.interrupt(outboxFiber);
             // Final recovery sweep: a SIGTERM mid-flush leaves the
             // active row in `in_flight` until the next pod boot. Reset
             // here so the replacement pod picks it up on its first

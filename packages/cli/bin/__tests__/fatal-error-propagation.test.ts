@@ -172,19 +172,26 @@ describe("DuckDB profiler — error propagation behavior", () => {
     expect(exitCode).toBe(0);
   });
 
+  // DuckDB native-module cold start dominates first-run wall time under
+  // parallel-suite contention; bound the elapsed assertion well below the
+  // bumped timeout so a real cold-start regression (e.g. native module
+  // load doubling) still fires red instead of riding the 30s ceiling.
   it("valid database profiles successfully with all columns", async () => {
-    // A valid database should profile without errors — all columns resolve
     const csvPath = path.join(tmpDir, "data.csv");
     fs.writeFileSync(csvPath, "id,value\n1,hello\n2,world\n");
 
     const dbPath = path.join(tmpDir, "test.duckdb");
     await ingestIntoDuckDB(dbPath, [{ path: csvPath, format: "csv" }]);
 
+    const t0 = performance.now();
     const result = await profileDuckDB(dbPath);
+    const elapsed = performance.now() - t0;
+
     expect(result.profiles).toHaveLength(1);
     expect(result.errors).toHaveLength(0);
     expect(result.profiles[0].columns.length).toBe(2);
-  });
+    expect(elapsed).toBeLessThan(25_000);
+  }, 30_000);
 });
 
 describe("column-level catch re-throw contract", () => {

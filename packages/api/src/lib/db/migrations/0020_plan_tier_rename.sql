@@ -6,7 +6,10 @@
 -- the baseline ran, the column won't exist yet. Add it first.
 
 DO $$ BEGIN
-  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'organization') THEN
+  -- to_regclass scopes the lookup to the caller's search_path so a sibling
+  -- test schema with its own `organization` table can't trick this into
+  -- ALTERing the wrong row. See 0000_baseline.sql comment + #2820 fix-CI.
+  IF to_regclass('organization') IS NOT NULL THEN
     -- Ensure all baseline columns exist (may have been skipped by baseline's conditional block
     -- if organization table was created by Better Auth AFTER baseline migration ran)
     ALTER TABLE organization ADD COLUMN IF NOT EXISTS workspace_status TEXT NOT NULL DEFAULT 'active';

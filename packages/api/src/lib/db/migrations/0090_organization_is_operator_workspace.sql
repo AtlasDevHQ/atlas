@@ -41,7 +41,9 @@
 -- org is the default (`trial`).
 
 DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'organization') THEN
+  -- Scope to caller's search_path via to_regclass — see 0000_baseline.sql
+  -- comment + #2820 fix-CI for the parallel-test-schema race this avoids.
+  IF to_regclass('organization') IS NULL THEN
     RAISE EXCEPTION 'Atlas migration 0090 requires the "organization" table to exist. In managed auth mode, Better Auth migrations must run before Atlas migrations.';
   END IF;
 END $$;

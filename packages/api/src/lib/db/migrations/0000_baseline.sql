@@ -335,9 +335,17 @@ CREATE INDEX IF NOT EXISTS idx_query_suggestions_tables ON query_suggestions USI
 -- NOTE: These ALTER TABLEs are conditional — they only run if the organization
 -- table already exists (created by Better Auth migrations, which run separately).
 -- On first boot they are skipped; applied on subsequent restarts.
+--
+-- `to_regclass('organization')` resolves the unqualified name against the
+-- caller's search_path — so a concurrent test schema that happens to have
+-- its own `organization` table (e.g. migrate-pg-with-auth.test.ts) can't
+-- trick this block into running ALTERs in a different schema. The
+-- information_schema.tables variant was globally scoped and triggered the
+-- THEN branch even when `organization` lived in a sibling schema, leaving
+-- the ALTER to fail with "relation does not exist". See #2820 fix-CI.
 
 DO $$ BEGIN
-  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'organization') THEN
+  IF to_regclass('organization') IS NOT NULL THEN
     ALTER TABLE organization ADD COLUMN IF NOT EXISTS workspace_status TEXT NOT NULL DEFAULT 'active';
     ALTER TABLE organization ADD COLUMN IF NOT EXISTS plan_tier TEXT NOT NULL DEFAULT 'free';
     ALTER TABLE organization ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ;

@@ -270,8 +270,18 @@ async function readErrorDetail(response: Response): Promise<{ message: string; c
  * Look up a Person by primary email. Returns the first match or
  * undefined when Twenty returns a 2xx with an empty result set.
  *
- * Twenty's REST filter syntax (bracket-nested, per their docs):
- *   ?filter[emails.primaryEmail][eq]=<email>&limit=1
+ * Twenty's REST filter syntax, per its OpenAPI spec
+ * (`components.parameters.filter.description`):
+ *   `field[COMPARATOR]:value`
+ *   e.g. `?filter=emails.primaryEmail[eq]:<email>&limit=1`
+ *
+ * Earlier versions of this client used a bracket-nested form
+ * (`?filter[emails.primaryEmail][eq]=…`) borrowed from Strapi/Sails.
+ * Twenty silently ignores that form and returns the unfiltered list,
+ * which caused `upsertPerson` to merge every dispatch onto whichever
+ * Person was first in the table — corrupting attribution across all
+ * lead sources. The fix uses Twenty's documented `field[op]:value`
+ * format so the filter actually narrows.
  *
  * Throws TwentyClientError when the response body is a 2xx but its
  * shape doesn't match `{ data: { people: TwentyPerson[] } }` — silently
@@ -283,7 +293,7 @@ async function findPersonByEmail(
   email: string,
 ): Promise<TwentyPerson | undefined> {
   const fetchImpl = config.fetchImpl ?? globalThis.fetch;
-  const filter = `filter[emails.primaryEmail][eq]=${encodeURIComponent(email)}`;
+  const filter = `filter=emails.primaryEmail[eq]:${encodeURIComponent(email)}`;
   const url = buildRestUrl(config.baseUrl, `people?${filter}&limit=1`);
   const response = await fetchImpl(url, {
     method: "GET",

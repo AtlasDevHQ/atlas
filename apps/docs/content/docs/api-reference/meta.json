@@ -74,6 +74,7 @@
     "onboarding-emails",
     "platform-admin",
     "platform-admin-backups",
+    "platform-admin-crm-outbox",
     "platform-admin-custom-domains",
     "platform-admin-residency",
     "platform-admin-sla",

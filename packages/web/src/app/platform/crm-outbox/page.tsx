@@ -1,0 +1,506 @@
+"use client";
+
+import { useMemo, useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { ErrorBoundary } from "@/ui/components/error-boundary";
+import { LoadingState } from "@/ui/components/admin/loading-state";
+import {
+  QueueFilterRow,
+  RelativeTimestamp,
+} from "@/ui/components/admin/queue";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
+import {
+  CrmOutboxListResponseSchema,
+  CrmOutboxRowDetailSchema,
+} from "@/ui/lib/admin-schemas";
+import type { CrmOutboxRow, OutboxStatus } from "@/ui/lib/types";
+import {
+  CheckCircle2,
+  Inbox,
+  Loader2,
+  RotateCcw,
+  Skull,
+  Timer,
+  XCircle,
+} from "lucide-react";
+
+// ── Filter constants ─────────────────────────────────────────────────
+
+type StatusFilter = "all" | OutboxStatus;
+
+const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "pending", label: "Pending" },
+  { value: "in_flight", label: "In flight" },
+  { value: "done", label: "Done" },
+  { value: "dead", label: "Dead" },
+];
+
+// ── Status badge ─────────────────────────────────────────────────────
+
+function statusBadge(status: OutboxStatus) {
+  switch (status) {
+    case "pending":
+      return (
+        <Badge variant="outline" className="gap-1 border-amber-500 text-amber-600">
+          <Timer className="size-3" />
+          Pending
+        </Badge>
+      );
+    case "in_flight":
+      return (
+        <Badge variant="outline" className="gap-1 border-primary/50 text-primary">
+          <Loader2 className="size-3 animate-spin" />
+          In flight
+        </Badge>
+      );
+    case "done":
+      return (
+        <Badge variant="outline" className="gap-1 border-green-500 text-green-600">
+          <CheckCircle2 className="size-3" />
+          Done
+        </Badge>
+      );
+    case "dead":
+      return (
+        <Badge variant="destructive" className="gap-1">
+          <XCircle className="size-3" />
+          Dead
+        </Badge>
+      );
+  }
+}
+
+// ── Main Page ────────────────────────────────────────────────────────
+
+export default function CrmOutboxPage() {
+  const { blocked } = usePlatformAdminGuard();
+  if (blocked) return <LoadingState message="Checking access..." />;
+  return (
+    <ErrorBoundary>
+      <TooltipProvider>
+        <CrmOutboxPageContent />
+      </TooltipProvider>
+    </ErrorBoundary>
+  );
+}
+
+function CrmOutboxPageContent() {
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [eventTypeFilter, setEventTypeFilter] = useState("");
+  const [sinceFilter, setSinceFilter] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Action state — confirm dialogs guard the destructive paths.
+  const [retryConfirmId, setRetryConfirmId] = useState<string | null>(null);
+  const [markDeadConfirmId, setMarkDeadConfirmId] = useState<string | null>(null);
+
+  // Build the query string from the filter trio. Empty filters are
+  // intentionally NOT sent so the API's `IS NULL OR …` predicates skip
+  // them server-side.
+  const listPath = useMemo(() => {
+    const params = new URLSearchParams();
+    if (statusFilter !== "all") params.set("status", statusFilter);
+    if (eventTypeFilter.trim()) params.set("event_type", eventTypeFilter.trim());
+    if (sinceFilter) params.set("since", sinceFilter);
+    const qs = params.toString();
+    return qs ? `/api/v1/platform/crm-outbox?${qs}` : "/api/v1/platform/crm-outbox";
+  }, [statusFilter, eventTypeFilter, sinceFilter]);
+
+  const {
+    data,
+    loading,
+    error,
+    refetch,
+  } = useAdminFetch(listPath, { schema: CrmOutboxListResponseSchema });
+
+  const { data: detail, loading: detailLoading } = useAdminFetch(
+    selectedId ? `/api/v1/platform/crm-outbox/${selectedId}` : "",
+    {
+      schema: CrmOutboxRowDetailSchema,
+      enabled: !!selectedId,
+    },
+  );
+
+  const { mutate: retryMutate, saving: retrying } = useAdminMutation({
+    invalidates: refetch,
+  });
+  const { mutate: markDeadMutate, saving: markingDead } = useAdminMutation({
+    invalidates: refetch,
+  });
+
+  const rows: CrmOutboxRow[] = data?.rows ?? [];
+  const counts = useMemo(() => {
+    const c = { pending: 0, in_flight: 0, done: 0, dead: 0 };
+    for (const r of rows) c[r.status]++;
+    return c;
+  }, [rows]);
+
+  async function handleRetry() {
+    if (!retryConfirmId) return;
+    await retryMutate({
+      path: `/api/v1/platform/crm-outbox/${retryConfirmId}/retry`,
+      method: "POST",
+    });
+    setRetryConfirmId(null);
+  }
+
+  async function handleMarkDead() {
+    if (!markDeadConfirmId) return;
+    await markDeadMutate({
+      path: `/api/v1/platform/crm-outbox/${markDeadConfirmId}/mark-dead`,
+      method: "POST",
+    });
+    setMarkDeadConfirmId(null);
+  }
+
+  return (
+    <div className="space-y-6 p-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">CRM Outbox</h1>
+          <p className="text-muted-foreground">
+            Inspect and recover marketing-funnel leads dispatched to Twenty.
+          </p>
+        </div>
+        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          <span>Pending: <strong>{counts.pending}</strong></span>
+          <span>In flight: <strong>{counts.in_flight}</strong></span>
+          <span>Dead: <strong className="text-destructive">{counts.dead}</strong></span>
+          <span>Done: <strong>{counts.done}</strong></span>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-end gap-4">
+        <QueueFilterRow
+          options={STATUS_OPTIONS}
+          value={statusFilter}
+          onChange={setStatusFilter}
+        />
+        <div className="grid gap-1.5">
+          <Label htmlFor="event-type-filter" className="text-xs">
+            Event type
+          </Label>
+          <Input
+            id="event-type-filter"
+            value={eventTypeFilter}
+            onChange={(e) => setEventTypeFilter(e.target.value)}
+            placeholder="e.g. demo, sales-form, signup"
+            className="h-8 w-56"
+          />
+        </div>
+        <div className="grid gap-1.5">
+          <Label htmlFor="since-filter" className="text-xs">
+            Since
+          </Label>
+          <Input
+            id="since-filter"
+            type="datetime-local"
+            value={sinceFilter}
+            onChange={(e) => setSinceFilter(e.target.value)}
+            className="h-8 w-56"
+          />
+        </div>
+      </div>
+
+      <AdminContentWrapper
+        loading={loading}
+        error={error}
+        feature="CRM Outbox"
+        onRetry={refetch}
+        loadingMessage="Loading outbox rows..."
+        emptyIcon={Inbox}
+        emptyTitle="No rows match these filters"
+        emptyDescription="Try clearing the filters or check back after the next flusher tick."
+        isEmpty={rows.length === 0}
+      >
+        <Card className="shadow-none">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Created</TableHead>
+                <TableHead>Event</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Attempts</TableHead>
+                <TableHead>Last error</TableHead>
+                <TableHead>Twenty IDs</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((row) => (
+                <TableRow
+                  key={row.id}
+                  onClick={() => setSelectedId(row.id)}
+                  className="cursor-pointer"
+                >
+                  <TableCell className="whitespace-nowrap font-medium">
+                    <RelativeTimestamp iso={row.createdAt} />
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {row.eventType}
+                  </TableCell>
+                  <TableCell>{statusBadge(row.status)}</TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {row.attempts}
+                  </TableCell>
+                  <TableCell className="max-w-[28rem]">
+                    {row.lastError ? (
+                      <span className="line-clamp-2 text-xs text-destructive">
+                        {row.lastError}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="font-mono text-[10px] text-muted-foreground">
+                    {row.twentyPersonId ? (
+                      <div>P: {row.twentyPersonId.slice(0, 8)}…</div>
+                    ) : null}
+                    {row.twentyNoteId ? (
+                      <div>N: {row.twentyNoteId.slice(0, 8)}…</div>
+                    ) : null}
+                    {!row.twentyPersonId && !row.twentyNoteId ? "—" : null}
+                  </TableCell>
+                  <TableCell
+                    className="text-right"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {row.status === "dead" ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setRetryConfirmId(row.id)}
+                        title="Retry now"
+                      >
+                        <RotateCcw className="size-4" />
+                      </Button>
+                    ) : null}
+                    {row.status === "pending" || row.status === "in_flight" ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setMarkDeadConfirmId(row.id)}
+                        title="Mark dead"
+                      >
+                        <Skull className="size-4" />
+                      </Button>
+                    ) : null}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Card>
+      </AdminContentWrapper>
+
+      {/* Detail sheet */}
+      <Sheet
+        open={!!selectedId}
+        onOpenChange={(open) => {
+          if (!open) setSelectedId(null);
+        }}
+      >
+        <SheetContent className="w-full sm:max-w-2xl">
+          <SheetHeader>
+            <SheetTitle>Outbox row detail</SheetTitle>
+            <SheetDescription>
+              Full payload and untruncated error for forensic review.
+            </SheetDescription>
+          </SheetHeader>
+          {detailLoading ? (
+            <LoadingState message="Loading row..." />
+          ) : detail ? (
+            <div className="mt-4 space-y-4 text-sm">
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="ID" value={detail.id} mono />
+                <Field label="Status" value={detail.status} />
+                <Field label="Event type" value={detail.eventType} mono />
+                <Field label="Attempts" value={String(detail.attempts)} />
+                <Field label="Created" value={detail.createdAt} />
+                <Field label="Processed" value={detail.processedAt ?? "—"} />
+                <Field
+                  label="Retry after"
+                  value={detail.retryAfter ?? "—"}
+                />
+                <Field label="Claimed at" value={detail.claimedAt ?? "—"} />
+                <Field
+                  label="Twenty Person ID"
+                  value={detail.twentyPersonId ?? "—"}
+                  mono
+                />
+                <Field
+                  label="Twenty Note ID"
+                  value={detail.twentyNoteId ?? "—"}
+                  mono
+                />
+              </div>
+              <div>
+                <Label className="mb-1 block text-xs uppercase tracking-wide text-muted-foreground">
+                  Payload
+                </Label>
+                <pre className="max-h-72 overflow-auto rounded-md border bg-muted/40 p-3 text-xs">
+                  {JSON.stringify(detail.payload, null, 2)}
+                </pre>
+              </div>
+              <div>
+                <Label className="mb-1 block text-xs uppercase tracking-wide text-muted-foreground">
+                  Last error
+                </Label>
+                <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border bg-muted/40 p-3 text-xs text-destructive">
+                  {detail.fullLastError ?? "—"}
+                </pre>
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                {detail.status === "dead" ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setRetryConfirmId(detail.id)}
+                  >
+                    <RotateCcw className="mr-2 size-4" />
+                    Retry now
+                  </Button>
+                ) : null}
+                {detail.status === "pending" || detail.status === "in_flight" ? (
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => setMarkDeadConfirmId(detail.id)}
+                  >
+                    <Skull className="mr-2 size-4" />
+                    Mark dead
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">Row not found.</p>
+          )}
+        </SheetContent>
+      </Sheet>
+
+      {/* Retry confirm */}
+      <AlertDialog
+        open={!!retryConfirmId}
+        onOpenChange={(open) => {
+          if (!open) setRetryConfirmId(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Retry this row?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will reset the row's status to <code>pending</code> and clear
+              its last error. <strong>Attempts is intentionally NOT reset</strong>
+              {" "}— the deterministic backoff continues from where it left off,
+              so a permanently-broken upstream call can&apos;t be ground into a
+              tight retry loop.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleRetry} disabled={retrying}>
+              {retrying ? (
+                <>
+                  <Loader2 className="mr-2 size-4 animate-spin" />
+                  Retrying...
+                </>
+              ) : (
+                "Retry now"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Mark-dead confirm */}
+      <AlertDialog
+        open={!!markDeadConfirmId}
+        onOpenChange={(open) => {
+          if (!open) setMarkDeadConfirmId(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Mark this row as dead?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The flusher will stop retrying this row. Use this when you know
+              the upstream dispatch will never succeed (e.g. a malformed
+              payload the dispatcher classification missed).
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleMarkDead}
+              disabled={markingDead}
+            >
+              {markingDead ? (
+                <>
+                  <Loader2 className="mr-2 size-4 animate-spin" />
+                  Marking dead...
+                </>
+              ) : (
+                "Mark dead"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  value,
+  mono,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
+  return (
+    <div>
+      <Label className="mb-1 block text-xs uppercase tracking-wide text-muted-foreground">
+        {label}
+      </Label>
+      <div className={mono ? "break-all font-mono text-xs" : "text-xs"}>
+        {value}
+      </div>
+    </div>
+  );
+}

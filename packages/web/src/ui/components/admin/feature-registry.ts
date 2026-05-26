@@ -36,6 +36,7 @@ export const FEATURE_NAMES = [
   "Cache",
   "Change plan",
   "Connections",
+  "CRM Outbox",
   "Custom Domains",
   "Custom Roles",
   "Data Residency",

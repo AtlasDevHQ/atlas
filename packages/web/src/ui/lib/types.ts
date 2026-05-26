@@ -151,6 +151,11 @@ export type {
   BackupConfig,
 } from "@useatlas/types";
 export type {
+  CrmOutboxRow,
+  CrmOutboxRowDetail,
+  OutboxStatus,
+} from "@useatlas/types";
+export type {
   Region,
   RegionConfig,
   RegionPickerItem,

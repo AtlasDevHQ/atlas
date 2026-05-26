@@ -23,6 +23,7 @@ export * from "./abuse";
 export * from "./percentage";
 export * from "./sla";
 export * from "./backups";
+export * from "./crm-outbox";
 export * from "./residency";
 export * from "./domain";
 export * from "./migration";

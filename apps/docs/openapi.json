@@ -68093,6 +68093,763 @@
         "operationId": "putPlatformBackupsConfig"
       }
     },
+    "/api/v1/platform/crm-outbox": {
+      "get": {
+        "tags": [
+          "Platform Admin — CRM Outbox"
+        ],
+        "summary": "List CRM outbox rows",
+        "description": "SaaS only. Returns crm_outbox rows ordered by created_at DESC. Filters: status, event_type, since (ISO timestamp), limit.",
+        "responses": {
+          "200": {
+            "description": "Outbox rows",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "rows": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "eventType": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "pending",
+                              "in_flight",
+                              "done",
+                              "dead"
+                            ]
+                          },
+                          "attempts": {
+                            "type": "number"
+                          },
+                          "lastError": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "twentyPersonId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "twentyNoteId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "processedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "retryAfter": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "claimedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "createdAt",
+                          "eventType",
+                          "status",
+                          "attempts",
+                          "lastError",
+                          "twentyPersonId",
+                          "twentyNoteId",
+                          "processedAt",
+                          "retryAfter",
+                          "claimedAt"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "rows"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled or no internal DB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getPlatformCrmOutbox"
+      }
+    },
+    "/api/v1/platform/crm-outbox/{id}": {
+      "get": {
+        "tags": [
+          "Platform Admin — CRM Outbox"
+        ],
+        "summary": "Get CRM outbox row detail",
+        "description": "SaaS only. Returns the full row including payload JSONB and untruncated last_error.",
+        "responses": {
+          "200": {
+            "description": "Outbox row detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "createdAt": {
+                      "type": "string"
+                    },
+                    "eventType": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "in_flight",
+                        "done",
+                        "dead"
+                      ]
+                    },
+                    "attempts": {
+                      "type": "number"
+                    },
+                    "lastError": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "twentyPersonId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "twentyNoteId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "processedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "retryAfter": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "claimedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "fullLastError": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "payload": {}
+                  },
+                  "required": [
+                    "id",
+                    "createdAt",
+                    "eventType",
+                    "status",
+                    "attempts",
+                    "lastError",
+                    "twentyPersonId",
+                    "twentyNoteId",
+                    "processedAt",
+                    "retryAfter",
+                    "claimedAt",
+                    "fullLastError"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled or row not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getPlatformCrmOutboxById"
+      }
+    },
+    "/api/v1/platform/crm-outbox/{id}/retry": {
+      "post": {
+        "tags": [
+          "Platform Admin — CRM Outbox"
+        ],
+        "summary": "Retry a dead outbox row",
+        "description": "SaaS only. Flips a `dead` row back to `pending` and clears `last_error`. `attempts` is intentionally NOT reset so the deterministic backoff in lib/lead-outbox continues from where it left off — prevents an operator from foot-gunning infinite retries on a permanently-broken upstream call.",
+        "responses": {
+          "200": {
+            "description": "Row reset to pending",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "row": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "eventType": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "in_flight",
+                            "done",
+                            "dead"
+                          ]
+                        },
+                        "attempts": {
+                          "type": "number"
+                        },
+                        "lastError": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "twentyPersonId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "twentyNoteId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "processedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "retryAfter": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "claimedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "createdAt",
+                        "eventType",
+                        "status",
+                        "attempts",
+                        "lastError",
+                        "twentyPersonId",
+                        "twentyNoteId",
+                        "processedAt",
+                        "retryAfter",
+                        "claimedAt"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "row"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Row is not in `dead` status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled or row not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postPlatformCrmOutboxByIdRetry"
+      }
+    },
+    "/api/v1/platform/crm-outbox/{id}/mark-dead": {
+      "post": {
+        "tags": [
+          "Platform Admin — CRM Outbox"
+        ],
+        "summary": "Manually mark an outbox row dead",
+        "description": "SaaS only. Operator escape hatch — flip a `pending` or `in_flight` row to `dead` so the flusher stops retrying. Use when an operator knows the upstream dispatch will never succeed.",
+        "responses": {
+          "200": {
+            "description": "Row marked dead",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "row": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "eventType": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "in_flight",
+                            "done",
+                            "dead"
+                          ]
+                        },
+                        "attempts": {
+                          "type": "number"
+                        },
+                        "lastError": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "twentyPersonId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "twentyNoteId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "processedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "retryAfter": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "claimedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "createdAt",
+                        "eventType",
+                        "status",
+                        "attempts",
+                        "lastError",
+                        "twentyPersonId",
+                        "twentyNoteId",
+                        "processedAt",
+                        "retryAfter",
+                        "claimedAt"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "row"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Row is already in a terminal state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled or row not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postPlatformCrmOutboxByIdMarkDead"
+      }
+    },
     "/api/v1/platform/residency/regions": {
       "get": {
         "tags": [
@@ -73901,6 +74658,9 @@
     },
     {
       "name": "Platform Admin — Backups"
+    },
+    {
+      "name": "Platform Admin — CRM Outbox"
     },
     {
       "name": "Platform Admin — Custom Domains"

@@ -1,21 +1,24 @@
 /**
- * Talk-to-sales contact form route (#2730, slice 3 of 1.6.0).
+ * Talk-to-sales contact form route.
  *
  * `POST /api/v1/contact` accepts a sales-form submission from the
  * marketing site (apps/www `/pricing` Business tier dialog) and hands
  * it off to the SaaS CRM outbox for durable dispatch into Twenty
  * (Person + Note).
  *
- * Request pipeline:
- *   1. IP-based rate limit (mirrors `/api/v1/demo/start`)
- *   2. Cloudflare Turnstile siteverify — 403 on failure
- *   3. Zod body validation — 422 on malformed input
- *   4. SaasCrm.upsertLead({ source: "sales-form", ... })
+ * Request pipeline (executed in this order):
+ *   1. IP-based rate limit — 429 on overshoot
+ *   2. JSON body parse — 400 on malformed body
+ *   3. Zod body validation — 422 on missing/invalid fields
+ *   4. `SaasCrm.available` check — 404 on self-hosted (no Turnstile
+ *      round-trip burned on a 404'd endpoint)
+ *   5. Cloudflare Turnstile siteverify — 403 on failure
+ *   6. `SaasCrm.upsertLead({ source: "sales-form", ... })` — 503 if the
+ *      Postgres outbox write fails so the user can retry
  *
- * Availability: returns 404 when `SaasCrm.available === false` (i.e.
- * self-hosted without enterprise OR SaaS that failed boot verification).
- * Same shape as the existing 404 `not_available` envelope used by other
- * enterprise-gated routes.
+ * Twenty-side dispatch failures happen AFTER enqueue under the
+ * scheduler-backed flusher and stay invisible at this boundary — the
+ * outbox row retries on the next tick.
  *
  * Turnstile context: apps/www is hosted on Railway BEHIND Cloudflare —
  * Cloudflare Turnstile is the natural bot-protection fit (Vercel BotID
@@ -43,6 +46,8 @@ import { withRequestId, type AuthEnv } from "./middleware";
 import { validationHook } from "./validation-hook";
 
 const log = createLogger("contact");
+
+let warnedNoTrustProxy = false;
 
 /** Same permissive envelope shape used by other public routes. */
 const ContactErrorSchema = z.record(z.string(), z.unknown());
@@ -127,6 +132,10 @@ const contactRoute = createRoute({
       description: "Unexpected server error",
       content: { "application/json": { schema: ContactErrorSchema } },
     },
+    503: {
+      description: "Outbox enqueue failed (Postgres unreachable) — caller should retry",
+      content: { "application/json": { schema: ContactErrorSchema } },
+    },
   },
 });
 
@@ -138,7 +147,7 @@ contact.use(withRequestId);
 // the request body is malformed JSON, the validator throws an
 // HTTPException(400) with a text/plain body — we promote it to a JSON
 // envelope here so the API surface stays uniform (same shape as the
-// demo route's onError, #2730).
+// demo route's onError).
 contact.onError((err, c) => {
   if (err instanceof HTTPException) {
     if (err.res) return err.res;
@@ -157,6 +166,19 @@ contact.openapi(contactRoute, async (c) => {
 
       // ── 1. Rate limit ─────────────────────────────────────────────
       const ip = getClientIP(c.req.raw);
+      if (ip === null && !warnedNoTrustProxy) {
+        // Without ATLAS_TRUST_PROXY=true `getClientIP` returns null on
+        // every request, and `ip ?? "anon-contact"` collapses the per-IP
+        // rate-limit into one global bucket — the SaaS-Cloudflare-fronted
+        // deployment shape this route is designed for. Warn loud once so
+        // an operator who deployed without TRUST_PROXY sees the gap
+        // before legitimate traffic gets blocked under shared 5 RPM.
+        warnedNoTrustProxy = true;
+        log.warn(
+          { event: "contact.no_trust_proxy" },
+          "ATLAS_TRUST_PROXY is not set — contact-form per-IP rate-limit collapses to one global bucket. Set ATLAS_TRUST_PROXY=true behind a trusted proxy (Cloudflare, Railway edge) to enable per-IP enforcement.",
+        );
+      }
       const rateCheck = checkContactRateLimit(ip ?? "anon-contact");
       if (!rateCheck.allowed) {
         const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
@@ -171,31 +193,12 @@ contact.openapi(contactRoute, async (c) => {
         );
       }
 
-      // ── 2. Parse body ─────────────────────────────────────────────
-      const bodyResult = yield* Effect.tryPromise({
-        try: () => c.req.json(),
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(Effect.either);
-      if (bodyResult._tag === "Left") {
-        log.debug({ err: bodyResult.left.message }, "Contact: invalid JSON body");
-        return c.json(
-          { error: "invalid_request", message: "Invalid JSON body.", requestId },
-          400,
-        );
-      }
-      const parsed = ContactBodySchema.safeParse(bodyResult.right);
-      if (!parsed.success) {
-        return c.json(
-          {
-            error: "validation_error",
-            message: "One or more fields failed validation.",
-            details: parsed.error.issues,
-            requestId,
-          },
-          422,
-        );
-      }
-      const body = parsed.data;
+      // ── 2. Body (parsed + validated by the OpenAPIHono validator) ─
+      // Malformed JSON → 400 from the contact.onError handler below.
+      // Schema mismatch → 422 from `validationHook` (the `defaultHook`
+      // passed to `new OpenAPIHono`). By the time we reach here, `body`
+      // is the typed result of `ContactBodySchema`.
+      const body = c.req.valid("json");
 
       // ── 3. SaasCrm availability ───────────────────────────────────
       // Resolved BEFORE the Turnstile siteverify so self-hosted /
@@ -250,22 +253,39 @@ contact.openapi(contactRoute, async (c) => {
       }
 
       // ── 5. Enqueue lead ───────────────────────────────────────────
-      // upsertLead's Effect has no failure channel today (the layer
-      // catches enqueue errors internally and logs them — see
-      // ee/src/saas-crm/index.ts). The user sees confirmation
-      // regardless; a Twenty outage / pg blip is invisible at this
-      // boundary by design — outbox catches up on the next tick.
+      // upsertLead surfaces the enqueue error (a Postgres write blip)
+      // so the route can return 503 — the user sees "try again in a
+      // minute" instead of a false "we got your note" on a lost lead.
+      // Twenty-side dispatch failures are different: those happen
+      // AFTER enqueue under the scheduler-backed flusher and stay
+      // invisible at this boundary by design (the outbox row retries).
       const userAgent = c.req.header("user-agent") ?? null;
-      yield* crm.upsertLead({
-        source: "sales-form",
-        email: body.email,
-        name: body.name,
-        company: body.company,
-        planInterest: body.planInterest,
-        message: body.message,
-        ip,
-        userAgent,
-      });
+      const enqueueResult = yield* crm
+        .upsertLead({
+          source: "sales-form",
+          email: body.email,
+          name: body.name,
+          company: body.company,
+          planInterest: body.planInterest,
+          message: body.message,
+          ip,
+          userAgent,
+        })
+        .pipe(Effect.either);
+      if (enqueueResult._tag === "Left") {
+        // The Live layer already logged the structured `saas_crm.enqueue_failed`
+        // event with the underlying pg error; here we just return the
+        // user-facing envelope so the form can prompt a retry.
+        return c.json(
+          {
+            error: "enqueue_failed",
+            message:
+              "We couldn't record your message right now. Please try again in a minute, or email sales@useatlas.dev directly.",
+            requestId,
+          },
+          503,
+        );
+      }
 
       log.info(
         {

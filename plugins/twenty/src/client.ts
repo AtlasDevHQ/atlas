@@ -55,6 +55,14 @@ export class TwentyClientError extends Data.TaggedError("TwentyClientError")<{
    * the upstream's requested delay instead of the tier-based default.
    */
   readonly retryAfterMs?: number;
+  /**
+   * Set when `createNote` failed at the link step (`/rest/noteTargets`)
+   * AFTER the note POST had already succeeded. The note exists in
+   * Twenty under this id but has no Person attached — on retry the
+   * dispatcher re-runs the full `createNote` and a second, linked note
+   * is created. Operators grep for this id to clean up the orphan.
+   */
+  readonly orphanedNoteId?: string;
 }> {}
 
 /**
@@ -470,6 +478,7 @@ export async function createNote(
       upstreamCode: detail.code,
       operation: "createNoteTarget",
       retryAfterMs: parseRetryAfterMs(linkResponse.headers.get("Retry-After")),
+      orphanedNoteId: noteId,
     });
   }
 

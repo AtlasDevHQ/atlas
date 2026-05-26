@@ -29,7 +29,9 @@ let upsertLeadCalls: unknown[] = [];
 let rateLimitAllowed = true;
 let rateLimitRetryAfterMs = 0;
 let turnstileOk = true;
+let turnstileReason: string = "siteverify_rejected";
 let turnstileCallArgs: { token: string; remoteIp?: string | null } | null = null;
+let upsertLeadShouldFail = false;
 
 // ── Mock the side modules BEFORE importing the route ─────────────────
 
@@ -46,8 +48,8 @@ mock.module("@atlas/api/lib/turnstile", () => ({
     if (turnstileOk) return { ok: true };
     return {
       ok: false,
-      errorCodes: ["invalid-input-response"],
-      reason: "siteverify_rejected",
+      errorCodes: turnstileReason === "no_secret" ? [] : ["invalid-input-response"],
+      reason: turnstileReason,
     };
   },
 }));
@@ -97,7 +99,9 @@ mock.module("@atlas/api/lib/effect/hono", () => ({
           available: true,
           upsertLead: (input: SaasCrmLeadInput) => {
             upsertLeadCalls.push(input);
-            return Effect.void;
+            return upsertLeadShouldFail
+              ? Effect.fail(new Error("pg_connection_terminated"))
+              : Effect.void;
           },
           // dispatcher is required by the available=true union arm but
           // tests don't exercise the flusher path.
@@ -154,7 +158,9 @@ beforeEach(() => {
   rateLimitAllowed = true;
   rateLimitRetryAfterMs = 0;
   turnstileOk = true;
+  turnstileReason = "siteverify_rejected";
   turnstileCallArgs = null;
+  upsertLeadShouldFail = false;
 });
 
 afterEach(() => {
@@ -267,5 +273,38 @@ describe("POST /api/v1/contact", () => {
     expect((upsertLeadCalls[0] as { userAgent?: string }).userAgent).toBe(
       "Mozilla/5.0 (test)",
     );
+  });
+
+  test("403 — Turnstile reports `no_secret` (fail-closed when TURNSTILE_SECRET_KEY unset)", async () => {
+    // Regression guard: pins the route's handling of the wrapper's
+    // fail-closed signal. A refactor that accidentally collapsed
+    // `reason: "no_secret"` into a success branch (e.g. by ignoring
+    // `ok: false` when errorCodes is empty) would let bot submissions
+    // through any SaaS deployment where the env var was unset — exactly
+    // the misconfiguration the wrapper is supposed to catch.
+    turnstileOk = false;
+    turnstileReason = "no_secret";
+    const res = await postContact(validBody());
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("turnstile_failed");
+    expect(upsertLeadCalls).toHaveLength(0);
+  });
+
+  test("503 — upsertLead enqueue failure surfaces to caller (not silently swallowed)", async () => {
+    // The user submitted a lead and we couldn't write it to the outbox
+    // (e.g. Postgres connection terminated mid-write). The previous
+    // shape silently logged + returned 200 "Thanks — we'll be in touch"
+    // while the lead was lost. The contact route now propagates so the
+    // form can prompt a retry.
+    upsertLeadShouldFail = true;
+    const res = await postContact(validBody());
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("enqueue_failed");
+    expect(body.message).toContain("try again");
+    // upsertLead WAS called — the failure is on the enqueue path,
+    // not before it.
+    expect(upsertLeadCalls).toHaveLength(1);
   });
 });

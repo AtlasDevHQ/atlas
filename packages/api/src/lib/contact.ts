@@ -1,5 +1,5 @@
 /**
- * Contact-form per-IP rate limit (#2730). Mirrors the shape of
+ * Contact-form per-IP rate limit. Mirrors the shape of
  * `checkDemoRateLimit` in `lib/demo.ts` — sliding window over a
  * configurable RPM — but with a tighter default ceiling because the
  * contact form should be a rare event per visitor (5 submissions per

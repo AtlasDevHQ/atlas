@@ -1,5 +1,5 @@
 /**
- * Cloudflare Turnstile siteverify wrapper (#2730).
+ * Cloudflare Turnstile siteverify wrapper.
  *
  * Why Turnstile and not Vercel BotID: apps/www is hosted on Railway
  * BEHIND Cloudflare. Cloudflare Turnstile is the natural bot-protection
@@ -103,18 +103,38 @@ export async function verifyTurnstile(
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
-    return {
-      ok: false,
-      errorCodes: [],
-      reason: `siteverify_request_failed: ${err instanceof Error ? err.message : String(err)}`,
-    };
+    const reason = `siteverify_request_failed: ${err instanceof Error ? err.message : String(err)}`;
+    // Log transport-level failures so call sites that don't surface the
+    // returned reason (future ones, batch jobs, etc.) don't lose all
+    // signal that Cloudflare's endpoint is unreachable. The contact
+    // route surfaces this as a 403 + structured `turnstile_failed` log,
+    // but the wrapper logs in its own right.
+    log.warn(
+      { requestId: opts.requestId, err: reason, event: "turnstile.network_failure" },
+      "Turnstile siteverify request failed at the transport layer",
+    );
+    return { ok: false, errorCodes: [], reason };
   }
 
   if (!response.ok) {
+    // Capture the Cloudflare error body (up to ~200 chars) so operators
+    // can diagnose without reproducing — 4xx commonly carries a JSON
+    // body explaining the misconfigured secret/sitekey.
+    let bodyExcerpt = "";
+    try {
+      const raw = await response.text();
+      bodyExcerpt = raw.slice(0, 200);
+    } catch {
+      // Reading the body is best-effort diagnostic context — a body
+      // that can't be read is not itself a failure beyond the HTTP
+      // status we already have.
+    }
     return {
       ok: false,
       errorCodes: [],
-      reason: `siteverify_http_${response.status}`,
+      reason: bodyExcerpt
+        ? `siteverify_http_${response.status}: ${bodyExcerpt}`
+        : `siteverify_http_${response.status}`,
     };
   }
 

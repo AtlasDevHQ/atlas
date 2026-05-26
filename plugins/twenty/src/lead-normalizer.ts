@@ -11,9 +11,10 @@
  * `TwentyClient.upsertPerson`. That keeps this module a pure function
  * of input → payload, with no I/O and no Twenty-record-state coupling.
  *
- * Types are defined inline here for 0.1.x; they will move to
- * `@useatlas/types` in a subsequent release so the dispatch boundary
- * (`@useatlas/twenty` → SaaS CRM seam) can share one source of truth.
+ * Types are defined inline here and mirrored in `packages/api/src/lib/effect/services.ts`
+ * (`SaasCrmLeadInput`) — the exhaustiveness switch in `normalizeLead`
+ * keeps the two in lockstep. Promote to `@useatlas/types` when a second
+ * consumer outside of `ee/src/saas-crm/` appears.
  */
 
 import type { UpsertPersonInput } from "./client";
@@ -53,10 +54,8 @@ export interface AtlasSalesFormLeadEvent {
 }
 
 /**
- * Discriminated union over every Atlas-internal lead event.
- *
- * Extended in subsequent slices: signup hook (`source: "signup"`), etc.
- * The exhaustiveness check in `normalizeLead` catches missing handlers
+ * Discriminated union over every Atlas-internal lead event. The
+ * exhaustiveness check in `normalizeLead` catches missing handlers
  * at compile time.
  */
 export type AtlasLeadEvent = AtlasDemoLeadEvent | AtlasSalesFormLeadEvent;

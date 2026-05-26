@@ -1247,6 +1247,34 @@ export function makeSchedulerLive(
       );
       yield* Effect.addFinalizer(() => Fiber.interrupt(demoFiber));
 
+      // ── Periodic fiber: contact rate-limit cleanup — every 60s ────
+      // Unauthenticated public endpoint with a per-IP map; without
+      // periodic eviction the map leaks one entry per distinct source IP
+      // until process restart.
+      const contactTick = Effect.try({
+        try: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { contactCleanupTick } = require("@atlas/api/lib/contact") as {
+            contactCleanupTick: () => void;
+          };
+          contactCleanupTick();
+        },
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            log.error(
+              { err: errorMessage(err) },
+              "Contact rate-limit cleanup tick failed",
+            );
+          }),
+        ),
+      );
+      const contactFiber = yield* Effect.fork(
+        contactTick.pipe(Effect.repeat(Schedule.spaced(Duration.seconds(60)))),
+      );
+      yield* Effect.addFinalizer(() => Fiber.interrupt(contactFiber));
+
       // ── Periodic fiber: abuse detection cleanup — every 5 min ──────
       const abuseTick = Effect.try({
         try: () => {

@@ -138,13 +138,31 @@ describe("verifyTurnstile", () => {
     }
   });
 
-  test("returns ok=false on 5xx from Cloudflare", async () => {
+  test("returns ok=false on 5xx from Cloudflare with body excerpt for diagnostics", async () => {
     process.env.TURNSTILE_SECRET_KEY = "s";
     const { fetch } = makeScriptedFetch({ status: 502, body: { foo: "bar" } });
     const result = await verifyTurnstile({ token: "t", fetchImpl: fetch });
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.reason).toBe("siteverify_http_502");
+      expect(result.reason).toContain("siteverify_http_502");
+      // Operator-diagnostic excerpt: capture upstream body verbatim
+      // (truncated to ~200 chars) so a misconfigured secret/sitekey
+      // doesn't require reproducing the failure to debug.
+      expect(result.reason).toContain('"foo":"bar"');
+    }
+  });
+
+  test("returns ok=false on 4xx with body excerpt (Cloudflare misconfig response)", async () => {
+    process.env.TURNSTILE_SECRET_KEY = "s";
+    const { fetch } = makeScriptedFetch({
+      status: 400,
+      body: { "error-codes": ["invalid-input-secret"] },
+    });
+    const result = await verifyTurnstile({ token: "t", fetchImpl: fetch });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toContain("siteverify_http_400");
+      expect(result.reason).toContain("invalid-input-secret");
     }
   });
 

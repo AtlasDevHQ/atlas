@@ -4,11 +4,13 @@
  * plugin. Self-hosted Atlas gets the Noop layer from
  * `lib/effect/services.ts:NoopSaasCrmLayer`.
  *
- * Slice 2 of 1.6.0 (#2729): `upsertLead` no longer dispatches inline.
- * It enqueues a `crm_outbox` row and returns immediately; the flusher
- * (wired in `lib/effect/layers.ts:makeSchedulerLive`) claims the row on
- * the next tick and calls `dispatchOutboxRow` below. A Twenty outage,
- * API crash, or partial sub-step failure no longer drops the lead.
+ * `upsertLead` enqueues a `crm_outbox` row and returns; the scheduler-
+ * wired flusher (`lib/effect/layers.ts:makeSchedulerLive`) claims the
+ * row on the next tick and calls `dispatchOutboxRow` below. A Twenty
+ * outage, API crash, or partial sub-step failure does not drop the lead.
+ * Enqueue itself surfaces its error via the Effect failure channel so
+ * callers that care about durability (the contact form) can return 503
+ * — the demo route wraps `runEnterprise` in a try/catch and swallows.
  *
  * Transient metadata-probe failures deliberately leave `available: true`
  * — a real schema mismatch surfaces as a 422 on the first upsert call.
@@ -201,11 +203,9 @@ export async function dispatchOutboxRow(
     };
   }
 
-  // Local view of which Twenty ids are populated for this dispatch.
-  // Seeded from the claimed row snapshot, updated as sub-steps succeed
-  // — this is how the createNote sub-step finds the personId on the
-  // SAME dispatch as upsertPerson (the row snapshot is frozen at claim
-  // time and never re-read).
+  // Row snapshot is frozen at claim time; track `personId` locally so
+  // sub-step 2 (createNote) sees the id sub-step 1 (upsertPerson) just
+  // persisted on the SAME dispatch.
   let personId: string | null = row.twentyPersonId;
 
   // ── Sub-step 1: upsertPerson (always required) ────────────────────
@@ -247,8 +247,8 @@ export async function dispatchOutboxRow(
   // ── Sub-step 2: createNote (sales-form only) ──────────────────────
   // Normalized payload carries the note shape for sales-form rows; demo
   // rows have no note and skip this branch entirely. Skip on replay when
-  // twentyNoteId is already populated — that's the sub-step idempotency
-  // contract from #2729 (createNote must NOT be called twice).
+  // twentyNoteId is already populated — sub-step idempotency contract:
+  // createNote must NOT be called twice on retry.
   if (normalized.note && !row.twentyNoteId) {
     if (!personId) {
       // Defensive: sub-step 1 above must have populated personId. If we
@@ -295,6 +295,23 @@ export async function dispatchOutboxRow(
 
 function classifyTwentyError(err: unknown, op: string): DispatchOutcome {
   if (err instanceof TwentyClientError) {
+    // Orphaned-note signal — note POST succeeded, link POST failed.
+    // The note exists in Twenty under `orphanedNoteId` with no Person
+    // attached; the next dispatch retry will create a SECOND linked
+    // note. Emit a dedicated structured event so operators can grep
+    // for the orphan id and delete it from Twenty by hand.
+    if (err.orphanedNoteId) {
+      log.warn(
+        {
+          event: "saas_crm.twenty_note_orphaned",
+          orphanedNoteId: err.orphanedNoteId,
+          status: err.status,
+          upstreamCode: err.upstreamCode,
+          op,
+        },
+        `Twenty Note ${err.orphanedNoteId} was created but the noteTarget link failed — the next dispatch retry will create a duplicate. Delete the orphaned note in Twenty when convenient.`,
+      );
+    }
     const classification = classifyHttpStatus(err.status);
     const message = `${op} failed (status=${err.status}${err.upstreamCode ? `, code=${err.upstreamCode}` : ""}): ${err.message}`;
     if (classification === "transient") {
@@ -388,20 +405,21 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
           },
           catch: (err) => (err instanceof Error ? err : new Error(String(err))),
         }).pipe(
-          Effect.catchAll((err) =>
+          // Tap the failure into a structured log so an operator sees
+          // it regardless of how the caller chooses to surface the
+          // error. Callers that swallow (demo route, where the user
+          // already has a sandbox link) still get the audit trail;
+          // callers that propagate (contact route, where a lost lead
+          // is a missed sales conversation) get to return 503.
+          Effect.tapError((err) =>
             Effect.sync(() => {
-              // An enqueue failure is just a Postgres write — they
-              // should be rare. Log and swallow so the demo response
-              // stays unblocked. `captureDemoLead` already has its
-              // own defense-in-depth catch around the dispatched
-              // Effect, so the route handler never sees this error.
               log.error(
                 {
                   source: input.source,
                   err: err.message,
                   event: "saas_crm.enqueue_failed",
                 },
-                "crm_outbox enqueue failed — lead lost (Postgres write error)",
+                "crm_outbox enqueue failed — Postgres write error",
               );
             }),
           ),

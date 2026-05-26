@@ -1132,7 +1132,7 @@ describe("upsertPerson with allowedPersonFields", () => {
       }),
       {
         email: "alice@example.com",
-        name: "Alice",
+        name: { firstName: "Alice" },
         eventSource: "DEMO",
         customFields: { atlasIp: "1.2.3.4", atlasStripeCustomerId: "cus_abc" },
       },
@@ -1142,7 +1142,7 @@ describe("upsertPerson with allowedPersonFields", () => {
     const body = JSON.parse(post.body ?? "{}") as Record<string, unknown>;
     expect(body.atlasFirstSource).toBe("DEMO");
     expect(body.atlasLastSource).toBe("DEMO");
-    expect(body.name).toBe("Alice");
+    expect(body.name).toEqual({ firstName: "Alice" });
     expect(body.emails).toEqual({ primaryEmail: "alice@example.com" });
     // Dropped because not in allowlist:
     expect("atlasIp" in body).toBe(false);

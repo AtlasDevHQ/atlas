@@ -12,12 +12,18 @@
  *   <TalkToSalesDialog triggerLabel="or talk to sales" />
  */
 
-import { useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { TalkToSalesForm } from "./talk-to-sales-form";
 
 export interface TalkToSalesDialogProps {
-  /** Visible label for the trigger button. */
+  /** Accessible name + visible label for the trigger button. */
   triggerLabel: string;
+  /**
+   * Optional decorative element rendered after the label (e.g. an arrow
+   * glyph on a primary CTA). Presentational only — the component owns
+   * placement; spacing is governed by the caller's `triggerClassName`.
+   */
+  triggerIcon?: ReactNode;
   /** Trigger button class — defaults to a subtle "secondary CTA" style. */
   triggerClassName?: string;
   /** Pre-select a plan in the dropdown (e.g. "Business" from /pricing). */
@@ -29,6 +35,7 @@ const DEFAULT_TRIGGER_CLASS =
 
 export function TalkToSalesDialog({
   triggerLabel,
+  triggerIcon,
   triggerClassName,
   initialPlanInterest,
 }: TalkToSalesDialogProps) {
@@ -64,6 +71,7 @@ export function TalkToSalesDialog({
         className={triggerClassName ?? DEFAULT_TRIGGER_CLASS}
       >
         {triggerLabel}
+        {triggerIcon}
       </button>
 
       {open ? (

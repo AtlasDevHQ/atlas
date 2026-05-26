@@ -27,7 +27,7 @@ jobs:
   # collapsing all dependent jobs into one always-running umbrella check.
   changes:
     name: Detect scaffold-relevant changes
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       scaffolds: ${{ steps.filter.outputs.scaffolds }}
       boot-smoke: ${{ steps.filter.outputs.boot-smoke }}
@@ -90,7 +90,7 @@ jobs:
     name: Scaffold (${{ matrix.platform }})
     needs: changes
     if: needs.changes.outputs.scaffolds == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     strategy:
       fail-fast: false
       matrix:
@@ -127,7 +127,7 @@ jobs:
     name: Standalone Example Build
     needs: changes
     if: needs.changes.outputs.scaffolds == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
@@ -169,15 +169,15 @@ jobs:
   # post-merge regardless of which paths the PR touched.
   boot-build:
     name: Boot Build
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3.6.1
+      - name: Setup Blacksmith Builder
+        uses: useblacksmith/setup-docker-builder@v1
 
       - name: Build deploy/api image up to builder stage
-        uses: docker/build-push-action@5cd11c3a4ced054e52742c5fd54dca954e0edd85 # v6.7.0
+        uses: useblacksmith/build-push-action@v2
         with:
           context: .
           file: deploy/api/Dockerfile
@@ -187,8 +187,6 @@ jobs:
           # Share cache with boot-smoke so the slow gate benefits when both
           # run on the same PR, and so the fast gate stays fast on PRs that
           # only touched non-runtime paths.
-          cache-from: type=gha,scope=boot-smoke
-          cache-to: type=gha,scope=boot-smoke,mode=max
 
   # Build the production deploy/api/Dockerfile, run it under the SaaS env
   # contract (#2226), and probe /api/health. Catches everything the
@@ -210,7 +208,7 @@ jobs:
     name: Boot Smoke
     needs: changes
     if: needs.changes.outputs.boot-smoke == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     services:
       postgres:
         image: postgres:16-alpine
@@ -243,11 +241,11 @@ jobs:
           echo "Fixture keys:"
           cut -d= -f1 /tmp/saas.env
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@988b5a0280414f521da01fcc63a27aeeb4b104db # v3.6.1
+      - name: Setup Blacksmith Builder
+        uses: useblacksmith/setup-docker-builder@v1
 
       - name: Build deploy/api image
-        uses: docker/build-push-action@5cd11c3a4ced054e52742c5fd54dca954e0edd85 # v6.7.0
+        uses: useblacksmith/build-push-action@v2
         with:
           context: .
           file: deploy/api/Dockerfile
@@ -261,8 +259,6 @@ jobs:
           # GHA cache writes (single layers taking ~60s each). Warm runs
           # land in ~4-5 min — dominated by `load: true` tarball export
           # (~2 min) and the runner-stage layer write (~1-2 min).
-          cache-from: type=gha,scope=boot-smoke
-          cache-to: type=gha,scope=boot-smoke,mode=min
 
       - name: Run API container
         run: |
@@ -331,7 +327,7 @@ jobs:
   # Lightweight checks that don't need bun: Docker compose validation + deploy mode defaults.
   config-validation:
     name: Config & Deploy Mode
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
@@ -375,7 +371,7 @@ jobs:
     name: Deploy Validation
     needs: [changes, scaffold-smoke, standalone-build, config-validation, boot-build, boot-smoke]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - name: Verify all dependent jobs succeeded or were skipped
         env:

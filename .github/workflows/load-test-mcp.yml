@@ -89,7 +89,7 @@ concurrency:
 jobs:
   load-test:
     name: load-test (${{ inputs.scenarios }} → ${{ inputs.base_url }})
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # Generous ceiling: full ladder is 5 stages × 5 min + ramps, plus
     # 5 min mix + ~2 min cold-start + install. 90 min absorbs slack.
     timeout-minutes: 90

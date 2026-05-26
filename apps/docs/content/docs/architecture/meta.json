@@ -6,6 +6,7 @@
     "sandbox",
     "content-mode",
     "enterprise",
+    "entitlements",
     "mcp-performance",
     "mcp-tools",
     "mcp-tool-annotations"

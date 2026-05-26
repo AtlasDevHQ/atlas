@@ -289,10 +289,93 @@ The web package never imports `@atlas/ee`. UI gating lives in two places:
 
 ---
 
+## Core ↔ EE boundary
+
+The 1.5.1 architecture-deepening arc (#2017 / milestone #48, closed 2026-05-18) inverted the historical `core → ee` dependency. Every enterprise subsystem now lives behind a `Context.Tag` declared in core, with a fail-closed Noop default Layer. EE provides the real `Layer.effect` implementations; core composes both via `lib/effect/enterprise-layer.ts` — **the single permitted runtime reference to `@atlas/ee` from core**.
+
+Two CI gates lock the inversion in. Both run on every PR and both sit in the required-status-check set on `main`:
+
+- **`scripts/check-ee-imports.sh`** — greps the core source tree for real `@atlas/ee` import syntax (`from "@atlas/ee`, `import("@atlas/ee`, `require("@atlas/ee`), strips comments before matching, and rejects any new match outside `lib/effect/enterprise-layer.ts`. A failure means a new dynamic import slipped in; migrate the call site to `yield* TheTag` from Effect Context.
+- **`ee-stub-build`** job (surfaced in branch protection as **Symlink Stub Build**) — replaces `ee/` with `scripts/ee-stub/` (whose `EELayer` export is `Layer.empty` and whose other exports are no-op stubs sized to the call sites) and re-runs `bun run type` + `bun run build`. Any structural coupling from core to ee fails the build. This proves core compiles standalone — the AGPL artifact that ships when enterprise is disabled.
+
+The 1.5.1 arc deliberately picked Effect's `Context.Tag` over a bare boolean flag because every subsystem already needed multiple methods (residency: 8; SLA: 6; backups: 5). A `Tag` lets the AGPL core express "I yield* this enterprise capability" without committing to whether `@atlas/ee` is on disk. The Noop default closes the loop: self-hosted runs the no-op implementation; SaaS overlays `ee/src/layers.ts:EELayer` via the lazy import in `ConditionalEELayer`.
+
+### Adding a new enterprise subsystem end-to-end
+
+1. **Declare the Tag in `packages/api/src/lib/effect/services.ts`.** Pattern: an exported `interface XYZShape` describing the methods, then `export class XYZ extends Context.Tag("XYZ")<XYZ, XYZShape>() {}`. Method return types use `Effect.Effect<A, E>` so consumers thread the typed error channel.
+
+2. **Add a Noop default Layer next to the Tag.** Use the shared `makeNotAvailable("…")` helper for the typed-error path — it lazy-requires `EnterpriseError` so `mock.module()` ordering surprises don't bite test wiring. The Noop's job is to fail loudly on every method (`Effect.fail(makeNotAvailable("XYZ requires enterprise")())`) so a self-hosted deploy that *yields* the Tag sees the same 403 response a missing-license-key would produce in any other shape.
+
+3. **Compose the Noop into `NoopEnterpriseDefaultsLayer`** (same file, near the bottom) so the conditional EE Layer can be merged on top in `enterprise-layer.ts`. Append the Tag to the `EnterpriseSubsystem` union in [`packages/api/src/lib/effect/enterprise-layer.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/effect/enterprise-layer.ts) so the bridge's `R` constraint widens.
+
+4. **Implement the real Layer in `ee/src/<category>/<feature>.ts`** and wire it into `ee/src/layers.ts:EELayer`. The dynamic import inside `ConditionalEELayer` is `await import("@atlas/ee/layers")` — your new Layer needs to be reachable from `EELayer`'s `Layer.mergeAll`.
+
+5. **`yield*` the Tag at consumer call sites in core.** Routes pull it via the shared Hono bridge (`runHandler`); standalone code uses `runEnterprise(program)` from `enterprise-layer.ts`. Never `await import("@atlas/ee/...")` — the CI grep gate rejects it.
+
+### Worked example: `ResidencyResolver`
+
+From [`packages/api/src/lib/effect/services.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/effect/services.ts):
+
+```typescript
+export interface ResidencyResolverShape {
+  /** False when EE residency is not loaded — routes should surface "not_available". */
+  readonly available: boolean;
+  readonly resolveRegionDatabaseUrl: (
+    workspaceId: string,
+  ) => Effect.Effect<ResidencyRegionRoute | null>;
+  readonly listRegions: () => Effect.Effect<RegionStatus[], ResidencyError>;
+  // ...
+}
+export class ResidencyResolver extends Context.Tag("ResidencyResolver")<
+  ResidencyResolver,
+  ResidencyResolverShape
+>() {}
+
+export const NoopResidencyResolverLayer: Layer.Layer<ResidencyResolver> =
+  Layer.sync(ResidencyResolver, () => {
+    const { ResidencyError } = require("@atlas/api/lib/residency/errors") as { /* … */ };
+    const notConfigured = () => new ResidencyError({
+      message: "Data residency is not configured.",
+      code: "not_configured",
+    });
+    return {
+      available: false,
+      resolveRegionDatabaseUrl: () => Effect.succeed(null),
+      listRegions: () => Effect.fail(notConfigured()),
+      // ...
+    } satisfies ResidencyResolverShape;
+  });
+```
+
+Core code now does `yield* ResidencyResolver` and gets either the EE implementation (when `EELayer` overlays it) or the Noop's `available: false` / `Effect.fail(...)` defaults — without importing `@atlas/ee`.
+
+### When to add `available: boolean` to a Tag
+
+From the [`Tag.available` checklist](https://github.com/AtlasDevHQ/atlas/blob/main/CLAUDE.md) in `CLAUDE.md`:
+
+> **`Tag.available` is for the 404 / shaped-success branch only** — When you author a new enterprise Tag in `lib/effect/services.ts`, **omit** `readonly available: boolean` by default. The Noop layer's `Effect.fail(EnterpriseError(...))` plus the Hono bridge's 403 mapping is the canonical "feature unavailable" signal — routes don't need a flag to surface it. Add `available` only when at least one non-test consumer must branch into a *different* response shape than the 403 envelope: 404 `not_available` (e.g. `platform-sla.ts`, `platform-backups.ts`), a 200-with-empty-shape body (e.g. `admin-residency.ts` returning `{ configured: false, ... }`), or a DB-skip short-circuit (e.g. `lib/auth/scim-provenance.ts` returning `false` without querying). Document the consumer(s) in the Tag's JSDoc — "False when EE X is not loaded — `<route>` …" — so the next reviewer can confirm the flag is still load-bearing.
+
+Tags that carry `available` today (verified against [`lib/effect/services.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/effect/services.ts)): `ResidencyResolver`, `ModelRouter`, `MaskingPolicy`, `ApprovalGate`, `SlaMetrics`, `BackupsManager`, `AuditRetention`, `IpAllowlistPolicy`, `SCIMProvenance`, `Domains`, and `SaasCrm` (anticipatory — no production caller branches on it yet, per its JSDoc). Everything else (`ComplianceReports`, `AuditPurgeScheduler`, `SSOPolicy`, `RolesPolicy`, `Branding`, `ProactiveGate`) uses the typed-error path. Domain-specific flags (`xyzActive: boolean`) are not permitted — fold them into `available` or surface the distinction through a method return value. `DeployModeResolver` is the lone sentinel-returning Tag (`"saas" | "self-hosted"` is the value, not a flag).
+
+### Reading failure modes from the CI gates
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `check-ee-imports` fails with a file path | A new `from "@atlas/ee/…"` or `import("@atlas/ee/…")` landed outside the allowed file | Replace with `yield* TheTag` from Effect Context. If the feature genuinely needs a new subsystem, follow the five-step recipe above |
+| `Symlink Stub Build` fails at `bun run type` | Core code references an EE-specific type via a structural path that the stub doesn't expose | Type-only imports from `@useatlas/types` or `@atlas/api/lib/effect/services` are fine; concrete imports from `@atlas/ee/...` are not. Move the type into a shared module |
+| `Symlink Stub Build` fails at `bun run build` | A consumer call site assumes EE-only side effects (e.g. `Effect.provide(EELayer)` instead of `EnterpriseLayer`) | Use `runEnterprise(program)` / the Hono bridge's `runHandler` — they thread `EnterpriseLayer`, which composes Noop defaults under the conditional EE overlay |
+
+### Load-failure handling
+
+When `ATLAS_ENTERPRISE_ENABLED=true` but `@atlas/ee/layers` fails to import at runtime (broken install, missing build artifact), `ConditionalEELayer` logs `event: "enterprise.load_failed"` at ERROR — alertable by SaaS monitoring — and falls through to `Layer.empty`. Every enterprise subsystem then resolves to its Noop default for the request. Four high-impact call sites (`MaskingPolicy`, `ApprovalGate`, `ResidencyResolver`, `AuditRetention`) layer on a consumer-side fail-closed check: when `isEnterpriseEnabled() === true` but `tag.available === false`, they short-circuit with `EnterpriseUnavailableError` (→ 503 `enterprise_load_failed`). Self-hosted (`ATLAS_ENTERPRISE_ENABLED !== "true"`) keeps the no-op pass-through; the 503 only fires on SaaS where the EE load actually failed.
+
+---
+
 ## See also
 
 - [Reference: Config](/reference/config#enterprise) — `enterprise.enabled` / `enterprise.licenseKey` schema
 - [Reference: Environment Variables](/reference/environment-variables) — `ATLAS_ENTERPRISE_ENABLED`, `ATLAS_ENTERPRISE_LICENSE_KEY`, `ATLAS_DEPLOY_MODE`
+- [Architecture: Entitlements](/architecture/entitlements) — plan-tier gating and the operator-workspace bypass that consumes the EE-aware admin surfaces
 - [Architecture: Sandbox](/architecture/sandbox) — companion design doc on the runtime sandbox boundary
 - [Comparisons: Metabase](/comparisons/metabase#license) — split-license positioning vs other AGPL BI tools
 - [`ee/LICENSE`](https://github.com/AtlasDevHQ/atlas/blob/main/ee/LICENSE) — the commercial license verbatim

@@ -1,0 +1,211 @@
+---
+title: Entitlements & Plan Gating
+description: The PLAN_RANK ordering, 4-layer gating model, is_operator_workspace bypass, and the throttled gate-deny log that powers every "is feature X available on plan Y?" decision.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+> Single source of truth on how Atlas decides whether a workspace can install, see, or be reached by a given catalog entry. Operators investigating an unexpected "Upgrade" banner or a silent proactive flow land here.
+
+The entitlement bundle shipped in #2713 (1.5.2) introduced a unified plan-tier comparator (`PLAN_RANK`), an `is_operator_workspace` bypass, four gating layers across the request lifecycle, and a throttled gate-deny log. Every "is feature X available on plan Y?" decision goes through this model — `/admin/integrations`, `/admin/billing`, the proactive listener, and the install endpoints all consume the same primitives.
+
+The model has two concerns:
+
+- **Visibility & install gates** — does this workspace see this catalog row, and can it click Connect? Lives in core (`packages/api/src/`).
+- **Runtime gates** — does an inbound chat event continue past the listener, given the current install state? Lives in the chat plugin (`plugins/chat/src/proactive/`).
+
+Both compose the same `PLAN_RANK` table and respect the same operator bypass.
+
+---
+
+## PLAN_RANK
+
+From [`packages/api/src/lib/integrations/install/plan-rank.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/integrations/install/plan-rank.ts):
+
+```typescript
+export const PLAN_RANK: Readonly<Record<PlanTier, number>> = {
+  free: 0,
+  trial: 1,
+  starter: 2,
+  pro: 3,
+  business: 4,
+};
+```
+
+Higher = more privileged. The ordering matches the customer-visible price ladder (`free → trial → starter → pro → business`); `trial` ranks above `free` because trials grant temporary starter-equivalent access. The `Record<PlanTier, number>` annotation is exhaustive — adding a tier to the `PLAN_TIERS` union in `@useatlas/types` without assigning a rank is a compile error.
+
+Two predicates back the comparator:
+
+| Function | Returns | Use |
+|---|---|---|
+| `parsePlanTier(value: unknown): PlanTier \| null` | Narrows a raw string off the wire / SQL row to the typed union; returns `null` for unknown values | Call once per trust boundary (DB row read, HTTP body, config import) |
+| `isPlanEligible(workspacePlan, requiredPlan): boolean` | `true` when `workspacePlan` ranks ≥ `requiredPlan` | The canonical "does this plan admit this entry?" check |
+
+### Fail-closed semantics
+
+- **Unknown `min_plan`** (catalog drift, typo in a seed): `planRank` returns `null` and `isPlanEligible` returns `false` — a typo in a catalog row never widens access. The install endpoints surface this as a structured `501 handler_unavailable` (see `checkPlanEligibility` in `packages/api/src/api/routes/integrations.ts`) so the operator sees the raw bad value in the log rather than a confusing customer-facing "upgrade to TEAM" prompt with a tier they can't buy.
+- **Unknown `plan_tier`** (legacy `team` row, NULL from a LEFT JOIN miss, pre-#1472 workspace): callers treat as rank 0 (most restrictive). The DB CHECK on `organization.plan_tier` should already prevent unknowns from landing, but the gate stays defensive.
+- **Pre-#2666 catalog rows** still carrying `team` / `enterprise` are normalized to `business` by migration 0090.
+
+---
+
+## The 4 gating layers
+
+Plan gating fires in four distinct places across the request lifecycle. Each layer answers a different question; together they ensure a workspace's plan tier is consistently respected from catalog discovery to runtime event delivery.
+
+| # | Where | What it gates | Verdict shape |
+|---|---|---|---|
+| 1 | **Catalog visibility** — `GET /api/v1/integrations/catalog` ([`integrations-catalog.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/api/routes/integrations-catalog.ts)) | Whether the row appears in the admin-UI listing and whether the card renders as actionable or as a read-only upsell | `accessible: boolean`, `upsellOnly: boolean`, `upgradeRequired: PlanTier \| null` on the row |
+| 2 | **Pre-install plan check** — `POST /api/v1/integrations/:platform/install` and the Discord variant ([`integrations.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/api/routes/integrations.ts), [`integrations-discord.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/api/routes/integrations-discord.ts)) | Whether the workspace can actually click Connect for this entry | `checkPlanEligibility(...)` → `admit \| deny \| catalog_drift`. Deny emits 403 `plan_upgrade_required` with `required_plan` / `current_plan` |
+| 3 | **Card-state machine** — `resolveInstallStatus` ([`install-status-machine.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/integrations/install-status-machine.ts)) | Which of the six render states the admin-UI card resolves to | `CardState` ∈ `{connected, accessible, coming_soon, misconfigured, upgrade_required, configured_but_downgraded}` |
+| 4 | **Proactive runtime gate** — `WorkspaceInstallGate.isWorkspaceInstallActive` ([`workspace-install-gate.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/integrations/install/workspace-install-gate.ts)) | Whether an inbound chat event continues past the listener BEFORE classify (no LLM call, no meter row) | `boolean` for the hot path; structured `InstallGateVerdict` for the deny-log path |
+
+Each layer fails closed independently. A DB outage at layer 4 silences proactive rather than letting an unverified workspace continue; a typo in `min_plan` at layer 2 refuses the install rather than admitting a malformed row.
+
+### Layer 1 — Catalog visibility
+
+The catalog read route projects each row to a response shape that includes `accessible`, `upsellOnly`, and `upgradeRequired`. The UI uses those to decide between rendering a working Connect button, a read-only upsell card, or hiding the row entirely (on SaaS, `saas_eligible: false` rows are hidden). Operator workspaces always see `accessible: true` regardless of plan tier.
+
+### Layer 2 — Pre-install plan check
+
+Before mounting the OAuth flow / form modal / static-bot handler, the install endpoint runs `checkPlanEligibility(entitlement, catalogRow.min_plan)`. The discriminated result routes to:
+
+- `admit` → continue with the install handler
+- `deny` → return 403 `plan_upgrade_required` carrying the required and current plans so the UI can render "Upgrade to Pro" copy
+- `catalog_drift` → return 501 `handler_unavailable` with the raw bad `min_plan` value logged
+
+This is the single layer that customers see as an HTTP response; the others either filter the catalog list or silence runtime events.
+
+### Layer 3 — Card-state machine
+
+`resolveInstallStatus` is a pure function that maps `(catalogRow, workspaceInstall, planAdmits, deployConfigured, handlerRegistered)` to one of six render states. Priority order:
+
+1. `coming_soon` (catalog row's `implementation_status`) — dominates everything
+2. `misconfigured` (operator hasn't wired env vars / handler isn't registered)
+3. plan-gate
+4. presence (`accessible` if no install row, `connected` if installed)
+
+When the plan gate fails but an install row exists, the state resolves to `configured_but_downgraded` so the user can still disconnect — a workspace that downgrades shouldn't get stranded with an undeletable install.
+
+### Layer 4 — Proactive runtime gate
+
+`WorkspaceInstallGate.isWorkspaceInstallActive(workspaceId, catalogId)` is the outermost check for every chat event reaching the proactive listener. Returns `true` only when all four facts hold:
+
+1. A `workspace_plugins` row exists for `(workspaceId, catalogId)`
+2. That row's `enabled = true`
+3. The joined `plugin_catalog` row's `enabled = true`
+4. **EITHER** the workspace's `organization.is_operator_workspace = true` (operator bypass) **OR** the workspace's `organization.plan_tier` ranks `>= catalog.min_plan`
+
+Any other state — missing install row, install disabled, catalog disabled, plan mismatch, DB hiccup — returns `false`. The gate is per-event-cached via `createInstallGateCache()`, not cross-event-cached (an admin's "uninstall" click takes effect on the very next event, no TTL window).
+
+---
+
+## `is_operator_workspace` bypass
+
+Atlas's own dogfood workspaces (the SaaS team's internal workspaces, per-region operator orgs, the `__demo__` workspace's parent) never hold a paid plan, but they must be able to install and reach every catalog entry. The `organization.is_operator_workspace` boolean (added in migration 0090) flips the plan-tier check to "always admit".
+
+Bypass conditions (every one is necessary):
+
+- The workspace's `organization` row has `is_operator_workspace = true`
+- The install + catalog `enabled` flags **still gate** — an operator workspace cannot admit a `pc.enabled = false` row, and an uninstall (`wp.enabled = false`) still takes effect
+- The bypass applies only to plan-tier comparisons. `coming_soon` (layer 3) and `handler_unavailable` (layer 2 catalog drift) still close the gate
+
+When the bypass admits a workspace, `WorkspaceInstallGate.describeState` returns `{ active: true, operatorBypass: true }` and the runtime log line carries `operatorBypass: true` so a reviewer investigating "why does this workspace get past the plan gate?" sees the answer in one structured field instead of debugging the rank table by hand.
+
+<Callout type="warn" title="`is_operator_workspace` is a write-by-operator field">
+There is no admin-UI surface for flipping `is_operator_workspace`. The only writers are Atlas's own deploy scripts (per-region operator org provisioning) and the migration that introduced the column. Setting it `true` on a customer workspace would silently widen access — treat it like a database root credential.
+</Callout>
+
+---
+
+## The throttled gate-deny log
+
+Layer 4's deny path emits a structured pino info line — not a DB audit row. Throttled per `(workspaceId, channelId)` to one line per 10 minutes so a steady-state denied workspace doesn't fill the log with one entry per inbound chat event.
+
+Source: [`plugins/chat/src/proactive/listener.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/plugins/chat/src/proactive/listener.ts) — search for `denyLogged` / `DENY_LOG_THROTTLE_MS`.
+
+### Shape
+
+```json
+{
+  "level": "info",
+  "msg": "Proactive: install gate closed — skipping (no classify, no meter, no DB write)",
+  "workspaceId": "ws_…",
+  "catalogId": "slack",
+  "channelId": "C…",
+  "throttleWindowMs": 600000,
+  "installFound": true,
+  "installEnabled": true,
+  "catalogEnabled": true,
+  "planTier": "starter",
+  "minPlan": "pro",
+  "operatorBypass": false,
+  "reason": "plan_below_min"
+}
+```
+
+### Deny reason codes
+
+The `reason` field is a literal union — exhaustive `switch` statements pin down what closed the gate:
+
+| Reason | Meaning |
+|---|---|
+| `no_install_row` | No `workspace_plugins` row exists for `(workspaceId, catalogId)` |
+| `install_disabled` | `workspace_plugins.enabled = false` (admin uninstall) |
+| `catalog_disabled` | `plugin_catalog.enabled = false` (operator emergency-disable) |
+| `unknown_min_plan` | Catalog row's `min_plan` is not a recognized tier (catalog drift) |
+| `plan_below_min` | Workspace's `plan_tier` ranks below `catalog.min_plan` and no operator bypass |
+| `db_error` | Gate query failed; fail-closed default |
+| `gate_cache_race` | The boolean check denied but `describeState` reports active — a per-event cache race; conservatively skipped |
+
+A cache-race deny logs a distinct message (`"… likely cache race; skipping conservatively"`) so operators can tell a real plan deny from a race.
+
+### Querying the log
+
+The line lands in your log-aggregation surface (Pino → stdout → Railway / Vercel / OTLP). For an alert on "workspace X denied proactively for 1h+", query the structured fields:
+
+```text
+msg = "Proactive: install gate closed*"
+AND workspaceId = "<ws>"
+```
+
+This is the canonical source for "why doesn't proactive work for workspace X?" — the deny-path log carries every fact the gate evaluated, not just the verdict.
+
+<Callout type="info" title="Not in admin_action_log">
+The gate-deny log is a pino info line, not a row in the `admin_action_log` DB table. `admin_action_log` is for *admin write actions* (uninstall, MFA reset, role change, etc.) — runtime gate verdicts on inbound chat events would balloon that table without bound. Throttled pino + the structured `reason` field is the right shape for "fired thousands of times per minute on a busy workspace".
+</Callout>
+
+---
+
+## Worked example: starter-plan workspace clicks Connect on a Team-tier integration
+
+Setup: workspace `ws_acme` is on `starter`; the operator declares a catalog row for a hypothetical `pagerduty` integration with `min_plan: "business"`.
+
+What each layer does:
+
+1. **Catalog visibility** — `GET /api/v1/integrations/catalog` includes the `pagerduty` row with `upsellOnly: true`, `accessible: false`, `upgradeRequired: "business"`. The UI renders a read-only upsell card.
+2. **Pre-install plan check** — the admin clicks Connect anyway (or curls the install endpoint directly). `checkPlanEligibility({ planTier: "starter", isOperator: false }, "business")` returns `{ kind: "deny", required_plan: "business", current_plan: "starter" }`. The endpoint returns 403:
+   ```json
+   {
+     "error": "plan_upgrade_required",
+     "message": "Installing pagerduty requires the \"business\" plan. Your workspace is on the \"starter\" plan.",
+     "required_plan": "business",
+     "current_plan": "starter",
+     "requestId": "..."
+   }
+   ```
+3. **Card-state machine** — `resolveInstallStatus` resolves to `upgrade_required` (no install row + plan-gate fails). The card shows the upsell variant.
+4. **Proactive runtime gate** — moot for `pagerduty` (not a chat platform). If `ws_acme` had Slack on `min_plan: "business"`, layer 4 would silently skip every inbound Slack event with `reason: "plan_below_min"` in the throttled deny log.
+
+If `ws_acme.is_operator_workspace` were `true`, layers 2 and 4 would admit the install / event; layer 1 would still show the row as `accessible: true` (operator workspaces see everything). Layer 3 would resolve to `accessible` or `connected` per install state.
+
+If `pagerduty.implementation_status === "coming_soon"`, layer 3 would resolve to `coming_soon` regardless of plan tier or operator status — `coming_soon` dominates every other gate.
+
+---
+
+## See also
+
+- [Reference: Config — Catalog](/reference/config#catalog) — declaring `min_plan` on a catalog entry
+- [Architecture: Enterprise (/ee) Boundary](/architecture/enterprise) — the EE-vs-AGPL split that backs the SaaS-only admin surfaces this gate consumes
+- [Deployment: Plugin Catalog](/deployment/plugin-catalog) — the catalog seeder behaviour and per-row toggles
+- [Guides: Billing & Plans](/guides/billing-and-plans) — what each tier costs and how `plan_tier` gets set

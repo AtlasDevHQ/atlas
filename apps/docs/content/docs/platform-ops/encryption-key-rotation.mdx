@@ -89,18 +89,28 @@ silently destroys every encrypted credential. Set a dedicated
    Deploy. Every new write now stamps ciphertext as `enc:v2:…`. Old
    rows still decrypt because v1 is still in the keyset.
 
-4. **Re-encrypt existing rows.** Run the rotation script — it walks
-   every encrypted column, decrypts under whichever keyset entry the
-   ciphertext carries, re-encrypts under v2, and stamps the companion
-   `_key_version` column.
+4. **Re-encrypt existing rows.** Run the rotation script — it walks:
+
+   - Every F-41 `*_encrypted` column (workspace_model_config + every
+     integration credential table), decrypts under whichever keyset
+     entry the ciphertext carries, re-encrypts under v2, and stamps
+     the companion `_key_version` column.
+   - Every selective-field secret inside `workspace_plugins.config`
+     JSONB (post-#2744). Datasource credentials and other plugin
+     secrets are walked via a JOIN against `plugin_catalog.config_schema`
+     — every catalog row's `secret: true` fields are re-encrypted
+     in-place. There is no companion `_key_version` column on the
+     JSONB row; idempotence is gated per-field on the `enc:v<N>:`
+     prefix instead.
 
    ```bash
    bun run packages/api/scripts/rotate-encryption-key.ts
    ```
 
-   The script is idempotent — it filters rows by
-   `<col>_key_version < $active`, so re-runs after partial progress
-   pick up where the previous run left off.
+   The script is idempotent for both shapes — column targets filter
+   rows by `<col>_key_version < $active`, and JSONB targets skip
+   fields whose prefix already names the active version. Re-runs
+   after partial progress pick up where the previous run left off.
 
 5. **Verify.** Each column-rotated table has a companion `*_key_version`
    column. The script should have left every row at the active version
@@ -161,11 +171,34 @@ silently destroys every encrypted credential. Set a dedicated
    -- Every row should report `below_active = 0`.
    ```
 
-   Note: datasource credentials live inside `workspace_plugins.config`
-   JSONB via selective-field encryption (post-#2744 cutover). They are
-   not column-rotated by this script — operators re-save the install
-   from `/admin/connections` to re-encrypt under the active key, or
-   wait for the next admin write to migrate organically.
+   Datasource credentials and other plugin secrets live inside
+   `workspace_plugins.config` JSONB via selective-field encryption
+   (post-#2744 cutover). They participate in the same rotation pass,
+   so the same script suffices — no per-install re-save needed. To
+   verify that every JSONB secret-field ciphertext is at v2, count
+   `enc:v<N>:` prefixes where `N < active` across every catalog row
+   whose schema marks a field `secret: true`:
+
+   ```sql
+   WITH plugin_secret_fields AS (
+     SELECT pc.id AS catalog_id,
+            jsonb_array_elements(pc.config_schema) ->> 'key' AS field_key,
+            (jsonb_array_elements(pc.config_schema) ->> 'secret')::boolean AS is_secret
+       FROM plugin_catalog pc
+      WHERE jsonb_typeof(pc.config_schema) = 'array'
+   )
+   SELECT 'workspace_plugins.config[secret-field]' AS col,
+          COUNT(*) FILTER (
+            WHERE wp.config ->> psf.field_key ~ '^enc:v[0-9]+:'
+              AND (SUBSTRING(wp.config ->> psf.field_key FROM 'enc:v(\d+):'))::int < 2
+          ) AS below_active
+     FROM workspace_plugins wp
+     JOIN plugin_secret_fields psf ON psf.catalog_id = wp.catalog_id
+    WHERE psf.is_secret = true;
+   -- Should report `below_active = 0`. A non-zero count means a JSONB
+   -- secret field is still pinned to a legacy key — re-run the
+   -- rotation script (or check exit code 2 for orphans before re-running).
+   ```
 
    The rotation script also exits `2` if any row was orphaned (stored
    ciphertext references a version missing from the keyset); if you
@@ -245,17 +278,22 @@ the escrow copy is a compromise target too.
 - [ ] Second deploy completed
 - [ ] `scripts/rotate-encryption-key.ts` run to completion
 - [ ] Per-column verification query shows `below_active = 0`
+- [ ] JSONB secret-field verification query shows `below_active = 0`
 - [ ] Legacy key dropped from config and revoked in the secret manager
 
 ## Known limitations
 
 - **OIDC SSO client secrets are not included in the rotation script.**
   `sso_providers.config` is a JSONB blob with the `clientSecret`
-  ciphertext embedded inside; rotating it requires walking the JSON
-  rather than a column-oriented UPDATE. Operators can re-save OIDC
-  provider configs via the admin UI after rotation to re-encrypt them
-  under the active key. The `enc:v<N>:` prefix keeps the ciphertext
-  readable as long as the legacy key stays in `ATLAS_ENCRYPTION_KEYS`.
+  ciphertext embedded under a hand-rolled field name, not the
+  catalog-driven `config_schema` walker that handles
+  `workspace_plugins.config`. Operators can re-save OIDC provider
+  configs via the admin UI after rotation to re-encrypt them under
+  the active key. The `enc:v<N>:` prefix keeps the ciphertext
+  readable as long as the legacy key stays in
+  `ATLAS_ENCRYPTION_KEYS`. (A future `oidc-jsonb` target kind would
+  close this gap; #2820 added the JSONB rotation shape it would
+  extend.)
 - **Dev-mode rows (no key configured) stamp `_key_version = 1`.** When
   no key is set, `encryptSecret` passes plaintext through unchanged,
   but the companion `_key_version` column still defaults to

@@ -20,7 +20,12 @@
 -- half-migrated state.
 
 DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'organization') THEN
+  -- Scope the existence check to the caller's search_path via to_regclass.
+  -- A global information_schema lookup would pass when `organization` lives
+  -- in a sibling schema (e.g. a concurrent test schema), then ALTER TABLE
+  -- below would fail because the table isn't actually reachable from
+  -- search_path. See 0000_baseline.sql comment + #2820 fix-CI.
+  IF to_regclass('organization') IS NULL THEN
     RAISE EXCEPTION 'Atlas migration 0027 requires the "organization" table to exist. In managed auth mode, Better Auth migrations must run before Atlas migrations. See https://github.com/AtlasDevHQ/atlas/issues/1472.';
   END IF;
 END $$;

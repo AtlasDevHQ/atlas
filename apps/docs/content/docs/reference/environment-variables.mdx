@@ -295,6 +295,9 @@ Atlas issues OAuth 2.1 access tokens via `@better-auth/oauth-provider` so MCP cl
 |----------|---------|-------------|
 | `ATLAS_OAUTH_VALID_AUDIENCES` | Derived from `ATLAS_PUBLIC_API_URL`/`BETTER_AUTH_URL` (`<base>/mcp`) | Comma-separated allowed JWT `aud` values. Used verbatim — operator owns the values and may want non-MCP audiences. The issuer's accepted audience must equal what the resource server advertises and what the verifier checks. |
 | `ATLAS_OAUTH_ALLOW_UNAUTH_DCR` | `true` | When `true`, MCP clients can register as public OAuth clients without authentication (RFC 7591) — required for standard MCP onboarding. Set `false` if your threat model rejects unattended client registration; Claude Desktop / ChatGPT / Cursor will then require manual client provisioning. Track the upstream MCP spec (Client ID Metadata Documents, signed `software_statement`) — this flag is deprecation-bound. |
+| `ATLAS_OAUTH_ACCESS_TOKEN_TTL_SECONDS` | `3600` (1h) | Access-token lifetime issued by the Atlas OAuth provider (`@better-auth/oauth-provider`). Read by `packages/api/src/lib/auth/server.ts`. Empty, non-numeric, or non-positive values silently fall back to the default — a typo like `ATLAS_OAUTH_ACCESS_TOKEN_TTL_SECONDS=` cannot ship a 0-second token |
+| `ATLAS_OAUTH_REFRESH_TOKEN_TTL_SECONDS` | `2592000` (30d) | Refresh-token lifetime issued by the Atlas OAuth provider. Same parse rules as the access-token TTL: empty / non-numeric / non-positive falls back to default |
+| `ATLAS_OAUTH_STATE_TTL_SECONDS` | `600` (10m) | TTL for OAuth `state` tokens minted during integration install flows (`/api/v1/integrations/:slug/install`). Clamped to `[60, 3600]` — values outside that window log a warning and fall back to the default. Source: `packages/api/src/lib/integrations/install/oauth-state-token.ts` |
 
 ### BYOT (Bring Your Own Token)
 
@@ -401,6 +404,9 @@ Actor binding for the [MCP server](/guides/mcp). The transport runs in one of tw
 | `ATLAS_MCP_EXPOSE_CANONICAL_PROMPTS` | `auto` | Tri-state gate (`auto` / `always` / `never`) for exposing the 20 NovaMart canonical eval questions ([#2076](https://github.com/AtlasDevHQ/atlas/issues/2076)) as `canonical-{slug}` `prompts/list` entries on the hosted MCP endpoint. `auto` exposes them only on the `__demo__` workspace (default — discoverable in the demo, hidden in customer prompt lists). `always` forces exposure for every workspace. `never` fails closed. The Settings → AI Agents → MCP Prompts preview block reflects this gate live |
 | `ATLAS_MCP_RATE_LIMIT_FAIL_CLOSED` | `false` | Fail-closed gate for MCP rate-limit infrastructure errors. When `true`, a rate-limit-store outage (Redis down, internal DB unreachable) causes MCP requests to be rejected rather than allowed through. SaaS regions opt in; self-hosted defaults to fail-open so a transient infra blip doesn't block agent access |
 | `ATLAS_MCP_RATE_LIMIT_MAX_KEYS` | (oauth-client clamp default) | Maximum cardinality of distinct rate-limit keys retained per workspace before LRU eviction. Bounds memory usage on workspaces with many short-lived OAuth clients. Clamped to a minimum at startup |
+| `ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS` | `1800000` (30m) | Idle timeout for hosted-MCP sessions. The sweep evicts sessions whose `lastSeenAt` is older than this. Floored at `60000` (1m) — values below the floor log a warning and fall back to the default. Test-only overrides set this below the floor in-process. Source: `packages/mcp/src/hosted.ts` |
+| `ATLAS_CANONICAL_QUESTIONS_PATH` | (bundled `eval/canonical-questions/questions.yml`) | Override path to the bundled NovaMart canonical-questions YAML used by the hosted MCP prompt server. Set when the `eval/` directory has been relocated; an empty string throws at startup (very likely a template error). Source: `packages/mcp/src/prompts/canonical.ts` |
+| `ATLAS_DEFAULT_WORKSPACE` | — | Framework-boundary workspace selector bridged into hosted MCP via the `X-Atlas-Default-Workspace` header. Honored only by `multi`-scope clients when the operator's MCP wrapper sets the header from this env var (no client framework auto-bridges it today). Source: `packages/mcp/src/hosted.ts` |
 
 ---
 
@@ -493,6 +499,24 @@ ATLAS_NSJAIL_MEMORY_LIMIT=256
 </Tab>
 </Tabs>
 
+### Vercel Sandbox
+
+Atlas uses `@vercel/sandbox` for the Vercel-Sandbox backend. On the Vercel platform, the SDK reads `VERCEL_OIDC_TOKEN` automatically — no operator wiring required. Off-Vercel hosts (Railway, Fly, bare metal) must set explicit access-token credentials; all three are required as a unit. Partial credentials log a one-time warn and the backend is treated as unset (`useVercelSandbox()` returns `false`). Source: `packages/api/src/lib/tools/backends/detect.ts`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VERCEL_TEAM_ID` | — | Vercel team ID for off-Vercel Sandbox API authentication. Required alongside `VERCEL_PROJECT_ID` and `VERCEL_TOKEN`; setting some-but-not-all logs a one-time warning and disables the backend |
+| `VERCEL_PROJECT_ID` | — | Vercel project ID for off-Vercel Sandbox API authentication. Required alongside `VERCEL_TEAM_ID` and `VERCEL_TOKEN` |
+| `VERCEL_TOKEN` | — | Vercel access token for off-Vercel Sandbox API authentication. Required alongside `VERCEL_TEAM_ID` and `VERCEL_PROJECT_ID`. Treat as a secret |
+| `VERCEL_OIDC_TOKEN` | (set by Vercel) | Platform-injected OIDC token used by `@vercel/sandbox` when running on Vercel. Cannot be set manually; sibling of the documented `VERCEL` runtime marker |
+
+```bash
+# Off-Vercel (Railway / Fly / bare metal): all three together
+VERCEL_TEAM_ID=team_xxx
+VERCEL_PROJECT_ID=prj_xxx
+VERCEL_TOKEN=your-vercel-access-token
+```
+
 ---
 
 ## Networking & CORS
@@ -523,6 +547,9 @@ Settings for multi-region deployments with per-workspace region routing. See als
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ATLAS_API_REGION` | — | Region identity of this API instance (e.g. `us-west`, `eu-west`, `ap-southeast`). Used for misrouting detection. Falls back to `residency.defaultRegion` from config if unset |
+| `ATLAS_REGION_US_DB_URL` | — | Per-region internal-DB URL used by the SaaS residency router when `ATLAS_API_REGION=us-*`. Required on SaaS regions that route to a US workspace database. Source: `packages/api/src/lib/effect/saas-env.ts` |
+| `ATLAS_REGION_EU_DB_URL` | — | Per-region internal-DB URL used by the residency router when `ATLAS_API_REGION=eu-*`. Required on SaaS regions that route to an EU workspace database |
+| `ATLAS_REGION_APAC_DB_URL` | — | Per-region internal-DB URL used by the residency router when `ATLAS_API_REGION=ap-*`. Required on SaaS regions that route to an APAC workspace database |
 | `ATLAS_STRICT_ROUTING` | `false` | When `true`, misrouted requests receive `421 Misdirected Request` with a `correctApiUrl` hint instead of being served with a warning log |
 | `ATLAS_INTERNAL_SECRET` | — | Shared secret for cross-region service-to-service auth. Required for region migration operations. Both the source and target API instances must share the same secret |
 
@@ -630,8 +657,10 @@ See [Python Tool](/guides/python) for the full guide.
 |----------|---------|-------------|
 | `SLACK_SIGNING_SECRET` | — | Enables Slack integration. Used to verify request signatures |
 | `SLACK_BOT_TOKEN` | — | Single-workspace mode (skip OAuth) |
-| `SLACK_CLIENT_ID` | — | Multi-workspace OAuth app client ID |
-| `SLACK_CLIENT_SECRET` | — | Multi-workspace OAuth app client secret |
+| `SLACK_CLIENT_ID` | — | Multi-workspace OAuth app client ID. Required for the catalog-driven Slack install path (`/api/v1/integrations/slack/install`) — when unset, that endpoint returns `501` |
+| `SLACK_CLIENT_SECRET` | — | Multi-workspace OAuth app client secret. Pair with `SLACK_CLIENT_ID` |
+| `SLACK_ENCRYPTION_KEY` | — | At-rest encryption key for per-Workspace Slack OAuth credentials in `chat_cache`. Required on SaaS — `ChatAdapterEnvGuardLive` asserts on it at boot. Missing the key silently drops the adapter (no Slack events land). Source: `packages/api/src/lib/effect/saas-env.ts` |
+| `ATLAS_SLACK_INSTALL_TABLE` | `chat_cache` | Override the SQL table OAuth installs land in. Must be a valid SQL identifier. Set this on self-hosted deploys that customize the chat plugin's `state.tablePrefix` (e.g. `myorg_` → `myorg_cache`) so OAuth installs land in the same physical table the chat-adapter reads from. SaaS pins the default. Source: `packages/api/src/lib/slack/store.ts` |
 
 See [Slack guide](/guides/slack) for the full setup.
 
@@ -657,17 +686,24 @@ DISCORD_CLIENT_SECRET=your-discord-client-secret
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TEAMS_APP_ID` | — | Microsoft Teams app ID. Enables Teams integration routes. Required for Teams connect flow |
+| `TEAMS_APP_PASSWORD` | — | Platform-shared Teams app client secret used by the platform OAuth flow. In BYOT mode the app password is stored per-tenant in the internal database instead, and this env var is unused. Source: `packages/api/src/lib/teams/store.ts` |
 
 ```bash
 # Teams integration via Azure AD admin consent
 TEAMS_APP_ID=your-teams-app-id
+# Platform OAuth flow only — leave unset for BYOT
+TEAMS_APP_PASSWORD=your-teams-app-secret
 ```
 
-> The Teams app password (client secret) is **not** read from a platform env var. Per-org Teams credentials are stored encrypted in the internal database and configured via the admin integrations UI — see [Teams integration](/guides/integrations#microsoft-teams).
+> In BYOT mode the Teams app password (client secret) is **not** read from `TEAMS_APP_PASSWORD`. Per-org credentials are stored encrypted in the internal database and configured via the admin integrations UI — see [Teams integration](/guides/integrations#microsoft-teams).
 
 ---
 
 ## JIRA Integration
+
+The createJiraTicket action uses a static API-token credential; the catalog-driven Jira install path uses OAuth.
+
+### Static API-token action
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -685,6 +721,23 @@ JIRA_EMAIL=you@example.com
 JIRA_API_TOKEN=your-api-token
 JIRA_DEFAULT_PROJECT=PROJ
 ```
+
+### OAuth install path
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `JIRA_CLIENT_ID` | — | Jira Cloud OAuth 2.0 app client ID. Required for `/api/v1/integrations/jira/install` — when unset that endpoint returns `501`. Source: `packages/api/src/lib/integrations/install/register.ts` |
+| `JIRA_CLIENT_SECRET` | — | Jira Cloud OAuth 2.0 app client secret. Pair with `JIRA_CLIENT_ID` |
+
+---
+
+## Salesforce Integration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SALESFORCE_CLIENT_ID` | — | Salesforce connected-app consumer key. Required for `/api/v1/integrations/salesforce/install` — when unset that endpoint returns `501`. Source: `packages/api/src/lib/integrations/install/register.ts` |
+| `SALESFORCE_CLIENT_SECRET` | — | Salesforce connected-app consumer secret. Pair with `SALESFORCE_CLIENT_ID` |
+| `SALESFORCE_LOGIN_URL` | `https://login.salesforce.com` | Operator override for Salesforce sandboxes (e.g. `https://test.salesforce.com`). When unset the handler uses the production login host |
 
 ---
 
@@ -768,6 +821,17 @@ SaaS only. Required for custom domain support via Railway.
 | `ATLAS_DEMO_INDUSTRY` | — | Industry label for the seeded `__demo__` connection (e.g. `cybersecurity`, `ecommerce`). Set at signup via onboarding; drives prompt-library industry filtering and the publish flow's demo-prompt archival cascade. See [Developer Mode](/guides/developer-mode) for the full demo lifecycle |
 
 Requires `BETTER_AUTH_SECRET` for demo token signing.
+
+---
+
+## Operator Subcommands
+
+Destructive operator-CLI subcommands gated by explicit env confirmation. None of these affect normal API boot.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_WIPE_OK` | — | Required gate (`=1`) for the destructive `atlas ops wipe` subcommand. `TRUNCATE`s every public table in the tenant DB; takes no backup. Pair with `--confirm` on the command line. Source: `packages/cli/src/commands/ops.ts` |
+| `ATLAS_TEAM_PG_URL` | — | Tenant-DB connection string consumed by `bun run` operator backfill scripts (e.g. `slack_installations_to_chat_cache.ts`). Not read by the API process — only by one-shot scripts under `packages/api/src/lib/db/migrations/scripts/` |
 
 ---
 

@@ -872,6 +872,86 @@ export default defineConfig({
 
 ---
 
+## Catalog
+
+Declare the **Plugin Catalog** — the flat list of installable chat platforms and integration plugins your deployment offers. Implements [ADR-0002](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0002-catalog-seeded-from-config-at-boot.md): declarative at deploy time, idempotently seeded into the `plugin_catalog` table at boot, then DB-canonical for runtime reads.
+
+The operator declares the catalog; customer admins install entries via `/admin/integrations`. `install_model` dispatches the install-handler family (`oauth`, `form`, or `static-bot`) — see [`packages/api/src/lib/integrations/install/register.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/integrations/install/register.ts) for the registered handler set.
+
+```typescript
+// atlas.config.ts — declare a Slack OAuth chat platform + an email form integration
+export default defineConfig({
+  catalog: [
+    {
+      slug: "slack",
+      type: "chat",
+      install_model: "oauth",
+      name: "Slack",
+      description: "Connect Atlas to your Slack workspace.",
+      iconUrl: "https://cdn.useatlas.dev/icons/slack.svg",
+      min_plan: "starter",
+    },
+    {
+      slug: "email",
+      type: "integration",
+      install_model: "form",
+      name: "Email",
+      description: "Send approval-gated emails via SMTP.",
+      min_plan: "starter",
+      // Required when install_model === "form" — non-empty.
+      configSchema: [
+        { key: "smtp_host", type: "string", required: true, label: "SMTP host" },
+        { key: "smtp_port", type: "number", required: true, label: "Port", default: 587 },
+        { key: "smtp_username", type: "string", required: true, label: "Username" },
+        { key: "smtp_password", type: "string", required: true, secret: true, label: "Password" },
+        { key: "from_address", type: "string", required: true, label: "From address" },
+      ],
+    },
+  ],
+});
+```
+
+### Catalog entry fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `slug` | `string` | Yes | — | Stable identifier — lowercase alphanumeric with dashes (regex `^[a-z][a-z0-9-]*$`). Used as the primary lookup key in `plugin_catalog.slug` and as the dispatch key in `AdapterRegistry`. Examples: `slack`, `salesforce`, `linear-apikey` |
+| `type` | `"chat" \| "integration"` | Yes | — | Admin-UI grouping. `chat` rows live on the Chat tab of `/admin/integrations`; `integration` rows live on the Actions/Integrations tab. Backend dispatch is by `install_model`, not `type` |
+| `install_model` | `"oauth" \| "form" \| "static-bot"` | Yes | — | Install-handler dispatch key. `oauth` runs a per-Workspace OAuth dance (Slack, Jira, Salesforce, GitHub App, Linear OAuth). `form` validates customer-supplied fields against `configSchema` (Email, Webhook, Obsidian, GitHub PAT, Linear API key). `static-bot` uses an operator-shared bot and a per-Workspace routing identifier (Teams, Discord, Google Chat, Telegram, WhatsApp) |
+| `name` | `string` | No | (derived from slug) | Human-readable name shown in admin-UI cards |
+| `description` | `string` | No | — | Admin-UI description copy |
+| `iconUrl` | `string` (URL) | No | — | Icon URL for admin-UI cards |
+| `min_plan` | `"free" \| "trial" \| "starter" \| "pro" \| "business"` | No | `"starter"` | Plan-tier gate evaluated at customer-install time via the unified `PLAN_RANK` comparator. See [Entitlements](/architecture/entitlements) for the gating model |
+| `enabled` | `boolean` | No | `true` | Whether customers can install this entry today. Operators flip to `false` (in DB) for emergency-disable without a deploy; the seed preserves a DB-side `false` even if the config declares `true` |
+| `saas_eligible` | `boolean` | No | `true` | Whether the entry is offered in SaaS deployments. `false` hides the row from SaaS admin-UI listings while keeping it available on self-host. Canonical case: GitHub PAT mode (per-user token tied to one employee — unsafe in B2B SaaS) |
+| `configSchema` | `ConfigSchemaField[]` | Required when `install_model === "form"` (and must be non-empty); optional otherwise | — | Form-field declaration for `install_model: "form"` entries. Each field is rendered by the install modal and validated server-side. Fields flagged `secret: true` are encrypted at rest before persistence |
+| `implementation_status` | `"available" \| "coming_soon"` | No | `"available"` | Whether Atlas has shipped a working install path. `coming_soon` renders the row as an inert grey card. Override per deploy via `overrideImplementationStatus`. See [ADR-0007](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0007-catalog-row-implementation-status.md) |
+
+### configSchema field shape
+
+Each entry in `configSchema` is a strict object with the following fields:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `key` | `string` | Yes | Field name persisted in `workspace_plugins.config` |
+| `type` | `"string" \| "number" \| "boolean" \| "select"` | Yes | Input type. `select` requires `options` |
+| `label` | `string` | No | Display label in the install modal |
+| `description` | `string` | No | Helper text below the input |
+| `required` | `boolean` | No | Reject the install when missing |
+| `secret` | `boolean` | No | When `true`, the value is encrypted at rest before persistence into `workspace_plugins.config` |
+| `options` | `string[]` | No | Choices for `type: "select"` |
+| `default` | `unknown` | No | Default value pre-filled in the install modal |
+
+### Validation rules
+
+- **Slug uniqueness.** Every entry must have a unique `slug` within the `catalog` array — duplicates fail Zod parsing with `catalog entries must have unique slugs — duplicate found`
+- **Form entries need a schema.** When `install_model === "form"`, `configSchema` is required and must be non-empty. A missing or empty schema fails Zod parsing at config-load time (the install route can't validate user input without it)
+- **Strict shape.** Every entry is parsed with `.strict()` — unknown fields are rejected
+
+See also: [`packages/api/src/lib/config.ts:CatalogEntrySchema`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/config.ts) for the authoritative Zod schema, and the [Plugin Catalog deployment guide](/deployment/plugin-catalog) for the seeder behaviour.
+
+---
+
 ## Full Example
 
 ```typescript

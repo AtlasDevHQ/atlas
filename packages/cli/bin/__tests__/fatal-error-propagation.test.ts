@@ -184,7 +184,11 @@ describe("DuckDB profiler — error propagation behavior", () => {
     expect(result.profiles).toHaveLength(1);
     expect(result.errors).toHaveLength(0);
     expect(result.profiles[0].columns.length).toBe(2);
-  });
+  }, 30_000);
+  // ^ 30s timeout (default 5s) — DuckDB native-module cold start +
+  // CSV ingest + profile blows past 5s when the full suite runs
+  // in parallel and the host is under contention (#2716). The test
+  // asserts behavior, not performance; the bump preserves coverage.
 });
 
 describe("column-level catch re-throw contract", () => {

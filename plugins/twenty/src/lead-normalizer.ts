@@ -180,7 +180,6 @@ export function normalizeSignupLead(event: AtlasSignupLeadEvent): NormalizedLead
   const email = event.email.toLowerCase().trim();
   const eventSource: AtlasEventSource = "SIGNUP";
 
-  // No request context on the auth-side hook → no atlasIp.
   const customFields: { atlasIp?: string } = {};
 
   const name = event.name ? splitName(event.name) : undefined;

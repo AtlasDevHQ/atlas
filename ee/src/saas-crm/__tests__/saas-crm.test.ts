@@ -844,7 +844,7 @@ describe("dispatchOutboxRow", () => {
     expect(fetchCount).toBe(0);
   });
 
-  test("signup happy path — upsertPerson stamps SIGNUP, NO createNote (signup carries no message)", async () => {
+  test("signup happy path — upsertPerson stamps SIGNUP, NO createNote", async () => {
     // End-to-end happy path for a brand-new Better Auth signup. The
     // upsertPerson POST body MUST stamp both atlasFirstSource and
     // atlasLastSource = "SIGNUP" so the new Twenty Person carries the
@@ -919,9 +919,9 @@ describe("dispatchOutboxRow", () => {
 
   test("signup preserves sticky atlasFirstSource on an email that previously demoed", async () => {
     // AC: an email that previously demoed must keep atlasFirstSource="DEMO"
-    // and only flip atlasLastSource to "SIGNUP". This pins the
-    // first-source preservation contract that lives inside
-    // TwentyClient.upsertPerson — proves slice 4 inherits it correctly.
+    // and only flip atlasLastSource to "SIGNUP". Pins the first-source
+    // preservation contract that lives inside TwentyClient.upsertPerson
+    // end-to-end through dispatchOutboxRow.
     let patchBody: Record<string, unknown> | null = null;
     const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const url = typeof input === "string" ? input : (input as Request).url;

@@ -19,7 +19,7 @@
  * plugin options, so the wiring is not introspectable from outside.
  */
 
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
 import { Effect, Layer } from "effect";
 import {
   SaasCrm,
@@ -32,6 +32,11 @@ import {
 let runEnterpriseImpl: (p: unknown) => Promise<unknown> = async () => undefined;
 const upsertLeadCalls: SaasCrmLeadInput[] = [];
 
+const mockLogWarn: Mock<(...args: unknown[]) => void> = mock(() => {});
+const mockLogError: Mock<(...args: unknown[]) => void> = mock(() => {});
+const mockLogInfo: Mock<(...args: unknown[]) => void> = mock(() => {});
+const mockLogDebug: Mock<(...args: unknown[]) => void> = mock(() => {});
+
 mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   // Capture the program and resolve the Tag through the unit-test
   // doubles below. The default runner provides a real SaasCrm Layer
@@ -40,6 +45,30 @@ mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
   getEnterpriseRuntime: () => ({
     runPromise: <A, E>(p: Effect.Effect<A, E, never>) => Effect.runPromise(p),
   }),
+  // CLAUDE.md "Mock all exports" rule — the canonical module exports
+  // EnterpriseLayer + the EnterpriseSubsystem type. A partial mock
+  // surfaces as a cross-file SyntaxError once the test runner moves to
+  // bun's `--parallel` workers (slice 6 / #2802).
+  EnterpriseLayer: Layer.empty,
+}));
+
+mock.module("@atlas/api/lib/logger", () => ({
+  createLogger: () => ({
+    info: mockLogInfo,
+    warn: mockLogWarn,
+    error: mockLogError,
+    debug: mockLogDebug,
+  }),
+  getLogger: () => ({
+    info: mockLogInfo,
+    warn: mockLogWarn,
+    error: mockLogError,
+    debug: mockLogDebug,
+  }),
+  withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
+  getRequestContext: () => undefined,
+  redactPaths: [],
+  setLogLevel: () => false,
 }));
 
 // ── Import the unit under test AFTER mocks ─────────────────────────
@@ -77,6 +106,10 @@ function noopLayer(): Layer.Layer<SaasCrm> {
 
 beforeEach(() => {
   upsertLeadCalls.length = 0;
+  mockLogWarn.mockClear();
+  mockLogError.mockClear();
+  mockLogInfo.mockClear();
+  mockLogDebug.mockClear();
   // Default: provide a recording Tag and run the helper's program through it.
   runEnterpriseImpl = async (program) => {
     await Effect.runPromise(
@@ -160,7 +193,7 @@ describe("dispatchSignupCrmLead — no-op cases", () => {
 });
 
 describe("dispatchSignupCrmLead — failure swallow contract", () => {
-  it("resolves even when runEnterprise throws synchronously", async () => {
+  it("resolves and logs `signup_crm.dispatch_defect` when runEnterprise throws synchronously", async () => {
     runEnterpriseImpl = async () => {
       throw new Error("simulated defect inside runEnterprise");
     };
@@ -170,9 +203,15 @@ describe("dispatchSignupCrmLead — failure swallow contract", () => {
         user: { id: "u8", email: "die@test.com", name: "X" },
       }),
     ).resolves.toBeUndefined();
+
+    // CLAUDE.md "every catch must log" — pin the defect path emits.
+    expect(mockLogWarn).toHaveBeenCalledTimes(1);
+    const [logCtx] = mockLogWarn.mock.calls[0] as [Record<string, unknown>, string];
+    expect(logCtx.event).toBe("signup_crm.dispatch_defect");
+    expect(logCtx.userId).toBe("u8");
   });
 
-  it("resolves even when runEnterprise rejects asynchronously", async () => {
+  it("resolves and logs `signup_crm.dispatch_defect` when runEnterprise rejects asynchronously", async () => {
     runEnterpriseImpl = async () => Promise.reject(new Error("async reject"));
 
     await expect(
@@ -180,9 +219,13 @@ describe("dispatchSignupCrmLead — failure swallow contract", () => {
         user: { id: "u9", email: "reject@test.com" },
       }),
     ).resolves.toBeUndefined();
+
+    expect(mockLogWarn).toHaveBeenCalledTimes(1);
+    const [logCtx] = mockLogWarn.mock.calls[0] as [Record<string, unknown>, string];
+    expect(logCtx.event).toBe("signup_crm.dispatch_defect");
   });
 
-  it("resolves when SaasCrm.upsertLead fails with a typed Error", async () => {
+  it("resolves and logs `signup_crm.enqueue_failed` when SaasCrm.upsertLead fails with a typed Error", async () => {
     runEnterpriseImpl = async (program) => {
       await Effect.runPromise(
         Effect.provide(
@@ -197,6 +240,15 @@ describe("dispatchSignupCrmLead — failure swallow contract", () => {
         user: { id: "u10", email: "pgblip@test.com", name: "X" },
       }),
     ).resolves.toBeUndefined();
+
+    // The typed `Effect.fail` path goes through `Effect.either` Left,
+    // not the outer catch — pin that branch independently so a future
+    // refactor that drops the Left-side log gets caught here, not by
+    // relying on EE's `tapError` for the audit trail.
+    expect(mockLogWarn).toHaveBeenCalledTimes(1);
+    const [logCtx] = mockLogWarn.mock.calls[0] as [Record<string, unknown>, string];
+    expect(logCtx.event).toBe("signup_crm.enqueue_failed");
+    expect(logCtx.userId).toBe("u10");
   });
 });
 

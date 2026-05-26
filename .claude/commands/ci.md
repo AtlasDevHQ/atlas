@@ -14,6 +14,7 @@ bash scripts/check-schema-drift.sh   # Drizzle schema.ts ↔ migrations parity
 bash scripts/check-oauth-helper-drift.sh  # plugins/mcp/src/_oauth-helper ↔ packages/oauth-helper/src parity
 bash scripts/check-test-discipline.sh  # No new top-level env/chdir mutations in test files
 bash scripts/check-twenty-resolver-imports.sh  # Twenty operator resolver confined to ee/saas-crm (#2850)
+bun run scripts/check-published-symbols.ts  # @useatlas/* imports in scaffold-bound source ↔ pinned-published exports parity
 ```
 
 Use the full `bun run test` here — `/ci` is the pre-PR check, not an iteration loop. For iteration, use `cd packages/api && bun run scripts/test-isolated.ts --affected` (only tests whose source graph your branch touched — typical 10–60s vs 225s full).
@@ -31,6 +32,7 @@ Use the full `bun run test` here — `/ci` is the pre-PR check, not an iteration
 | Schema drift | `Schema drift check passed` (every migration table is in `packages/api/src/lib/db/schema.ts`) |
 | OAuth helper drift | `vendored _oauth-helper matches canonical packages/oauth-helper/src` |
 | Test discipline | `Test discipline check passed — env: N allowlisted, chdir: N allowlisted.` New offenders fail; new allowlist entries need justifying comment (see #2796). `mock.module()` is NOT gated — slice 5a verdict (#2801) proved bun's `--isolate` resets module mocks between files |
+| Published symbols | `Published symbol check passed.` Diffs braced **value** imports from `@useatlas/*` packages in scaffold-bound source (`packages/{api,cli,web,schemas}/src`, `ee/src`, `examples/nextjs-standalone/src`, `create-atlas/overrides`) against the symbols exported by the version `npm view` resolves for the range pinned in `create-atlas/templates/*/package.json`. Type-only imports are skipped (they erase; the scaffold's `next build` runs with `ignoreBuildErrors: true`). Fix per the version-bump-ordering rule: publish the plugin first, then bump the template ref in a follow-up PR |
 
 **If any gate fails:**
 

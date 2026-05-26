@@ -316,6 +316,8 @@ For `0.0.x` semver, `^0.0.2` pins EXACTLY to `0.0.2` — consumers won't get `0.
 
 **Why this order matters:** Deploy Validation scaffold jobs run `npm install` from the registry. If template refs point to an unpublished version, scaffolds fail. Sequencing the ref bump after publish avoids the race.
 
+**Local gate against pre-publish drift:** `scripts/check-published-symbols.ts` (part of `/ci`) diffs braced **value** imports from `@useatlas/*` packages in scaffold-bound source (`packages/{api,cli,web,schemas}/src`, `ee/src`, `examples/nextjs-standalone/src`, `create-atlas/overrides`) against the symbols exported by the version `npm view` resolves for the range pinned in `create-atlas/templates/*/package.json`. Catches "I added a new export and used it before publishing" locally instead of in the CI Scaffold (docker)/(vercel) jobs. Type-only imports are skipped (they erase; the scaffold's `next build` runs with `ignoreBuildErrors: true`).
+
 ## Environment Variables
 
 See `.env.example` for the full list with defaults and descriptions. Key vars: `ATLAS_PROVIDER`, `ATLAS_MODEL`, `ATLAS_DATASOURCE_URL`, `DATABASE_URL`, `ATLAS_AUTH_MODE`, `BETTER_AUTH_SECRET`.

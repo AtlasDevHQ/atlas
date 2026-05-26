@@ -9,6 +9,7 @@
 import { describe, test, expect } from "bun:test";
 import {
   upsertPerson,
+  stampStripeCustomerId,
   getPersonMetadata,
   createNote,
   TwentyClientError,
@@ -850,6 +851,200 @@ describe("createNote — error mapping", () => {
       expect(err).toBeInstanceOf(TwentyClientError);
       const msg = (err as TwentyClientError).message;
       expect(msg).not.toContain("twenty_secret_must_not_leak");
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  stampStripeCustomerId — Stripe → Twenty conversion stamping (#2737)
+// ─────────────────────────────────────────────────────────────────────
+
+describe("stampStripeCustomerId — Person exists with atlasFirstSource set", () => {
+  test("PATCHes atlasLastSource = CONVERSION + atlasStripeCustomerId — atlasFirstSource preserved", async () => {
+    const { fetch, calls } = makeScriptedFetch([
+      {
+        status: 200,
+        body: {
+          data: {
+            people: [
+              {
+                id: "person_existing",
+                emails: { primaryEmail: "user@test.com" },
+                atlasFirstSource: "DEMO",
+                atlasLastSource: "DEMO",
+              },
+            ],
+          },
+        },
+      },
+      {
+        status: 200,
+        body: {
+          data: {
+            updatePerson: {
+              id: "person_existing",
+              atlasFirstSource: "DEMO",
+              atlasLastSource: "CONVERSION",
+              atlasStripeCustomerId: "cus_abc123",
+            },
+          },
+        },
+      },
+    ]);
+    const config = baseConfig({ fetchImpl: fetch });
+
+    const result = await stampStripeCustomerId(config, {
+      email: "user@test.com",
+      stripeCustomerId: "cus_abc123",
+    });
+
+    expect(result.id).toBe("person_existing");
+    expect(calls).toHaveLength(2);
+    expect(calls[1].method).toBe("PATCH");
+    expect(calls[1].url).toBe(
+      "https://crm.test.local/rest/people/person_existing",
+    );
+    const body = JSON.parse(calls[1].body ?? "{}");
+    // atlasFirstSource is sticky — must NOT be in the payload.
+    expect(body.atlasFirstSource).toBeUndefined();
+    expect(body.atlasLastSource).toBe("CONVERSION");
+    expect(body.atlasStripeCustomerId).toBe("cus_abc123");
+  });
+});
+
+describe("stampStripeCustomerId — Person does not exist (paying customer never demoed)", () => {
+  test("POSTs a new Person with atlasFirstSource = CONVERSION, atlasLastSource = CONVERSION, AND atlasStripeCustomerId", async () => {
+    const { fetch, calls } = makeScriptedFetch([
+      { status: 200, body: { data: { people: [] } } },
+      {
+        status: 200,
+        body: {
+          data: {
+            createPerson: {
+              id: "person_new",
+              emails: { primaryEmail: "first.touch@test.com" },
+              atlasFirstSource: "CONVERSION",
+              atlasLastSource: "CONVERSION",
+              atlasStripeCustomerId: "cus_xyz",
+            } as TwentyPerson,
+          },
+        },
+      },
+    ]);
+    const config = baseConfig({ fetchImpl: fetch });
+
+    const result = await stampStripeCustomerId(config, {
+      email: "first.touch@test.com",
+      stripeCustomerId: "cus_xyz",
+    });
+
+    expect(result.id).toBe("person_new");
+    expect(calls).toHaveLength(2);
+    expect(calls[1].method).toBe("POST");
+    expect(calls[1].url).toBe("https://crm.test.local/rest/people");
+    const body = JSON.parse(calls[1].body ?? "{}");
+    // Custom fields inline — no `customFields` wrapper.
+    expect(body.emails).toEqual({ primaryEmail: "first.touch@test.com" });
+    expect(body.atlasFirstSource).toBe("CONVERSION");
+    expect(body.atlasLastSource).toBe("CONVERSION");
+    expect(body.atlasStripeCustomerId).toBe("cus_xyz");
+    expect(body.customFields).toBeUndefined();
+  });
+});
+
+describe("stampStripeCustomerId — Person exists but atlasFirstSource absent", () => {
+  test("PATCHes both source fields to CONVERSION + atlasStripeCustomerId", async () => {
+    const { fetch, calls } = makeScriptedFetch([
+      {
+        status: 200,
+        body: {
+          data: {
+            people: [
+              {
+                id: "person_unstamped",
+                emails: { primaryEmail: "user@test.com" },
+              },
+            ],
+          },
+        },
+      },
+      {
+        status: 200,
+        body: { data: { updatePerson: { id: "person_unstamped" } } },
+      },
+    ]);
+    const config = baseConfig({ fetchImpl: fetch });
+
+    await stampStripeCustomerId(config, {
+      email: "user@test.com",
+      stripeCustomerId: "cus_first",
+    });
+
+    const body = JSON.parse(calls[1].body ?? "{}");
+    expect(body.atlasFirstSource).toBe("CONVERSION");
+    expect(body.atlasLastSource).toBe("CONVERSION");
+    expect(body.atlasStripeCustomerId).toBe("cus_first");
+  });
+});
+
+describe("stampStripeCustomerId — error mapping", () => {
+  test("maps 4xx to TwentyClientError (caller treats permanent)", async () => {
+    const { fetch } = makeScriptedFetch([
+      { status: 401, body: { messages: ["bad key"] } },
+    ]);
+    const config = baseConfig({ fetchImpl: fetch });
+
+    try {
+      await stampStripeCustomerId(config, {
+        email: "u@t.com",
+        stripeCustomerId: "cus_1",
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TwentyClientError);
+      const e = err as TwentyClientError;
+      expect(e.status).toBe(401);
+      // The first sub-step that errors carries the operation discriminator.
+      expect(e.operation).toBe("findPersonByEmail");
+    }
+  });
+
+  test("5xx surfaces as TwentyClientError with status — outbox retries", async () => {
+    const { fetch } = makeScriptedFetch([
+      { status: 503, body: { messages: ["upstream down"] } },
+    ]);
+    const config = baseConfig({ fetchImpl: fetch });
+
+    try {
+      await stampStripeCustomerId(config, {
+        email: "u@t.com",
+        stripeCustomerId: "cus_1",
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TwentyClientError);
+      expect((err as TwentyClientError).status).toBe(503);
+    }
+  });
+
+  test("does not include the apiKey in thrown error messages", async () => {
+    const { fetch } = makeScriptedFetch([
+      { status: 401, body: { messages: ["bad key"] } },
+    ]);
+    const config = baseConfig({
+      apiKey: "twenty_secret_stamp_must_not_leak",
+      fetchImpl: fetch,
+    });
+
+    try {
+      await stampStripeCustomerId(config, {
+        email: "u@t.com",
+        stripeCustomerId: "cus_1",
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      const msg = (err as TwentyClientError).message;
+      expect(msg).not.toContain("twenty_secret_stamp_must_not_leak");
     }
   });
 });

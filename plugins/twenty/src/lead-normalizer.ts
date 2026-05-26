@@ -24,7 +24,12 @@ import type { UpsertPersonInput } from "./client";
  * records. Narrow literal union: a typo here persists in Twenty
  * forever, so the type must reject misspellings at compile time.
  */
-export type AtlasEventSource = "DEMO" | "SIGNUP" | "SALES_FORM" | "OTHER";
+export type AtlasEventSource =
+  | "DEMO"
+  | "SIGNUP"
+  | "SALES_FORM"
+  | "CONVERSION"
+  | "OTHER";
 
 /** Demo signup variant — captured at the `/demo` gate on useatlas.dev. */
 export interface AtlasDemoLeadEvent {
@@ -73,6 +78,25 @@ export interface AtlasSignupLeadEvent {
 }
 
 /**
+ * Stripe → Twenty conversion stamping variant — fired by the
+ * `onSubscriptionComplete` hook in `packages/api/src/lib/auth/server.ts`
+ * after a paying checkout. Carries the Stripe `customer.id` so the
+ * dispatcher can stamp `customFields.atlasStripeCustomerId` on the
+ * matching Twenty Person — closing the funnel attribution loop for the
+ * read-side datasource (#2728).
+ *
+ * Edge case: paying customer who never demoed/signed up. The dispatcher
+ * still creates a new Person with `atlasFirstSource = "CONVERSION"` (the
+ * `upsertPerson` POST branch) so the stamp is never lost.
+ */
+export interface AtlasConversionLeadEvent {
+  readonly source: "conversion";
+  readonly email: string;
+  /** Stripe `customer.id` (the `cus_…` literal). */
+  readonly stripeCustomerId: string;
+}
+
+/**
  * Discriminated union over every Atlas-internal lead event. The
  * exhaustiveness check in `normalizeLead` catches missing handlers
  * at compile time.
@@ -80,7 +104,8 @@ export interface AtlasSignupLeadEvent {
 export type AtlasLeadEvent =
   | AtlasDemoLeadEvent
   | AtlasSalesFormLeadEvent
-  | AtlasSignupLeadEvent;
+  | AtlasSignupLeadEvent
+  | AtlasConversionLeadEvent;
 
 /** Note attached to the Person — only emitted by variants that carry a message. */
 export interface NormalizedNote {
@@ -195,6 +220,29 @@ export function normalizeSignupLead(event: AtlasSignupLeadEvent): NormalizedLead
   };
 }
 
+/**
+ * Normalize a Stripe → Twenty conversion event to a Twenty upsert
+ * payload. The `atlasStripeCustomerId` rides through `customFields` and
+ * is spread inline by `upsertPerson` on every write path (POST + both
+ * PATCH branches), so the stamp lands regardless of whether the Person
+ * already existed. No note — conversion carries no message.
+ */
+export function normalizeConversionLead(
+  event: AtlasConversionLeadEvent,
+): NormalizedLead {
+  const email = event.email.toLowerCase().trim();
+  const eventSource: AtlasEventSource = "CONVERSION";
+
+  return {
+    person: {
+      email,
+      eventSource,
+      customFields: { atlasStripeCustomerId: event.stripeCustomerId },
+    },
+    eventSource,
+  };
+}
+
 /** Dispatch on `source`. */
 export function normalizeLead(event: AtlasLeadEvent): NormalizedLead {
   switch (event.source) {
@@ -204,6 +252,8 @@ export function normalizeLead(event: AtlasLeadEvent): NormalizedLead {
       return normalizeSalesFormLead(event);
     case "signup":
       return normalizeSignupLead(event);
+    case "conversion":
+      return normalizeConversionLead(event);
     default: {
       // Exhaustiveness — when new variants are added to `AtlasLeadEvent`,
       // the absence of a case here surfaces as a tsgo compile error.

@@ -29,7 +29,11 @@ import { z } from "zod";
 import { tool } from "ai";
 import { createPlugin } from "@useatlas/plugin-sdk";
 import type { AtlasActionPlugin, PluginAction } from "@useatlas/plugin-sdk";
-import { upsertPerson, type TwentyClientConfig } from "./client";
+import {
+  stampStripeCustomerId,
+  upsertPerson,
+  type TwentyClientConfig,
+} from "./client";
 
 // ─────────────────────────────────────────────────────────────────────
 //  Public re-exports — consumed by ee/src/saas-crm/ and tests
@@ -37,12 +41,14 @@ import { upsertPerson, type TwentyClientConfig } from "./client";
 
 export {
   upsertPerson,
+  stampStripeCustomerId,
   getPersonMetadata,
   createNote,
   TwentyClientError,
   type TwentyOperation,
   type TwentyClientConfig,
   type UpsertPersonInput,
+  type StampStripeCustomerIdInput,
   type TwentyPerson,
   type AtlasPersonCustomFields,
   type PersonMetadata,
@@ -55,10 +61,12 @@ export {
   normalizeDemoLead,
   normalizeSalesFormLead,
   normalizeSignupLead,
+  normalizeConversionLead,
   normalizeLead,
   type AtlasDemoLeadEvent,
   type AtlasSalesFormLeadEvent,
   type AtlasSignupLeadEvent,
+  type AtlasConversionLeadEvent,
   type AtlasEventSource,
   type AtlasLeadEvent,
   type NormalizedLead,
@@ -139,7 +147,7 @@ export const twentyPlugin = createPlugin<
       inputSchema: z.object({
         email: z.string().email().describe("Primary email of the Person"),
         eventSource: z
-          .enum(["DEMO", "SIGNUP", "SALES_FORM", "OTHER"])
+          .enum(["DEMO", "SIGNUP", "SALES_FORM", "CONVERSION", "OTHER"])
           .describe("Source label."),
         firstName: z.string().optional(),
         lastName: z.string().optional(),
@@ -160,11 +168,41 @@ export const twentyPlugin = createPlugin<
       },
     });
 
-    const action: PluginAction = {
+    const stampStripeCustomerIdTool = tool({
+      description:
+        "Stamp the Stripe customer ID on the Twenty Person matching email. Sets atlasLastSource=CONVERSION; creates the Person if absent with atlasFirstSource=CONVERSION.",
+      inputSchema: z.object({
+        email: z.string().email().describe("Primary email of the Person"),
+        stripeCustomerId: z
+          .string()
+          .min(1)
+          .describe("Stripe customer id (cus_…)"),
+      }),
+      execute: async ({ email, stripeCustomerId }) => {
+        const result = await stampStripeCustomerId(clientConfig, {
+          email,
+          stripeCustomerId,
+        });
+        return { id: result.id, email: result.emails?.primaryEmail };
+      },
+    });
+
+    const upsertAction: PluginAction = {
       name: "upsertTwentyPerson",
       description: PLUGIN_DESCRIPTION,
       tool: upsertPersonTool,
       actionType: "crm:upsert-person",
+      reversible: false,
+      defaultApproval: "admin-only",
+      requiredCredentials: ["apiKey"],
+    };
+
+    const stampAction: PluginAction = {
+      name: "stampStripeCustomerId",
+      description:
+        "Stamp atlasStripeCustomerId on a Twenty Person by email (CONVERSION source). Use from a Stripe webhook handler.",
+      tool: stampStripeCustomerIdTool,
+      actionType: "crm:stamp-stripe-customer-id",
       reversible: false,
       defaultApproval: "admin-only",
       requiredCredentials: ["apiKey"],
@@ -177,7 +215,7 @@ export const twentyPlugin = createPlugin<
       name: "Twenty CRM Action",
       config,
 
-      actions: [action],
+      actions: [upsertAction, stampAction],
 
       async initialize(ctx) {
         ctx.logger.info(

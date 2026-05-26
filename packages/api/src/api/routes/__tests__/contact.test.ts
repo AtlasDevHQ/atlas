@@ -103,6 +103,7 @@ mock.module("@atlas/api/lib/effect/hono", () => ({
               ? Effect.fail(new Error("pg_connection_terminated"))
               : Effect.void;
           },
+          stampConversion: () => Effect.void,
           // dispatcher is required by the available=true union arm but
           // tests don't exercise the flusher path.
           dispatcher: async () => ({ kind: "ok" as const }),
@@ -113,6 +114,7 @@ mock.module("@atlas/api/lib/effect/hono", () => ({
             upsertLeadCalls.push(input);
             return Effect.void;
           },
+          stampConversion: () => Effect.void,
         };
     const layer = Layer.mergeAll(
       services.createRequestContextTestLayer({ requestId: "test-req-id" }),

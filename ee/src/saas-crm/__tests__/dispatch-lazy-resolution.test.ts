@@ -279,6 +279,7 @@ describe("ensureVerified — per-credential verification cache", () => {
                       edges: [
                         { node: { name: "atlasFirstSource" } },
                         { node: { name: "atlasLastSource" } },
+                        { node: { name: "atlasStripeCustomerId" } },
                       ],
                     },
                   },
@@ -369,6 +370,7 @@ describe("ensureVerified — per-credential verification cache", () => {
                       edges: [
                         { node: { name: "atlasFirstSource" } },
                         { node: { name: "atlasLastSource" } },
+                        { node: { name: "atlasStripeCustomerId" } },
                       ],
                     },
                   },

@@ -15,7 +15,11 @@ import {
   checkWipeGate,
   resolveWipeUrl,
   handleOps,
+  parseBatchSize,
+  parseBackfillSource,
+  resolveBackfillUrl,
 } from "../commands/ops";
+import { DEFAULT_BATCH_SIZE } from "@atlas/api/lib/db/migrations/scripts/backfill-crm-leads";
 import type { TenantPgClient } from "../../lib/tenant-db";
 
 // --- WIPE_LIST_TABLES_SQL is the contract; verify expected shape ---
@@ -225,5 +229,86 @@ describe("handleOps", () => {
     }
     expect(caught?.message).toBe("__process_exit__:1");
     expect(errors.some((line) => line.includes("--confirm"))).toBe(true);
+  });
+
+  it("usage text lists backfill-crm-leads alongside wipe", async () => {
+    let caught: Error | null = null;
+    try {
+      await handleOps(["ops", "unknown-subcommand"]);
+    } catch (err) {
+      caught = err instanceof Error ? err : new Error(String(err));
+    }
+    expect(caught?.message).toBe("__process_exit__:1");
+    expect(errors.some((line) => line.includes("backfill-crm-leads"))).toBe(true);
+  });
+});
+
+// --- backfill-crm-leads flag parsing ---
+
+describe("parseBatchSize", () => {
+  it("returns the default when --batch-size is absent", () => {
+    expect(parseBatchSize([])).toBe(DEFAULT_BATCH_SIZE);
+  });
+
+  it("returns the explicit fallback when --batch-size is absent", () => {
+    expect(parseBatchSize([], 100)).toBe(100);
+  });
+
+  it("parses --batch-size N", () => {
+    expect(parseBatchSize(["--batch-size", "250"])).toBe(250);
+  });
+
+  it("throws on a non-numeric value", () => {
+    expect(() => parseBatchSize(["--batch-size", "abc"])).toThrow(/positive integer/);
+  });
+
+  it("throws on zero", () => {
+    // Zero would cause an infinite empty-page loop in the script — fail loud.
+    expect(() => parseBatchSize(["--batch-size", "0"])).toThrow(/positive integer/);
+  });
+
+  it("throws on a negative value", () => {
+    expect(() => parseBatchSize(["--batch-size", "-5"])).toThrow(/positive integer/);
+  });
+});
+
+describe("parseBackfillSource", () => {
+  it("defaults to demo when --source is absent", () => {
+    expect(parseBackfillSource([])).toBe("demo");
+  });
+
+  it("accepts --source demo", () => {
+    expect(parseBackfillSource(["--source", "demo"])).toBe("demo");
+  });
+
+  it("rejects an unknown source", () => {
+    // Sales-form lands in its own table eventually — until then any other
+    // value is operator error. Pin the rejection so a future variant has
+    // to be added intentionally to the allowed set.
+    expect(() => parseBackfillSource(["--source", "sales-form"])).toThrow(/must be one of/);
+  });
+});
+
+describe("resolveBackfillUrl", () => {
+  it("returns --database-url when set", () => {
+    expect(
+      resolveBackfillUrl(
+        ["--database-url", "postgresql://x/y"],
+        { ATLAS_TEAM_PG_URL: "postgresql://team" } as NodeJS.ProcessEnv,
+      ),
+    ).toBe("postgresql://x/y");
+  });
+
+  it("falls back to ATLAS_TEAM_PG_URL, then DATABASE_URL", () => {
+    expect(
+      resolveBackfillUrl([], { ATLAS_TEAM_PG_URL: "postgresql://team" } as NodeJS.ProcessEnv),
+    ).toBe("postgresql://team");
+    expect(
+      resolveBackfillUrl([], { DATABASE_URL: "postgresql://db" } as NodeJS.ProcessEnv),
+    ).toBe("postgresql://db");
+  });
+
+  it("returns null when nothing is set", () => {
+    expect(resolveBackfillUrl([], {} as NodeJS.ProcessEnv)).toBeNull();
   });
 });

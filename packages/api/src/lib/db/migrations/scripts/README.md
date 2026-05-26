@@ -28,6 +28,8 @@ environment.
 ## Existing scripts
 
 - `0027_backfill_region.ts` — accompanies `0027_organization_saas_columns.sql`
+- `0096_connections_to_workspace_plugins.ts` — sanity-check harness for `0096_drop_connections_table.sql` (1.5.3 cutover / ADR-0007)
 - `slack_installations_to_chat_cache.ts` — accompanies the runtime DDL emitted by `@useatlas/chat`'s `pg-adapter.ts`
+- `backfill-crm-leads.ts` — enqueues every existing `demo_leads` row into `crm_outbox` so the lead-outbox flusher dispatches them to Twenty as Persons (#2736, 1.6.0 slice 10). Surfaced via `bun run atlas -- ops backfill-crm-leads` so the operator runbook matches the rest of the `ops` surface (`wipe`, future audits); the file lives here rather than in `atlas-cli` because the script is genuinely one-shot — it accompanies the runtime cutover from "demo leads only land in `demo_leads`" to "demo leads also dispatch via the outbox" (#2730 / PR #2785), even though the SQL change itself is in `0102_crm_outbox.sql`. Re-runs are safe — `TwentyClient.upsertPerson` dedupes by `emails.primaryEmail`.
 
-See each script's header docblock for the prod-run date and the exact invocation. The second script doesn't accompany a numbered migration: `chat_cache` is created at runtime by the chat plugin. Naming it after the source table is the clearest signal of intent.
+See each script's header docblock for the prod-run date and the exact invocation. The Slack and CRM-leads scripts don't accompany a numbered migration: `chat_cache` is created at runtime by the chat plugin; the CRM-leads backfill is a one-shot bridge from the existing `demo_leads` to the new `crm_outbox` (0102) — naming them after the source table / domain is the clearest signal of intent.

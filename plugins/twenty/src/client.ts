@@ -261,13 +261,19 @@ async function readErrorDetail(response: Response): Promise<{ message: string; c
     upstreamCode = typeof body.code === "string" ? body.code : undefined;
   } catch (err) {
     // Body wasn't JSON. Try text but cap length so a huge HTML 502 page
-    // from a fronting proxy doesn't bloat the log.
+    // from a fronting proxy doesn't bloat the log. Mark truncation
+    // explicitly so the reader can tell a clipped fragment from the
+    // whole body — silent slicing once hid schema-drift detail past byte 200.
     try {
       const txt = await response.text();
-      upstreamMessage = txt.slice(0, 200);
+      upstreamMessage =
+        txt.length > 200
+          ? `${txt.slice(0, 200)}… (truncated, ${txt.length} bytes total)`
+          : txt;
     } catch (textErr) {
       upstreamMessage =
-        `[body unreadable: text=${textErr instanceof Error ? textErr.message : String(textErr)}; ` +
+        `HTTP ${response.status} [body unreadable: ` +
+        `text=${textErr instanceof Error ? textErr.message : String(textErr)}; ` +
         `json=${err instanceof Error ? err.message : String(err)}]`;
     }
   }
@@ -697,6 +703,10 @@ const METADATA_FIELDS_QUERY =
  * custom fields exist before dispatch. Errors propagate as
  * TwentyClientError so the layer can distinguish transient failures
  * from configuration errors.
+ *
+ * @deprecated Prefer {@link getPersonRestSchema}. Twenty's GraphQL
+ * metadata surface is unstable across releases — the REST OpenAPI probe
+ * is the documented replacement.
  */
 export async function getPersonMetadata(
   config: TwentyClientConfig,
@@ -833,17 +843,10 @@ export async function getPersonRestSchema(
   return { fields: new Set(Object.keys(properties)) };
 }
 
-// ─────────────────────────────────────────────────────────────────────
-//  Read tools — used by the internal scripts/twenty-mcp.ts MCP server
-// ─────────────────────────────────────────────────────────────────────
-//
-// These are the surface that local Claude Code sessions hit when
-// inspecting crm.useatlas.dev. None are reached by the SaaS dispatch
-// path (`ee/src/saas-crm/`) — they exist for internal dogfood. Returns
-// the full upstream record shape with NO hand-rolled subsetting (one of
-// the failure modes of the community MCP we replaced was dropping Atlas
-// custom fields like `atlasFirstSource` from its hand-rolled response
-// types — see #2843 handoff).
+// Read-only helpers — return the full upstream record shape with no
+// field subsetting. Custom Atlas fields (`atlasFirstSource`, `atlasIp`,
+// etc.) flow through automatically; any future workspace column appears
+// without requiring a client change.
 
 export interface TwentyCompany {
   readonly id?: string;
@@ -957,9 +960,9 @@ export async function getPerson(
     });
   }
 
+  let body: { data?: { person?: unknown } };
   try {
-    const body = (await response.json()) as { data?: { person?: TwentyPerson } };
-    return body.data?.person;
+    body = (await response.json()) as typeof body;
   } catch (err) {
     throw new TwentyClientError({
       message: `getPerson: unparseable response (${err instanceof Error ? err.message : String(err)})`,
@@ -967,6 +970,19 @@ export async function getPerson(
       operation: "getPerson",
     });
   }
+
+  const data = body.data;
+  if (data && "person" in data) {
+    return data.person as TwentyPerson | undefined;
+  }
+  // Twenty returned 2xx but the response shape doesn't include
+  // data.person at all — distinguish from a 404 so a drifted upstream
+  // schema doesn't look like "record absent".
+  throw new TwentyClientError({
+    message: "getPerson: unexpected response shape (expected data.person)",
+    status: response.status,
+    operation: "getPerson",
+  });
 }
 
 export interface SearchPeopleInput extends ListOptions {
@@ -981,9 +997,9 @@ export interface SearchPeopleInput extends ListOptions {
  *
  * IMPORTANT: never construct a bracket-nested filter like
  * `?filter[emails.primaryEmail][eq]=…` — Twenty silently ignores that
- * form and returns the unfiltered list. PR #2865 fixed
- * `findPersonByEmail`'s same regression. The unit tests assert the
- * documented shape AND forbid the bracket-nested form.
+ * form and returns the unfiltered list, which silently corrupts caller
+ * logic. The unit tests assert the documented shape AND forbid the
+ * bracket-nested form.
  *
  * When multiple criteria are supplied they are AND'd via Twenty's
  * top-level `,` join — `?filter=A[eq]:x,B[like]:%y%`.
@@ -1078,11 +1094,9 @@ export async function listNotes(
     });
   }
 
+  let body: { data?: { notes?: unknown } };
   try {
-    const body = (await response.json()) as { data?: { notes?: TwentyNoteFull[] } };
-    const list = body.data?.notes;
-    if (Array.isArray(list)) return list;
-    return [];
+    body = (await response.json()) as typeof body;
   } catch (err) {
     throw new TwentyClientError({
       message: `listNotes: unparseable response (${err instanceof Error ? err.message : String(err)})`,
@@ -1090,6 +1104,16 @@ export async function listNotes(
       operation: "listNotes",
     });
   }
+
+  const list = body.data?.notes;
+  if (Array.isArray(list)) return list as TwentyNoteFull[];
+  // Fail loud on shape drift — silent `[]` would let wipeWorkspace report
+  // "nothing to delete" when the Twenty response shape actually changed.
+  throw new TwentyClientError({
+    message: "listNotes: unexpected response shape (expected data.notes to be an array)",
+    status: response.status,
+    operation: "listNotes",
+  });
 }
 
 /** List Companies — unfiltered. Returns the raw upstream array. */
@@ -1116,11 +1140,9 @@ export async function listCompanies(
     });
   }
 
+  let body: { data?: { companies?: unknown } };
   try {
-    const body = (await response.json()) as { data?: { companies?: TwentyCompany[] } };
-    const list = body.data?.companies;
-    if (Array.isArray(list)) return list;
-    return [];
+    body = (await response.json()) as typeof body;
   } catch (err) {
     throw new TwentyClientError({
       message: `listCompanies: unparseable response (${err instanceof Error ? err.message : String(err)})`,
@@ -1128,6 +1150,14 @@ export async function listCompanies(
       operation: "listCompanies",
     });
   }
+
+  const list = body.data?.companies;
+  if (Array.isArray(list)) return list as TwentyCompany[];
+  throw new TwentyClientError({
+    message: "listCompanies: unexpected response shape (expected data.companies to be an array)",
+    status: response.status,
+    operation: "listCompanies",
+  });
 }
 
 export interface SearchCompaniesInput extends ListOptions {
@@ -1180,11 +1210,9 @@ export async function searchCompanies(
     });
   }
 
+  let body: { data?: { companies?: unknown } };
   try {
-    const body = (await response.json()) as { data?: { companies?: TwentyCompany[] } };
-    const list = body.data?.companies;
-    if (Array.isArray(list)) return list;
-    return [];
+    body = (await response.json()) as typeof body;
   } catch (err) {
     throw new TwentyClientError({
       message: `searchCompanies: unparseable response (${err instanceof Error ? err.message : String(err)})`,
@@ -1192,20 +1220,21 @@ export async function searchCompanies(
       operation: "searchCompanies",
     });
   }
+
+  const list = body.data?.companies;
+  if (Array.isArray(list)) return list as TwentyCompany[];
+  throw new TwentyClientError({
+    message: "searchCompanies: unexpected response shape (expected data.companies to be an array)",
+    status: response.status,
+    operation: "searchCompanies",
+  });
 }
 
-// ─────────────────────────────────────────────────────────────────────
-//  Delete tools
-// ─────────────────────────────────────────────────────────────────────
-//
-// `DELETE /rest/{object}/{id}?soft_delete=<bool>` — Twenty defaults to
-// `false` (hard delete) per its OpenAPI spec. Soft-deleted records are
-// excluded from list resolvers but Twenty's server-side duplicate
-// detection still trips on them when creating a new Person with the
-// same primary email. Internal-tools usage (scripts/twenty-mcp.ts wipe
-// + manual cleanup) wants hard delete; we make the default explicit on
-// the wire so a future Twenty default change doesn't silently flip our
-// semantics.
+// `DELETE /rest/{object}/{id}?soft_delete=<bool>` — soft-deleted records
+// still trip Twenty's server-side duplicate detection on upsertPerson, so
+// "hard delete" is the right default for cleanup paths. The wire param
+// is sent explicitly so a future upstream default flip can't silently
+// change our semantics.
 
 export interface DeleteOptions {
   /** Defaults to false (hard delete). Pass true to send `?soft_delete=true`. */
@@ -1269,76 +1298,157 @@ export async function deleteCompany(
 }
 
 export interface WipeWorkspaceOptions {
-  /** When true, list everything but don't delete — returns the counts only. */
+  /**
+   * When true (default), list one page per object type but issue no
+   * DELETEs — returns sample counts so the caller can preview the wipe.
+   * Defaults to true so the destructive path requires explicit opt-in.
+   */
   readonly dryRun?: boolean;
   /** Limit per page during enumeration; defaults to 60. */
   readonly pageLimit?: number;
-  /** Safety cap on total records visited across all object types. Default 10_000. */
+  /**
+   * Safety cap on records visited per object type (not summed across
+   * types). Default 10_000. Hitting the cap sets `truncated` to true on
+   * the returned shape.
+   */
   readonly maxRecords?: number;
 }
 
-export interface WipeWorkspaceResult {
-  readonly dryRun: boolean;
-  readonly peopleDeleted: number;
-  readonly notesDeleted: number;
-  readonly companiesDeleted: number;
-  readonly truncated: boolean;
+/**
+ * Per-record delete failure surfaced from a live wipe. Accumulated
+ * inside the result so a transient 5xx mid-wipe can't be mistaken for
+ * a clean run — the caller sees both the progress made and the records
+ * left behind.
+ */
+export interface WipeWorkspaceError {
+  readonly objectType: "note" | "person" | "company";
+  readonly id: string;
+  readonly status: number;
+  readonly message: string;
 }
 
+interface WipeTruncation {
+  readonly notes: boolean;
+  readonly people: boolean;
+  readonly companies: boolean;
+}
+
+export type WipeWorkspaceResult =
+  | {
+      readonly dryRun: true;
+      readonly notesSampled: number;
+      readonly peopleSampled: number;
+      readonly companiesSampled: number;
+      readonly truncated: WipeTruncation;
+    }
+  | {
+      readonly dryRun: false;
+      readonly notesDeleted: number;
+      readonly peopleDeleted: number;
+      readonly companiesDeleted: number;
+      readonly truncated: WipeTruncation;
+      readonly errors: ReadonlyArray<WipeWorkspaceError>;
+    };
+
 /**
- * Hard-delete every Person, Note, and Company in the workspace.
+ * Hard-delete every Note, Person, and Company in the workspace, or in
+ * dry-run mode sample one page per object type to preview the wipe.
  *
- * Internal-tools only — invoked from `scripts/twenty-mcp.ts wipe`. Not
- * called by `ee/src/saas-crm/` or any production code path. The wipe
- * order is notes → people → companies so dangling NoteTargets don't
- * survive (deleting a Note cascades the NoteTargets server-side per
- * Twenty's referential rules; we don't enumerate them here). Companies
- * last so a Person.companyId reference doesn't dangle mid-wipe.
+ * Iteration order is notes → people → companies. Notes go first so the
+ * NoteTarget rows referencing them are released before the People they
+ * point at disappear; Companies go last because Twenty's FK behavior on
+ * Person.companyId rejects (or, depending on workspace config, leaves
+ * orphans on) Company deletes while People still reference them.
  *
- * Pagination shape: lists `pageLimit` at a time, deletes the page,
- * re-lists. Twenty's cursor pagination would also work but a simple
- * "delete the first page until the table is empty" loop is sufficient
- * because deletes shift the cursor.
+ * Pagination: lists `pageLimit` at a time, deletes the page, re-lists.
+ * Twenty's cursor pagination would also work but a "delete-then-relist"
+ * loop is sufficient because deletes shift the cursor.
+ *
+ * Safety: `dryRun` defaults to true. `maxRecords` is enforced per
+ * object type, not summed, so a large Notes table can't silently starve
+ * the People and Companies drains.
  */
 export async function wipeWorkspace(
   config: TwentyClientConfig,
   opts?: WipeWorkspaceOptions,
 ): Promise<WipeWorkspaceResult> {
-  const dryRun = opts?.dryRun === true;
+  const dryRun = opts?.dryRun !== false;
   const pageLimit = opts?.pageLimit ?? 60;
   const maxRecords = opts?.maxRecords ?? 10_000;
 
-  let visited = 0;
-  let truncated = false;
+  const errors: WipeWorkspaceError[] = [];
 
   async function drain<T extends { id?: string }>(
+    objectType: WipeWorkspaceError["objectType"],
     list: (config: TwentyClientConfig, listOpts: ListOptions) => Promise<T[]>,
     del: (config: TwentyClientConfig, id: string) => Promise<void>,
-  ): Promise<number> {
-    let deleted = 0;
-    // Loop until the upstream returns an empty page. Cap with maxRecords.
+  ): Promise<{ count: number; truncated: boolean }> {
+    let count = 0;
+    let visited = 0;
     while (visited < maxRecords) {
       const page = await list(config, { limit: pageLimit });
-      if (page.length === 0) return deleted;
+      if (page.length === 0) return { count, truncated: false };
       for (const record of page) {
         if (visited >= maxRecords) {
-          truncated = true;
-          return deleted;
+          return { count, truncated: true };
         }
         visited++;
         if (!record.id) continue;
-        if (!dryRun) await del(config, record.id);
-        deleted++;
+        if (dryRun) {
+          count++;
+          continue;
+        }
+        try {
+          await del(config, record.id);
+          count++;
+        } catch (err) {
+          if (err instanceof TwentyClientError) {
+            errors.push({
+              objectType,
+              id: record.id,
+              status: err.status,
+              message: err.message,
+            });
+          } else {
+            errors.push({
+              objectType,
+              id: record.id,
+              status: 0,
+              message: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
       }
-      if (dryRun) return deleted; // one page is enough to estimate
+      if (dryRun) return { count, truncated: false };
     }
-    truncated = true;
-    return deleted;
+    return { count, truncated: true };
   }
 
-  const notesDeleted = await drain(listNotes, (c, id) => deleteNote(c, id));
-  const peopleDeleted = await drain(listPeople, (c, id) => deletePerson(c, id));
-  const companiesDeleted = await drain(listCompanies, (c, id) => deleteCompany(c, id));
+  const notes = await drain("note", listNotes, (c, id) => deleteNote(c, id));
+  const people = await drain("person", listPeople, (c, id) => deletePerson(c, id));
+  const companies = await drain("company", listCompanies, (c, id) => deleteCompany(c, id));
 
-  return { dryRun, peopleDeleted, notesDeleted, companiesDeleted, truncated };
+  const truncated: WipeTruncation = {
+    notes: notes.truncated,
+    people: people.truncated,
+    companies: companies.truncated,
+  };
+
+  if (dryRun) {
+    return {
+      dryRun: true,
+      notesSampled: notes.count,
+      peopleSampled: people.count,
+      companiesSampled: companies.count,
+      truncated,
+    };
+  }
+  return {
+    dryRun: false,
+    notesDeleted: notes.count,
+    peopleDeleted: people.count,
+    companiesDeleted: companies.count,
+    truncated,
+    errors,
+  };
 }

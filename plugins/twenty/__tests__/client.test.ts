@@ -1211,11 +1211,6 @@ describe("upsertPerson with allowedPersonFields", () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────
-//  Read tools — listPeople / getPerson / searchPeople / listCompanies /
-//  searchCompanies / listNotes
-// ─────────────────────────────────────────────────────────────────────
-
 describe("listPeople", () => {
   test("GETs /rest/people with optional limit + starting_after; returns the array", async () => {
     const { fetch, calls } = makeScriptedFetch([
@@ -1277,6 +1272,23 @@ describe("getPerson", () => {
     expect(calls[0].url).toBe("https://crm.test.local/rest/people/person_xyz");
   });
 
+  test("returns the whole upstream Person — no field subsetting", async () => {
+    const upstream = {
+      id: "p1",
+      emails: { primaryEmail: "x@y.com" },
+      atlasFirstSource: "DEMO",
+      atlasLastSource: "CONVERSION",
+      atlasIp: "1.2.3.4",
+      atlasStripeCustomerId: "cus_x",
+      futureCustomField: "lives",
+    };
+    const { fetch } = makeScriptedFetch([
+      { status: 200, body: { data: { person: upstream } } },
+    ]);
+    const result = await getPerson(baseConfig({ fetchImpl: fetch }), "p1");
+    expect(result).toEqual(upstream);
+  });
+
   test("returns undefined on 404", async () => {
     const { fetch } = makeScriptedFetch([
       { status: 404, body: { messages: ["not found"] } },
@@ -1297,6 +1309,16 @@ describe("getPerson", () => {
       status: 401,
     });
   });
+
+  test("fails loud when 2xx body lacks data.person — distinguishes drift from 404", async () => {
+    const { fetch } = makeScriptedFetch([{ status: 200, body: { data: {} } }]);
+    await expect(
+      getPerson(baseConfig({ fetchImpl: fetch }), "id"),
+    ).rejects.toMatchObject({
+      _tag: "TwentyClientError",
+      operation: "getPerson",
+    });
+  });
 });
 
 describe("searchPeople", () => {
@@ -1305,9 +1327,8 @@ describe("searchPeople", () => {
       { status: 200, body: { data: { people: [] } } },
     ]);
     await searchPeople(baseConfig({ fetchImpl: fetch }), { email: "find@example.com" });
-    // Twenty's documented form is `field[op]:value`. The bracket-nested
-    // form `?filter[emails.primaryEmail][eq]=…` is silently ignored —
-    // forbid it in the same shape as PR #2865.
+    // Twenty silently ignores the bracket-nested form
+    // `?filter[emails.primaryEmail][eq]=…` and returns the unfiltered list.
     expect(calls[0].url).toContain("filter=emails.primaryEmail[eq]:");
     expect(calls[0].url).not.toContain("filter[emails.primaryEmail][eq]=");
     expect(calls[0].url).toContain(encodeURIComponent("find@example.com"));
@@ -1335,12 +1356,13 @@ describe("searchPeople", () => {
     expect(url).not.toContain("filter[");
   });
 
-  test("throws when no criteria supplied", async () => {
-    const { fetch } = makeScriptedFetch([]);
+  test("throws when no criteria supplied and never issues a request", async () => {
+    const { fetch, calls } = makeScriptedFetch([]);
     await expect(searchPeople(baseConfig({ fetchImpl: fetch }), {})).rejects.toMatchObject({
       _tag: "TwentyClientError",
       operation: "searchPeople",
     });
+    expect(calls).toHaveLength(0);
   });
 });
 
@@ -1374,21 +1396,58 @@ describe("listCompanies / searchCompanies / listNotes", () => {
     expect(url).not.toContain("filter[");
   });
 
-  test("listNotes GETs /rest/notes; returns empty array when missing", async () => {
+  test("listNotes returns the array on a normal 200 response", async () => {
     const { fetch } = makeScriptedFetch([
-      { status: 200, body: { data: {} } },
+      { status: 200, body: { data: { notes: [{ id: "n1", title: "x" }] } } },
     ]);
     const result = await listNotes(baseConfig({ fetchImpl: fetch }));
-    expect(result).toEqual([]);
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("n1");
+  });
+
+  test("listNotes fails loud when data.notes is missing", async () => {
+    const { fetch } = makeScriptedFetch([{ status: 200, body: { data: {} } }]);
+    await expect(listNotes(baseConfig({ fetchImpl: fetch }))).rejects.toMatchObject({
+      _tag: "TwentyClientError",
+      operation: "listNotes",
+    });
+  });
+
+  test("listCompanies fails loud when data.companies is missing", async () => {
+    const { fetch } = makeScriptedFetch([{ status: 200, body: { data: {} } }]);
+    await expect(listCompanies(baseConfig({ fetchImpl: fetch }))).rejects.toMatchObject({
+      _tag: "TwentyClientError",
+      operation: "listCompanies",
+    });
+  });
+
+  test("searchCompanies fails loud when data.companies is missing", async () => {
+    const { fetch } = makeScriptedFetch([{ status: 200, body: { data: {} } }]);
+    await expect(
+      searchCompanies(baseConfig({ fetchImpl: fetch }), { nameLike: "Acme" }),
+    ).rejects.toMatchObject({
+      _tag: "TwentyClientError",
+      operation: "searchCompanies",
+    });
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────
-//  Delete tools — soft_delete=false by default, hard delete on the wire
-// ─────────────────────────────────────────────────────────────────────
+const deleteCases: Array<{
+  readonly name: "deletePerson" | "deleteNote" | "deleteCompany";
+  readonly fn: (
+    cfg: TwentyClientConfig,
+    id: string,
+    opts?: { readonly softDelete?: boolean },
+  ) => Promise<void>;
+  readonly path: string;
+}> = [
+  { name: "deletePerson", fn: deletePerson, path: "people" },
+  { name: "deleteNote", fn: deleteNote, path: "notes" },
+  { name: "deleteCompany", fn: deleteCompany, path: "companies" },
+];
 
 describe("deletePerson / deleteNote / deleteCompany", () => {
-  test("sends DELETE with ?soft_delete=false by default (hard delete)", async () => {
+  test("sends DELETE with ?soft_delete=false by default", async () => {
     const { fetch, calls } = makeScriptedFetch([
       { status: 200, body: {} },
       { status: 200, body: {} },
@@ -1403,48 +1462,58 @@ describe("deletePerson / deleteNote / deleteCompany", () => {
     expect(calls[0].url).toBe("https://crm.test.local/rest/people/p1?soft_delete=false");
     expect(calls[1].url).toBe("https://crm.test.local/rest/notes/n1?soft_delete=false");
     expect(calls[2].url).toBe("https://crm.test.local/rest/companies/c1?soft_delete=false");
-    // soft_delete must always be explicit on the wire so a future
-    // Twenty default change can't silently flip our semantics.
     for (const call of calls) {
-      expect(call.url).toContain("soft_delete=");
+      expect(call.url).toMatch(/[?&]soft_delete=(true|false)\b/);
     }
   });
 
-  test("honors softDelete:true override", async () => {
-    const { fetch, calls } = makeScriptedFetch([{ status: 200, body: {} }]);
-    await deletePerson(baseConfig({ fetchImpl: fetch }), "p1", { softDelete: true });
-    expect(calls[0].url).toBe("https://crm.test.local/rest/people/p1?soft_delete=true");
-  });
+  test.each(deleteCases)(
+    "$name honors softDelete:true override",
+    async ({ fn, path }) => {
+      const { fetch, calls } = makeScriptedFetch([{ status: 200, body: {} }]);
+      await fn(baseConfig({ fetchImpl: fetch }), "id-1", { softDelete: true });
+      expect(calls[0].url).toBe(`https://crm.test.local/rest/${path}/id-1?soft_delete=true`);
+    },
+  );
 
-  test("treats 404 as idempotent — does not throw", async () => {
+  test.each(deleteCases)("$name treats 404 as idempotent", async ({ fn }) => {
     const { fetch } = makeScriptedFetch([
       { status: 404, body: { messages: ["already gone"] } },
     ]);
-    await expect(
-      deletePerson(baseConfig({ fetchImpl: fetch }), "p1"),
-    ).resolves.toBeUndefined();
+    await expect(fn(baseConfig({ fetchImpl: fetch }), "id-1")).resolves.toBeUndefined();
   });
 
-  test("throws TwentyClientError on non-404 4xx with operation set", async () => {
-    const { fetch } = makeScriptedFetch([
-      { status: 401, body: { messages: ["unauthorized"] } },
-    ]);
-    await expect(
-      deletePerson(baseConfig({ fetchImpl: fetch }), "p1"),
-    ).rejects.toMatchObject({
-      _tag: "TwentyClientError",
-      operation: "deletePerson",
-      status: 401,
-    });
-  });
+  test.each(deleteCases)(
+    "$name throws TwentyClientError on non-404 4xx with operation set",
+    async ({ fn, name }) => {
+      const { fetch } = makeScriptedFetch([
+        { status: 401, body: { messages: ["unauthorized"] } },
+      ]);
+      await expect(fn(baseConfig({ fetchImpl: fetch }), "id-1")).rejects.toMatchObject({
+        _tag: "TwentyClientError",
+        operation: name,
+        status: 401,
+      });
+    },
+  );
 });
 
-// ─────────────────────────────────────────────────────────────────────
-//  wipeWorkspace — drains pages, dryRun samples one page per object
-// ─────────────────────────────────────────────────────────────────────
-
 describe("wipeWorkspace", () => {
-  test("drains notes → people → companies and reports counts", async () => {
+  test("defaults to dryRun:true and issues no DELETEs when called with no opts", async () => {
+    const { fetch, calls } = makeScriptedFetch([
+      { status: 200, body: { data: { notes: [{ id: "n1" }] } } },
+      { status: 200, body: { data: { people: [] } } },
+      { status: 200, body: { data: { companies: [] } } },
+    ]);
+    const result = await wipeWorkspace(baseConfig({ fetchImpl: fetch }));
+    expect(result.dryRun).toBe(true);
+    if (result.dryRun) {
+      expect(result.notesSampled).toBe(1);
+    }
+    expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(0);
+  });
+
+  test("dryRun:false drains notes → people → companies in order and reports deleted counts", async () => {
     const { fetch, calls } = makeScriptedFetch([
       // notes: page 1 returns 2, delete×2, page 2 empty
       { status: 200, body: { data: { notes: [{ id: "n1" }, { id: "n2" }] } } },
@@ -1458,21 +1527,33 @@ describe("wipeWorkspace", () => {
       // companies: page 1 empty
       { status: 200, body: { data: { companies: [] } } },
     ]);
-    const result = await wipeWorkspace(baseConfig({ fetchImpl: fetch }), { pageLimit: 60 });
+    const result = await wipeWorkspace(baseConfig({ fetchImpl: fetch }), {
+      dryRun: false,
+      pageLimit: 60,
+    });
     expect(result.dryRun).toBe(false);
-    expect(result.notesDeleted).toBe(2);
-    expect(result.peopleDeleted).toBe(1);
-    expect(result.companiesDeleted).toBe(0);
-    expect(result.truncated).toBe(false);
+    if (!result.dryRun) {
+      expect(result.notesDeleted).toBe(2);
+      expect(result.peopleDeleted).toBe(1);
+      expect(result.companiesDeleted).toBe(0);
+      expect(result.truncated).toEqual({ notes: false, people: false, companies: false });
+      expect(result.errors).toEqual([]);
+    }
 
-    // Each delete URL must carry soft_delete=false (hard delete) so the
-    // wipe actually clears the workspace — soft-deleted records still
-    // trip Twenty's duplicate detection on next upsertPerson.
     const deletes = calls.filter((c) => c.method === "DELETE");
     expect(deletes.length).toBe(3);
     for (const d of deletes) {
-      expect(d.url).toContain("soft_delete=false");
+      expect(d.url).toMatch(/[?&]soft_delete=false\b/);
     }
+
+    // Iteration-order assertion — the safety property of the wipe.
+    const listUrls = calls.filter((c) => c.method === "GET").map((c) => c.url);
+    const notesIdx = listUrls.findIndex((u) => u.includes("/rest/notes"));
+    const peopleIdx = listUrls.findIndex((u) => u.includes("/rest/people"));
+    const companiesIdx = listUrls.findIndex((u) => u.includes("/rest/companies"));
+    expect(notesIdx).toBeGreaterThanOrEqual(0);
+    expect(peopleIdx).toBeGreaterThan(notesIdx);
+    expect(companiesIdx).toBeGreaterThan(peopleIdx);
   });
 
   test("dryRun=true counts one page per object type and issues no DELETEs", async () => {
@@ -1486,30 +1567,84 @@ describe("wipeWorkspace", () => {
       pageLimit: 60,
     });
     expect(result.dryRun).toBe(true);
-    expect(result.notesDeleted).toBe(2);
-    expect(result.peopleDeleted).toBe(1);
-    expect(result.companiesDeleted).toBe(0);
+    if (result.dryRun) {
+      expect(result.notesSampled).toBe(2);
+      expect(result.peopleSampled).toBe(1);
+      expect(result.companiesSampled).toBe(0);
+    }
     expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(0);
   });
 
-  test("sets truncated=true when maxRecords cap is reached", async () => {
+  test("sets truncated.notes=true when notes drain hits maxRecords", async () => {
     const { fetch } = makeScriptedFetch([
-      // 3 notes returned on page 1, maxRecords=2 → only 2 processed
-      {
-        status: 200,
-        body: { data: { notes: [{ id: "n1" }, { id: "n2" }, { id: "n3" }] } },
-      },
+      { status: 200, body: { data: { notes: [{ id: "n1" }, { id: "n2" }, { id: "n3" }] } } },
       { status: 200, body: {} }, // DELETE n1
       { status: 200, body: {} }, // DELETE n2
-      // people + companies still need to drain — empty for this test
+      // people + companies still drain — maxRecords is per-object, not summed
       { status: 200, body: { data: { people: [] } } },
       { status: 200, body: { data: { companies: [] } } },
     ]);
     const result = await wipeWorkspace(baseConfig({ fetchImpl: fetch }), {
+      dryRun: false,
       pageLimit: 60,
       maxRecords: 2,
     });
-    expect(result.truncated).toBe(true);
-    expect(result.notesDeleted).toBe(2);
+    if (!result.dryRun) {
+      expect(result.notesDeleted).toBe(2);
+      expect(result.truncated).toEqual({ notes: true, people: false, companies: false });
+    }
+  });
+
+  test("maxRecords is per-object-type — people drain still gets full budget after notes saturates", async () => {
+    const { fetch } = makeScriptedFetch([
+      { status: 200, body: { data: { notes: [{ id: "n1" }, { id: "n2" }, { id: "n3" }] } } },
+      { status: 200, body: {} }, // DELETE n1
+      { status: 200, body: {} }, // DELETE n2
+      // people drain: maxRecords=2 is independent — should see all 2 deleted (3rd truncated)
+      { status: 200, body: { data: { people: [{ id: "p1" }, { id: "p2" }, { id: "p3" }] } } },
+      { status: 200, body: {} }, // DELETE p1
+      { status: 200, body: {} }, // DELETE p2
+      // companies drain still runs with fresh budget
+      { status: 200, body: { data: { companies: [{ id: "c1" }] } } },
+      { status: 200, body: {} }, // DELETE c1
+      { status: 200, body: { data: { companies: [] } } },
+    ]);
+    const result = await wipeWorkspace(baseConfig({ fetchImpl: fetch }), {
+      dryRun: false,
+      pageLimit: 60,
+      maxRecords: 2,
+    });
+    if (!result.dryRun) {
+      expect(result.notesDeleted).toBe(2);
+      expect(result.peopleDeleted).toBe(2);
+      expect(result.companiesDeleted).toBe(1);
+      expect(result.truncated.notes).toBe(true);
+      expect(result.truncated.people).toBe(true);
+      expect(result.truncated.companies).toBe(false);
+    }
+  });
+
+  test("collects per-record delete failures and continues the wipe", async () => {
+    const { fetch } = makeScriptedFetch([
+      { status: 200, body: { data: { notes: [{ id: "n1" }, { id: "n2" }] } } },
+      { status: 500, body: { messages: ["upstream blew up"] } }, // DELETE n1 fails
+      { status: 200, body: {} }, // DELETE n2 succeeds
+      { status: 200, body: { data: { notes: [] } } },
+      { status: 200, body: { data: { people: [] } } },
+      { status: 200, body: { data: { companies: [] } } },
+    ]);
+    const result = await wipeWorkspace(baseConfig({ fetchImpl: fetch }), {
+      dryRun: false,
+      pageLimit: 60,
+    });
+    if (!result.dryRun) {
+      expect(result.notesDeleted).toBe(1);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toMatchObject({
+        objectType: "note",
+        id: "n1",
+        status: 500,
+      });
+    }
   });
 });

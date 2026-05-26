@@ -1,36 +1,13 @@
 #!/usr/bin/env bun
 /**
- * scripts/twenty-mcp.ts — internal-tools Twenty CRM MCP server.
- *
- * Single-file MCP server that exposes the in-repo TwentyClient
- * (`plugins/twenty/src/client.ts`) over stdio for local Claude Code
- * sessions querying or manipulating `crm.useatlas.dev`. Replaces the
- * community `twenty-mcp-server` (jezweb) we used previously — the
- * community MCP shipped multiple failure modes (silent empty-result
- * filters, broken metadata GraphQL, hand-rolled response subsetting
- * that dropped Atlas custom fields, missing delete verbs).
- *
- * INTERNAL ONLY. NOT a product surface. NOT published to npm.
- * Reuses the same TwentyClient that backs `ee/src/saas-crm/` so auth,
- * retry, filter syntax (#2865), and schema probe (#2860) stay aligned
- * with production.
+ * Internal-tools Twenty CRM MCP server. Exposes the in-repo
+ * TwentyClient over stdio for local Claude Code sessions.
  *
  * Setup:
  *   claude mcp add --scope user twenty-crm \
  *     --env TWENTY_API_KEY="$TWENTY_API_KEY" \
  *     --env TWENTY_BASE_URL=https://crm.useatlas.dev \
  *     -- bun /path/to/atlas/scripts/twenty-mcp.ts
- *
- * Or in claude_desktop_config.json:
- *   {
- *     "mcpServers": {
- *       "twenty-crm": {
- *         "command": "bun",
- *         "args": ["/path/to/atlas/scripts/twenty-mcp.ts"],
- *         "env": { "TWENTY_API_KEY": "...", "TWENTY_BASE_URL": "https://crm.useatlas.dev" }
- *       }
- *     }
- *   }
  *
  * Logging contract: stdout is reserved for JSON-RPC. All diagnostic
  * messages go to stderr so they don't corrupt the protocol stream.
@@ -58,6 +35,7 @@ import {
   TwentyClientError,
   type TwentyClientConfig,
 } from "../plugins/twenty/src/client.js";
+import type { AtlasEventSource } from "../plugins/twenty/src/lead-normalizer.js";
 
 const SERVER_NAME = "atlas-twenty-mcp";
 const SERVER_VERSION = "0.1.0";
@@ -110,6 +88,9 @@ async function run<T>(
         operation: e.operation,
         upstreamCode: e.upstreamCode,
         retryAfterMs: e.retryAfterMs,
+        // Preserve orphanedNoteId on createNote partial failures so the
+        // operator can clean up the unlinked note manually.
+        ...(e.orphanedNoteId !== undefined && { orphanedNoteId: e.orphanedNoteId }),
       });
     }
     return err(`${toolName}: ${e instanceof Error ? e.message : String(e)}`);
@@ -123,12 +104,18 @@ const eventSourceSchema = z.enum([
   "CONVERSION",
   "OTHER",
 ]);
+// Fail the build if the Zod enum drifts from the TS union exported by
+// lead-normalizer — the two are parallel definitions and would otherwise
+// silently disagree.
+type _EventSourceDriftCheck = z.infer<typeof eventSourceSchema> extends AtlasEventSource
+  ? AtlasEventSource extends z.infer<typeof eventSourceSchema>
+    ? true
+    : never
+  : never;
+const _eventSourceDriftCheck: _EventSourceDriftCheck = true;
+void _eventSourceDriftCheck;
 
 const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
-
-// ─────────────────────────────────────────────────────────────────────
-//  Read tools
-// ─────────────────────────────────────────────────────────────────────
 
 server.registerTool(
   "listPeople",
@@ -225,10 +212,6 @@ server.registerTool(
     }),
 );
 
-// ─────────────────────────────────────────────────────────────────────
-//  Write tools
-// ─────────────────────────────────────────────────────────────────────
-
 server.registerTool(
   "upsertPerson",
   {
@@ -271,13 +254,9 @@ server.registerTool(
   async (args) => run("createNote", () => createNote(config, args)),
 );
 
-// ─────────────────────────────────────────────────────────────────────
-//  Delete tools — HARD DELETE by default (?soft_delete=false)
-// ─────────────────────────────────────────────────────────────────────
-//
-// Soft-deleted records still trip Twenty's server-side duplicate
-// detection on upsertPerson. For internal-tools cleanup the default
-// must be hard delete; callers who want soft delete pass softDelete:true.
+// HARD DELETE by default — soft-deleted records still trip Twenty's
+// server-side duplicate detection on upsertPerson, so cleanup paths need
+// hard delete to actually free the email for re-creation.
 
 server.registerTool(
   "deletePerson",
@@ -331,9 +310,9 @@ server.registerTool(
   "wipeWorkspace",
   {
     description:
-      "DESTRUCTIVE — hard-delete every Note, Person, and Company in the Twenty workspace. Default is dryRun:true (returns counts from a single sampled page, no deletes). Pass dryRun:false to actually delete. Capped at maxRecords (default 10000) — sets truncated:true when the cap is hit.",
+      "DESTRUCTIVE — hard-delete every Note, Person, and Company in the Twenty workspace. Defaults to dryRun:true (one sampled page per object type, no deletes). Pass dryRun:false to actually delete. Capped per-object-type at maxRecords (default 10000) — `truncated.{notes,people,companies}` flags which drains hit the cap; live runs surface per-record delete failures in `errors`.",
     inputSchema: {
-      dryRun: z.boolean().optional().default(true),
+      dryRun: z.boolean().optional(),
       pageLimit: z.number().int().positive().optional(),
       maxRecords: z.number().int().positive().optional(),
     },
@@ -341,16 +320,12 @@ server.registerTool(
   async ({ dryRun, pageLimit, maxRecords }) =>
     run("wipeWorkspace", () =>
       wipeWorkspace(config, {
-        dryRun: dryRun !== false,
+        ...(dryRun !== undefined && { dryRun }),
         ...(pageLimit !== undefined && { pageLimit }),
         ...(maxRecords !== undefined && { maxRecords }),
       }),
     ),
 );
-
-// ─────────────────────────────────────────────────────────────────────
-//  Boot
-// ─────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
   const transport = new StdioServerTransport();

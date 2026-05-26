@@ -155,7 +155,9 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
 
 ## Planned
 
-- [ ] **1.6.0 — CRM & Lead Capture** ([milestone #52](https://github.com/AtlasDevHQ/atlas/milestone/52), [PRD #2726](https://github.com/AtlasDevHQ/atlas/issues/2726)) — Demo lead → Twenty CRM person, signup hook, talk-to-sales form, durable outbox, admin override + retry surface. Twenty-as-Atlas-datasource slice deferred to a future "generic REST datasources" milestone (#2728 closed with reasoning). Slice 1 (#2727 / PR #2785) shipped ahead of formal kickoff — `plugins/twenty/` + `SaasCrm` Tag + fire-and-forget demo lead capture; `@useatlas/twenty@0.0.1` published via #2787.
+- [ ] **1.6.0 — CRM & Lead Capture** ([milestone #52](https://github.com/AtlasDevHQ/atlas/milestone/52), [PRD #2726](https://github.com/AtlasDevHQ/atlas/issues/2726)) — Demo lead → Twenty CRM person, signup hook, talk-to-sales form, durable outbox, admin override + retry surface. Twenty-as-Atlas-datasource slice deferred to a future "generic REST datasources" milestone (#2728 closed with reasoning).
+  - [x] Slice 1 (#2727 / PR #2785) — `plugins/twenty/` + `SaasCrm` Tag + fire-and-forget demo lead capture; `@useatlas/twenty@0.0.1` published via #2787.
+  - [x] Slice 2 (#2729 / PR #2830) — durable lead outbox + Scheduler-backed flusher replaces fire-and-forget; migration 0102 + classify/backoff/flusher-lifecycle test coverage.
 
 ## Parked
 

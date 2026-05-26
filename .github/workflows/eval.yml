@@ -87,7 +87,7 @@ env:
 jobs:
   canonical-eval:
     name: canonical-eval
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # PR runs are informational; tag pushes are blocking. The release-tag
     # branch flips this off so a regression actually trips the workflow red.
     continue-on-error: ${{ github.event_name == 'pull_request' }}
@@ -151,7 +151,7 @@ jobs:
   # **protocol + JWT** gate.
   canonical-mcp-eval-deterministic:
     name: canonical-mcp-eval (deterministic)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # Same policy as the deterministic job: PRs informational, tag pushes
     # blocking. A protocol-shape regression must not ship in a tag.
     continue-on-error: ${{ github.event_name == 'pull_request' }}
@@ -203,7 +203,7 @@ jobs:
   # doesn't masquerade as a "0/20 regression" on a tag push.
   eval-mcp-llm:
     name: eval-mcp-llm (#2119 Part B)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # Same policy as the deterministic + JWT-path jobs — PRs informational,
     # tag pushes blocking. A drop below the 18/20 acceptance floor must
     # not ship in a tag.

@@ -43,6 +43,7 @@ export {
   upsertPerson,
   stampStripeCustomerId,
   getPersonMetadata,
+  getPersonRestSchema,
   createNote,
   TwentyClientError,
   type TwentyOperation,

@@ -56,22 +56,32 @@ const { SaasCrm } = await import("@atlas/api/lib/effect/services");
 
 // ── Fixture helpers ─────────────────────────────────────────────────
 
-function metadataResponse(fieldNames: string[]): Response {
+/**
+ * Shape mirrors Twenty's REST OpenAPI 3.1.1 spec at `/rest/open-api/core`:
+ * `components.schemas.Person.properties` is an object keyed by field name.
+ * The verifier only reads property keys, so values are placeholders.
+ *
+ * `emails` and `name` (standard Twenty Person fields) are auto-included
+ * so callers only specify the custom-field set under test. Production
+ * Twenty always exposes these in OpenAPI, and the boot-time guard in
+ * `verifyCustomFields` requires `emails` — explicitly opt out by passing
+ * `{ includeStandard: false }` when testing the missing-standard branch.
+ */
+function metadataResponse(
+  fieldNames: string[],
+  options: { includeStandard?: boolean } = {},
+): Response {
+  const { includeStandard = true } = options;
+  const properties: Record<string, { type: string }> = {};
+  if (includeStandard) {
+    properties.emails = { type: "object" };
+    properties.name = { type: "object" };
+  }
+  for (const name of fieldNames) properties[name] = { type: "string" };
   return new Response(
     JSON.stringify({
-      data: {
-        objects: {
-          edges: [
-            {
-              node: {
-                fields: {
-                  edges: fieldNames.map((name) => ({ node: { name } })),
-                },
-              },
-            },
-          ],
-        },
-      },
+      openapi: "3.1.1",
+      components: { schemas: { Person: { properties } } },
     }),
     { status: 200, headers: { "Content-Type": "application/json" } },
   );
@@ -100,7 +110,33 @@ describe("verifyCustomFields", () => {
     resetStubs();
   });
 
-  test("returns ok=true when both required custom fields are present", async () => {
+  test("returns ok=true + present set when all required fields are present", async () => {
+    const fetchImpl = (async () =>
+      metadataResponse([
+        "id",
+        "atlasFirstSource",
+        "atlasLastSource",
+        "atlasStripeCustomerId",
+        "atlasIp",
+      ])) as unknown as typeof globalThis.fetch;
+
+    await withFetch(fetchImpl, async () => {
+      const result = await verifyCustomFields({
+        apiKey: "k",
+        baseUrl: "https://crm.test.local",
+        source: "env",
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.present.has("atlasFirstSource")).toBe(true);
+        expect(result.present.has("atlasLastSource")).toBe(true);
+        expect(result.present.has("atlasStripeCustomerId")).toBe(true);
+        expect(result.present.has("atlasIp")).toBe(true);
+      }
+    });
+  });
+
+  test("returns ok=true even when optional atlasIp is absent (only required fields gate availability)", async () => {
     const fetchImpl = (async () =>
       metadataResponse([
         "id",
@@ -115,13 +151,16 @@ describe("verifyCustomFields", () => {
         baseUrl: "https://crm.test.local",
         source: "env",
       });
-      expect(result).toEqual({ ok: true });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.present.has("atlasIp")).toBe(false);
+      }
     });
   });
 
   test("returns ok=false when atlasFirstSource is missing", async () => {
     const fetchImpl = (async () =>
-      metadataResponse(["id", "atlasLastSource"])) as unknown as typeof globalThis.fetch;
+      metadataResponse(["id", "atlasLastSource", "atlasStripeCustomerId"])) as unknown as typeof globalThis.fetch;
 
     await withFetch(fetchImpl, async () => {
       const result = await verifyCustomFields({
@@ -133,7 +172,29 @@ describe("verifyCustomFields", () => {
     });
   });
 
-  test("returns ok=transient on network failure", async () => {
+  // Defensive guard from PR #2860 review: if Twenty's OpenAPI ever stops
+  // exposing `emails` as a flat property (e.g. $ref/allOf composition that
+  // doesn't flatten into Person.properties), the boot probe must fail
+  // closed rather than construct an allowlist that would silently strip
+  // every lead's email from POST bodies.
+  test("returns ok=false when standard `emails` field is missing from the probed schema", async () => {
+    const fetchImpl = (async () =>
+      metadataResponse(
+        ["id", "atlasFirstSource", "atlasLastSource", "atlasStripeCustomerId"],
+        { includeStandard: false },
+      )) as unknown as typeof globalThis.fetch;
+
+    await withFetch(fetchImpl, async () => {
+      const result = await verifyCustomFields({
+        apiKey: "k",
+        baseUrl: "https://crm.test.local",
+        source: "env",
+      });
+      expect(result).toEqual({ ok: false });
+    });
+  });
+
+  test("returns ok=false on network failure (fail closed — no more silent transient)", async () => {
     const fetchImpl = (async () => {
       throw new Error("ECONNRESET");
     }) as unknown as typeof globalThis.fetch;
@@ -144,7 +205,7 @@ describe("verifyCustomFields", () => {
         baseUrl: "https://crm.test.local",
         source: "env",
       });
-      expect(result).toMatchObject({ ok: "transient" });
+      expect(result).toEqual({ ok: false });
     });
   });
 
@@ -201,7 +262,7 @@ describe("SaasCrmLive boot — enterprise enabled + creds + both fields present 
     let metadataCalls = 0;
     const fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
       const url = typeof input === "string" ? input : (input as Request).url;
-      if (url.endsWith("/metadata")) {
+      if (url.endsWith("/rest/open-api/core")) {
         metadataCalls++;
         return metadataResponse([
           "id",
@@ -288,7 +349,7 @@ describe("SaasCrmLive boot — missing required field flips available to false",
 
     const fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
       const url = typeof input === "string" ? input : (input as Request).url;
-      if (url.endsWith("/metadata")) {
+      if (url.endsWith("/rest/open-api/core")) {
         return metadataResponse(["id", "atlasLastSource"]);
       }
       throw new Error(`Unexpected fetch: ${url}`);
@@ -323,7 +384,7 @@ describe("SaasCrmLive boot — missing atlasStripeCustomerId flips available to 
 
     const fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
       const url = typeof input === "string" ? input : (input as Request).url;
-      if (url.endsWith("/metadata")) {
+      if (url.endsWith("/rest/open-api/core")) {
         // Old schema — source fields present but the conversion stamp
         // field is missing. The verification must catch it on boot so
         // every conversion event doesn't dead-letter on a 422.
@@ -364,7 +425,7 @@ describe("SaasCrmLive boot — stampConversion enqueues with eventType=stamp-con
 
     const fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
       const url = typeof input === "string" ? input : (input as Request).url;
-      if (url.endsWith("/metadata")) {
+      if (url.endsWith("/rest/open-api/core")) {
         return metadataResponse([
           "id",
           "atlasFirstSource",
@@ -438,7 +499,7 @@ describe("SaasCrmLive boot — 401 metadata response flips to permanent", () => 
 
     const fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
       const url = typeof input === "string" ? input : (input as Request).url;
-      if (url.endsWith("/metadata")) {
+      if (url.endsWith("/rest/open-api/core")) {
         return new Response(JSON.stringify({ messages: ["Unauthorized"] }), {
           status: 401,
           headers: { "Content-Type": "application/json" },
@@ -503,7 +564,7 @@ describe("SaasCrmLive.dispatcher — env-only config baked at boot (#2850)", () 
       const headers = new Headers(init?.headers ?? {});
       const auth = headers.get("authorization");
       if (auth) seenAuthHeaders.push(auth);
-      if (url.endsWith("/metadata")) {
+      if (url.endsWith("/rest/open-api/core")) {
         return metadataResponse([
           "id",
           "atlasFirstSource",
@@ -581,7 +642,7 @@ describe("SaasCrmLive.dispatcher — env-only config baked at boot (#2850)", () 
       const headers = new Headers(init?.headers ?? {});
       const auth = headers.get("authorization");
       if (auth) seenAuthHeaders.push(auth);
-      if (url.endsWith("/metadata")) {
+      if (url.endsWith("/rest/open-api/core")) {
         return metadataResponse([
           "id",
           "atlasFirstSource",
@@ -638,6 +699,119 @@ describe("SaasCrmLive.dispatcher — env-only config baked at boot (#2850)", () 
         expect(h).toBe("Bearer boot-key");
         expect(h).not.toBe("Bearer swapped-out-key");
       }
+    } finally {
+      delete process.env.TWENTY_API_KEY;
+      delete process.env.TWENTY_BASE_URL;
+    }
+  });
+
+  // ── 1.6.0 incident regression test (#2860) ────────────────────────
+  //
+  // Pre-fix: the boot probe (broken GraphQL) silently fell through to
+  // "assume custom fields present", the dispatcher unconditionally sent
+  // `atlasIp` on every demo row, and Twenty 400'd the entire upsert on
+  // the unknown property — every demo / sales-form lead dead-lettered.
+  //
+  // This test pins the end-to-end fix: boot probe returns a Person
+  // schema lacking `atlasIp`, dispatch a demo row carrying an IP, and
+  // assert (a) `emails.primaryEmail` survives the allowlist filter and
+  // (b) `atlasIp` is dropped from the POST body. Wires probe → boot →
+  // dispatcher → filter end-to-end; the gap that would have caught the
+  // original incident if it had existed.
+  test("dispatcher drops atlasIp from POST body when probe doesn't list it (#2860 incident regression)", async () => {
+    enterpriseEnabled = true;
+    process.env.TWENTY_API_KEY = "boot-key";
+    process.env.TWENTY_BASE_URL = "https://crm.test.local";
+
+    const capturedPosts: { url: string; body: string }[] = [];
+    const fetchImpl = (async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.endsWith("/rest/open-api/core")) {
+        // Workspace operator skipped creating the `atlasIp` column.
+        // Required fields + standard `emails` / `name` are present.
+        return metadataResponse([
+          "id",
+          "emails",
+          "name",
+          "atlasFirstSource",
+          "atlasLastSource",
+          "atlasStripeCustomerId",
+        ]);
+      }
+      if (url.includes("/rest/people?filter")) {
+        return new Response(JSON.stringify({ data: { people: [] } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      // Create-person path. Capture body for assertion.
+      if (init?.method === "POST" && url.endsWith("/rest/people")) {
+        capturedPosts.push({ url, body: String(init.body ?? "") });
+        return new Response(
+          JSON.stringify({ data: { createPerson: { id: "person_incident" } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("{}", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    try {
+      await withFetch(fetchImpl, async () => {
+        const program = Effect.gen(function* () {
+          const crm = yield* SaasCrm;
+          if (!crm.available) throw new Error("expected available=true");
+          return yield* Effect.promise(() =>
+            crm.dispatcher(
+              {
+                id: "row-incident-2860",
+                eventType: "demo",
+                payload: {
+                  source: "demo",
+                  email: "incident@test.local",
+                  // Pre-fix: this IP would land in the POST body and
+                  // Twenty would 400 because the workspace doesn't have
+                  // `atlasIp` as a custom field.
+                  ip: "1.2.3.4",
+                },
+                attempts: 1,
+                twentyPersonId: null,
+                twentyNoteId: null,
+              },
+              {
+                setTwentyPersonId: async () => {},
+                setTwentyNoteId: async () => {},
+              },
+            ),
+          );
+        });
+        const outcome = await Effect.runPromise(
+          program.pipe(Effect.provide(SaasCrmLive)),
+        );
+        expect(outcome).toEqual({ kind: "ok" });
+      });
+
+      // Exactly one POST to /rest/people landed (the create path —
+      // findPersonByEmail returned empty).
+      expect(capturedPosts.length).toBe(1);
+      const body = JSON.parse(capturedPosts[0].body) as Record<string, unknown>;
+
+      // The allowlist did NOT strip the lead's email — `emails` is in
+      // the probed schema and survives the filter. Without this, every
+      // dispatch would create an email-less Person (or Twenty would 422).
+      expect(body.emails).toEqual({ primaryEmail: "incident@test.local" });
+      expect(body.atlasFirstSource).toBe("DEMO");
+      expect(body.atlasLastSource).toBe("DEMO");
+
+      // The allowlist DID strip `atlasIp` — the workspace schema didn't
+      // declare it, so the dispatcher must not send it. This is the
+      // single load-bearing assertion the original incident violated.
+      expect("atlasIp" in body).toBe(false);
     } finally {
       delete process.env.TWENTY_API_KEY;
       delete process.env.TWENTY_BASE_URL;

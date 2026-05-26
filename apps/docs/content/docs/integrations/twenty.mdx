@@ -41,19 +41,25 @@ Self-hosted operators have two install paths:
 Two **custom fields** must exist on the `Person` object in your Twenty
 instance before Atlas can dispatch:
 
-| Field name         | Type | Purpose                                                                                            |
-| ------------------ | ---- | -------------------------------------------------------------------------------------------------- |
-| `atlasFirstSource` | Text | Sticky first-touch attribution — set once on a Person, never overwritten (e.g. `DEMO`).            |
-| `atlasLastSource`  | Text | Most recent touch — overwritten on every dispatch (e.g. `DEMO`, `SIGNUP`, `SALES_FORM`).           |
+| Field name              | Required | Type | Purpose                                                                                          |
+| ----------------------- | -------- | ---- | ------------------------------------------------------------------------------------------------ |
+| `atlasFirstSource`      | yes      | Text | Sticky first-touch attribution — set once on a Person, never overwritten (e.g. `DEMO`).          |
+| `atlasLastSource`       | yes      | Text | Most recent touch — overwritten on every dispatch (e.g. `DEMO`, `SIGNUP`, `SALES_FORM`).         |
+| `atlasStripeCustomerId` | yes      | Text | Stripe `customer.id` of a paying customer; stamped on the trial→paid conversion path.            |
+| `atlasIp`               | optional | Text | Client IP captured on demo / sales-form submissions; useful for fraud triage. Skip-safe.         |
 
 Create them under **Twenty Settings → Data Model → Person → + Add
 Field**. The Atlas SaaS layer runs a startup verification against
-Twenty's `/metadata` GraphQL endpoint — missing fields are logged as a
-hard error with the create-instructions and Atlas disables dispatch
-until the schema is fixed.
+Twenty's REST OpenAPI spec (`/rest/open-api/core`) — missing **required**
+fields are logged as a hard error and Atlas disables dispatch until the
+schema is fixed. Missing **optional** fields (currently only `atlasIp`)
+are silently dropped from the dispatch payload, so you can leave them
+out without breaking lead capture.
 
-An optional third field `atlasIp` (Text) records the client IP on
-demo-gate submissions; its absence is non-fatal.
+The probe uses the REST OpenAPI spec rather than the metadata GraphQL
+surface because the GraphQL schema has drifted between Twenty releases
+and the old `ObjectFilter` shape no longer matches current Twenty. The
+REST OpenAPI document is the authoritative, workspace-scoped contract.
 
 ## Option 1: Admin UI configuration
 

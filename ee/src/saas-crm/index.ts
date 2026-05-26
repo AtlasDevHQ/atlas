@@ -12,10 +12,18 @@
  * callers that care about durability (the contact form) can return 503
  * — the demo route wraps `runEnterprise` in a try/catch and swallows.
  *
- * Transient metadata-probe failures deliberately leave `available: true`
- * — a real schema mismatch surfaces as a 422 on the first upsert call.
- * Deterministic misconfigurations (401/403/404) flip to permanent so
- * leads aren't lost silently against a clearly-broken endpoint.
+ * Boot probe fails closed (#2860). Any verification failure — missing
+ * required custom field, deterministic misconfig (401/403/404), network
+ * error, 5xx, or unparseable response — flips `available: false`. The
+ * contact route then returns 404 and the marketing site's mailto
+ * fallback captures leads, rather than the prior silent-transient path
+ * that left `available: true` and dead-lettered every submission. The
+ * probe targets Twenty's REST OpenAPI spec at `/rest/open-api/core`
+ * (the GraphQL `/metadata` surface has drifted between Twenty releases
+ * and `ObjectFilter.nameSingular` no longer exists in current Twenty).
+ * The boot-resolved field set is reused as the dispatcher's payload
+ * allowlist so optional fields like `atlasIp` the operator chose not
+ * to create are silently dropped instead of 400-ing the upsert.
  *
  * Credential source — env-only (#2850). `TWENTY_API_KEY` /
  * `TWENTY_BASE_URL` belong to Atlas-the-operator; this Layer never
@@ -46,11 +54,11 @@ import {
 } from "@atlas/api/lib/lead-outbox";
 import { isEnterpriseEnabled } from "../index";
 import {
-  getPersonMetadata,
   tryResolveOperatorCredentials,
   normalizeLead,
   upsertPerson,
   createNote,
+  getPersonRestSchema,
   TwentyClientError,
   type ResolvedTwentyCredentials,
   type TwentyClientConfig,
@@ -66,6 +74,29 @@ const REQUIRED_PERSON_FIELDS = [
   // event against a 422 schema mismatch.
   "atlasStripeCustomerId",
 ] as const;
+
+/**
+ * Atlas-specific custom fields the dispatcher CAN populate but the
+ * workspace operator MAY choose to skip. The client.ts allowlist filter
+ * silently omits any of these missing from the Twenty schema so we
+ * don't 400 the entire upsert over a single optional field. Add a name
+ * here when the dispatcher gains a new optional field; keep
+ * `REQUIRED_PERSON_FIELDS` above for the load-bearing ones whose
+ * absence should fail boot.
+ */
+const OPTIONAL_PERSON_FIELDS = ["atlasIp"] as const;
+
+/**
+ * Standard Twenty Person fields the dispatcher MUST be able to write —
+ * `emails` is the email-keyed-upsert primary key; without it every POST
+ * would be a body-less write. Treated identically to a missing custom
+ * field at boot: probe shape that lacks `emails` flips `available: false`
+ * rather than constructing a `filterPersonPayload` that silently strips
+ * the lead's email out of every dispatch. Defensive against future
+ * Twenty schema reshapes (e.g. composition via `$ref` / `allOf` that
+ * would not populate flat `properties` keys).
+ */
+const REQUIRED_STANDARD_PERSON_FIELDS = ["emails"] as const;
 
 /**
  * Outbox event-type string for Stripe → Twenty conversion stamps
@@ -104,12 +135,22 @@ function missingFieldInstructions(missing: ReadonlyArray<string>): string {
 
 function misconfigurationInstructions(status: number, baseUrl: string): string {
   return (
-    `Twenty metadata probe returned HTTP ${status} from ${baseUrl}/metadata — ` +
+    `Twenty REST OpenAPI probe returned HTTP ${status} from ${baseUrl}/rest/open-api/core — ` +
     `this is a deterministic misconfiguration that will NEVER succeed without ` +
     `operator intervention. Check TWENTY_API_KEY (bearer token from Twenty → ` +
     `Settings → API & Webhooks) and TWENTY_BASE_URL (must point at a Twenty ` +
-    `instance whose /metadata GraphQL endpoint is reachable). SaaS CRM dispatch ` +
-    `is disabled until this is fixed.`
+    `instance whose REST API is reachable). SaaS CRM dispatch is disabled ` +
+    `until this is fixed.`
+  );
+}
+
+function unreachableProbeInstructions(reason: string, baseUrl: string): string {
+  return (
+    `Twenty REST OpenAPI probe at ${baseUrl}/rest/open-api/core was unreachable ` +
+    `(${reason}). SaaS CRM dispatch is disabled until the probe succeeds — ` +
+    `we will not "assume fields are present" and silently dead-letter every ` +
+    `subsequent submission. /api/v1/contact will return 404; the marketing ` +
+    `site's mailto fallback continues to capture leads while the probe is fixed.`
   );
 }
 
@@ -118,50 +159,80 @@ function misconfigurationInstructions(status: number, baseUrl: string): string {
  * Atlas-internal base URL fallback lives here, NOT in the plugin's
  * schema default — self-hosters who install `@useatlas/twenty`
  * directly must point at their own Twenty.
+ *
+ * `allowedPersonFields` threads the boot-probed schema allowlist into
+ * the client so `upsertPerson` / `stampStripeCustomerId` automatically
+ * drop optional fields (e.g. `atlasIp`) the operator chose not to
+ * create on their Twenty workspace.
  */
-function buildSaasClientConfig(creds: ResolvedTwentyCredentials): TwentyClientConfig {
+function buildSaasClientConfig(
+  creds: ResolvedTwentyCredentials,
+  allowedPersonFields?: ReadonlySet<string>,
+): TwentyClientConfig {
   return {
     apiKey: creds.apiKey,
     baseUrl: creds.baseUrl ?? ATLAS_SAAS_TWENTY_BASE_URL,
     timeoutMs: SAAS_TIMEOUT_MS,
+    allowedPersonFields,
   };
 }
 
 /**
- * Run startup verification against the Twenty metadata endpoint.
+ * Run startup verification against the Twenty REST OpenAPI spec.
  *
  * Returns:
- *  - `ok: true` — both required fields are present.
+ *  - `ok: true` with the `present` set — all required custom fields exist;
+ *    the set is the full Person property list (standard + custom) so the
+ *    dispatcher can filter optional fields the operator didn't create.
  *  - `ok: false` — fields missing OR upstream returned a deterministic
- *    misconfiguration code (401/403/404). A structured `log.error` has
- *    already been emitted.
- *  - `ok: "transient"` — network / 5xx / parse failure. Caller decides
- *    whether to fail closed or proceed; transient at boot keeps
- *    `available: true`, transient at dispatch lets the row proceed
- *    (and any real schema mismatch then surfaces as 422 → permanent).
+ *    misconfiguration code (401/403/404) OR the probe was unreachable.
+ *    A structured `log.error` has already been emitted. In all cases the
+ *    Live layer sets `available: false` — we never silently swallow an
+ *    unverifiable schema.
+ *
+ * This replaces the prior GraphQL-metadata probe, which broke against
+ * current Twenty when `ObjectFilter.nameSingular` was removed. The REST
+ * OpenAPI surface is documented, stable across Twenty releases, and
+ * authenticated identically to the data API.
  */
 async function verifyCustomFields(
   creds: ResolvedTwentyCredentials,
-): Promise<{ ok: true } | { ok: false } | { ok: "transient"; reason: string }> {
+): Promise<{ ok: true; present: ReadonlySet<string> } | { ok: false }> {
   const baseUrl = creds.baseUrl ?? ATLAS_SAAS_TWENTY_BASE_URL;
   try {
-    const meta = await getPersonMetadata({
+    const schema = await getPersonRestSchema({
       apiKey: creds.apiKey,
       baseUrl,
       timeoutMs: SAAS_TIMEOUT_MS,
     });
-    const present = new Set(meta.fields.map((f) => f.name));
-    const missing = REQUIRED_PERSON_FIELDS.filter((f) => !present.has(f));
-    if (missing.length === 0) return { ok: true };
+    const missingStandard = REQUIRED_STANDARD_PERSON_FIELDS.filter(
+      (f) => !schema.fields.has(f),
+    );
+    if (missingStandard.length > 0) {
+      // Defensive guard. The dispatcher uses the probe set as the
+      // payload allowlist; a probe shape that omits `emails` would make
+      // `filterPersonPayload` strip the lead's email out of every POST.
+      // Treat as a permanent misconfig — never construct a client config
+      // that's pre-broken at the email level.
+      log.error(
+        { missing: missingStandard, event: "saas_crm.standard_fields_missing" },
+        `Twenty REST OpenAPI probe returned a Person schema missing standard fields ` +
+          `(${missingStandard.join(", ")}). This is a Twenty-side schema reshape ` +
+          `(likely $ref / allOf composition not flattened into properties) — the ` +
+          `dispatcher cannot safely write Person records when standard keys are ` +
+          `absent from the allowlist. SaaS CRM dispatch is disabled until the ` +
+          `probe returns a flat-properties Person schema again.`,
+      );
+      return { ok: false };
+    }
+    const missing = REQUIRED_PERSON_FIELDS.filter((f) => !schema.fields.has(f));
+    if (missing.length === 0) return { ok: true, present: schema.fields };
     log.error(
       { missing, event: "saas_crm.custom_fields_missing" },
       missingFieldInstructions(missing),
     );
     return { ok: false };
   } catch (err) {
-    // 401/403/404 are deterministic misconfigurations — silently
-    // marking them transient would leave `available: true` and every
-    // subsequent dispatch would fail identically forever, losing leads.
     if (
       err instanceof TwentyClientError &&
       (err.status === 401 || err.status === 403 || err.status === 404)
@@ -172,14 +243,24 @@ async function verifyCustomFields(
           upstreamCode: err.upstreamCode,
           err: err.message,
           baseUrl,
-          event: "saas_crm.metadata_misconfigured",
+          event: "saas_crm.openapi_misconfigured",
         },
         misconfigurationInstructions(err.status, baseUrl),
       );
       return { ok: false };
     }
+    // Network / 5xx / parse / unknown error. Previously this was a
+    // silent transient with `available: true` — that path eats leads at
+    // dispatch time (cf. 1.6.0 hotfix where every submission dead-lettered
+    // because the GraphQL probe was broken but the Live layer assumed
+    // fields were present). Fail closed instead so /api/v1/contact returns
+    // 404 and the mailto fallback handles leads while the probe is fixed.
     const reason = err instanceof Error ? err.message : String(err);
-    return { ok: "transient", reason };
+    log.error(
+      { err: reason, baseUrl, event: "saas_crm.openapi_unreachable" },
+      unreachableProbeInstructions(reason, baseUrl),
+    );
+    return { ok: false };
   }
 }
 
@@ -401,39 +482,44 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
 
     const verifyResult = yield* Effect.promise(() => verifyCustomFields(bootCreds));
     if (verifyResult.ok === false) {
-      // Already logged inside verifyCustomFields (missing fields OR
-      // deterministic misconfiguration). Surface unavailable so
-      // subsequent demo signups are no-ops rather than rows that will
-      // dead-letter on the very first flush.
+      // Already logged inside verifyCustomFields (missing required field,
+      // deterministic misconfig, or unreachable probe). Fail closed so
+      // /api/v1/contact returns 404 and the marketing site's mailto
+      // fallback captures leads while the operator investigates — never
+      // accept submissions we know will dead-letter at dispatch.
       return {
         available: false,
         upsertLead: () => Effect.void,
         stampConversion: () => Effect.void,
       } satisfies SaasCrmShape;
     }
-    if (verifyResult.ok === "transient") {
-      log.warn(
-        { err: verifyResult.reason, event: "saas_crm.verify_transient_failure" },
-        "Twenty metadata endpoint errored during boot verification — assuming custom fields are present. " +
-          "A real schema mismatch will surface as a 422 on the first dispatch (and dead-letter the row).",
-      );
-    } else {
-      log.info(
-        {
-          baseUrl: bootCreds.baseUrl ?? ATLAS_SAAS_TWENTY_BASE_URL,
-          credentialSource: bootCreds.source,
-          event: "saas_crm.ready",
-        },
-        `SaasCrm wired up — ${REQUIRED_PERSON_FIELDS.join(" + ")} verified on Twenty Person`,
-      );
-    }
+
+    const optionalFieldStatus = OPTIONAL_PERSON_FIELDS.map((f) => ({
+      name: f,
+      present: verifyResult.present.has(f),
+    }));
+    log.info(
+      {
+        baseUrl: bootCreds.baseUrl ?? ATLAS_SAAS_TWENTY_BASE_URL,
+        credentialSource: bootCreds.source,
+        optional: optionalFieldStatus,
+        event: "saas_crm.ready",
+      },
+      `SaasCrm wired up — ${REQUIRED_PERSON_FIELDS.join(" + ")} verified on Twenty Person. ` +
+        `Optional fields ${OPTIONAL_PERSON_FIELDS.join(", ")} dispatched only when present in the workspace schema.`,
+    );
 
     // Boot-resolved env client config. Reused across every dispatch:
     // the env-only source means TWENTY_API_KEY / TWENTY_BASE_URL are
     // baked in at process start, and runtime mutation is not supported
     // (admin-UI credential edits flow through the per-workspace plugin
-    // install, NOT here — see #2850).
-    const clientConfig: TwentyClientConfig = buildSaasClientConfig(bootCreds);
+    // install, NOT here — see #2850). `allowedPersonFields` carries the
+    // boot-probed schema allowlist so the client strips optional fields
+    // (e.g. `atlasIp`) the workspace didn't create.
+    const clientConfig: TwentyClientConfig = buildSaasClientConfig(
+      bootCreds,
+      verifyResult.present,
+    );
 
     return {
       available: true,

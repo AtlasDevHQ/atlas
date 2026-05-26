@@ -11,6 +11,7 @@ import {
   upsertPerson,
   stampStripeCustomerId,
   getPersonMetadata,
+  getPersonRestSchema,
   createNote,
   TwentyClientError,
   type TwentyClientConfig,
@@ -1046,5 +1047,151 @@ describe("stampStripeCustomerId — error mapping", () => {
       const msg = (err as TwentyClientError).message;
       expect(msg).not.toContain("twenty_secret_stamp_must_not_leak");
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  getPersonRestSchema — REST OpenAPI probe
+// ─────────────────────────────────────────────────────────────────────
+
+function openApiResponse(fieldNames: string[]): { status: number; body: unknown } {
+  const properties: Record<string, { type: string }> = {};
+  for (const name of fieldNames) properties[name] = { type: "string" };
+  return {
+    status: 200,
+    body: { openapi: "3.1.1", components: { schemas: { Person: { properties } } } },
+  };
+}
+
+describe("getPersonRestSchema", () => {
+  test("returns a Set of every Person property name", async () => {
+    const { fetch } = makeScriptedFetch([
+      openApiResponse(["id", "name", "atlasFirstSource", "atlasLastSource", "atlasIp"]),
+    ]);
+    const result = await getPersonRestSchema(baseConfig({ fetchImpl: fetch }));
+    expect(result.fields.has("atlasFirstSource")).toBe(true);
+    expect(result.fields.has("atlasIp")).toBe(true);
+    expect(result.fields.has("nonexistent")).toBe(false);
+  });
+
+  test("hits /rest/open-api/core with a GET + bearer header", async () => {
+    const { fetch, calls } = makeScriptedFetch([openApiResponse(["id"])]);
+    await getPersonRestSchema(baseConfig({ fetchImpl: fetch }));
+    expect(calls[0].method).toBe("GET");
+    expect(calls[0].url).toBe("https://crm.test.local/rest/open-api/core");
+    expect(calls[0].headers["Authorization"]).toBe("Bearer twenty_test_apikey_xyz");
+  });
+
+  test("throws TwentyClientError when Person schema is missing from the document", async () => {
+    const { fetch } = makeScriptedFetch([
+      { status: 200, body: { openapi: "3.1.1", components: { schemas: {} } } },
+    ]);
+    try {
+      await getPersonRestSchema(baseConfig({ fetchImpl: fetch }));
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TwentyClientError);
+      expect((err as TwentyClientError).operation).toBe("getPersonRestSchema");
+    }
+  });
+
+  test("propagates 401 as TwentyClientError with status preserved", async () => {
+    const { fetch } = makeScriptedFetch([
+      { status: 401, body: { messages: ["Unauthorized"] } },
+    ]);
+    try {
+      await getPersonRestSchema(baseConfig({ fetchImpl: fetch }));
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TwentyClientError);
+      expect((err as TwentyClientError).status).toBe(401);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  allowedPersonFields — write-path filter
+// ─────────────────────────────────────────────────────────────────────
+
+describe("upsertPerson with allowedPersonFields", () => {
+  test("strips payload keys not in the allowlist before POST", async () => {
+    const { fetch, calls } = makeScriptedFetch([
+      { status: 200, body: { data: { people: [] } } }, // findPersonByEmail miss
+      { status: 200, body: { data: { person: { id: "p1" } } } }, // createPerson ok
+    ]);
+    await upsertPerson(
+      baseConfig({
+        fetchImpl: fetch,
+        // Workspace exposes only the required fields — atlasIp is NOT defined.
+        allowedPersonFields: new Set([
+          "emails",
+          "name",
+          "atlasFirstSource",
+          "atlasLastSource",
+        ]),
+      }),
+      {
+        email: "alice@example.com",
+        name: { firstName: "Alice" },
+        eventSource: "DEMO",
+        customFields: { atlasIp: "1.2.3.4", atlasStripeCustomerId: "cus_abc" },
+      },
+    );
+    const post = calls[1];
+    expect(post.method).toBe("POST");
+    const body = JSON.parse(post.body ?? "{}") as Record<string, unknown>;
+    expect(body.atlasFirstSource).toBe("DEMO");
+    expect(body.atlasLastSource).toBe("DEMO");
+    expect(body.name).toEqual({ firstName: "Alice" });
+    expect(body.emails).toEqual({ primaryEmail: "alice@example.com" });
+    // Dropped because not in allowlist:
+    expect("atlasIp" in body).toBe(false);
+    expect("atlasStripeCustomerId" in body).toBe(false);
+  });
+
+  test("sends every payload key when allowedPersonFields is unset (today's behaviour)", async () => {
+    const { fetch, calls } = makeScriptedFetch([
+      { status: 200, body: { data: { people: [] } } },
+      { status: 200, body: { data: { person: { id: "p1" } } } },
+    ]);
+    await upsertPerson(baseConfig({ fetchImpl: fetch }), {
+      email: "alice@example.com",
+      eventSource: "DEMO",
+      customFields: { atlasIp: "1.2.3.4" },
+    });
+    const body = JSON.parse(calls[1].body ?? "{}") as Record<string, unknown>;
+    expect(body.atlasIp).toBe("1.2.3.4");
+  });
+
+  test("strips disallowed keys on the PATCH path too", async () => {
+    const { fetch, calls } = makeScriptedFetch([
+      {
+        status: 200,
+        body: {
+          data: {
+            people: [{ id: "p1", atlasFirstSource: "DEMO", emails: { primaryEmail: "alice@example.com" } }],
+          },
+        },
+      },
+      { status: 200, body: { data: { updatePerson: { id: "p1" } } } },
+    ]);
+    await upsertPerson(
+      baseConfig({
+        fetchImpl: fetch,
+        allowedPersonFields: new Set(["emails", "atlasFirstSource", "atlasLastSource"]),
+      }),
+      {
+        email: "alice@example.com",
+        eventSource: "SIGNUP",
+        customFields: { atlasIp: "9.9.9.9" },
+      },
+    );
+    const patch = calls[1];
+    expect(patch.method).toBe("PATCH");
+    const body = JSON.parse(patch.body ?? "{}") as Record<string, unknown>;
+    expect(body.atlasLastSource).toBe("SIGNUP");
+    expect("atlasIp" in body).toBe(false);
+    // sticky first-source not in the payload since it already had one
+    expect("atlasFirstSource" in body).toBe(false);
   });
 });

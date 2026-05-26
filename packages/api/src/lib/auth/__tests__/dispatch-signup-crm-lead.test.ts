@@ -101,6 +101,10 @@ function noopLayer(): Layer.Layer<SaasCrm> {
   return Layer.succeed(SaasCrm, {
     available: false,
     upsertLead: () => Effect.void,
+    // #2737 — SaasCrmShape's available:false branch now requires
+    // `stampConversion` too. Noop is structurally identical to
+    // `upsertLead` here.
+    stampConversion: () => Effect.void,
   });
 }
 

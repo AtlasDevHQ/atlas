@@ -48,7 +48,22 @@ import {
 
 const log = createLogger("ee:saas-crm");
 
-const REQUIRED_PERSON_FIELDS = ["atlasFirstSource", "atlasLastSource"] as const;
+const REQUIRED_PERSON_FIELDS = [
+  "atlasFirstSource",
+  "atlasLastSource",
+  // #2737 — conversion stamp lands in this custom field. Boot fails-soft
+  // if it's missing so the outbox doesn't dead-letter every conversion
+  // event against a 422 schema mismatch.
+  "atlasStripeCustomerId",
+] as const;
+
+/**
+ * Outbox event-type string for Stripe → Twenty conversion stamps
+ * (#2737). Distinct from the union discriminator (`"conversion"`) on the
+ * payload — the eventType is purely for crm_outbox row triage and
+ * observability; the dispatcher routes by re-normalizing the payload.
+ */
+const STAMP_CONVERSION_EVENT_TYPE = "stamp-conversion";
 
 /**
  * Atlas's known Twenty CRM hostname. Used as the fallback when
@@ -72,8 +87,8 @@ function missingFieldInstructions(missing: ReadonlyArray<string>): string {
   return (
     `Twenty Person object is missing required Atlas custom field(s): ${missing.join(", ")}. ` +
     `Create them in the Twenty UI under Settings → Data Model → Person → + Add Field. ` +
-    `Each field should be of type "Text". SaaS CRM dispatch is disabled until both ` +
-    `atlasFirstSource and atlasLastSource exist on the Person object.`
+    `Each field should be of type "Text". SaaS CRM dispatch is disabled until all of ` +
+    `${REQUIRED_PERSON_FIELDS.join(", ")} exist on the Person object.`
   );
 }
 
@@ -338,6 +353,7 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
       return {
         available: false,
         upsertLead: () => Effect.void,
+        stampConversion: () => Effect.void,
       } satisfies SaasCrmShape;
     }
 
@@ -350,6 +366,7 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
       return {
         available: false,
         upsertLead: () => Effect.void,
+        stampConversion: () => Effect.void,
       } satisfies SaasCrmShape;
     }
 
@@ -361,6 +378,7 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
       return {
         available: false,
         upsertLead: () => Effect.void,
+        stampConversion: () => Effect.void,
       } satisfies SaasCrmShape;
     }
 
@@ -373,6 +391,7 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
       return {
         available: false,
         upsertLead: () => Effect.void,
+        stampConversion: () => Effect.void,
       } satisfies SaasCrmShape;
     }
     if (verifyResult.ok === "transient") {
@@ -387,7 +406,7 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
           baseUrl: creds.baseUrl ?? ATLAS_SAAS_TWENTY_BASE_URL,
           event: "saas_crm.ready",
         },
-        "SaasCrm wired up — atlasFirstSource + atlasLastSource verified on Twenty Person",
+        `SaasCrm wired up — ${REQUIRED_PERSON_FIELDS.join(" + ")} verified on Twenty Person`,
       );
     }
 
@@ -424,6 +443,41 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
             }),
           ),
         ),
+      stampConversion: (input) => {
+        // Construct the canonical `conversion` SaasCrmLeadInput payload
+        // — the normalizer is the single source of truth for the
+        // dispatch shape, and routing by re-normalizing the payload
+        // keeps the dispatcher generic over event types.
+        const payload: SaasCrmLeadInput = {
+          source: "conversion",
+          email: input.email,
+          stripeCustomerId: input.stripeCustomerId,
+        };
+        return Effect.tryPromise({
+          try: async () => {
+            await enqueue(outboxDb, {
+              eventType: STAMP_CONVERSION_EVENT_TYPE,
+              payload: payload as unknown as Record<string, unknown>,
+            });
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(
+          Effect.tapError((err) =>
+            Effect.sync(() => {
+              log.error(
+                {
+                  // Don't log the stripeCustomerId; bare-minimum
+                  // breadcrumb is email + the error.
+                  email: input.email,
+                  err: err.message,
+                  event: "saas_crm.stamp_conversion_enqueue_failed",
+                },
+                "crm_outbox enqueue failed for stamp-conversion — Postgres write error",
+              );
+            }),
+          ),
+        );
+      },
       dispatcher: (row, persist) => dispatchOutboxRow(clientConfig, row, persist),
     } satisfies SaasCrmShape;
   }),
@@ -435,4 +489,6 @@ export {
   buildSaasClientConfig,
   ATLAS_SAAS_TWENTY_BASE_URL,
   classifyTwentyError,
+  STAMP_CONVERSION_EVENT_TYPE,
+  REQUIRED_PERSON_FIELDS,
 };

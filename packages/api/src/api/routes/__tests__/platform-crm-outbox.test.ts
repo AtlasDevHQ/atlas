@@ -164,11 +164,13 @@ mock.module("@atlas/api/lib/effect/hono", () => ({
       ? {
           available: true,
           upsertLead: () => Effect.void,
+          stampConversion: () => Effect.void,
           dispatcher: async () => ({ kind: "ok" as const }),
         }
       : {
           available: false,
           upsertLead: () => Effect.void,
+          stampConversion: () => Effect.void,
         };
     const layer = Layer.mergeAll(
       services.createRequestContextTestLayer({

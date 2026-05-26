@@ -102,7 +102,12 @@ describe("verifyCustomFields", () => {
 
   test("returns ok=true when both required custom fields are present", async () => {
     const fetchImpl = (async () =>
-      metadataResponse(["id", "atlasFirstSource", "atlasLastSource"])) as unknown as typeof globalThis.fetch;
+      metadataResponse([
+        "id",
+        "atlasFirstSource",
+        "atlasLastSource",
+        "atlasStripeCustomerId",
+      ])) as unknown as typeof globalThis.fetch;
 
     await withFetch(fetchImpl, async () => {
       const result = await verifyCustomFields({
@@ -194,7 +199,12 @@ describe("SaasCrmLive boot — enterprise enabled + creds + both fields present 
       const url = typeof input === "string" ? input : (input as Request).url;
       if (url.endsWith("/metadata")) {
         metadataCalls++;
-        return metadataResponse(["id", "atlasFirstSource", "atlasLastSource"]);
+        return metadataResponse([
+          "id",
+          "atlasFirstSource",
+          "atlasLastSource",
+          "atlasStripeCustomerId",
+        ]);
       }
       // No dispatch fetches expected — outbox holds the row for the flusher.
       throw new Error(`Unexpected fetch during enqueue: ${url}`);
@@ -238,7 +248,12 @@ describe("SaasCrmLive boot — InternalDB unavailable", () => {
     process.env.TWENTY_BASE_URL = "https://crm.test.local";
 
     const fetchImpl = (async () =>
-      metadataResponse(["id", "atlasFirstSource", "atlasLastSource"])) as unknown as typeof globalThis.fetch;
+      metadataResponse([
+        "id",
+        "atlasFirstSource",
+        "atlasLastSource",
+        "atlasStripeCustomerId",
+      ])) as unknown as typeof globalThis.fetch;
 
     try {
       const result = await withFetch(fetchImpl, async () => {
@@ -291,6 +306,121 @@ describe("SaasCrmLive boot — missing required field flips available to false",
       delete process.env.TWENTY_API_KEY;
       delete process.env.TWENTY_BASE_URL;
     }
+  });
+});
+
+describe("SaasCrmLive boot — missing atlasStripeCustomerId flips available to false (#2737)", () => {
+  beforeEach(resetStubs);
+
+  test("yields available=false when atlasStripeCustomerId is missing (boot-time guard)", async () => {
+    enterpriseEnabled = true;
+    process.env.TWENTY_API_KEY = "test-key";
+    process.env.TWENTY_BASE_URL = "https://crm.test.local";
+
+    const fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.endsWith("/metadata")) {
+        // Old schema — source fields present but the conversion stamp
+        // field is missing. The verification must catch it on boot so
+        // every conversion event doesn't dead-letter on a 422.
+        return metadataResponse(["id", "atlasFirstSource", "atlasLastSource"]);
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }) as unknown as typeof globalThis.fetch;
+
+    try {
+      const result = await withFetch(fetchImpl, async () => {
+        const program = Effect.gen(function* () {
+          const crm = yield* SaasCrm;
+          yield* crm.stampConversion({
+            email: "convert@x.test",
+            stripeCustomerId: "cus_x",
+          });
+          return crm.available;
+        });
+        return Effect.runPromise(program.pipe(Effect.provide(SaasCrmLive)));
+      });
+
+      expect(result).toBe(false);
+      expect(enqueueCount).toBe(0);
+    } finally {
+      delete process.env.TWENTY_API_KEY;
+      delete process.env.TWENTY_BASE_URL;
+    }
+  });
+});
+
+describe("SaasCrmLive boot — stampConversion enqueues with eventType=stamp-conversion (#2737)", () => {
+  beforeEach(resetStubs);
+
+  test("enqueues a stamp-conversion row carrying the conversion payload", async () => {
+    enterpriseEnabled = true;
+    process.env.TWENTY_API_KEY = "test-key";
+    process.env.TWENTY_BASE_URL = "https://crm.test.local";
+
+    const fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.endsWith("/metadata")) {
+        return metadataResponse([
+          "id",
+          "atlasFirstSource",
+          "atlasLastSource",
+          "atlasStripeCustomerId",
+        ]);
+      }
+      throw new Error(`Unexpected fetch during enqueue: ${url}`);
+    }) as unknown as typeof globalThis.fetch;
+
+    try {
+      const wasAvailable = await withFetch(fetchImpl, async () => {
+        const program = Effect.gen(function* () {
+          const crm = yield* SaasCrm;
+          yield* crm.stampConversion({
+            email: "convert@happy.test",
+            stripeCustomerId: "cus_abc123",
+          });
+          return crm.available;
+        });
+        return Effect.runPromise(program.pipe(Effect.provide(SaasCrmLive)));
+      });
+
+      expect(wasAvailable).toBe(true);
+      expect(enqueueCount).toBe(1);
+      expect(lastEnqueueArgs?.sql).toMatch(/INSERT INTO crm_outbox/i);
+      // event_type is the stamp-conversion sentinel — distinct from the
+      // payload's `source` discriminator so an operator can quickly
+      // bucket outbox rows by funnel stage.
+      expect(lastEnqueueArgs?.params[0]).toBe("stamp-conversion");
+      // Payload is the canonical conversion variant.
+      const payload = JSON.parse(String(lastEnqueueArgs?.params[1]));
+      expect(payload.source).toBe("conversion");
+      expect(payload.email).toBe("convert@happy.test");
+      expect(payload.stripeCustomerId).toBe("cus_abc123");
+    } finally {
+      delete process.env.TWENTY_API_KEY;
+      delete process.env.TWENTY_BASE_URL;
+    }
+  });
+
+  test("stampConversion is a no-op when enterprise is disabled (Noop layer active)", async () => {
+    enterpriseEnabled = false;
+    delete process.env.TWENTY_API_KEY;
+    delete process.env.TWENTY_BASE_URL;
+
+    const program = Effect.gen(function* () {
+      const crm = yield* SaasCrm;
+      yield* crm.stampConversion({
+        email: "x@y.com",
+        stripeCustomerId: "cus_noop",
+      });
+      return crm.available;
+    });
+
+    const available = await Effect.runPromise(
+      program.pipe(Effect.provide(SaasCrmLive)),
+    );
+    expect(available).toBe(false);
+    expect(enqueueCount).toBe(0);
   });
 });
 
@@ -380,6 +510,139 @@ describe("dispatchOutboxRow", () => {
     expect(persisted.note).toBeUndefined();
   });
 
+  test("conversion variant — POSTs Person with CONVERSION source + atlasStripeCustomerId (#2737)", async () => {
+    // End-to-end via dispatchOutboxRow: normalizer routes the conversion
+    // payload through the existing upsertPerson code path, and the
+    // POST body must carry atlasFirstSource / atlasLastSource /
+    // atlasStripeCustomerId inline.
+    const captured: { url: string; body: string }[] = [];
+    const fetchImpl = (async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const body = init?.body ? String(init.body) : "";
+      captured.push({ url, body });
+      if (url.includes("/rest/people?filter")) {
+        return new Response(JSON.stringify({ data: { people: [] } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(
+        JSON.stringify({ data: { createPerson: { id: "person_convert" } } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+
+    const persisted: { person?: string; note?: string } = {};
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-conv",
+          eventType: "stamp-conversion",
+          payload: {
+            source: "conversion",
+            email: "convert@test.local",
+            stripeCustomerId: "cus_pay_42",
+          },
+          attempts: 1,
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async (id: string) => {
+            persisted.person = id;
+          },
+          setTwentyNoteId: async (id: string) => {
+            persisted.note = id;
+          },
+        },
+      ),
+    );
+
+    expect(outcome).toEqual({ kind: "ok" });
+    expect(persisted.person).toBe("person_convert");
+    // No note for conversion — createNote must NOT have been called.
+    expect(persisted.note).toBeUndefined();
+    // Two HTTP calls: findPersonByEmail (GET) + createPerson (POST).
+    expect(captured).toHaveLength(2);
+    const postBody = JSON.parse(captured[1].body);
+    expect(postBody.atlasFirstSource).toBe("CONVERSION");
+    expect(postBody.atlasLastSource).toBe("CONVERSION");
+    expect(postBody.atlasStripeCustomerId).toBe("cus_pay_42");
+  });
+
+  test("conversion variant — existing Person preserves atlasFirstSource, PATCHes lastSource + stripeCustomerId (#2737)", async () => {
+    // The sticky-firstSource rule lives in upsertPerson; the conversion
+    // path inherits it for free. This test pins that behavior end-to-
+    // end through dispatchOutboxRow so a future refactor that splits
+    // out a dedicated stamp dispatcher can't silently lose it.
+    const captured: { url: string; body: string; method: string }[] = [];
+    const fetchImpl = (async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const body = init?.body ? String(init.body) : "";
+      const method = init?.method ?? "GET";
+      captured.push({ url, body, method });
+      if (url.includes("/rest/people?filter")) {
+        return new Response(
+          JSON.stringify({
+            data: {
+              people: [
+                {
+                  id: "person_demo",
+                  emails: { primaryEmail: "convert@test.local" },
+                  atlasFirstSource: "DEMO",
+                  atlasLastSource: "DEMO",
+                },
+              ],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(
+        JSON.stringify({ data: { updatePerson: { id: "person_demo" } } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-conv-existing",
+          eventType: "stamp-conversion",
+          payload: {
+            source: "conversion",
+            email: "convert@test.local",
+            stripeCustomerId: "cus_pay_99",
+          },
+          attempts: 1,
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {},
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+
+    expect(outcome).toEqual({ kind: "ok" });
+    expect(captured).toHaveLength(2);
+    expect(captured[1].method).toBe("PATCH");
+    const patchBody = JSON.parse(captured[1].body);
+    // Sticky — atlasFirstSource must NOT be in the PATCH body.
+    expect(patchBody.atlasFirstSource).toBeUndefined();
+    expect(patchBody.atlasLastSource).toBe("CONVERSION");
+    expect(patchBody.atlasStripeCustomerId).toBe("cus_pay_99");
+  });
+
   test("idempotent replay — skips upsertPerson when twenty_person_id is already set", async () => {
     let fetchCount = 0;
     const fetchImpl = (async (): Promise<Response> => {
@@ -399,6 +662,51 @@ describe("dispatchOutboxRow", () => {
           payload: { source: "demo", email: "replay@test.local" },
           attempts: 2,
           twentyPersonId: "person_already_done",
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async (id: string) => {
+            persisted.person = id;
+          },
+          setTwentyNoteId: async (id: string) => {
+            persisted.note = id;
+          },
+        },
+      ),
+    );
+
+    expect(outcome).toEqual({ kind: "ok" });
+    expect(fetchCount).toBe(0);
+    expect(persisted.person).toBeUndefined();
+  });
+
+  test("idempotent replay — conversion variant also skips upsertPerson when twenty_person_id is already set (#2737)", async () => {
+    // PR review gap: the demo-variant replay test above covers the
+    // pre-existing path, but adding the conversion variant means a
+    // replayed `stamp-conversion` row should also short-circuit. Pin
+    // that the dispatcher's idempotency is variant-agnostic — a future
+    // refactor that split the dispatcher per-eventType would otherwise
+    // silently re-dispatch a paid customer's stamp on every flush.
+    let fetchCount = 0;
+    const fetchImpl = (async (): Promise<Response> => {
+      fetchCount++;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const persisted: { person?: string; note?: string } = {};
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-conv-replay",
+          eventType: "stamp-conversion",
+          payload: {
+            source: "conversion",
+            email: "paying@example.com",
+            stripeCustomerId: "cus_already_stamped",
+          },
+          attempts: 2,
+          twentyPersonId: "person_already_stamped",
           twentyNoteId: null,
         },
         {

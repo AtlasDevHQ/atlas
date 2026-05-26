@@ -35,6 +35,7 @@ export type TwentyOperation =
   | "createPerson"
   | "updatePerson"
   | "getPersonMetadata"
+  | "getPersonRestSchema"
   | "createNote"
   | "createNoteTarget";
 
@@ -127,6 +128,17 @@ export interface TwentyClientConfig {
   readonly timeoutMs?: number;
   /** Fetch impl override. Defaults to `globalThis.fetch`. */
   readonly fetchImpl?: typeof globalThis.fetch;
+  /**
+   * Optional allowlist of Person property names supported by the
+   * upstream Twenty workspace, sourced from `getPersonRestSchema`.
+   * When set, write operations (`upsertPerson` / `stampStripeCustomerId`)
+   * drop any payload keys not in the set BEFORE the POST/PATCH —
+   * letting the operator skip "optional" custom fields like `atlasIp`
+   * by simply not creating them in Twenty. When unset, every payload
+   * key is sent as-is (today's behaviour; appropriate for callers that
+   * haven't probed the schema, e.g. per-workspace plugin actions).
+   */
+  readonly allowedPersonFields?: ReadonlySet<string>;
 }
 
 /**
@@ -156,6 +168,18 @@ function buildRestUrl(baseUrl: string, path: string): string {
 /** Metadata GraphQL endpoint — Twenty docs: `/metadata/` (no `/rest/`). */
 function buildMetadataUrl(baseUrl: string): string {
   return `${stripTrailingSlashes(baseUrl)}/metadata`;
+}
+
+/**
+ * REST OpenAPI spec endpoint. Twenty serves an authenticated OpenAPI 3.1.1
+ * document at `/rest/open-api/core` whose `components.schemas.Person.properties`
+ * is the authoritative list of Person fields for the workspace identified
+ * by the bearer token. We prefer this over the metadata GraphQL surface
+ * because the GraphQL schema has drifted between Twenty releases and the
+ * old `ObjectFilter.nameSingular` filter no longer exists in current Twenty.
+ */
+function buildOpenApiUrl(baseUrl: string): string {
+  return `${stripTrailingSlashes(baseUrl)}/rest/open-api/core`;
 }
 
 function buildAuthHeaders(apiKey: string): Record<string, string> {
@@ -297,6 +321,25 @@ async function findPersonByEmail(
   });
 }
 
+/**
+ * Filter a Person write payload against the upstream schema allowlist.
+ * No-ops when the allowlist is unset (today's callers that haven't probed
+ * the schema continue sending every key). Drops top-level keys not in the
+ * allowlist — the nested `emails` object stays intact because Twenty
+ * always exposes it on Person.
+ */
+function filterPersonPayload(
+  payload: Record<string, unknown>,
+  allowed: ReadonlySet<string> | undefined,
+): Record<string, unknown> {
+  if (!allowed) return payload;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (allowed.has(key)) out[key] = value;
+  }
+  return out;
+}
+
 /** POST a new Person. */
 async function createPerson(
   config: TwentyClientConfig,
@@ -304,10 +347,11 @@ async function createPerson(
 ): Promise<TwentyPerson> {
   const fetchImpl = config.fetchImpl ?? globalThis.fetch;
   const url = buildRestUrl(config.baseUrl, "people");
+  const filtered = filterPersonPayload(payload, config.allowedPersonFields);
   const response = await fetchImpl(url, {
     method: "POST",
     headers: buildAuthHeaders(config.apiKey),
-    body: JSON.stringify(payload),
+    body: JSON.stringify(filtered),
     signal: AbortSignal.timeout(config.timeoutMs ?? DEFAULT_TIMEOUT_MS),
   });
 
@@ -344,10 +388,11 @@ async function updatePerson(
 ): Promise<TwentyPerson> {
   const fetchImpl = config.fetchImpl ?? globalThis.fetch;
   const url = buildRestUrl(config.baseUrl, `people/${encodeURIComponent(id)}`);
+  const filtered = filterPersonPayload(payload, config.allowedPersonFields);
   const response = await fetchImpl(url, {
     method: "PATCH",
     headers: buildAuthHeaders(config.apiKey),
-    body: JSON.stringify(payload),
+    body: JSON.stringify(filtered),
     signal: AbortSignal.timeout(config.timeoutMs ?? DEFAULT_TIMEOUT_MS),
   });
 
@@ -682,4 +727,76 @@ export async function getPersonMetadata(
     if (typeof name === "string") fields.push({ name });
   }
   return { fields };
+}
+
+/**
+ * Fetch the Person property set from Twenty's REST OpenAPI spec
+ * (`/rest/open-api/core`). The spec is workspace-scoped via the bearer
+ * token: `components.schemas.Person.properties` enumerates every column
+ * — standard and custom — defined on this workspace's Person object.
+ *
+ * Returns a `Set<string>` of property names so callers can decide which
+ * Atlas custom fields are safe to emit on `upsertPerson` / `stampStripeCustomerId`.
+ * Caller is expected to cache the result for the process lifetime — the
+ * Twenty workspace schema is operator-managed and changes rarely; the
+ * boot probe is the right caching boundary.
+ *
+ * Why this replaces `getPersonMetadata`: the old GraphQL probe filtered
+ * by `ObjectFilter.nameSingular`, a field that was removed from Twenty's
+ * GraphQL schema in a backwards-incompatible release. The REST OpenAPI
+ * surface is documented, stable, and authenticated the same way as the
+ * data API — making it the natural source of truth for "which Atlas
+ * custom fields does this workspace know about".
+ */
+export async function getPersonRestSchema(
+  config: TwentyClientConfig,
+): Promise<{ fields: Set<string> }> {
+  const fetchImpl = config.fetchImpl ?? globalThis.fetch;
+  const url = buildOpenApiUrl(config.baseUrl);
+  const response = await fetchImpl(url, {
+    method: "GET",
+    headers: buildAuthHeaders(config.apiKey),
+    signal: AbortSignal.timeout(config.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new TwentyClientError({
+      message: `getPersonRestSchema failed: ${detail.message}`,
+      status: response.status,
+      upstreamCode: detail.code,
+      operation: "getPersonRestSchema",
+      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+    });
+  }
+
+  let body: {
+    components?: {
+      schemas?: {
+        Person?: {
+          properties?: Record<string, unknown>;
+        };
+      };
+    };
+  };
+  try {
+    body = (await response.json()) as typeof body;
+  } catch (err) {
+    throw new TwentyClientError({
+      message: `getPersonRestSchema: unparseable response (${err instanceof Error ? err.message : String(err)})`,
+      status: response.status,
+      operation: "getPersonRestSchema",
+    });
+  }
+
+  const properties = body.components?.schemas?.Person?.properties;
+  if (!properties || typeof properties !== "object") {
+    throw new TwentyClientError({
+      message: `getPersonRestSchema: Person schema missing from OpenAPI document`,
+      status: response.status,
+      operation: "getPersonRestSchema",
+    });
+  }
+
+  return { fields: new Set(Object.keys(properties)) };
 }

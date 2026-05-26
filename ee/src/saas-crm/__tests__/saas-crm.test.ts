@@ -56,22 +56,18 @@ const { SaasCrm } = await import("@atlas/api/lib/effect/services");
 
 // ── Fixture helpers ─────────────────────────────────────────────────
 
+/**
+ * Shape mirrors Twenty's REST OpenAPI 3.1.1 spec at `/rest/open-api/core`:
+ * `components.schemas.Person.properties` is an object keyed by field name.
+ * The verifier only reads property keys, so values are placeholders.
+ */
 function metadataResponse(fieldNames: string[]): Response {
+  const properties: Record<string, { type: string }> = {};
+  for (const name of fieldNames) properties[name] = { type: "string" };
   return new Response(
     JSON.stringify({
-      data: {
-        objects: {
-          edges: [
-            {
-              node: {
-                fields: {
-                  edges: fieldNames.map((name) => ({ node: { name } })),
-                },
-              },
-            },
-          ],
-        },
-      },
+      openapi: "3.1.1",
+      components: { schemas: { Person: { properties } } },
     }),
     { status: 200, headers: { "Content-Type": "application/json" } },
   );
@@ -100,7 +96,33 @@ describe("verifyCustomFields", () => {
     resetStubs();
   });
 
-  test("returns ok=true when both required custom fields are present", async () => {
+  test("returns ok=true + present set when all required fields are present", async () => {
+    const fetchImpl = (async () =>
+      metadataResponse([
+        "id",
+        "atlasFirstSource",
+        "atlasLastSource",
+        "atlasStripeCustomerId",
+        "atlasIp",
+      ])) as unknown as typeof globalThis.fetch;
+
+    await withFetch(fetchImpl, async () => {
+      const result = await verifyCustomFields({
+        apiKey: "k",
+        baseUrl: "https://crm.test.local",
+        source: "env",
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.present.has("atlasFirstSource")).toBe(true);
+        expect(result.present.has("atlasLastSource")).toBe(true);
+        expect(result.present.has("atlasStripeCustomerId")).toBe(true);
+        expect(result.present.has("atlasIp")).toBe(true);
+      }
+    });
+  });
+
+  test("returns ok=true even when optional atlasIp is absent (only required fields gate availability)", async () => {
     const fetchImpl = (async () =>
       metadataResponse([
         "id",
@@ -115,13 +137,16 @@ describe("verifyCustomFields", () => {
         baseUrl: "https://crm.test.local",
         source: "env",
       });
-      expect(result).toEqual({ ok: true });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.present.has("atlasIp")).toBe(false);
+      }
     });
   });
 
   test("returns ok=false when atlasFirstSource is missing", async () => {
     const fetchImpl = (async () =>
-      metadataResponse(["id", "atlasLastSource"])) as unknown as typeof globalThis.fetch;
+      metadataResponse(["id", "atlasLastSource", "atlasStripeCustomerId"])) as unknown as typeof globalThis.fetch;
 
     await withFetch(fetchImpl, async () => {
       const result = await verifyCustomFields({
@@ -133,7 +158,7 @@ describe("verifyCustomFields", () => {
     });
   });
 
-  test("returns ok=transient on network failure", async () => {
+  test("returns ok=false on network failure (fail closed — no more silent transient)", async () => {
     const fetchImpl = (async () => {
       throw new Error("ECONNRESET");
     }) as unknown as typeof globalThis.fetch;
@@ -144,7 +169,7 @@ describe("verifyCustomFields", () => {
         baseUrl: "https://crm.test.local",
         source: "env",
       });
-      expect(result).toMatchObject({ ok: "transient" });
+      expect(result).toEqual({ ok: false });
     });
   });
 
@@ -201,7 +226,7 @@ describe("SaasCrmLive boot — enterprise enabled + creds + both fields present 
     let metadataCalls = 0;
     const fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
       const url = typeof input === "string" ? input : (input as Request).url;
-      if (url.endsWith("/metadata")) {
+      if (url.endsWith("/rest/open-api/core")) {
         metadataCalls++;
         return metadataResponse([
           "id",
@@ -288,7 +313,7 @@ describe("SaasCrmLive boot — missing required field flips available to false",
 
     const fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
       const url = typeof input === "string" ? input : (input as Request).url;
-      if (url.endsWith("/metadata")) {
+      if (url.endsWith("/rest/open-api/core")) {
         return metadataResponse(["id", "atlasLastSource"]);
       }
       throw new Error(`Unexpected fetch: ${url}`);
@@ -323,7 +348,7 @@ describe("SaasCrmLive boot — missing atlasStripeCustomerId flips available to 
 
     const fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
       const url = typeof input === "string" ? input : (input as Request).url;
-      if (url.endsWith("/metadata")) {
+      if (url.endsWith("/rest/open-api/core")) {
         // Old schema — source fields present but the conversion stamp
         // field is missing. The verification must catch it on boot so
         // every conversion event doesn't dead-letter on a 422.
@@ -364,7 +389,7 @@ describe("SaasCrmLive boot — stampConversion enqueues with eventType=stamp-con
 
     const fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
       const url = typeof input === "string" ? input : (input as Request).url;
-      if (url.endsWith("/metadata")) {
+      if (url.endsWith("/rest/open-api/core")) {
         return metadataResponse([
           "id",
           "atlasFirstSource",
@@ -438,7 +463,7 @@ describe("SaasCrmLive boot — 401 metadata response flips to permanent", () => 
 
     const fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
       const url = typeof input === "string" ? input : (input as Request).url;
-      if (url.endsWith("/metadata")) {
+      if (url.endsWith("/rest/open-api/core")) {
         return new Response(JSON.stringify({ messages: ["Unauthorized"] }), {
           status: 401,
           headers: { "Content-Type": "application/json" },
@@ -503,7 +528,7 @@ describe("SaasCrmLive.dispatcher — env-only config baked at boot (#2850)", () 
       const headers = new Headers(init?.headers ?? {});
       const auth = headers.get("authorization");
       if (auth) seenAuthHeaders.push(auth);
-      if (url.endsWith("/metadata")) {
+      if (url.endsWith("/rest/open-api/core")) {
         return metadataResponse([
           "id",
           "atlasFirstSource",
@@ -581,7 +606,7 @@ describe("SaasCrmLive.dispatcher — env-only config baked at boot (#2850)", () 
       const headers = new Headers(init?.headers ?? {});
       const auth = headers.get("authorization");
       if (auth) seenAuthHeaders.push(auth);
-      if (url.endsWith("/metadata")) {
+      if (url.endsWith("/rest/open-api/core")) {
         return metadataResponse([
           "id",
           "atlasFirstSource",

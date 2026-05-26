@@ -148,6 +148,7 @@
         "@opentelemetry/semantic-conventions": "^1.40.0",
         "@useatlas/chat": "workspace:*",
         "@useatlas/schemas": "workspace:*",
+        "@useatlas/twenty": "workspace:*",
         "@useatlas/types": "workspace:*",
         "ai": "^6.0.141",
         "better-auth": "^1.6.9",

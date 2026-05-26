@@ -152,6 +152,9 @@ bun run atlas -- seed workspace --workspace <id|slug> --group prod \
   --connections us-prod=US_DB_URL:postgres:primary,eu-prod=EU_DB_URL:postgres
 # DESTRUCTIVE — TRUNCATE every public table (excluding migration bookkeeping):
 ATLAS_WIPE_OK=1 bun run atlas -- ops wipe --confirm [--database-url <url>]
+# One-shot: enqueue every demo_leads row into crm_outbox for dispatch to Twenty
+# (idempotent — TwentyClient.upsertPerson dedupes by primary email):
+bun run atlas -- ops backfill-crm-leads [--dry-run] [--batch-size 500] [--source demo]
 ```
 
 The `ops wipe` subcommand is the only destructive one. It requires **both** `ATLAS_WIPE_OK=1` in the env **and** `--confirm` on the command line — the double-confirm gate is intentional. No backup is taken; wrap with `pg_dump` yourself for any data you might want back. Operates on one DB per invocation, so wiping multiple regional clusters means running it once per cluster (intentional — keeps the SQL surface testable).

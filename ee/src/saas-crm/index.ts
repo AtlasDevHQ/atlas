@@ -38,6 +38,7 @@ import {
   tryResolveCredentialsFromEnv,
   normalizeLead,
   upsertPerson,
+  createNote,
   TwentyClientError,
   type ResolvedTwentyCredentials,
   type TwentyClientConfig,
@@ -200,8 +201,15 @@ export async function dispatchOutboxRow(
     };
   }
 
+  // Local view of which Twenty ids are populated for this dispatch.
+  // Seeded from the claimed row snapshot, updated as sub-steps succeed
+  // — this is how the createNote sub-step finds the personId on the
+  // SAME dispatch as upsertPerson (the row snapshot is frozen at claim
+  // time and never re-read).
+  let personId: string | null = row.twentyPersonId;
+
   // ── Sub-step 1: upsertPerson (always required) ────────────────────
-  if (!row.twentyPersonId) {
+  if (!personId) {
     let person;
     try {
       person = await upsertPerson(clientConfig, normalized.person);
@@ -233,25 +241,53 @@ export async function dispatchOutboxRow(
           `(personId=${person.id}): ${err instanceof Error ? err.message : String(err)}`,
       };
     }
+    personId = person.id;
   }
 
-  // ── Sub-step 2: createNote (sales-form only — placeholder) ───────
-  // The `sales-form` source is anticipated in #2729 but the
-  // discriminated union in `@useatlas/twenty/lead-normalizer` only
-  // emits `demo` today. The dispatcher dead-letters any sales-form
-  // row that lands today so the failure is operator-visible (rather
-  // than silently completing at upsertPerson and dropping the note).
-  if (row.eventType === "sales-form" && !row.twentyNoteId) {
-    log.warn(
-      { rowId: row.id, event: "lead_outbox.sales_form_note_unwired" },
-      "sales-form row received but createNote is not wired — dead-lettering",
-    );
-    return {
-      kind: "permanent",
-      message:
-        "sales-form createNote not yet implemented in @useatlas/twenty — " +
-        "follow-up slice will wire this. Row dead-lettered for visibility.",
-    };
+  // ── Sub-step 2: createNote (sales-form only) ──────────────────────
+  // Normalized payload carries the note shape for sales-form rows; demo
+  // rows have no note and skip this branch entirely. Skip on replay when
+  // twentyNoteId is already populated — that's the sub-step idempotency
+  // contract from #2729 (createNote must NOT be called twice).
+  if (normalized.note && !row.twentyNoteId) {
+    if (!personId) {
+      // Defensive: sub-step 1 above must have populated personId. If we
+      // got here without it, our own invariant is broken — dead-letter
+      // so an operator sees it (the row would otherwise loop forever).
+      return {
+        kind: "permanent",
+        message: "createNote skipped — personId is null after upsertPerson sub-step (invariant violation)",
+      };
+    }
+    let note;
+    try {
+      note = await createNote(clientConfig, {
+        personId,
+        title: normalized.note.title,
+        body: normalized.note.body,
+      });
+    } catch (err) {
+      return classifyTwentyError(err, "createNote");
+    }
+    if (!note.id) {
+      // createNote's own contract throws when 2xx has no id, so this is
+      // belt-and-suspenders. Same reasoning as the upsertPerson no-id
+      // branch above.
+      return {
+        kind: "permanent",
+        message: "createNote succeeded but returned no id",
+      };
+    }
+    try {
+      await persist.setTwentyNoteId(note.id);
+    } catch (err) {
+      return {
+        kind: "transient",
+        message:
+          `persist.setTwentyNoteId failed after createNote succeeded ` +
+          `(noteId=${note.id}): ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
   }
 
   return { kind: "ok" };

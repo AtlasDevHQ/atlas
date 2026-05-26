@@ -38,6 +38,7 @@ import { mode } from "./routes/mode";
 import { meConnectionGroups } from "./routes/me-connection-groups";
 import { starterPrompts } from "./routes/starter-prompts";
 import { subProcessorSubscriptions } from "./routes/sub-processor-subscriptions";
+import { contact } from "./routes/contact";
 import { wellKnown } from "./routes/well-known";
 
 const log = createLogger("api");
@@ -189,6 +190,9 @@ app.route("/api/v1/mode", mode);
 app.route("/api/v1/me/connection-groups", meConnectionGroups);
 app.route("/api/v1/starter-prompts", starterPrompts);
 app.route("/api/v1/sub-processor-subscriptions", subProcessorSubscriptions);
+// Public talk-to-sales endpoint backing the /pricing dialog on apps/www.
+// Returns 404 on self-hosted via SaasCrm.available === false.
+app.route("/api/v1/contact", contact);
 
 // .well-known metadata endpoints — RFC 8414 OAuth authorization-server
 // metadata, OIDC discovery, RFC 9728 protected-resource metadata for the

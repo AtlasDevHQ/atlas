@@ -2403,16 +2403,33 @@ export const NoopDeployModeResolverLayer: Layer.Layer<DeployModeResolver> =
  * Inputs to `SaasCrm.upsertLead`. Inlined here (mirrors the same
  * discriminated union in `@useatlas/twenty/lead-normalizer`) until a
  * subsequent release promotes the shared types into `@useatlas/types`.
- * Two-place duplication is intentional and accepted at this slice —
- * the union has exactly one variant (`demo`) today; the next variant
- * lands together with the type promotion.
+ * Two-place duplication is intentional at this slice — promotion to
+ * `@useatlas/types` is the next release window.
+ *
+ * Adding a variant: extend BOTH this union AND the matching union in
+ * `plugins/twenty/src/lead-normalizer.ts`. The normalizer's switch is
+ * the exhaustiveness gate — if the two unions drift, the next dispatch
+ * dead-letters with `Unknown lead source`.
  */
-export type SaasCrmLeadInput = {
-  readonly source: "demo";
-  readonly email: string;
-  readonly ip?: string | null;
-  readonly userAgent?: string | null;
-};
+export type SaasCrmLeadInput =
+  | {
+      readonly source: "demo";
+      readonly email: string;
+      readonly ip?: string | null;
+      readonly userAgent?: string | null;
+    }
+  | {
+      readonly source: "sales-form";
+      readonly email: string;
+      /** Full name as typed by the prospect — split into first/last at the seam. */
+      readonly name: string;
+      readonly company: string;
+      readonly planInterest: string;
+      /** Free-text message body — becomes the attached Twenty Note's body. */
+      readonly message: string;
+      readonly ip?: string | null;
+      readonly userAgent?: string | null;
+    };
 
 /**
  * Discriminated SaasCrm shape — the two correlated facts (anticipated

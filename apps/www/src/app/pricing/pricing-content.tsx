@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { ArrowIcon, CheckIcon } from "../../components/shared";
+import { TalkToSalesDialog } from "../../components/talk-to-sales-dialog";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -451,9 +452,23 @@ function TierCard({
           {tier.cta}
           <ArrowIcon />
         </a>
-        <p className="mt-2.5 text-center font-mono text-[10.5px] tracking-wider text-zinc-400">
-          {tier.ctaSecondary}
-        </p>
+        {tier.kind === "enterprise" ? (
+          // Business tier — secondary affordance opens the talk-to-sales
+          // dialog inline (no mailto link). The dialog's own trigger
+          // renders the {tier.ctaSecondary} label so this row stays a
+          // single click target with the same visual weight as the other
+          // tiers' helper text.
+          <div className="mt-2.5 flex justify-center">
+            <TalkToSalesDialog
+              triggerLabel={tier.ctaSecondary}
+              initialPlanInterest="Business"
+            />
+          </div>
+        ) : (
+          <p className="mt-2.5 text-center font-mono text-[10.5px] tracking-wider text-zinc-400">
+            {tier.ctaSecondary}
+          </p>
+        )}
       </div>
     </div>
   );

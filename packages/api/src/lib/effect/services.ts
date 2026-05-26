@@ -2400,19 +2400,36 @@ export const NoopDeployModeResolverLayer: Layer.Layer<DeployModeResolver> =
 // SaaS-only CRM dispatch (Twenty). Self-hosted gets the Noop layer.
 
 /**
- * Inputs to `SaasCrm.upsertLead`. Inlined here (mirrors the same
- * discriminated union in `@useatlas/twenty/lead-normalizer`) until a
- * subsequent release promotes the shared types into `@useatlas/types`.
- * Two-place duplication is intentional and accepted at this slice —
- * the union has exactly one variant (`demo`) today; the next variant
- * lands together with the type promotion.
+ * Inputs to `SaasCrm.upsertLead`. Mirrors the discriminated union in
+ * `plugins/twenty/src/lead-normalizer.ts:AtlasLeadEvent`. The normalizer's
+ * exhaustiveness switch is the drift gate — when the two unions diverge,
+ * the next dispatch dead-letters with `Unknown lead source` rather than
+ * silently swallowing.
+ *
+ * Adding a variant: extend BOTH this union AND `AtlasLeadEvent`. The
+ * two-place duplication exists because we don't currently want to drag
+ * `@useatlas/twenty` into the contract surface of `@atlas/api`; promote
+ * to `@useatlas/types` when a second consumer appears.
  */
-export type SaasCrmLeadInput = {
-  readonly source: "demo";
-  readonly email: string;
-  readonly ip?: string | null;
-  readonly userAgent?: string | null;
-};
+export type SaasCrmLeadInput =
+  | {
+      readonly source: "demo";
+      readonly email: string;
+      readonly ip?: string | null;
+      readonly userAgent?: string | null;
+    }
+  | {
+      readonly source: "sales-form";
+      readonly email: string;
+      /** Full name as typed by the prospect — split into first/last at the seam. */
+      readonly name: string;
+      readonly company: string;
+      readonly planInterest: string;
+      /** Free-text message body — becomes the attached Twenty Note's body. */
+      readonly message: string;
+      readonly ip?: string | null;
+      readonly userAgent?: string | null;
+    };
 
 /**
  * Discriminated SaasCrm shape — the two correlated facts (anticipated
@@ -2431,18 +2448,26 @@ export type SaasCrmLeadInput = {
 export type SaasCrmShape =
   | {
       /**
-       * Anticipatory — a future `POST /api/v1/contact` route will read
-       * this to return 404 `not_available` on self-hosted (or when the
-       * SaaS layer failed boot verification) rather than the standard
-       * 403 envelope. Until that route lands, the flusher wire-up in
-       * `lib/effect/layers.ts:makeSchedulerLive` is the only consumer.
+       * `POST /api/v1/contact` reads this to return 404 `not_available`
+       * on self-hosted (or when the SaaS layer failed boot verification)
+       * rather than the standard 403 envelope. The flusher wire-up in
+       * `lib/effect/layers.ts:makeSchedulerLive` also reads it to decide
+       * whether to mount the per-row dispatcher.
        */
       readonly available: false;
-      readonly upsertLead: (input: SaasCrmLeadInput) => Effect.Effect<void>;
+      readonly upsertLead: (input: SaasCrmLeadInput) => Effect.Effect<void, Error>;
     }
   | {
       readonly available: true;
-      readonly upsertLead: (input: SaasCrmLeadInput) => Effect.Effect<void>;
+      /**
+       * Enqueue a lead row into `crm_outbox` for durable dispatch by
+       * the scheduler-backed flusher. Returns `Effect.void` on success;
+       * fails with the raw `Error` when the Postgres write fails so the
+       * caller can decide whether to surface a 5xx (sales form — every
+       * lost lead is a missed revenue conversation) or swallow with a
+       * structured log (demo — user already has a sandbox link).
+       */
+      readonly upsertLead: (input: SaasCrmLeadInput) => Effect.Effect<void, Error>;
       /**
        * Per-row dispatcher the scheduler-backed flusher calls inside
        * `flushBatch`. Defined here (not in `@atlas/ee`) so

@@ -661,12 +661,499 @@ describe("dispatchOutboxRow", () => {
     }
   });
 
-  // (Stale test removed: `@useatlas/twenty` 0.0.2 normalizes the
-  // sales-form variant via `normalizeSalesFormLead`, so the prior
-  // "sales-form row dead-letters today via the normalizer" assertion
-  // no longer holds. The dispatcher's full sales-form happy-path,
-  // resumed-claim, and orphan-note coverage lives on the slice-3
-  // branch (#2833) alongside the consumer wiring.)
+  test("sales-form happy path — upsertPerson then createNote (then noteTarget link), persists both ids", async () => {
+    // End-to-end happy path for a fresh sales-form lead.
+    // Expected fetch sequence on a brand-new prospect:
+    //   1. GET /rest/people?filter…           — find-by-email returns []
+    //   2. POST /rest/people                  — create person
+    //   3. POST /rest/notes                   — create note
+    //   4. POST /rest/noteTargets             — link note to person
+    const fetchSeq: string[] = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const method = init?.method ?? "GET";
+      fetchSeq.push(`${method} ${url.replace("https://crm.test.local", "")}`);
+
+      if (method === "GET" && url.includes("/rest/people?filter")) {
+        return new Response(JSON.stringify({ data: { people: [] } }), {
+          status: 200, headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (method === "POST" && url.endsWith("/rest/people")) {
+        return new Response(
+          JSON.stringify({ data: { createPerson: { id: "person_sales_1" } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (method === "POST" && url.endsWith("/rest/notes")) {
+        return new Response(
+          JSON.stringify({ data: { createNote: { id: "note_sales_1" } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (method === "POST" && url.endsWith("/rest/noteTargets")) {
+        return new Response(
+          JSON.stringify({ data: { createNoteTarget: { id: "nt_1" } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${method} ${url}`);
+    }) as unknown as typeof globalThis.fetch;
+
+    const persisted: { person?: string; note?: string } = {};
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-sales-happy",
+          eventType: "sales-form",
+          payload: {
+            source: "sales-form",
+            email: "sales@test.local",
+            name: "Alice Example",
+            company: "Acme Co",
+            planInterest: "Business",
+            message: "We need ten seats.",
+          },
+          attempts: 1,
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async (id: string) => { persisted.person = id; },
+          setTwentyNoteId: async (id: string) => { persisted.note = id; },
+        },
+      ),
+    );
+
+    expect(outcome).toEqual({ kind: "ok" });
+    expect(persisted.person).toBe("person_sales_1");
+    expect(persisted.note).toBe("note_sales_1");
+    // Strict-sequence assertion — proves the sub-steps fire in the right
+    // order (no parallel createNote before personId is known).
+    expect(fetchSeq).toHaveLength(4);
+    expect(fetchSeq[2]).toBe("POST /rest/notes");
+    expect(fetchSeq[3]).toBe("POST /rest/noteTargets");
+  });
+
+  test("sales-form idempotent replay (person already done) — skips upsertPerson, calls createNote with the persisted personId", async () => {
+    // Models the partial-success crash path from #2729: sub-step 1
+    // succeeded on a prior claim, persisted twenty_person_id, then the
+    // pod died before sub-step 2 ran. On replay the dispatcher must NOT
+    // re-call upsertPerson (would duplicate noise on Twenty) but MUST
+    // still create the note against the persisted personId.
+    let upsertCalled = false;
+    let noteTargetBody: Record<string, unknown> | null = null;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const method = init?.method ?? "GET";
+      if (url.includes("/rest/people")) {
+        upsertCalled = true;
+        throw new Error("upsertPerson must NOT be called on replay");
+      }
+      if (method === "POST" && url.endsWith("/rest/notes")) {
+        return new Response(
+          JSON.stringify({ data: { createNote: { id: "note_replay" } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (method === "POST" && url.endsWith("/rest/noteTargets")) {
+        noteTargetBody = JSON.parse(String(init?.body ?? "{}"));
+        return new Response(JSON.stringify({ data: { createNoteTarget: { id: "nt_replay" } } }), {
+          status: 200, headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected fetch: ${method} ${url}`);
+    }) as unknown as typeof globalThis.fetch;
+
+    const persisted: { person?: string; note?: string } = {};
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-sales-replay",
+          eventType: "sales-form",
+          payload: {
+            source: "sales-form",
+            email: "replay@test.local",
+            name: "Bob Replay",
+            company: "Acme",
+            planInterest: "Pro",
+            message: "Following up.",
+          },
+          attempts: 2,
+          twentyPersonId: "person_from_prior_claim",
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async (id: string) => { persisted.person = id; },
+          setTwentyNoteId: async (id: string) => { persisted.note = id; },
+        },
+      ),
+    );
+
+    expect(outcome).toEqual({ kind: "ok" });
+    expect(upsertCalled).toBe(false);
+    expect(persisted.person).toBeUndefined(); // not re-persisted on replay
+    expect(persisted.note).toBe("note_replay");
+    // noteTarget MUST link to the persisted personId, not anything fresh.
+    // Cast through unknown so bun's `toEqual` overload doesn't narrow on
+    // the captured `null` initializer (Record<string, unknown> | null).
+    expect(noteTargetBody as unknown as Record<string, string>).toEqual({
+      noteId: "note_replay",
+      targetPersonId: "person_from_prior_claim",
+    });
+  });
+
+  test("sales-form fully idempotent (both ids set) — no fetches, returns ok", async () => {
+    // Both sub-steps already completed on a prior claim. The next claim
+    // (e.g. the flusher recovered an in_flight row mid-status-stamp)
+    // must short-circuit completely.
+    let fetchCount = 0;
+    const fetchImpl = (async (): Promise<Response> => {
+      fetchCount++;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-sales-done",
+          eventType: "sales-form",
+          payload: {
+            source: "sales-form",
+            email: "done@test.local",
+            name: "X",
+            company: "Y",
+            planInterest: "Pro",
+            message: "Hi",
+          },
+          attempts: 3,
+          twentyPersonId: "p_done",
+          twentyNoteId: "n_done",
+        },
+        {
+          setTwentyPersonId: async () => { throw new Error("must not be called"); },
+          setTwentyNoteId: async () => { throw new Error("must not be called"); },
+        },
+      ),
+    );
+
+    expect(outcome).toEqual({ kind: "ok" });
+    expect(fetchCount).toBe(0);
+  });
+
+  test("sales-form: createNote 4xx is dead-lettered with operation=createNote in the message", async () => {
+    // upsertPerson succeeds; createNote returns 422. The row must
+    // dead-letter so the operator sees the malformed note payload.
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const method = init?.method ?? "GET";
+      if (method === "GET" && url.includes("/rest/people?filter")) {
+        return new Response(JSON.stringify({ data: { people: [] } }), {
+          status: 200, headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (method === "POST" && url.endsWith("/rest/people")) {
+        return new Response(
+          JSON.stringify({ data: { createPerson: { id: "person_4xx" } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (method === "POST" && url.endsWith("/rest/notes")) {
+        return new Response(JSON.stringify({ messages: ["title required"] }), {
+          status: 422, headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected fetch: ${method} ${url}`);
+    }) as unknown as typeof globalThis.fetch;
+
+    const persisted: { person?: string; note?: string } = {};
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-sales-422",
+          eventType: "sales-form",
+          payload: {
+            source: "sales-form",
+            email: "fourtwo@test.local",
+            name: "X",
+            company: "Y",
+            planInterest: "Pro",
+            message: "Hi",
+          },
+          attempts: 1,
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async (id: string) => { persisted.person = id; },
+          setTwentyNoteId: async (id: string) => { persisted.note = id; },
+        },
+      ),
+    );
+
+    expect(outcome.kind).toBe("permanent");
+    if (outcome.kind === "permanent") {
+      expect(outcome.message).toContain("createNote");
+    }
+    // personId is persisted before createNote runs — that's the
+    // sub-step idempotency contract. On the next claim (well, on the
+    // next manual operator retry after they fix the payload) the
+    // dispatcher will skip upsertPerson.
+    expect(persisted.person).toBe("person_4xx");
+    expect(persisted.note).toBeUndefined();
+  });
+
+  test("sales-form: setTwentyPersonId throws after upsertPerson succeeds — transient, replay re-runs upsertPerson", async () => {
+    // Models: sub-step 1 (upsertPerson) succeeds, sub-step 1's persist
+    // callback (setTwentyPersonId) throws (e.g. pg pool exhausted while
+    // stamping the row). The outcome MUST be transient with the
+    // setTwentyPersonId-specific message so an operator can tell this
+    // apart from `upsertPerson threw`. On replay, the dispatcher sees
+    // `twentyPersonId === null` and re-runs upsertPerson, which is safe
+    // because upsertPerson does find-by-email-first PATCH (no duplicate
+    // Person on Twenty).
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const method = init?.method ?? "GET";
+      if (method === "GET" && url.includes("/rest/people?filter")) {
+        return new Response(JSON.stringify({ data: { people: [] } }), {
+          status: 200, headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (method === "POST" && url.endsWith("/rest/people")) {
+        return new Response(
+          JSON.stringify({ data: { createPerson: { id: "person_persist_fail" } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${method} ${url}`);
+    }) as unknown as typeof globalThis.fetch;
+
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-sales-persist-fail",
+          eventType: "sales-form",
+          payload: {
+            source: "sales-form",
+            email: "persist@test.local",
+            name: "Carla Persist",
+            company: "Acme",
+            planInterest: "Business",
+            message: "Hi",
+          },
+          attempts: 1,
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {
+            throw new Error("pg pool exhausted");
+          },
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+
+    expect(outcome.kind).toBe("transient");
+    if (outcome.kind === "transient") {
+      expect(outcome.message).toContain("persist.setTwentyPersonId");
+      expect(outcome.message).toContain("pg pool exhausted");
+      // Specifically NOT labelled as upsertPerson failure — that
+      // matters for operator triage (the call itself succeeded).
+      expect(outcome.message).not.toContain("upsertPerson threw");
+    }
+  });
+
+  test("sales-form orphan-note retry: noteTarget 5xx returns transient AND replay re-issues both note POSTs (orphan note is real, not silently fixed)", async () => {
+    // Pins the documented orphan-note trade-off: when /rest/noteTargets
+    // fails after /rest/notes succeeded, the dispatcher returns
+    // transient WITHOUT persisting twentyNoteId. Next claim re-runs the
+    // full createNote (both POSTs) — duplicating the note in Twenty.
+    // The orphan story is intentional (acceptable cost vs. dropping
+    // the lead); this test proves it stays that way.
+    const fetchSeq: string[] = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const method = init?.method ?? "GET";
+      fetchSeq.push(`${method} ${url.replace("https://crm.test.local", "")}`);
+      if (method === "POST" && url.endsWith("/rest/notes")) {
+        return new Response(
+          JSON.stringify({ data: { createNote: { id: `note_attempt_${fetchSeq.length}` } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (method === "POST" && url.endsWith("/rest/noteTargets")) {
+        return new Response(JSON.stringify({ messages: ["upstream down"] }), {
+          status: 503, headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected: ${method} ${url}`);
+    }) as unknown as typeof globalThis.fetch;
+
+    // Replay claim — `twentyPersonId` is populated, so upsertPerson is
+    // skipped. Only the createNote sub-step runs.
+    const persisted: { person?: string; note?: string } = {};
+    const dispatch = () =>
+      withFetch(fetchImpl, async () =>
+        dispatchOutboxRow(
+          { apiKey: "k", baseUrl: "https://crm.test.local" },
+          {
+            id: "row-orphan",
+            eventType: "sales-form",
+            payload: {
+              source: "sales-form",
+              email: "orphan@test.local",
+              name: "X Y",
+              company: "Acme",
+              planInterest: "Pro",
+              message: "Hi",
+            },
+            attempts: 1,
+            twentyPersonId: "p_persisted",
+            twentyNoteId: null,
+          },
+          {
+            setTwentyPersonId: async (id: string) => { persisted.person = id; },
+            setTwentyNoteId: async (id: string) => { persisted.note = id; },
+          },
+        ),
+      );
+
+    const outcome1 = await dispatch();
+    expect(outcome1.kind).toBe("transient");
+    expect(persisted.note).toBeUndefined(); // twentyNoteId NOT persisted on orphan
+    // Sub-step 2 attempted both posts before classifying.
+    expect(fetchSeq).toEqual([
+      "POST /rest/notes",
+      "POST /rest/noteTargets",
+    ]);
+
+    // Replay: dispatcher re-runs createNote (twentyNoteId still null).
+    // The first note is now orphaned in Twenty under `note_attempt_1`.
+    fetchSeq.length = 0;
+    const outcome2 = await dispatch();
+    expect(outcome2.kind).toBe("transient");
+    expect(fetchSeq).toEqual([
+      "POST /rest/notes",
+      "POST /rest/noteTargets",
+    ]);
+  });
+
+  test("sales-form: noteTarget 5xx surfaces orphanedNoteId on the TwentyClientError so the saas-crm dispatcher logs it for operator cleanup", async () => {
+    // The orphan story above is operator-recoverable ONLY if the
+    // operator can grep for the orphaned note id. The client carries
+    // it on the error; classifyTwentyError emits a structured
+    // `saas_crm.twenty_note_orphaned` log event with the id.
+    let capturedNoteId: string | undefined;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const method = init?.method ?? "GET";
+      if (method === "POST" && url.endsWith("/rest/notes")) {
+        capturedNoteId = "note_will_orphan";
+        return new Response(
+          JSON.stringify({ data: { createNote: { id: capturedNoteId } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (method === "POST" && url.endsWith("/rest/noteTargets")) {
+        return new Response(JSON.stringify({ messages: ["link down"] }), {
+          status: 503, headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected: ${method} ${url}`);
+    }) as unknown as typeof globalThis.fetch;
+
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-orphan-id",
+          eventType: "sales-form",
+          payload: {
+            source: "sales-form",
+            email: "orphan-id@test.local",
+            name: "X Y",
+            company: "Acme",
+            planInterest: "Pro",
+            message: "Hi",
+          },
+          attempts: 1,
+          twentyPersonId: "p_existing",
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {},
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+
+    // Transient (so flusher retries) but the orphaned note id is now
+    // captured for operator follow-up via the structured log emitted
+    // by classifyTwentyError. The outcome message includes the note id
+    // so the row's stored failure_reason carries it forward too.
+    expect(outcome.kind).toBe("transient");
+    if (outcome.kind === "transient") {
+      expect(outcome.message).toContain("createNoteTarget");
+      expect(outcome.message).toContain(capturedNoteId ?? "");
+    }
+  });
+
+  test("sales-form: createNote 5xx is transient (retried by flusher)", async () => {
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const method = init?.method ?? "GET";
+      if (method === "GET" && url.includes("/rest/people?filter")) {
+        return new Response(JSON.stringify({ data: { people: [] } }), {
+          status: 200, headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (method === "POST" && url.endsWith("/rest/people")) {
+        return new Response(JSON.stringify({ data: { createPerson: { id: "p_5xx" } } }), {
+          status: 200, headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (method === "POST" && url.endsWith("/rest/notes")) {
+        return new Response(JSON.stringify({ messages: ["upstream down"] }), {
+          status: 503, headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected: ${method} ${url}`);
+    }) as unknown as typeof globalThis.fetch;
+
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-sales-5xx",
+          eventType: "sales-form",
+          payload: {
+            source: "sales-form",
+            email: "fivexx@test.local",
+            name: "X",
+            company: "Y",
+            planInterest: "Pro",
+            message: "Hi",
+          },
+          attempts: 1,
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {},
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+
+    expect(outcome.kind).toBe("transient");
+  });
 });
 
 // ── classifyTwentyError ─────────────────────────────────────────────

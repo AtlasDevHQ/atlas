@@ -41,6 +41,9 @@ import { adminAccessControl, adminRole as adminUserRole, platformAdminRole } fro
 import { getStripePlans, resolvePlanTierFromPriceId, TRIAL_DAYS } from "@atlas/api/lib/billing/plans";
 import { invalidatePlanCache, checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
 import { getConfig } from "@atlas/api/lib/config";
+import { SaasCrm } from "@atlas/api/lib/effect/services";
+import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
+import { Effect } from "effect";
 
 /**
  * Build the socialProviders config from environment variables.
@@ -222,6 +225,74 @@ export async function assignSaasTrial(args: {
     log.error(
       { err: errorMessage(err), userId: user.id, orgId: org.id },
       "Failed to assign SaaS trial — workspace stays on plan_tier='free'",
+    );
+  }
+}
+
+/**
+ * Twenty CRM dispatch for a Better Auth signup. Enqueues a `signup`
+ * lead into `crm_outbox` via the `SaasCrm` Tag; the scheduler-backed
+ * flusher (`lib/effect/layers.ts:makeSchedulerLive`) picks it up and
+ * calls `TwentyClient.upsertPerson` — first/last source semantics live
+ * inside `upsertPerson`, not here. Self-hosted resolves to the no-op
+ * `SaasCrm` Layer and produces no Twenty traffic.
+ *
+ * A Twenty outage MUST NOT 500 the signup endpoint. Two layers of
+ * defense:
+ *  - inner `.pipe(Effect.either)` absorbs `upsertLead`'s typed `Error`
+ *    channel (e.g. a `crm_outbox` Postgres blip), with a structured
+ *    `log.warn` so the failure surfaces in this module's logs — does
+ *    NOT rely on the EE-side `tapError` for the audit trail.
+ *  - outer `try/catch` absorbs runtime defects (a stuck `runPromise`,
+ *    an unhandled rejection from a future Layer change).
+ *
+ * Exported for direct unit testing — Better Auth closes over its
+ * options inside `buildAuthOptions`, so the only way to assert the
+ * contract from outside the plugin wiring is to test the helper in
+ * isolation. Mirrors `captureDemoLead` in `lib/demo.ts`.
+ *
+ * @internal
+ */
+export async function dispatchSignupCrmLead(args: {
+  user: { id: string; email?: string | null; name?: string | null };
+}): Promise<void> {
+  const { user } = args;
+  const email = user.email?.toLowerCase().trim();
+  if (!email) return;
+
+  const name = user.name?.trim() || undefined;
+
+  try {
+    await runEnterprise(
+      Effect.gen(function* () {
+        const crm = yield* SaasCrm;
+        const result = yield* crm
+          .upsertLead({
+            source: "signup",
+            email,
+            ...(name ? { name } : {}),
+          })
+          .pipe(Effect.either);
+        if (result._tag === "Left") {
+          log.warn(
+            {
+              userId: user.id,
+              err: errorMessage(result.left),
+              event: "signup_crm.enqueue_failed",
+            },
+            "SaasCrm.upsertLead enqueue failed during signup — swallowed to keep auth response unblocked",
+          );
+        }
+      }),
+    );
+  } catch (err) {
+    log.warn(
+      {
+        userId: user.id,
+        err: errorMessage(err),
+        event: "signup_crm.dispatch_defect",
+      },
+      "Unexpected SaasCrm dispatch error during signup — swallowed to keep auth response unblocked",
     );
   }
 }
@@ -1918,6 +1989,12 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
             }
           },
           after: async (user: User) => {
+            // Awaited deliberately — the helper swallows every failure
+            // mode internally, so the await only blocks on the
+            // outbox INSERT. Not awaiting risks an unhandled rejection
+            // if a future change widens the error channel.
+            await dispatchSignupCrmLead({ user });
+
             // Onboarding welcome email — fire-and-forget after signup.
             // Deferred with setTimeout to allow Better Auth to create the org/membership first.
             if (user.email) {

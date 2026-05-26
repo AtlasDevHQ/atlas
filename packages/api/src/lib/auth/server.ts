@@ -227,6 +227,92 @@ export async function assignSaasTrial(args: {
 }
 
 /**
+ * Fire-and-forget Twenty CRM dispatch for a Better Auth signup. Enqueues
+ * a `signup` lead into `crm_outbox` via the `SaasCrm` Tag; the
+ * scheduler-backed flusher (`lib/effect/layers.ts:makeSchedulerLive`)
+ * picks it up on the next tick and calls `TwentyClient.upsertPerson`.
+ *
+ * First-source preservation is delegated to `upsertPerson` itself: a
+ * brand-new email gets both `atlasFirstSource` and `atlasLastSource`
+ * set to `SIGNUP`; an email that previously demoed keeps its sticky
+ * `atlasFirstSource=DEMO` and only `atlasLastSource` flips to `SIGNUP`.
+ *
+ * Self-hosted (no enterprise) resolves to the `NoopSaasCrm` Layer →
+ * `upsertLead` is `Effect.void` and no Twenty traffic is generated.
+ *
+ * Latency contract: this MUST stay non-blocking on the signup happy
+ * path. The enqueue is a single Postgres INSERT — fast — but any
+ * outage in the enterprise runtime (a future Layer change, a stuck
+ * runPromise, an unhandled rejection) must not turn into a 500 on the
+ * auth endpoint. Both branches are wrapped: the outer `try/catch`
+ * around `runEnterprise` absorbs runtime defects, and the inner
+ * `Effect.either` absorbs upsertLead's typed `Error` channel without
+ * a re-throw. Mirrors the swallow contract in
+ * `packages/api/src/lib/demo.ts:captureDemoLead`.
+ *
+ * Exported for direct unit testing — the Better Auth hook closes over
+ * its options inside `buildAuthOptions`, so the only way to assert
+ * the contract from outside the plugin wiring is to test the helper
+ * in isolation.
+ *
+ * @internal
+ */
+export async function dispatchSignupCrmLead(args: {
+  user: { id: string; email?: string | null; name?: string | null };
+}): Promise<void> {
+  const { user } = args;
+  const email = user.email?.toLowerCase().trim();
+  if (!email) return;
+
+  // Defer the heavy imports — keeps the auth module's top-level cost
+  // unchanged for non-SaaS deployments that never hit this path.
+  let SaasCrm: typeof import("@atlas/api/lib/effect/services").SaasCrm;
+  let runEnterprise: typeof import("@atlas/api/lib/effect/enterprise-layer").runEnterprise;
+  let Effect: typeof import("effect").Effect;
+  try {
+    ({ SaasCrm } = await import("@atlas/api/lib/effect/services"));
+    ({ runEnterprise } = await import("@atlas/api/lib/effect/enterprise-layer"));
+    ({ Effect } = await import("effect"));
+  } catch (err) {
+    log.warn(
+      { err: errorMessage(err), userId: user.id },
+      "SaasCrm dispatch skipped — enterprise runtime imports failed",
+    );
+    return;
+  }
+
+  const name = user.name?.trim() || undefined;
+
+  try {
+    await runEnterprise(
+      Effect.gen(function* () {
+        const crm = yield* SaasCrm;
+        // `Effect.either` collapses the typed Postgres-write failure
+        // into a Right/Left tuple so we don't reject the runPromise
+        // — the failure is already logged inside SaasCrmLive's
+        // `tapError` and we don't want the auth handler to see it.
+        yield* crm
+          .upsertLead({
+            source: "signup",
+            email,
+            ...(name ? { name } : {}),
+          })
+          .pipe(Effect.either);
+      }),
+    );
+  } catch (err) {
+    // Defects (runPromise died, unhandled rejection inside a future
+    // Layer change, etc.) — swallow with a structured log so a Twenty
+    // outage or an EE-layer regression never turns into a 500 on the
+    // signup endpoint.
+    log.warn(
+      { userId: user.id, err: errorMessage(err) },
+      "Unexpected SaasCrm dispatch error during signup — swallowed to keep auth response unblocked",
+    );
+  }
+}
+
+/**
  * Built-in rate-limit ceilings for Better Auth endpoints. Chosen to slow
  * online brute force and email-verification abuse while tolerating
  * legitimate retry patterns (user fat-fingers password 2–3 times, clicks
@@ -1918,6 +2004,18 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
             }
           },
           after: async (user: User) => {
+            // SaaS CRM dispatch — non-blocking enqueue into crm_outbox.
+            // Self-hosted resolves to NoopSaasCrm (no Twenty traffic);
+            // SaaS enqueues a `signup` lead that the scheduler-backed
+            // flusher picks up on the next tick. Awaited deliberately:
+            // the helper internally swallows ALL failure modes (Effect
+            // defects, enqueue errors, missing enterprise runtime), so
+            // the await only blocks on the single Postgres INSERT, which
+            // is fast. Not awaiting would expose us to an unhandled
+            // promise rejection if a future change widens the error
+            // channel.
+            await dispatchSignupCrmLead({ user });
+
             // Onboarding welcome email — fire-and-forget after signup.
             // Deferred with setTimeout to allow Better Auth to create the org/membership first.
             if (user.email) {

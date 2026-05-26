@@ -2,7 +2,7 @@
  * LeadNormalizer — pure mapping from Atlas lead events to the Twenty
  * upsert input shape.
  *
- * Ships the `demo` and `sales-form` variants. `normalizeLead`'s
+ * Ships the `demo`, `sales-form`, and `signup` variants. `normalizeLead`'s
  * exhaustive switch surfaces a compile error the moment a new union
  * member lands.
  *
@@ -54,11 +54,33 @@ export interface AtlasSalesFormLeadEvent {
 }
 
 /**
+ * Better Auth signup variant — fired by the `user.create.after` hook in
+ * `packages/api/src/lib/auth/server.ts`. No request context (no IP, no
+ * UA) since the hook runs post-commit on the auth pathway, and no
+ * attached message — first/last source semantics are owned by
+ * `TwentyClient.upsertPerson`, so a prior demo/sales-form touch keeps
+ * its `atlasFirstSource` and only `atlasLastSource` flips to `SIGNUP`.
+ */
+export interface AtlasSignupLeadEvent {
+  readonly source: "signup";
+  readonly email: string;
+  /**
+   * Full name from Better Auth's `user.name` field — split into
+   * first/last at the seam (parity with the sales-form variant).
+   * Optional because email-only signup is allowed.
+   */
+  readonly name?: string;
+}
+
+/**
  * Discriminated union over every Atlas-internal lead event. The
  * exhaustiveness check in `normalizeLead` catches missing handlers
  * at compile time.
  */
-export type AtlasLeadEvent = AtlasDemoLeadEvent | AtlasSalesFormLeadEvent;
+export type AtlasLeadEvent =
+  | AtlasDemoLeadEvent
+  | AtlasSalesFormLeadEvent
+  | AtlasSignupLeadEvent;
 
 /** Note attached to the Person — only emitted by variants that carry a message. */
 export interface NormalizedNote {
@@ -149,6 +171,31 @@ export function normalizeSalesFormLead(
   };
 }
 
+/**
+ * Normalize a Better Auth signup lead event to a Twenty upsert payload.
+ * No note — signup events don't carry a message; first vs. last source
+ * semantics are owned by `upsertPerson`, not the normalizer.
+ */
+export function normalizeSignupLead(event: AtlasSignupLeadEvent): NormalizedLead {
+  const email = event.email.toLowerCase().trim();
+  const eventSource: AtlasEventSource = "SIGNUP";
+
+  // No request context on the auth-side hook → no atlasIp.
+  const customFields: { atlasIp?: string } = {};
+
+  const name = event.name ? splitName(event.name) : undefined;
+
+  return {
+    person: {
+      email,
+      eventSource,
+      ...(name ? { name } : {}),
+      customFields,
+    },
+    eventSource,
+  };
+}
+
 /** Dispatch on `source`. */
 export function normalizeLead(event: AtlasLeadEvent): NormalizedLead {
   switch (event.source) {
@@ -156,6 +203,8 @@ export function normalizeLead(event: AtlasLeadEvent): NormalizedLead {
       return normalizeDemoLead(event);
     case "sales-form":
       return normalizeSalesFormLead(event);
+    case "signup":
+      return normalizeSignupLead(event);
     default: {
       // Exhaustiveness — when new variants are added to `AtlasLeadEvent`,
       // the absence of a case here surfaces as a tsgo compile error.

@@ -844,6 +844,145 @@ describe("dispatchOutboxRow", () => {
     expect(fetchCount).toBe(0);
   });
 
+  test("signup happy path — upsertPerson stamps SIGNUP, NO createNote (signup carries no message)", async () => {
+    // End-to-end happy path for a brand-new Better Auth signup. The
+    // upsertPerson POST body MUST stamp both atlasFirstSource and
+    // atlasLastSource = "SIGNUP" so the new Twenty Person carries the
+    // sticky first-touch. The dispatcher MUST NOT fire any /rest/notes
+    // call — the signup variant carries no message, so the normalizer
+    // returns a `note`-less NormalizedLead.
+    const fetchSeq: string[] = [];
+    let createPersonBody: Record<string, unknown> | null = null;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const method = init?.method ?? "GET";
+      fetchSeq.push(`${method} ${url.replace("https://crm.test.local", "")}`);
+
+      if (method === "GET" && url.includes("/rest/people?filter")) {
+        // New email — no existing Person, so both source fields stamp.
+        return new Response(JSON.stringify({ data: { people: [] } }), {
+          status: 200, headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (method === "POST" && url.endsWith("/rest/people")) {
+        createPersonBody = JSON.parse(String(init?.body ?? "{}"));
+        return new Response(
+          JSON.stringify({ data: { createPerson: { id: "person_signup_1" } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected fetch on signup happy path: ${method} ${url}`);
+    }) as unknown as typeof globalThis.fetch;
+
+    const persisted: { person?: string; note?: string } = {};
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-signup-happy",
+          eventType: "signup",
+          payload: {
+            source: "signup",
+            email: "signup@test.local",
+            name: "Alice Example",
+          },
+          attempts: 1,
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async (id: string) => { persisted.person = id; },
+          setTwentyNoteId: async (id: string) => { persisted.note = id; },
+        },
+      ),
+    );
+
+    expect(outcome).toEqual({ kind: "ok" });
+    expect(persisted.person).toBe("person_signup_1");
+    // Critical: NO note was created.
+    expect(persisted.note).toBeUndefined();
+    expect(fetchSeq).toHaveLength(2);
+    expect(fetchSeq[0]).toContain("GET /rest/people?filter");
+    expect(fetchSeq[1]).toBe("POST /rest/people");
+    // Sticky first-touch contract: brand-new email gets BOTH source
+    // fields stamped to SIGNUP.
+    expect(createPersonBody).not.toBeNull();
+    const created = createPersonBody as unknown as Record<string, unknown>;
+    expect(created.atlasFirstSource).toBe("SIGNUP");
+    expect(created.atlasLastSource).toBe("SIGNUP");
+    // Name is split at the normalizer seam.
+    expect(created.name).toEqual({
+      firstName: "Alice",
+      lastName: "Example",
+    });
+  });
+
+  test("signup preserves sticky atlasFirstSource on an email that previously demoed", async () => {
+    // AC: an email that previously demoed must keep atlasFirstSource="DEMO"
+    // and only flip atlasLastSource to "SIGNUP". This pins the
+    // first-source preservation contract that lives inside
+    // TwentyClient.upsertPerson — proves slice 4 inherits it correctly.
+    let patchBody: Record<string, unknown> | null = null;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      const method = init?.method ?? "GET";
+      if (method === "GET" && url.includes("/rest/people?filter")) {
+        // Existing Person with sticky atlasFirstSource set by an earlier demo.
+        return new Response(
+          JSON.stringify({
+            data: {
+              people: [
+                { id: "person_returning", atlasFirstSource: "DEMO", atlasLastSource: "DEMO" },
+              ],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (method === "PATCH" && url.includes("/rest/people/")) {
+        patchBody = JSON.parse(String(init?.body ?? "{}"));
+        return new Response(
+          JSON.stringify({ data: { updatePerson: { id: "person_returning" } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected fetch on signup-returning path: ${method} ${url}`);
+    }) as unknown as typeof globalThis.fetch;
+
+    const persisted: { person?: string; note?: string } = {};
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-signup-returning",
+          eventType: "signup",
+          payload: {
+            source: "signup",
+            email: "returning@test.local",
+            name: "Bob Returning",
+          },
+          attempts: 1,
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async (id: string) => { persisted.person = id; },
+          setTwentyNoteId: async (id: string) => { persisted.note = id; },
+        },
+      ),
+    );
+
+    expect(outcome).toEqual({ kind: "ok" });
+    expect(persisted.person).toBe("person_returning");
+    expect(persisted.note).toBeUndefined();
+    expect(patchBody).not.toBeNull();
+    const patched = patchBody as unknown as Record<string, unknown>;
+    // Critical: atlasFirstSource is NOT in the PATCH payload — sticky.
+    expect(patched.atlasFirstSource).toBeUndefined();
+    // Only atlasLastSource is updated.
+    expect(patched.atlasLastSource).toBe("SIGNUP");
+  });
+
   test("sales-form: createNote 4xx is dead-lettered with operation=createNote in the message", async () => {
     // upsertPerson succeeds; createNote returns 422. The row must
     // dead-letter so the operator sees the malformed note payload.

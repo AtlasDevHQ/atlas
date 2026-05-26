@@ -7,8 +7,10 @@ import {
   normalizeDemoLead,
   normalizeLead,
   normalizeSalesFormLead,
+  normalizeSignupLead,
   type AtlasDemoLeadEvent,
   type AtlasSalesFormLeadEvent,
+  type AtlasSignupLeadEvent,
 } from "../src/lead-normalizer";
 
 describe("normalizeDemoLead", () => {
@@ -208,6 +210,103 @@ describe("normalizeSalesFormLead", () => {
   });
 });
 
+describe("normalizeSignupLead", () => {
+  test("maps a full signup event to a Twenty upsert payload (no note)", () => {
+    const event: AtlasSignupLeadEvent = {
+      source: "signup",
+      email: "User@Example.com",
+      name: "Alice Example",
+    };
+
+    const result = normalizeSignupLead(event);
+
+    expect(result.eventSource).toBe("SIGNUP");
+    expect(result.person.email).toBe("user@example.com");
+    expect(result.person.eventSource).toBe("SIGNUP");
+    expect(result.person.name).toEqual({ firstName: "Alice", lastName: "Example" });
+    // Signup events carry no IP/message → no atlasIp, no Note.
+    expect(result.person.customFields).toEqual({});
+    expect(result.note).toBeUndefined();
+  });
+
+  test("lowercases and trims the email", () => {
+    const result = normalizeSignupLead({
+      source: "signup",
+      email: "  Bob@ACME.COM ",
+      name: "Bob",
+    });
+    expect(result.person.email).toBe("bob@acme.com");
+  });
+
+  test("single-word name maps to firstName only (no empty lastName)", () => {
+    const result = normalizeSignupLead({
+      source: "signup",
+      email: "u@t.com",
+      name: "Cher",
+    });
+    expect(result.person.name).toEqual({ firstName: "Cher" });
+  });
+
+  test("multi-word last name collapses everything after the first whitespace into lastName", () => {
+    const result = normalizeSignupLead({
+      source: "signup",
+      email: "u@t.com",
+      name: "Mary  Anne   Van Der Beek",
+    });
+    expect(result.person.name).toEqual({
+      firstName: "Mary",
+      lastName: "Anne Van Der Beek",
+    });
+  });
+
+  test("omits name when missing — Better Auth allows email-only signup", () => {
+    const result = normalizeSignupLead({
+      source: "signup",
+      email: "u@t.com",
+    });
+    expect(result.person.name).toBeUndefined();
+  });
+
+  test("omits name when empty / whitespace-only — never PATCH a stray empty name", () => {
+    for (const name of ["", "   ", "\t"]) {
+      const result = normalizeSignupLead({
+        source: "signup",
+        email: "u@t.com",
+        name,
+      });
+      expect(result.person.name).toBeUndefined();
+    }
+  });
+
+  test("always stamps eventSource = SIGNUP for the signup variant", () => {
+    const result = normalizeSignupLead({ source: "signup", email: "u@t.com" });
+    expect(result.eventSource).toBe("SIGNUP");
+    expect(result.person.eventSource).toBe("SIGNUP");
+  });
+
+  test("never attaches a Note (signup carries no message)", () => {
+    const result = normalizeSignupLead({
+      source: "signup",
+      email: "u@t.com",
+      name: "Alice Example",
+    });
+    expect(result.note).toBeUndefined();
+  });
+
+  test("does NOT round-trip an ip — signup doesn't capture one", () => {
+    // Future-proof: even if a caller is widened to pass ip, it must not
+    // appear on the Person — the signup variant is explicitly the
+    // "auth-side, no request context" lead.
+    const result = normalizeSignupLead({
+      source: "signup",
+      email: "u@t.com",
+      name: "Alice",
+    });
+    expect(result.person.customFields).toEqual({});
+    expect(JSON.stringify(result)).not.toContain("atlasIp");
+  });
+});
+
 describe("normalizeLead — dispatch", () => {
   test("dispatches demo source to the demo normalizer", () => {
     const result = normalizeLead({ source: "demo", email: "u@t.com" });
@@ -225,5 +324,15 @@ describe("normalizeLead — dispatch", () => {
     });
     expect(result.eventSource).toBe("SALES_FORM");
     expect(result.note?.body).toBe("Hi");
+  });
+
+  test("dispatches signup source to the signup normalizer", () => {
+    const result = normalizeLead({
+      source: "signup",
+      email: "u@t.com",
+      name: "Alice Example",
+    });
+    expect(result.eventSource).toBe("SIGNUP");
+    expect(result.note).toBeUndefined();
   });
 });

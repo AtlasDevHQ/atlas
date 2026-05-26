@@ -54,9 +54,11 @@ export {
 export {
   normalizeDemoLead,
   normalizeSalesFormLead,
+  normalizeSignupLead,
   normalizeLead,
   type AtlasDemoLeadEvent,
   type AtlasSalesFormLeadEvent,
+  type AtlasSignupLeadEvent,
   type AtlasEventSource,
   type AtlasLeadEvent,
   type NormalizedLead,

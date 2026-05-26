@@ -2429,6 +2429,15 @@ export type SaasCrmLeadInput =
       readonly message: string;
       readonly ip?: string | null;
       readonly userAgent?: string | null;
+    }
+  | {
+      readonly source: "signup";
+      readonly email: string;
+      /**
+       * Better Auth `user.name` — optional because email-only signup is
+       * allowed. Split into first/last at the normalizer seam.
+       */
+      readonly name?: string;
     };
 
 /**

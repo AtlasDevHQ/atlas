@@ -96,6 +96,16 @@ if [ -n "$CANDIDATES" ]; then
       esac
     done
     [ "$allowed" -eq 1 ] && continue
+    # Real-import gate: only flag files that actually import from
+    # @useatlas/twenty (or a subpath). A symbol name appearing in a
+    # changelog string, JSDoc reference, or doc-component data file
+    # does NOT count — the leak we're guarding against requires a
+    # real ESM/CJS import. Without this, the gate false-positives on
+    # `apps/docs/src/components/changelog-data.ts` (the changelog entry
+    # for #2850 mentions the function name in a string literal).
+    if ! grep -qE 'from[[:space:]]*["'\'']@useatlas/twenty|import\(["'\'']@useatlas/twenty|require\(["'\'']@useatlas/twenty' "$f"; then
+      continue
+    fi
     # Post-filter through STRIP_COMMENTS so comment matches don't count.
     if eval "$STRIP_COMMENTS \"\$f\"" | grep -qE "$PATTERN"; then
       OFFENDERS="${OFFENDERS}${f}"$'\n'

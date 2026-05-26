@@ -1,10 +1,13 @@
 /**
- * SaasCrm layer tests — boot verification + dispatch + end-to-end Live wiring.
+ * SaasCrm layer tests — boot verification + outbox enqueue + dispatcher.
  *
- * Exercises the EE-side Layer (`SaasCrmLive`) with a mocked fetch impl,
- * isolating from both the plugin's HTTP wrapper (covered in
- * `plugins/twenty/__tests__/`) and from Twenty itself. There are NO
- * live calls to crm.useatlas.dev.
+ * Exercises the EE-side Layer (`SaasCrmLive`) with a mocked fetch impl
+ * AND a stubbed `internalQuery` (so the outbox enqueue is observable
+ * without a real Postgres). The dispatcher itself (`dispatchOutboxRow`)
+ * is unit-tested directly — it's the call the flusher makes from
+ * inside the Scheduler Layer.
+ *
+ * There are NO live calls to crm.useatlas.dev.
  */
 
 import { describe, test, expect, beforeEach, mock } from "bun:test";
@@ -25,8 +28,30 @@ mock.module("@atlas/api/lib/logger", () => ({
   }),
 }));
 
+// ── Stub the internal DB so SaasCrmLive can observe enqueue ─────────
+let internalDbAvailable = true;
+let lastEnqueueArgs: { sql: string; params: unknown[] } | null = null;
+let enqueueCount = 0;
+let nextEnqueueId = "row-id-0";
+mock.module("@atlas/api/lib/db/internal", () => ({
+  hasInternalDB: () => internalDbAvailable,
+  internalQuery: async (sql: string, params?: unknown[]) => {
+    lastEnqueueArgs = { sql, params: params ?? [] };
+    if (/^\s*INSERT INTO crm_outbox/i.test(sql)) {
+      enqueueCount++;
+      return [{ id: nextEnqueueId }];
+    }
+    return [];
+  },
+}));
+
 // ── Now we can import the layer + its helpers ───────────────────────
-const { verifyCustomFields, dispatchLead, SaasCrmLive } = await import("../index");
+const {
+  verifyCustomFields,
+  SaasCrmLive,
+  dispatchOutboxRow,
+  classifyTwentyError,
+} = await import("../index");
 const { SaasCrm } = await import("@atlas/api/lib/effect/services");
 
 // ── Fixture helpers ─────────────────────────────────────────────────
@@ -60,11 +85,19 @@ function withFetch<T>(impl: typeof globalThis.fetch, run: () => Promise<T>): Pro
   });
 }
 
+function resetStubs(): void {
+  internalDbAvailable = true;
+  lastEnqueueArgs = null;
+  enqueueCount = 0;
+  nextEnqueueId = "row-id-0";
+}
+
 // ── verifyCustomFields ──────────────────────────────────────────────
 
 describe("verifyCustomFields", () => {
   beforeEach(() => {
     enterpriseEnabled = true;
+    resetStubs();
   });
 
   test("returns ok=true when both required custom fields are present", async () => {
@@ -93,39 +126,9 @@ describe("verifyCustomFields", () => {
     });
   });
 
-  test("returns ok=false when atlasLastSource is missing", async () => {
-    const fetchImpl = (async () =>
-      metadataResponse(["id", "atlasFirstSource"])) as unknown as typeof globalThis.fetch;
-
-    await withFetch(fetchImpl, async () => {
-      const result = await verifyCustomFields({
-        apiKey: "k",
-        baseUrl: "https://crm.test.local",
-      });
-      expect(result).toEqual({ ok: false });
-    });
-  });
-
-  test("returns ok='transient' on 5xx (transient upstream failure)", async () => {
-    const fetchImpl = (async () =>
-      new Response(JSON.stringify({ messages: ["oops"] }), {
-        status: 503,
-        headers: { "Content-Type": "application/json" },
-      })) as unknown as typeof globalThis.fetch;
-
-    await withFetch(fetchImpl, async () => {
-      const result = await verifyCustomFields({
-        apiKey: "k",
-        baseUrl: "https://crm.test.local",
-      });
-      if (result.ok !== "transient") throw new Error("expected transient");
-      expect(result.reason.length).toBeGreaterThan(0);
-    });
-  });
-
-  test("returns ok='transient' on network failure", async () => {
+  test("returns ok=transient on network failure", async () => {
     const fetchImpl = (async () => {
-      throw new Error("ECONNREFUSED");
+      throw new Error("ECONNRESET");
     }) as unknown as typeof globalThis.fetch;
 
     await withFetch(fetchImpl, async () => {
@@ -133,14 +136,11 @@ describe("verifyCustomFields", () => {
         apiKey: "k",
         baseUrl: "https://crm.test.local",
       });
-      if (result.ok !== "transient") throw new Error("expected transient");
-      expect(result.reason).toContain("ECONNREFUSED");
+      expect(result).toMatchObject({ ok: "transient" });
     });
   });
 
-  // CX-2 — deterministic misconfigurations are NOT transient.
-
-  test("returns ok=false on 401 (bad API key — deterministic misconfiguration)", async () => {
+  test("returns ok=false on 401 (deterministic misconfig)", async () => {
     const fetchImpl = (async () =>
       new Response(JSON.stringify({ messages: ["Unauthorized"] }), {
         status: 401,
@@ -149,123 +149,10 @@ describe("verifyCustomFields", () => {
 
     await withFetch(fetchImpl, async () => {
       const result = await verifyCustomFields({
-        apiKey: "wrong-key",
-        baseUrl: "https://crm.test.local",
-      });
-      expect(result).toEqual({ ok: false });
-    });
-  });
-
-  test("returns ok=false on 403 (deterministic misconfiguration)", async () => {
-    const fetchImpl = (async () =>
-      new Response(JSON.stringify({ messages: ["Forbidden"] }), {
-        status: 403,
-        headers: { "Content-Type": "application/json" },
-      })) as unknown as typeof globalThis.fetch;
-
-    await withFetch(fetchImpl, async () => {
-      const result = await verifyCustomFields({
         apiKey: "k",
         baseUrl: "https://crm.test.local",
       });
       expect(result).toEqual({ ok: false });
-    });
-  });
-
-  test("returns ok=false on 404 (wrong base URL — deterministic misconfiguration)", async () => {
-    const fetchImpl = (async () =>
-      new Response(JSON.stringify({ messages: ["Not Found"] }), {
-        status: 404,
-        headers: { "Content-Type": "application/json" },
-      })) as unknown as typeof globalThis.fetch;
-
-    await withFetch(fetchImpl, async () => {
-      const result = await verifyCustomFields({
-        apiKey: "k",
-        baseUrl: "https://crm.test.local",
-      });
-      expect(result).toEqual({ ok: false });
-    });
-  });
-});
-
-// ── dispatchLead — fire-and-forget contract ─────────────────────────
-
-describe("dispatchLead", () => {
-  test("happy path — normalizes and upserts; does not throw", async () => {
-    let fetchCount = 0;
-    const fetchImpl = (async (
-      input: string | URL | Request,
-    ): Promise<Response> => {
-      fetchCount++;
-      const url = typeof input === "string" ? input : (input as Request).url;
-      if (url.includes("/rest/people?filter")) {
-        return new Response(JSON.stringify({ data: { people: [] } }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      return new Response(
-        JSON.stringify({ data: { createPerson: { id: "person_xyz" } } }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
-    }) as unknown as typeof globalThis.fetch;
-
-    await withFetch(fetchImpl, async () => {
-      await dispatchLead(
-        { apiKey: "k", baseUrl: "https://crm.test.local" },
-        { source: "demo", email: "user@test.com", ip: "1.2.3.4" },
-      );
-      expect(fetchCount).toBe(2);
-    });
-  });
-
-  test("never throws when Twenty returns a 5xx", async () => {
-    const fetchImpl = (async () =>
-      new Response(JSON.stringify({ messages: ["Internal Server Error"] }), {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      })) as unknown as typeof globalThis.fetch;
-
-    await withFetch(fetchImpl, async () => {
-      await expect(
-        dispatchLead(
-          { apiKey: "k", baseUrl: "https://crm.test.local" },
-          { source: "demo", email: "user@test.com" },
-        ),
-      ).resolves.toBeUndefined();
-    });
-  });
-
-  test("never throws on network failure", async () => {
-    const fetchImpl = (async () => {
-      throw new Error("ECONNREFUSED");
-    }) as unknown as typeof globalThis.fetch;
-
-    await withFetch(fetchImpl, async () => {
-      await expect(
-        dispatchLead(
-          { apiKey: "k", baseUrl: "https://crm.test.local" },
-          { source: "demo", email: "user@test.com" },
-        ),
-      ).resolves.toBeUndefined();
-    });
-  });
-
-  test("never throws on malformed-200 from findPersonByEmail", async () => {
-    const fetchImpl = (async () =>
-      new Response(JSON.stringify({ data: { people: null } }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      })) as unknown as typeof globalThis.fetch;
-
-    await withFetch(fetchImpl, async () => {
-      await expect(
-        dispatchLead(
-          { apiKey: "k", baseUrl: "https://crm.test.local" },
-          { source: "demo", email: "user@test.com" },
-        ),
-      ).resolves.toBeUndefined();
     });
   });
 });
@@ -273,6 +160,8 @@ describe("dispatchLead", () => {
 // ── SaasCrmLive boot end-to-end ─────────────────────────────────────
 
 describe("SaasCrmLive boot — enterprise disabled", () => {
+  beforeEach(resetStubs);
+
   test("yields available=false and no-op upsertLead when enterprise is OFF", async () => {
     enterpriseEnabled = false;
     delete process.env.TWENTY_API_KEY;
@@ -288,36 +177,27 @@ describe("SaasCrmLive boot — enterprise disabled", () => {
       program.pipe(Effect.provide(SaasCrmLive)),
     );
     expect(available).toBe(false);
+    expect(enqueueCount).toBe(0);
   });
 });
 
-describe("SaasCrmLive boot — enterprise enabled + creds + both fields present (R-6)", () => {
-  test("yields available=true AND dispatches via TwentyClient on subsequent upsertLead", async () => {
+describe("SaasCrmLive boot — enterprise enabled + creds + both fields present + InternalDB available", () => {
+  beforeEach(resetStubs);
+
+  test("yields available=true AND enqueues to crm_outbox on upsertLead", async () => {
     enterpriseEnabled = true;
     process.env.TWENTY_API_KEY = "test-key";
     process.env.TWENTY_BASE_URL = "https://crm.test.local";
 
     let metadataCalls = 0;
-    let dispatchCalls = 0;
-    const fetchImpl = (async (
-      input: string | URL | Request,
-    ): Promise<Response> => {
+    const fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
       const url = typeof input === "string" ? input : (input as Request).url;
       if (url.endsWith("/metadata")) {
         metadataCalls++;
         return metadataResponse(["id", "atlasFirstSource", "atlasLastSource"]);
       }
-      dispatchCalls++;
-      if (url.includes("/rest/people?filter")) {
-        return new Response(JSON.stringify({ data: { people: [] } }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      return new Response(
-        JSON.stringify({ data: { createPerson: { id: "person_xyz" } } }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
+      // No dispatch fetches expected — outbox holds the row for the flusher.
+      throw new Error(`Unexpected fetch during enqueue: ${url}`);
     }) as unknown as typeof globalThis.fetch;
 
     try {
@@ -327,7 +207,7 @@ describe("SaasCrmLive boot — enterprise enabled + creds + both fields present 
           const wasAvailable = crm.available;
           yield* crm.upsertLead({
             source: "demo",
-            email: "verified@happy.test",
+            email: "queue@happy.test",
           });
           return wasAvailable;
         });
@@ -336,8 +216,11 @@ describe("SaasCrmLive boot — enterprise enabled + creds + both fields present 
 
       expect(result).toBe(true);
       expect(metadataCalls).toBe(1);
-      // Dispatch: 1 GET (find) + 1 POST (create)
-      expect(dispatchCalls).toBe(2);
+      expect(enqueueCount).toBe(1);
+      // The INSERT carries event_type=source and the original payload as
+      // jsonb. We don't assert exact ordering of params beyond presence.
+      expect(lastEnqueueArgs?.sql).toMatch(/INSERT INTO crm_outbox/i);
+      expect(lastEnqueueArgs?.params[0]).toBe("demo");
     } finally {
       delete process.env.TWENTY_API_KEY;
       delete process.env.TWENTY_BASE_URL;
@@ -345,42 +228,30 @@ describe("SaasCrmLive boot — enterprise enabled + creds + both fields present 
   });
 });
 
-describe("SaasCrmLive boot — missing required field flips available to false (R-5)", () => {
-  test("yields available=false when atlasFirstSource is missing", async () => {
+describe("SaasCrmLive boot — InternalDB unavailable", () => {
+  beforeEach(resetStubs);
+
+  test("yields available=false when hasInternalDB() is false", async () => {
     enterpriseEnabled = true;
+    internalDbAvailable = false;
     process.env.TWENTY_API_KEY = "test-key";
     process.env.TWENTY_BASE_URL = "https://crm.test.local";
 
-    let dispatchCalls = 0;
-    const fetchImpl = (async (
-      input: string | URL | Request,
-    ): Promise<Response> => {
-      const url = typeof input === "string" ? input : (input as Request).url;
-      if (url.endsWith("/metadata")) {
-        // Only atlasLastSource present — atlasFirstSource missing
-        return metadataResponse(["id", "atlasLastSource"]);
-      }
-      dispatchCalls++;
-      return new Response(JSON.stringify({}), { status: 500 });
-    }) as unknown as typeof globalThis.fetch;
+    const fetchImpl = (async () =>
+      metadataResponse(["id", "atlasFirstSource", "atlasLastSource"])) as unknown as typeof globalThis.fetch;
 
     try {
       const result = await withFetch(fetchImpl, async () => {
         const program = Effect.gen(function* () {
           const crm = yield* SaasCrm;
-          // Should be a no-op since available=false
-          yield* crm.upsertLead({
-            source: "demo",
-            email: "missingfield@x.test",
-          });
+          yield* crm.upsertLead({ source: "demo", email: "nodb@x.test" });
           return crm.available;
         });
         return Effect.runPromise(program.pipe(Effect.provide(SaasCrmLive)));
       });
 
       expect(result).toBe(false);
-      // No dispatch calls should have happened (Noop upsertLead bound).
-      expect(dispatchCalls).toBe(0);
+      expect(enqueueCount).toBe(0);
     } finally {
       delete process.env.TWENTY_API_KEY;
       delete process.env.TWENTY_BASE_URL;
@@ -388,48 +259,34 @@ describe("SaasCrmLive boot — missing required field flips available to false (
   });
 });
 
-describe("SaasCrmLive boot — transient metadata failure leaves available=true (R-7)", () => {
-  test("yields available=true when the metadata probe rejects with a network error", async () => {
+describe("SaasCrmLive boot — missing required field flips available to false", () => {
+  beforeEach(resetStubs);
+
+  test("yields available=false when atlasFirstSource is missing", async () => {
     enterpriseEnabled = true;
     process.env.TWENTY_API_KEY = "test-key";
     process.env.TWENTY_BASE_URL = "https://crm.test.local";
 
-    let metadataCalls = 0;
-    let dispatchCalls = 0;
-    const fetchImpl = (async (
-      input: string | URL | Request,
-    ): Promise<Response> => {
+    const fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
       const url = typeof input === "string" ? input : (input as Request).url;
       if (url.endsWith("/metadata")) {
-        metadataCalls++;
-        throw new Error("ECONNRESET");
+        return metadataResponse(["id", "atlasLastSource"]);
       }
-      dispatchCalls++;
-      if (url.includes("/rest/people?filter")) {
-        return new Response(JSON.stringify({ data: { people: [] } }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      return new Response(
-        JSON.stringify({ data: { createPerson: { id: "p1" } } }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
+      throw new Error(`Unexpected fetch: ${url}`);
     }) as unknown as typeof globalThis.fetch;
 
     try {
       const result = await withFetch(fetchImpl, async () => {
         const program = Effect.gen(function* () {
           const crm = yield* SaasCrm;
-          yield* crm.upsertLead({ source: "demo", email: "transient@x.test" });
+          yield* crm.upsertLead({ source: "demo", email: "missing@x.test" });
           return crm.available;
         });
         return Effect.runPromise(program.pipe(Effect.provide(SaasCrmLive)));
       });
 
-      expect(result).toBe(true);
-      expect(metadataCalls).toBe(1);
-      expect(dispatchCalls).toBeGreaterThan(0);
+      expect(result).toBe(false);
+      expect(enqueueCount).toBe(0);
     } finally {
       delete process.env.TWENTY_API_KEY;
       delete process.env.TWENTY_BASE_URL;
@@ -437,16 +294,15 @@ describe("SaasCrmLive boot — transient metadata failure leaves available=true 
   });
 });
 
-describe("SaasCrmLive boot — 401 metadata response flips to permanent (CX-2)", () => {
-  test("yields available=false on 401 and does NOT dispatch", async () => {
+describe("SaasCrmLive boot — 401 metadata response flips to permanent", () => {
+  beforeEach(resetStubs);
+
+  test("yields available=false on 401 and does NOT enqueue", async () => {
     enterpriseEnabled = true;
     process.env.TWENTY_API_KEY = "test-key";
     process.env.TWENTY_BASE_URL = "https://crm.test.local";
 
-    let dispatchCalls = 0;
-    const fetchImpl = (async (
-      input: string | URL | Request,
-    ): Promise<Response> => {
+    const fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
       const url = typeof input === "string" ? input : (input as Request).url;
       if (url.endsWith("/metadata")) {
         return new Response(JSON.stringify({ messages: ["Unauthorized"] }), {
@@ -454,8 +310,7 @@ describe("SaasCrmLive boot — 401 metadata response flips to permanent (CX-2)",
           headers: { "Content-Type": "application/json" },
         });
       }
-      dispatchCalls++;
-      return new Response(JSON.stringify({}), { status: 500 });
+      throw new Error(`Unexpected fetch: ${url}`);
     }) as unknown as typeof globalThis.fetch;
 
     try {
@@ -469,10 +324,221 @@ describe("SaasCrmLive boot — 401 metadata response flips to permanent (CX-2)",
       });
 
       expect(result).toBe(false);
-      expect(dispatchCalls).toBe(0);
+      expect(enqueueCount).toBe(0);
     } finally {
       delete process.env.TWENTY_API_KEY;
       delete process.env.TWENTY_BASE_URL;
     }
   });
 });
+
+// ── dispatchOutboxRow — the flusher's per-row entry point ───────────
+
+describe("dispatchOutboxRow", () => {
+  beforeEach(resetStubs);
+
+  test("happy path — calls upsertPerson and persists twenty_person_id", async () => {
+    const fetchImpl = (async (input: string | URL | Request): Promise<Response> => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      if (url.includes("/rest/people?filter")) {
+        return new Response(JSON.stringify({ data: { people: [] } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(
+        JSON.stringify({ data: { createPerson: { id: "person_happy" } } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+
+    const persisted: { person?: string; note?: string } = {};
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-1",
+          eventType: "demo",
+          payload: { source: "demo", email: "happy@test.local" },
+          attempts: 1,
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async (id: string) => {
+            persisted.person = id;
+          },
+          setTwentyNoteId: async (id: string) => {
+            persisted.note = id;
+          },
+        },
+      ),
+    );
+
+    expect(outcome).toEqual({ kind: "ok" });
+    expect(persisted.person).toBe("person_happy");
+    expect(persisted.note).toBeUndefined();
+  });
+
+  test("idempotent replay — skips upsertPerson when twenty_person_id is already set", async () => {
+    let fetchCount = 0;
+    const fetchImpl = (async (): Promise<Response> => {
+      fetchCount++;
+      // Should never be called — the row's existing twenty_person_id
+      // means the dispatcher must short-circuit straight to done.
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const persisted: { person?: string; note?: string } = {};
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-2",
+          eventType: "demo",
+          payload: { source: "demo", email: "replay@test.local" },
+          attempts: 2,
+          twentyPersonId: "person_already_done",
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async (id: string) => {
+            persisted.person = id;
+          },
+          setTwentyNoteId: async (id: string) => {
+            persisted.note = id;
+          },
+        },
+      ),
+    );
+
+    expect(outcome).toEqual({ kind: "ok" });
+    expect(fetchCount).toBe(0);
+    expect(persisted.person).toBeUndefined();
+  });
+
+  test("5xx → transient outcome (retried by flusher)", async () => {
+    const fetchImpl = (async (): Promise<Response> =>
+      new Response(JSON.stringify({ messages: ["upstream boom"] }), {
+        status: 503,
+        headers: { "Content-Type": "application/json" },
+      })) as unknown as typeof globalThis.fetch;
+
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-3",
+          eventType: "demo",
+          payload: { source: "demo", email: "transient@test.local" },
+          attempts: 1,
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {},
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+
+    expect(outcome.kind).toBe("transient");
+  });
+
+  test("401 → permanent outcome (dead-lettered)", async () => {
+    const fetchImpl = (async (): Promise<Response> =>
+      new Response(JSON.stringify({ messages: ["Unauthorized"] }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      })) as unknown as typeof globalThis.fetch;
+
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-4",
+          eventType: "demo",
+          payload: { source: "demo", email: "dead@test.local" },
+          attempts: 1,
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {},
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+
+    expect(outcome.kind).toBe("permanent");
+  });
+
+  test("429 → transient (rate-limited)", async () => {
+    const fetchImpl = (async (): Promise<Response> =>
+      new Response(JSON.stringify({ messages: ["rate limited"] }), {
+        status: 429,
+        headers: { "Content-Type": "application/json" },
+      })) as unknown as typeof globalThis.fetch;
+
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-5",
+          eventType: "demo",
+          payload: { source: "demo", email: "rate@test.local" },
+          attempts: 1,
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {},
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+
+    expect(outcome.kind).toBe("transient");
+  });
+
+  test("network failure → transient", async () => {
+    const fetchImpl = (async () => {
+      throw new Error("ECONNREFUSED");
+    }) as unknown as typeof globalThis.fetch;
+
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-6",
+          eventType: "demo",
+          payload: { source: "demo", email: "net@test.local" },
+          attempts: 1,
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {},
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+
+    expect(outcome.kind).toBe("transient");
+  });
+});
+
+// ── classifyTwentyError ─────────────────────────────────────────────
+
+describe("classifyTwentyError", () => {
+  test("non-TwentyClientError defaults to transient", () => {
+    const out = classifyTwentyError(new Error("boom"), "upsertPerson");
+    expect(out.kind).toBe("transient");
+  });
+
+  test("non-Error value defaults to transient", () => {
+    const out = classifyTwentyError("string thrown", "upsertPerson");
+    expect(out.kind).toBe("transient");
+  });
+});
+

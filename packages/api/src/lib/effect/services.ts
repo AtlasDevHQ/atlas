@@ -2423,12 +2423,27 @@ export interface SaasCrmShape {
    */
   readonly available: boolean;
   /**
-   * Fire-and-forget upsert of a lead into the Atlas SaaS CRM. Errors
-   * are swallowed inside the layer — callers (notably `captureDemoLead`)
-   * must never block on or propagate CRM failures back to the HTTP
-   * response. Returns success even when `available === false` (no-op).
+   * Enqueue a lead onto the `crm_outbox` for dispatch by the flusher
+   * (slice 2 of 1.6.0, #2729). Errors are swallowed inside the layer
+   * — callers (notably `captureDemoLead`) must never block on or
+   * propagate CRM failures back to the HTTP response. Returns success
+   * even when `available === false` (no-op).
    */
   readonly upsertLead: (input: SaasCrmLeadInput) => Effect.Effect<void>;
+  /**
+   * Per-row dispatcher the scheduler-backed flusher calls inside
+   * `flushBatch`. `null` when the layer is unavailable (enterprise off,
+   * credentials missing, etc.) — the flusher skips wiring in that
+   * case. Defined here so `lib/effect/layers.ts:makeSchedulerLive` can
+   * `yield* SaasCrm` to fetch it without importing from `@atlas/ee`
+   * (the `core → ee` boundary is enforced by `check-ee-imports.sh`).
+   */
+  readonly dispatcher:
+    | ((
+        row: import("@atlas/api/lib/lead-outbox").ClaimedOutboxRow,
+        persist: import("@atlas/api/lib/lead-outbox").OutboxPersistHelpers,
+      ) => Promise<import("@atlas/api/lib/lead-outbox").DispatchOutcome>)
+    | null;
 }
 
 export class SaasCrm extends Context.Tag("SaasCrm")<SaasCrm, SaasCrmShape>() {}
@@ -2437,6 +2452,7 @@ export class SaasCrm extends Context.Tag("SaasCrm")<SaasCrm, SaasCrmShape>() {}
 export const NoopSaasCrmLayer: Layer.Layer<SaasCrm> = Layer.succeed(SaasCrm, {
   available: false,
   upsertLead: () => Effect.void,
+  dispatcher: null,
 } satisfies SaasCrmShape);
 
 // ── Aggregate no-op default Layer ────────────────────────────────────

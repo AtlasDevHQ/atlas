@@ -36,7 +36,7 @@
 import { Context, Duration, Effect, Fiber, Layer, Schedule } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
-import { InternalDB, makeInternalDBLive, hasInternalDB } from "@atlas/api/lib/db/internal";
+import { InternalDB, makeInternalDBLive, hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { assertSaasPlatformEmailIsResend } from "@atlas/api/lib/email/dpa-guard";
 import {
   EnterpriseGuardLive,
@@ -50,7 +50,14 @@ import {
 } from "./saas-guards";
 import { readSaasEnv } from "./saas-env";
 import { EnterpriseLayer, type EnterpriseSubsystem } from "./enterprise-layer";
-import { AuditPurgeScheduler } from "./services";
+import { AuditPurgeScheduler, SaasCrm } from "./services";
+import {
+  recoverInFlight as recoverOutboxInFlight,
+  flushBatch as flushOutboxBatch,
+  getTickIntervalMs as getOutboxTickIntervalMs,
+  FLUSH_BATCH_LIMIT as OUTBOX_FLUSH_BATCH_LIMIT,
+  type OutboxDB,
+} from "@atlas/api/lib/lead-outbox";
 
 const log = createLogger("effect:layers");
 
@@ -998,7 +1005,7 @@ export class Scheduler extends Context.Tag("Scheduler")<
  */
 export function makeSchedulerLive(
   config: ResolvedConfig,
-): Layer.Layer<Scheduler, never, AuditPurgeScheduler> {
+): Layer.Layer<Scheduler, never, AuditPurgeScheduler | SaasCrm> {
   return Layer.scoped(
     Scheduler,
     Effect.gen(function* () {
@@ -1392,6 +1399,106 @@ export function makeSchedulerLive(
         ),
       );
       yield* Effect.addFinalizer(() => Fiber.interrupt(subProcessorFiber));
+
+      // ── Periodic fiber: SaaS CRM outbox flusher (#2729) ─────────────
+      // Slice 2 of 1.6.0. The flusher polls `crm_outbox` for pending /
+      // due rows, claims them via single-statement UPDATE … RETURNING,
+      // and hands each to the dispatcher Tag-bound by `SaasCrmLive`.
+      // Skipped when SaasCrm has no dispatcher (self-hosted, missing
+      // creds, no internal DB, or boot verification failure).
+      const saasCrm = yield* SaasCrm;
+      const outboxDispatcher = saasCrm.dispatcher;
+      if (outboxDispatcher && hasInternalDB()) {
+        const outboxDb: OutboxDB = { query: internalQuery };
+
+        // Startup recovery: any `in_flight` row at boot is the carcass
+        // of a crash mid-dispatch. Reset to `pending` BEFORE the tick
+        // starts so the very first claim picks them up.
+        yield* Effect.tryPromise({
+          try: (): Promise<number> => recoverOutboxInFlight(outboxDb),
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(
+          Effect.tap((count: number) =>
+            Effect.sync(() => {
+              if (count > 0) {
+                log.warn(
+                  { recovered: count, event: "lead_outbox.startup_recovery" },
+                  "Reset stranded in_flight crm_outbox rows to pending at boot",
+                );
+              }
+            }),
+          ),
+          Effect.catchAll((err) =>
+            Effect.sync(() => {
+              log.error(
+                { err: errorMessage(err), event: "lead_outbox.startup_recovery_failed" },
+                "Outbox startup recovery failed — stranded in_flight rows will block until next restart",
+              );
+            }),
+          ),
+        );
+
+        const outboxTickIntervalMs = getOutboxTickIntervalMs();
+        const outboxTick = Effect.tryPromise({
+          try: () =>
+            flushOutboxBatch(outboxDb, outboxDispatcher, OUTBOX_FLUSH_BATCH_LIMIT),
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(
+          Effect.catchAll((err) =>
+            Effect.sync(() => {
+              log.warn(
+                { err: errorMessage(err), event: "lead_outbox.tick_failed" },
+                "Outbox flush tick failed — will retry on next interval",
+              );
+            }),
+          ),
+        );
+        const outboxFiber = yield* Effect.fork(
+          outboxTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(outboxTickIntervalMs)))),
+        );
+        yield* Effect.addFinalizer(() =>
+          Effect.gen(function* () {
+            yield* Fiber.interrupt(outboxFiber);
+            // Final recovery sweep: a SIGTERM mid-flush leaves the
+            // active row in `in_flight` until the next pod boot. Reset
+            // here so the replacement pod picks it up on its first
+            // tick rather than waiting for the next restart cycle.
+            yield* Effect.tryPromise({
+              try: (): Promise<number> => recoverOutboxInFlight(outboxDb),
+              catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+            }).pipe(
+              Effect.tap((count: number) =>
+                Effect.sync(() => {
+                  log.info(
+                    { recovered: count, event: "lead_outbox.shutdown_recovery" },
+                    "Outbox in_flight rows reset on shutdown",
+                  );
+                }),
+              ),
+              Effect.catchAll((err) =>
+                Effect.sync(() => {
+                  log.warn(
+                    { err: errorMessage(err), event: "lead_outbox.shutdown_recovery_failed" },
+                    "Outbox shutdown recovery sweep failed — next boot will mop up",
+                  );
+                }),
+              ),
+            );
+          }),
+        );
+        log.info(
+          { intervalMs: outboxTickIntervalMs, batchLimit: OUTBOX_FLUSH_BATCH_LIMIT },
+          "CRM outbox flusher started",
+        );
+      } else {
+        log.debug(
+          {
+            hasDispatcher: outboxDispatcher !== null,
+            hasInternalDB: hasInternalDB(),
+          },
+          "CRM outbox flusher not started — SaasCrm unavailable or internal DB absent",
+        );
+      }
 
       // --- Finalizer: stop main scheduler ---
       yield* Effect.addFinalizer(() =>

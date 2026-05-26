@@ -116,8 +116,9 @@ describe("runMigrations", () => {
     // + 0100 (add 'whatsapp' to approval-surface CHECK enums + promote
     //   whatsapp catalog row to 'available', #2753)
     // + 0101 (add 'gchat' to approval-surface CHECK enums + promote
-    //   gchat catalog row to 'available', #2754) = 102.
-    expect(count).toBe(102);
+    //   gchat catalog row to 'available', #2754)
+    // + 0102 (crm_outbox durable queue, #2729) = 103.
+    expect(count).toBe(103);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -248,6 +249,7 @@ describe("runMigrations", () => {
         "0099_approval_surface_discord.sql",
         "0100_approval_surface_whatsapp.sql",
         "0101_approval_surface_gchat.sql",
+        "0102_crm_outbox.sql",
       ],
     });
 

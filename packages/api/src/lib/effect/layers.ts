@@ -53,14 +53,20 @@ import { EnterpriseLayer, type EnterpriseSubsystem } from "./enterprise-layer";
 import { AuditPurgeScheduler, SaasCrm } from "./services";
 import {
   recoverInFlight as recoverOutboxInFlight,
-  flushBatch as flushOutboxBatch,
+  runOutboxTick,
   getTickIntervalMs as getOutboxTickIntervalMs,
+  getWarnThreshold as getOutboxWarnThreshold,
+  OutboxWarnRateLimiter,
   FLUSH_BATCH_LIMIT as OUTBOX_FLUSH_BATCH_LIMIT,
   STARTUP_RECOVERY_STALE_MS as OUTBOX_STARTUP_STALE_MS,
   SHUTDOWN_RECOVERY_STALE_MS as OUTBOX_SHUTDOWN_STALE_MS,
   type OutboxDB,
   type RecoveryResult as OutboxRecoveryResult,
 } from "@atlas/api/lib/lead-outbox";
+import {
+  crmOutboxPendingCount,
+  crmOutboxDeadCount,
+} from "@atlas/api/lib/metrics";
 
 const log = createLogger("effect:layers");
 
@@ -1480,12 +1486,24 @@ export function makeSchedulerLive(
         );
 
         const outboxTickIntervalMs = getOutboxTickIntervalMs();
+        // One rate limiter per Layer scope — `lastWarnAt` lives on the
+        // instance, so a sustained 101+ pending depth fires exactly
+        // one log.warn per minute regardless of how many ticks elapse.
+        const outboxWarnLimiter = new OutboxWarnRateLimiter(getOutboxWarnThreshold());
         const outboxTick = Effect.tryPromise({
           try: () =>
-            flushOutboxBatch(outboxDb, outboxDispatcher, OUTBOX_FLUSH_BATCH_LIMIT),
+            runOutboxTick({
+              db: outboxDb,
+              dispatcher: outboxDispatcher,
+              batchLimit: OUTBOX_FLUSH_BATCH_LIMIT,
+              limiter: outboxWarnLimiter,
+              pendingGauge: crmOutboxPendingCount,
+              deadGauge: crmOutboxDeadCount,
+              logger: log,
+            }),
           catch: (err) => (err instanceof Error ? err : new Error(String(err))),
         }).pipe(
-          Effect.tap((result) =>
+          Effect.tap(({ flush: result }) =>
             Effect.sync(() => {
               // Only log non-empty ticks so an idle queue doesn't fill
               // the log with `claimed: 0`. The per-row dead-letter /

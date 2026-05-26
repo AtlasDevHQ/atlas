@@ -34,3 +34,23 @@ export {
 } from "./backoff";
 
 export { classifyHttpStatus, type Classification } from "./classify";
+
+export {
+  queryDepthSnapshot,
+  getWarnThreshold,
+  OutboxWarnRateLimiter,
+  DEFAULT_WARN_THRESHOLD,
+  WARN_INTERVAL_MS,
+  MIN_WARN_THRESHOLD,
+  MAX_WARN_THRESHOLD,
+  type OutboxDepthSnapshot,
+  type WarnDecision,
+} from "./depth";
+
+export {
+  runOutboxTick,
+  type OutboxTickDeps,
+  type OutboxTickResult,
+  type GaugeRecorder,
+  type OutboxTickLogger,
+} from "./tick";

@@ -16,7 +16,7 @@
  * Grafana board need to extend telemetry.ts with an OTLP metrics exporter.
  */
 
-import { metrics, type Counter, type Histogram } from "@opentelemetry/api";
+import { metrics, type Counter, type Gauge, type Histogram } from "@opentelemetry/api";
 
 const meter = metrics.getMeter("@atlas/api");
 
@@ -192,5 +192,42 @@ export const mcpPromptCalls: Counter = meter.createCounter(
   {
     description:
       "MCP prompts surface dispatch count by method + prompt + source",
+  },
+);
+
+/**
+ * `atlas.crm_outbox.pending_count` — current `crm_outbox` rows in
+ * `pending` status. Updated by the SaaS-CRM outbox flusher (#2734) on
+ * every tick, BEFORE dispatch, so the value reflects the queue depth
+ * an operator sees between ticks.
+ *
+ * No `workspace.id` attribute — the flusher is process-global and the
+ * queue is single-tenant (SaaS-only; the self-hosted Noop SaasCrm
+ * never starts a flusher fiber so no observations land here).
+ *
+ * A sustained value past `ATLAS_CRM_OUTBOX_WARN_THRESHOLD` (default
+ * 100) also fires a rate-limited `log.warn` with the oldest pending
+ * row's age — pair the two signals in dashboards.
+ */
+export const crmOutboxPendingCount: Gauge = meter.createGauge(
+  "atlas.crm_outbox.pending_count",
+  {
+    description:
+      "Current crm_outbox rows in pending status, observed per flusher tick (#2734)",
+  },
+);
+
+/**
+ * `atlas.crm_outbox.dead_count` — current `crm_outbox` rows in `dead`
+ * status. A monotonically-growing value means the dispatcher is
+ * surfacing permanent failures (or exhausting the retry budget). For
+ * per-row triage, join with the `lead_outbox.dead_letter_permanent` /
+ * `_exhausted` log events emitted by slice 2 (#2729).
+ */
+export const crmOutboxDeadCount: Gauge = meter.createGauge(
+  "atlas.crm_outbox.dead_count",
+  {
+    description:
+      "Current crm_outbox rows in dead status, observed per flusher tick (#2734)",
   },
 );

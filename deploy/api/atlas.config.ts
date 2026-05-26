@@ -509,17 +509,16 @@ export default defineConfig({
         "Query Jira issues via JQL. Connects through your operator's Atlassian OAuth 2.0 (3LO) App and refreshes access tokens automatically.",
       min_plan: "starter",
     },
-    {
-      slug: "salesforce",
-      type: "integration",
-      install_model: "oauth",
-      enabled: true,
-      saas_eligible: true,
-      name: "Salesforce",
-      description:
-        "Query Salesforce objects via SOQL. Connects through your operator's Connected App and refreshes access tokens automatically.",
-      min_plan: "starter",
-    },
+    // Salesforce is intentionally NOT declared here. Per ADR-0006 §"For
+    // admin UX" (#2859), Salesforce lives exclusively on the Datasource
+    // pillar — seeded by `seed-builtin-datasource-catalog.ts` with
+    // `pillar='datasource'`, surfaced at `/admin/connections`. The
+    // pre-1.5.3 integrations-catalog stub that lived here clobbered the
+    // datasource row's pillar on every boot (the 0092 sync trigger then
+    // flipped it to 'action'); 0097 dropped that trigger and exposed the
+    // double-seed as a NOT NULL violation. Future Salesforce-as-Action
+    // capability ships as a separate slug per the multi-pillar rule
+    // (ADR-0006 §"Multi-pillar systems").
     // ── Form-based integrations (1.5.2 slice 7 — #2660) ─────────────
     // First form-based catalog entry. `configSchema` declares the SMTP
     // fields admins see in the install modal; the server-side Zod

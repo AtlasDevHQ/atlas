@@ -11035,6 +11035,17 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Outbox enqueue failed (Postgres unreachable) — caller should retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
           }
         },
         "operationId": "postContact"

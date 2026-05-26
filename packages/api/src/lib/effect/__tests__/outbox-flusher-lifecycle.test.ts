@@ -139,6 +139,49 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
     expect(recoveryCalls.length).toBe(0);
   });
 
+  test("forked tick fiber actually runs (regression: #2864 fork→forkScoped)", async () => {
+    // Regression test for the #2864 silent stall: the outbox
+    // flusher's tick fiber was spawned with `Effect.fork`, which links
+    // the child fiber to the gen's parent fiber and interrupts it the
+    // moment the gen returns. Result: zero ticks from boot, indefinitely.
+    // `Effect.forkScoped` binds to the Layer scope instead.
+    //
+    // This test asserts the fiber actually runs by checking that the
+    // tick's queryDepthSnapshot SELECT fires within a window slightly
+    // longer than the tick interval. Without forkScoped this test would
+    // see zero depth-snapshot queries — proving the regression canary.
+    process.env.ATLAS_CRM_OUTBOX_TICK_SECONDS = "1";
+    try {
+      const config = {} as Parameters<typeof makeSchedulerLive>[0];
+      const baseLayer = makeSchedulerLive(config);
+      const deps = Layer.mergeAll(
+        NoopEnterpriseDefaultsLayer,
+        makeAvailableSaasCrmLayer(),
+      );
+      const layer = baseLayer.pipe(Layer.provide(deps));
+
+      const rt = ManagedRuntime.make(layer);
+      await Effect.runPromise(rt.runtimeEffect);
+
+      // Wait > 2× tick interval (1s minimum-clamped) so the first
+      // scheduled iteration of `Effect.repeat(Schedule.spaced)` has
+      // comfortable slack on contended CI runners. The depth snapshot
+      // SELECT is the tick's first observable side effect.
+      await new Promise((r) => setTimeout(r, 2_500));
+      await rt.dispose();
+
+      // queryDepthSnapshot reads from crm_outbox without an in_flight
+      // filter — distinguishes it from the recovery sweep queries.
+      const depthSnapshotCalls = sqlLog.filter(
+        (q) =>
+          /FROM crm_outbox/i.test(q.sql) && !/WHERE status = 'in_flight'/i.test(q.sql),
+      );
+      expect(depthSnapshotCalls.length).toBeGreaterThan(0);
+    } finally {
+      delete process.env.ATLAS_CRM_OUTBOX_TICK_SECONDS;
+    }
+  });
+
   test("Layer skips flusher wiring when SaasCrm.available is false", async () => {
     const noopSaasCrm: Layer.Layer<SaasCrmTag> = Layer.succeed(SaasCrm, {
       available: false,

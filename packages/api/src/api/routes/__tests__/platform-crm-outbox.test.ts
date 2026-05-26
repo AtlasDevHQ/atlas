@@ -195,7 +195,7 @@ app.route("/api/v1/platform/crm-outbox", platformCrmOutbox);
 // ── Fixture rows ────────────────────────────────────────────────────
 
 const SAMPLE_ROW = {
-  id: "row-1",
+  id: "00000000-0000-4000-8000-000000000001",
   created_at: "2026-05-26T10:00:00.000Z",
   event_type: "demo",
   status: "dead",
@@ -261,7 +261,7 @@ describe("GET /api/v1/platform/crm-outbox", () => {
     const body = (await res.json()) as { rows: unknown[] };
     expect(body.rows).toHaveLength(1);
     expect(body.rows[0]).toMatchObject({
-      id: "row-1",
+      id: "00000000-0000-4000-8000-000000000001",
       eventType: "demo",
       status: "dead",
       attempts: 3,
@@ -320,40 +320,53 @@ describe("GET /api/v1/platform/crm-outbox", () => {
     expect(body.rows[0]?.lastError).toBe("z".repeat(200) + "…");
   });
 
-  test("list silently ignores invalid since= and falls back to null", async () => {
-    // Documented behaviour: a malformed `since` doesn't 400 — it falls
-    // through to the `IS NULL OR …` predicate as if absent. Pinned so a
-    // future "tighten the parser into a 400" doesn't break the
-    // marketing dashboard URLs operators paste around.
-    queryStub = async () => [];
+  test("list 422 on malformed since=", async () => {
+    // The `ListQuerySchema` enforces RFC-3339 with explicit timezone.
+    // A naïve local string or unparseable input now 422s via
+    // `validationHook` instead of silently falling through, fixing
+    // the timezone-window-shift bug Codex P2 flagged.
     const res = await app.request(
       "http://localhost/api/v1/platform/crm-outbox?since=not-a-date",
     );
-    expect(res.status).toBe(200);
-    expect(queryCalls[0]?.params?.[2]).toBeNull();
+    expect(res.status).toBe(422);
+    expect(queryCalls).toHaveLength(0);
   });
 
-  test("list clampLimit covers every branch", async () => {
-    // Four branches in `clampLimit`: undefined → 100, non-numeric → 100,
-    // ≤0 → 100, >500 → 500. The cap is the only thing standing between
-    // an operator and `LIMIT 9999999` on a multi-million-row outbox.
+  test("list 422 on naïve (no-timezone) since=", async () => {
+    // Naïve "2026-05-26T10:00" is a fingerprint of the
+    // `datetime-local` HTML input — accepting it would re-introduce
+    // the operator-zone window shift. Schema requires `offset: true`.
+    const res = await app.request(
+      "http://localhost/api/v1/platform/crm-outbox?since=2026-05-26T10:00:00",
+    );
+    expect(res.status).toBe(422);
+  });
+
+  test("list 422 on out-of-range limit=", async () => {
+    // Schema bounds: limit ∈ [1, LIST_LIMIT_MAX=500].
+    const res = await app.request(
+      "http://localhost/api/v1/platform/crm-outbox?limit=99999",
+    );
+    expect(res.status).toBe(422);
+  });
+
+  test("list applies default limit when limit= absent", async () => {
     queryStub = async () => [];
-    const cases: Array<[string, number]> = [
-      ["", 100],
-      ["?limit=abc", 100],
-      ["?limit=0", 100],
-      ["?limit=-5", 100],
-      ["?limit=99999", 500],
-      ["?limit=250", 250],
-    ];
-    for (const [qs, expected] of cases) {
-      queryCalls = [];
-      const res = await app.request(
-        `http://localhost/api/v1/platform/crm-outbox${qs}`,
-      );
-      expect(res.status).toBe(200);
-      expect(queryCalls[0]?.params?.[3]).toBe(expected);
-    }
+    const res = await app.request(
+      "http://localhost/api/v1/platform/crm-outbox",
+    );
+    expect(res.status).toBe(200);
+    expect(queryCalls[0]?.params?.[3]).toBe(100);
+  });
+
+  test("list 422 on invalid status= value", async () => {
+    // `z.enum(OUTBOX_STATUSES)` rejects values outside the canonical
+    // tuple. Surfaces a 422 instead of silently falling through to an
+    // unfiltered list.
+    const res = await app.request(
+      "http://localhost/api/v1/platform/crm-outbox?status=nonsense",
+    );
+    expect(res.status).toBe(422);
   });
 
   test("list maps Date-instance timestamps from the pg driver", async () => {
@@ -380,14 +393,6 @@ describe("GET /api/v1/platform/crm-outbox", () => {
     expect(body.rows[0]?.processedAt).toBe("2026-05-26T10:01:00.000Z");
   });
 
-  test("list rejects an invalid status value (treated as no filter)", async () => {
-    queryStub = async () => [];
-    const res = await app.request(
-      "http://localhost/api/v1/platform/crm-outbox?status=nonsense",
-    );
-    expect(res.status).toBe(200);
-    expect(queryCalls[0]?.params?.[0]).toBeNull();
-  });
 });
 
 describe("GET /api/v1/platform/crm-outbox/:id", () => {
@@ -395,7 +400,7 @@ describe("GET /api/v1/platform/crm-outbox/:id", () => {
     const longErr = "y".repeat(500);
     queryStub = async () => [{ ...SAMPLE_DETAIL, last_error: longErr }];
     const res = await app.request(
-      "http://localhost/api/v1/platform/crm-outbox/row-1",
+      "http://localhost/api/v1/platform/crm-outbox/00000000-0000-4000-8000-000000000001",
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -404,7 +409,7 @@ describe("GET /api/v1/platform/crm-outbox/:id", () => {
       fullLastError: string;
       lastError: string;
     };
-    expect(body.id).toBe("row-1");
+    expect(body.id).toBe("00000000-0000-4000-8000-000000000001");
     expect(body.payload).toEqual({
       source: "demo",
       email: "user@example.com",
@@ -420,7 +425,7 @@ describe("GET /api/v1/platform/crm-outbox/:id", () => {
   test("404 detail when the row is not found", async () => {
     queryStub = async () => [];
     const res = await app.request(
-      "http://localhost/api/v1/platform/crm-outbox/missing",
+      "http://localhost/api/v1/platform/crm-outbox/00000000-0000-4000-8000-000000000002",
     );
     expect(res.status).toBe(404);
     const body = (await res.json()) as { error: string };
@@ -440,7 +445,7 @@ describe("POST /api/v1/platform/crm-outbox/:id/retry", () => {
       probeCalls++;
       return [
         {
-          id: "row-1",
+          id: "00000000-0000-4000-8000-000000000001",
           event_type: "demo",
           status: "dead",
           attempts: 3,
@@ -449,7 +454,7 @@ describe("POST /api/v1/platform/crm-outbox/:id/retry", () => {
       ];
     };
     const res = await app.request(
-      "http://localhost/api/v1/platform/crm-outbox/row-1/retry",
+      "http://localhost/api/v1/platform/crm-outbox/00000000-0000-4000-8000-000000000001/retry",
       { method: "POST" },
     );
     expect(res.status).toBe(200);
@@ -469,10 +474,10 @@ describe("POST /api/v1/platform/crm-outbox/:id/retry", () => {
     expect(auditCalls[0]).toMatchObject({
       actionType: "crm_outbox.retry",
       targetType: "crm_outbox",
-      targetId: "row-1",
+      targetId: "00000000-0000-4000-8000-000000000001",
       scope: "platform",
       metadata: {
-        outboxId: "row-1",
+        outboxId: "00000000-0000-4000-8000-000000000001",
         eventType: "demo",
         previousStatus: "dead",
         previousAttempts: 3,
@@ -484,7 +489,7 @@ describe("POST /api/v1/platform/crm-outbox/:id/retry", () => {
   test("404 retry when the row is not found", async () => {
     queryStub = async () => [];
     const res = await app.request(
-      "http://localhost/api/v1/platform/crm-outbox/missing/retry",
+      "http://localhost/api/v1/platform/crm-outbox/00000000-0000-4000-8000-000000000002/retry",
       { method: "POST" },
     );
     expect(res.status).toBe(404);
@@ -494,7 +499,7 @@ describe("POST /api/v1/platform/crm-outbox/:id/retry", () => {
   test("400 retry on a pending row (only `dead` is allowed)", async () => {
     queryStub = async () => [
       {
-        id: "row-1",
+        id: "00000000-0000-4000-8000-000000000001",
         event_type: "demo",
         status: "pending",
         attempts: 1,
@@ -502,7 +507,7 @@ describe("POST /api/v1/platform/crm-outbox/:id/retry", () => {
       },
     ];
     const res = await app.request(
-      "http://localhost/api/v1/platform/crm-outbox/row-1/retry",
+      "http://localhost/api/v1/platform/crm-outbox/00000000-0000-4000-8000-000000000001/retry",
       { method: "POST" },
     );
     expect(res.status).toBe(400);
@@ -515,7 +520,7 @@ describe("POST /api/v1/platform/crm-outbox/:id/retry", () => {
   test("404 retry when SaasCrm.available === false", async () => {
     saasAvailable = false;
     const res = await app.request(
-      "http://localhost/api/v1/platform/crm-outbox/row-1/retry",
+      "http://localhost/api/v1/platform/crm-outbox/00000000-0000-4000-8000-000000000001/retry",
       { method: "POST" },
     );
     expect(res.status).toBe(404);
@@ -531,7 +536,7 @@ describe("POST /api/v1/platform/crm-outbox/:id/retry", () => {
       if (sql.includes("UPDATE crm_outbox")) return [];
       return [
         {
-          id: "row-1",
+          id: "00000000-0000-4000-8000-000000000001",
           event_type: "demo",
           status: "dead",
           attempts: 3,
@@ -540,7 +545,7 @@ describe("POST /api/v1/platform/crm-outbox/:id/retry", () => {
       ];
     };
     const res = await app.request(
-      "http://localhost/api/v1/platform/crm-outbox/row-1/retry",
+      "http://localhost/api/v1/platform/crm-outbox/00000000-0000-4000-8000-000000000001/retry",
       { method: "POST" },
     );
     expect(res.status).toBe(400);
@@ -550,11 +555,11 @@ describe("POST /api/v1/platform/crm-outbox/:id/retry", () => {
     expect(auditCalls[0]).toMatchObject({
       actionType: "crm_outbox.retry",
       targetType: "crm_outbox",
-      targetId: "row-1",
+      targetId: "00000000-0000-4000-8000-000000000001",
       scope: "platform",
       status: "failure",
       metadata: {
-        outboxId: "row-1",
+        outboxId: "00000000-0000-4000-8000-000000000001",
         previousStatus: "dead",
         previousAttempts: 3,
         raceLost: true,
@@ -577,7 +582,7 @@ describe("POST /api/v1/platform/crm-outbox/:id/mark-dead", () => {
       }
       return [
         {
-          id: "row-1",
+          id: "00000000-0000-4000-8000-000000000001",
           event_type: "signup",
           status: "pending",
           attempts: 0,
@@ -586,7 +591,7 @@ describe("POST /api/v1/platform/crm-outbox/:id/mark-dead", () => {
       ];
     };
     const res = await app.request(
-      "http://localhost/api/v1/platform/crm-outbox/row-1/mark-dead",
+      "http://localhost/api/v1/platform/crm-outbox/00000000-0000-4000-8000-000000000001/mark-dead",
       { method: "POST" },
     );
     expect(res.status).toBe(200);
@@ -597,10 +602,10 @@ describe("POST /api/v1/platform/crm-outbox/:id/mark-dead", () => {
     expect(auditCalls[0]).toMatchObject({
       actionType: "crm_outbox.mark_dead",
       targetType: "crm_outbox",
-      targetId: "row-1",
+      targetId: "00000000-0000-4000-8000-000000000001",
       scope: "platform",
       metadata: {
-        outboxId: "row-1",
+        outboxId: "00000000-0000-4000-8000-000000000001",
         eventType: "signup",
         previousStatus: "pending",
         previousAttempts: 0,
@@ -609,33 +614,37 @@ describe("POST /api/v1/platform/crm-outbox/:id/mark-dead", () => {
     });
   });
 
-  test("200 mark-dead on an in_flight row", async () => {
-    queryStub = async (sql) => {
-      if (sql.includes("UPDATE crm_outbox")) {
-        return [{ ...SAMPLE_ROW, status: "dead" }];
-      }
-      return [
-        {
-          id: "row-1",
-          event_type: "demo",
-          status: "in_flight",
-          attempts: 2,
-          last_error: null,
-        },
-      ];
-    };
+  test("400 mark-dead on an in_flight row — not durable (Codex P1)", async () => {
+    // The flusher's terminal commit (`MARK_DONE_SQL` /
+    // `MARK_TRANSIENT_FAIL_SQL`) is gated on `id` only — a manual
+    // dead write during dispatch would be silently overwritten when
+    // the dispatcher returns. The route MUST reject so the contract
+    // ("mark dead stops retries") is durable.
+    queryStub = async () => [
+      {
+        id: "00000000-0000-4000-8000-000000000001",
+        event_type: "demo",
+        status: "in_flight",
+        attempts: 2,
+        last_error: null,
+      },
+    ];
     const res = await app.request(
-      "http://localhost/api/v1/platform/crm-outbox/row-1/mark-dead",
+      "http://localhost/api/v1/platform/crm-outbox/00000000-0000-4000-8000-000000000001/mark-dead",
       { method: "POST" },
     );
-    expect(res.status).toBe(200);
-    expect(auditCalls[0]?.metadata?.previousStatus).toBe("in_flight");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("invalid_state");
+    expect(body.message).toContain("in_flight");
+    expect(queryCalls.filter((q) => q.sql.includes("UPDATE"))).toHaveLength(0);
+    expect(auditCalls).toHaveLength(0);
   });
 
   test("400 mark-dead on a row already dead", async () => {
     queryStub = async () => [
       {
-        id: "row-1",
+        id: "00000000-0000-4000-8000-000000000001",
         event_type: "demo",
         status: "dead",
         attempts: 6,
@@ -643,7 +652,7 @@ describe("POST /api/v1/platform/crm-outbox/:id/mark-dead", () => {
       },
     ];
     const res = await app.request(
-      "http://localhost/api/v1/platform/crm-outbox/row-1/mark-dead",
+      "http://localhost/api/v1/platform/crm-outbox/00000000-0000-4000-8000-000000000001/mark-dead",
       { method: "POST" },
     );
     expect(res.status).toBe(400);
@@ -655,7 +664,7 @@ describe("POST /api/v1/platform/crm-outbox/:id/mark-dead", () => {
   test("400 mark-dead on a row already done", async () => {
     queryStub = async () => [
       {
-        id: "row-1",
+        id: "00000000-0000-4000-8000-000000000001",
         event_type: "demo",
         status: "done",
         attempts: 1,
@@ -663,7 +672,7 @@ describe("POST /api/v1/platform/crm-outbox/:id/mark-dead", () => {
       },
     ];
     const res = await app.request(
-      "http://localhost/api/v1/platform/crm-outbox/row-1/mark-dead",
+      "http://localhost/api/v1/platform/crm-outbox/00000000-0000-4000-8000-000000000001/mark-dead",
       { method: "POST" },
     );
     expect(res.status).toBe(400);
@@ -673,7 +682,7 @@ describe("POST /api/v1/platform/crm-outbox/:id/mark-dead", () => {
   test("404 mark-dead when the row is not found", async () => {
     queryStub = async () => [];
     const res = await app.request(
-      "http://localhost/api/v1/platform/crm-outbox/missing/mark-dead",
+      "http://localhost/api/v1/platform/crm-outbox/00000000-0000-4000-8000-000000000002/mark-dead",
       { method: "POST" },
     );
     expect(res.status).toBe(404);
@@ -682,30 +691,31 @@ describe("POST /api/v1/platform/crm-outbox/:id/mark-dead", () => {
   test("404 mark-dead when SaasCrm.available === false", async () => {
     saasAvailable = false;
     const res = await app.request(
-      "http://localhost/api/v1/platform/crm-outbox/row-1/mark-dead",
+      "http://localhost/api/v1/platform/crm-outbox/00000000-0000-4000-8000-000000000001/mark-dead",
       { method: "POST" },
     );
     expect(res.status).toBe(404);
   });
 
   test("400 race_lost mark-dead — probe sees pending, UPDATE matches zero rows", async () => {
-    // Probe returns `pending` but a concurrent mark-dead (or the
-    // flusher's commit) flipped the row to a terminal state first.
-    // Failure audit must still capture the operator's intent.
+    // Probe returns `pending` but the flusher's claim (a concurrent
+    // claim sweep flipping to in_flight) won the conditional UPDATE
+    // before the operator's write landed. Failure audit must still
+    // capture the operator's intent.
     queryStub = async (sql) => {
       if (sql.includes("UPDATE crm_outbox")) return [];
       return [
         {
-          id: "row-1",
+          id: "00000000-0000-4000-8000-000000000001",
           event_type: "demo",
-          status: "in_flight",
-          attempts: 2,
+          status: "pending",
+          attempts: 0,
           last_error: null,
         },
       ];
     };
     const res = await app.request(
-      "http://localhost/api/v1/platform/crm-outbox/row-1/mark-dead",
+      "http://localhost/api/v1/platform/crm-outbox/00000000-0000-4000-8000-000000000001/mark-dead",
       { method: "POST" },
     );
     expect(res.status).toBe(400);
@@ -716,8 +726,8 @@ describe("POST /api/v1/platform/crm-outbox/:id/mark-dead", () => {
       actionType: "crm_outbox.mark_dead",
       status: "failure",
       metadata: {
-        outboxId: "row-1",
-        previousStatus: "in_flight",
+        outboxId: "00000000-0000-4000-8000-000000000001",
+        previousStatus: "pending",
         raceLost: true,
       },
     });

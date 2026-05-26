@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useQueryStates } from "nuqs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -48,6 +49,7 @@ import {
   CrmOutboxRowDetailSchema,
 } from "@/ui/lib/admin-schemas";
 import type { CrmOutboxRow, OutboxStatus } from "@/ui/lib/types";
+import { crmOutboxSearchParams } from "./search-params";
 import {
   CheckCircle2,
   Inbox,
@@ -120,10 +122,24 @@ export default function CrmOutboxPage() {
 }
 
 function CrmOutboxPageContent() {
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [eventTypeFilter, setEventTypeFilter] = useState("");
-  const [sinceFilter, setSinceFilter] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // URL-backed filter state — `since` carries a UTC ISO timestamp so a
+  // deep-linked URL means the same window regardless of the
+  // operator's local zone. The text-input `<datetime-local>` operates
+  // on a local-time mirror; conversion happens at the seam.
+  const [{ status: statusFilter, eventType: eventTypeFilter, since: sinceUtc, selectedId }, setParams] =
+    useQueryStates(crmOutboxSearchParams);
+  const setStatusFilter = (next: StatusFilter) =>
+    setParams({ status: next });
+  const setEventTypeFilter = (next: string) =>
+    setParams({ eventType: next });
+  const sinceLocal = sinceUtc ? utcIsoToLocalInput(sinceUtc) : "";
+  const setSinceLocal = (local: string) =>
+    setParams({ since: local ? localInputToUtcIso(local) : "" });
+  const setSelectedId = (next: string | null) =>
+    setParams({ selectedId: next });
+
+  // Confirm-dialog state stays local — these are transient UI
+  // primitives, not shareable application state.
   const [retryConfirmId, setRetryConfirmId] = useState<string | null>(null);
   const [markDeadConfirmId, setMarkDeadConfirmId] = useState<string | null>(null);
 
@@ -133,7 +149,7 @@ function CrmOutboxPageContent() {
     const params = new URLSearchParams();
     if (statusFilter !== "all") params.set("status", statusFilter);
     if (eventTypeFilter.trim()) params.set("event_type", eventTypeFilter.trim());
-    if (sinceFilter) params.set("since", sinceFilter);
+    if (sinceUtc) params.set("since", sinceUtc);
     const qs = params.toString();
     return qs ? `/api/v1/platform/crm-outbox?${qs}` : "/api/v1/platform/crm-outbox";
   })();
@@ -234,8 +250,8 @@ function CrmOutboxPageContent() {
           <Input
             id="since-filter"
             type="datetime-local"
-            value={sinceFilter}
-            onChange={(e) => setSinceFilter(e.target.value)}
+            value={sinceLocal}
+            onChange={(e) => setSinceLocal(e.target.value)}
             className="h-8 w-56"
           />
         </div>
@@ -314,7 +330,7 @@ function CrmOutboxPageContent() {
                         <RotateCcw className="size-4" />
                       </Button>
                     ) : null}
-                    {row.status === "pending" || row.status === "in_flight" ? (
+                    {row.status === "pending" ? (
                       <Button
                         variant="ghost"
                         size="sm"
@@ -400,7 +416,7 @@ function CrmOutboxPageContent() {
                     Retry now
                   </Button>
                 ) : null}
-                {detail.status === "pending" || detail.status === "in_flight" ? (
+                {detail.status === "pending" ? (
                   <Button
                     variant="destructive"
                     size="sm"
@@ -466,7 +482,12 @@ function CrmOutboxPageContent() {
             <AlertDialogDescription>
               The flusher will stop retrying this row. Use this when you know
               the upstream dispatch will never succeed (e.g. a malformed
-              payload the dispatcher classification missed).
+              payload the dispatcher classification missed). Only
+              <code>pending</code> rows can be marked dead — wait for any
+              <code>in_flight</code> attempt to settle (the row returns
+              to pending within seconds on transient failure) so the
+              flusher&apos;s commit doesn&apos;t silently overwrite the
+              manual write.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <MutationErrorSurface error={markDeadError} feature="CRM Outbox" />
@@ -510,5 +531,33 @@ function Field({
         {value}
       </div>
     </div>
+  );
+}
+
+// `<input type="datetime-local">` operates on a naïve local-time
+// string ("YYYY-MM-DDTHH:mm"). The API contract requires an RFC-3339
+// timestamp with an explicit timezone offset — Codex P2 flagged that
+// a naïve string would shift the filter window for any operator off
+// the server's local zone. Convert at the seam so the URL state
+// (and therefore the API call) is always unambiguous UTC ISO.
+
+function localInputToUtcIso(local: string): string {
+  if (!local) return "";
+  const ms = Date.parse(local);
+  if (!Number.isFinite(ms)) return "";
+  return new Date(ms).toISOString();
+}
+
+function utcIsoToLocalInput(iso: string): string {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return "";
+  const d = new Date(ms);
+  // datetime-local wants local YYYY-MM-DDTHH:mm with no zone suffix;
+  // pad each component so the browser parses it back into the same
+  // instant.
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}`
   );
 }

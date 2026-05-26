@@ -24,23 +24,14 @@
  *                          `last_error`; keeps `attempts` so backoff resumes
  *                          from where it left off — no foot-gun infinite
  *                          retry loop on a permanently-broken upstream)
- * - POST   /:id/mark-dead — escape hatch: flip a pending/in_flight row to
- *                          `dead` so the flusher stops retrying
+ * - POST   /:id/mark-dead — escape hatch: flip a `pending` row to
+ *                          `dead` so the flusher stops retrying.
+ *                          `in_flight` rows are rejected (400) — see
+ *                          `MARK_DEAD_SQL` for the durability
+ *                          rationale.
  *
  * The route uses `queryEffect` directly because the table lives in
  * core; the `SaasCrm` Tag is touched only for the availability gate.
- *
- * Mark-dead race window: the flusher's terminal writes
- * (`MARK_DONE_SQL` / `MARK_DEAD_SQL` / `MARK_TRANSIENT_FAIL_SQL` in
- * `lib/lead-outbox/outbox.ts`) are gated on `WHERE id = $1` only. If
- * an admin marks a row `dead` while the flusher's dispatcher is
- * mid-call, the flusher's commit can silently flip the row back to
- * `done` (or `pending` for a transient outcome) — admin's verdict is
- * lost. The race is bounded by the duration of one Twenty dispatch
- * (typically &lt; 1s); the audit row from `mark_dead` survives
- * regardless. Operators triaging "I marked this dead but it came
- * back" should compare `processed_at` against the audit row's
- * timestamp.
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
@@ -85,7 +76,53 @@ const LIST_LIMIT_MAX = 500;
  * from a runaway upstream shouldn't bloat the list response.
  */
 const LAST_ERROR_LIST_TRUNCATION = 200;
-const STATUS_SET = new Set<OutboxStatus>(OUTBOX_STATUSES);
+
+// ---------------------------------------------------------------------------
+// Request schemas
+// ---------------------------------------------------------------------------
+//
+// Declared once and shared across `createRoute` definitions so the
+// generated OpenAPI surfaces the parameter contract AND the
+// `validationHook` (mounted by `createPlatformRouter`) automatically
+// 422s on malformed input — no more silent fallbacks for bad
+// `since=` or `limit=` values.
+
+const ListQuerySchema = z.object({
+  status: z.enum(OUTBOX_STATUSES).optional().openapi({
+    description: "Filter by outbox row status.",
+    example: "dead",
+  }),
+  event_type: z.string().min(1).max(64).optional().openapi({
+    description:
+      "Filter by event_type discriminator (e.g. demo, sales-form, signup).",
+    example: "demo",
+  }),
+  since: z.string().datetime({ offset: true }).optional().openapi({
+    description:
+      "Return rows created at or after this RFC-3339 timestamp. " +
+      "MUST include a timezone offset (Z or ±HH:MM) — naive local " +
+      "timestamps are rejected so the filter window is unambiguous " +
+      "across server/client zones.",
+    example: "2026-05-01T00:00:00Z",
+  }),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(LIST_LIMIT_MAX)
+    .optional()
+    .openapi({
+      description: `Max rows to return. Default ${LIST_LIMIT_DEFAULT}, capped at ${LIST_LIMIT_MAX}.`,
+      example: 100,
+    }),
+});
+
+const RowParamSchema = z.object({
+  id: z.string().uuid().openapi({
+    description: "Outbox row id (UUID).",
+    example: "00000000-0000-0000-0000-000000000000",
+  }),
+});
 
 // ---------------------------------------------------------------------------
 // Route definitions
@@ -97,7 +134,8 @@ const listRoute = createRoute({
   tags: ["Platform Admin — CRM Outbox"],
   summary: "List CRM outbox rows",
   description:
-    "SaaS only. Returns crm_outbox rows ordered by created_at DESC. Filters: status, event_type, since (ISO timestamp), limit.",
+    "SaaS only. Returns crm_outbox rows ordered by created_at DESC. Filters: status, event_type, since (RFC-3339 timestamp with timezone), limit.",
+  request: { query: ListQuerySchema },
   responses: {
     200: {
       description: "Outbox rows",
@@ -119,6 +157,7 @@ const getRowRoute = createRoute({
   summary: "Get CRM outbox row detail",
   description:
     "SaaS only. Returns the full row including payload JSONB and untruncated last_error.",
+  request: { params: RowParamSchema },
   responses: {
     200: {
       description: "Outbox row detail",
@@ -138,6 +177,7 @@ const retryRoute = createRoute({
   summary: "Retry a dead outbox row",
   description:
     "SaaS only. Flips a `dead` row back to `pending` and clears `last_error`. `attempts` is intentionally NOT reset so the deterministic backoff in lib/lead-outbox continues from where it left off — prevents an operator from foot-gunning infinite retries on a permanently-broken upstream call.",
+  request: { params: RowParamSchema },
   responses: {
     200: {
       description: "Row reset to pending",
@@ -157,7 +197,8 @@ const markDeadRoute = createRoute({
   tags: ["Platform Admin — CRM Outbox"],
   summary: "Manually mark an outbox row dead",
   description:
-    "SaaS only. Operator escape hatch — flip a `pending` or `in_flight` row to `dead` so the flusher stops retrying. Use when an operator knows the upstream dispatch will never succeed.",
+    "SaaS only. Operator escape hatch — flip a `pending` row to `dead` so the flusher stops retrying. `in_flight` rows are NOT accepted: the flusher's terminal commit (MARK_DONE_SQL / MARK_TRANSIENT_FAIL_SQL) is gated on `id` only, so a mark-dead during dispatch would be silently overwritten by the dispatcher's outcome. Operators must wait for the current attempt to settle (the row returns to `pending` on transient failure within seconds) before marking dead.",
+  request: { params: RowParamSchema },
   responses: {
     200: {
       description: "Row marked dead",
@@ -228,9 +269,17 @@ const RETRY_SQL = `
 `;
 
 /**
- * Mark-dead: only succeeds on `pending` or `in_flight`. Appends an
- * audit suffix to `last_error` so a future row-detail view shows the
- * manual override even when the prior error string was empty.
+ * Mark-dead: only succeeds on `pending`. `in_flight` is intentionally
+ * excluded — the flusher's terminal writes in `lib/lead-outbox/outbox.ts`
+ * (`MARK_DONE_SQL`, `MARK_TRANSIENT_FAIL_SQL`, `MARK_DEAD_SQL`) are
+ * gated on `id` only, so a manual `dead` write during dispatch would
+ * be silently overwritten when the dispatcher's commit lands. Forcing
+ * the operator to wait until the row returns to `pending` (typically
+ * &lt; 1s for transient outcomes; immediate for permanent failures —
+ * the flusher dead-letters those itself) makes the verdict durable.
+ *
+ * Appends an audit suffix to `last_error` so a future row-detail view
+ * shows the manual override even when the prior error string was empty.
  */
 const MARK_DEAD_SQL = `
   UPDATE crm_outbox
@@ -243,7 +292,7 @@ const MARK_DEAD_SQL = `
       END,
       retry_after = NULL,
       claimed_at = NULL
-  WHERE id = $1 AND status IN ('pending', 'in_flight')
+  WHERE id = $1 AND status = 'pending'
   RETURNING id, created_at, event_type, status, attempts, last_error,
             twenty_person_id, twenty_note_id, processed_at, retry_after, claimed_at
 `;
@@ -326,13 +375,6 @@ function toDetailRow(raw: RawDetailRow) {
   };
 }
 
-function clampLimit(raw: string | undefined): number {
-  if (!raw) return LIST_LIMIT_DEFAULT;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return LIST_LIMIT_DEFAULT;
-  return Math.min(parsed, LIST_LIMIT_MAX);
-}
-
 // `queryEffect` (from @atlas/api/lib/db/internal) is the canonical DB
 // → Effect bridge: it wraps `internalQuery` with the centralized
 // `normalizeError` so route handlers don't re-implement the catch
@@ -377,19 +419,18 @@ platformCrmOutbox.openapi(listRoute, async (c) => {
         );
       }
 
-      const rawStatus = c.req.query("status");
-      const status =
-        rawStatus && STATUS_SET.has(rawStatus as OutboxStatus)
-          ? (rawStatus as OutboxStatus)
-          : null;
-      const eventType = c.req.query("event_type") ?? null;
-      const sinceRaw = c.req.query("since");
-      let since: string | null = null;
-      if (sinceRaw) {
-        const parsed = Date.parse(sinceRaw);
-        if (Number.isFinite(parsed)) since = new Date(parsed).toISOString();
-      }
-      const limit = clampLimit(c.req.query("limit"));
+      // `validationHook` 422s on a malformed query — by the time we
+      // reach here every field is either undefined or a valid value
+      // matching `ListQuerySchema`. Coerce undefined → null so the
+      // `IS NULL OR …` predicates in `LIST_SQL` skip the filter
+      // server-side.
+      const query = c.req.valid("query");
+      const status = query.status ?? null;
+      const eventType = query.event_type ?? null;
+      // `z.string().datetime({ offset: true })` validates RFC-3339;
+      // normalise to UTC ISO so the SQL bind is timezone-unambiguous.
+      const since = query.since ? new Date(query.since).toISOString() : null;
+      const limit = query.limit ?? LIST_LIMIT_DEFAULT;
 
       const rows = yield* queryEffect<RawListRow>(LIST_SQL, [
         status,
@@ -629,11 +670,11 @@ platformCrmOutbox.openapi(markDeadRoute, async (c) => {
           404,
         );
       }
-      if (probe.status !== "pending" && probe.status !== "in_flight") {
+      if (probe.status !== "pending") {
         return c.json(
           {
             error: "invalid_state",
-            message: `Mark-dead only applies to pending/in_flight rows (row is currently \`${probe.status}\`).`,
+            message: `Mark-dead only applies to pending rows (row is currently \`${probe.status}\`). Wait for an in_flight attempt to settle before marking the row dead — the flusher's terminal commit would silently overwrite a manual write.`,
             requestId,
           },
           400,

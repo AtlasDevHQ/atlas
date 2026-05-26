@@ -68099,7 +68099,64 @@
           "Platform Admin — CRM Outbox"
         ],
         "summary": "List CRM outbox rows",
-        "description": "SaaS only. Returns crm_outbox rows ordered by created_at DESC. Filters: status, event_type, since (ISO timestamp), limit.",
+        "description": "SaaS only. Returns crm_outbox rows ordered by created_at DESC. Filters: status, event_type, since (RFC-3339 timestamp with timezone), limit.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "in_flight",
+                "done",
+                "dead"
+              ],
+              "description": "Filter by outbox row status.",
+              "example": "dead"
+            },
+            "required": false,
+            "description": "Filter by outbox row status.",
+            "name": "status",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "description": "Filter by event_type discriminator (e.g. demo, sales-form, signup).",
+              "example": "demo"
+            },
+            "required": false,
+            "description": "Filter by event_type discriminator (e.g. demo, sales-form, signup).",
+            "name": "event_type",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "description": "Return rows created at or after this RFC-3339 timestamp. MUST include a timezone offset (Z or ±HH:MM) — naive local timestamps are rejected so the filter window is unambiguous across server/client zones.",
+              "example": "2026-05-01T00:00:00Z"
+            },
+            "required": false,
+            "description": "Return rows created at or after this RFC-3339 timestamp. MUST include a timezone offset (Z or ±HH:MM) — naive local timestamps are rejected so the filter window is unambiguous across server/client zones.",
+            "name": "since",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "description": "Max rows to return. Default 100, capped at 500.",
+              "example": 100
+            },
+            "required": false,
+            "description": "Max rows to return. Default 100, capped at 500.",
+            "name": "limit",
+            "in": "query"
+          }
+        ],
         "responses": {
           "200": {
             "description": "Outbox rows",
@@ -68277,6 +68334,20 @@
         ],
         "summary": "Get CRM outbox row detail",
         "description": "SaaS only. Returns the full row including payload JSONB and untruncated last_error.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Outbox row id (UUID).",
+              "example": "00000000-0000-0000-0000-000000000000"
+            },
+            "required": true,
+            "description": "Outbox row id (UUID).",
+            "name": "id",
+            "in": "path"
+          }
+        ],
         "responses": {
           "200": {
             "description": "Outbox row detail",
@@ -68451,6 +68522,20 @@
         ],
         "summary": "Retry a dead outbox row",
         "description": "SaaS only. Flips a `dead` row back to `pending` and clears `last_error`. `attempts` is intentionally NOT reset so the deterministic backoff in lib/lead-outbox continues from where it left off — prevents an operator from foot-gunning infinite retries on a permanently-broken upstream call.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Outbox row id (UUID).",
+              "example": "00000000-0000-0000-0000-000000000000"
+            },
+            "required": true,
+            "description": "Outbox row id (UUID).",
+            "name": "id",
+            "in": "path"
+          }
+        ],
         "responses": {
           "200": {
             "description": "Row reset to pending",
@@ -68653,7 +68738,21 @@
           "Platform Admin — CRM Outbox"
         ],
         "summary": "Manually mark an outbox row dead",
-        "description": "SaaS only. Operator escape hatch — flip a `pending` or `in_flight` row to `dead` so the flusher stops retrying. Use when an operator knows the upstream dispatch will never succeed.",
+        "description": "SaaS only. Operator escape hatch — flip a `pending` row to `dead` so the flusher stops retrying. `in_flight` rows are NOT accepted: the flusher's terminal commit (MARK_DONE_SQL / MARK_TRANSIENT_FAIL_SQL) is gated on `id` only, so a mark-dead during dispatch would be silently overwritten by the dispatcher's outcome. Operators must wait for the current attempt to settle (the row returns to `pending` on transient failure within seconds) before marking dead.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Outbox row id (UUID).",
+              "example": "00000000-0000-0000-0000-000000000000"
+            },
+            "required": true,
+            "description": "Outbox row id (UUID).",
+            "name": "id",
+            "in": "path"
+          }
+        ],
         "responses": {
           "200": {
             "description": "Row marked dead",

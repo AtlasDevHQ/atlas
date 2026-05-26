@@ -26,6 +26,7 @@ export function buildAdminPaletteGroups(opts: {
       const items = group.items
         .filter((item) => !item.requiredRole || item.requiredRole === userRole)
         .filter((item) => !item.selfHostedOnly || !isSaas)
+        .filter((item) => !item.saasOnly || isSaas)
         .map((item): PaletteItem => navItemToPaletteItem(item, group.title, badges));
       return { heading: group.title, items };
     })

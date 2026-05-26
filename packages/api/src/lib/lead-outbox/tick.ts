@@ -3,10 +3,10 @@
  *
  * Composes the slice-2 `flushBatch` with the slice-8 depth snapshot +
  * threshold warning. Lives in its own module so the unit test in
- * `__tests__/tick.test.ts` can drive a single async function with
+ * `__tests__/depth.test.ts` can drive a single async function with
  * stub deps — no `mock.module`, no Effect runtime, no global gauge
  * provider — which is exactly the Layer-handoff contract: `layers.ts`
- * builds the deps, `runTick` does the work.
+ * builds the deps, `runOutboxTick` does the work.
  *
  * Order of operations matters. Snapshot runs BEFORE dispatch so the
  * gauge value an operator sees between ticks is "queue depth as of

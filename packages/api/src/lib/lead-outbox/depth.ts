@@ -38,8 +38,15 @@ export interface OutboxDepthSnapshot {
 
 /**
  * Single aggregate row — keeps the snapshot to one round-trip even
- * under contention. `FILTER` clauses avoid the cost (and PG plan
- * branching) of GROUP BY + a client-side bucket lookup.
+ * under contention. The outer `WHERE status IN ('pending', 'dead')`
+ * scopes the scan to the only two statuses we report on, so the
+ * snapshot's cost does NOT scale with the unbounded history of
+ * `done` rows that accumulate over the lifetime of the table. The
+ * `pending` side of the scan hits the
+ * `idx_crm_outbox_pending_created` partial index (mig 0102); the
+ * `dead` side falls back to a sequential walk of dead rows only —
+ * small in practice (a few hundred at most absent a sustained
+ * upstream outage).
  */
 const SNAPSHOT_SQL = `
   SELECT
@@ -47,6 +54,7 @@ const SNAPSHOT_SQL = `
     COUNT(*) FILTER (WHERE status = 'dead')           AS dead_count,
     MIN(created_at) FILTER (WHERE status = 'pending') AS oldest_pending_at
   FROM crm_outbox
+  WHERE status IN ('pending', 'dead')
 `;
 
 interface SnapshotRow extends Record<string, unknown> {
@@ -59,11 +67,18 @@ export async function queryDepthSnapshot(db: OutboxDB): Promise<OutboxDepthSnaps
   const rows = await db.query<SnapshotRow>(SNAPSHOT_SQL);
   const row = rows[0];
   if (!row) {
-    // PG always returns one aggregate row for COUNT() — a missing row
-    // here means the driver/pool short-circuited. Return zeros so the
-    // tick stays alive; the operator-side ratio alert on
-    // `lead_outbox.tick_failed` (slice 2) picks up the actual cause.
-    return { pending: 0, dead: 0, oldestPendingCreatedAt: null };
+    // PG's contract: `SELECT COUNT(*) FROM x` with no GROUP BY always
+    // returns exactly one row. Zero rows here means something below
+    // the SQL layer broke — driver/pool short-circuit, adapter
+    // regression, or a custom OutboxDB stub violating the contract.
+    // Throw so the caller's `Effect.catchAll` emits
+    // `lead_outbox.tick_failed` (slice 2) and the OTel gauges retain
+    // their last-recorded values rather than being reset to a
+    // misleading zero — a sticky pool failure must NOT make the
+    // queue look healthy.
+    throw new Error(
+      "crm_outbox snapshot returned no aggregate row — driver/pool invariant violated",
+    );
   }
   return {
     pending: parseCount(row.pending_count),
@@ -73,16 +88,35 @@ export async function queryDepthSnapshot(db: OutboxDB): Promise<OutboxDepthSnaps
 }
 
 function parseCount(v: string | number): number {
-  if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+  if (typeof v === "number") {
+    if (Number.isFinite(v)) return v;
+    log.warn(
+      { raw: v, event: "lead_outbox.snapshot_count_unparseable" },
+      "crm_outbox aggregate count is NaN/Infinity — clamping to 0; pg type-parser config drifted",
+    );
+    return 0;
+  }
   const n = Number.parseInt(v, 10);
-  return Number.isFinite(n) ? n : 0;
+  if (Number.isFinite(n)) return n;
+  log.warn(
+    { raw: v, event: "lead_outbox.snapshot_count_unparseable" },
+    "crm_outbox aggregate count is not a valid integer — clamping to 0",
+  );
+  return 0;
 }
 
 function parseTimestamp(v: Date | string | null): Date | null {
   if (v == null) return null;
   if (v instanceof Date) return v;
   const d = new Date(v);
-  return Number.isNaN(d.getTime()) ? null : d;
+  if (Number.isNaN(d.getTime())) {
+    log.warn(
+      { raw: v, event: "lead_outbox.snapshot_timestamp_unparseable" },
+      "crm_outbox oldest_pending_at could not be parsed as a Date — dropping; depth_threshold_warn ageMs will be null this tick",
+    );
+    return null;
+  }
+  return d;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -97,6 +131,17 @@ export const MAX_WARN_THRESHOLD = 1_000_000;
 export function getWarnThreshold(): number {
   const raw = process.env.ATLAS_CRM_OUTBOX_WARN_THRESHOLD;
   if (!raw) return DEFAULT_WARN_THRESHOLD;
+  // Reject operator typos like "100abc" — `parseInt` is forgiving and
+  // would silently accept `100`, masking a misconfigured env var. The
+  // strict integer regex rejects anything that isn't a clean optional
+  // sign followed by digits.
+  if (!/^-?\d+$/.test(raw)) {
+    log.warn(
+      { requested: raw, event: "lead_outbox.threshold_unparseable" },
+      `ATLAS_CRM_OUTBOX_WARN_THRESHOLD=${raw} is not a valid integer — using default ${DEFAULT_WARN_THRESHOLD}`,
+    );
+    return DEFAULT_WARN_THRESHOLD;
+  }
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed)) return DEFAULT_WARN_THRESHOLD;
   if (parsed < MIN_WARN_THRESHOLD) {
@@ -130,10 +175,12 @@ export interface WarnDecision {
  *
  * `evaluate(snapshot, now)` returns `null` when the operator should
  * NOT see a warn (depth under threshold OR still inside the rate-limit
- * window) and the fully-shaped payload otherwise. Updating the
- * `lastWarnAt` field happens on emit, so a 101+ pending depth that
- * resolves to 0 and re-rises immediately would correctly re-warn (the
- * gate is time-based, not edge-based).
+ * window) and the fully-shaped payload otherwise. The gate is
+ * time-based, not edge-based: a depth that crosses the threshold,
+ * drops below, and re-crosses within `intervalMs` is suppressed on
+ * the second cross — re-emission happens once the interval elapses,
+ * regardless of intervening dips. After the interval, a still-elevated
+ * depth (or a fresh re-rise) re-warns.
  */
 export class OutboxWarnRateLimiter {
   private lastWarnAt = 0;

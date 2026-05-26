@@ -21,8 +21,11 @@
 import { describe, expect, mock, test } from "bun:test";
 import {
   DEFAULT_WARN_THRESHOLD,
+  MAX_WARN_THRESHOLD,
+  MIN_WARN_THRESHOLD,
   OutboxWarnRateLimiter,
   WARN_INTERVAL_MS,
+  getWarnThreshold,
   queryDepthSnapshot,
   type OutboxDepthSnapshot,
 } from "../depth";
@@ -59,7 +62,7 @@ function makeStubDB(opts: StubDBOptions = {}): OutboxDB & {
       params?: unknown[],
     ): Promise<T[]> => {
       calls.push({ sql, params: params ?? [] });
-      if (/FROM crm_outbox\s*$/i.test(sql.trim())) {
+      if (/FROM crm_outbox\s+WHERE status IN/i.test(sql)) {
         return (opts.snapshotRows ?? []) as unknown as T[];
       }
       if (/RETURNING id, event_type/i.test(sql)) {
@@ -153,14 +156,49 @@ describe("queryDepthSnapshot", () => {
     expect(snap.dead).toBe(0);
   });
 
-  test("missing aggregate row falls back to zeros (driver invariant violation)", async () => {
+  test("missing aggregate row throws (driver invariant violation surfaces as tick_failed)", async () => {
+    // Per Codex P2: zero-fallback would leak a misleading "queue
+    // empty" reading on a sticky pool failure. Throwing forces the
+    // existing `lead_outbox.tick_failed` alert path and lets the
+    // OTel gauges keep their last-recorded values until the next
+    // successful tick.
     const db = makeStubDB({ snapshotRows: [] });
-    const snap = await queryDepthSnapshot(db);
-    expect(snap).toEqual({
-      pending: 0,
-      dead: 0,
-      oldestPendingCreatedAt: null,
+    await expect(queryDepthSnapshot(db)).rejects.toThrow(
+      /driver\/pool invariant violated/,
+    );
+  });
+
+  test("NaN/Infinity count clamps to 0 with structured warn (defensive path)", async () => {
+    const db = makeStubDB({
+      snapshotRows: [
+        { pending_count: Number.NaN, dead_count: 0, oldest_pending_at: null },
+      ],
     });
+    const snap = await queryDepthSnapshot(db);
+    expect(snap.pending).toBe(0);
+    expect(snap.dead).toBe(0);
+  });
+
+  test("non-integer count string clamps to 0", async () => {
+    const db = makeStubDB({
+      snapshotRows: [
+        { pending_count: "not-a-number", dead_count: "5", oldest_pending_at: null },
+      ],
+    });
+    const snap = await queryDepthSnapshot(db);
+    expect(snap.pending).toBe(0);
+    expect(snap.dead).toBe(5);
+  });
+
+  test("unparseable oldest_pending_at string yields null without throwing", async () => {
+    const db = makeStubDB({
+      snapshotRows: [
+        { pending_count: "1", dead_count: "0", oldest_pending_at: "garbage-timestamp" },
+      ],
+    });
+    const snap = await queryDepthSnapshot(db);
+    expect(snap.pending).toBe(1);
+    expect(snap.oldestPendingCreatedAt).toBeNull();
   });
 });
 
@@ -203,12 +241,19 @@ describe("OutboxWarnRateLimiter", () => {
     expect(limiter.evaluate(snap(500), baseTime + WARN_INTERVAL_MS - 1)).toBeNull();
   });
 
-  test("evaluation at exactly 60s does NOT re-emit; strictly past does", () => {
+  test("strict-less-than window: -1ms suppresses, exact boundary and +1ms re-emit", () => {
     const limiter = new OutboxWarnRateLimiter(100);
     limiter.evaluate(snap(101), baseTime);
-    // `now - lastWarnAt < intervalMs` — equality means still inside the window.
+    // Gate is `now - lastWarnAt < intervalMs`. Strict less-than → equality
+    // is OUTSIDE the window and re-emits. This matches the "elapsed
+    // interval = ready to fire again" convention.
     expect(limiter.evaluate(snap(101), baseTime + WARN_INTERVAL_MS - 1)).toBeNull();
     expect(limiter.evaluate(snap(101), baseTime + WARN_INTERVAL_MS)).not.toBeNull();
+    // Reset internal lastWarnAt to baseTime (we just emitted at the boundary)
+    // so the +1ms assertion measures the same edge cleanly.
+    const fresh = new OutboxWarnRateLimiter(100);
+    fresh.evaluate(snap(101), baseTime);
+    expect(fresh.evaluate(snap(101), baseTime + WARN_INTERVAL_MS + 1)).not.toBeNull();
   });
 
   test("falling below threshold then back above re-emits if window has passed", () => {
@@ -247,6 +292,66 @@ describe("OutboxWarnRateLimiter", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
+//  getWarnThreshold (env-var parser — AC #3)
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Save/restore the env var inside try/finally per the CLAUDE.md
+ * testing rule: no top-level `process.env.X = ...` at module scope.
+ * `getWarnThreshold` reads at call-time, so there is no import-hoist
+ * requirement — the wrapper is sufficient and survives the future
+ * `bun test --parallel` worker-reuse cutover.
+ */
+function withEnv<T>(value: string | undefined, fn: () => T): T {
+  const KEY = "ATLAS_CRM_OUTBOX_WARN_THRESHOLD";
+  const prev = process.env[KEY];
+  try {
+    if (value === undefined) delete process.env[KEY];
+    else process.env[KEY] = value;
+    return fn();
+  } finally {
+    if (prev === undefined) delete process.env[KEY];
+    else process.env[KEY] = prev;
+  }
+}
+
+describe("getWarnThreshold (env-var parser)", () => {
+  test("unset env returns DEFAULT_WARN_THRESHOLD", () => {
+    expect(withEnv(undefined, () => getWarnThreshold())).toBe(DEFAULT_WARN_THRESHOLD);
+  });
+
+  test("valid override is honoured (AC #3 override path)", () => {
+    expect(withEnv("200", () => getWarnThreshold())).toBe(200);
+    expect(withEnv("50", () => getWarnThreshold())).toBe(50);
+  });
+
+  test("non-numeric input falls back to default", () => {
+    expect(withEnv("abc", () => getWarnThreshold())).toBe(DEFAULT_WARN_THRESHOLD);
+    expect(withEnv("", () => getWarnThreshold())).toBe(DEFAULT_WARN_THRESHOLD);
+  });
+
+  test("parseInt-prefix typos like '100abc' fall back to default (not silent 100)", () => {
+    // `Number.parseInt("100abc", 10) === 100` — without strict regex
+    // validation, operator fat-finger would silently accept the
+    // truncation. Verify the stricter `/^-?\d+$/` gate.
+    expect(withEnv("100abc", () => getWarnThreshold())).toBe(DEFAULT_WARN_THRESHOLD);
+    expect(withEnv("50.5", () => getWarnThreshold())).toBe(DEFAULT_WARN_THRESHOLD);
+    expect(withEnv(" 100", () => getWarnThreshold())).toBe(DEFAULT_WARN_THRESHOLD);
+  });
+
+  test("below minimum clamps to MIN_WARN_THRESHOLD (zero / negative)", () => {
+    // Zero would defeat rate-limiting entirely (warn on every tick),
+    // so the clamp at 1 is load-bearing.
+    expect(withEnv("0", () => getWarnThreshold())).toBe(MIN_WARN_THRESHOLD);
+    expect(withEnv("-5", () => getWarnThreshold())).toBe(MIN_WARN_THRESHOLD);
+  });
+
+  test("above maximum clamps to MAX_WARN_THRESHOLD", () => {
+    expect(withEnv("2000000", () => getWarnThreshold())).toBe(MAX_WARN_THRESHOLD);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
 //  runOutboxTick
 // ─────────────────────────────────────────────────────────────────────
 
@@ -280,15 +385,19 @@ describe("runOutboxTick", () => {
     expect(logger.warnCalls).toEqual([]);
 
     // Order check: snapshot SELECT precedes any UPDATE attempt.
-    const snapshotIdx = db.calls.findIndex((c) => /FROM crm_outbox\s*$/i.test(c.sql.trim()));
+    const snapshotIdx = db.calls.findIndex((c) =>
+      /FROM crm_outbox\s+WHERE status IN/i.test(c.sql),
+    );
     const claimIdx = db.calls.findIndex((c) => /RETURNING id, event_type/i.test(c.sql));
     expect(snapshotIdx).toBeGreaterThanOrEqual(0);
     expect(claimIdx).toBeGreaterThan(snapshotIdx);
   });
 
   test("101 pending across two within-window ticks emits exactly one warn", async () => {
-    const oldest = new Date("2026-05-26T09:55:00.000Z");
     const tickTime = 1_700_000_000_000;
+    // `oldest` precedes `tickTime` by 5 min so `oldestPendingAgeMs` is
+    // a positive duration (300_000 ms), not the clock-skew clamp.
+    const oldest = new Date(tickTime - 5 * 60_000);
     const db = makeStubDB({
       snapshotRows: [
         { pending_count: "101", dead_count: "0", oldest_pending_at: oldest },
@@ -316,6 +425,14 @@ describe("runOutboxTick", () => {
     expect(logger.warnCalls[0]!.obj.depth).toBe(101);
     expect(logger.warnCalls[0]!.obj.threshold).toBe(100);
     expect(logger.warnCalls[0]!.obj.oldestPendingCreatedAt).toBe(oldest.toISOString());
+    // AC #2 requires "depth + oldest pending row's age" — humans read
+    // age faster than ISO timestamps, dashboards plot age. Lock the
+    // payload field so a destructure-and-forget refactor in
+    // `tick.ts:84-94` can't silently drop it.
+    expect(typeof logger.warnCalls[0]!.obj.oldestPendingAgeMs).toBe("number");
+    expect(logger.warnCalls[0]!.obj.oldestPendingAgeMs).toBe(
+      tickTime - oldest.getTime(),
+    );
 
     // Tick 2: still 101, 5s later — still inside the 60s window.
     const r2 = await runOutboxTick({
@@ -362,6 +479,30 @@ describe("runOutboxTick", () => {
     expect(result.flush.claimed).toBe(1);
     expect(result.flush.ok).toBe(1);
     expect(dispatchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("propagates snapshot errors so the caller's Effect.tryPromise records tick_failed", async () => {
+    // Contract from `tick.ts:74`: exceptions from `queryDepthSnapshot`
+    // (or `flushBatch`) propagate so the outer `Effect.catchAll` in
+    // `layers.ts` logs `lead_outbox.tick_failed`. A future "let's be
+    // resilient" refactor that wraps the snapshot in try/catch and
+    // returns zeros would silence the transient-DB alert path.
+    const db: OutboxDB = {
+      query: async () => {
+        throw new Error("connection terminated unexpectedly");
+      },
+    };
+    await expect(
+      runOutboxTick({
+        db,
+        dispatcher: NEVER_DISPATCH,
+        batchLimit: 50,
+        limiter: new OutboxWarnRateLimiter(100),
+        pendingGauge: makeGauge(),
+        deadGauge: makeGauge(),
+        logger: makeLogger(),
+      }),
+    ).rejects.toThrow("connection terminated unexpectedly");
   });
 
   test("snapshot under threshold never warns, regardless of depth=threshold edge", async () => {

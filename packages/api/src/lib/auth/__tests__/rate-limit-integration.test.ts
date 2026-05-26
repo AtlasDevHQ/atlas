@@ -367,13 +367,9 @@ describe("live rate-limit loop — /sign-in/email", () => {
     // returns 429. If `rateLimit:` is dropped, all 11 stay 401 — red.
     expect(statuses.slice(0, 10)).toEqual(Array.from({ length: 10 }, () => 401));
     expect(statuses[10]).toBe(429);
-  });
+  }, 15_000);
 
-  // 15s timeout (default 5s) — 11 sequential Better Auth handler invocations
-  // through the live rate-limit middleware blow past 5s when the api-tests
-  // shard is contended with sibling real-PG tests (#2694). The matching
-  // ATLAS_AUTH_RATE_LIMIT_MAX=9999 keeps the per-endpoint rule
-  // (max=10) as the only source of the trailing 429 — see assertion below.
+  // 11 sequential Better Auth calls — shard contention pushes p99 past the 5s default.
   it("rate-limits by x-atlas-client-ip even when x-forwarded-for rotates (F-06 spoof resistance)", async () => {
     // If `advanced` is dropped, Better Auth falls back to default IP
     // detection — which reads `x-forwarded-for`. An attacker rotating

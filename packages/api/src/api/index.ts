@@ -526,19 +526,21 @@ try {
   );
 }
 
-// Teams + Discord routes — always mount. The handlers in routes/teams.ts
-// and routes/discord.ts read env at REQUEST time and return 501 when the
-// platform credentials are unset, so unconfigured deployments still get
-// the discoverable 501 response. Gating at import time made route
-// registration order-dependent under shared-worker test runs (#2710 / #2776):
-// once any sibling file triggered api/index.ts evaluation with the env
-// unset, the routes were never registered for the rest of that worker's
-// lifetime. ESM modules are cached per realm, so the conditional only
-// executed once and the cached result was wrong for every subsequent test.
+// Teams + Discord routes — always mount. Handlers read env per-request
+// and return 501 when unconfigured, so import-time gating would freeze
+// a stale "unconfigured" routing decision into the cached ESM module
+// for any caller that evaluates this file before env is set.
 const { teams } = await import("./routes/teams");
 app.route("/api/v1/teams", teams);
 const { discord } = await import("./routes/discord");
 app.route("/api/v1/discord", discord);
+log.info(
+  {
+    teams: Boolean(process.env.TEAMS_APP_ID),
+    discord: Boolean(process.env.DISCORD_CLIENT_ID),
+  },
+  "platform integrations",
+);
 
 // Hosted MCP endpoint — mounts the MCP server as a Hono route under
 // /mcp/{workspace_id}/sse so the same per-region API instance that

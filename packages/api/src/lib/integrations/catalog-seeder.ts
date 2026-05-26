@@ -547,16 +547,25 @@ async function upsertEntry(db: CatalogSeedDb, entry: CatalogEntry): Promise<void
       ? null
       : JSON.stringify(entry.configSchema);
 
+  // Derived per the three-pillar taxonomy (ADR-0006 / migration 0092).
+  // Migration 0097 (#2744 hotfix) dropped the BEFORE-INSERT trigger that
+  // used to default this from `type`, so every writer must name pillar
+  // explicitly. Datasource rows are seeded by
+  // `seed-builtin-datasource-catalog.ts` (pillar='datasource'); this
+  // seeder only handles 'chat' + 'integration' rows.
+  const pillar = pillarFromType(entry.type);
+
   await db.query(
     `INSERT INTO plugin_catalog
-       (id, name, slug, description, type, icon_url, min_plan, enabled,
+       (id, name, slug, description, type, pillar, icon_url, min_plan, enabled,
         install_model, saas_eligible, implementation_status, config_schema,
         created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, NOW(), NOW())
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, NOW(), NOW())
      ON CONFLICT (slug) DO UPDATE
        SET name                  = EXCLUDED.name,
            description           = EXCLUDED.description,
            type                  = EXCLUDED.type,
+           pillar                = EXCLUDED.pillar,
            icon_url              = EXCLUDED.icon_url,
            min_plan              = EXCLUDED.min_plan,
            enabled               = EXCLUDED.enabled,
@@ -571,6 +580,7 @@ async function upsertEntry(db: CatalogSeedDb, entry: CatalogEntry): Promise<void
       entry.slug,
       description,
       entry.type,
+      pillar,
       iconUrl,
       entry.min_plan,
       entry.enabled,
@@ -580,6 +590,17 @@ async function upsertEntry(db: CatalogSeedDb, entry: CatalogEntry): Promise<void
       configSchemaJson,
     ],
   );
+}
+
+/**
+ * Map `CatalogEntry.type` to `plugin_catalog.pillar`. Mirrors the
+ * mapping enforced by the 0092 BEFORE-INSERT trigger (dropped by 0097):
+ * chat→chat, integration→action. `'datasource'` is handled by a
+ * separate seeder so it isn't represented here — the type union doesn't
+ * admit it.
+ */
+function pillarFromType(type: CatalogEntryType): "chat" | "action" {
+  return type === "chat" ? "chat" : "action";
 }
 
 /**

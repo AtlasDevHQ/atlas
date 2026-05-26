@@ -661,43 +661,12 @@ describe("dispatchOutboxRow", () => {
     }
   });
 
-  test("sales-form row dead-letters today via the normalizer (sales-form not yet accepted)", async () => {
-    // The normalizer's discriminated union only accepts `demo` today;
-    // a sales-form payload throws `Unknown lead source` BEFORE the
-    // dispatcher's downstream sales-form branch runs. Either way the
-    // row dead-letters with an operator-visible message. This test
-    // pins both halves of the contract: (1) no fetch is attempted,
-    // (2) the dead-letter message identifies the offending source.
-    let fetchCalls = 0;
-    const fetchImpl = (async (): Promise<Response> => {
-      fetchCalls++;
-      return new Response("{}", { status: 200 });
-    }) as unknown as typeof globalThis.fetch;
-
-    const outcome = await withFetch(fetchImpl, async () =>
-      dispatchOutboxRow(
-        { apiKey: "k", baseUrl: "https://crm.test.local" },
-        {
-          id: "row-sales",
-          eventType: "sales-form",
-          payload: { source: "sales-form", email: "sales@test.local" },
-          attempts: 1,
-          twentyPersonId: null,
-          twentyNoteId: null,
-        },
-        {
-          setTwentyPersonId: async () => {},
-          setTwentyNoteId: async () => {},
-        },
-      ),
-    );
-
-    expect(fetchCalls).toBe(0);
-    expect(outcome.kind).toBe("permanent");
-    if (outcome.kind === "permanent") {
-      expect(outcome.message).toContain("sales-form");
-    }
-  });
+  // (Stale test removed: `@useatlas/twenty` 0.0.2 normalizes the
+  // sales-form variant via `normalizeSalesFormLead`, so the prior
+  // "sales-form row dead-letters today via the normalizer" assertion
+  // no longer holds. The dispatcher's full sales-form happy-path,
+  // resumed-claim, and orphan-note coverage lives on the slice-3
+  // branch (#2833) alongside the consumer wiring.)
 });
 
 // ── classifyTwentyError ─────────────────────────────────────────────

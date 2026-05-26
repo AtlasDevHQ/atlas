@@ -364,6 +364,15 @@ export default function DPAPage() {
               triggerLabel="Talk to sales"
             />
           </div>
+          <noscript>
+            <p className="mt-6 text-sm text-zinc-400">
+              The contact form needs JavaScript. Email{" "}
+              <a className="underline" href="mailto:sales@useatlas.dev">
+                sales@useatlas.dev
+              </a>{" "}
+              and we&rsquo;ll take it from there.
+            </p>
+          </noscript>
         </section>
       </main>
 

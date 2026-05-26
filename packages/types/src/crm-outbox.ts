@@ -32,7 +32,11 @@ export interface CrmOutboxRow {
   eventType: string;
   status: OutboxStatus;
   attempts: number;
-  /** Truncated to ~200 chars by the API; null when the row hasn't failed. */
+  /**
+   * Truncated by the API in list responses; the detail endpoint
+   * returns the full string under `fullLastError`. Null when the row
+   * hasn't failed.
+   */
   lastError: string | null;
   twentyPersonId: string | null;
   twentyNoteId: string | null;

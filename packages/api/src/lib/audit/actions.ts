@@ -784,20 +784,20 @@ export const ADMIN_ACTIONS = {
     flush: "cache.flush",
   },
   /**
-   * Platform-operator CRM outbox actions (#2735, 1.6.0 slice 9). The
-   * outbox table holds SaaS-only marketing-funnel leads (demo signups,
-   * Better Auth signups, talk-to-sales submissions); operators
-   * inspecting the queue can manually `retry` a dead row (resets
-   * `status` to `pending` and clears `last_error`, leaving `attempts`
-   * untouched so backoff resumes where it stopped) or `markDead` a
-   * pending/in-flight row (the manual escape hatch when an operator
-   * knows dispatch will never succeed). Without these entries a
-   * platform admin can unstick or kill leads with zero forensic
-   * record, defeating the durable-outbox guarantee that slice 2
-   * (#2729) shipped. Scope is always `platform`. Metadata for both:
-   * `{ outboxId, eventType, previousStatus, previousAttempts,
-   * previousLastError? }`; the previous state is the audit signal that
-   * lets a reviewer reconstruct what the operator overrode.
+   * Platform-operator CRM outbox actions (#2735). The outbox table
+   * holds SaaS-only marketing-funnel leads (demo signups, Better Auth
+   * signups, talk-to-sales submissions); operators inspecting the
+   * queue can manually `retry` a dead row (resets `status` to
+   * `pending` and clears `last_error`, leaving `attempts` untouched so
+   * backoff resumes where it stopped) or `markDead` a pending/in-flight
+   * row (the manual escape hatch when an operator knows dispatch will
+   * never succeed). Without these entries a platform admin can unstick
+   * or kill leads with zero forensic record, defeating the
+   * durable-outbox guarantee that slice 2 (#2729) shipped. Scope is
+   * always `platform`; the prior-state snapshot captured in metadata
+   * is the audit signal that lets a reviewer reconstruct what the
+   * operator overrode — see `platform-crm-outbox.ts` for the metadata
+   * shape on each action.
    */
   crm_outbox: {
     retry: "crm_outbox.retry",

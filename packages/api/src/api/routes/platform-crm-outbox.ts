@@ -27,21 +27,36 @@
  * - POST   /:id/mark-dead — escape hatch: flip a pending/in_flight row to
  *                          `dead` so the flusher stops retrying
  *
- * Direct query approach: `crm_outbox` lives in core (no EE-specific
- * logic), so the route queries via `internalQuery` rather than widening
- * the SaasCrm Tag. The Tag is consulted only for the availability gate.
+ * The route uses `queryEffect` directly because the table lives in
+ * core; the `SaasCrm` Tag is touched only for the availability gate.
+ *
+ * Mark-dead race window: the flusher's terminal writes
+ * (`MARK_DONE_SQL` / `MARK_DEAD_SQL` / `MARK_TRANSIENT_FAIL_SQL` in
+ * `lib/lead-outbox/outbox.ts`) are gated on `WHERE id = $1` only. If
+ * an admin marks a row `dead` while the flusher's dispatcher is
+ * mid-call, the flusher's commit can silently flip the row back to
+ * `done` (or `pending` for a transient outcome) — admin's verdict is
+ * lost. The race is bounded by the duration of one Twenty dispatch
+ * (typically &lt; 1s); the audit row from `mark_dead` survives
+ * regardless. Operators triaging "I marked this dead but it came
+ * back" should compare `processed_at` against the audit row's
+ * timestamp.
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
-import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import {
+  logAdminAction,
+  logAdminActionAwait,
+  ADMIN_ACTIONS,
+} from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
   SaasCrm,
 } from "@atlas/api/lib/effect/services";
-import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, queryEffect } from "@atlas/api/lib/db/internal";
 import {
   CrmOutboxRowSchema,
   CrmOutboxRowDetailSchema,
@@ -297,8 +312,15 @@ function toListRow(raw: RawListRow) {
 }
 
 function toDetailRow(raw: RawDetailRow) {
+  // Detail-row override: skip the list-side truncation so `lastError`
+  // and `fullLastError` carry the same untruncated string on the
+  // detail endpoint. Two fields exist for wire compatibility with
+  // `CrmOutboxRowSchema` (the parent shape) — they MUST agree on
+  // detail rows so a UI consumer reading `.lastError` doesn't get a
+  // half-string mid-stack-trace.
   return {
     ...toListRow(raw),
+    lastError: raw.last_error,
     fullLastError: raw.last_error,
     payload: raw.payload,
   };
@@ -311,15 +333,12 @@ function clampLimit(raw: string | undefined): number {
   return Math.min(parsed, LIST_LIMIT_MAX);
 }
 
-function tryQuery<T extends Record<string, unknown>>(
-  sql: string,
-  params: unknown[],
-) {
-  return Effect.tryPromise({
-    try: () => internalQuery<T>(sql, params),
-    catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-  });
-}
+// `queryEffect` (from @atlas/api/lib/db/internal) is the canonical DB
+// → Effect bridge: it wraps `internalQuery` with the centralized
+// `normalizeError` so route handlers don't re-implement the catch
+// shape per file. See `packages/api/src/lib/db/internal.ts:629` for
+// the rationale ("Effect.promise hides DB rejections in the defect
+// channel; route handlers should use queryEffect").
 
 // ---------------------------------------------------------------------------
 // Router
@@ -372,7 +391,7 @@ platformCrmOutbox.openapi(listRoute, async (c) => {
       }
       const limit = clampLimit(c.req.query("limit"));
 
-      const rows = yield* tryQuery<RawListRow>(LIST_SQL, [
+      const rows = yield* queryEffect<RawListRow>(LIST_SQL, [
         status,
         eventType,
         since,
@@ -417,7 +436,7 @@ platformCrmOutbox.openapi(getRowRoute, async (c) => {
       }
 
       const id = c.req.param("id");
-      const rows = yield* tryQuery<RawDetailRow>(GET_SQL, [id]);
+      const rows = yield* queryEffect<RawDetailRow>(GET_SQL, [id]);
       const row = rows[0];
       if (!row) {
         return c.json(
@@ -466,7 +485,7 @@ platformCrmOutbox.openapi(retryRoute, async (c) => {
 
       // Snapshot before mutation so the audit row captures what the
       // operator overrode.
-      const probeRows = yield* tryQuery<ProbeRow>(PROBE_SQL, [id]);
+      const probeRows = yield* queryEffect<ProbeRow>(PROBE_SQL, [id]);
       const probe = probeRows[0];
       if (!probe) {
         return c.json(
@@ -485,12 +504,36 @@ platformCrmOutbox.openapi(retryRoute, async (c) => {
         );
       }
 
-      const updated = yield* tryQuery<RawListRow>(RETRY_SQL, [id]);
+      const updated = yield* queryEffect<RawListRow>(RETRY_SQL, [id]);
       const row = updated[0];
+      const ipAddress =
+        c.req.header("x-forwarded-for") ??
+        c.req.header("x-real-ip") ??
+        null;
       if (!row) {
         // Race: a concurrent retry slipped between the probe and the
         // UPDATE. The row is no longer `dead` so the conditional WHERE
-        // matched zero rows. Surface as 400 so the UI can re-fetch.
+        // matched zero rows. Surface as 400 so the UI can re-fetch
+        // AND emit a `status: "failure"` audit row so a reviewer can
+        // still tell that an operator tried — without this row, two
+        // simultaneous retries on the same id leave only the winner's
+        // trail in `admin_action_log`.
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.crm_outbox.retry,
+          targetType: "crm_outbox",
+          targetId: id,
+          scope: "platform",
+          status: "failure",
+          metadata: {
+            outboxId: id,
+            eventType: probe.event_type,
+            previousStatus: probe.status,
+            previousAttempts: probe.attempts,
+            previousLastError: probe.last_error,
+            raceLost: true,
+          },
+          ipAddress,
+        });
         return c.json(
           {
             error: "race_lost",
@@ -507,22 +550,29 @@ platformCrmOutbox.openapi(retryRoute, async (c) => {
         "CRM outbox row reset to pending by platform admin",
       );
 
-      logAdminAction({
-        actionType: ADMIN_ACTIONS.crm_outbox.retry,
-        targetType: "crm_outbox",
-        targetId: id,
-        scope: "platform",
-        metadata: {
-          outboxId: id,
-          eventType: probe.event_type,
-          previousStatus: probe.status,
-          previousAttempts: probe.attempts,
-          previousLastError: probe.last_error,
-        },
-        ipAddress:
-          c.req.header("x-forwarded-for") ??
-          c.req.header("x-real-ip") ??
-          null,
+      // Audit is the security control here — without a durable row,
+      // an operator can flip a `dead` lead back to `pending` with no
+      // forensic trail. Use `logAdminActionAwait` so a DB blip after
+      // the UPDATE surfaces to the caller as a 500; the operator's
+      // instinctive retry safely no-ops because the row's status is
+      // already `pending` (returns 400 `invalid_state` next time).
+      yield* Effect.tryPromise({
+        try: () =>
+          logAdminActionAwait({
+            actionType: ADMIN_ACTIONS.crm_outbox.retry,
+            targetType: "crm_outbox",
+            targetId: id,
+            scope: "platform",
+            metadata: {
+              outboxId: id,
+              eventType: probe.event_type,
+              previousStatus: probe.status,
+              previousAttempts: probe.attempts,
+              previousLastError: probe.last_error,
+            },
+            ipAddress,
+          }),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
 
       return c.json(
@@ -571,7 +621,7 @@ platformCrmOutbox.openapi(markDeadRoute, async (c) => {
 
       const id = c.req.param("id");
 
-      const probeRows = yield* tryQuery<ProbeRow>(PROBE_SQL, [id]);
+      const probeRows = yield* queryEffect<ProbeRow>(PROBE_SQL, [id]);
       const probe = probeRows[0];
       if (!probe) {
         return c.json(
@@ -590,9 +640,33 @@ platformCrmOutbox.openapi(markDeadRoute, async (c) => {
         );
       }
 
-      const updated = yield* tryQuery<RawListRow>(MARK_DEAD_SQL, [id]);
+      const updated = yield* queryEffect<RawListRow>(MARK_DEAD_SQL, [id]);
       const row = updated[0];
+      const ipAddress =
+        c.req.header("x-forwarded-for") ??
+        c.req.header("x-real-ip") ??
+        null;
       if (!row) {
+        // Race: a concurrent mark-dead OR the flusher's own commit
+        // flipped the row to a terminal state between probe and
+        // UPDATE. Emit a failure audit so the loser's intent isn't
+        // erased from `admin_action_log`.
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.crm_outbox.markDead,
+          targetType: "crm_outbox",
+          targetId: id,
+          scope: "platform",
+          status: "failure",
+          metadata: {
+            outboxId: id,
+            eventType: probe.event_type,
+            previousStatus: probe.status,
+            previousAttempts: probe.attempts,
+            previousLastError: probe.last_error,
+            raceLost: true,
+          },
+          ipAddress,
+        });
         return c.json(
           {
             error: "race_lost",
@@ -609,22 +683,26 @@ platformCrmOutbox.openapi(markDeadRoute, async (c) => {
         "CRM outbox row marked dead by platform admin",
       );
 
-      logAdminAction({
-        actionType: ADMIN_ACTIONS.crm_outbox.markDead,
-        targetType: "crm_outbox",
-        targetId: id,
-        scope: "platform",
-        metadata: {
-          outboxId: id,
-          eventType: probe.event_type,
-          previousStatus: probe.status,
-          previousAttempts: probe.attempts,
-          previousLastError: probe.last_error,
-        },
-        ipAddress:
-          c.req.header("x-forwarded-for") ??
-          c.req.header("x-real-ip") ??
-          null,
+      // Same audit-as-security-control rationale as the retry path —
+      // mark-dead is a state mutation that disappears without a
+      // durable forensic trail.
+      yield* Effect.tryPromise({
+        try: () =>
+          logAdminActionAwait({
+            actionType: ADMIN_ACTIONS.crm_outbox.markDead,
+            targetType: "crm_outbox",
+            targetId: id,
+            scope: "platform",
+            metadata: {
+              outboxId: id,
+              eventType: probe.event_type,
+              previousStatus: probe.status,
+              previousAttempts: probe.attempts,
+              previousLastError: probe.last_error,
+            },
+            ipAddress,
+          }),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       });
 
       return c.json(

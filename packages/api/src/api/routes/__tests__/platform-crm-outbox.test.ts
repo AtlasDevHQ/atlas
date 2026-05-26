@@ -1,20 +1,11 @@
 /**
- * Platform CRM outbox route integration tests (#2735, 1.6.0 slice 9).
+ * Platform CRM outbox route integration tests (#2735).
  *
- * Covers list / detail / retry / mark-dead end-to-end via a mounted Hono
- * test app. The Hono → Effect bridge is stubbed to inject the SaasCrm
- * Tag (toggleable for the self-hosted 404 branch) plus a per-test stub
- * for `internalQuery`, so the route is exercised without touching a
- * real Postgres.
- *
- * Acceptance coverage:
- *  - 404 when SaasCrm.available === false (self-hosted)
- *  - 200 list + filters
- *  - 200 detail + 404 row-not-found
- *  - 200 retry on a dead row (audit row written, attempts preserved)
- *  - 400 retry on a non-dead row
- *  - 200 mark-dead on pending/in_flight (audit row written)
- *  - 400 mark-dead on a row already in a terminal state
+ * Covers list / detail / retry / mark-dead end-to-end via a mounted
+ * Hono test app. The Hono → Effect bridge is stubbed to inject the
+ * SaasCrm Tag (toggleable for the self-hosted 404 branch) plus a
+ * per-test stub for `internalQuery`, so the route is exercised
+ * without touching a real Postgres.
  */
 
 import {
@@ -50,17 +41,24 @@ let auditCalls: CapturedAudit[] = [];
 
 // ── Mock side modules BEFORE importing the route ────────────────────
 
-mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => hasDB,
-  internalQuery: async (sql: string, params?: unknown[]) => {
+mock.module("@atlas/api/lib/db/internal", () => {
+  const internalQuery = async (sql: string, params?: unknown[]) => {
     queryCalls.push({ sql, params });
     return queryStub(sql, params);
-  },
-  // Re-exported by transitive consumers; provide no-op shapes so they
-  // can't crash a sibling import.
-  getInternalDB: () => null,
-  internalExecute: async () => undefined,
-}));
+  };
+  return {
+    hasInternalDB: () => hasDB,
+    internalQuery,
+    queryEffect: (sql: string, params?: unknown[]) =>
+      Effect.tryPromise({
+        try: () => internalQuery(sql, params),
+        catch: (err) =>
+          err instanceof Error ? err : new Error(String(err)),
+      }),
+    getInternalDB: () => null,
+    internalExecute: async () => undefined,
+  };
+});
 
 mock.module("@atlas/api/lib/logger", () => {
   const noop = () => {};
@@ -298,6 +296,90 @@ describe("GET /api/v1/platform/crm-outbox", () => {
     expect(body.rows[0]?.lastError?.endsWith("…")).toBe(true);
   });
 
+  test("list truncation boundary: 200-char input passes through verbatim", async () => {
+    // Pin the cap value documented in the wire-type comment and the
+    // route's `LAST_ERROR_LIST_TRUNCATION` constant. A regression that
+    // moves the cap to 100 would still pass the prior `<= 201` test.
+    const exact = "y".repeat(200);
+    queryStub = async () => [{ ...SAMPLE_ROW, last_error: exact }];
+    const res = await app.request(
+      "http://localhost/api/v1/platform/crm-outbox",
+    );
+    const body = (await res.json()) as { rows: { lastError: string }[] };
+    expect(body.rows[0]?.lastError).toBe(exact);
+    expect(body.rows[0]?.lastError?.endsWith("…")).toBe(false);
+  });
+
+  test("list truncation boundary: 201-char input is clipped to 200 + ellipsis", async () => {
+    const over = "z".repeat(201);
+    queryStub = async () => [{ ...SAMPLE_ROW, last_error: over }];
+    const res = await app.request(
+      "http://localhost/api/v1/platform/crm-outbox",
+    );
+    const body = (await res.json()) as { rows: { lastError: string }[] };
+    expect(body.rows[0]?.lastError).toBe("z".repeat(200) + "…");
+  });
+
+  test("list silently ignores invalid since= and falls back to null", async () => {
+    // Documented behaviour: a malformed `since` doesn't 400 — it falls
+    // through to the `IS NULL OR …` predicate as if absent. Pinned so a
+    // future "tighten the parser into a 400" doesn't break the
+    // marketing dashboard URLs operators paste around.
+    queryStub = async () => [];
+    const res = await app.request(
+      "http://localhost/api/v1/platform/crm-outbox?since=not-a-date",
+    );
+    expect(res.status).toBe(200);
+    expect(queryCalls[0]?.params?.[2]).toBeNull();
+  });
+
+  test("list clampLimit covers every branch", async () => {
+    // Four branches in `clampLimit`: undefined → 100, non-numeric → 100,
+    // ≤0 → 100, >500 → 500. The cap is the only thing standing between
+    // an operator and `LIMIT 9999999` on a multi-million-row outbox.
+    queryStub = async () => [];
+    const cases: Array<[string, number]> = [
+      ["", 100],
+      ["?limit=abc", 100],
+      ["?limit=0", 100],
+      ["?limit=-5", 100],
+      ["?limit=99999", 500],
+      ["?limit=250", 250],
+    ];
+    for (const [qs, expected] of cases) {
+      queryCalls = [];
+      const res = await app.request(
+        `http://localhost/api/v1/platform/crm-outbox${qs}`,
+      );
+      expect(res.status).toBe(200);
+      expect(queryCalls[0]?.params?.[3]).toBe(expected);
+    }
+  });
+
+  test("list maps Date-instance timestamps from the pg driver", async () => {
+    // The pg driver returns `created_at` as a `Date` object on the
+    // SqlClient-less path; SqlClient returns a string. The route's
+    // `isoOr` helper handles both. Pin the Date branch — a regression
+    // that drops it (`return v.toISOString()` only) would crash on the
+    // raw-pool fallback.
+    queryStub = async () => [
+      {
+        ...SAMPLE_ROW,
+        created_at: new Date("2026-05-26T10:00:00.000Z"),
+        processed_at: new Date("2026-05-26T10:01:00.000Z"),
+      },
+    ];
+    const res = await app.request(
+      "http://localhost/api/v1/platform/crm-outbox",
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      rows: { createdAt: string; processedAt: string | null }[];
+    };
+    expect(body.rows[0]?.createdAt).toBe("2026-05-26T10:00:00.000Z");
+    expect(body.rows[0]?.processedAt).toBe("2026-05-26T10:01:00.000Z");
+  });
+
   test("list rejects an invalid status value (treated as no filter)", async () => {
     queryStub = async () => [];
     const res = await app.request(
@@ -327,8 +409,12 @@ describe("GET /api/v1/platform/crm-outbox/:id", () => {
       source: "demo",
       email: "user@example.com",
     });
+    // Detail endpoint MUST surface the full string on BOTH fields so a
+    // UI consumer that reads `.lastError` doesn't get a half-string
+    // mid-stack-trace. The dual-field shape exists only for list-side
+    // wire compatibility.
     expect(body.fullLastError).toBe(longErr);
-    expect(body.lastError?.length).toBeLessThanOrEqual(201);
+    expect(body.lastError).toBe(longErr);
   });
 
   test("404 detail when the row is not found", async () => {
@@ -349,7 +435,6 @@ describe("POST /api/v1/platform/crm-outbox/:id/retry", () => {
     queryStub = async (sql) => {
       if (sql.includes("UPDATE crm_outbox")) {
         updateCalls++;
-        // RETURNING clause — the row after the UPDATE.
         return [{ ...SAMPLE_ROW, status: "pending", last_error: null }];
       }
       probeCalls++;
@@ -376,7 +461,8 @@ describe("POST /api/v1/platform/crm-outbox/:id/retry", () => {
       row: { status: string; attempts: number };
     };
     expect(body.row.status).toBe("pending");
-    // attempts is preserved (no reset) — the issue's load-bearing AC.
+    // attempts must survive the retry — the deterministic backoff in
+    // `lib/lead-outbox/backoff.ts` keys on it.
     expect(body.row.attempts).toBe(3);
 
     expect(auditCalls).toHaveLength(1);
@@ -422,7 +508,6 @@ describe("POST /api/v1/platform/crm-outbox/:id/retry", () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
     expect(body.error).toBe("invalid_state");
-    // No UPDATE attempted, no audit row written.
     expect(queryCalls.filter((q) => q.sql.includes("UPDATE"))).toHaveLength(0);
     expect(auditCalls).toHaveLength(0);
   });
@@ -435,6 +520,46 @@ describe("POST /api/v1/platform/crm-outbox/:id/retry", () => {
     );
     expect(res.status).toBe(404);
     expect(auditCalls).toHaveLength(0);
+  });
+
+  test("400 race_lost retry — probe sees dead, UPDATE matches zero rows", async () => {
+    // Probe returns the row in `dead`, but a concurrent retry won the
+    // conditional UPDATE first → UPDATE returns []. Loser's intent
+    // MUST surface as a `status: "failure"` audit row so the
+    // forensic trail captures both attempts.
+    queryStub = async (sql) => {
+      if (sql.includes("UPDATE crm_outbox")) return [];
+      return [
+        {
+          id: "row-1",
+          event_type: "demo",
+          status: "dead",
+          attempts: 3,
+          last_error: "twenty 5xx",
+        },
+      ];
+    };
+    const res = await app.request(
+      "http://localhost/api/v1/platform/crm-outbox/row-1/retry",
+      { method: "POST" },
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("race_lost");
+    expect(auditCalls).toHaveLength(1);
+    expect(auditCalls[0]).toMatchObject({
+      actionType: "crm_outbox.retry",
+      targetType: "crm_outbox",
+      targetId: "row-1",
+      scope: "platform",
+      status: "failure",
+      metadata: {
+        outboxId: "row-1",
+        previousStatus: "dead",
+        previousAttempts: 3,
+        raceLost: true,
+      },
+    });
   });
 });
 
@@ -561,5 +686,40 @@ describe("POST /api/v1/platform/crm-outbox/:id/mark-dead", () => {
       { method: "POST" },
     );
     expect(res.status).toBe(404);
+  });
+
+  test("400 race_lost mark-dead — probe sees pending, UPDATE matches zero rows", async () => {
+    // Probe returns `pending` but a concurrent mark-dead (or the
+    // flusher's commit) flipped the row to a terminal state first.
+    // Failure audit must still capture the operator's intent.
+    queryStub = async (sql) => {
+      if (sql.includes("UPDATE crm_outbox")) return [];
+      return [
+        {
+          id: "row-1",
+          event_type: "demo",
+          status: "in_flight",
+          attempts: 2,
+          last_error: null,
+        },
+      ];
+    };
+    const res = await app.request(
+      "http://localhost/api/v1/platform/crm-outbox/row-1/mark-dead",
+      { method: "POST" },
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("race_lost");
+    expect(auditCalls).toHaveLength(1);
+    expect(auditCalls[0]).toMatchObject({
+      actionType: "crm_outbox.mark_dead",
+      status: "failure",
+      metadata: {
+        outboxId: "row-1",
+        previousStatus: "in_flight",
+        raceLost: true,
+      },
+    });
   });
 });

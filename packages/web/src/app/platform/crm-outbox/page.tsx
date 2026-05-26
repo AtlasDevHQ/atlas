@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/table";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import {
@@ -123,21 +124,19 @@ function CrmOutboxPageContent() {
   const [eventTypeFilter, setEventTypeFilter] = useState("");
   const [sinceFilter, setSinceFilter] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  // Action state — confirm dialogs guard the destructive paths.
   const [retryConfirmId, setRetryConfirmId] = useState<string | null>(null);
   const [markDeadConfirmId, setMarkDeadConfirmId] = useState<string | null>(null);
 
-  // Build the query string from the filter trio. Empty filters are
-  // intentionally NOT sent so the API's `IS NULL OR …` predicates skip
-  // them server-side.
-  const listPath = useMemo(() => {
+  // Empty filters are intentionally NOT sent so the API's
+  // `IS NULL OR …` predicates skip them server-side.
+  const listPath = (() => {
     const params = new URLSearchParams();
     if (statusFilter !== "all") params.set("status", statusFilter);
     if (eventTypeFilter.trim()) params.set("event_type", eventTypeFilter.trim());
     if (sinceFilter) params.set("since", sinceFilter);
     const qs = params.toString();
     return qs ? `/api/v1/platform/crm-outbox?${qs}` : "/api/v1/platform/crm-outbox";
-  }, [statusFilter, eventTypeFilter, sinceFilter]);
+  })();
 
   const {
     data,
@@ -154,36 +153,43 @@ function CrmOutboxPageContent() {
     },
   );
 
-  const { mutate: retryMutate, saving: retrying } = useAdminMutation({
-    invalidates: refetch,
-  });
-  const { mutate: markDeadMutate, saving: markingDead } = useAdminMutation({
-    invalidates: refetch,
-  });
+  const {
+    mutate: retryMutate,
+    saving: retrying,
+    error: retryError,
+  } = useAdminMutation({ invalidates: refetch });
+  const {
+    mutate: markDeadMutate,
+    saving: markingDead,
+    error: markDeadError,
+  } = useAdminMutation({ invalidates: refetch });
 
   const rows: CrmOutboxRow[] = data?.rows ?? [];
-  const counts = useMemo(() => {
-    const c = { pending: 0, in_flight: 0, done: 0, dead: 0 };
-    for (const r of rows) c[r.status]++;
-    return c;
-  }, [rows]);
+  const counts = { pending: 0, in_flight: 0, done: 0, dead: 0 };
+  for (const r of rows) counts[r.status]++;
 
+  // Both handlers keep the dialog open on failure so the FetchError
+  // surfaces in the dialog body via `MutationErrorSurface`. Closing
+  // the dialog unconditionally would silently hide 400 `race_lost`
+  // (concurrent retry won), 400 `invalid_state` (stale list), 404
+  // `not_found` (row purged), and 500 internal errors — exactly the
+  // signals an operator at this surface needs to see.
   async function handleRetry() {
     if (!retryConfirmId) return;
-    await retryMutate({
+    const result = await retryMutate({
       path: `/api/v1/platform/crm-outbox/${retryConfirmId}/retry`,
       method: "POST",
     });
-    setRetryConfirmId(null);
+    if (result.ok) setRetryConfirmId(null);
   }
 
   async function handleMarkDead() {
     if (!markDeadConfirmId) return;
-    await markDeadMutate({
+    const result = await markDeadMutate({
       path: `/api/v1/platform/crm-outbox/${markDeadConfirmId}/mark-dead`,
       method: "POST",
     });
-    setMarkDeadConfirmId(null);
+    if (result.ok) setMarkDeadConfirmId(null);
   }
 
   return (
@@ -430,6 +436,7 @@ function CrmOutboxPageContent() {
               tight retry loop.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <MutationErrorSurface error={retryError} feature="CRM Outbox" />
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleRetry} disabled={retrying}>
@@ -462,6 +469,7 @@ function CrmOutboxPageContent() {
               payload the dispatcher classification missed).
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <MutationErrorSurface error={markDeadError} feature="CRM Outbox" />
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction

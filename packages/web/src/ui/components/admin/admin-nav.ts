@@ -18,10 +18,11 @@ export interface NavSubItem {
   selfHostedOnly?: boolean;
   /**
    * Hide on self-hosted deploys. Mirror of `selfHostedOnly` for items
-   * that depend on a SaaS-only Tag — e.g. `/platform/crm-outbox` queries
-   * the `crm_outbox` table that only the EE `SaasCrmLayer` writes to.
-   * The API still returns 404 if accessed directly on self-hosted; this
-   * just keeps the nav link from advertising a dead page.
+   * that depend on a SaaS-only Tag — e.g. `/platform/crm-outbox`
+   * queries the `crm_outbox` table that is only populated when the EE
+   * `SaasCrm` layer is bound. The API still returns 404 on self-hosted
+   * via the no-op layer; this just keeps the nav link from advertising
+   * a dead page.
    */
   saasOnly?: boolean;
   badge?: number;

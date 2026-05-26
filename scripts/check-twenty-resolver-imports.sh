@@ -40,11 +40,16 @@ ALLOWED_DIRS=(
   "plugins/twenty/__tests__/"
 )
 
-# Match `resolveOperatorCredentials` and `tryResolveOperatorCredentials`
-# in real import syntax. The closing `\b` keeps a future
-# `resolveOperatorCredentialsFromCache` (unrelated symbol) from
-# triggering the check.
-PATTERN='resolveOperatorCredentials\b|tryResolveOperatorCredentials\b'
+# Match every name that resolves the operator-env path. The new
+# canonical names (`resolveOperatorCredentials`,
+# `tryResolveOperatorCredentials`) AND the legacy `@deprecated`
+# aliases (`resolveCredentialsFromEnv`, `tryResolveCredentialsFromEnv`)
+# are all confined to the allowed dirs. The aliases are referentially
+# identical re-exports of the new functions; a caller reaching for
+# either lands in the same env-only code path, so the leak prevention
+# must cover both names. The closing `\b` keeps lookalikes like
+# `resolveOperatorCredentialsFromCache` from triggering the check.
+PATTERN='resolveOperatorCredentials\b|tryResolveOperatorCredentials\b|resolveCredentialsFromEnv\b|tryResolveCredentialsFromEnv\b'
 
 # Strip comments before pattern-matching. Same three-step sed program
 # as `check-ee-imports.sh` (see that file for the why):
@@ -126,4 +131,4 @@ if [ -n "$OFFENDERS" ]; then
   exit 1
 fi
 
-echo "Twenty resolver import check passed — resolveOperatorCredentials is confined to ee/saas-crm + the plugin."
+echo "Twenty resolver import check passed — operator-path resolvers are confined to ee/saas-crm + the plugin."

@@ -74,6 +74,16 @@ run_fixture fail "packages/api/src/lib/violator.ts" \
 run_fixture fail "packages/api/src/lib/try-violator.ts" \
   'import { tryResolveOperatorCredentials } from "@useatlas/twenty";'
 
+# Legacy `@deprecated` aliases must also be confined to the allowed
+# dirs — they re-export the operator function, so a caller using the
+# old name lands in the same env-only code path and can leak just as
+# much as a caller using the new name.
+run_fixture fail "packages/api/src/lib/legacy-from-env.ts" \
+  'import { resolveCredentialsFromEnv } from "@useatlas/twenty";'
+
+run_fixture fail "packages/api/src/lib/legacy-try-from-env.ts" \
+  'import { tryResolveCredentialsFromEnv } from "@useatlas/twenty";'
+
 run_fixture fail "packages/api/src/lib/same-line-block-comment.ts" \
   '/* TODO: revisit */ import { resolveOperatorCredentials } from "@useatlas/twenty";'
 

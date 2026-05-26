@@ -47,7 +47,15 @@ import {
 import { isEnterpriseEnabled } from "../index";
 import {
   getPersonMetadata,
-  tryResolveOperatorCredentials,
+  // Legacy name kept here until @useatlas/twenty@0.0.4 publishes. The
+  // canonical name post-#2850 is `tryResolveOperatorCredentials`, but
+  // the scaffold templates pin `@useatlas/twenty@^0.0.3` (0.0.x exact-
+  // match semver per CLAUDE.md), which only exports the legacy name.
+  // In 0.0.4 `tryResolveCredentialsFromEnv` becomes a @deprecated
+  // re-export of `tryResolveOperatorCredentials` — referentially
+  // identical, env-only. The follow-up PR that ships after publish
+  // swaps this to the canonical name and bumps template refs.
+  tryResolveCredentialsFromEnv,
   normalizeLead,
   upsertPerson,
   createNote,
@@ -386,7 +394,7 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
     // through it would create the Direction-2 leak documented in #2850.
     // The grep gate in scripts/check-twenty-resolver-imports.sh enforces
     // that this file cannot import resolveWorkspaceCredentials.
-    const bootCreds = tryResolveOperatorCredentials();
+    const bootCreds = tryResolveCredentialsFromEnv();
     if (!bootCreds) {
       log.warn(
         { event: "saas_crm.credentials_absent" },

@@ -16,6 +16,15 @@ export interface NavSubItem {
   prefixMatch?: boolean;
   requiredRole?: "platform_admin";
   selfHostedOnly?: boolean;
+  /**
+   * Hide on self-hosted deploys. Mirror of `selfHostedOnly` for items
+   * that depend on a SaaS-only Tag — e.g. `/platform/crm-outbox`
+   * queries the `crm_outbox` table that is only populated when the EE
+   * `SaasCrm` layer is bound. The API still returns 404 on self-hosted
+   * via the no-op layer; this just keeps the nav link from advertising
+   * a dead page.
+   */
+  saasOnly?: boolean;
   badge?: number;
 }
 
@@ -115,6 +124,7 @@ export const navGroups: NavGroup[] = [
       { href: "/platform/abuse", label: "Abuse Prevention" },
       { href: "/platform/sla", label: "SLA Monitoring" },
       { href: "/platform/backups", label: "Backups" },
+      { href: "/platform/crm-outbox", label: "CRM Outbox", saasOnly: true },
       { href: "/platform/residency", label: "Data Residency" },
       { href: "/platform/domains", label: "Custom Domains" },
       { href: "/platform/settings", label: "Settings" },

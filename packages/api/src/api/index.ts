@@ -448,6 +448,20 @@ try {
   );
 }
 
+// Platform CRM outbox routes — SaaS-only (gated on SaasCrm.available),
+// platform_admin role. Inspection + manual retry/mark-dead surface for
+// the crm_outbox queue (#2735).
+try {
+  const { platformCrmOutbox } = await import("./routes/platform-crm-outbox");
+  app.route("/api/v1/platform/crm-outbox", platformCrmOutbox);
+  log.info("Platform CRM outbox routes enabled");
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load platform CRM outbox routes — CRM outbox inspection will be unavailable",
+  );
+}
+
 // Platform data residency routes — enterprise-gated, platform_admin role.
 try {
   const { platformResidency } = await import("./routes/platform-residency");

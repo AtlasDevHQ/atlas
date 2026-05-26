@@ -3,6 +3,7 @@ export * from "./admin-config";
 export * from "./analytics";
 export * from "./approval";
 export * from "./backup";
+export * from "./crm-outbox";
 export * from "./billing";
 export * from "./common";
 export * from "./connection";

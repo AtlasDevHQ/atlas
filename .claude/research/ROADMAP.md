@@ -161,6 +161,7 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
   - [x] Slice 3 (#2730 / PR #2833) — talk-to-sales dialog on `/pricing` Business tier → `POST /api/v1/contact` → Twenty `Person` + attached `Note` via the slice-1/2 outbox; Cloudflare Turnstile siteverify fail-closed, `@useatlas/twenty@0.0.2` adds `createNote`.
   - [x] Slice 4 (#2731 / PR #2840) — Better Auth `databaseHooks.user.create.after` enqueues `signup` lead via the outbox; deduped via the `signup:<userId>` idempotency key. Wiring-test follow-up tracked at #2841 + type-bridge follow-up at #2842.
   - [x] Slice 5 (#2733 / PR #2838) — talk-to-sales dialog replicated to `/sla`, `/dpa`, `/terms` via shared `<TalkToSalesDialog>` + page-specific `topic` field; `noscript` mailto fallback preserved.
+  - [x] Slice 9 (#2735) — platform-operator UI at `/platform/crm-outbox` for `crm_outbox` inspection + manual `retry` / `mark-dead`. SaaS-gated through the `SaasCrm` Tag's `available` flag (self-hosted hides the nav link via the new `saasOnly` and falls through to the no-op layer's 404 envelope on direct access). `retry` preserves `attempts` so the deterministic backoff resumes from where it stopped — no foot-gun infinite-retry path. Both mutations audit-logged via new `ADMIN_ACTIONS.crm_outbox.{retry, markDead}`.
 
 ## Parked
 

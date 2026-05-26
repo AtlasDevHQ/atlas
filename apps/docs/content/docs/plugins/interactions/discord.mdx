@@ -82,51 +82,42 @@ Generate an invite URL with the required permissions:
 
 ## Configuration
 
+<Callout type="info" title="Catalog-driven activation (1.5.2+)">
+The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650) (1.5.2). Adapter activation is driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. Discord's static-bot install handler landed in 1.5.3 ([#2749](https://github.com/AtlasDevHQ/atlas/pull/2749)) — the catalog row carries `install_model: "static-bot"`, and bot credentials are read from `DISCORD_BOT_TOKEN`, `DISCORD_APPLICATION_ID`, and `DISCORD_PUBLIC_KEY`. See the [chat plugin docs](/plugins/interactions/chat#configuration) for the canonical shape.
+</Callout>
+
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
 import { executeAgentQuery } from "@atlas/api/lib/agent-query";
 import { chatPlugin } from "@useatlas/chat";
 
+const catalog = [
+  { slug: "discord", type: "chat", install_model: "static-bot",
+    enabled: true, saas_eligible: true },
+] as const;
+
 export default defineConfig({
+  catalog,
   plugins: [
     chatPlugin({
-      adapters: {
-        discord: {
-          botToken: process.env.DISCORD_BOT_TOKEN!,
-          applicationId: process.env.DISCORD_APPLICATION_ID!,
-          publicKey: process.env.DISCORD_PUBLIC_KEY!,
-        },
-      },
+      catalog,
       executeQuery: executeAgentQuery,
     }),
   ],
 });
 ```
 
-With optional mention role IDs (to trigger on role mentions, not just direct @mentions):
+Bot credentials come from env vars — see [Environment Variables](#environment-variables) below. To trigger mention handlers on role mentions (not just direct `@user` mentions), set `DISCORD_MENTION_ROLE_IDS` to a comma-separated list of role IDs.
 
-```typescript
-chatPlugin({
-  adapters: {
-    discord: {
-      botToken: process.env.DISCORD_BOT_TOKEN!,
-      applicationId: process.env.DISCORD_APPLICATION_ID!,
-      publicKey: process.env.DISCORD_PUBLIC_KEY!,
-      mentionRoleIds: ["1234567890"],
-    },
-  },
-  executeQuery: executeAgentQuery,
-})
-```
+### Catalog entry
 
-### Options
-
-| Option | Type | Required | Description |
-|--------|------|----------|-------------|
-| `botToken` | `string` | Yes | Discord bot token from the Developer Portal Bot page. |
-| `applicationId` | `string` | Yes | Discord application ID from the General Information page. |
-| `publicKey` | `string` | Yes | Application public key for Ed25519 webhook signature verification. |
-| `mentionRoleIds` | `string[]` | No | Role IDs that trigger mention handlers in addition to direct @mentions. |
+| Field | Value | Description |
+|-------|-------|-------------|
+| `slug` | `"discord"` | Stable platform key. |
+| `type` | `"chat"` | Required for chat dispatch. |
+| `install_model` | `"static-bot"` | Activates the static-bot install handler (1.5.3+). |
+| `enabled` | `true` | Customer can install this row. Ops can flip false to disable without removing the row. |
+| `saas_eligible` | `true` | Visible to the SaaS admin UI. |
 
 ## Mounted Routes
 

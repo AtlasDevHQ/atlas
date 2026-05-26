@@ -65,45 +65,42 @@ For the bot to see all messages (not just commands and @mentions), disable priva
 
 ## Configuration
 
+<Callout type="info" title="Catalog-driven activation (1.5.2+)">
+The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650) (1.5.2). Adapter activation is driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. Telegram lands as the first static-bot install model in 1.5.3 ([#2748](https://github.com/AtlasDevHQ/atlas/pull/2748)) — the catalog row carries `install_model: "static-bot"`, and the bot token is read from `TELEGRAM_BOT_TOKEN`. See the [chat plugin docs](/plugins/interactions/chat#configuration) for the canonical shape.
+</Callout>
+
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
 import { executeAgentQuery } from "@atlas/api/lib/agent-query";
 import { chatPlugin } from "@useatlas/chat";
 
+const catalog = [
+  { slug: "telegram", type: "chat", install_model: "static-bot",
+    enabled: true, saas_eligible: true },
+] as const;
+
 export default defineConfig({
+  catalog,
   plugins: [
     chatPlugin({
-      adapters: {
-        telegram: {
-          botToken: process.env.TELEGRAM_BOT_TOKEN!,
-        },
-      },
+      catalog,
       executeQuery: executeAgentQuery,
     }),
   ],
 });
 ```
 
-With optional webhook secret token:
+The bot token comes from env vars — see [Environment Variables](#environment-variables) below.
 
-```typescript
-chatPlugin({
-  adapters: {
-    telegram: {
-      botToken: process.env.TELEGRAM_BOT_TOKEN!,
-      secretToken: process.env.TELEGRAM_WEBHOOK_SECRET_TOKEN,
-    },
-  },
-  executeQuery: executeAgentQuery,
-})
-```
+### Catalog entry
 
-### Options
-
-| Option | Type | Required | Description |
-|--------|------|----------|-------------|
-| `botToken` | `string` | Yes | Telegram bot token from BotFather. |
-| `secretToken` | `string` | No | Webhook secret token for verifying incoming requests via `x-telegram-bot-api-secret-token` header. |
+| Field | Value | Description |
+|-------|-------|-------------|
+| `slug` | `"telegram"` | Stable platform key. |
+| `type` | `"chat"` | Required for chat dispatch. |
+| `install_model` | `"static-bot"` | Activates the static-bot install handler (1.5.3+). |
+| `enabled` | `true` | Customer can install this row. Ops can flip false to disable without removing the row. |
+| `saas_eligible` | `true` | Visible to the SaaS admin UI. |
 
 ## Mounted Routes
 

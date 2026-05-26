@@ -72,74 +72,68 @@ For personal bots or testing, you can use a PAT instead of a GitHub App.
 
 ## Configuration
 
-### GitHub App (Multi-Tenant)
+<Callout type="info" title="Catalog-driven activation (1.5.2+)">
+The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650) (1.5.2). Adapter activation is driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. GitHub ships two install models — the OAuth-style App row landed in 1.5.3 ([#2818](https://github.com/AtlasDevHQ/atlas/pull/2818)) and the static-bot PAT row landed alongside it ([#2807](https://github.com/AtlasDevHQ/atlas/pull/2807)). Pick exactly one row per workspace. See the [chat plugin docs](/plugins/interactions/chat#configuration) for the canonical shape.
+</Callout>
+
+### GitHub App (Recommended)
+
+The App row covers both multi-tenant (auto-detect installation from webhook payloads) and single-tenant (fixed `GITHUB_INSTALLATION_ID`) modes — set the env var to lock to one installation, or leave it unset for multi-tenant.
 
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
 import { executeAgentQuery } from "@atlas/api/lib/agent-query";
 import { chatPlugin } from "@useatlas/chat";
 
+const catalog = [
+  { slug: "github", type: "chat", install_model: "oauth",
+    enabled: true, saas_eligible: true },
+] as const;
+
 export default defineConfig({
+  catalog,
   plugins: [
     chatPlugin({
-      adapters: {
-        github: {
-          appId: process.env.GITHUB_APP_ID!,
-          privateKey: process.env.GITHUB_PRIVATE_KEY!,
-          webhookSecret: process.env.GITHUB_WEBHOOK_SECRET!,
-        },
-      },
+      catalog,
       executeQuery: executeAgentQuery,
     }),
   ],
 });
 ```
 
-### GitHub App (Single-Tenant)
-
-```typescript
-chatPlugin({
-  adapters: {
-    github: {
-      appId: process.env.GITHUB_APP_ID!,
-      privateKey: process.env.GITHUB_PRIVATE_KEY!,
-      installationId: Number(process.env.GITHUB_INSTALLATION_ID!),
-      webhookSecret: process.env.GITHUB_WEBHOOK_SECRET!,
-    },
-  },
-  executeQuery: executeAgentQuery,
-})
-```
+App ID, private key, and webhook secret come from env vars — see [Environment Variables](#environment-variables) below. Single-tenant mode is selected by also setting `GITHUB_INSTALLATION_ID` to a fixed installation; leave it unset for multi-tenant.
 
 ### Personal Access Token
 
+For personal bots or testing, use the `github-pat` static-bot row:
+
 ```typescript
-chatPlugin({
-  adapters: {
-    github: {
-      token: process.env.GITHUB_TOKEN!,
-      webhookSecret: process.env.GITHUB_WEBHOOK_SECRET!,
-      userName: "my-bot-username",
-    },
-  },
-  executeQuery: executeAgentQuery,
-})
+const catalog = [
+  { slug: "github-pat", type: "chat", install_model: "static-bot",
+    enabled: true, saas_eligible: false },
+] as const;
+
+export default defineConfig({
+  catalog,
+  plugins: [
+    chatPlugin({
+      catalog,
+      executeQuery: executeAgentQuery,
+    }),
+  ],
+});
 ```
 
-### Options
+PAT + webhook secret come from env vars — see [Environment Variables](#environment-variables) below.
 
-| Option | Type | Required | Description |
-|--------|------|----------|-------------|
-| `appId` | `string` | Yes* | GitHub App ID. Required for App-based auth. |
-| `privateKey` | `string` | Yes* | GitHub App private key (PEM format). Required for App-based auth. |
-| `installationId` | `number` | No | Installation ID for single-tenant mode. Omit for multi-tenant (auto-detected from webhook payloads). |
-| `token` | `string` | Yes* | Personal Access Token. Alternative to App-based auth. |
-| `webhookSecret` | `string` | No | Webhook secret for HMAC-SHA256 signature verification. Strongly recommended for production. |
-| `userName` | `string` | No | Bot username for @-mention detection (e.g., `"my-bot"` or `"my-bot[bot]"`). |
+### Catalog entries
 
-<Callout type="info">
-\* Provide either `token` (PAT auth) or `appId` + `privateKey` (GitHub App auth). Do not provide both.
-</Callout>
+| Row | `slug` | `install_model` | Auth mode | Notes |
+|-----|--------|-----------------|-----------|-------|
+| GitHub App | `"github"` | `"oauth"` | App ID + private key | Recommended; covers single- and multi-tenant via env-var presence of `GITHUB_INSTALLATION_ID`. |
+| PAT | `"github-pat"` | `"static-bot"` | Fine-grained PAT | Single-account; not surfaced in the SaaS admin UI (`saas_eligible: false`). |
+
+Don't enable both rows in the same deploy — pick the auth mode that matches the workspace.
 
 ## Mounted Routes
 

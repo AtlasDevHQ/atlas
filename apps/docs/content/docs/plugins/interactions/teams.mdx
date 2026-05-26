@@ -152,21 +152,31 @@ Teams requires Adaptive Card schema version 1.5 or lower. The plugin uses versio
 
 ## Migrating to @useatlas/chat
 
-Replace `@useatlas/teams` with the Chat SDK bridge plugin:
+Replace `@useatlas/teams` with the Chat SDK bridge plugin. The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650) (1.5.2); Teams's manifest-driven install handler landed in 1.5.3 ([#2752](https://github.com/AtlasDevHQ/atlas/pull/2752)). Activation is now driven by a `catalog` row + per-Platform env vars — `chatPlugin()` itself takes no credentials.
 
 ```typescript
 // Before:
 import { teamsPlugin } from "@useatlas/teams";
 teamsPlugin({ appId: "...", appPassword: "...", executeQuery })
 
-// After:
+// After (1.5.3+):
+import { defineConfig } from "@atlas/api/lib/config";
 import { chatPlugin } from "@useatlas/chat";
-chatPlugin({
-  adapters: {
-    teams: { appId: "...", appPassword: "...", tenantId: "..." },
-  },
-  executeQuery,
-})
+
+const catalog = [
+  { slug: "teams", type: "chat", install_model: "static-bot",
+    enabled: true, saas_eligible: true },
+] as const;
+
+export default defineConfig({
+  catalog,
+  plugins: [
+    chatPlugin({ catalog, executeQuery }),
+  ],
+});
+
+// env vars:
+//   TEAMS_APP_ID, TEAMS_APP_PASSWORD, TEAMS_TENANT_ID (optional)
 ```
 
 When using the Chat SDK bridge, update the **messaging endpoint** in your Azure Bot Configuration to:

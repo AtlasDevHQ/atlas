@@ -90,71 +90,42 @@ The adapter automatically creates Workspace Events subscriptions when added to a
 
 ## Configuration
 
-### Basic (Service Account Credentials)
+<Callout type="info" title="Catalog-driven activation (1.5.2+)">
+The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650) (1.5.2). Adapter activation is driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. Google Chat's service-account install handler landed in 1.5.3 ([#2754](https://github.com/AtlasDevHQ/atlas/pull/2754)) — the catalog row carries `install_model: "static-bot"`, and the service-account JSON + Pub/Sub topic are read from env vars. See the [chat plugin docs](/plugins/interactions/chat#configuration) for the canonical shape.
+</Callout>
 
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
 import { executeAgentQuery } from "@atlas/api/lib/agent-query";
 import { chatPlugin } from "@useatlas/chat";
 
+const catalog = [
+  { slug: "gchat", type: "chat", install_model: "static-bot",
+    enabled: true, saas_eligible: true },
+] as const;
+
 export default defineConfig({
+  catalog,
   plugins: [
     chatPlugin({
-      adapters: {
-        gchat: {
-          credentials: JSON.parse(process.env.GOOGLE_CHAT_CREDENTIALS!),
-        },
-      },
+      catalog,
       executeQuery: executeAgentQuery,
     }),
   ],
 });
 ```
 
-### Application Default Credentials
+Service-account credentials, Pub/Sub topic, and optional impersonation come from env vars — see [Environment Variables](#environment-variables) below.
 
-Use ADC when running on GCE, Cloud Run, or with Workload Identity Federation:
+### Catalog entry
 
-```typescript
-chatPlugin({
-  adapters: {
-    gchat: {
-      useApplicationDefaultCredentials: true,
-    },
-  },
-  executeQuery: executeAgentQuery,
-})
-```
-
-### Full Configuration (With Pub/Sub)
-
-```typescript
-chatPlugin({
-  adapters: {
-    gchat: {
-      credentials: JSON.parse(process.env.GOOGLE_CHAT_CREDENTIALS!),
-      endpointUrl: "https://your-atlas-api.example.com/api/plugins/chat-interaction/webhooks/gchat",
-      pubsubTopic: "projects/my-project/topics/chat-events",
-      impersonateUser: "admin@example.com",
-    },
-  },
-  executeQuery: executeAgentQuery,
-})
-```
-
-### Options
-
-| Option | Type | Required | Description |
-|--------|------|----------|-------------|
-| `credentials` | `object` | No* | Service account credentials (`client_email`, `private_key`, optional `project_id`). |
-| `useApplicationDefaultCredentials` | `true` | No* | Use Application Default Credentials (GCE, Cloud Run, Workload Identity). |
-| `endpointUrl` | `string` | No | HTTP endpoint URL for card button click actions. Required for interactive cards. |
-| `pubsubTopic` | `string` | No | Pub/Sub topic for Workspace Events (format: `projects/{project}/topics/{topic}`). |
-| `impersonateUser` | `string` | No | User email to impersonate for Workspace Events API (domain-wide delegation). |
-
-<Callout type="info">
-\* Provide `credentials` OR `useApplicationDefaultCredentials`, or omit both for automatic detection from `GOOGLE_CHAT_CREDENTIALS` and `GOOGLE_CHAT_USE_ADC` environment variables.
-</Callout>
+| Field | Value | Description |
+|-------|-------|-------------|
+| `slug` | `"gchat"` | Stable platform key. |
+| `type` | `"chat"` | Required for chat dispatch. |
+| `install_model` | `"static-bot"` | Activates the static-bot install handler (1.5.3+). |
+| `enabled` | `true` | Customer can install this row. Ops can flip false to disable without removing the row. |
+| `saas_eligible` | `true` | Visible to the SaaS admin UI. |
 
 ## Mounted Routes
 

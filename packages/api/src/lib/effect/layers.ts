@@ -70,6 +70,34 @@ import {
 
 const log = createLogger("effect:layers");
 
+// ── Defect-canary wrapper for forked periodic fibers (#2864) ──────────
+// Inner `Effect.catchAll(...)` blocks at each tick body normalize
+// expected Promise rejections into typed `Cause.Fail` so the
+// `Effect.repeat(Schedule.spaced(...))` loop survives them. But a
+// genuine defect — a synchronous throw inside the `Effect.sync` log
+// handler, an Effect runtime fault, or any non-`tryPromise` path — lands
+// in `Cause.Die`, escapes the inner `catchAll`, exits `repeat`, and
+// kills the fiber **silently** (the original #2864 failure mode, just
+// reached via a different door). Wrap each `tick.pipe(Effect.repeat(...))`
+// with this outer catch so a defect-induced fiber death emits a single
+// `periodic_fiber.died` error log entry before the fiber unwinds.
+function withFiberDeathLog<A, E, R>(
+  fiber: string,
+  eff: Effect.Effect<A, E, R>,
+): Effect.Effect<void, never, R> {
+  return eff.pipe(
+    Effect.catchAllCause((cause) =>
+      Effect.sync(() => {
+        log.error(
+          { err: cause.toString(), event: "periodic_fiber.died", fiber },
+          `Periodic fiber "${fiber}" died — defect escaped tick body`,
+        );
+      }),
+    ),
+    Effect.asVoid,
+  );
+}
+
 // ══════════════════════════════════════════════════════════════════════
 // ██  Enterprise gate (#2563 slice 1/11 of #2017; #2564 slice 2/11)
 // ══════════════════════════════════════════════════════════════════════
@@ -985,11 +1013,14 @@ export const SettingsLive: Layer.Layer<Settings> = Layer.scoped(
       // after the fork. With `Effect.fork` the first scheduled iteration
       // of `Effect.repeat(Schedule.spaced)` never runs because the child
       // is interrupted at gen completion (verified by repro; diagnosed
-      // in #DharmaIncident). `forkScoped` binds to the Scope provided
+      // in #2864). `forkScoped` binds to the Scope provided
       // by `Layer.scoped`, so the fiber lives until layer shutdown. No
       // companion `addFinalizer(Fiber.interrupt)` needed — scope handles it.
       yield* Effect.forkScoped(
-        tick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(intervalMs)))),
+        withFiberDeathLog(
+          "settings_refresh",
+          tick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(intervalMs)))),
+        ),
       );
 
       log.info({ intervalMs }, "Started periodic settings refresh fiber");
@@ -1096,7 +1127,10 @@ export function makeSchedulerLive(
         );
         // forkScoped, not fork — see SettingsLive for rationale.
         yield* Effect.forkScoped(
-          emailTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS)))),
+          withFiberDeathLog(
+            "onboarding_email",
+            emailTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS)))),
+          ),
         );
       } else {
         log.debug("Onboarding email scheduler not started — feature disabled");
@@ -1137,7 +1171,10 @@ export function makeSchedulerLive(
         );
         // forkScoped, not fork — see SettingsLive for rationale.
         yield* Effect.forkScoped(
-          expertTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(getExpertSchedulerIntervalMs())))),
+          withFiberDeathLog(
+            "expert_scheduler",
+            expertTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(getExpertSchedulerIntervalMs())))),
+          ),
         );
         log.info({ intervalMs: getExpertSchedulerIntervalMs() }, "Semantic expert scheduler started");
       } else {
@@ -1203,7 +1240,10 @@ export function makeSchedulerLive(
       );
       // forkScoped, not fork — see SettingsLive for rationale.
       yield* Effect.forkScoped(
-        oauthTick.pipe(Effect.repeat(Schedule.spaced(Duration.minutes(10)))),
+        withFiberDeathLog(
+          "oauth_state_cleanup",
+          oauthTick.pipe(Effect.repeat(Schedule.spaced(Duration.minutes(10)))),
+        ),
       );
 
       // ── Periodic fiber: rate-limit cleanup (#1274) — every 60s ──────
@@ -1229,7 +1269,10 @@ export function makeSchedulerLive(
       );
       // forkScoped, not fork — see SettingsLive for rationale.
       yield* Effect.forkScoped(
-        rateLimitTick.pipe(Effect.repeat(Schedule.spaced(Duration.seconds(60)))),
+        withFiberDeathLog(
+          "rate_limit_cleanup",
+          rateLimitTick.pipe(Effect.repeat(Schedule.spaced(Duration.seconds(60)))),
+        ),
       );
 
       // ── Periodic fiber: demo rate-limit cleanup — interval from DEMO_CLEANUP_INTERVAL_MS ──
@@ -1258,7 +1301,10 @@ export function makeSchedulerLive(
       };
       // forkScoped, not fork — see SettingsLive for rationale.
       yield* Effect.forkScoped(
-        demoTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(DEMO_CLEANUP_INTERVAL_MS)))),
+        withFiberDeathLog(
+          "demo_rate_limit_cleanup",
+          demoTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(DEMO_CLEANUP_INTERVAL_MS)))),
+        ),
       );
 
       // ── Periodic fiber: contact rate-limit cleanup — every 60s ────
@@ -1286,7 +1332,10 @@ export function makeSchedulerLive(
       );
       // forkScoped, not fork — see SettingsLive for rationale.
       yield* Effect.forkScoped(
-        contactTick.pipe(Effect.repeat(Schedule.spaced(Duration.seconds(60)))),
+        withFiberDeathLog(
+          "contact_rate_limit_cleanup",
+          contactTick.pipe(Effect.repeat(Schedule.spaced(Duration.seconds(60)))),
+        ),
       );
 
       // ── Periodic fiber: abuse detection cleanup — every 5 min ──────
@@ -1315,7 +1364,10 @@ export function makeSchedulerLive(
       };
       // forkScoped, not fork — see SettingsLive for rationale.
       yield* Effect.forkScoped(
-        abuseTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(ABUSE_CLEANUP_INTERVAL_MS)))),
+        withFiberDeathLog(
+          "abuse_cleanup",
+          abuseTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(ABUSE_CLEANUP_INTERVAL_MS)))),
+        ),
       );
 
       // ── Periodic fiber: dashboard public rate-limit cleanup — every 60s ─
@@ -1350,7 +1402,10 @@ export function makeSchedulerLive(
       }
       // forkScoped, not fork — see SettingsLive for rationale.
       yield* Effect.forkScoped(
-        dashboardTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(dashboardCleanupIntervalMs)))),
+        withFiberDeathLog(
+          "dashboard_rate_limit_cleanup",
+          dashboardTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(dashboardCleanupIntervalMs)))),
+        ),
       );
 
       // ── Periodic fiber: conversation public rate sweep — every 60s ──
@@ -1380,7 +1435,10 @@ export function makeSchedulerLive(
       };
       // forkScoped, not fork — see SettingsLive for rationale.
       yield* Effect.forkScoped(
-        convSweepTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(CONVERSATION_RATE_SWEEP_INTERVAL_MS)))),
+        withFiberDeathLog(
+          "conversation_rate_sweep",
+          convSweepTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(CONVERSATION_RATE_SWEEP_INTERVAL_MS)))),
+        ),
       );
 
       // ── Periodic fiber: share token cleanup — every 60 min ─────────
@@ -1405,7 +1463,10 @@ export function makeSchedulerLive(
       );
       // forkScoped, not fork — see SettingsLive for rationale.
       yield* Effect.forkScoped(
-        shareCleanupEffect.pipe(Effect.repeat(Schedule.spaced(Duration.millis(SHARE_CLEANUP_INTERVAL_MS)))),
+        withFiberDeathLog(
+          "share_token_cleanup",
+          shareCleanupEffect.pipe(Effect.repeat(Schedule.spaced(Duration.millis(SHARE_CLEANUP_INTERVAL_MS)))),
+        ),
       );
 
       // ── Periodic fiber: sub-processor change-feed publisher (#1924) ──
@@ -1436,10 +1497,13 @@ export function makeSchedulerLive(
       );
       // forkScoped, not fork — see SettingsLive for rationale.
       yield* Effect.forkScoped(
-        subProcessorTick.pipe(
-          Effect.repeat(
-            Schedule.spaced(
-              Duration.millis(subProcessorPublisher.SUBPROCESSOR_PUBLISH_INTERVAL_MS),
+        withFiberDeathLog(
+          "sub_processor_publisher",
+          subProcessorTick.pipe(
+            Effect.repeat(
+              Schedule.spaced(
+                Duration.millis(subProcessorPublisher.SUBPROCESSOR_PUBLISH_INTERVAL_MS),
+              ),
             ),
           ),
         ),
@@ -1491,6 +1555,53 @@ export function makeSchedulerLive(
               );
             }),
           ),
+        );
+
+        // Shutdown-recovery finalizer — registered BEFORE the two
+        // `Effect.forkScoped` calls below. Effect scope finalizers run
+        // LIFO; the `forkScoped` calls each register an implicit
+        // fiber-interrupt finalizer at their fork point, so this
+        // ordering guarantees: tick + watchdog fibers are interrupted
+        // (and `Fiber.interrupt` awaits cleanup completion) BEFORE the
+        // recovery sweep runs. If we registered the finalizer AFTER
+        // the forks, LIFO would invert the order — the sweep would
+        // race an in-flight tick + dead-letter branch, leaving the
+        // active row in an inconsistent terminal state (Codex P1 on
+        // #2864).
+        yield* Effect.addFinalizer(() =>
+          Effect.gen(function* () {
+            // Final recovery sweep: a SIGTERM mid-flush leaves the
+            // active row in `in_flight` until the next pod boot. Reset
+            // here so the replacement pod picks it up on its first
+            // tick rather than waiting for the next restart cycle.
+            yield* Effect.tryPromise({
+              try: (): Promise<OutboxRecoveryResult> =>
+                recoverOutboxInFlight(outboxDb, OUTBOX_SHUTDOWN_STALE_MS),
+              catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+            }).pipe(
+              Effect.tap((result: OutboxRecoveryResult) =>
+                Effect.sync(() => {
+                  log.info(
+                    {
+                      reset: result.reset,
+                      deadLettered: result.deadLettered,
+                      staleAgeMs: OUTBOX_SHUTDOWN_STALE_MS,
+                      event: "lead_outbox.shutdown_recovery",
+                    },
+                    `Outbox shutdown sweep — ${result.reset} reset to pending, ${result.deadLettered} dead-lettered`,
+                  );
+                }),
+              ),
+              Effect.catchAll((err) =>
+                Effect.sync(() => {
+                  log.warn(
+                    { err: errorMessage(err), event: "lead_outbox.shutdown_recovery_failed" },
+                    "Outbox shutdown recovery sweep failed — next boot will mop up",
+                  );
+                }),
+              ),
+            );
+          }),
         );
 
         const outboxTickIntervalMs = getOutboxTickIntervalMs();
@@ -1606,11 +1717,14 @@ export function makeSchedulerLive(
           ),
         );
         // forkScoped, not fork — see SettingsLive for rationale.
-        // The recovery sweep still needs its own addFinalizer below
-        // because it's not a fiber interrupt — it's an orderly cleanup
-        // that must run on layer shutdown regardless.
+        // The recovery sweep finalizer is registered ABOVE this fork
+        // (not below) so LIFO finalizer order interrupts this fiber
+        // (and the watchdog below) before the sweep runs.
         yield* Effect.forkScoped(
-          outboxTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(outboxTickIntervalMs)))),
+          withFiberDeathLog(
+            "lead_outbox_flusher",
+            outboxTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(outboxTickIntervalMs)))),
+          ),
         );
 
         // Stall watchdog — separate fiber that asserts the main tick
@@ -1648,49 +1762,12 @@ export function makeSchedulerLive(
         // detection lag to ~one tick interval. (Codex P2, 2026-05-26.)
         // forkScoped, not fork — see SettingsLive for rationale.
         yield* Effect.forkScoped(
-          outboxWatchdog.pipe(
-            Effect.repeat(Schedule.spaced(Duration.millis(outboxTickIntervalMs))),
+          withFiberDeathLog(
+            "lead_outbox_watchdog",
+            outboxWatchdog.pipe(
+              Effect.repeat(Schedule.spaced(Duration.millis(outboxTickIntervalMs))),
+            ),
           ),
-        );
-        // Recovery-sweep finalizer. The two forked fibers above are
-        // already cleaned up by the layer scope (forkScoped); this
-        // finalizer only owns the in_flight reset sweep, which is an
-        // orderly cleanup that must run on layer shutdown so the next
-        // pod boot doesn't see stranded `in_flight` carcasses.
-        yield* Effect.addFinalizer(() =>
-          Effect.gen(function* () {
-            // Final recovery sweep: a SIGTERM mid-flush leaves the
-            // active row in `in_flight` until the next pod boot. Reset
-            // here so the replacement pod picks it up on its first
-            // tick rather than waiting for the next restart cycle.
-            yield* Effect.tryPromise({
-              try: (): Promise<OutboxRecoveryResult> =>
-                recoverOutboxInFlight(outboxDb, OUTBOX_SHUTDOWN_STALE_MS),
-              catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-            }).pipe(
-              Effect.tap((result: OutboxRecoveryResult) =>
-                Effect.sync(() => {
-                  log.info(
-                    {
-                      reset: result.reset,
-                      deadLettered: result.deadLettered,
-                      staleAgeMs: OUTBOX_SHUTDOWN_STALE_MS,
-                      event: "lead_outbox.shutdown_recovery",
-                    },
-                    `Outbox shutdown sweep — ${result.reset} reset to pending, ${result.deadLettered} dead-lettered`,
-                  );
-                }),
-              ),
-              Effect.catchAll((err) =>
-                Effect.sync(() => {
-                  log.warn(
-                    { err: errorMessage(err), event: "lead_outbox.shutdown_recovery_failed" },
-                    "Outbox shutdown recovery sweep failed — next boot will mop up",
-                  );
-                }),
-              ),
-            );
-          }),
         );
         log.info(
           {

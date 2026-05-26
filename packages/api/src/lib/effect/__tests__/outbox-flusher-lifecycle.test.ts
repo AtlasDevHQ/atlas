@@ -139,8 +139,8 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
     expect(recoveryCalls.length).toBe(0);
   });
 
-  test("forked tick fiber actually runs (regression: #DharmaIncident fork→forkScoped)", async () => {
-    // Regression test for the #DharmaIncident silent stall: the outbox
+  test("forked tick fiber actually runs (regression: #2864 fork→forkScoped)", async () => {
+    // Regression test for the #2864 silent stall: the outbox
     // flusher's tick fiber was spawned with `Effect.fork`, which links
     // the child fiber to the gen's parent fiber and interrupts it the
     // moment the gen returns. Result: zero ticks from boot, indefinitely.
@@ -163,11 +163,11 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
       const rt = ManagedRuntime.make(layer);
       await Effect.runPromise(rt.runtimeEffect);
 
-      // Wait > 1× tick interval (1s minimum-clamped) so the first
+      // Wait > 2× tick interval (1s minimum-clamped) so the first
       // scheduled iteration of `Effect.repeat(Schedule.spaced)` has
-      // time to fire. The depth snapshot SELECT is the tick's first
-      // observable side effect.
-      await new Promise((r) => setTimeout(r, 1_500));
+      // comfortable slack on contended CI runners. The depth snapshot
+      // SELECT is the tick's first observable side effect.
+      await new Promise((r) => setTimeout(r, 2_500));
       await rt.dispose();
 
       // queryDepthSnapshot reads from crm_outbox without an in_flight

@@ -7,7 +7,7 @@
  * - makeConnectionRegistryLive creates a working layer
  */
 import { describe, it, expect } from "bun:test";
-import { Effect, Scope, Exit } from "effect";
+import { Effect, Layer, ManagedRuntime, Scope, Exit } from "effect";
 import {
   ConnectionRegistry,
   makeConnectionRegistryLive,
@@ -116,6 +116,36 @@ describe("ConnectionRegistry Live Layer lifecycle", () => {
     await Effect.runPromise(Scope.close(scope, Exit.void));
 
     expect(mockRegistry._calls).toContain("shutdown");
+  });
+
+  it("health-check fiber actually runs (regression: #2864 fork→forkScoped)", async () => {
+    // Companion to outbox-flusher-lifecycle.test.ts:#2864 — the outbox
+    // test covers the scheduler Layer. This one covers ConnectionRegistry
+    // health-check Layer, which is a separate fork site (services.ts).
+    // A targeted human revert of forkScoped → fork at services.ts:190
+    // would not be caught by the outbox test; this one catches it.
+    //
+    // `Effect.repeat(Schedule.spaced(60s))` runs the effect eagerly on
+    // fork *before* the spaced wait kicks in, so the first health check
+    // fires within milliseconds of layer boot. Without forkScoped the
+    // fiber is interrupted at gen completion and the mock's
+    // healthCheckCount stays at 0.
+    const mockRegistry = createMockRegistryClass();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-only cast to class interface
+    const layer = makeConnectionRegistryLive(() => mockRegistry as any);
+
+    const rt = ManagedRuntime.make(Layer.scopedDiscard(Effect.gen(function* () {
+      yield* ConnectionRegistry;
+    })).pipe(Layer.provide(layer)));
+    await Effect.runPromise(rt.runtimeEffect);
+
+    // Wait long enough for the eager first iteration to resolve. The
+    // mock's healthCheck is async but settles immediately on the next
+    // microtask; 2.5s gives comfortable slack on contended CI runners.
+    await new Promise((r) => setTimeout(r, 2_500));
+    await rt.dispose();
+
+    expect(mockRegistry._getHealthCheckCount()).toBeGreaterThan(0);
   });
 
   it("delegates register() to underlying impl", async () => {

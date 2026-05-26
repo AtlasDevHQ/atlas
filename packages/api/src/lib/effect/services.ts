@@ -180,12 +180,27 @@ export function makeConnectionRegistryLive(
         );
       });
 
+      // Shutdown finalizer — registered BEFORE the forkScoped health
+      // fiber below. Effect scope finalizers run LIFO; `forkScoped`
+      // registers an implicit fiber-interrupt finalizer at its fork
+      // point, so this ordering guarantees the health fiber is
+      // interrupted (and `Fiber.interrupt` awaits cleanup completion)
+      // BEFORE `impl.shutdown()` tears down pools. Registered the
+      // other way around, the shutdown would race a concurrent health
+      // cycle against pools being torn down (Codex P2 on #2864).
+      yield* Effect.addFinalizer(() =>
+        Effect.gen(function* () {
+          yield* Effect.promise(() => impl.shutdown());
+          log.info("ConnectionRegistry shut down via Effect scope");
+        }),
+      );
+
       // forkScoped, not fork — the bare `fork` API links the child fiber
       // to the parent fiber's lifetime, and the parent here is this gen
       // which returns the service shape immediately. With `Effect.fork`
       // the periodic health-check never runs because the child is
       // interrupted at gen completion (verified by repro; diagnosed in
-      // #DharmaIncident on the outbox flusher). forkScoped binds to the
+      // #2864 on the outbox flusher). forkScoped binds to the
       // Layer scope, so the fiber lives until layer shutdown.
       yield* Effect.forkScoped(
         healthCheckAll.pipe(
@@ -200,16 +215,6 @@ export function makeConnectionRegistryLive(
           Effect.repeat(Schedule.spaced(Duration.millis(HEALTH_CHECK_INTERVAL_MS))),
           Effect.asVoid,
         ),
-      );
-
-      // --- Scope finalizer for graceful shutdown ---
-      // The fiber above is interrupted by the Layer scope automatically
-      // (forkScoped). This finalizer only owns the impl.shutdown() call.
-      yield* Effect.addFinalizer(() =>
-        Effect.gen(function* () {
-          yield* Effect.promise(() => impl.shutdown());
-          log.info("ConnectionRegistry shut down via Effect scope");
-        }),
       );
 
       // --- Build service interface ---
@@ -391,6 +396,28 @@ function buildPluginService(impl: PluginRegistryClass) {
       }),
     );
 
+    // Teardown finalizer — registered BEFORE the forkScoped health
+    // fiber below. Scope finalizers are LIFO; this ordering guarantees
+    // the health fiber is interrupted (awaiting cleanup completion)
+    // BEFORE `impl.teardownAll()` dismantles plugins. The reverse order
+    // would let a concurrent health cycle mutate plugin statuses or
+    // probe plugins mid-teardown (Codex P2 on #2864). `teardownAll`
+    // iterates plugins LIFO internally, which is a separate concern.
+    yield* Effect.addFinalizer(() =>
+      Effect.gen(function* () {
+        yield* Effect.tryPromise({
+          try: () => impl.teardownAll(),
+          catch: (err) => (err instanceof Error ? err.message : String(err)),
+        }).pipe(
+          Effect.catchAll((errMsg) => {
+            pluginLog.error({ err: errMsg }, "PluginRegistry teardownAll failed during shutdown");
+            return Effect.void;
+          }),
+        );
+        pluginLog.info("PluginRegistry shut down via Effect scope");
+      }),
+    );
+
     // forkScoped, not fork — see ConnectionRegistry's healthFiber for rationale.
     yield* Effect.forkScoped(
       healthCheckCycle.pipe(
@@ -406,25 +433,6 @@ function buildPluginService(impl: PluginRegistryClass) {
         ),
         Effect.asVoid,
       ),
-    );
-
-    // --- Scope finalizer for graceful shutdown ---
-    // The fiber above is interrupted by the Layer scope automatically
-    // (forkScoped). This finalizer only owns the teardownAll call,
-    // which iterates plugins in reverse registration order (LIFO).
-    yield* Effect.addFinalizer(() =>
-      Effect.gen(function* () {
-        yield* Effect.tryPromise({
-          try: () => impl.teardownAll(),
-          catch: (err) => (err instanceof Error ? err.message : String(err)),
-        }).pipe(
-          Effect.catchAll((errMsg) => {
-            pluginLog.error({ err: errMsg }, "PluginRegistry teardownAll failed during shutdown");
-            return Effect.void;
-          }),
-        );
-        pluginLog.info("PluginRegistry shut down via Effect scope");
-      }),
     );
 
     // --- Build service interface (delegates to underlying impl) ---

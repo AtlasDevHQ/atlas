@@ -1,4 +1,4 @@
-FROM oven/bun:1.3.14@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4 AS base
+FROM oven/bun:1.3.13@sha256:87416c977a612a204eb54ab9f3927023c2a3c971f4f345a01da08ea6262ae30e AS base
 
 # Install only the tools needed for explore mode
 RUN apt-get update && apt-get install -y --no-install-recommends \

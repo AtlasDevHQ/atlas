@@ -203,6 +203,7 @@
         "@clickhouse/client": "^1.18.2",
         "@duckdb/node-api": "^1.5.1-r.1",
         "@modelcontextprotocol/sdk": "^1.28.0",
+        "@useatlas/twenty": "workspace:*",
         "@useatlas/types": "workspace:*",
         "ai": "^6.0.141",
         "hono": "^4.12.9",

@@ -253,13 +253,21 @@ export async function handleOps(args: string[]): Promise<void> {
   const subcommand = args[1];
   if (subcommand === "wipe") return handleWipe(args);
   if (subcommand === "backfill-crm-leads") return handleBackfillCrmLeads(args);
+  if (subcommand === "smoke-crm") {
+    const { handleOpsSmokeCrm } = await import("./ops-smoke-crm");
+    return handleOpsSmokeCrm(args);
+  }
 
   console.error(
-    "Usage: atlas ops <wipe|backfill-crm-leads> [options]\n\n" +
+    "Usage: atlas ops <wipe|backfill-crm-leads|smoke-crm> [options]\n\n" +
       "Subcommands:\n" +
       "  wipe                 TRUNCATE every public table in the tenant DB. DESTRUCTIVE — requires ATLAS_WIPE_OK=1 + --confirm.\n" +
       "  backfill-crm-leads   Enqueue every demo_leads row into crm_outbox for dispatch to Twenty.\n" +
-      "                       Flags: --dry-run, --batch-size N (default 500), --source demo, --database-url <url>\n",
+      "                       Flags: --dry-run, --batch-size N (default 500), --source demo, --database-url <url>\n" +
+      "  smoke-crm            End-to-end CRM lead-capture verification (below Turnstile).\n" +
+      "                       Flags: --personas <path> (required), --wipe-twenty (requires ATLAS_SMOKE_WIPE_OK=1),\n" +
+      "                              --twenty-base-url <url>, --twenty-api-key <key>, --timeout-seconds N (default 60),\n" +
+      "                              --database-url <url>\n",
   );
   process.exit(1);
 }

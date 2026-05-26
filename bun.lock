@@ -718,7 +718,7 @@
     },
     "plugins/twenty": {
       "name": "@useatlas/twenty",
-      "version": "0.0.3",
+      "version": "0.0.4",
       "devDependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
         "ai": "^6.0.141",

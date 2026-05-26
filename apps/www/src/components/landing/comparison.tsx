@@ -25,7 +25,7 @@ const ROWS: ReadonlyArray<Row> = [
   },
   {
     feature: "Embeddable",
-    atlas: "Script tag, React component, headless API, MCP, Slack, Teams",
+    atlas: "Script tag, React component, headless API, MCP, 8 chat platforms",
     bi: "Standalone app",
     textToSql: "Standalone app",
   },

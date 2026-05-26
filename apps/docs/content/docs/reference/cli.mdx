@@ -836,6 +836,22 @@ ATLAS_WIPE_OK=1 bun run atlas -- ops wipe --confirm [--database-url <url>]
 
 The exclusion list (`__atlas_migrations`, `region_migrations`) lives next to the SQL in `packages/cli/src/commands/ops.ts:WIPE_EXCLUDED_TABLES`.
 
+### ops backfill-crm-leads
+
+One-shot migration backfill: enqueues every existing `demo_leads` row into `crm_outbox` so historical demo signups also dispatch to Twenty CRM. Idempotent — re-running is safe because `TwentyClient.upsertPerson` dedupes by primary email and the outbox uses a per-source idempotency key.
+
+```bash
+bun run atlas -- ops backfill-crm-leads [--dry-run] [--batch-size 500] [--source demo]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Count what would be enqueued without writing to `crm_outbox`. |
+| `--batch-size <n>` | Rows per insert batch (default `500`). |
+| `--source <name>` | Source tag stamped on outbox rows (default `demo`). |
+
+Already-run on prod against `demo_leads`; safe to re-run if a new region comes online. See the SaaS lead pipeline in [Twenty CRM integration](/integrations/twenty).
+
 ---
 
 ## See Also

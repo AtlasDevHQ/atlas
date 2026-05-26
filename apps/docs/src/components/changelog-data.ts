@@ -13,6 +13,24 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "1.6.0",
+    title: "CRM & lead capture",
+    date: "2026-05-26",
+    summary:
+      "Every meaningful lead event — demo signup, Better Auth signup, Stripe trial-to-paid conversion, talk-to-sales submission — now lands in Twenty CRM at crm.useatlas.dev automatically, tagged by source. The `mailto:sales@useatlas.dev` CTAs on `/pricing`, `/sla`, `/dpa`, and `/terms` are replaced with a real in-page form (Cloudflare Turnstile-protected) that creates a Twenty Person + Note with qualifying context. Under the hood, a durable `crm_outbox` table absorbs Twenty downtime — every dispatch is enqueue-then-flush via a Scheduler-backed background flusher with exponential backoff, plus an operator UI at `/platform/crm-outbox` for inspection / retry / mark-dead. The integration ships as a general-purpose `@useatlas/twenty` plugin (AGPL) plus a SaaS wiring layer in `ee/src/saas-crm/` gated behind the `SaasCrm` Context.Tag — self-hosted Atlas gets the plugin (admin UI install or `atlas.config.ts`) but never the SaaS dispatch path, with a closeout `scripts/check-twenty-resolver-imports.sh` gate locking the seam. Numbers: 11 issues + PRD #2726, slice 6 (Twenty-as-datasource) deferred to 1.7.0 because Twenty Cloud doesn't expose Postgres.",
+    highlights: [
+      "Demo / signup / sales-form / conversion → Twenty Person — four event sources stamp `atlasFirstSource` (sticky) + `atlasLastSource` (overwritten) custom fields. Better Auth `databaseHooks.user.create.after` (#2731) enqueues `signup` leads; Stripe `customer.subscription.created` (#2737) enqueues `conversion` leads for the already-stamped Person",
+      "Talk-to-sales dialog replaces mailto — shared `<TalkToSalesDialog>` (#2730 / #2733) on `/pricing` Business tier, `/sla`, `/dpa`, `/terms` with a page-specific `topic` field. `POST /api/v1/contact` enqueues a Person + Note via the outbox; Cloudflare Turnstile siteverify fail-closed; `<noscript>` mailto fallback preserved",
+      "Durable `crm_outbox` + Scheduler-backed flusher (#2729) — replaces fire-and-forget capture with classify/backoff/dead-letter semantics; depth gauges + `oldest-pending-age` warned per flusher tick (#2734); operator UI at `/platform/crm-outbox` (#2735) for `retry` / `mark-dead` with both mutations audit-logged (`ADMIN_ACTIONS.crm_outbox.{retry, markDead}`)",
+      "`@useatlas/twenty` plugin (#2727 / PR #2785) — AGPL, self-hostable via Admin → Integrations → Twenty or `atlas.config.ts:plugins`. Admin UI at `/admin/integrations/twenty` (#2732) writes `workspace_plugins.config` with F-41 selective-field encryption on `apiKey`. Actions: `upsertPerson`, `createNote`, `createOpportunity`",
+      "`atlas ops backfill-crm-leads` (#2736) — one-shot CLI enqueues every existing `demo_leads` row into `crm_outbox` so historical signups also dispatch to Twenty. Idempotent via the per-source idempotency key; `--dry-run` / `--batch-size` / `--source` flags",
+      "Credential resolver split (#2850 closeout) — `ee/saas-crm/` reads the `TWENTY_API_KEY` env for Atlas's own pipeline; `plugins/twenty/` reads per-workspace `workspace_plugins.config` only. `scripts/check-twenty-resolver-imports.sh` gate keeps `resolveOperatorCredentials` reachable only from `ee/src/saas-crm/`. Two leak directions structurally impossible — a customer install with missing apiKey can't fall through to Atlas's operator key, and a future change in `ee/src/saas-crm/` can't accidentally read a customer's `twenty_integrations` row",
+      "`SaasCrm` Context.Tag with `available: boolean` — load-bearing for the `/api/v1/contact` 404-vs-200 branch and the `/platform/crm-outbox` nav-link gate (`saasOnly`). Noop default returns success-after-enqueue without dispatching, so self-hosted Atlas runs without Twenty credentials and the SaaS-only pages 404 cleanly",
+      "Slice 6 deferred to 1.7.0 — Twenty Cloud doesn't expose Postgres, so the lightweight \"plug it in as an Atlas connection\" path isn't available. Generic REST / non-SQL datasources (Twenty, Stripe, OpenSearch) is now the seed for 1.7.0 ([milestone #54](https://github.com/AtlasDevHQ/atlas/milestone/54))",
+    ],
+    githubMilestone: 52,
+  },
+  {
     version: "1.5.3",
     title: "Multi-platform install models",
     date: "2026-05-26",

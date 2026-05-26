@@ -766,6 +766,19 @@ stripe listen --forward-to localhost:3001/api/auth/stripe/webhook
 
 ---
 
+## SaaS Lead Capture (CRM)
+
+Operator-only. These env vars wire Atlas-the-company's own lead pipeline (`ee/src/saas-crm/`) into Twenty CRM at `crm.useatlas.dev`. **Self-hosted operators do not set these** — per-workspace Twenty installs read DB credentials only (see [Twenty CRM integration](/integrations/twenty)).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TWENTY_API_KEY` | — | Bearer token from Twenty → Settings → API & Webhooks. When unset, `SaasCrm.available=false` and `/api/v1/contact` returns 404. Never read by per-workspace plugin installs |
+| `TWENTY_BASE_URL` | `https://crm.useatlas.dev` | Override the default Twenty host. Only the SaaS operator pipeline reads this — plugin installs use admin-UI or `atlas.config.ts` |
+| `TURNSTILE_SECRET_KEY` | — | Cloudflare Turnstile secret for siteverify on `/api/v1/contact`. When unset, `verifyTurnstile()` fails closed (no submissions accepted) |
+| `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | — | Cloudflare Turnstile public site key. Read by the `<TalkToSalesForm>` component in `apps/www`. When unset, the form renders a "bot protection not configured" notice |
+
+---
+
 ## Enterprise
 
 | Variable | Default | Description |

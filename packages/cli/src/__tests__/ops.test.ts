@@ -241,6 +241,44 @@ describe("handleOps", () => {
     expect(caught?.message).toBe("__process_exit__:1");
     expect(errors.some((line) => line.includes("backfill-crm-leads"))).toBe(true);
   });
+
+  it("exits 1 when `ops backfill-crm-leads` runs without any DB URL", async () => {
+    // Pins the handler-boundary exit code on the missing-URL path —
+    // the parser unit tests cover `resolveBackfillUrl` in isolation,
+    // but only this test exercises the `process.exit(1)` after a null
+    // resolution in `handleBackfillCrmLeads`.
+    const origTeam = process.env.ATLAS_TEAM_PG_URL;
+    const origDb = process.env.DATABASE_URL;
+    delete process.env.ATLAS_TEAM_PG_URL;
+    delete process.env.DATABASE_URL;
+    let caught: Error | null = null;
+    try {
+      await handleOps(["ops", "backfill-crm-leads", "--dry-run"]);
+    } catch (err) {
+      caught = err instanceof Error ? err : new Error(String(err));
+    } finally {
+      if (origTeam !== undefined) process.env.ATLAS_TEAM_PG_URL = origTeam;
+      if (origDb !== undefined) process.env.DATABASE_URL = origDb;
+    }
+    expect(caught?.message).toBe("__process_exit__:1");
+    expect(errors.some((line) => line.includes("No DB URL available"))).toBe(true);
+  });
+
+  it("exits 1 when `ops backfill-crm-leads` gets a malformed --batch-size", async () => {
+    const orig = process.env.ATLAS_TEAM_PG_URL;
+    process.env.ATLAS_TEAM_PG_URL = "postgresql://x/y";
+    let caught: Error | null = null;
+    try {
+      await handleOps(["ops", "backfill-crm-leads", "--batch-size", "abc"]);
+    } catch (err) {
+      caught = err instanceof Error ? err : new Error(String(err));
+    } finally {
+      if (orig === undefined) delete process.env.ATLAS_TEAM_PG_URL;
+      else process.env.ATLAS_TEAM_PG_URL = orig;
+    }
+    expect(caught?.message).toBe("__process_exit__:1");
+    expect(errors.some((line) => line.includes("--batch-size"))).toBe(true);
+  });
 });
 
 // --- backfill-crm-leads flag parsing ---
@@ -270,6 +308,20 @@ describe("parseBatchSize", () => {
   it("throws on a negative value", () => {
     expect(() => parseBatchSize(["--batch-size", "-5"])).toThrow(/positive integer/);
   });
+
+  it("throws when --batch-size is at end-of-args with no value", () => {
+    // Operator typo `bun run atlas -- ops backfill-crm-leads --batch-size`
+    // should fail loud rather than silently use 500 — pinned per Codex
+    // review on PR #2846.
+    expect(() => parseBatchSize(["--batch-size"])).toThrow(/requires a value/);
+  });
+
+  it("throws when --batch-size is followed by another flag", () => {
+    // `--batch-size --dry-run` — `getFlag` returns undefined because the
+    // next token starts with `--`; without the loud-fail we'd default
+    // to 500 and run with unintended settings.
+    expect(() => parseBatchSize(["--batch-size", "--dry-run"])).toThrow(/requires a value/);
+  });
 });
 
 describe("parseBackfillSource", () => {
@@ -286,6 +338,14 @@ describe("parseBackfillSource", () => {
     // value is operator error. Pin the rejection so a future variant has
     // to be added intentionally to the allowed set.
     expect(() => parseBackfillSource(["--source", "sales-form"])).toThrow(/must be one of/);
+  });
+
+  it("throws when --source is at end-of-args with no value", () => {
+    expect(() => parseBackfillSource(["--source"])).toThrow(/requires a value/);
+  });
+
+  it("throws when --source is followed by another flag", () => {
+    expect(() => parseBackfillSource(["--source", "--dry-run"])).toThrow(/requires a value/);
   });
 });
 

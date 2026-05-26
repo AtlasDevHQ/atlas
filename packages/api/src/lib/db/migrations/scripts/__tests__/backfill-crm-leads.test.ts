@@ -28,6 +28,7 @@ import {
   DEFAULT_BATCH_SIZE,
   DRY_RUN_SAMPLE_SIZE,
 } from "../backfill-crm-leads";
+import type { SaasCrmLeadInput } from "@atlas/api/lib/effect/services";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -113,7 +114,12 @@ describeIfPg("backfill-crm-leads (real Postgres)", () => {
       );
       expect(rows[0]?.n).toBe("0");
 
-      expect(logs.some((l) => l.includes("DRY-RUN"))).toBe(true);
+      // Header line ("DRY-RUN — N row(s), batch size B") AND summary
+      // line ("DRY-RUN summary — …") both contain "DRY-RUN" — exactly
+      // two of them. Pinning the count surfaces a future log-style
+      // refactor that drops either marker.
+      const dryRunLines = logs.filter((l) => l.includes("DRY-RUN"));
+      expect(dryRunLines).toHaveLength(2);
     }, PG_TEST_TIMEOUT_MS);
 
     it("caps the sample at DRY_RUN_SAMPLE_SIZE even when the table is larger", async () => {
@@ -172,12 +178,18 @@ describeIfPg("backfill-crm-leads (real Postgres)", () => {
       expect(stats.enqueued).toBe(1001);
       expect(stats.batches).toBe(3); // 500 + 500 + 1
 
-      // Outbox actually grew. The batch atomicity contract means a
-      // partial enqueue would still surface as a non-1001 count here.
+      // Outbox actually grew. Each batch is a single multi-row VALUES
+      // INSERT (atomic by virtue of being one statement) — a partial
+      // commit would still surface as a non-1001 count here.
       const { rows: outboxCount } = await pool.query<{ n: string }>(
         `SELECT COUNT(*)::text AS n FROM crm_outbox`,
       );
       expect(outboxCount[0]?.n).toBe("1001");
+
+      // The seed used a single multi-row INSERT, so every demo_leads row
+      // shares the same `now()` timestamp. That this test terminates
+      // (vs looping forever past 1001/1001) is the regression gate for
+      // the `(created_at, id)` keyset bug — see the cursor docstring.
 
       // Every enqueued row uses the expected event_type + 'pending'
       // status. Pinning these two is enough — the flusher reads both and
@@ -223,12 +235,20 @@ describeIfPg("backfill-crm-leads (real Postgres)", () => {
       // Email lowercases at the *normalizer* seam — the payload itself
       // carries the original form. Pin both so a future "lowercase at
       // enqueue" refactor doesn't silently change the contract.
-      expect(rows[0]?.payload).toEqual({
+      //
+      // Pinning against `SaasCrmLeadInput` (the EE dispatcher's read
+      // shape — `ee/src/saas-crm/index.ts:dispatchOutboxRow` casts
+      // `row.payload as SaasCrmLeadInput`) keeps the producer +
+      // consumer in lockstep at compile time. A drift in either side
+      // surfaces here as a type mismatch rather than a runtime
+      // "Unknown lead source" in production.
+      const expected: SaasCrmLeadInput = {
         source: "demo",
         email: "roundtrip@example.com",
         ip: "192.168.1.1",
         userAgent: "Chrome/130",
-      });
+      };
+      expect(rows[0]?.payload).toEqual(expected);
     }, PG_TEST_TIMEOUT_MS);
 
     it("rejects batchSize < 1 before any DB work", async () => {
@@ -241,6 +261,53 @@ describeIfPg("backfill-crm-leads (real Postgres)", () => {
           log: () => {},
         }),
       ).rejects.toThrow(/batchSize/);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("handles a single-row table — one batch, one row enqueued", async () => {
+      // The short-page break (`page.rows.length < options.batchSize`) is
+      // the load-bearing termination condition when batchSize > total.
+      // Without this test, an off-by-one regression that re-issues the
+      // empty-page query would only surface as a perf regression, not
+      // an incorrectness one.
+      await pool.query(`INSERT INTO demo_leads (email) VALUES ('only@example.com')`);
+      const stats = await runBackfill({
+        db: db(),
+        dryRun: false,
+        batchSize: 500,
+        source: "demo",
+        log: () => {},
+      });
+      expect(stats).toMatchObject({ totalRows: 1, enqueued: 1, batches: 1 });
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("count-drift guard: throws if the INSERT returns fewer rows than the batch", async () => {
+      // Pins the post-condition that `result.rows.length` matches
+      // `page.rows.length`. If a future ON CONFLICT DO NOTHING is added
+      // to the bulk-INSERT SQL, RETURNING would omit skipped rows and
+      // stats.enqueued would silently under-report. Inject a
+      // count-skewing fake `db` to prove the guard fires.
+      await pool.query(`INSERT INTO demo_leads (email) VALUES ('drift@example.com')`);
+      const realQuery = pool.query.bind(pool);
+      const skewedDb = {
+        async query<T extends Record<string, unknown>>(sql: string, params?: unknown[]) {
+          const result = await realQuery<T>(sql, params);
+          // Drop the RETURNING result on the bulk-INSERT path only.
+          if (/^\s*INSERT INTO crm_outbox/.test(sql)) {
+            return { rows: [] as T[] };
+          }
+          return { rows: result.rows };
+        },
+      } as Parameters<typeof runBackfill>[0]["db"];
+
+      await expect(
+        runBackfill({
+          db: skewedDb,
+          dryRun: false,
+          batchSize: 500,
+          source: "demo",
+          log: () => {},
+        }),
+      ).rejects.toThrow(/ON CONFLICT/);
     }, PG_TEST_TIMEOUT_MS);
   });
 });

@@ -19,6 +19,7 @@
 import {
   runBackfill,
   DEFAULT_BATCH_SIZE,
+  BACKFILL_SOURCES,
   type BackfillSource,
 } from "@atlas/api/lib/db/migrations/scripts/backfill-crm-leads";
 import { getFlag } from "../../lib/cli-utils";
@@ -138,17 +139,21 @@ async function handleWipe(args: string[]): Promise<void> {
   }
 }
 
-/** Source variants the backfill harness knows about. Extend in lockstep
- *  with `BackfillSource` in the script. */
-const KNOWN_BACKFILL_SOURCES: readonly BackfillSource[] = ["demo"] as const;
-
 /** Exported for tests — parses `--batch-size N` with a positive-integer
- *  invariant. Returns the default on absent flag; throws on present-but-
- *  malformed so a typo like `--batch-size abc` fails loud at the CLI seam
- *  rather than silently falling back to 500 and hiding operator intent. */
+ *  invariant. Returns the default when the flag is entirely absent; throws
+ *  when the flag is present without a value (e.g. `--batch-size --dry-run`
+ *  or `--batch-size` at end of args) OR present with a malformed value.
+ *  Loud-failing on missing values matters more here than for typical
+ *  optional CLI flags — this command writes to `crm_outbox`, and silently
+ *  defaulting to 500 on an operator typo would hide intent. */
 export function parseBatchSize(args: string[], fallback: number = DEFAULT_BATCH_SIZE): number {
   const raw = getFlag(args, "--batch-size");
-  if (raw === undefined) return fallback;
+  if (raw === undefined) {
+    if (args.includes("--batch-size")) {
+      throw new Error("--batch-size requires a value (e.g. --batch-size 500)");
+    }
+    return fallback;
+  }
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n) || n < 1) {
     throw new Error(`--batch-size requires a positive integer (got "${raw}")`);
@@ -156,16 +161,26 @@ export function parseBatchSize(args: string[], fallback: number = DEFAULT_BATCH_
   return n;
 }
 
-/** Exported for tests — validates `--source` against `KNOWN_BACKFILL_SOURCES`. */
+/** Exported for tests — validates `--source` against `BACKFILL_SOURCES`.
+ *  Same loud-failing rule as `parseBatchSize`: throws when the flag is
+ *  present without a value, throws on unknown values, defaults only when
+ *  the flag is entirely absent. */
 export function parseBackfillSource(
   args: string[],
   fallback: BackfillSource = "demo",
 ): BackfillSource {
   const raw = getFlag(args, "--source");
-  if (raw === undefined) return fallback;
-  if (!(KNOWN_BACKFILL_SOURCES as readonly string[]).includes(raw)) {
+  if (raw === undefined) {
+    if (args.includes("--source")) {
+      throw new Error(
+        `--source requires a value — one of: ${BACKFILL_SOURCES.join(", ")}`,
+      );
+    }
+    return fallback;
+  }
+  if (!(BACKFILL_SOURCES as readonly string[]).includes(raw)) {
     throw new Error(
-      `--source must be one of: ${KNOWN_BACKFILL_SOURCES.join(", ")} (got "${raw}")`,
+      `--source must be one of: ${BACKFILL_SOURCES.join(", ")} (got "${raw}")`,
     );
   }
   return raw as BackfillSource;

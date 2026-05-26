@@ -18,8 +18,6 @@
  *
  * Or directly:
  *   DATABASE_URL=... bun run packages/api/src/lib/db/migrations/scripts/backfill-crm-leads.ts [--dry-run]
- *
- * Prod-run date: TBD (paste here when run).
  */
 
 import { Client } from "pg";
@@ -43,8 +41,11 @@ export const DRY_RUN_SAMPLE_SIZE = 3;
 
 /** Lead source today is always `"demo"` — `--source` is parameterized
  *  so a future sales-form-leads table can use the same harness. The
- *  normalizer's exhaustive switch is the drift gate. */
-export type BackfillSource = "demo";
+ *  normalizer's exhaustive switch is the drift gate. Source of truth
+ *  for the CLI's `--source` validator too — derived type prevents the
+ *  literal list from drifting between this module and `ops.ts`. */
+export const BACKFILL_SOURCES = ["demo"] as const;
+export type BackfillSource = (typeof BACKFILL_SOURCES)[number];
 
 export interface BackfillOptions {
   readonly db: BackfillDB;
@@ -95,14 +96,13 @@ interface DemoLeadRow {
  * missed/duplicated rows if new demo signups slip in mid-run; the
  * keyset keeps the walk monotonic.
  *
- * Why not `(created_at, id)`: a JavaScript `Date` is millisecond-
- * precision but Postgres `timestamptz` is microsecond-precision. The
- * round-trip drops the trailing microseconds, so a bulk-INSERT row
- * batch sharing the same `now()` timestamp produced cursor values that
- * compared as STRICTLY LESS than the source rows on the next page —
- * the cursor never advanced and the loop never terminated. (Debug
- * trace: 30 rows / batchSize 10 looped past `(40/30)`, `(50/30)`, …
- * indefinitely.) UUID-only keyset has no precision loss.
+ * Why not `(created_at, id)`: JavaScript `Date` is millisecond-
+ * precision but Postgres `timestamptz` is microsecond-precision. A
+ * cursor value round-tripping through `Date` drops the trailing
+ * microseconds, so a bulk-INSERT row batch sharing one `now()`
+ * timestamp compares as strictly less than the source rows on the
+ * next page and the cursor never advances. UUID-only keyset has no
+ * precision loss.
  */
 const FIRST_PAGE_SQL = `
   SELECT id, email, ip_address, user_agent
@@ -123,14 +123,11 @@ const COUNT_SQL = `SELECT COUNT(*)::bigint AS n FROM demo_leads`;
 
 /**
  * Build a multi-row VALUES INSERT for one batch — one round trip per
- * batch instead of one per row. We construct the placeholders by hand
- * (`($1, $2::jsonb), ($3, $4::jsonb), …`) instead of binding `text[]`
- * arrays because the payload JSON contains `{`, `,`, `"` — characters
- * that collide with Postgres's array-literal syntax under driver-side
- * array serialization. The first cut used `UNNEST($1::text[], $2::text[])`
- * and produced wildly over-inflated insert counts because the JSON
- * payloads were parsed as multi-element array literals. Multi-row
- * VALUES with positional placeholders is the boring, correct path.
+ * batch instead of one per row. Positional placeholders
+ * (`($1, $2::jsonb), ($3, $4::jsonb), …`) avoid binding the payload
+ * JSON through `text[]`: JSON contains `{`, `,`, `"` — characters
+ * that collide with Postgres's array-literal syntax and cause silent
+ * row-count inflation under driver-side array serialization.
  */
 function buildBulkEnqueueSql(rowCount: number): string {
   const placeholders: string[] = [];
@@ -229,28 +226,28 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillSta
     }
 
     if (!options.dryRun) {
-      // BEGIN/COMMIT around the bulk INSERT — keeps each batch atomic
-      // so a mid-batch crash doesn't leave a partial spray of outbox
-      // rows. The flusher tolerates duplicates (upsertPerson dedupes)
-      // but the operator's mental model is "either the batch landed
-      // whole or it didn't", and that's worth the one-statement cost.
-      await options.db.query("BEGIN");
-      try {
-        const sql = buildBulkEnqueueSql(page.rows.length);
-        const result = await options.db.query<{ id: string }>(sql, params);
-        await options.db.query("COMMIT");
-        enqueued += result.rows.length;
-      } catch (err) {
-        await options.db.query("ROLLBACK").catch((rbErr) => {
-          // Surfacing both keeps the actual fault visible — the
-          // rollback failure is usually a connection blip, but the
-          // original error is what the operator needs to debug.
-          console.error(
-            `[backfill-crm-leads] rollback failed: ${rbErr instanceof Error ? rbErr.message : String(rbErr)}`,
-          );
-        });
-        throw err;
+      // Each batch is a single multi-row VALUES INSERT — Postgres treats
+      // that as one statement, executed atomically without an explicit
+      // transaction. We deliberately do NOT wrap with BEGIN/COMMIT: when
+      // `db` is a `pg.Pool`, each `.query()` checks out a fresh
+      // connection, so `BEGIN` would land on connection A and the INSERT
+      // on connection B (auto-committed), producing the illusion of a
+      // transaction while silently bypassing it. Single-statement
+      // atomicity sidesteps the footgun and is sufficient for the
+      // "batch lands whole or not at all" mental model.
+      const sql = buildBulkEnqueueSql(page.rows.length);
+      const result = await options.db.query<{ id: string }>(sql, params);
+      // Guard against future drift: if anyone adds `ON CONFLICT DO
+      // NOTHING` to the enqueue SQL, RETURNING would omit skipped rows
+      // and stats would silently under-report. Today the two counts are
+      // equal by construction — pin it.
+      if (result.rows.length !== page.rows.length) {
+        throw new Error(
+          `crm_outbox enqueue returned ${result.rows.length} of ${page.rows.length} expected rows ` +
+            "— likely an ON CONFLICT clause was added without updating the stats accounting",
+        );
       }
+      enqueued += page.rows.length;
     }
 
     processed += page.rows.length;
@@ -288,7 +285,13 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const dryRun = args.includes("--dry-run");
   const batchSize = pickFlagInt(args, "--batch-size", DEFAULT_BATCH_SIZE);
-  const source = (pickFlagString(args, "--source", "demo") as BackfillSource);
+  const rawSource = pickFlagString(args, "--source", "demo");
+  if (!(BACKFILL_SOURCES as readonly string[]).includes(rawSource)) {
+    throw new Error(
+      `--source must be one of: ${BACKFILL_SOURCES.join(", ")} (got "${rawSource}")`,
+    );
+  }
+  const source = rawSource as BackfillSource;
 
   const url = process.env.DATABASE_URL;
   if (!url) {

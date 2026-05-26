@@ -2407,9 +2407,16 @@ export const NoopDeployModeResolverLayer: Layer.Layer<DeployModeResolver> =
  * silently swallowing.
  *
  * Adding a variant: extend BOTH this union AND `AtlasLeadEvent`. The
- * two-place duplication exists because we don't currently want to drag
- * `@useatlas/twenty` into the contract surface of `@atlas/api`; promote
- * to `@useatlas/types` when a second consumer appears.
+ * two-place duplication exists because the runtime queue
+ * (`lib/lead-outbox/`) and the route layer (the `SaasCrm` Tag's
+ * `upsertLead` contract surface) intentionally stay free of any
+ * `@useatlas/twenty` import — the EE dispatcher is the only allowed
+ * cross-boundary consumer. The one-shot operator backfill at
+ * `lib/db/migrations/scripts/backfill-crm-leads.ts` is the documented
+ * carve-out: it imports `normalizeLead` to render dry-run previews,
+ * and `@useatlas/twenty` is therefore a runtime dep of `@atlas/api`.
+ * Promote to `@useatlas/types` when a second consumer of the union
+ * itself (not the normalizer) appears.
  */
 export type SaasCrmLeadInput =
   | {

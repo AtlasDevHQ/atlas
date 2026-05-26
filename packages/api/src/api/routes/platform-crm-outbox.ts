@@ -46,8 +46,13 @@ import {
   CrmOutboxRowSchema,
   CrmOutboxRowDetailSchema,
   CrmOutboxListResponseSchema,
+  // OUTBOX_STATUSES is mirrored in @useatlas/schemas (not imported from
+  // @useatlas/types) to avoid the registry-pinned value-export drag on
+  // the scaffold template build — see the comment in
+  // `packages/schemas/src/crm-outbox.ts`.
+  OUTBOX_STATUSES,
 } from "@useatlas/schemas";
-import { OUTBOX_STATUSES, type OutboxStatus } from "@useatlas/types";
+import type { OutboxStatus } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
 

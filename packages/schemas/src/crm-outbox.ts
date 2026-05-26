@@ -13,11 +13,28 @@
  * of passing through to runtime.
  */
 import { z } from "zod";
-import {
-  OUTBOX_STATUSES,
-  type CrmOutboxRow,
-  type CrmOutboxRowDetail,
+import type {
+  CrmOutboxRow,
+  CrmOutboxRowDetail,
+  OutboxStatus,
 } from "@useatlas/types";
+
+// Local literal tuple instead of importing the value-export tuple from
+// `@useatlas/types`. The template scaffold installs `@useatlas/types`
+// from the registry — adding a new value export forces a publish-first
+// merge dance for every PR (#useatlas/types-scaffold-gotcha). The
+// `satisfies` constraint pins this tuple to the same union as the
+// canonical `OutboxStatus` so adding a state in
+// `@useatlas/types/crm-outbox.ts` fails compile here until both sides match.
+//
+// Re-exported so consumers reach for the schemas copy (which is
+// scaffold-copied as source) rather than the types copy (registry).
+export const OUTBOX_STATUSES = [
+  "pending",
+  "in_flight",
+  "done",
+  "dead",
+] as const satisfies readonly OutboxStatus[];
 
 const OutboxStatusEnum = z.enum(OUTBOX_STATUSES);
 

@@ -1,13 +1,24 @@
 /**
  * F-47 re-encryption script.
  *
- * Iterates every encrypted column in the internal database, decrypts
- * under whichever keyset entry the ciphertext carries, re-encrypts
- * under the active key, and stamps the companion `_key_version` column
- * with the new version.
+ * Two rotation shapes share the same operator entry point:
  *
- * Idempotent via the `<col>_key_version < $active` guard — rows already
- * at the active version are skipped. Safe to run repeatedly.
+ *   • **Column-oriented** — every F-41 `*_encrypted` column (Teams,
+ *     Discord, Telegram, gchat, GitHub, Linear, WhatsApp, Email,
+ *     Sandbox, sub-processor subscriptions, integration_credentials,
+ *     Twenty CRM, workspace_model_config). One ciphertext per row,
+ *     gated by a companion `_key_version` column for cheap idempotent
+ *     re-runs (`WHERE <col>_key_version < $active`).
+ *
+ *   • **JSONB selective-field** — `workspace_plugins.config` post-#2744
+ *     cutover. Datasource credentials and every other plugin secret
+ *     (Linear api_key #2750, GitHub-PAT #2807, …) live inside the JSONB
+ *     blob, with the catalog row's `config_schema` `secret: true` flag
+ *     driving which fields to walk. No companion `_key_version` column
+ *     — idempotence is gated per-field on the `enc:v<N>:` prefix.
+ *
+ * Safe to run repeatedly: both shapes skip rows that are already at the
+ * active version.
  *
  * Usage:
  *   # Before: ATLAS_ENCRYPTION_KEYS carries the new key in position 0.
@@ -20,15 +31,12 @@
  *
  * Not covered by this script (by design):
  *   • OIDC `sso_providers.config` — `clientSecret` is encrypted inside
- *     a JSONB blob with no companion `_key_version` column, so the
- *     column-oriented UPDATE pattern here doesn't apply. The ciphertext
- *     carries the `enc:v<N>:` prefix so it stays readable while the
- *     legacy key is in the keyset. Operators re-save OIDC configs via
- *     admin UI to re-encrypt them under the active key.
- *   • Integration tests against a seeded DB — this file's unit tests
- *     use a mock pg client to pin per-row behavior. An end-to-end test
- *     against the live migration + row fixtures is worthwhile future
- *     work, but not currently wired up.
+ *     a JSONB blob keyed by a hand-rolled `clientSecret` field, not the
+ *     catalog-driven selective-field walker. The ciphertext carries
+ *     the `enc:v<N>:` prefix so it stays readable while the legacy key
+ *     is in the keyset. Operators re-save OIDC configs via admin UI to
+ *     re-encrypt them under the active key. A future generalization
+ *     (`oidc-jsonb` target kind) would close this gap.
  */
 
 import { Pool, type PoolClient } from "pg";
@@ -47,6 +55,7 @@ import {
   INTEGRATION_TABLES,
   type IntegrationTable,
 } from "@atlas/api/lib/db/integration-tables";
+import { parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
 
 const log = createLogger("rotate-encryption-key");
 
@@ -55,27 +64,73 @@ const log = createLogger("rotate-encryption-key");
 // ---------------------------------------------------------------------------
 
 /**
- * A column whose ciphertext the rotation script should re-encrypt. Every
- * rotation target uses the `db/secret-encryption.ts` helper pair
- * (versioned-prefix-only `encryptSecret` / `decryptSecret`).
- *
- * Pre-1.5.3 the script also rotated `connections.url` via the URL-aware
- * `db/internal.ts` helper (with plaintext `postgres://…` first-time
- * encryption fallback). That table was dropped in 0096 / #2744 per
- * ADR-0007; datasource URLs now live inside `workspace_plugins.config`
- * JSONB and are not in scope for this column-oriented rotation pass.
- * The two remaining `db/internal.ts` consumers (`workspace_model_config`,
- * `sso_providers`) read identically through the versioned-prefix
- * decryptor — ciphertext format is shared across both helper pairs.
+ * Column-oriented rotation target — the F-41 shape. One encrypted
+ * column per row, with a companion `_key_version` column used to gate
+ * idempotent re-runs (`WHERE <col>_key_version < $active`).
  */
-type RotateTarget = IntegrationTable;
+interface ColumnTarget extends IntegrationTable {
+  readonly kind: "column";
+}
+
+/**
+ * Selective-field-inside-JSONB rotation target — the post-#2744 shape.
+ * `workspace_plugins.config` is a JSONB blob; the catalog row's
+ * `config_schema` declares which fields are `secret: true`. Those
+ * ciphertext values carry the `enc:v<N>:` prefix per field, and there
+ * is no companion `_key_version` column — idempotence is gated on the
+ * prefix itself (an `enc:v<N>:` value with N < active triggers
+ * rotation; anything at the active version is a no-op).
+ *
+ * The JOIN against `plugin_catalog` makes the rotation generic across
+ * every plugin install: datasource URLs (slice 5 / #2744), Linear
+ * api_key (#2750), GitHub-PAT (#2807), and every future
+ * selective-field secret all get covered by the same walk.
+ */
+interface JsonbSelectiveFieldTarget {
+  readonly kind: "jsonb-selective-field";
+  /** Table holding the JSONB column (`workspace_plugins`). */
+  readonly table: string;
+  /** Primary-key column used to scope per-row UPDATEs. */
+  readonly pk: string;
+  /** JSONB column carrying selective-field-encrypted secrets (`config`). */
+  readonly jsonbColumn: string;
+  /** FK column joining to the catalog table (`catalog_id`). */
+  readonly catalogIdColumn: string;
+  /** Catalog table (`plugin_catalog`). */
+  readonly catalogTable: string;
+  /** Catalog PK column referenced by `catalogIdColumn` (`id`). */
+  readonly catalogPk: string;
+  /** Catalog JSONB column carrying the per-plugin schema (`config_schema`). */
+  readonly catalogSchemaColumn: string;
+}
+
+/**
+ * A rotation target. Two shapes today (column / JSONB selective-field);
+ * a third (`oidc-jsonb`) is plausible if `sso_providers.config.clientSecret`
+ * ever needs to participate without a manual admin re-save.
+ */
+type RotateTarget = ColumnTarget | JsonbSelectiveFieldTarget;
 
 const ROTATION_TABLES: readonly RotateTarget[] = [
-  { table: "workspace_model_config", pk: "id", encrypted: "api_key_encrypted", keyVersionColumn: "api_key_key_version" },
+  { kind: "column", table: "workspace_model_config", pk: "id", encrypted: "api_key_encrypted", keyVersionColumn: "api_key_key_version" },
   // Derive from F-41's INTEGRATION_TABLES so adding a new integration
   // in one place covers rotation, audit, and any future column-walking
   // tooling — matches the "single source of truth" convention.
-  ...INTEGRATION_TABLES,
+  ...INTEGRATION_TABLES.map((t) => ({ kind: "column" as const, ...t })),
+  // 0096 / #2744 — datasource credentials live inside this JSONB column
+  // post-cutover. Coverage is generic via `plugin_catalog.config_schema`:
+  // every future plugin install that flags a field `secret: true` is
+  // rotated by the same walk (no per-integration entry needed here).
+  {
+    kind: "jsonb-selective-field",
+    table: "workspace_plugins",
+    pk: "id",
+    jsonbColumn: "config",
+    catalogIdColumn: "catalog_id",
+    catalogTable: "plugin_catalog",
+    catalogPk: "id",
+    catalogSchemaColumn: "config_schema",
+  },
 ];
 
 // Parameterize table / column names into validated identifiers — we
@@ -146,12 +201,13 @@ export interface RotateResult {
 }
 
 /**
- * Re-encrypt every row in one table whose `_key_version < $active`.
- * Runs in a single transaction — mid-batch failure rolls back cleanly.
+ * Re-encrypt every row in one column-shaped table whose
+ * `_key_version < $active`. Runs in a single transaction — mid-batch
+ * failure rolls back cleanly.
  */
 export async function rotateTable(
   client: PoolClient,
-  target: RotateTarget,
+  target: ColumnTarget,
   activeVersion: number,
 ): Promise<RotateResult> {
   assertIdentifier(target.table, "table");
@@ -231,6 +287,205 @@ export async function rotateTable(
 }
 
 // ---------------------------------------------------------------------------
+// JSONB selective-field rotation (workspace_plugins.config post-#2744)
+// ---------------------------------------------------------------------------
+
+/**
+ * Capture the `<N>` from an `enc:v<N>:` prefix without buying into the
+ * full body parse — cheap idempotence gate inside the per-field loop.
+ * Production reads rely on `decryptSecret`'s parse; this regex stays
+ * separate so a malformed body still routes through the orphan path
+ * via the `decryptSecret` throw, not silently here.
+ */
+const VERSION_PREFIX_RE = /^enc:v(\d+):/;
+
+/**
+ * Re-encrypt every `secret: true` field inside a JSONB column whose
+ * ciphertext is at a version below the active key. Catalog-driven —
+ * the rotation set per row is determined by joining to `plugin_catalog`
+ * and parsing `config_schema`, so a future plugin that declares a new
+ * `secret: true` field is covered without code changes here.
+ *
+ * Row-level outcome accounting (matches `rotateTable` for symmetry):
+ *
+ *   • `updated`     — row had ≥1 secret field rotated, no errors. One
+ *                     UPDATE issued with the merged JSONB.
+ *   • `orphaned`    — row had ≥1 secret field whose ciphertext could not
+ *                     be decrypted (legacy key missing from keyset). No
+ *                     UPDATE issued for the row — partial rotation
+ *                     would leave the row at mixed versions; safer to
+ *                     refuse until the operator re-adds the legacy key.
+ *   • `unprefixed`  — row had ≥1 non-empty secret field whose value
+ *                     lacked the `enc:v<N>:` prefix. Either legacy
+ *                     plaintext or corrupted prefix; both refuse
+ *                     rotation. No UPDATE issued for the row.
+ *   • `skippedEmpty` — row had no secret fields (schema absent, empty
+ *                      catalog schema, or no secret-marked field had a
+ *                      non-empty string value), or every secret field
+ *                      was already at the active version. Idempotent
+ *                      re-runs land all rows here.
+ *
+ * Worst-outcome wins per row: a row with both an orphan and a
+ * rotatable field is counted as `orphaned` and not updated. Operator
+ * fixes the keyset and re-runs to converge.
+ *
+ * Runs in a single transaction — mid-batch UPDATE failure rolls back.
+ */
+export async function rotateJsonbSelectiveField(
+  client: PoolClient,
+  target: JsonbSelectiveFieldTarget,
+  activeVersion: number,
+): Promise<RotateResult> {
+  assertIdentifier(target.table, "table");
+  assertIdentifier(target.pk, "pk");
+  assertIdentifier(target.jsonbColumn, "jsonbColumn");
+  assertIdentifier(target.catalogIdColumn, "catalogIdColumn");
+  assertIdentifier(target.catalogTable, "catalogTable");
+  assertIdentifier(target.catalogPk, "catalogPk");
+  assertIdentifier(target.catalogSchemaColumn, "catalogSchemaColumn");
+
+  try {
+    await client.query("BEGIN");
+
+    // No row-level filter analogous to `<col>_key_version < $active`
+    // for column targets — the version is embedded per-field inside
+    // the JSONB blob, so we walk every row and gate per-field below.
+    // Bounded by workspace × installs (sub-100k in practice).
+    const rows = (
+      await client.query(
+        `SELECT t.${target.pk} AS pk,
+                t.${target.jsonbColumn} AS config,
+                c.${target.catalogSchemaColumn} AS config_schema
+           FROM ${target.table} t
+           JOIN ${target.catalogTable} c
+             ON c.${target.catalogPk} = t.${target.catalogIdColumn}`,
+      )
+    ).rows as Array<{ pk: string; config: unknown; config_schema: unknown }>;
+
+    let updated = 0;
+    let skippedEmpty = 0;
+    let orphaned = 0;
+    let unprefixed = 0;
+    for (const row of rows) {
+      // A drifted JSONB shape (non-object) gets skipped — same posture
+      // as the masking / encryption walkers in `lib/plugins/secrets.ts`.
+      if (row.config == null || typeof row.config !== "object" || Array.isArray(row.config)) {
+        skippedEmpty += 1;
+        continue;
+      }
+      const config = row.config as Record<string, unknown>;
+      const schema = parseConfigSchema(row.config_schema);
+
+      // Fields to walk. `corrupt` falls back to every string field —
+      // mirrors `encryptSecretFields`' fail-closed posture. `absent`
+      // / empty: nothing to rotate.
+      const secretKeys = pickSecretKeysForRotation(schema, config);
+      if (secretKeys.length === 0) {
+        skippedEmpty += 1;
+        continue;
+      }
+
+      const merged: Record<string, unknown> = { ...config };
+      let rowUpdated = false;
+      let rowOrphaned = false;
+      let rowUnprefixed = false;
+
+      for (const key of secretKeys) {
+        const value = config[key];
+        if (typeof value !== "string" || value.length === 0) continue;
+
+        if (!hasVersionedPrefix(value)) {
+          // Legacy plaintext or corrupted prefix. Refuse — same
+          // reasoning as the column path's `unprefixed` counter.
+          log.error(
+            { table: target.table, pk: row.pk, field: key },
+            "JSONB secret field missing enc:v<N>: prefix — manual intervention required",
+          );
+          rowUnprefixed = true;
+          continue;
+        }
+
+        // Cheap idempotence: parse `enc:v<N>:` once, skip if N is
+        // already active. Avoids a decrypt + re-encrypt round-trip on
+        // already-rotated fields and lets the re-run walk be entirely
+        // allocation-free for healthy rows.
+        const versionMatch = value.match(VERSION_PREFIX_RE);
+        if (versionMatch && Number.parseInt(versionMatch[1], 10) >= activeVersion) {
+          continue;
+        }
+
+        try {
+          merged[key] = encryptSecret(decryptSecret(value));
+          rowUpdated = true;
+        } catch (err) {
+          log.error(
+            { table: target.table, pk: row.pk, field: key, err },
+            "Failed to rotate JSONB secret field — legacy key likely dropped from ATLAS_ENCRYPTION_KEYS",
+          );
+          rowOrphaned = true;
+        }
+      }
+
+      // Worst-outcome wins per row. Orphan beats unprefixed beats
+      // updated, because the remediation order matches: fix the
+      // keyset first (orphan), then re-save through admin UI to clear
+      // unprefixed fields, then re-run rotation to land updates.
+      if (rowOrphaned) {
+        orphaned += 1;
+      } else if (rowUnprefixed) {
+        unprefixed += 1;
+      } else if (rowUpdated) {
+        await client.query(
+          `UPDATE ${target.table}
+             SET ${target.jsonbColumn} = $1::jsonb
+           WHERE ${target.pk} = $2`,
+          [JSON.stringify(merged), row.pk],
+        );
+        updated += 1;
+      } else {
+        // Every secret field was already at the active version —
+        // typical for idempotent re-runs.
+        skippedEmpty += 1;
+      }
+    }
+
+    await client.query("COMMIT");
+    return { table: target.table, scanned: rows.length, updated, skippedEmpty, orphaned, unprefixed };
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {
+      // Rollback failure is secondary — the original error is what matters.
+    });
+    throw err;
+  }
+}
+
+/**
+ * Resolve the set of config keys this rotation pass should walk. Mirrors
+ * `encryptSecretFields` (`lib/plugins/secrets.ts`) so the rotation
+ * surface and the write path can't drift apart:
+ *
+ *   • `absent` / `parsed` with no `secret: true` fields → empty (nothing
+ *     to rotate; the row's config is entirely non-secret).
+ *   • `parsed` with secret fields → those keys.
+ *   • `corrupt` → every string-valued key in the config blob. Fail
+ *     closed — the catalog schema is broken and we can't trust the
+ *     `secret: true` flag, so rotate every string just like the write
+ *     path encrypts every string.
+ */
+function pickSecretKeysForRotation(
+  schema: ReturnType<typeof parseConfigSchema>,
+  config: Record<string, unknown>,
+): string[] {
+  if (schema.state === "corrupt") {
+    // Every string field — broad but matches the write path's
+    // fail-closed encrypt-every-string behavior.
+    return Object.keys(config).filter((k) => typeof config[k] === "string");
+  }
+  if (schema.state === "absent" || schema.fields.length === 0) return [];
+  return schema.fields.filter((f) => f.secret === true).map((f) => f.key);
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -292,8 +547,11 @@ async function main(): Promise<void> {
     for (const target of ROTATION_TABLES) {
       const client = await pool.connect();
       try {
-        log.info({ table: target.table }, "rotate starting");
-        const result = await rotateTable(client, target, active);
+        log.info({ table: target.table, kind: target.kind }, "rotate starting");
+        const result =
+          target.kind === "column"
+            ? await rotateTable(client, target, active)
+            : await rotateJsonbSelectiveField(client, target, active);
         totalUpdated += result.updated;
         totalSkippedEmpty += result.skippedEmpty;
         totalOrphaned += result.orphaned;

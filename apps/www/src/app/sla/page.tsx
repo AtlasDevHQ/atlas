@@ -5,6 +5,7 @@ import { LegalSection, LegalTOC, type LegalSectionData } from "../../components/
 import { Nav } from "../../components/nav";
 import { ArrowIcon, TopGlow } from "../../components/shared";
 import { StickyNav } from "../../components/sticky-nav";
+import { TalkToSalesDialog } from "../../components/talk-to-sales-dialog";
 
 export const metadata: Metadata = {
   title: "SLA — Atlas",
@@ -271,13 +272,15 @@ export default function SLAPage() {
             Slack — talk to sales.
           </p>
           <div className="flex flex-wrap items-center justify-center gap-4">
-            <a
-              href="mailto:sales@useatlas.dev"
-              className="group inline-flex items-center gap-2 rounded-lg bg-zinc-100 px-5 py-2.5 text-sm font-medium text-zinc-950 transition-all hover:bg-white"
-            >
-              Talk to sales
-              <ArrowIcon />
-            </a>
+            <TalkToSalesDialog
+              triggerClassName="group inline-flex items-center gap-2 rounded-lg bg-zinc-100 px-5 py-2.5 text-sm font-medium text-zinc-950 transition-all hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+              triggerLabel={
+                <>
+                  Talk to sales
+                  <ArrowIcon />
+                </>
+              }
+            />
             <a
               href="/pricing"
               className="group inline-flex items-center gap-2 rounded-lg border border-zinc-800 px-5 py-2.5 text-sm font-medium text-zinc-300 transition-all hover:border-zinc-700 hover:text-zinc-100"

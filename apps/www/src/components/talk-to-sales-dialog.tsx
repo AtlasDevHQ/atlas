@@ -12,12 +12,16 @@
  *   <TalkToSalesDialog triggerLabel="or talk to sales" />
  */
 
-import { useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { TalkToSalesForm } from "./talk-to-sales-form";
 
 export interface TalkToSalesDialogProps {
-  /** Visible label for the trigger button. */
-  triggerLabel: string;
+  /**
+   * Visible content for the trigger button. Accepts a string for the simple
+   * case (e.g. `/pricing` secondary CTA) or a ReactNode when the caller needs
+   * a trailing icon — `/sla` keeps its primary-CTA ArrowIcon, for example.
+   */
+  triggerLabel: ReactNode;
   /** Trigger button class — defaults to a subtle "secondary CTA" style. */
   triggerClassName?: string;
   /** Pre-select a plan in the dropdown (e.g. "Business" from /pricing). */

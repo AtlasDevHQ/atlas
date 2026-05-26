@@ -7,6 +7,7 @@ import { Nav } from "../../components/nav";
 import { ArrowIcon, TopGlow } from "../../components/shared";
 import { StickyNav } from "../../components/sticky-nav";
 import { SubProcessorWebhookButton } from "../../components/sub-processor-webhook-button";
+import { TalkToSalesDialog } from "../../components/talk-to-sales-dialog";
 
 export const metadata: Metadata = {
   title: "Data Processing Addendum — Atlas",
@@ -358,12 +359,10 @@ export default function DPAPage() {
             >
               Email legal
             </a>
-            <a
-              href="mailto:sales@useatlas.dev"
-              className="group inline-flex items-center gap-2 rounded-lg border border-zinc-800 px-5 py-2.5 text-sm font-medium text-zinc-300 transition-all hover:border-zinc-700 hover:text-zinc-100"
-            >
-              Talk to sales
-            </a>
+            <TalkToSalesDialog
+              triggerClassName="group inline-flex items-center gap-2 rounded-lg border border-zinc-800 px-5 py-2.5 text-sm font-medium text-zinc-300 transition-all hover:border-zinc-700 hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+              triggerLabel="Talk to sales"
+            />
           </div>
         </section>
       </main>

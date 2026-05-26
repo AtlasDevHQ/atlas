@@ -159,6 +159,8 @@ Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + P
   - [x] Slice 1 (#2727 / PR #2785) — `plugins/twenty/` + `SaasCrm` Tag + fire-and-forget demo lead capture; `@useatlas/twenty@0.0.1` published via #2787.
   - [x] Slice 2 (#2729 / PR #2830) — durable lead outbox + Scheduler-backed flusher replaces fire-and-forget; migration 0102 + classify/backoff/flusher-lifecycle test coverage.
   - [x] Slice 3 (#2730 / PR #2833) — talk-to-sales dialog on `/pricing` Business tier → `POST /api/v1/contact` → Twenty `Person` + attached `Note` via the slice-1/2 outbox; Cloudflare Turnstile siteverify fail-closed, `@useatlas/twenty@0.0.2` adds `createNote`.
+  - [x] Slice 4 (#2731 / PR #2840) — Better Auth `databaseHooks.user.create.after` enqueues `signup` lead via the outbox; deduped via the `signup:<userId>` idempotency key. Wiring-test follow-up tracked at #2841 + type-bridge follow-up at #2842.
+  - [x] Slice 5 (#2733 / PR #2838) — talk-to-sales dialog replicated to `/sla`, `/dpa`, `/terms` via shared `<TalkToSalesDialog>` + page-specific `topic` field; `noscript` mailto fallback preserved.
 
 ## Parked
 

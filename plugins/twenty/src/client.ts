@@ -45,6 +45,14 @@ export class TwentyClientError extends Data.TaggedError("TwentyClientError")<{
   readonly upstreamCode?: string;
   /** Which client method raised the failure. */
   readonly operation: TwentyOperation;
+  /**
+   * Best-effort `Retry-After` from the response, normalised to
+   * milliseconds. Set when the upstream returned a 429 (or any other
+   * status) with a parseable `Retry-After` header. The outbox honours
+   * this on the row's `retry_after` column so the next claim respects
+   * the upstream's requested delay instead of the tier-based default.
+   */
+  readonly retryAfterMs?: number;
 }> {}
 
 /**
@@ -144,6 +152,36 @@ function buildAuthHeaders(apiKey: string): Record<string, string> {
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 /**
+ * Parse the `Retry-After` header per RFC 9110 §10.2.3. Two valid forms:
+ *  - `delta-seconds` (e.g. `120`) — non-negative integer.
+ *  - `HTTP-date` (e.g. `Wed, 21 Oct 2015 07:28:00 GMT`) — `Date.parse`able.
+ *
+ * Returns the wait in milliseconds, or `undefined` when the header is
+ * absent or unparseable. Always clamped to a non-negative value so a
+ * server clock skew can't ask us to retry "in the past" (which would
+ * collapse to no delay) or — worse — produce a negative interval the
+ * outbox would store as a Postgres-rejected timestamp.
+ */
+export function parseRetryAfterMs(headerValue: string | null | undefined): number | undefined {
+  if (!headerValue) return undefined;
+  const trimmed = headerValue.trim();
+  if (trimmed.length === 0) return undefined;
+
+  // delta-seconds form — integer, possibly with leading zeros.
+  if (/^\d+$/.test(trimmed)) {
+    const seconds = Number.parseInt(trimmed, 10);
+    if (!Number.isFinite(seconds)) return undefined;
+    return Math.max(0, seconds * 1000);
+  }
+
+  // HTTP-date form. Date.parse returns NaN on garbage.
+  const target = Date.parse(trimmed);
+  if (!Number.isFinite(target)) return undefined;
+  const delta = target - Date.now();
+  return Math.max(0, delta);
+}
+
+/**
  * Parse a Twenty error response without ever including the raw body in
  * the thrown error message — Twenty may include sensitive context. We
  * surface the upstream `messages[0]` (canonical envelope) or fall back
@@ -213,6 +251,7 @@ async function findPersonByEmail(
       status: response.status,
       upstreamCode: detail.code,
       operation: "findPersonByEmail",
+      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
     });
   }
 
@@ -262,6 +301,7 @@ async function createPerson(
       status: response.status,
       upstreamCode: detail.code,
       operation: "createPerson",
+      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
     });
   }
 
@@ -301,6 +341,7 @@ async function updatePerson(
       status: response.status,
       upstreamCode: detail.code,
       operation: "updatePerson",
+      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
     });
   }
 
@@ -428,6 +469,7 @@ export async function getPersonMetadata(
       status: response.status,
       upstreamCode: detail.code,
       operation: "getPersonMetadata",
+      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
     });
   }
 

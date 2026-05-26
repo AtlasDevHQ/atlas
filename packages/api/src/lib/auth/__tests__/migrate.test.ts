@@ -347,6 +347,7 @@ describe("migrateAuthTables", () => {
             { name: "0099_approval_surface_discord.sql" },
             { name: "0100_approval_surface_whatsapp.sql" },
             { name: "0101_approval_surface_gchat.sql" },
+            { name: "0102_crm_outbox.sql" },
           ],
         };
       }

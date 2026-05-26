@@ -9,6 +9,7 @@
  * part of the standard migration path instead of lazy ensureTable() calls.
  */
 
+import type { OutboxStatus } from "../lead-outbox/outbox";
 import {
   pgTable,
   uuid,
@@ -2232,5 +2233,44 @@ export const twentyIntegrations = pgTable(
   },
   (t) => [
     uniqueIndex("idx_twenty_integrations_workspace_unique").on(t.workspaceId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// crm_outbox (0102) — durable queue for SaaS CRM (Twenty) lead dispatches.
+// Slice 2 of 1.6.0 (#2729). Owned by `lib/lead-outbox/`. No credentials are
+// stored in this table, so it is intentionally NOT a member of
+// `INTEGRATION_TABLES` (F-47 rotation / F-42 audit skip it). The partial
+// index on (status, created_at) WHERE status IN ('pending','in_flight')
+// keeps the flusher poll fast as done/dead rows accumulate.
+// ---------------------------------------------------------------------------
+
+export const crmOutbox = pgTable(
+  "crm_outbox",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventType: text("event_type").notNull(),
+    payload: jsonb("payload").notNull(),
+    status: text("status").$type<OutboxStatus>().notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error"),
+    // TODO(#2729-followup): rename to a generic `resource_ids JSONB` if
+    // a second SaaS CRM ever ships. The Twenty-specific names leak
+    // vendor specifics into what is otherwise a generic outbox.
+    twentyPersonId: text("twenty_person_id"),
+    twentyNoteId: text("twenty_note_id"),
+    retryAfter: timestamp("retry_after", { withTimezone: true }),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+  },
+  (t) => [
+    check(
+      "crm_outbox_status_chk",
+      sql`status IN ('pending', 'in_flight', 'done', 'dead')`,
+    ),
+    index("idx_crm_outbox_pending_created")
+      .on(t.status, t.createdAt)
+      .where(sql`status IN ('pending', 'in_flight')`),
   ],
 );

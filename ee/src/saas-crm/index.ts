@@ -4,6 +4,12 @@
  * plugin. Self-hosted Atlas gets the Noop layer from
  * `lib/effect/services.ts:NoopSaasCrmLayer`.
  *
+ * Slice 2 of 1.6.0 (#2729): `upsertLead` no longer dispatches inline.
+ * It enqueues a `crm_outbox` row and returns immediately; the flusher
+ * (wired in `lib/effect/layers.ts:makeSchedulerLive`) claims the row on
+ * the next tick and calls `dispatchOutboxRow` below. A Twenty outage,
+ * API crash, or partial sub-step failure no longer drops the lead.
+ *
  * Transient metadata-probe failures deliberately leave `available: true`
  * — a real schema mismatch surfaces as a 422 on the first upsert call.
  * Deterministic misconfigurations (401/403/404) flip to permanent so
@@ -17,6 +23,15 @@ import {
   type SaasCrmLeadInput,
 } from "@atlas/api/lib/effect/services";
 import { createLogger } from "@atlas/api/lib/logger";
+import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import {
+  enqueue,
+  classifyHttpStatus,
+  type OutboxDB,
+  type ClaimedOutboxRow,
+  type OutboxPersistHelpers,
+  type DispatchOutcome,
+} from "@atlas/api/lib/lead-outbox";
 import { isEnterpriseEnabled } from "../index";
 import {
   getPersonMetadata,
@@ -42,15 +57,13 @@ const REQUIRED_PERSON_FIELDS = ["atlasFirstSource", "atlasLastSource"] as const;
 const ATLAS_SAAS_TWENTY_BASE_URL = "https://crm.useatlas.dev";
 
 /**
- * Per-request timeout for the SaaS CRM client. Tight on purpose: every
- * lead dispatch sits inside the demo response path, and even though
- * the dispatch is fire-and-forget at the catch-and-swallow layer
- * inside `dispatchLead`, the `await` in `captureDemoLead` would still
- * add latency-on-failure. 3s caps each leg (find + create/patch),
- * keeping worst-case Twenty-outage latency in the demo response under
- * ~6s rather than the 10s default.
+ * Per-request timeout for the SaaS CRM client. With the outbox in
+ * place the demo response no longer waits on the dispatch, so we
+ * could relax this — but a tight timeout still bounds how long a
+ * single flush tick blocks on a stuck Twenty. 5s keeps the flusher
+ * responsive without thrashing on transient slow responses.
  */
-const SAAS_TIMEOUT_MS = 3_000;
+const SAAS_TIMEOUT_MS = 5_000;
 
 function missingFieldInstructions(missing: ReadonlyArray<string>): string {
   return (
@@ -142,50 +155,124 @@ async function verifyCustomFields(
 }
 
 /**
- * Dispatch a normalized lead via TwentyClient. Errors are caught and
- * logged inside this function so the SaasCrmShape Effect channel stays
- * typed as `Effect<void>` (no error channel) — that contract is what
- * keeps the call-site short (`yield* SaasCrm` then
- * `yield* upsertLead(input)` with nothing to catch).
+ * The outbox-side OutboxDB adapter. We delegate to the module-level
+ * `internalQuery` rather than yielding `InternalDB` from Effect
+ * Context so the SaasCrm Layer requirements stay empty — the demo
+ * route's `runEnterprise(...)` provides `EnterpriseSubsystem`, not
+ * `InternalDB`, and we don't want to widen that contract just to give
+ * the SaasCrm layer access to the pool.
  */
-async function dispatchLead(
+const outboxDb: OutboxDB = {
+  query: internalQuery,
+};
+
+/**
+ * Dispatch one claimed outbox row through the Twenty client. Each
+ * sub-step's resource ID is persisted via the `persist` callbacks
+ * AS SOON AS the call returns — that's what makes the partial-success
+ * crash path idempotent on retry.
+ *
+ * Errors are classified into `transient` / `permanent` based on the
+ * upstream HTTP status (per #2729): 4xx other than 429 → permanent
+ * (deterministic misconfig, never going to succeed on retry); 5xx /
+ * 429 / transport / unknown → transient (worth a retry).
+ */
+export async function dispatchOutboxRow(
   clientConfig: TwentyClientConfig,
-  input: SaasCrmLeadInput,
-): Promise<void> {
+  row: ClaimedOutboxRow,
+  persist: OutboxPersistHelpers,
+): Promise<DispatchOutcome> {
+  // Normalize from the persisted payload. The payload was JSON.stringified
+  // on enqueue (`enqueue` passes `JSON.stringify(input.payload)`), and the
+  // jsonb column round-trips through pg as a plain object — so what we
+  // get back is structurally a `SaasCrmLeadInput`. Cast at this single
+  // boundary; downstream code is type-safe.
+  let normalized;
   try {
-    const normalized = normalizeLead(input);
-    await upsertPerson(clientConfig, normalized.person);
-    log.debug(
-      { source: input.source, eventSource: normalized.eventSource },
-      "SaaS CRM lead dispatched to Twenty",
-    );
+    normalized = normalizeLead(row.payload as SaasCrmLeadInput);
   } catch (err) {
-    // Twenty being down (or a missing custom field, or a bad key)
-    // MUST NOT block the caller. Log loudly so an operator can
-    // correlate, but never re-throw.
-    if (err instanceof TwentyClientError) {
-      log.warn(
-        {
-          source: input.source,
-          status: err.status,
-          upstreamCode: err.upstreamCode,
-          operation: err.operation,
-          err: err.message,
-          event: "saas_crm.dispatch_failed",
-        },
-        "Twenty upsertPerson failed — lead lost (durable outbox not yet implemented)",
-      );
-    } else {
-      log.warn(
-        {
-          source: input.source,
-          err: err instanceof Error ? err.message : String(err),
-          event: "saas_crm.dispatch_failed",
-        },
-        "Twenty dispatch threw unexpectedly — lead lost",
-      );
+    // A normalizer error is a bug in our own code (the discriminated
+    // union exhaustiveness should have caught it). Dead-letter so an
+    // operator sees the corrupt payload.
+    return {
+      kind: "permanent",
+      message: `normalizeLead threw: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  // ── Sub-step 1: upsertPerson (always required) ────────────────────
+  if (!row.twentyPersonId) {
+    let person;
+    try {
+      person = await upsertPerson(clientConfig, normalized.person);
+    } catch (err) {
+      return classifyTwentyError(err, "upsertPerson");
+    }
+    if (!person.id) {
+      // Twenty returned a 2xx Person with no id. Treat as permanent —
+      // we have no way to reference the record on retry, so retrying
+      // would just create another duplicate-by-email upsert against
+      // an already-mutated record. Operator must inspect.
+      return {
+        kind: "permanent",
+        message: "upsertPerson succeeded but returned no id",
+      };
+    }
+    // Persist the id in its own try/catch so an isolated pg blip is
+    // labelled as a persist failure, not as an `upsertPerson threw`.
+    // The next claim will see `twentyPersonId === null` and re-call
+    // upsertPerson, which is safe because `upsertPerson` itself does
+    // a find-by-email-first → PATCH-if-exists (no duplicate Person).
+    try {
+      await persist.setTwentyPersonId(person.id);
+    } catch (err) {
+      return {
+        kind: "transient",
+        message:
+          `persist.setTwentyPersonId failed after upsertPerson succeeded ` +
+          `(personId=${person.id}): ${err instanceof Error ? err.message : String(err)}`,
+      };
     }
   }
+
+  // ── Sub-step 2: createNote (sales-form only — placeholder) ───────
+  // The `sales-form` source is anticipated in #2729 but the
+  // discriminated union in `@useatlas/twenty/lead-normalizer` only
+  // emits `demo` today. The dispatcher dead-letters any sales-form
+  // row that lands today so the failure is operator-visible (rather
+  // than silently completing at upsertPerson and dropping the note).
+  if (row.eventType === "sales-form" && !row.twentyNoteId) {
+    log.warn(
+      { rowId: row.id, event: "lead_outbox.sales_form_note_unwired" },
+      "sales-form row received but createNote is not wired — dead-lettering",
+    );
+    return {
+      kind: "permanent",
+      message:
+        "sales-form createNote not yet implemented in @useatlas/twenty — " +
+        "follow-up slice will wire this. Row dead-lettered for visibility.",
+    };
+  }
+
+  return { kind: "ok" };
+}
+
+function classifyTwentyError(err: unknown, op: string): DispatchOutcome {
+  if (err instanceof TwentyClientError) {
+    const classification = classifyHttpStatus(err.status);
+    const message = `${op} failed (status=${err.status}${err.upstreamCode ? `, code=${err.upstreamCode}` : ""}): ${err.message}`;
+    if (classification === "transient") {
+      return {
+        kind: "transient",
+        message,
+        httpStatus: err.status,
+        retryAfterMs: err.retryAfterMs,
+      };
+    }
+    return { kind: "permanent", message, httpStatus: err.status };
+  }
+  const message = `${op} threw: ${err instanceof Error ? err.message : String(err)}`;
+  return { kind: "transient", message };
 }
 
 // Boot-time verification runs once inside Layer.effect; available reflects that one check.
@@ -213,12 +300,23 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
       } satisfies SaasCrmShape;
     }
 
+    if (!hasInternalDB()) {
+      log.warn(
+        { event: "saas_crm.no_internal_db" },
+        "Internal DB unavailable — SaasCrm.available=false. The outbox cannot enqueue without a Postgres backing store.",
+      );
+      return {
+        available: false,
+        upsertLead: () => Effect.void,
+      } satisfies SaasCrmShape;
+    }
+
     const verifyResult = yield* Effect.promise(() => verifyCustomFields(creds));
     if (verifyResult.ok === false) {
       // Already logged inside verifyCustomFields (missing fields OR
       // deterministic misconfiguration). Surface unavailable so
-      // subsequent demo signups are no-ops rather than dead-letter
-      // rows in the (future) outbox.
+      // subsequent demo signups are no-ops rather than rows that will
+      // dead-letter on the very first flush.
       return {
         available: false,
         upsertLead: () => Effect.void,
@@ -228,7 +326,7 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
       log.warn(
         { err: verifyResult.reason, event: "saas_crm.verify_transient_failure" },
         "Twenty metadata endpoint errored during boot verification — assuming custom fields are present. " +
-          "A real schema mismatch will surface as a 422 on the first upsertPerson call.",
+          "A real schema mismatch will surface as a 422 on the first dispatch (and dead-letter the row).",
       );
     } else {
       log.info(
@@ -245,10 +343,42 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
     return {
       available: true,
       upsertLead: (input) =>
-        Effect.promise(() => dispatchLead(clientConfig, input)),
+        Effect.tryPromise({
+          try: async () => {
+            await enqueue(outboxDb, {
+              eventType: input.source,
+              payload: input as unknown as Record<string, unknown>,
+            });
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(
+          Effect.catchAll((err) =>
+            Effect.sync(() => {
+              // An enqueue failure is just a Postgres write — they
+              // should be rare. Log and swallow so the demo response
+              // stays unblocked. `captureDemoLead` already has its
+              // own defense-in-depth catch around the dispatched
+              // Effect, so the route handler never sees this error.
+              log.error(
+                {
+                  source: input.source,
+                  err: err.message,
+                  event: "saas_crm.enqueue_failed",
+                },
+                "crm_outbox enqueue failed — lead lost (Postgres write error)",
+              );
+            }),
+          ),
+        ),
+      dispatcher: (row, persist) => dispatchOutboxRow(clientConfig, row, persist),
     } satisfies SaasCrmShape;
   }),
 );
 
 // Re-exported for direct testing of the verification / dispatch logic.
-export { verifyCustomFields, dispatchLead, buildSaasClientConfig, ATLAS_SAAS_TWENTY_BASE_URL };
+export {
+  verifyCustomFields,
+  buildSaasClientConfig,
+  ATLAS_SAAS_TWENTY_BASE_URL,
+  classifyTwentyError,
+};

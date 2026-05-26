@@ -2414,22 +2414,47 @@ export type SaasCrmLeadInput = {
   readonly userAgent?: string | null;
 };
 
-export interface SaasCrmShape {
-  /**
-   * Anticipatory — a future `POST /api/v1/contact` route will read this
-   * to return 404 `not_available` on self-hosted (or when the SaaS layer
-   * failed boot verification) rather than the standard 403 envelope.
-   * Until that route lands, no production caller branches on this flag.
-   */
-  readonly available: boolean;
-  /**
-   * Fire-and-forget upsert of a lead into the Atlas SaaS CRM. Errors
-   * are swallowed inside the layer — callers (notably `captureDemoLead`)
-   * must never block on or propagate CRM failures back to the HTTP
-   * response. Returns success even when `available === false` (no-op).
-   */
-  readonly upsertLead: (input: SaasCrmLeadInput) => Effect.Effect<void>;
-}
+/**
+ * Discriminated SaasCrm shape — the two correlated facts (anticipated
+ * `available` flag for the future `POST /api/v1/contact` 404 branch and
+ * the load-bearing `dispatcher` for the flusher) are encoded as a
+ * single union so they can't drift out of sync. Five places in
+ * `SaasCrmLive` used to set them by hand; the discriminator now
+ * narrows automatically.
+ *
+ * `available === false` ⇒ no dispatcher (flusher skips wiring).
+ * `available === true`  ⇒ dispatcher is non-null (flusher uses it).
+ *
+ * `upsertLead` is shared across both — even an `available: false` layer
+ * accepts the call as a no-op so callers don't need to branch.
+ */
+export type SaasCrmShape =
+  | {
+      /**
+       * Anticipatory — a future `POST /api/v1/contact` route will read
+       * this to return 404 `not_available` on self-hosted (or when the
+       * SaaS layer failed boot verification) rather than the standard
+       * 403 envelope. Until that route lands, the flusher wire-up in
+       * `lib/effect/layers.ts:makeSchedulerLive` is the only consumer.
+       */
+      readonly available: false;
+      readonly upsertLead: (input: SaasCrmLeadInput) => Effect.Effect<void>;
+    }
+  | {
+      readonly available: true;
+      readonly upsertLead: (input: SaasCrmLeadInput) => Effect.Effect<void>;
+      /**
+       * Per-row dispatcher the scheduler-backed flusher calls inside
+       * `flushBatch`. Defined here (not in `@atlas/ee`) so
+       * `lib/effect/layers.ts:makeSchedulerLive` can `yield* SaasCrm`
+       * to fetch it without importing from `@atlas/ee` (the `core →
+       * ee` boundary is enforced by `check-ee-imports.sh`).
+       */
+      readonly dispatcher: (
+        row: import("@atlas/api/lib/lead-outbox").ClaimedOutboxRow,
+        persist: import("@atlas/api/lib/lead-outbox").OutboxPersistHelpers,
+      ) => Promise<import("@atlas/api/lib/lead-outbox").DispatchOutcome>;
+    };
 
 export class SaasCrm extends Context.Tag("SaasCrm")<SaasCrm, SaasCrmShape>() {}
 

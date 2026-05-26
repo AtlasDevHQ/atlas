@@ -12,10 +12,18 @@
  * callers that care about durability (the contact form) can return 503
  * — the demo route wraps `runEnterprise` in a try/catch and swallows.
  *
- * Transient metadata-probe failures deliberately leave `available: true`
- * — a real schema mismatch surfaces as a 422 on the first upsert call.
- * Deterministic misconfigurations (401/403/404) flip to permanent so
- * leads aren't lost silently against a clearly-broken endpoint.
+ * Boot probe fails closed (#2860). Any verification failure — missing
+ * required custom field, deterministic misconfig (401/403/404), network
+ * error, 5xx, or unparseable response — flips `available: false`. The
+ * contact route then returns 404 and the marketing site's mailto
+ * fallback captures leads, rather than the prior silent-transient path
+ * that left `available: true` and dead-lettered every submission. The
+ * probe targets Twenty's REST OpenAPI spec at `/rest/open-api/core`
+ * (the GraphQL `/metadata` surface has drifted between Twenty releases
+ * and `ObjectFilter.nameSingular` no longer exists in current Twenty).
+ * The boot-resolved field set is reused as the dispatcher's payload
+ * allowlist so optional fields like `atlasIp` the operator chose not
+ * to create are silently dropped instead of 400-ing the upsert.
  *
  * Credential source — env-only (#2850). `TWENTY_API_KEY` /
  * `TWENTY_BASE_URL` belong to Atlas-the-operator; this Layer never
@@ -77,6 +85,18 @@ const REQUIRED_PERSON_FIELDS = [
  * absence should fail boot.
  */
 const OPTIONAL_PERSON_FIELDS = ["atlasIp"] as const;
+
+/**
+ * Standard Twenty Person fields the dispatcher MUST be able to write —
+ * `emails` is the email-keyed-upsert primary key; without it every POST
+ * would be a body-less write. Treated identically to a missing custom
+ * field at boot: probe shape that lacks `emails` flips `available: false`
+ * rather than constructing a `filterPersonPayload` that silently strips
+ * the lead's email out of every dispatch. Defensive against future
+ * Twenty schema reshapes (e.g. composition via `$ref` / `allOf` that
+ * would not populate flat `properties` keys).
+ */
+const REQUIRED_STANDARD_PERSON_FIELDS = ["emails"] as const;
 
 /**
  * Outbox event-type string for Stripe → Twenty conversion stamps
@@ -185,6 +205,26 @@ async function verifyCustomFields(
       baseUrl,
       timeoutMs: SAAS_TIMEOUT_MS,
     });
+    const missingStandard = REQUIRED_STANDARD_PERSON_FIELDS.filter(
+      (f) => !schema.fields.has(f),
+    );
+    if (missingStandard.length > 0) {
+      // Defensive guard. The dispatcher uses the probe set as the
+      // payload allowlist; a probe shape that omits `emails` would make
+      // `filterPersonPayload` strip the lead's email out of every POST.
+      // Treat as a permanent misconfig — never construct a client config
+      // that's pre-broken at the email level.
+      log.error(
+        { missing: missingStandard, event: "saas_crm.standard_fields_missing" },
+        `Twenty REST OpenAPI probe returned a Person schema missing standard fields ` +
+          `(${missingStandard.join(", ")}). This is a Twenty-side schema reshape ` +
+          `(likely $ref / allOf composition not flattened into properties) — the ` +
+          `dispatcher cannot safely write Person records when standard keys are ` +
+          `absent from the allowlist. SaaS CRM dispatch is disabled until the ` +
+          `probe returns a flat-properties Person schema again.`,
+      );
+      return { ok: false };
+    }
     const missing = REQUIRED_PERSON_FIELDS.filter((f) => !schema.fields.has(f));
     if (missing.length === 0) return { ok: true, present: schema.fields };
     log.error(

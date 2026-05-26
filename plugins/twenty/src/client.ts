@@ -14,11 +14,17 @@
  *
  * URL composition:
  *  - Core records:   `{baseUrl}/rest/people` etc.
- *  - Metadata probe: `{baseUrl}/metadata/` (GraphQL; metadata's REST
- *    surface lists objects but does NOT expose a per-object fields list).
+ *  - OpenAPI probe:  `{baseUrl}/rest/open-api/core` — authoritative,
+ *    workspace-scoped Person schema (`components.schemas.Person.properties`).
+ *    Canonical surface for "which Atlas custom fields exist on this
+ *    workspace" (#2860). Same `Authorization: Bearer <apiKey>` as the
+ *    REST data API.
+ *  - Metadata probe: `{baseUrl}/metadata/` (GraphQL — LEGACY, retained
+ *    for back-compat. Broke in current Twenty when `ObjectFilter.nameSingular`
+ *    was removed; new code should call `getPersonRestSchema` instead).
  *
  * Verified against Twenty docs (REST: GET /rest/{namePlural} + filter
- * bracket syntax; metadata GraphQL: `objects { fields { name } }`).
+ * bracket syntax; OpenAPI 3.1.1 at `/rest/open-api/core`).
  * See README.md for endpoint references.
  */
 import { Data } from "effect";
@@ -325,8 +331,13 @@ async function findPersonByEmail(
  * Filter a Person write payload against the upstream schema allowlist.
  * No-ops when the allowlist is unset (today's callers that haven't probed
  * the schema continue sending every key). Drops top-level keys not in the
- * allowlist — the nested `emails` object stays intact because Twenty
- * always exposes it on Person.
+ * allowlist; the filter does NOT recurse — if `emails` (or any nested
+ * object) is in the allowlist, its inner shape is passed through unchanged.
+ *
+ * Correctness depends on the boot probe populating the allowlist with the
+ * full Person property set (standard `emails` / `name` PLUS custom Atlas
+ * fields). `SaasCrmLive` enforces this by reusing the `getPersonRestSchema`
+ * result as the allowlist and refusing to boot if `emails` is missing.
  */
 function filterPersonPayload(
   payload: Record<string, unknown>,
@@ -735,8 +746,10 @@ export async function getPersonMetadata(
  * token: `components.schemas.Person.properties` enumerates every column
  * — standard and custom — defined on this workspace's Person object.
  *
- * Returns a `Set<string>` of property names so callers can decide which
- * Atlas custom fields are safe to emit on `upsertPerson` / `stampStripeCustomerId`.
+ * Returns a `ReadonlySet<string>` of property names so callers can decide
+ * which Atlas custom fields are safe to emit on `upsertPerson` /
+ * `stampStripeCustomerId`. The Set is immutable at the type level — callers
+ * thread it through `TwentyClientConfig.allowedPersonFields` without copying.
  * Caller is expected to cache the result for the process lifetime — the
  * Twenty workspace schema is operator-managed and changes rarely; the
  * boot probe is the right caching boundary.

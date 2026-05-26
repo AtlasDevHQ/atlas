@@ -2558,11 +2558,35 @@ export type SaasCrmShape =
 
 export class SaasCrm extends Context.Tag("SaasCrm")<SaasCrm, SaasCrmShape>() {}
 
-/** No-op default: SaaS CRM dispatch unavailable; upsertLead is a noop. */
+/**
+ * No-op default: SaaS CRM dispatch unavailable.
+ *
+ * `stampConversion` warns on every call — a Stripe → Twenty conversion
+ * landing while SaasCrm is unavailable means a paying-customer Person
+ * record was not stamped, which is a revenue record-keeping gap an
+ * operator wants observable per-call (not just at boot). `upsertLead`
+ * stays silent because demo / signup volume is high enough that per-call
+ * warning would be log spam; operators should rely on the boot-time
+ * `saas_crm.openapi_unreachable` / `saas_crm.custom_fields_missing`
+ * structured logs for unavailable-layer alerting, plus the `crm_outbox`
+ * table row-count for visibility into the demo / signup path.
+ */
+const saasCrmLog = createLogger("effect:saas-crm");
 export const NoopSaasCrmLayer: Layer.Layer<SaasCrm> = Layer.succeed(SaasCrm, {
   available: false,
   upsertLead: () => Effect.void,
-  stampConversion: () => Effect.void,
+  stampConversion: (input) =>
+    Effect.sync(() => {
+      saasCrmLog.warn(
+        {
+          email: input.email,
+          stripeCustomerId: input.stripeCustomerId,
+          event: "saas_crm.stamp_skipped_unavailable",
+        },
+        "SaasCrm.stampConversion called while available=false — Stripe conversion not stamped on Twenty Person. " +
+          "Check boot logs for the original 'saas_crm.openapi_*' event that flipped the layer to unavailable.",
+      );
+    }),
 } satisfies SaasCrmShape);
 
 // ── Aggregate no-op default Layer ────────────────────────────────────

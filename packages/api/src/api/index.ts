@@ -526,25 +526,21 @@ try {
   );
 }
 
-// Teams routes — lazy import, only loaded if TEAMS_APP_ID is set.
-// Dynamic import avoids pulling teams dependencies into the module graph
-// when Teams is disabled, and prevents mock.module leaks in test suites.
-if (process.env.TEAMS_APP_ID) {
-  const { teams } = await import("./routes/teams");
-  app.route("/api/v1/teams", teams);
-  log.info("Teams integration enabled");
-} else {
-  log.debug("Teams integration disabled (TEAMS_APP_ID not set)");
-}
-
-// Discord routes — lazy import, only loaded if DISCORD_CLIENT_ID is set.
-if (process.env.DISCORD_CLIENT_ID) {
-  const { discord } = await import("./routes/discord");
-  app.route("/api/v1/discord", discord);
-  log.info("Discord integration enabled");
-} else {
-  log.debug("Discord integration disabled (DISCORD_CLIENT_ID not set)");
-}
+// Teams + Discord routes — always mount. Handlers read env per-request
+// and return 501 when unconfigured, so import-time gating would freeze
+// a stale "unconfigured" routing decision into the cached ESM module
+// for any caller that evaluates this file before env is set.
+const { teams } = await import("./routes/teams");
+app.route("/api/v1/teams", teams);
+const { discord } = await import("./routes/discord");
+app.route("/api/v1/discord", discord);
+log.info(
+  {
+    teams: Boolean(process.env.TEAMS_APP_ID),
+    discord: Boolean(process.env.DISCORD_CLIENT_ID),
+  },
+  "platform integrations",
+);
 
 // Hosted MCP endpoint — mounts the MCP server as a Hono route under
 // /mcp/{workspace_id}/sse so the same per-region API instance that

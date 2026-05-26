@@ -367,8 +367,9 @@ describe("live rate-limit loop — /sign-in/email", () => {
     // returns 429. If `rateLimit:` is dropped, all 11 stay 401 — red.
     expect(statuses.slice(0, 10)).toEqual(Array.from({ length: 10 }, () => 401));
     expect(statuses[10]).toBe(429);
-  });
+  }, 15_000);
 
+  // 11 sequential Better Auth calls — shard contention pushes p99 past the 5s default.
   it("rate-limits by x-atlas-client-ip even when x-forwarded-for rotates (F-06 spoof resistance)", async () => {
     // If `advanced` is dropped, Better Auth falls back to default IP
     // detection — which reads `x-forwarded-for`. An attacker rotating
@@ -400,7 +401,7 @@ describe("live rate-limit loop — /sign-in/email", () => {
 
     expect(statuses.slice(0, 10)).toEqual(Array.from({ length: 10 }, () => 401));
     expect(statuses[10]).toBe(429);
-  });
+  }, 15_000);
 });
 
 describe("signup enumeration response parity — /sign-up/email", () => {

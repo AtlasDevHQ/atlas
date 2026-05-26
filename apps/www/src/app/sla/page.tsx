@@ -274,12 +274,8 @@ export default function SLAPage() {
           <div className="flex flex-wrap items-center justify-center gap-4">
             <TalkToSalesDialog
               triggerClassName="group inline-flex items-center gap-2 rounded-lg bg-zinc-100 px-5 py-2.5 text-sm font-medium text-zinc-950 transition-all hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
-              triggerLabel={
-                <>
-                  Talk to sales
-                  <ArrowIcon />
-                </>
-              }
+              triggerLabel="Talk to sales"
+              triggerIcon={<ArrowIcon />}
             />
             <a
               href="/pricing"

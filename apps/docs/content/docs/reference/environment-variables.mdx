@@ -659,7 +659,7 @@ See [Python Tool](/guides/python) for the full guide.
 | `SLACK_BOT_TOKEN` | — | Single-workspace mode (skip OAuth) |
 | `SLACK_CLIENT_ID` | — | Multi-workspace OAuth app client ID. Required for the catalog-driven Slack install path (`/api/v1/integrations/slack/install`) — when unset, that endpoint returns `501` |
 | `SLACK_CLIENT_SECRET` | — | Multi-workspace OAuth app client secret. Pair with `SLACK_CLIENT_ID` |
-| `SLACK_ENCRYPTION_KEY` | — | At-rest encryption key for per-Workspace Slack OAuth credentials in `chat_cache`. Required on SaaS — `ChatAdapterEnvGuardLive` asserts on it at boot. Missing the key silently drops the adapter (no Slack events land). Source: `packages/api/src/lib/effect/saas-env.ts` |
+| `SLACK_ENCRYPTION_KEY` | — | At-rest encryption key for per-Workspace Slack OAuth credentials in `chat_cache`. Failure mode differs by deploy mode: **on SaaS** (`deployMode === "saas"`), `ChatAdapterEnvGuardLive` fails boot with `ChatAdapterEnvMissingError` when any Slack OAuth catalog entry is `enabled` but the key (or the other Slack envs) is missing — incident response should look for the boot-failure error, not for dropped events. **On self-hosted**, the guard is a no-op; `SLACK_BUILDER.build()` returns `null` and the adapter silently doesn't activate (the api still boots — fix the env when ready). Sources: `packages/api/src/lib/effect/saas-guards.ts:793` (the guard), `packages/api/src/lib/effect/saas-env.ts` (env wiring) |
 | `ATLAS_SLACK_INSTALL_TABLE` | `chat_cache` | Override the SQL table OAuth installs land in. Must be a valid SQL identifier. Set this on self-hosted deploys that customize the chat plugin's `state.tablePrefix` (e.g. `myorg_` → `myorg_cache`) so OAuth installs land in the same physical table the chat-adapter reads from. SaaS pins the default. Source: `packages/api/src/lib/slack/store.ts` |
 
 See [Slack guide](/guides/slack) for the full setup.
@@ -831,7 +831,7 @@ Destructive operator-CLI subcommands gated by explicit env confirmation. None of
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ATLAS_WIPE_OK` | — | Required gate (`=1`) for the destructive `atlas ops wipe` subcommand. `TRUNCATE`s every public table in the tenant DB; takes no backup. Pair with `--confirm` on the command line. Source: `packages/cli/src/commands/ops.ts` |
-| `ATLAS_TEAM_PG_URL` | — | Tenant-DB connection string consumed by `bun run` operator backfill scripts (e.g. `slack_installations_to_chat_cache.ts`). Not read by the API process — only by one-shot scripts under `packages/api/src/lib/db/migrations/scripts/` |
+| `ATLAS_TEAM_PG_URL` | — | Canonical tenant-DB connection string for the operator CLI. Resolved by `packages/cli/lib/tenant-db.ts` in this precedence: `ATLAS_TEAM_PG_URL` → `DATABASE_URL` → exit with error. Read by every CLI operator subcommand that touches the tenant DB — `atlas ops` (wipe, etc.), `atlas proactive enable/disable`, `atlas seed`, and the `--db` override flag — plus one-shot `bun run` backfill scripts under `packages/api/src/lib/db/migrations/scripts/`. **Set explicitly before any destructive subcommand**: falling back to `DATABASE_URL` can target the wrong database. Not read by the API process |
 
 ---
 

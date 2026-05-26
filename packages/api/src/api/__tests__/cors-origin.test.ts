@@ -62,11 +62,15 @@ mock.module("@atlas/api/lib/auth/detect", () => ({
   resetAuthModeCache: () => {},
 }));
 
-// Return explicit origin from getSettingAuto for CORS
+// Return explicit origin from getSettingAuto for CORS — comma-separated
+// allowlist so the multi-origin path is exercised alongside the single-origin
+// path (https://app.example.com still matches, https://www.example.com is
+// the second entry).
 mock.module("@atlas/api/lib/settings", () => ({
   getSetting: () => undefined,
   getSettingAuto: (key: string) => {
-    if (key === "ATLAS_CORS_ORIGIN") return "https://app.example.com";
+    if (key === "ATLAS_CORS_ORIGIN")
+      return "https://app.example.com,https://www.example.com";
     return undefined;
   },
   getSettingLive: async () => undefined,
@@ -130,6 +134,21 @@ describe("CORS explicit origin matching", () => {
     );
 
     expect(res.headers.get("Access-Control-Allow-Origin")).toBe("https://app.example.com");
+    expect(res.headers.get("Access-Control-Allow-Credentials")).toBe("true");
+  });
+
+  it("second allowlist entry also matches and echoes the request origin", async () => {
+    const res = await app.fetch(
+      new Request("http://localhost/api/v1/chat", {
+        method: "OPTIONS",
+        headers: {
+          Origin: "https://www.example.com",
+          "Access-Control-Request-Method": "POST",
+        },
+      }),
+    );
+
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("https://www.example.com");
     expect(res.headers.get("Access-Control-Allow-Credentials")).toBe("true");
   });
 });

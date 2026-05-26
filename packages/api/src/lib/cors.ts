@@ -47,6 +47,12 @@ export function resolveCorsOrigin(): string {
  * exact headers the streaming-response path should attach so cross-origin
  * fetches receive `Access-Control-Allow-Origin` (the browser blocks any
  * non-OPTIONS response missing this, even when the preflight succeeded).
+ *
+ * `ATLAS_CORS_ORIGIN` accepts either `"*"`, a single origin, or a
+ * comma-separated allowlist (e.g. `"https://app.useatlas.dev,https://www.useatlas.dev"`).
+ * The list form is needed when one API host serves multiple frontend
+ * surfaces — e.g. SaaS Atlas hosts the app at `app.useatlas.dev` and the
+ * marketing/talk-to-sales surface at `www.useatlas.dev`.
  */
 export function corsResponseHeaders(requestOrigin: string): Record<string, string> {
   const configured = resolveCorsOrigin();
@@ -58,7 +64,15 @@ export function corsResponseHeaders(requestOrigin: string): Record<string, strin
   if (configured === "*") {
     headers["Access-Control-Allow-Origin"] = "*";
     // Per CORS spec, credentials must NOT be set with wildcard origin.
-  } else if (configured === requestOrigin) {
+    return headers;
+  }
+
+  const allowed = configured
+    .split(",")
+    .map((o) => o.trim())
+    .filter((o) => o.length > 0);
+
+  if (allowed.includes(requestOrigin)) {
     headers["Access-Control-Allow-Origin"] = requestOrigin;
     headers["Access-Control-Allow-Credentials"] = "true";
   }

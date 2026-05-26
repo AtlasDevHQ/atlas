@@ -114,9 +114,14 @@ describe("upsertPerson — Person absent", () => {
     expect(result.id).toBe("person_123");
     expect(calls).toHaveLength(2);
     expect(calls[0].method).toBe("GET");
-    expect(calls[0].url).toContain("/rest/people?filter");
-    // Twenty's bracket-nested filter syntax — verified against Twenty REST docs.
-    expect(calls[0].url).toContain("filter[emails.primaryEmail][eq]=");
+    expect(calls[0].url).toContain("/rest/people?filter=");
+    // Twenty's documented filter syntax: `field[COMPARATOR]:value`
+    // (per its OpenAPI spec's `components.parameters.filter` description).
+    // The bracket-nested form `filter[field][op]=value` is silently
+    // ignored by Twenty and returns the unfiltered list — guard against
+    // a regression to that shape.
+    expect(calls[0].url).toContain("filter=emails.primaryEmail[eq]:");
+    expect(calls[0].url).not.toContain("filter[emails.primaryEmail][eq]=");
     expect(calls[0].url).toContain(encodeURIComponent("user@test.com"));
 
     expect(calls[1].method).toBe("POST");

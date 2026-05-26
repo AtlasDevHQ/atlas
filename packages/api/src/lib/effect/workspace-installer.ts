@@ -1850,6 +1850,24 @@ async function deleteCredentialStoreForSlug(
     await deleteCredentialBundle(workspaceId, catalogId);
     return;
   }
+  if (slug === "twenty") {
+    // Twenty CRM — credentials live in the dedicated
+    // `twenty_integrations` table, not `workspace_plugins.config`. The
+    // catalog DELETE removes the workspace_plugins row (step 2 of the
+    // disconnect dance); this step removes the credential row so the
+    // dispatcher falls back to env var (or surfaces the actionable
+    // "configure under Admin → Integrations → Twenty" error).
+    //
+    // Lazy import for the same reason as the Slack branch above — keeps
+    // the Twenty store off the static graph of test files that mock
+    // `db/internal` partially.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { deleteTwentyIntegration } = require("@atlas/api/lib/integrations/twenty/store") as {
+      deleteTwentyIntegration: (workspaceId: string) => Promise<boolean>;
+    };
+    await deleteTwentyIntegration(workspaceId);
+    return;
+  }
   // Form-based: no separate credential store; the DELETE on
   // workspace_plugins (step 2) is the credential teardown. No-op here.
 }

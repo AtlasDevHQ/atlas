@@ -26,6 +26,7 @@ import { SlackOAuthInstallHandler } from "./slack-oauth-handler";
 import { EmailFormInstallHandler } from "./email-form-handler";
 import { ObsidianFormInstallHandler } from "./obsidian-form-handler";
 import { WebhookFormInstallHandler } from "./webhook-form-handler";
+import { TwentyFormInstallHandler, TWENTY_SLUG } from "./twenty-form-handler";
 import {
   JiraOAuthInstallHandler,
   JIRA_CATALOG_ID,
@@ -146,6 +147,13 @@ export function registerBuiltinInstallHandlers(): void {
   log.info("Registered ObsidianFormInstallHandler");
   registerFormHandler("webhook", new WebhookFormInstallHandler());
   log.info("Registered WebhookFormInstallHandler");
+  // Twenty CRM form-install. Per-workspace credentials land in the
+  // dedicated `twenty_integrations` table (encrypted via
+  // `db/secret-encryption.ts`); the `workspace_plugins` row is the
+  // catalog binding only. No env gate — customer admins supply their
+  // own credentials at install time, matching every other form handler.
+  registerFormHandler(TWENTY_SLUG, new TwentyFormInstallHandler());
+  log.info("Registered TwentyFormInstallHandler");
   // Linear API-key form-install (#2750). Pairs with the lazy builder
   // for `catalog:linear-apikey` registered below — same "register both
   // halves together so a half-wired deploy can't end up with an

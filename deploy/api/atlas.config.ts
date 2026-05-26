@@ -617,6 +617,42 @@ export default defineConfig({
         },
       ],
     },
+    // Twenty CRM — per-workspace API key + base URL override.
+    // Credentials land in the dedicated `twenty_integrations` table;
+    // the `workspace_plugins` row is the catalog binding only.
+    // baseUrl is REQUIRED with NO default — a default
+    // `https://crm.useatlas.dev` would silently point a self-hosted
+    // operator's install at Atlas's own Twenty CRM. The SaaS
+    // deployment carries that hostname separately via `TWENTY_BASE_URL`.
+    {
+      slug: "twenty",
+      type: "integration",
+      install_model: "form",
+      enabled: true,
+      saas_eligible: true,
+      name: "Twenty CRM",
+      description:
+        "Upsert leads into Twenty CRM (Persons + Notes). Configure your workspace's Twenty hostname and API key — the key is encrypted at rest.",
+      configSchema: [
+        {
+          key: "baseUrl",
+          type: "string",
+          label: "Base URL",
+          description:
+            "Your Twenty instance hostname (e.g. https://crm.example.com). No default — enter the URL of your own Twenty install.",
+          required: true,
+        },
+        {
+          key: "apiKey",
+          type: "string",
+          label: "API key",
+          description:
+            "Bearer API key from Twenty → Settings → API & Webhooks. Stored encrypted at rest.",
+          required: true,
+          secret: true,
+        },
+      ],
+    },
     // Outbound webhook — POSTs analysis output to a customer-managed
     // HTTPS endpoint with HMAC-SHA256 signing. `signing_secret` is the
     // shared secret receivers verify against; rotation is "re-install"

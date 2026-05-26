@@ -20,6 +20,23 @@ Create the required fields under **Settings → Data Model → Person → + Add 
 
 ## Install (self-hoster)
 
+Self-hosted operators have **two ways** to configure Twenty credentials. The dispatcher consults sources in this exact order:
+
+1. **`twenty_integrations` DB row** (admin-UI override) — wins when present.
+2. **`TWENTY_API_KEY` env var** (+ optional `TWENTY_BASE_URL`) — fallback.
+3. Throws an actionable error when neither is configured.
+
+### Option 1: Admin UI (recommended — wins when present)
+
+Navigate to **Admin → Integrations → Twenty** in your Atlas deployment and submit:
+
+- **Base URL** — your Twenty instance hostname (e.g. `https://crm.example.com`). **Required, no default** — the form will NOT auto-fill `https://crm.useatlas.dev` (that's Atlas's own Twenty).
+- **API key** — bearer token from Twenty → Settings → API & Webhooks.
+
+The key is encrypted at rest in the `twenty_integrations` table (AES-256-GCM via Atlas's F-41 selective-field encryption) and overrides any `TWENTY_API_KEY` environment variable when present. Deleting the row falls back to env.
+
+### Option 2: Environment variables / `atlas.config.ts` (fallback only)
+
 ```bash
 bun add @useatlas/twenty
 ```

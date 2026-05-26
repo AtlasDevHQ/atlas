@@ -1,0 +1,124 @@
+---
+title: Twenty CRM
+description: Push leads from Atlas into Twenty CRM. Configure your workspace's Twenty hostname and API key through the admin UI, or fall back to environment variables.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas's [Twenty CRM](https://twenty.com) integration is an **Action
+Target**: Atlas upserts a Person (and optionally creates a Note) in
+Twenty for each lead event — demo signups, sales-form submissions, new
+user accounts. It is not a chat platform.
+
+Self-hosted operators can wire Twenty in two ways:
+
+- **Admin UI (recommended)** — submit a `baseUrl` + `apiKey` through
+  **Admin → Integrations → Twenty**. The key is encrypted at rest in
+  the dedicated `twenty_integrations` table and overrides any
+  environment variable.
+- **Environment variables** — set `TWENTY_API_KEY` (and optionally
+  `TWENTY_BASE_URL`) on the API service. Used when the admin UI row is
+  absent.
+
+<Callout type="warn" title="No Atlas-SaaS default for Base URL">
+  The admin UI form requires you to type your own Twenty hostname. It
+  does **not** default to `https://crm.useatlas.dev` — that URL is
+  Atlas's own internal Twenty instance, and a silent default would
+  route every self-hosted operator's leads into Atlas's CRM. Enter the
+  hostname of your own Twenty install (e.g. `https://crm.example.com`).
+</Callout>
+
+## Required Twenty setup (one-time)
+
+Two **custom fields** must exist on the `Person` object in your Twenty
+instance before Atlas can dispatch:
+
+| Field name         | Type | Purpose                                                                                            |
+| ------------------ | ---- | -------------------------------------------------------------------------------------------------- |
+| `atlasFirstSource` | Text | Sticky first-touch attribution — set once on a Person, never overwritten (e.g. `DEMO`).            |
+| `atlasLastSource`  | Text | Most recent touch — overwritten on every dispatch (e.g. `DEMO`, `SIGNUP`, `SALES_FORM`).           |
+
+Create them under **Twenty Settings → Data Model → Person → + Add
+Field**. The Atlas SaaS layer runs a startup verification against
+Twenty's `/metadata` GraphQL endpoint — missing fields are logged as a
+hard error with the create-instructions and Atlas disables dispatch
+until the schema is fixed.
+
+An optional third field `atlasIp` (Text) records the client IP on
+demo-gate submissions; its absence is non-fatal.
+
+## Option 1: Admin UI configuration
+
+1. Open **Admin → Integrations** in the Atlas web app.
+2. Find the **Twenty CRM** card and click **Install**.
+3. Fill in:
+   - **Base URL**: the hostname of your Twenty instance (required, no
+     default). Both `https://` and `http://` are accepted — use `http`
+     only for private-network / dev deployments.
+   - **API key**: a bearer token from Twenty → **Settings → API &
+     Webhooks**. The key is masked on submit and stored encrypted via
+     AES-256-GCM (F-41 selective-field encryption).
+4. Save. The next demo / sales-form / signup event dispatches using
+   the admin-configured credentials — no restart required.
+
+To remove the admin override, click **Disconnect** on the Twenty card.
+Atlas drops both the `workspace_plugins` catalog row and the
+`twenty_integrations` credential row, and falls back to environment
+variables (if set) for subsequent dispatches. If no `TWENTY_API_KEY` is
+set in the environment, subsequent dispatches will fail with
+`TwentyCredentialError` until either the admin UI is re-installed or
+the env var is set — outbox rows dead-letter with an actionable
+"configure under Admin → Integrations → Twenty" message rather than
+silently retrying.
+
+## Option 2: Environment variable configuration
+
+Set on your API service:
+
+```bash
+TWENTY_API_KEY=<bearer token from Twenty Settings → API & Webhooks>
+# Required on self-hosted. The default to https://crm.useatlas.dev
+# only applies to the Atlas SaaS deployment. Self-hosted operators who
+# omit this AND don't use the admin UI will route their leads into
+# Atlas's CRM — set this OR use the admin UI.
+TWENTY_BASE_URL=https://crm.example.com
+```
+
+The environment variables are the documented fallback. Atlas
+re-resolves credentials per dispatch, so an admin-UI row added later
+takes precedence without requiring a restart.
+
+## Credential resolution order
+
+The dispatcher consults sources in this exact order:
+
+1. **`twenty_integrations` DB row** (admin-UI override). Encrypted with
+   `db/secret-encryption.ts` (F-41 selective-field encryption). The
+   table is listed in `INTEGRATION_TABLES`, so F-47 key rotation and
+   F-42 residue audits cover it automatically.
+2. **`TWENTY_API_KEY` + `TWENTY_BASE_URL` env vars**.
+3. **Actionable error**: _"Twenty credentials missing: set
+   `TWENTY_API_KEY` (and optionally `TWENTY_BASE_URL`) in the
+   environment, or configure them under Admin → Integrations →
+   Twenty."_
+
+The decrypted API key is **never** returned from any GET endpoint —
+the admin UI only displays a "configured" indicator + the (plaintext)
+base URL. The catalog status endpoint reflects "Installed" / "Not
+installed" without exposing the key.
+
+## SaaS-mode encryption gate
+
+When `ATLAS_DEPLOY_MODE=saas` is set, the install handler refuses to
+persist credentials unless `ATLAS_ENCRYPTION_KEYS` is also configured.
+Without the keyset, `encryptSecret` would fall back to plaintext (a
+dev-only convenience), and a misconfigured SaaS deploy must fail
+closed at the credential boundary. The error message points the
+operator at the missing env var.
+
+## Reference
+
+- [Plugin SDK docs](/plugins/sdk)
+- [Twenty REST API](https://twenty.com/developers/section/rest-api)
+- [Twenty metadata API](https://twenty.com/developers/section/api-and-webhooks/metadata-api)
+- [Encryption key rotation](/platform-ops/encryption-key-rotation)

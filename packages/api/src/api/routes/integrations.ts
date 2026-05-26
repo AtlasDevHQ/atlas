@@ -121,6 +121,18 @@ const INLINE_CREDENTIAL_SLUGS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Slugs that store credentials in a dedicated per-Platform credential
+ * table (not `integration_credentials` and not inline in
+ * `workspace_plugins.config`). Disconnect must drop both the
+ * dedicated row AND the catalog row — `deleteCredentialStoreForSlug`
+ * in `lib/effect/workspace-installer.ts` carries the per-slug branch.
+ *
+ * `twenty` is currently the only member; the credential table is
+ * `twenty_integrations` (created in #2727).
+ */
+const DEDICATED_TABLE_CREDENTIAL_SLUGS: ReadonlySet<string> = new Set(["twenty"]);
+
+/**
  * OpenAPI schema for the 403 {@link PlanUpgradeRequiredBody}. Pins the
  * wire shape — both plan fields are PlanTier (the same union used
  * everywhere else) — and the `z.ZodType<PlanUpgradeRequiredBody>`
@@ -1273,7 +1285,8 @@ integrations.openapi(disconnectRoute, async (c) =>
     const isSlack = platform === "slack";
     const isIntegrationCredentials = INTEGRATION_CREDENTIALS_SLUGS.has(platform);
     const isInlineCredential = INLINE_CREDENTIAL_SLUGS.has(platform);
-    if (!isSlack && !isIntegrationCredentials && !isInlineCredential) {
+    const isDedicatedTable = DEDICATED_TABLE_CREDENTIAL_SLUGS.has(platform);
+    if (!isSlack && !isIntegrationCredentials && !isInlineCredential && !isDedicatedTable) {
       // Cheap pre-check: catalog lookup so the 404 still fires before
       // the 501. Otherwise an attacker probing unknown slugs would
       // learn whether the slug exists (501 vs 404).

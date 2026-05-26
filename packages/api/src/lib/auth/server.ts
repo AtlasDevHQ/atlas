@@ -298,12 +298,21 @@ export async function dispatchSignupCrmLead(args: {
 }
 
 /**
- * Twenty CRM dispatch for a completed Stripe checkout (#2737).
- * Enqueues a `stamp-conversion` row into `crm_outbox` via the `SaasCrm`
- * Tag; the scheduler-backed flusher routes the row through
+ * Twenty CRM dispatch for a Stripe subscription that has actually been
+ * paid (#2737). Enqueues a `stamp-conversion` row into `crm_outbox` via
+ * the `SaasCrm` Tag; the scheduler-backed flusher routes the row through
  * `TwentyClient.upsertPerson` which stamps `atlasStripeCustomerId` on
  * the matching Twenty Person (and creates a new Person with
  * `atlasFirstSource = "CONVERSION"` if none exists).
+ *
+ * **Call sites:** invoked from two Better Auth Stripe hooks:
+ *  - `onSubscriptionComplete` — only when `subscription.status` is
+ *    already `"active"` (a paid plan without a trial, or a trial that
+ *    completed instantly). Trialing subscriptions are skipped here.
+ *  - `onSubscriptionUpdate` — when the underlying Stripe event is
+ *    `customer.subscription.updated` and `previous_attributes.status`
+ *    transitions from `"trialing"` to `"active"` (i.e. the customer
+ *    just paid their first post-trial invoice).
  *
  * **Webhook latency:** enqueue + return immediately. The Twenty side
  * runs out-of-band via the flusher. A Twenty outage MUST NOT 500 the
@@ -400,6 +409,71 @@ export async function dispatchConversionCrmStamp(args: {
       "Unexpected SaasCrm dispatch error during conversion stamp — swallowed to keep webhook ack unblocked",
     );
   }
+}
+
+/**
+ * Decide whether a Stripe webhook hook should call
+ * `dispatchConversionCrmStamp`. Pure function, no I/O, no logging —
+ * the only meaningful decision logic in #2737's two trigger points is
+ * the gating, so it's worth pinning in isolation.
+ *
+ * Returns a discriminated directive:
+ *  - `dispatch` — caller should `await dispatchConversionCrmStamp(...)`.
+ *  - `log-and-skip` — caller should emit a structured `log.warn` with
+ *    the `reason` and skip. Used only when the customer id is missing
+ *    (a structural anomaly worth a breadcrumb).
+ *  - `skip` — caller should silently do nothing. Used for the routine
+ *    "still trialing" / "not a trial-to-active transition" branches.
+ *
+ * Trigger semantics:
+ *  - `"complete"` — `onSubscriptionComplete`. Stamp only if the
+ *    subscription is already `"active"` at completion (no-trial plan
+ *    or instant-completion path). Trialing subs defer to the update
+ *    trigger below.
+ *  - `"update"` — `onSubscriptionUpdate`. Stamp on the trial → active
+ *    transition (`previous_attributes.status === "trialing"` and
+ *    current `status === "active"`).
+ *
+ * @internal
+ */
+export type ConversionStampDirective =
+  | { readonly kind: "dispatch"; readonly stripeCustomerId: string }
+  | { readonly kind: "log-and-skip"; readonly reason: "no-stripe-customer-id" }
+  | { readonly kind: "skip"; readonly reason: "trialing" | "non-active" | "non-transition" };
+
+export function planConversionStamp(args: {
+  readonly trigger: "complete";
+  readonly subscription: { readonly status?: string | null; readonly stripeCustomerId?: string | null };
+} | {
+  readonly trigger: "update";
+  readonly subscription: { readonly stripeCustomerId?: string | null };
+  readonly event: { readonly type: string; readonly data: { readonly previous_attributes?: { readonly status?: string | null } | null; readonly object: { readonly status?: string | null } } };
+}): ConversionStampDirective {
+  if (args.trigger === "complete") {
+    if (!args.subscription.stripeCustomerId) {
+      return { kind: "log-and-skip", reason: "no-stripe-customer-id" };
+    }
+    if (args.subscription.status === "active") {
+      return { kind: "dispatch", stripeCustomerId: args.subscription.stripeCustomerId };
+    }
+    if (args.subscription.status === "trialing") {
+      return { kind: "skip", reason: "trialing" };
+    }
+    return { kind: "skip", reason: "non-active" };
+  }
+  // trigger === "update"
+  if (args.event.type !== "customer.subscription.updated") {
+    return { kind: "skip", reason: "non-transition" };
+  }
+  if (!args.subscription.stripeCustomerId) {
+    return { kind: "skip", reason: "non-transition" };
+  }
+  const previousStatus = args.event.data.previous_attributes?.status;
+  const currentStatus = args.event.data.object.status;
+  if (previousStatus === "trialing" && currentStatus === "active") {
+    return { kind: "dispatch", stripeCustomerId: args.subscription.stripeCustomerId };
+  }
+  return { kind: "skip", reason: "non-transition" };
 }
 
 /**
@@ -1476,10 +1550,31 @@ export function buildPlugins() {
                 // outbox INSERT (a few ms). Not awaiting risks an
                 // unhandled rejection if a future change widens the
                 // error channel.
-                if (subscription.stripeCustomerId) {
+                //
+                // All paid plans ship with `freeTrial: { days: TRIAL_DAYS }`
+                // (see `lib/billing/plans.ts`), so this hook fires with
+                // status `"trialing"` on every checkout completion that
+                // entered a trial — stamping then would overcount unpaid
+                // trials as paid conversions in the #2728 read path. The
+                // trial → active transition is picked up by
+                // `onSubscriptionUpdate` below. Gating is centralised in
+                // `planConversionStamp` so the trial / no-customer-id /
+                // active permutations are unit-testable.
+                const directive = planConversionStamp({ trigger: "complete", subscription });
+                if (directive.kind === "log-and-skip") {
+                  log.warn(
+                    {
+                      orgId,
+                      plan: plan.name,
+                      subscriptionId: subscription.id,
+                      event: "conversion_crm.no_stripe_customer_id",
+                    },
+                    "Subscription completed without stripeCustomerId — skipping Twenty conversion stamp",
+                  );
+                } else if (directive.kind === "dispatch") {
                   await dispatchConversionCrmStamp({
                     stripeClient,
-                    stripeCustomerId: subscription.stripeCustomerId,
+                    stripeCustomerId: directive.stripeCustomerId,
                     orgId,
                   });
                 }
@@ -1506,6 +1601,29 @@ export function buildPlugins() {
 
                 // Resolve the new plan tier from the Stripe subscription's price ID
                 const stripeSubscription = event.data.object as Stripe.Subscription;
+
+                // #2737 — Twenty CRM conversion stamp on trial → active.
+                // `onSubscriptionComplete` skips trialing subscriptions to
+                // avoid overcounting unpaid trials as paid conversions.
+                // The real "paid" signal is `customer.subscription.updated`
+                // with status transitioning from "trialing" to "active"
+                // (Stripe fires this when the first trial-end invoice is
+                // paid). Awaited for the same reason as the create-side
+                // dispatch (helper swallows internally; the await only
+                // blocks on the outbox INSERT).
+                const updateDirective = planConversionStamp({
+                  trigger: "update",
+                  subscription,
+                  event: event as { type: string; data: { previous_attributes?: { status?: string | null } | null; object: { status?: string | null } } },
+                });
+                if (updateDirective.kind === "dispatch") {
+                  await dispatchConversionCrmStamp({
+                    stripeClient,
+                    stripeCustomerId: updateDirective.stripeCustomerId,
+                    orgId,
+                  });
+                }
+
                 const priceId = stripeSubscription.items?.data?.[0]?.price?.id;
                 if (!priceId) {
                   billingLog.warn(

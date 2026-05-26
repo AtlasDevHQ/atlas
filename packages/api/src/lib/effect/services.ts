@@ -2462,18 +2462,18 @@ export type SaasCrmLeadInput =
     };
 
 /**
- * Inputs to `SaasCrm.stampConversion`. Separate from `SaasCrmLeadInput`
- * so the call site (the Stripe webhook hook) stays a flat call —
+ * Inputs to `SaasCrm.stampConversion`. Derived from the `conversion`
+ * variant of `SaasCrmLeadInput` so a future field addition (e.g.
+ * `paidPlanInterval`) only needs to touch the union — this interface
+ * tracks automatically. Kept as a distinct type so the call site (the
+ * Stripe webhook hook) stays a flat call —
  * `crm.stampConversion({ email, stripeCustomerId })` — without needing
- * to construct a discriminated union literal. The conversion shape lives
- * on `SaasCrmLeadInput` too (as the `conversion` variant) because the
- * outbox payload uses the same union as the normalizer.
+ * to construct a discriminated union literal.
  */
-export interface SaasCrmStampConversionInput {
-  readonly email: string;
-  /** Stripe `customer.id` (`cus_…`). */
-  readonly stripeCustomerId: string;
-}
+export type SaasCrmStampConversionInput = Omit<
+  Extract<SaasCrmLeadInput, { source: "conversion" }>,
+  "source"
+>;
 
 /**
  * Discriminated SaasCrm shape — the two correlated facts (anticipated
@@ -2497,6 +2497,17 @@ export type SaasCrmShape =
        * rather than the standard 403 envelope. The flusher wire-up in
        * `lib/effect/layers.ts:makeSchedulerLive` also reads it to decide
        * whether to mount the per-row dispatcher.
+       *
+       * Flips to `false` on any of:
+       *  - self-hosted (`@atlas/ee` not loaded → `NoopSaasCrmLayer`);
+       *  - `@useatlas/twenty` credentials unresolvable at boot;
+       *  - Twenty metadata probe returns 401/403/404 (deterministic
+       *    misconfiguration);
+       *  - any of `REQUIRED_PERSON_FIELDS` is missing on the Twenty
+       *    Person object (`atlasFirstSource` / `atlasLastSource` /
+       *    `atlasStripeCustomerId` — #2737). Missing custom fields
+       *    would dead-letter every dispatch on a 422 schema mismatch,
+       *    so the boot-time guard disables the layer instead.
        */
       readonly available: false;
       readonly upsertLead: (input: SaasCrmLeadInput) => Effect.Effect<void, Error>;

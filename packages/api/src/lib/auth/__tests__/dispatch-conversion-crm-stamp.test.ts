@@ -64,7 +64,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 // ── Import the unit under test AFTER mocks ─────────────────────────
 
-const { dispatchConversionCrmStamp } = await import("../server");
+const { dispatchConversionCrmStamp, planConversionStamp } = await import("../server");
 
 // Stripe client doubles. The Better Auth Stripe plugin only calls
 // `customers.retrieve` from this helper, so we expose just that surface
@@ -284,13 +284,16 @@ describe("dispatchConversionCrmStamp — Noop / self-hosted shape", () => {
   });
 });
 
-describe("dispatchConversionCrmStamp — stripeCustomerId is never logged", () => {
-  // Defensive contract — log scrubbing for cus_… is loose since the id
-  // isn't a secret per se, but the helper deliberately omits it from
-  // the enqueue-failed log on the rationale that the email + orgId are
-  // enough breadcrumb to triage. Pin that so a future log-context
-  // refactor doesn't silently widen the surface.
-  it("omits stripeCustomerId from the enqueue_failed log context", async () => {
+describe("dispatchConversionCrmStamp — enqueue_failed log shape", () => {
+  // Pin the outer helper's log context for `conversion_crm.enqueue_failed`.
+  // The stripeCustomerId IS included on the outer log (operators need it
+  // to triage in Stripe directly); the inner EE-side
+  // `saas_crm.stamp_conversion_enqueue_failed` log deliberately OMITS it
+  // — that contract lives in `ee/src/saas-crm/__tests__/saas-crm.test.ts`.
+  // The split keeps the rationale "stripeCustomerId is not a secret per se,
+  // but the EE-side log is intentionally bare to reduce surface" testable
+  // at each boundary.
+  it("includes orgId, stripeCustomerId, and err on the outer enqueue_failed warn", async () => {
     runEnterpriseImpl = async (program) => {
       await Effect.runPromise(
         Effect.provide(
@@ -304,14 +307,140 @@ describe("dispatchConversionCrmStamp — stripeCustomerId is never logged", () =
     await dispatchConversionCrmStamp({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural Stripe stub
       stripeClient: stripe as any,
-      stripeCustomerId: "cus_should_not_appear_in_logs",
-      orgId: "org_x",
+      stripeCustomerId: "cus_pin_outer_log",
+      orgId: "org_pin",
     });
 
-    // The outer helper's enqueue_failed log includes stripeCustomerId
-    // intentionally (for triage). The inner EE-side `saas_crm.stamp_
-    // conversion_enqueue_failed` log does NOT — verified in ee tests.
-    // Just pin that this helper logs at least once.
     expect(mockLogWarn).toHaveBeenCalledTimes(1);
+    const [logCtx] = mockLogWarn.mock.calls[0] as [Record<string, unknown>, string];
+    expect(logCtx.event).toBe("conversion_crm.enqueue_failed");
+    expect(logCtx.orgId).toBe("org_pin");
+    expect(logCtx.stripeCustomerId).toBe("cus_pin_outer_log");
+    expect(logCtx.err).toBe("blip");
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// planConversionStamp — the trial-vs-paid gating predicate (#2737 +
+// Codex P1). Pinning every permutation here is the structural defence
+// against silently re-introducing trial-start stamping.
+// ────────────────────────────────────────────────────────────────────
+
+describe("planConversionStamp — onSubscriptionComplete trigger", () => {
+  it("dispatches when status is active and stripeCustomerId is present", () => {
+    expect(
+      planConversionStamp({
+        trigger: "complete",
+        subscription: { status: "active", stripeCustomerId: "cus_paid_immediately" },
+      }),
+    ).toEqual({ kind: "dispatch", stripeCustomerId: "cus_paid_immediately" });
+  });
+
+  it("skips when status is trialing (Codex P1 — no overcounting unpaid trials)", () => {
+    expect(
+      planConversionStamp({
+        trigger: "complete",
+        subscription: { status: "trialing", stripeCustomerId: "cus_on_trial" },
+      }),
+    ).toEqual({ kind: "skip", reason: "trialing" });
+  });
+
+  it("skips when status is any other non-active value (incomplete / past_due / paused)", () => {
+    for (const status of ["incomplete", "past_due", "paused", "unpaid", "canceled"] as const) {
+      expect(
+        planConversionStamp({
+          trigger: "complete",
+          subscription: { status, stripeCustomerId: "cus_x" },
+        }),
+      ).toEqual({ kind: "skip", reason: "non-active" });
+    }
+  });
+
+  it("returns log-and-skip when stripeCustomerId is missing", () => {
+    expect(
+      planConversionStamp({
+        trigger: "complete",
+        subscription: { status: "active", stripeCustomerId: null },
+      }),
+    ).toEqual({ kind: "log-and-skip", reason: "no-stripe-customer-id" });
+    expect(
+      planConversionStamp({
+        trigger: "complete",
+        subscription: { status: "active", stripeCustomerId: undefined },
+      }),
+    ).toEqual({ kind: "log-and-skip", reason: "no-stripe-customer-id" });
+  });
+});
+
+describe("planConversionStamp — onSubscriptionUpdate trigger", () => {
+  const updateEvent = (current: string | null | undefined, previous: string | null | undefined) => ({
+    type: "customer.subscription.updated",
+    data: {
+      previous_attributes: previous === undefined ? undefined : { status: previous },
+      object: { status: current },
+    },
+  });
+
+  it("dispatches on the trial → active transition", () => {
+    expect(
+      planConversionStamp({
+        trigger: "update",
+        subscription: { stripeCustomerId: "cus_trial_converted" },
+        event: updateEvent("active", "trialing"),
+      }),
+    ).toEqual({ kind: "dispatch", stripeCustomerId: "cus_trial_converted" });
+  });
+
+  it("skips when current status is active but previous was not trialing (e.g. price change)", () => {
+    expect(
+      planConversionStamp({
+        trigger: "update",
+        subscription: { stripeCustomerId: "cus_x" },
+        event: updateEvent("active", "active"),
+      }),
+    ).toEqual({ kind: "skip", reason: "non-transition" });
+  });
+
+  it("skips when previous_attributes is absent (Stripe omits unchanged fields)", () => {
+    expect(
+      planConversionStamp({
+        trigger: "update",
+        subscription: { stripeCustomerId: "cus_x" },
+        event: updateEvent("active", undefined),
+      }),
+    ).toEqual({ kind: "skip", reason: "non-transition" });
+  });
+
+  it("skips when current status is something other than active (trial → past_due)", () => {
+    expect(
+      planConversionStamp({
+        trigger: "update",
+        subscription: { stripeCustomerId: "cus_x" },
+        event: updateEvent("past_due", "trialing"),
+      }),
+    ).toEqual({ kind: "skip", reason: "non-transition" });
+  });
+
+  it("skips when the event type is not customer.subscription.updated", () => {
+    expect(
+      planConversionStamp({
+        trigger: "update",
+        subscription: { stripeCustomerId: "cus_x" },
+        event: {
+          type: "customer.subscription.created",
+          data: { previous_attributes: { status: "trialing" }, object: { status: "active" } },
+        },
+      }),
+    ).toEqual({ kind: "skip", reason: "non-transition" });
+  });
+
+  it("skips when stripeCustomerId is missing on the subscription (even on a real transition)", () => {
+    expect(
+      planConversionStamp({
+        trigger: "update",
+        subscription: { stripeCustomerId: undefined },
+        event: updateEvent("active", "trialing"),
+      }),
+    ).toEqual({ kind: "skip", reason: "non-transition" });
   });
 });

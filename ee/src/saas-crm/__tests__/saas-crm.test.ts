@@ -680,6 +680,51 @@ describe("dispatchOutboxRow", () => {
     expect(persisted.person).toBeUndefined();
   });
 
+  test("idempotent replay — conversion variant also skips upsertPerson when twenty_person_id is already set (#2737)", async () => {
+    // PR review gap: the demo-variant replay test above covers the
+    // pre-existing path, but adding the conversion variant means a
+    // replayed `stamp-conversion` row should also short-circuit. Pin
+    // that the dispatcher's idempotency is variant-agnostic — a future
+    // refactor that split the dispatcher per-eventType would otherwise
+    // silently re-dispatch a paid customer's stamp on every flush.
+    let fetchCount = 0;
+    const fetchImpl = (async (): Promise<Response> => {
+      fetchCount++;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const persisted: { person?: string; note?: string } = {};
+    const outcome = await withFetch(fetchImpl, async () =>
+      dispatchOutboxRow(
+        { apiKey: "k", baseUrl: "https://crm.test.local" },
+        {
+          id: "row-conv-replay",
+          eventType: "stamp-conversion",
+          payload: {
+            source: "conversion",
+            email: "paying@example.com",
+            stripeCustomerId: "cus_already_stamped",
+          },
+          attempts: 2,
+          twentyPersonId: "person_already_stamped",
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async (id: string) => {
+            persisted.person = id;
+          },
+          setTwentyNoteId: async (id: string) => {
+            persisted.note = id;
+          },
+        },
+      ),
+    );
+
+    expect(outcome).toEqual({ kind: "ok" });
+    expect(fetchCount).toBe(0);
+    expect(persisted.person).toBeUndefined();
+  });
+
   test("5xx → transient outcome (retried by flusher)", async () => {
     const fetchImpl = (async (): Promise<Response> =>
       new Response(JSON.stringify({ messages: ["upstream boom"] }), {

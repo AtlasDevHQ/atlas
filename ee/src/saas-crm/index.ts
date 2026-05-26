@@ -87,8 +87,8 @@ function missingFieldInstructions(missing: ReadonlyArray<string>): string {
   return (
     `Twenty Person object is missing required Atlas custom field(s): ${missing.join(", ")}. ` +
     `Create them in the Twenty UI under Settings → Data Model → Person → + Add Field. ` +
-    `Each field should be of type "Text". SaaS CRM dispatch is disabled until both ` +
-    `atlasFirstSource and atlasLastSource exist on the Person object.`
+    `Each field should be of type "Text". SaaS CRM dispatch is disabled until all of ` +
+    `${REQUIRED_PERSON_FIELDS.join(", ")} exist on the Person object.`
   );
 }
 

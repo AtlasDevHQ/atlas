@@ -70,11 +70,17 @@ export {
   resolveCredentialsForWorkspace,
   tryResolveCredentialsFromEnv,
   TwentyCredentialError,
+  TwentyDecryptError,
+  isTwentyDecryptError,
+  assertTwentyApiKey,
+  assertTwentyBaseUrl,
   type DbCredentialLookup,
   type DbCredentialLookupResult,
   type ResolvedTwentyCredentials,
   type ResolveOptions,
   type ResolveForWorkspaceOptions,
+  type TwentyApiKey,
+  type TwentyBaseUrl,
 } from "./credential-resolver";
 
 // ─────────────────────────────────────────────────────────────────────

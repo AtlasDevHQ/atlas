@@ -1851,7 +1851,7 @@ async function deleteCredentialStoreForSlug(
     return;
   }
   if (slug === "twenty") {
-    // Twenty CRM (#2732 / Slice 7) — credentials live in the dedicated
+    // Twenty CRM — credentials live in the dedicated
     // `twenty_integrations` table, not `workspace_plugins.config`. The
     // catalog DELETE removes the workspace_plugins row (step 2 of the
     // disconnect dance); this step removes the credential row so the

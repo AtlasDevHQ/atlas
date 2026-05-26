@@ -1,7 +1,7 @@
 /**
  * TwentyCredentialResolver — single seam for picking up Twenty creds.
  *
- * Resolution order (per #2732 / Slice 7):
+ * Resolution order:
  *   1. Per-workspace row in `twenty_integrations` (admin UI override)
  *   2. `TWENTY_API_KEY` env var
  *   3. Throw with an actionable message
@@ -12,17 +12,88 @@
  * lives in `@atlas/api/lib/integrations/twenty/credentials.ts` so the
  * plugin stays portable (no `@atlas/api` import).
  *
- * Fail-open on lookup errors: a transient pg blip falls back to env so
- * the SaaS demo dispatcher keeps working when the credential table is
- * temporarily unreachable. Only when BOTH the DB lookup AND env are
- * absent do we throw — that's a real misconfiguration the operator
- * needs to see.
+ * Fail-open on TRANSPORT errors: a transient pg blip falls back to env
+ * so the SaaS demo dispatcher keeps working when the credential table
+ * is temporarily unreachable. A lookup MUST distinguish transport from
+ * decrypt by throwing a `decryptFailed`-flagged error (any object with
+ * `decryptFailed === true` on it) for the latter — those bubble up and
+ * fail closed at the dispatch boundary so a key-rotation misconfig
+ * doesn't silently route credentials to the env fallback.
+ *
+ * Only when BOTH the DB lookup AND env are absent do we throw — that's
+ * a real misconfiguration the operator needs to see.
  */
 
+/**
+ * Branded apiKey — a `string` that has passed the bearer-token gate at
+ * a parse boundary (Zod or {@link assertTwentyApiKey}). The brand makes
+ * a `baseUrl` ↔ `apiKey` swap a compile error rather than a runtime
+ * embarrassment.
+ *
+ * Same pattern as `WorkspaceId` / `ChannelId` / `ThreadId` in
+ * `@useatlas/types` — see #2680 for the precedent.
+ */
+export type TwentyApiKey = string & { readonly __brand: "TwentyApiKey" };
+
+/**
+ * Branded Twenty REST base URL. Validated as a well-formed URL with
+ * `http://` or `https://` scheme before the brand is applied.
+ */
+export type TwentyBaseUrl = string & { readonly __brand: "TwentyBaseUrl" };
+
+/** Assert + brand a string as a non-empty TwentyApiKey. */
+export function assertTwentyApiKey(value: string): TwentyApiKey {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new TwentyCredentialError("Twenty apiKey is empty");
+  }
+  return trimmed as TwentyApiKey;
+}
+
+/**
+ * Assert + brand a string as a TwentyBaseUrl. Accepts both `https://`
+ * and `http://` (dev / private-network deployments use plain http);
+ * rejects everything else and any string that fails URL parsing.
+ */
+export function assertTwentyBaseUrl(value: string): TwentyBaseUrl {
+  const trimmed = value.trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new TwentyCredentialError(
+      `Twenty baseUrl is not a well-formed URL: ${trimmed}`,
+    );
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new TwentyCredentialError(
+      `Twenty baseUrl must use https or http scheme; got ${parsed.protocol}`,
+    );
+  }
+  return stripTrailingSlashes(trimmed) as TwentyBaseUrl;
+}
+
+/**
+ * Resolved Twenty credentials, with a `source` discriminator so
+ * dispatch-time consumers can attribute creds to the admin-UI override
+ * vs the env fallback in structured logs and metrics.
+ *
+ * Plain `string` types here (not the {@link TwentyApiKey} /
+ * {@link TwentyBaseUrl} brands) because the brand's value is at the
+ * VALIDATION boundary (Zod parse, `assertTwentyApiKey`) — once a
+ * credential survives validation, plain strings flow through cleanly
+ * without ceremony in tests / downstream callers.
+ */
 export interface ResolvedTwentyCredentials {
   readonly apiKey: string;
   /** Undefined when neither DB row nor `TWENTY_BASE_URL` supplies one. */
   readonly baseUrl: string | undefined;
+  /**
+   * Which resolution path produced this record.
+   * - `"db"` — admin-UI row in `twenty_integrations`.
+   * - `"env"` — `TWENTY_API_KEY` (+ optional `TWENTY_BASE_URL`).
+   */
+  readonly source: "db" | "env";
 }
 
 /**
@@ -35,6 +106,39 @@ export class TwentyCredentialError extends Error {
   constructor(message: string) {
     super(message);
   }
+}
+
+/**
+ * Decrypt-failure signal — a DB row exists but its ciphertext could
+ * not be decrypted (key rotation, missing key version, corrupted
+ * ciphertext). This is a deterministic misconfiguration; the resolver
+ * must NOT silently fall back to env, because env would route to a
+ * different Twenty instance than the operator intended.
+ *
+ * Production lookups (`getTwentyIntegrationWithSecret`,
+ * `findLatestTwentyDbCredentials` in `@atlas/api`) throw this when
+ * `decryptSecret` fails. The resolver re-throws it; the dispatcher
+ * fails closed (dead-letters the outbox row or marks unavailable at
+ * boot).
+ */
+export class TwentyDecryptError extends Error {
+  override readonly name = "TwentyDecryptError";
+  readonly decryptFailed = true as const;
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message);
+    if (options?.cause !== undefined) {
+      (this as { cause?: unknown }).cause = options.cause;
+    }
+  }
+}
+
+/** Type-guard for the decrypt-failure signal — accepts subclasses and structural marks. */
+export function isTwentyDecryptError(err: unknown): boolean {
+  if (err instanceof TwentyDecryptError) return true;
+  if (typeof err === "object" && err !== null && "decryptFailed" in err) {
+    return (err as { decryptFailed?: unknown }).decryptFailed === true;
+  }
+  return false;
 }
 
 export interface ResolveOptions {
@@ -60,9 +164,11 @@ export interface DbCredentialLookupResult {
  * Callback that fetches the per-workspace credential row. Returns
  * `null` when no row exists; throws on transport / decrypt failure.
  *
- * The resolver swallows thrown errors and falls back to env so a pg
- * blip doesn't take down the dispatcher (the DB-row path is an
- * optional override, not a hard requirement).
+ * The resolver swallows TRANSPORT errors and falls back to env so a pg
+ * blip doesn't take down the dispatcher (the DB-row path is an optional
+ * override, not a hard requirement). Decrypt failures — flagged via
+ * `TwentyDecryptError` or any error with `decryptFailed === true` —
+ * bubble up so the dispatcher can fail closed.
  */
 export type DbCredentialLookup = (
   workspaceId: string,
@@ -104,15 +210,13 @@ export function resolveCredentialsFromEnv(
         "the environment, or configure them under Admin → Integrations → Twenty.",
     );
   }
+  const apiKey: string = assertTwentyApiKey(rawKey);
   const rawBase = env.TWENTY_BASE_URL;
-  const baseUrl =
+  const baseUrl: string | undefined =
     typeof rawBase === "string" && rawBase.trim().length > 0
-      ? stripTrailingSlashes(rawBase.trim())
+      ? assertTwentyBaseUrl(rawBase)
       : undefined;
-  return {
-    apiKey: rawKey.trim(),
-    baseUrl,
-  };
+  return { apiKey, baseUrl, source: "env" };
 }
 
 /**
@@ -132,8 +236,8 @@ export function tryResolveCredentialsFromEnv(
 }
 
 /**
- * Resolve credentials for a specific workspace, honoring the
- * Slice 7 (#2732) precedence: DB row → env → throw.
+ * Resolve credentials for a specific workspace. Precedence:
+ * DB row → env → throw.
  *
  * `options.lookup` is the DB seam. Production passes
  * `lookupTwentyDbCredentials` from `@atlas/api/lib/integrations/twenty/credentials`;
@@ -143,23 +247,44 @@ export function tryResolveCredentialsFromEnv(
  * back-compat shape for callers that don't (yet) have the workspace
  * context wired through.
  *
+ * Decrypt failures from `options.lookup` propagate as-is so the
+ * dispatcher can fail closed; transport failures (anything else) are
+ * swallowed and the resolver falls through to env.
+ *
  * @throws TwentyCredentialError when neither path yields a usable key.
+ * @throws TwentyDecryptError when the DB row's ciphertext fails to decrypt.
+ *
+ * @internal Wired through to the agent-tool path lands with #2849
+ *   (`crm_outbox.workspace_id`). Today's SaaS dispatch path consults
+ *   `findLatestTwentyDbCredentials` directly because outbox rows don't
+ *   yet carry a workspaceId.
  */
 export async function resolveCredentialsForWorkspace(
   workspaceId: string,
   options: ResolveForWorkspaceOptions = {},
 ): Promise<ResolvedTwentyCredentials> {
   // ── 1. DB row override ─────────────────────────────────────────────
-  // Fail-open: a pg blip falls back to env so the SaaS demo dispatcher
-  // keeps working when the credential table is briefly unreachable.
+  // Fail-open on TRANSPORT errors: a pg blip falls back to env so the
+  // SaaS demo dispatcher keeps working when the credential table is
+  // briefly unreachable. Fail-CLOSED on decrypt errors: a row exists,
+  // its ciphertext doesn't decrypt, env would be the wrong destination
+  // — the operator must see that.
   let dbRow: DbCredentialLookupResult | null = null;
   if (options.lookup) {
     try {
       dbRow = await options.lookup(workspaceId);
-    } catch {
-      // Swallow — env is the documented fallback. The caller's logger
-      // wraps the lookup with structured-warn on failure; the resolver
-      // itself stays log-free so it remains portable (no @atlas/api).
+    } catch (err) {
+      if (isTwentyDecryptError(err)) {
+        // intentionally re-thrown: a decrypt failure is operator-visible
+        // misconfiguration (key rotation / corrupt ciphertext); silently
+        // falling back to env would route to the wrong Twenty.
+        throw err;
+      }
+      // intentionally ignored: transport blip — env is the documented
+      // fallback. The store (production lookup) emits the structured-warn
+      // before throwing; the resolver stays log-free so it remains
+      // portable (no `@atlas/api` dep).
+      void err;
       dbRow = null;
     }
   }
@@ -169,18 +294,19 @@ export async function resolveCredentialsForWorkspace(
     if (apiKey) {
       const baseUrlFromDb = trimNonEmpty(dbRow.baseUrl);
       if (baseUrlFromDb) {
-        return { apiKey, baseUrl: stripTrailingSlashes(baseUrlFromDb) };
+        const baseUrl: string = assertTwentyBaseUrl(baseUrlFromDb);
+        return { apiKey, baseUrl, source: "db" };
       }
       // DB row's baseUrl is null/empty — fall back to env-supplied baseUrl
       // (apiKey still comes from DB). The env apiKey is NOT consulted —
       // the DB row's apiKey wins by design.
       const env = options.env ?? process.env;
       const rawBase = env.TWENTY_BASE_URL;
-      const envBase =
+      const envBase: string | undefined =
         typeof rawBase === "string" && rawBase.trim().length > 0
-          ? stripTrailingSlashes(rawBase.trim())
+          ? assertTwentyBaseUrl(rawBase)
           : undefined;
-      return { apiKey, baseUrl: envBase };
+      return { apiKey, baseUrl: envBase, source: "db" };
     }
     // DB row exists but apiKey is empty/whitespace — fall through to env.
   }

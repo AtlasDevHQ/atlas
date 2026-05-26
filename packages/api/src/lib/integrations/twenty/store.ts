@@ -1,6 +1,6 @@
 /**
  * Twenty integration storage — per-workspace credentials for the
- * Twenty CRM plugin (#2732 / Slice 7 of 1.6.0).
+ * Twenty CRM plugin.
  *
  * Wraps the `twenty_integrations` table created in #2727 (migration
  * `0098_twenty_integrations.sql`). One row per workspace; the row
@@ -17,6 +17,13 @@
  * separation keeps the plugin portable (`@useatlas/twenty` doesn't
  * import `@atlas/api`) — the resolver accepts a callback, this
  * module supplies the production implementation.
+ *
+ * Multi-tenant safety: under `ATLAS_DEPLOY_MODE=saas`, the dispatch
+ * path uses `findLatestTwentyDbCredentials` (single-row across all
+ * workspaces) until per-row routing lands via #2849. To prevent a
+ * second tenant from silently hijacking the first's dispatch, this
+ * module REFUSES `saveTwentyIntegration` when the table already
+ * contains a row for a DIFFERENT workspace.
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -27,6 +34,7 @@ import {
 } from "@atlas/api/lib/db/secret-encryption";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
 import { createLogger } from "@atlas/api/lib/logger";
+import { TwentyDecryptError } from "@useatlas/twenty";
 
 const log = createLogger("twenty-store");
 
@@ -52,6 +60,11 @@ export interface TwentyIntegrationWithSecret extends TwentyIntegrationPublic {
   readonly apiKey: string;
 }
 
+// SECURITY INVARIANT: never add `api_key_encrypted` to SELECT_PUBLIC_COLS.
+// This constant feeds the admin GET endpoint AND the public envelope of
+// `saveTwentyIntegration`'s RETURNING clause — both must NOT expose the
+// secret. Add new public-safe columns here; if you need the secret-
+// bearing column, extend SELECT_WITH_SECRET_COLS below.
 const SELECT_PUBLIC_COLS =
   `workspace_id, base_url, ` +
   `to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS updated_at`;
@@ -67,14 +80,31 @@ function parsePublicRow(
     log.warn(context, "Invalid twenty_integrations row (missing workspace_id)");
     return null;
   }
+  // Refuse malformed rows symmetrically with the workspace_id branch —
+  // synthesising a "now" timestamp would echo back to the admin UI as
+  // "last configured: now" for a row whose real timestamp was corrupted.
+  if (typeof row.updated_at !== "string") {
+    log.warn(context, "Invalid twenty_integrations row (missing updated_at)");
+    return null;
+  }
   return {
     workspaceId,
     baseUrl: typeof row.base_url === "string" ? row.base_url : null,
-    updatedAt:
-      typeof row.updated_at === "string" ? row.updated_at : new Date().toISOString(),
+    updatedAt: row.updated_at,
   };
 }
 
+/**
+ * Parse a row that SHOULD carry the decrypted apiKey.
+ *
+ * @throws TwentyDecryptError when `decryptSecret` fails on a row whose
+ *   ciphertext is present — this is a deterministic misconfiguration
+ *   (key rotation, missing key version, corrupt ciphertext) and the
+ *   resolver/dispatcher must NOT silently fall back to env.
+ *
+ * Returns `null` for "row malformed / missing ciphertext column" —
+ * structurally different from "decrypt threw on present ciphertext".
+ */
 function parseSecretRow(
   row: Record<string, unknown>,
   context: Record<string, unknown>,
@@ -94,7 +124,11 @@ function parseSecretRow(
       { ...context, err: err instanceof Error ? err.message : String(err) },
       "Failed to decrypt twenty_integrations.api_key_encrypted",
     );
-    return null;
+    throw new TwentyDecryptError(
+      `Failed to decrypt twenty_integrations.api_key_encrypted for ${JSON.stringify(context)} — ` +
+        `check that ATLAS_ENCRYPTION_KEYS contains the key version that encrypted the row.`,
+      { cause: err },
+    );
   }
   return { ...pub, apiKey };
 }
@@ -105,8 +139,12 @@ function parseSecretRow(
 
 /**
  * Look up the per-workspace Twenty integration row WITHOUT the
- * decrypted apiKey. Used by the admin GET endpoint to render
- * "configured" / "not configured".
+ * decrypted apiKey. Intended for an admin GET endpoint that wants to
+ * render "configured" / "not configured".
+ *
+ * @internal Not yet consumed in production — admin UI currently
+ *   surfaces install state via the catalog status endpoint.
+ *   Wiring tracked in #2849 (per-workspace dispatch).
  */
 export async function getTwentyIntegrationPublic(
   workspaceId: string,
@@ -132,9 +170,11 @@ export async function getTwentyIntegrationPublic(
  * Look up the per-workspace Twenty integration row WITH the decrypted
  * apiKey. Used by `TwentyCredentialResolver`'s DB-lookup callback.
  *
- * Returns `null` on missing row, malformed row, or decrypt failure —
- * the resolver swallows the absence and falls back to env, so we never
- * surface a partial-success here.
+ * Returns `null` when no row exists OR when the row is structurally
+ * malformed (missing workspace_id / updated_at / ciphertext column).
+ *
+ * @throws TwentyDecryptError when the row exists with ciphertext but
+ *   `decryptSecret` fails — operator-visible misconfiguration.
  */
 export async function getTwentyIntegrationWithSecret(
   workspaceId: string,
@@ -148,6 +188,7 @@ export async function getTwentyIntegrationWithSecret(
     if (rows.length === 0) return null;
     return parseSecretRow(rows[0], { workspaceId });
   } catch (err) {
+    if (err instanceof TwentyDecryptError) throw err;
     log.error(
       { err: err instanceof Error ? err.message : String(err), workspaceId },
       "Failed to query twenty_integrations (with secret)",
@@ -159,21 +200,16 @@ export async function getTwentyIntegrationWithSecret(
 /**
  * Pick the most-recently-updated `twenty_integrations` row across
  * every workspace, decrypted. Used by the SaaS demo-dispatch path,
- * which has no workspace context on outbox rows today (#2732 / Slice 7
- * of 1.6.0 ships the per-workspace credential table; per-row workspace
- * routing on `crm_outbox` is a follow-up when multi-tenant Twenty
- * dispatch lands).
+ * which has no workspace context on outbox rows today — per-row
+ * routing tracked in #2849.
  *
- * Returns `null` when no row exists OR when the chosen row's
- * ciphertext fails to decrypt. The caller falls back to env in either
- * case.
+ * The companion {@link saveTwentyIntegration} guard refuses multi-row
+ * SaaS state, so on SaaS this resolves to the single configured
+ * operator workspace's row.
  *
- * "Latest" is deterministic: `ORDER BY updated_at DESC LIMIT 1`. For
- * the SaaS Atlas deployment, exactly one operator workspace configures
- * Twenty, so the "latest" semantic collapses to "the operator's row."
- * For self-hosted with one workspace, same outcome. The multi-tenant
- * branch (many workspaces, many rows) requires workspace_id on
- * crm_outbox and is intentionally out of scope here.
+ * @throws TwentyDecryptError when the chosen row's ciphertext fails to
+ *   decrypt — the caller fails closed (boot: unavailable; dispatch:
+ *   dead-letter the row) rather than silently routing to env.
  */
 export async function findLatestTwentyDbCredentials(): Promise<
   TwentyIntegrationWithSecret | null
@@ -189,6 +225,7 @@ export async function findLatestTwentyDbCredentials(): Promise<
     if (rows.length === 0) return null;
     return parseSecretRow(rows[0], { latest: true });
   } catch (err) {
+    if (err instanceof TwentyDecryptError) throw err;
     log.error(
       { err: err instanceof Error ? err.message : String(err) },
       "Failed to query twenty_integrations (latest)",
@@ -202,15 +239,65 @@ export async function findLatestTwentyDbCredentials(): Promise<
 // ---------------------------------------------------------------------------
 
 /**
+ * Refuse multi-tenant SaaS state until #2849 lands per-row routing on
+ * `crm_outbox`. Without that, the SaaS dispatcher picks the most-
+ * recently-updated row across ALL workspaces — a second tenant
+ * configuring Twenty would silently hijack the first's dispatch.
+ *
+ * Self-hosted is unaffected: this guard is keyed on
+ * `ATLAS_DEPLOY_MODE=saas`. Self-hosted operators can configure as
+ * many workspaces as they want.
+ */
+async function assertNoConflictingSaasRow(workspaceId: string): Promise<void> {
+  if (process.env.ATLAS_DEPLOY_MODE !== "saas") return;
+  try {
+    const rows = await internalQuery<{ workspace_id: string }>(
+      `SELECT workspace_id FROM twenty_integrations WHERE workspace_id <> $1 LIMIT 1`,
+      [workspaceId],
+    );
+    if (rows.length > 0) {
+      const existing = rows[0]?.workspace_id ?? "<unknown>";
+      log.error(
+        {
+          requestedWorkspace: workspaceId,
+          existingWorkspace: existing,
+          event: "twenty_store.saas_multi_row_refused",
+        },
+        "Refusing twenty_integrations write: another workspace already has a row in SaaS mode.",
+      );
+      throw new Error(
+        `Refusing Twenty install: ATLAS_DEPLOY_MODE=saas allows exactly one workspace to ` +
+          `configure Twenty until per-row dispatch routing lands (#2849). Workspace ` +
+          `'${existing}' already has a row. Either delete that row first, or wait for ` +
+          `the per-workspace routing follow-up.`,
+      );
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("Refusing Twenty install")) {
+      throw err;
+    }
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), workspaceId },
+      "twenty_integrations SaaS multi-row guard query failed — refusing the write to fail closed",
+    );
+    throw err;
+  }
+}
+
+/**
  * Upsert per-workspace Twenty credentials. Returns the public row
  * shape so the caller can echo `updatedAt` back to the admin UI
  * without re-querying.
  *
  * `baseUrl` is required from the form (the operator must point at
- * their own Twenty install — there is NO default baseUrl, per the
- * "no Atlas-SaaS leak in defaults" rule in #2732). The column itself
- * is nullable so a future operator-shared deploy could omit it; the
- * form layer rejects empty baseUrl up-front.
+ * their own Twenty install — there is NO default baseUrl; defaulting
+ * to `https://crm.useatlas.dev` would silently route a self-hosted
+ * operator at Atlas's own internal CRM). The column itself is nullable
+ * so a future operator-shared deploy could omit it; the form layer
+ * rejects empty baseUrl up-front.
+ *
+ * @throws when SaaS mode already has a row for a different workspace
+ *   (see {@link assertNoConflictingSaasRow}).
  */
 export async function saveTwentyIntegration(
   workspaceId: string,
@@ -219,6 +306,7 @@ export async function saveTwentyIntegration(
   if (!hasInternalDB()) {
     throw new Error("Cannot save Twenty integration — no internal database configured");
   }
+  await assertNoConflictingSaasRow(workspaceId);
   const apiKeyEncrypted: OpaqueSecret = encryptSecret(opts.apiKey);
   const keyVersion = activeKeyVersion();
   try {

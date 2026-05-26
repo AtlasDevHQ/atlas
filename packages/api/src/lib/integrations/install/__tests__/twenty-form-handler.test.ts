@@ -194,6 +194,14 @@ describe("TwentyFormInstallHandler.validateConfig — SaaS keyset gate", () => {
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
 
+  it("permits install in SaaS mode WHEN a keyset is configured (happy path 2×2 cell)", async () => {
+    process.env.ATLAS_DEPLOY_MODE = "saas";
+    // setKeys already ran in beforeEach — keyset is present.
+    const handler = new TwentyFormInstallHandler({ idGenerator: () => "saas-ok" });
+    const result = await handler.validateConfig(WSID, validForm());
+    expect(result.credentialWritten).toBe(true);
+  });
+
   it("permits install in self-hosted mode even without a keyset (dev convenience)", async () => {
     delete process.env.ATLAS_DEPLOY_MODE;
     clearKeys();

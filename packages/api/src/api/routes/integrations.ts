@@ -127,8 +127,8 @@ const INLINE_CREDENTIAL_SLUGS: ReadonlySet<string> = new Set([
  * dedicated row AND the catalog row — `deleteCredentialStoreForSlug`
  * in `lib/effect/workspace-installer.ts` carries the per-slug branch.
  *
- * `twenty` is the first member (#2732 / Slice 7 of 1.6.0); the
- * credential table is `twenty_integrations` (created in #2727).
+ * `twenty` is currently the only member; the credential table is
+ * `twenty_integrations` (created in #2727).
  */
 const DEDICATED_TABLE_CREDENTIAL_SLUGS: ReadonlySet<string> = new Set(["twenty"]);
 

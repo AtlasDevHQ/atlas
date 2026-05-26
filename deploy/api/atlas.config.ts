@@ -617,12 +617,12 @@ export default defineConfig({
         },
       ],
     },
-    // Twenty CRM — per-workspace API key + base URL override
-    // (#2732 / Slice 7 of 1.6.0). Credentials land in the dedicated
-    // `twenty_integrations` table; the `workspace_plugins` row is the
-    // catalog binding only. baseUrl is REQUIRED with NO default — a
-    // default `https://crm.useatlas.dev` would silently point a self-
-    // hosted operator's install at Atlas's own Twenty CRM. The SaaS
+    // Twenty CRM — per-workspace API key + base URL override.
+    // Credentials land in the dedicated `twenty_integrations` table;
+    // the `workspace_plugins` row is the catalog binding only.
+    // baseUrl is REQUIRED with NO default — a default
+    // `https://crm.useatlas.dev` would silently point a self-hosted
+    // operator's install at Atlas's own Twenty CRM. The SaaS
     // deployment carries that hostname separately via `TWENTY_BASE_URL`.
     {
       slug: "twenty",

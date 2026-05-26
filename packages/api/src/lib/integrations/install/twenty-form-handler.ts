@@ -1,6 +1,6 @@
 /**
  * `TwentyFormInstallHandler` — admin UI override flow for the Twenty
- * CRM integration (#2732 / Slice 7 of 1.6.0).
+ * CRM integration.
  *
  * The admin submits a baseUrl + apiKey via the standard
  * `FormInstallModal`; this handler validates, encrypts the apiKey
@@ -10,8 +10,7 @@
  *
  *   1. `twenty_integrations` — the dedicated credential table from
  *     #2727. `saveTwentyIntegration` upserts by `workspace_id`. This
- *     is what `TwentyCredentialResolver.resolveCredentialsForWorkspace`
- *     consults at dispatch time.
+ *     is what the SaaS dispatcher consults at flush time.
  *   2. `workspace_plugins` — the catalog install record (ADR-0003 dual
  *     store). Enables the catalog UI's "Installed" state + the
  *     standard catalog DELETE teardown path.
@@ -32,7 +31,6 @@
  *
  * @see ./types.ts — {@link FormBasedInstallHandler}
  * @see ../twenty/store.ts — `saveTwentyIntegration` (credential table)
- * @see ./email-form-handler.ts — `FormInstallValidationError` shape
  */
 
 import crypto from "crypto";
@@ -78,12 +76,15 @@ const API_KEY_MAX = 4096;
 const TwentyBaseUrlSchema = z
   .string()
   .min(1, "baseUrl is required (enter your Twenty hostname)")
+  .transform((raw) => raw.trim())
   .refine(
     (raw) => {
       try {
         const u = new URL(raw);
         return u.protocol === "https:" || u.protocol === "http:";
       } catch {
+        // intentionally ignored: URL constructor throw is the negative
+        // validation signal — the user sees the .refine message below.
         return false;
       }
     },
@@ -96,7 +97,9 @@ export const TwentyFormDataSchema = z
     apiKey: z
       .string()
       .min(1, "apiKey is required")
-      .max(API_KEY_MAX, `apiKey must be ${API_KEY_MAX} characters or fewer`),
+      .max(API_KEY_MAX, `apiKey must be ${API_KEY_MAX} characters or fewer`)
+      .transform((raw) => raw.trim())
+      .refine((raw) => raw.length > 0, "apiKey is required"),
   })
   .strict();
 
@@ -147,7 +150,9 @@ export class TwentyFormInstallHandler implements FormBasedInstallHandler {
 
     // ── 3. Write the credential row in twenty_integrations ──────────
     // Encryption happens inside the store; we never see ciphertext at
-    // this layer. The store throws if the internal DB is unconfigured.
+    // this layer. The store throws if the internal DB is unconfigured,
+    // or if a different workspace already has a row under SaaS (the
+    // multi-tenant guard pending #2849).
     try {
       await saveTwentyIntegration(workspaceId, { apiKey, baseUrl });
     } catch (err) {
@@ -166,10 +171,11 @@ export class TwentyFormInstallHandler implements FormBasedInstallHandler {
     // DELETE path (which removes the workspace_plugins row) flows
     // through.
     //
-    // Pillar='action' + install_id named explicitly per migration 0092
-    // (#2739). The partial unique index keys re-installs to the same
-    // row; `RETURNING id` lets us pick up the existing id rather than
-    // a phantom freshly-generated one on conflict.
+    // Pillar='action' + install_id named explicitly per the
+    // `workspace_plugins` partial unique index on
+    // `(workspace_id, catalog_id) WHERE pillar IN ('chat', 'action')`.
+    // `RETURNING id` lets us pick up the existing id rather than a
+    // phantom freshly-generated one on conflict.
     const candidateId = this.newId();
     let persistedId: string;
     try {
@@ -202,7 +208,7 @@ export class TwentyFormInstallHandler implements FormBasedInstallHandler {
     } catch (err) {
       log.error(
         { workspaceId, err: err instanceof Error ? err.message : String(err) },
-        "Failed to persist Twenty install record — twenty_integrations row is persisted; admin UI may not reflect installed state until /admin/integrations refetches",
+        "Failed to persist Twenty install record — twenty_integrations row is persisted (retrying the install is safe; the credential write is idempotent)",
       );
       // Don't roll back the twenty_integrations row — the credential
       // is the load-bearing artefact; the catalog row is a UI mirror.
@@ -230,6 +236,9 @@ function safeHost(url: string): string {
   try {
     return new URL(url).host;
   } catch {
+    // intentionally ignored: log breadcrumb only — URL was already
+    // validated by zod refine above, so reaching this branch implies
+    // a malformed log entry, not a malformed user input.
     return "<unparseable>";
   }
 }

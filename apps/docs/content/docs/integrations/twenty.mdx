@@ -64,7 +64,12 @@ demo-gate submissions; its absence is non-fatal.
 To remove the admin override, click **Disconnect** on the Twenty card.
 Atlas drops both the `workspace_plugins` catalog row and the
 `twenty_integrations` credential row, and falls back to environment
-variables (if set) for subsequent dispatches.
+variables (if set) for subsequent dispatches. If no `TWENTY_API_KEY` is
+set in the environment, subsequent dispatches will fail with
+`TwentyCredentialError` until either the admin UI is re-installed or
+the env var is set — outbox rows dead-letter with an actionable
+"configure under Admin → Integrations → Twenty" message rather than
+silently retrying.
 
 ## Option 2: Environment variable configuration
 
@@ -72,9 +77,10 @@ Set on your API service:
 
 ```bash
 TWENTY_API_KEY=<bearer token from Twenty Settings → API & Webhooks>
-# Optional — defaults to Atlas SaaS's own crm.useatlas.dev when unset
-# on the SaaS deployment. Self-hosted operators must set this OR use
-# the admin UI.
+# Required on self-hosted. The default to https://crm.useatlas.dev
+# only applies to the Atlas SaaS deployment. Self-hosted operators who
+# omit this AND don't use the admin UI will route their leads into
+# Atlas's CRM — set this OR use the admin UI.
 TWENTY_BASE_URL=https://crm.example.com
 ```
 

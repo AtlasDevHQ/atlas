@@ -108,6 +108,7 @@ describe("verifyCustomFields", () => {
       const result = await verifyCustomFields({
         apiKey: "k",
         baseUrl: "https://crm.test.local",
+        source: "env",
       });
       expect(result).toEqual({ ok: true });
     });
@@ -121,6 +122,7 @@ describe("verifyCustomFields", () => {
       const result = await verifyCustomFields({
         apiKey: "k",
         baseUrl: "https://crm.test.local",
+        source: "env",
       });
       expect(result).toEqual({ ok: false });
     });
@@ -135,6 +137,7 @@ describe("verifyCustomFields", () => {
       const result = await verifyCustomFields({
         apiKey: "k",
         baseUrl: "https://crm.test.local",
+        source: "env",
       });
       expect(result).toMatchObject({ ok: "transient" });
     });
@@ -151,6 +154,7 @@ describe("verifyCustomFields", () => {
       const result = await verifyCustomFields({
         apiKey: "k",
         baseUrl: "https://crm.test.local",
+        source: "env",
       });
       expect(result).toEqual({ ok: false });
     });

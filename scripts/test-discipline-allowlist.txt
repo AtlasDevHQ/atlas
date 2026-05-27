@@ -31,7 +31,6 @@ env	packages/api/src/api/__tests__/admin.test.ts
 env	packages/api/src/api/__tests__/admin-email-provider-route.test.ts
 env	packages/api/src/api/__tests__/admin-integrations.test.ts
 env	packages/api/src/api/__tests__/admin-integrations-byot.test.ts
-env	packages/api/src/api/__tests__/admin-invitations.test.ts
 env	packages/api/src/api/__tests__/semantic.test.ts
 env	packages/mcp/src/__tests__/prompts/listing.test.ts
 env	packages/mcp/src/__tests__/prompts/registry.test.ts

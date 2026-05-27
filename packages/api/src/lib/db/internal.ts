@@ -2004,7 +2004,6 @@ export interface HardDeleteResult {
   scheduledTaskRuns: number;
   scheduledTasks: number;
   tokenUsage: number;
-  invitations: number;
   pluginSettings: number;
   settings: number;
   semanticEntityVersions: number;
@@ -2159,7 +2158,9 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // live in `workspace_plugins` (pillar='datasource') and are wiped
     // alongside other installs in Phase 3 below.
     const tokenUsage = await del(`DELETE FROM token_usage WHERE org_id = $1`);
-    const invitations = await del(`DELETE FROM invitations WHERE org_id = $1`);
+    // Legacy `invitations` (plural) table has been dropped. Better Auth's
+    // `invitation` (singular) table cascades via the foreign-key drop
+    // when `DELETE FROM organization` fires below — no explicit DELETE needed.
     const pluginSettings = await del(`DELETE FROM plugin_settings WHERE org_id = $1`);
     const settings = await del(`DELETE FROM settings WHERE org_id = $1`);
     const semanticEntities = await del(`DELETE FROM semantic_entities WHERE org_id = $1`);
@@ -2267,7 +2268,6 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
       scheduledTaskRuns,
       scheduledTasks,
       tokenUsage,
-      invitations,
       pluginSettings,
       settings,
       semanticEntityVersions,

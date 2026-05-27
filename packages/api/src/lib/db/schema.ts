@@ -382,33 +382,9 @@ export const tokenUsage = pgTable(
   ],
 );
 
-// ---------------------------------------------------------------------------
-// Invitations
-// ---------------------------------------------------------------------------
-
-export const invitations = pgTable(
-  "invitations",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    email: text("email").notNull(),
-    role: text("role").notNull().default("member"),
-    token: text("token").notNull().unique(),
-    status: text("status").notNull().default("pending"),
-    invitedBy: text("invited_by"),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    // Org scoping
-    orgId: text("org_id"),
-  },
-  (t) => [
-    index("idx_invitations_email").on(t.email),
-    index("idx_invitations_token").on(t.token),
-    index("idx_invitations_status").on(t.status),
-    uniqueIndex("idx_invitations_pending_email").on(t.email, t.orgId).where(sql`status = 'pending'`),
-    index("idx_invitations_org").on(t.orgId),
-  ],
-);
+// Legacy `invitations` (plural) table has been dropped. Org invitations
+// live in Better Auth's `invitation` (singular) table owned by the org
+// plugin in `lib/auth/server.ts`.
 
 // ---------------------------------------------------------------------------
 // Plugin & application settings

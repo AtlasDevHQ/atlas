@@ -44,8 +44,12 @@ mock.module("@/ui/hooks/use-webauthn-supported", () => ({
 }));
 
 const routerPushMock = mock((_path: string) => {});
+// Per-test mutable search params so tests can drive the `?invitationId=…`
+// branch without re-mocking the whole module.
+const searchParamsStore: Record<string, string | null> = { invitationId: null };
 mock.module("next/navigation", () => ({
   useRouter: () => ({ push: routerPushMock, replace: () => {}, back: () => {} }),
+  useSearchParams: () => ({ get: (k: string) => searchParamsStore[k] ?? null }),
 }));
 
 // `LoginPage` fetches the social-provider list + password-reset status
@@ -77,6 +81,7 @@ beforeEach(() => {
   routerPushMock.mockReset();
   webAuthnSupportMock.mockReset();
   fetchMock.mockClear();
+  searchParamsStore.invitationId = null;
   signInPasskeyMock.mockImplementation(async () => ({
     data: { session: {}, user: {} },
     error: null,
@@ -284,6 +289,32 @@ describe("LoginPage — conditional UI autofill on mount", () => {
     // Resolve so cleanup is clean.
     await act(async () => {
       resolveSignIn({ data: { session: {}, user: {} }, error: null });
+    });
+  });
+});
+
+describe("LoginPage — invitationId deep-link threading", () => {
+  test("passkey-autofill success routes to /accept-invitation/<id> when ?invitationId set", async () => {
+    searchParamsStore.invitationId = "inv-abc-123";
+    render(<LoginPage />);
+    await waitFor(() => {
+      expect(routerPushMock).toHaveBeenCalledWith("/accept-invitation/inv-abc-123");
+    });
+  });
+
+  test("URL-encodes path-unsafe characters in invitationId", async () => {
+    searchParamsStore.invitationId = "a/b?c";
+    render(<LoginPage />);
+    await waitFor(() => {
+      expect(routerPushMock).toHaveBeenCalledWith("/accept-invitation/a%2Fb%3Fc");
+    });
+  });
+
+  test("routes to '/' when invitationId is null", async () => {
+    searchParamsStore.invitationId = null;
+    render(<LoginPage />);
+    await waitFor(() => {
+      expect(routerPushMock).toHaveBeenCalledWith("/");
     });
   });
 });

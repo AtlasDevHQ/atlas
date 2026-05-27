@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { authClient } from "@/lib/auth/client";
 import { getApiUrl } from "@/lib/api-url";
 import { Button } from "@/components/ui/button";
@@ -29,6 +29,16 @@ function getApiBase(): string {
 
 export default function SignupPage() {
   const router = useRouter();
+  // `?invitationId=…` is set when the user clicks an org-invitation
+  // email link while signed out and picks "Create account". Threading it
+  // through the signup + OTP flow lets us route to /accept-invitation
+  // post-verify instead of /signup/workspace (joining an existing org
+  // rather than creating their own).
+  const searchParams = useSearchParams();
+  const invitationId = searchParams.get("invitationId");
+  const postSignupPath = invitationId
+    ? `/accept-invitation/${encodeURIComponent(invitationId)}`
+    : "/signup/workspace";
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -86,7 +96,7 @@ export default function SignupPage() {
       // dev), the response carries a token and we can push directly.
       const token = (res.data as { token?: string | null } | undefined)?.token;
       if (token) {
-        router.push("/signup/workspace");
+        router.push(postSignupPath);
       } else {
         setPendingEmail(email);
       }
@@ -110,7 +120,7 @@ export default function SignupPage() {
     try {
       await authClient.signIn.social({
         provider: provider as "google" | "github" | "microsoft",
-        callbackURL: "/signup/workspace",
+        callbackURL: postSignupPath,
       });
     } catch (err) {
       console.warn("Social login failed:", err instanceof Error ? err.message : String(err));
@@ -138,7 +148,7 @@ export default function SignupPage() {
           <CardContent className="space-y-4">
             <VerifyEmailOTPForm
               email={pendingEmail}
-              onVerified={() => router.push("/signup/workspace")}
+              onVerified={() => router.push(postSignupPath)}
             />
             <p className="text-center text-xs text-muted-foreground">
               <button

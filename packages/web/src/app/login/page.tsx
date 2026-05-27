@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { authClient } from "@/lib/auth/client";
 import { getApiUrl } from "@/lib/api-url";
 import { Button } from "@/components/ui/button";
@@ -56,6 +56,11 @@ function getApiBase(): string {
 
 export default function LoginPage() {
   const router = useRouter();
+  // `?invitationId=…` is set when the user clicks an org-invitation
+  // email link while signed out. Preserved across the auth flow so
+  // /accept-invitation can complete the join after sign-in.
+  const searchParams = useSearchParams();
+  const invitationId = searchParams.get("invitationId");
   const webAuthnSupport = useWebAuthnSupported();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -159,7 +164,11 @@ export default function LoginPage() {
           return;
         }
         if (res.data) {
-          router.push("/");
+          router.push(
+            invitationId
+              ? `/accept-invitation/${encodeURIComponent(invitationId)}`
+              : "/",
+          );
           return;
         }
         // Better Auth's wire shape technically allows `{ data: null, error: null }`.
@@ -219,7 +228,11 @@ export default function LoginPage() {
         );
         return;
       }
-      router.push("/");
+      router.push(
+        invitationId
+          ? `/accept-invitation/${encodeURIComponent(invitationId)}`
+          : "/",
+      );
     } catch (err) {
       console.warn(
         "[passkey] sign-in threw:",
@@ -247,7 +260,7 @@ export default function LoginPage() {
         setError(parseSignInError({ error: res.error, attemptedEmail: email }));
         return;
       }
-      const next = getPostSignInRoute(res.data);
+      const next = getPostSignInRoute(res.data, invitationId);
       // #2487: hydrate the Better Auth session store before navigating to a
       // guarded route. Skip on the 2FA branch — no session exists yet and
       // /login/two-factor doesn't gate on one.
@@ -275,7 +288,10 @@ export default function LoginPage() {
     setError(null);
     setSocialLoading(provider);
     try {
-      await authClient.signIn.social({ provider, callbackURL: "/" });
+      const callbackURL = invitationId
+        ? `/accept-invitation/${encodeURIComponent(invitationId)}`
+        : "/";
+      await authClient.signIn.social({ provider, callbackURL });
     } catch (err) {
       console.debug(
         "Social login failed:",
@@ -314,7 +330,11 @@ export default function LoginPage() {
           <CardContent className="space-y-4 pt-6">
             <VerifyEmailOTPForm
               email={error.attemptedEmail}
-              onVerified={() => router.push("/")}
+              onVerified={() => router.push(
+                invitationId
+                  ? `/accept-invitation/${encodeURIComponent(invitationId)}`
+                  : "/",
+              )}
             />
             <p className="text-center text-xs text-muted-foreground">
               <button

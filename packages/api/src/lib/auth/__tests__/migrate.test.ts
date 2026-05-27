@@ -350,6 +350,7 @@ describe("migrateAuthTables", () => {
             { name: "0102_crm_outbox.sql" },
             { name: "0103_converge_salesforce_pillar.sql" },
             { name: "0104_crm_outbox_email_key.sql" },
+            { name: "0105_drop_legacy_invitations.sql" },
           ],
         };
       }

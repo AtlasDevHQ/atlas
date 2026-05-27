@@ -2,7 +2,14 @@ import { describe, it, expect, afterEach } from "bun:test";
 import { betterAuth } from "better-auth";
 import { bearer } from "better-auth/plugins";
 import { apiKey } from "@better-auth/api-key";
-import { resetAuthInstance, canMintSCIMToken } from "../server";
+import { APIError } from "better-auth/api";
+import {
+  resetAuthInstance,
+  canMintSCIMToken,
+  assertInvitationRoleAllowed,
+  isTransportError,
+  buildPlugins,
+} from "../server";
 
 describe("Better Auth instance shape", () => {
   afterEach(() => {
@@ -67,5 +74,118 @@ describe("canMintSCIMToken", () => {
     expect(canMintSCIMToken("Owner")).toBe(false);
     expect(canMintSCIMToken("")).toBe(false);
     expect(canMintSCIMToken(42)).toBe(false);
+  });
+});
+
+describe("assertInvitationRoleAllowed", () => {
+  it("accepts member role", () => {
+    expect(() => assertInvitationRoleAllowed("member")).not.toThrow();
+  });
+
+  it("accepts admin role", () => {
+    expect(() => assertInvitationRoleAllowed("admin")).not.toThrow();
+  });
+
+  it("accepts owner role", () => {
+    expect(() => assertInvitationRoleAllowed("owner")).not.toThrow();
+  });
+
+  it("rejects platform_admin single string", () => {
+    expect(() => assertInvitationRoleAllowed("platform_admin")).toThrow(APIError);
+  });
+
+  it("rejects PLATFORM_ADMIN casing variant", () => {
+    expect(() => assertInvitationRoleAllowed("PLATFORM_ADMIN")).toThrow(APIError);
+  });
+
+  it("rejects ' platform_admin ' with surrounding whitespace", () => {
+    expect(() => assertInvitationRoleAllowed(" platform_admin ")).toThrow(APIError);
+  });
+
+  it("rejects mixed-case 'Platform_Admin'", () => {
+    expect(() => assertInvitationRoleAllowed("Platform_Admin")).toThrow(APIError);
+  });
+
+  it("rejects array role containing platform_admin", () => {
+    expect(() => assertInvitationRoleAllowed(["member", "platform_admin"])).toThrow(APIError);
+  });
+
+  it("rejects array role with cased PLATFORM_ADMIN", () => {
+    expect(() => assertInvitationRoleAllowed(["admin", "PLATFORM_ADMIN"])).toThrow(APIError);
+  });
+
+  it("accepts array role with no platform_admin", () => {
+    expect(() => assertInvitationRoleAllowed(["member", "admin"])).not.toThrow();
+  });
+
+  it("ignores null / undefined entries", () => {
+    expect(() => assertInvitationRoleAllowed([null, "member"])).not.toThrow();
+    expect(() => assertInvitationRoleAllowed(undefined)).not.toThrow();
+  });
+});
+
+describe("isTransportError", () => {
+  it("matches pg connection-reset code", () => {
+    const err = Object.assign(new Error("connection closed"), { code: "ECONNRESET" });
+    expect(isTransportError(err)).toBe(true);
+  });
+
+  it("matches pg admin-shutdown code 57P01", () => {
+    const err = Object.assign(new Error("server shut down"), { code: "57P01" });
+    expect(isTransportError(err)).toBe(true);
+  });
+
+  it("matches connection-class SQLSTATE codes (08xxx)", () => {
+    const err = Object.assign(new Error("connection failure"), { code: "08006" });
+    expect(isTransportError(err)).toBe(true);
+  });
+
+  it("matches 'connection terminated' message", () => {
+    expect(isTransportError(new Error("connection terminated unexpectedly"))).toBe(true);
+  });
+
+  it("matches 'pool ended' message", () => {
+    expect(isTransportError(new Error("pool ended"))).toBe(true);
+  });
+
+  it("rejects programmer errors (syntax error)", () => {
+    expect(isTransportError(new Error("syntax error at or near 'WHERE'"))).toBe(false);
+  });
+
+  it("rejects TypeError for malformed response", () => {
+    expect(isTransportError(new TypeError("Cannot read property 'allowed' of undefined"))).toBe(false);
+  });
+
+  it("rejects non-Error values", () => {
+    expect(isTransportError("connection terminated")).toBe(false);
+    expect(isTransportError(null)).toBe(false);
+    expect(isTransportError(undefined)).toBe(false);
+  });
+});
+
+describe("organization plugin wiring", () => {
+  // Wiring assertion — `requireEmailVerificationOnInvitation: true` closes
+  // the invitation-claiming-via-signup oracle. A Better Auth upgrade that
+  // renames or defaults this option silently re-opens the path.
+  it("requireEmailVerificationOnInvitation is wired to true", () => {
+    const plugins = buildPlugins();
+    const org = plugins.find((p: { id?: string }) => p.id === "organization");
+    expect(org).toBeDefined();
+    // The plugin stores its options under `.options` after construction.
+    // Different Better Auth versions have shipped the option under one of
+    // a few keys (`options`, `_config`); probe both.
+    const opts =
+      (org as { options?: { requireEmailVerificationOnInvitation?: boolean } }).options
+      ?? (org as { _config?: { requireEmailVerificationOnInvitation?: boolean } })._config
+      ?? (org as Record<string, unknown>);
+    // If neither shape is present, the assertion below still trips on
+    // `undefined`, surfacing the BA shape change to the next maintainer.
+    expect((opts as { requireEmailVerificationOnInvitation?: boolean }).requireEmailVerificationOnInvitation).toBe(true);
+  });
+
+  it("organization plugin exposes invitation hooks", () => {
+    const plugins = buildPlugins();
+    const org = plugins.find((p: { id?: string }) => p.id === "organization");
+    expect(org).toBeDefined();
   });
 });

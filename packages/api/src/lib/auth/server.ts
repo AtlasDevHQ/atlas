@@ -12,6 +12,7 @@
  */
 
 import { betterAuth, type Session, type User } from "better-auth";
+import { APIError } from "better-auth/api";
 import { bearer, admin, organization, jwt } from "better-auth/plugins";
 import { twoFactor } from "better-auth/plugins/two-factor";
 import { emailOTP } from "better-auth/plugins/email-otp";
@@ -32,7 +33,10 @@ import { listUserWorkspaceIds } from "@atlas/api/lib/auth/oauth-workspace-grants
 import { recordOAuthTokenRefresh } from "@atlas/api/lib/auth/oauth-refresh-audit";
 import Stripe from "stripe";
 import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
-import { createLogger } from "@atlas/api/lib/logger";
+import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { createAtlasUser } from "@atlas/api/lib/auth/types";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { renderInvitationEmail } from "@atlas/api/lib/email/templates";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { onVerificationCreated } from "@atlas/api/lib/auth/trusted-device-hook";
 import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
@@ -1186,6 +1190,42 @@ export function resolveRefreshTokenTtlSeconds(env: NodeJS.ProcessEnv): number {
  * This keeps all Stripe dependencies out of the module graph for
  * self-hosted deployments that don't use billing.
  */
+/**
+ * Best-effort workspace-branding lookup for the invitation email. Returns
+ * the `WorkspaceBrandingPublic` shape `renderInvitationEmail` expects, or
+ * null if no row exists or the DB is unavailable. Throws are left to the
+ * caller (only the email-send path uses this and it logs + falls back).
+ */
+async function loadInviteBranding(orgId: string): Promise<{
+  logoUrl: string | null;
+  logoText: string | null;
+  primaryColor: string | null;
+  faviconUrl: string | null;
+  hideAtlasBranding: boolean;
+} | null> {
+  if (!hasInternalDB()) return null;
+  const rows = await internalQuery<{
+    logo_url: string | null;
+    logo_text: string | null;
+    primary_color: string | null;
+    favicon_url: string | null;
+    hide_atlas_branding: boolean;
+  }>(
+    `SELECT logo_url, logo_text, primary_color, favicon_url, hide_atlas_branding
+     FROM workspace_branding WHERE org_id = $1 LIMIT 1`,
+    [orgId],
+  );
+  if (rows.length === 0) return null;
+  const r = rows[0];
+  return {
+    logoUrl: r.logo_url,
+    logoText: r.logo_text,
+    primaryColor: r.primary_color,
+    faviconUrl: r.favicon_url,
+    hideAtlasBranding: r.hide_atlas_branding,
+  };
+}
+
 /** @internal — exported for wiring assertions in tests. */
 export function buildPlugins() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin types are complex union types that vary by plugin combination
@@ -1203,38 +1243,190 @@ export function buildPlugins() {
     organization({
       ac,
       roles: { owner: ownerRole, admin: adminRole, member: memberRole },
+      // Close the signup-enumeration oracle on the accept-invitation path
+      // and prevent an attacker who guesses an `invitationId` from claiming
+      // a row intended for someone else. Pairs with the email-OTP plugin.
+      requireEmailVerificationOnInvitation: true,
       organizationHooks: {
         // Lives here rather than in `databaseHooks.member.create.after`
         // because the org plugin inserts the initial owner-member through
         // its own internal context, which bypasses user-defined
         // `databaseHooks` — the previous wiring fired zero times in prod.
-        //
-        // Better Auth accepts a single function. Both hooks catch their
-        // own errors so sequencing them is safe — neither will throw
-        // back into org creation.
         afterCreateOrganization: async (args) => {
           await promoteOrgOwnerToAdmin(args);
           await assignSaasTrial(args);
         },
+        // F-10 (#1752): defense-in-depth role gate. Better Auth's schema
+        // already restricts `role` to the configured roles map above, but
+        // a malicious payload could still ship `platform_admin` — fail
+        // loud rather than silently downcast.
+        beforeCreateInvitation: async ({ invitation, organization: org }) => {
+          const role = String(invitation.role ?? "").trim().toLowerCase();
+          if (role === "platform_admin") {
+            throw new APIError("BAD_REQUEST", {
+              message:
+                "Invitations cannot grant platform_admin. Use the platform-admin grant flow.",
+            });
+          }
+
+          // Seat-limit gate. Counts current members + previously-pending
+          // invitations and compares against the plan cap before this row
+          // lands. TOCTOU is acceptable here — invitation creation is
+          // low-frequency and the next call will catch any overshoot.
+          try {
+            const rows = await internalQuery<{ count: number }>(
+              `SELECT (
+                (SELECT COUNT(*)::int FROM member WHERE "organizationId" = $1) +
+                (SELECT COUNT(*)::int FROM invitation WHERE "organizationId" = $1 AND status = 'pending' AND "expiresAt" > now())
+              ) as count`,
+              [org.id],
+            );
+            const seatCount = rows[0]?.count ?? 0;
+            const resourceCheck = await checkResourceLimit(org.id, "seats", seatCount);
+            if (!resourceCheck.allowed) {
+              throw new APIError("TOO_MANY_REQUESTS", {
+                message: resourceCheck.errorMessage ?? "Workspace seat limit reached.",
+              });
+            }
+          } catch (err) {
+            if (err instanceof APIError) throw err;
+            // DB outage or pool init failure — fail-open so a billing-edge
+            // hiccup doesn't block a legitimate operator. The audit row
+            // emitted in `afterCreateInvitation` still records the action.
+            log.warn(
+              { orgId: org.id, err: errorMessage(err) },
+              "Seat-limit check failed — allowing invitation",
+            );
+          }
+        },
+        afterCreateInvitation: async ({ invitation, inviter, organization: org }) => {
+          // Better Auth hooks fire inside the `/api/auth/*` HTTP handler,
+          // where Atlas's logger AsyncLocalStorage is not bound. Synthesize
+          // a transient context so `logAdminAction` resolves a real actor
+          // instead of "unknown".
+          const inviterUser = createAtlasUser(
+            inviter.user.id,
+            "managed",
+            inviter.user.email,
+            { activeOrganizationId: org.id },
+          );
+          withRequestContext(
+            { requestId: `invite:${invitation.id}`, user: inviterUser },
+            () => {
+              logAdminAction({
+                actionType: ADMIN_ACTIONS.user.invite,
+                targetType: "user",
+                targetId: invitation.id,
+                metadata: {
+                  email: invitation.email,
+                  role: invitation.role,
+                  orgId: org.id,
+                },
+              });
+            },
+          );
+
+          // Trigger onboarding milestone for the inviter (preserved from
+          // the pre-hook implementation — fires the "invite team" nudge
+          // off their to-do list).
+          try {
+            const { onTeamMemberInvited } = await import("@atlas/api/lib/email/hooks");
+            onTeamMemberInvited({
+              userId: inviter.user.id,
+              email: inviter.user.email,
+              orgId: org.id,
+            });
+          } catch (err) {
+            log.debug(
+              { err: errorMessage(err) },
+              "Onboarding hook not available — non-blocking",
+            );
+          }
+        },
+        afterCancelInvitation: async ({ invitation, cancelledBy, organization: org }) => {
+          const actor = createAtlasUser(
+            cancelledBy.user.id,
+            "managed",
+            cancelledBy.user.email,
+            { activeOrganizationId: org.id },
+          );
+          withRequestContext(
+            { requestId: `cancel-invite:${invitation.id}`, user: actor },
+            () => {
+              logAdminAction({
+                actionType: ADMIN_ACTIONS.user.revokeInvitation,
+                targetType: "user",
+                targetId: invitation.id,
+                metadata: {
+                  invitedEmail: invitation.email,
+                  role: invitation.role,
+                  previousStatus: "pending",
+                  orgId: org.id,
+                },
+              });
+            },
+          );
+        },
       },
       async sendInvitationEmail(data) {
-        log.warn(
-          { email: data.email, orgName: data.organization.name, inviterId: data.inviter.user.id },
-          "Organization invitation created but email delivery is not configured — share the invite link manually",
-        );
+        const baseUrl =
+          process.env.NEXT_PUBLIC_ATLAS_API_URL
+          ?? process.env.BETTER_AUTH_URL
+          ?? "http://localhost:3000";
+        const acceptUrl = `${baseUrl}/accept-invitation/${data.id}`;
 
-        // Trigger onboarding milestone for the inviter
+        // Best-effort branding lookup so the invite email matches the
+        // workspace's white-label. Falls back to Atlas defaults on any
+        // DB hiccup.
+        let branding: Awaited<ReturnType<typeof loadInviteBranding>> = null;
         try {
-          const { onTeamMemberInvited } = await import("@atlas/api/lib/email/hooks");
-          onTeamMemberInvited({
-            userId: data.inviter.user.id,
-            email: data.inviter.user.email,
-            orgId: data.organization.id,
-          });
+          branding = await loadInviteBranding(data.organization.id);
         } catch (err) {
           log.debug(
-            { err: errorMessage(err) },
-            "Onboarding hook not available — non-blocking",
+            { err: errorMessage(err), orgId: data.organization.id },
+            "Invite branding lookup failed — using defaults",
+          );
+        }
+
+        const role = Array.isArray(data.role)
+          ? data.role.join(", ")
+          : String(data.role ?? "member");
+
+        const { subject, html } = renderInvitationEmail({
+          orgName: data.organization.name,
+          inviterName: data.inviter.user.name || data.inviter.user.email,
+          role,
+          acceptUrl,
+          branding,
+        });
+
+        try {
+          const { sendEmail } = await import("@atlas/api/lib/email/delivery");
+          const result = await sendEmail(
+            { to: data.email, subject, html },
+            data.organization.id,
+          );
+          if (!result.success) {
+            log.error(
+              {
+                email: data.email,
+                orgName: data.organization.name,
+                invitationId: data.id,
+                provider: result.provider,
+                err: result.error,
+              },
+              "Invitation email failed to send",
+            );
+          }
+        } catch (err) {
+          log.error(
+            {
+              email: data.email,
+              orgName: data.organization.name,
+              invitationId: data.id,
+              err: errorMessage(err),
+            },
+            "Invitation email threw",
           );
         }
       },

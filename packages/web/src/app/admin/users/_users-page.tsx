@@ -72,7 +72,7 @@ import {
   type FetchError,
 } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyErrorOrNull } from "@/ui/lib/fetch-error";
+import { authClient } from "@/lib/auth/client";
 import { UserStatsSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
@@ -91,7 +91,6 @@ import {
   Mail,
   Copy,
   Check,
-  Clock,
   X,
 } from "lucide-react";
 
@@ -156,20 +155,17 @@ export function UsersPage({ scope }: UsersPageProps) {
   });
 
   // -- Invite dialog state --
+  // The dialog runs the Better Auth org client directly — the legacy
+  // /api/v1/admin/users/invite endpoint was removed when the invitation
+  // flow cut over to `authClient.organization.inviteMember()` (see
+  // `lib/auth/server.ts:organizationHooks`). The hooks layer handles
+  // seat-limit, audit, and email delivery on the server.
   const [inviteOpen, setInviteOpen] = useState(false);
-  const [inviteResult, setInviteResult] = useState<{ inviteUrl: string; emailSent: boolean; emailError?: string; email: string } | null>(null);
+  const [inviteResult, setInviteResult] = useState<{ inviteUrl: string; email: string } | null>(null);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [inviteSaving, setInviteSaving] = useState(false);
   const [copied, setCopied] = useState(false);
-
-  // Invite mutation
-  const invite = useAdminMutation<{ inviteUrl: string; emailSent: boolean; emailError?: string }>({
-    path: "/api/v1/admin/users/invite",
-    method: "POST",
-  });
-
-  // Revoke invitation mutation
-  const revokeInvitation = useAdminMutation({
-    method: "DELETE",
-  });
+  const [revokeError, setRevokeError] = useState<string | null>(null);
 
   // -- Invitations list --
   const [invitations, setInvitations] = useState<Invitation[]>([]);
@@ -351,7 +347,11 @@ export function UsersPage({ scope }: UsersPageProps) {
     return () => { cancelled = true; };
   }, [apiUrl, offset, params.search, params.role, credentials]);
 
-  // Fetch invitations
+  // Fetch invitations via Better Auth's `listInvitations` (the
+  // legacy /api/v1/admin/users/invitations endpoint was removed). Scoped
+  // to the caller's active org by default; explicit `organizationId`
+  // could thread through here once the platform-scope org-selector ships
+  // (tracked as a follow-up).
   const [invitationsError, setInvitationsError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -359,16 +359,25 @@ export function UsersPage({ scope }: UsersPageProps) {
       setInvitationsLoading(true);
       setInvitationsError(null);
       try {
-        const res = await fetch(`${apiUrl}/api/v1/admin/users/invitations`, { credentials });
-        if (!res.ok) {
-          if (!cancelled) {
-            setInvitations([]);
-            setInvitationsError(`Failed to load invitations (HTTP ${res.status})`);
-          }
+        const result = await authClient.organization.listInvitations();
+        if (cancelled) return;
+        if (result.error) {
+          setInvitations([]);
+          setInvitationsError(result.error.message);
           return;
         }
-        const data = await res.json();
-        if (!cancelled) setInvitations(data.invitations ?? []);
+        setInvitations(
+          (result.data ?? []).map((inv) => ({
+            id: inv.id,
+            organizationId: inv.organizationId,
+            email: inv.email,
+            role: inv.role,
+            status: inv.status,
+            inviterId: inv.inviterId,
+            expiresAt: inv.expiresAt,
+            createdAt: inv.createdAt,
+          })),
+        );
       } catch (err) {
         if (!cancelled) {
           setInvitations([]);
@@ -380,7 +389,7 @@ export function UsersPage({ scope }: UsersPageProps) {
     }
     fetchInvitations();
     return () => { cancelled = true; };
-  }, [apiUrl, credentials, invitationsVersion]);
+  }, [invitationsVersion]);
 
   function handleSearch() {
     setParams({ search: searchInput, page: 1 });
@@ -444,20 +453,34 @@ export function UsersPage({ scope }: UsersPageProps) {
   // -- Invite handlers --
 
   function resetInviteDialog() {
-    invite.reset();
     setInviteResult(null);
+    setInviteError(null);
     setCopied(false);
   }
 
   async function handleInvite(values: z.infer<typeof inviteSchema>) {
-    await invite.mutate({
-      body: { email: values.email, role: values.role },
-      onSuccess: (data) => {
-        if (!data) return;
-        setInviteResult({ inviteUrl: data.inviteUrl, emailSent: data.emailSent, emailError: data.emailError, email: values.email });
-        setInvitationsVersion((v) => v + 1);
-      },
-    });
+    setInviteError(null);
+    setInviteSaving(true);
+    try {
+      const result = await authClient.organization.inviteMember({
+        email: values.email,
+        role: values.role,
+      });
+      if (result.error || !result.data) {
+        setInviteError(result.error?.message ?? "Failed to send invitation.");
+        return;
+      }
+      // Compute the link client-side so we can offer "Copy link" as a
+      // fallback when email delivery isn't configured (matches the
+      // accept page route `/accept-invitation/[id]`).
+      const inviteUrl = `${window.location.origin}/accept-invitation/${result.data.id}`;
+      setInviteResult({ inviteUrl, email: values.email });
+      setInvitationsVersion((v) => v + 1);
+    } catch (err) {
+      setInviteError(err instanceof Error ? err.message : "Failed to send invitation.");
+    } finally {
+      setInviteSaving(false);
+    }
   }
 
   async function handleCopyLink(url: string) {
@@ -471,11 +494,19 @@ export function UsersPage({ scope }: UsersPageProps) {
   }
 
   async function handleRevokeInvitation(id: string): Promise<boolean> {
-    const result = await revokeInvitation.mutate({
-      path: `/api/v1/admin/users/invitations/${id}`,
-      onSuccess: () => setInvitationsVersion((v) => v + 1),
-    });
-    return result.ok;
+    setRevokeError(null);
+    try {
+      const result = await authClient.organization.cancelInvitation({ invitationId: id });
+      if (result.error) {
+        setRevokeError(result.error.message);
+        return false;
+      }
+      setInvitationsVersion((v) => v + 1);
+      return true;
+    } catch (err) {
+      setRevokeError(err instanceof Error ? err.message : "Failed to revoke invitation.");
+      return false;
+    }
   }
 
   const pendingInvitations = invitations.filter((i) => i.status === "pending");
@@ -579,9 +610,9 @@ export function UsersPage({ scope }: UsersPageProps) {
           onRetry={adminAction.clearError}
         />
         <MutationErrorSurface
-          error={revokeInvitation.error}
+          error={revokeError ? { message: revokeError } : null}
           feature="Users"
-          onRetry={revokeInvitation.clearError}
+          onRetry={() => setRevokeError(null)}
         />
 
         <AdminContentWrapper
@@ -637,48 +668,38 @@ export function UsersPage({ scope }: UsersPageProps) {
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4">
-              {inviteResult.emailSent ? (
-                <div className="flex items-start gap-3 rounded-md border border-green-200 bg-green-50 p-3 dark:border-green-800 dark:bg-green-950">
-                  <Mail className="mt-0.5 size-4 text-green-600 dark:text-green-400" />
-                  <div className="text-sm">
-                    <p className="font-medium text-green-700 dark:text-green-300">Invitation sent!</p>
-                    <p className="text-green-600 dark:text-green-400">An email has been sent to {inviteResult.email}.</p>
-                  </div>
+              {/* Better Auth fires `sendInvitationEmail` asynchronously after
+                  the row inserts — by the time we return here the email
+                  has at least been handed off to the delivery layer. Show
+                  a confirmation and the invite link as a manual share
+                  fallback (operators without email delivery configured
+                  copy this and paste it into Slack / DM). */}
+              <div className="flex items-start gap-3 rounded-md border border-green-200 bg-green-50 p-3 dark:border-green-800 dark:bg-green-950">
+                <Mail className="mt-0.5 size-4 text-green-600 dark:text-green-400" />
+                <div className="text-sm">
+                  <p className="font-medium text-green-700 dark:text-green-300">Invitation sent!</p>
+                  <p className="text-green-600 dark:text-green-400">An email is on its way to {inviteResult.email}.</p>
                 </div>
-              ) : (
-                <div className="space-y-3">
-                  <div className="flex items-start gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950">
-                    <Clock className="mt-0.5 size-4 text-amber-600 dark:text-amber-400" />
-                    <div className="text-sm">
-                      <p className="font-medium text-amber-700 dark:text-amber-300">
-                        {inviteResult.emailError ? "Email delivery failed" : "No email delivery configured"}
-                      </p>
-                      <p className="text-amber-600 dark:text-amber-400">
-                        {inviteResult.emailError ?? "Share the invite link manually."}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>Invite link</Label>
-                    <div className="flex gap-2">
-                      <Input
-                        readOnly
-                        value={inviteResult.inviteUrl}
-                        className="h-9 text-xs"
-                      />
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-9 shrink-0"
-                        onClick={() => handleCopyLink(inviteResult.inviteUrl)}
-                      >
-                        {copied ? <Check className="mr-1.5 size-3.5" /> : <Copy className="mr-1.5 size-3.5" />}
-                        {copied ? "Copied" : "Copy"}
-                      </Button>
-                    </div>
-                  </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Invite link (share manually if needed)</Label>
+                <div className="flex gap-2">
+                  <Input
+                    readOnly
+                    value={inviteResult.inviteUrl}
+                    className="h-9 text-xs"
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-9 shrink-0"
+                    onClick={() => handleCopyLink(inviteResult.inviteUrl)}
+                  >
+                    {copied ? <Check className="mr-1.5 size-3.5" /> : <Copy className="mr-1.5 size-3.5" />}
+                    {copied ? "Copied" : "Copy"}
+                  </Button>
                 </div>
-              )}
+              </div>
               <DialogFooter>
                 <Button onClick={() => setInviteOpen(false)}>Done</Button>
               </DialogFooter>
@@ -698,8 +719,8 @@ export function UsersPage({ scope }: UsersPageProps) {
           defaultValues={{ email: "", role: "member" }}
           onSubmit={handleInvite}
           submitLabel="Send invitation"
-          saving={invite.saving}
-          serverError={friendlyErrorOrNull(invite.error)}
+          saving={inviteSaving}
+          serverError={inviteError}
           className="sm:max-w-md"
         >
           {(form) => (

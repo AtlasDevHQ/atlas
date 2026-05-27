@@ -97,6 +97,29 @@ const _authClient = createAuthClient({
 // reference identical types.
 type OrgResult<T> = { data: T | null; error: { message: string } | null };
 
+// Better Auth org plugin's invitation row shape (mirror of
+// `invitationTableFields` in the upstream docs). The plugin returns this
+// from `inviteMember`, `cancelInvitation`, and the list endpoints.
+export interface OrgInvitation {
+  id: string;
+  organizationId: string;
+  email: string;
+  role: string;
+  status: "pending" | "accepted" | "rejected" | "canceled";
+  inviterId: string;
+  expiresAt: string;
+  createdAt: string;
+}
+
+// `getInvitation` returns the row plus inviter / organization metadata so
+// the /accept-invitation page can render "You were invited by X to Y"
+// without a second roundtrip.
+export interface OrgInvitationDetail extends OrgInvitation {
+  organizationName: string;
+  organizationSlug: string;
+  inviterEmail: string;
+}
+
 // Session extras the organization plugin stamps at runtime (active-org id is
 // written by `databaseHooks.session.create.before` in
 // `packages/api/src/lib/auth/server.ts`; the active-org name comes from the
@@ -132,6 +155,19 @@ type OrgClient = Omit<typeof _authClient, "useSession"> & {
     create: (opts: { name: string; slug: string; logo?: string }) => Promise<OrgResult<{ id: string }>>;
     list: () => Promise<OrgResult<{ id: string; name: string; slug: string; logo?: string | null }[]>>;
     setActive: (opts: { organizationId: string }) => Promise<OrgResult<Record<string, unknown>>>;
+    // Invitation surface — pre/post hooks live in `lib/auth/server.ts:organizationHooks`.
+    // The legacy `/api/v1/admin/users/invite*` routes were cut over to these in
+    // the better-auth-invitations refactor; both `admin:users` (workspace) and
+    // `platform:users` (platform) consume them. Better Auth enforces the
+    // `invitation:create` ACL inside the org plugin — `requirePermission` in
+    // our admin router no longer gates this path.
+    inviteMember: (opts: { email: string; role: string; organizationId?: string; resend?: boolean }) => Promise<OrgResult<OrgInvitation>>;
+    cancelInvitation: (opts: { invitationId: string }) => Promise<OrgResult<{ id: string }>>;
+    acceptInvitation: (opts: { invitationId: string }) => Promise<OrgResult<{ invitation: OrgInvitation; member: { id: string; userId: string; organizationId: string; role: string } }>>;
+    rejectInvitation: (opts: { invitationId: string }) => Promise<OrgResult<{ invitation: OrgInvitation }>>;
+    getInvitation: (opts: { query: { id: string } }) => Promise<OrgResult<OrgInvitationDetail>>;
+    listInvitations: (opts?: { query?: { organizationId?: string } }) => Promise<OrgResult<OrgInvitation[]>>;
+    listUserInvitations: () => Promise<OrgResult<OrgInvitation[]>>;
   };
 
   // passkeyClient — enrollment lives under `passkey.*`; sign-in lives

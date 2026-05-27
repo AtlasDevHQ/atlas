@@ -19,16 +19,21 @@ export interface User {
   createdAt: string;
 }
 
+/**
+ * Pending org invitation as returned by Better Auth's `listInvitations`.
+ * Camel-case fields mirror the org plugin's row shape — the legacy
+ * snake_case `invitations` (plural) table was dropped in 0104, and the
+ * web client no longer normalizes between shapes.
+ */
 export interface Invitation {
   id: string;
+  organizationId: string;
   email: string;
   role: string;
   status: string;
-  invited_by: string | null;
-  invited_by_email: string | null;
-  expires_at: string;
-  accepted_at: string | null;
-  created_at: string;
+  inviterId: string;
+  expiresAt: string;
+  createdAt: string;
 }
 
 // ── Shared badge styles ──────────────────────────────────────────
@@ -189,28 +194,28 @@ export function getInvitationColumns(): ColumnDef<Invitation>[] {
       size: 112,
     },
     {
-      id: "expires_at",
-      accessorKey: "expires_at",
+      id: "expiresAt",
+      accessorKey: "expiresAt",
       header: ({ column }) => (
         <DataTableColumnHeader column={column} label="Expires" />
       ),
       cell: ({ row }) => (
         <span className="text-xs text-muted-foreground whitespace-nowrap">
-          <RelativeTimestamp iso={row.getValue<string>("expires_at")} />
+          <RelativeTimestamp iso={row.getValue<string>("expiresAt")} />
         </span>
       ),
       meta: { label: "Expires", icon: Calendar },
       size: 144,
     },
     {
-      id: "created_at",
-      accessorKey: "created_at",
+      id: "createdAt",
+      accessorKey: "createdAt",
       header: ({ column }) => (
         <DataTableColumnHeader column={column} label="Sent" />
       ),
       cell: ({ row }) => (
         <span className="text-xs text-muted-foreground whitespace-nowrap">
-          <RelativeTimestamp iso={row.getValue<string>("created_at")} />
+          <RelativeTimestamp iso={row.getValue<string>("createdAt")} />
         </span>
       ),
       meta: { label: "Sent", icon: Calendar },

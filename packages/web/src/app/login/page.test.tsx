@@ -46,6 +46,10 @@ mock.module("@/ui/hooks/use-webauthn-supported", () => ({
 const routerPushMock = mock((_path: string) => {});
 mock.module("next/navigation", () => ({
   useRouter: () => ({ push: routerPushMock, replace: () => {}, back: () => {} }),
+  // LoginPage reads `?invitationId=…` so /accept-invitation deep-links
+  // survive the auth flow (better-auth-invitations refactor). Bind a
+  // null-returning stub so the page renders cleanly with no query.
+  useSearchParams: () => ({ get: () => null }),
 }));
 
 // `LoginPage` fetches the social-provider list + password-reset status

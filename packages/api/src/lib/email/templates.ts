@@ -213,3 +213,70 @@ export function renderOnboardingEmail(
 
   return { subject, html };
 }
+
+// ── Invitation email ────────────────────────────────────────────────
+
+function invitationFooter(ctx: BrandingContext): string {
+  return `
+    <div style="padding:20px 32px;border-top:1px solid #e5e5e5;color:#737373;font-size:12px;line-height:1.5;">
+      <p style="margin:0;">You're receiving this because you were invited to ${escapeHtml(ctx.appName)}.</p>
+      <p style="margin:4px 0 0;">If you weren't expecting this, you can safely ignore it.</p>
+    </div>`;
+}
+
+function wrapInvitation(ctx: BrandingContext, content: string): string {
+  return `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" /></head>
+<body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f5f5;">
+  <div style="max-width:600px;margin:32px auto;background:#ffffff;border-radius:8px;overflow:hidden;border:1px solid #e5e5e5;">
+    ${header(ctx)}
+    <div style="padding:32px;">
+      ${content}
+    </div>
+    ${invitationFooter(ctx)}
+  </div>
+</body>
+</html>`;
+}
+
+function invitationContent(
+  ctx: BrandingContext,
+  args: { orgName: string; inviterName: string; role: string; acceptUrl: string },
+): string {
+  return `
+    <h1 style="margin:0 0 16px;font-size:24px;color:${ctx.primaryColor};">You're invited to ${escapeHtml(args.orgName)}</h1>
+    <p style="margin:0 0 16px;font-size:15px;color:#404040;line-height:1.6;">
+      ${escapeHtml(args.inviterName)} invited you to join <strong>${escapeHtml(args.orgName)}</strong> on ${escapeHtml(ctx.appName)} as <strong>${escapeHtml(args.role)}</strong>.
+    </p>
+    <p style="margin:0 0 24px;font-size:14px;color:#404040;line-height:1.6;">
+      ${escapeHtml(ctx.appName)} turns natural language into SQL — ask questions about your data and get instant answers.
+    </p>
+    <div style="text-align:center;margin:24px 0;">
+      ${button("Accept invitation", args.acceptUrl, ctx.accentColor)}
+    </div>
+    <p style="margin:16px 0 0;font-size:12px;color:#737373;line-height:1.6;">
+      Or paste this link into your browser: <a href="${escapeHtml(args.acceptUrl)}" style="color:#737373;">${escapeHtml(args.acceptUrl)}</a>
+    </p>`;
+}
+
+/**
+ * Render the org invitation email triggered by Better Auth's
+ * `sendInvitationEmail` callback (see `lib/auth/server.ts`). Standalone
+ * from the onboarding-step renderer because invitations don't carry
+ * an "unsubscribe from onboarding" footer — the recipient isn't an
+ * Atlas user yet and has no onboarding preferences row.
+ */
+export function renderInvitationEmail(args: {
+  orgName: string;
+  inviterName: string;
+  role: string;
+  acceptUrl: string;
+  branding?: WorkspaceBrandingPublic | null;
+}): RenderedEmail {
+  const ctx = buildBrandingContext(args.branding);
+  const content = invitationContent(ctx, args);
+  const html = wrapInvitation(ctx, content);
+  const subject = `You've been invited to ${args.orgName} on ${ctx.appName}`;
+  return { subject, html };
+}

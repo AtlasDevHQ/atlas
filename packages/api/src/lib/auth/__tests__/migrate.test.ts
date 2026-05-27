@@ -349,6 +349,7 @@ describe("migrateAuthTables", () => {
             { name: "0101_approval_surface_gchat.sql" },
             { name: "0102_crm_outbox.sql" },
             { name: "0103_converge_salesforce_pillar.sql" },
+            { name: "0104_drop_legacy_invitations.sql" },
           ],
         };
       }

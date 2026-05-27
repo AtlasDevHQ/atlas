@@ -13,7 +13,11 @@ describe("getUserColumns", () => {
 
 describe("getInvitationColumns", () => {
   test("returns the documented column ids in order", () => {
+    // Column ids mirror Better Auth's `invitation` table fields after the
+    // cutover from the legacy `invitations` (plural, snake_case) table.
+    // The DataTable contract takes id literals here, so a rename in
+    // `columns.tsx` that diverges from this list breaks sort/filter.
     const ids = getInvitationColumns().map((c) => c.id);
-    expect(ids).toEqual(["email", "role", "status", "expires_at", "created_at"]);
+    expect(ids).toEqual(["email", "role", "status", "expiresAt", "createdAt"]);
   });
 });

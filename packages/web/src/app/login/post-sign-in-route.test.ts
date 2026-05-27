@@ -42,4 +42,38 @@ describe("getPostSignInRoute", () => {
     expect(getPostSignInRoute(42)).toBe("/");
     expect(getPostSignInRoute(true)).toBe("/");
   });
+
+  describe("with invitationId", () => {
+    test("routes to /accept-invitation/{id} on a normal sign-in", () => {
+      expect(getPostSignInRoute({ token: "abc" }, "inv-123")).toBe(
+        "/accept-invitation/inv-123",
+      );
+    });
+
+    test("routes to /login/two-factor with accept-invitation as callbackURL on the 2FA branch", () => {
+      // The 2FA challenge wins over the invitation redirect — accept-invitation
+      // requires a full session, and the 2FA challenge is what mints one.
+      // The accept-invitation path threads through `callbackURL` so the
+      // two-factor page lands on it after verify completes.
+      expect(
+        getPostSignInRoute({ twoFactorRedirect: true }, "inv-123"),
+      ).toBe("/login/two-factor?callbackURL=%2Faccept-invitation%2Finv-123");
+    });
+
+    test("ignores null / empty invitationId", () => {
+      expect(getPostSignInRoute({ token: "abc" }, null)).toBe("/");
+      expect(getPostSignInRoute({ token: "abc" }, undefined)).toBe("/");
+      expect(getPostSignInRoute({ token: "abc" }, "")).toBe("/");
+    });
+
+    test("URI-encodes special characters in invitationId", () => {
+      // Invitation IDs are UUIDs in practice, but defense-in-depth: a
+      // crafted query that smuggles `?` or `&` into the param shouldn't
+      // produce a redirect URL that breaks the 2FA callbackURL parser
+      // (or worse, redirects open-redirect-style to another path).
+      expect(getPostSignInRoute({ token: "abc" }, "a/b?c")).toBe(
+        "/accept-invitation/a%2Fb%3Fc",
+      );
+    });
+  });
 });

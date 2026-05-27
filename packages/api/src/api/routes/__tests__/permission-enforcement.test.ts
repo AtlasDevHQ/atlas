@@ -300,13 +300,11 @@ const inlineWriteCases: MappingCase[] = [
     method: "DELETE",
     permission: "admin:users",
   },
-  {
-    name: "POST /admin/users/invite (invite member)",
-    url: "/api/v1/admin/users/invite",
-    method: "POST",
-    body: { email: "x@example.com", role: "member" },
-    permission: "admin:users",
-  },
+  // Invitations cut over to Better Auth's native /api/auth/organization/*
+  // endpoints in the better-auth-invitations refactor. The permission gate
+  // is enforced inside the org plugin's `invitation:create` ACL — not by
+  // Atlas's admin:users middleware — so the per-route F-53 coverage entry
+  // is no longer applicable here.
   {
     name: "POST /admin/users/:id/unban (unbanUser)",
     url: "/api/v1/admin/users/user_abc123/unban",
@@ -396,7 +394,7 @@ describe("F-53 — admin route 403s when role lacks the required permission", ()
   }
 });
 
-describe("F-53 — inline-guard write paths (admin.ts / admin-invitations.ts / admin-semantic.ts)", () => {
+describe("F-53 — inline-guard write paths (admin.ts / admin-semantic.ts)", () => {
   for (const tc of inlineWriteCases) {
     it(`${tc.name} → calls checkPermission("${tc.permission}")`, async () => {
       await app.fetch(adminRequest(tc.url, tc.method ?? "GET", tc.body));

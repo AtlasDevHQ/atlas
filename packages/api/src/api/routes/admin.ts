@@ -303,9 +303,6 @@ admin.route("/tokens", adminTokens);
 admin.route("/tokens/", adminTokens);
 admin.route("/oauth-clients", adminOauthClients);
 admin.route("/oauth-clients/", adminOauthClients);
-// Invitations — registered directly to avoid sub-router middleware leaking to other /users/* routes
-import { registerInvitationRoutes } from "./admin-invitations";
-registerInvitationRoutes(admin, adminAuthAndContext);
 // Per-user trusted-browsers — see me-trusted-devices.ts header.
 import { registerTrustedDeviceRoutes } from "./me-trusted-devices";
 registerTrustedDeviceRoutes(admin, reqId);

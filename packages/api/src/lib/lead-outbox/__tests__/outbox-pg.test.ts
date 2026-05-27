@@ -772,13 +772,16 @@ describeIfPg("lead-outbox (real Postgres)", () => {
         ],
       );
 
-      // Re-run the migration UPDATE — idempotent by design.
+      // Re-run the migration UPDATE — idempotent by design. Mirrors
+      // 0104 exactly: regex-based trim for JS `String.trim()` parity
+      // (plain Postgres `TRIM()` only strips spaces, would leak the
+      // tab/newline row).
       await pool.query(
         `UPDATE crm_outbox
-            SET email_key = NULLIF(LOWER(TRIM(payload->>'email')), '')
+            SET email_key = NULLIF(LOWER(REGEXP_REPLACE(payload->>'email', '^\\s+|\\s+$', '', 'g')), '')
           WHERE email_key IS NULL
             AND jsonb_typeof(payload->'email') = 'string'
-            AND NULLIF(LOWER(TRIM(payload->>'email')), '') IS NOT NULL`,
+            AND NULLIF(LOWER(REGEXP_REPLACE(payload->>'email', '^\\s+|\\s+$', '', 'g')), '') IS NOT NULL`,
       );
 
       const rows = await pool.query<{ email_key: string | null }>(

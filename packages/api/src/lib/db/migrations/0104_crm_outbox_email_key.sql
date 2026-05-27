@@ -37,19 +37,24 @@ ALTER TABLE crm_outbox ADD COLUMN IF NOT EXISTS email_key TEXT;
 -- backfill is idempotent (`WHERE email_key IS NULL`) so running this
 -- migration twice is a no-op.
 --
--- `NULLIF(LOWER(TRIM(...)), '')` mirrors the runtime `extractEmailKey`
--- helper exactly: a whitespace-only payload (`"   "`) passes a naive
--- pre-TRIM `<> ''` check but collapses to `''` after TRIM. We MUST
--- land NULL rather than `''` for those rows — a non-NULL empty-string
+-- Mirror the runtime `extractEmailKey` helper exactly:
+--   `NULLIF(LOWER(REGEXP_REPLACE(value, '^\s+|\s+$', '', 'g')), '')`
+-- A whitespace-only payload (`"   "`, `"\t\n"`, etc.) collapses to ''
+-- after the trim and we MUST land NULL — a non-NULL empty-string
 -- email_key would collide with every other whitespace-only row in
 -- CLAIM_SQL's NOT EXISTS gate, causing all such rows to mutually
--- block each other and drain at one-per-tick globally. `jsonb_typeof`
--- guards against `"email": null` and non-string types up front.
+-- block each other and drain at one-per-tick globally. The regex
+-- form matches JavaScript `String.prototype.trim()` for ASCII
+-- whitespace (space, tab, newline, CR, FF, VT); plain `TRIM()` in
+-- Postgres only strips spaces by default and would leak rows whose
+-- payload uses tabs/newlines, asymmetric with what `extractEmailKey`
+-- writes at runtime. `jsonb_typeof` guards against `"email": null`
+-- and non-string types up front.
 UPDATE crm_outbox
-SET email_key = NULLIF(LOWER(TRIM(payload->>'email')), '')
+SET email_key = NULLIF(LOWER(REGEXP_REPLACE(payload->>'email', '^\s+|\s+$', '', 'g')), '')
 WHERE email_key IS NULL
   AND jsonb_typeof(payload->'email') = 'string'
-  AND NULLIF(LOWER(TRIM(payload->>'email')), '') IS NOT NULL;
+  AND NULLIF(LOWER(REGEXP_REPLACE(payload->>'email', '^\s+|\s+$', '', 'g')), '') IS NOT NULL;
 
 -- Partial index supports both the DISTINCT-ON dedupe inside CLAIM_SQL
 -- and the NOT EXISTS gate. Filtering on the active statuses keeps the

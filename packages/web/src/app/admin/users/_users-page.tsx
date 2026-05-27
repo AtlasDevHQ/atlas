@@ -6,6 +6,7 @@ import { useQueryStates } from "nuqs";
 import { z } from "zod";
 import { usersSearchParams } from "./search-params";
 import { ROLES, isDemotion, removeEndpointForRole, type Role } from "./roles";
+import { useOrgRoles } from "./use-org-roles";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useAtlasConfig } from "@/ui/context";
 import { Badge } from "@/components/ui/badge";
@@ -111,6 +112,21 @@ const inviteSchema = z.object({
   role: z.enum(ROLES),
 });
 
+// Platform-scope adds an org selector. Cross-org invites hit a separate
+// endpoint (`POST /api/v1/platform/invitations`) — the native
+// `authClient.organization.inviteMember()` enforces a membership gate the
+// platform admin can't satisfy when the target is an org they don't belong
+// to. See #2876.
+const platformInviteSchema = inviteSchema.extend({
+  organizationId: z.string().min(1, "Pick an organization"),
+});
+
+interface OrgListItem {
+  id: string;
+  name: string;
+  slug: string;
+}
+
 /**
  * Scope of the users page. Driven by the route that mounts it, NOT by
  * the caller's role:
@@ -171,6 +187,14 @@ export function UsersPage({ scope }: UsersPageProps) {
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [invitationsLoading, setInvitationsLoading] = useState(true);
   const [invitationsVersion, setInvitationsVersion] = useState(0);
+
+  // -- Cross-org invite (platform scope only) --
+  // The platform-scope dialog includes an org selector. When workspace
+  // scope the orgs list isn't fetched (the dialog always targets the
+  // caller's active org through the native Better Auth flow).
+  const [orgs, setOrgs] = useState<OrgListItem[]>([]);
+  const [orgsLoading, setOrgsLoading] = useState(false);
+  const [orgsError, setOrgsError] = useState<string | null>(null);
 
   const { data: stats, error: statsError } = useAdminFetch(
     "/api/v1/admin/users/stats",
@@ -391,6 +415,36 @@ export function UsersPage({ scope }: UsersPageProps) {
     return () => { cancelled = true; };
   }, [invitationsVersion]);
 
+  // Fetch the orgs list for the platform-scope org selector. Lazy-loaded
+  // when the invite dialog opens so the page-mount cost stays unchanged
+  // for the much more common workspace-scope path.
+  useEffect(() => {
+    if (!isPlatformScope || !inviteOpen) return;
+    if (orgs.length > 0) return;
+    let cancelled = false;
+    async function fetchOrgs() {
+      setOrgsLoading(true);
+      setOrgsError(null);
+      try {
+        const res = await fetch(`${apiUrl}/api/v1/admin/organizations`, { credentials });
+        if (!res.ok) {
+          if (!cancelled) setOrgsError(`Failed to load organizations (HTTP ${res.status})`);
+          return;
+        }
+        const data = (await res.json()) as { organizations?: OrgListItem[] };
+        if (!cancelled) setOrgs(data.organizations ?? []);
+      } catch (err) {
+        if (!cancelled) {
+          setOrgsError(err instanceof Error ? err.message : "Failed to load organizations");
+        }
+      } finally {
+        if (!cancelled) setOrgsLoading(false);
+      }
+    }
+    fetchOrgs();
+    return () => { cancelled = true; };
+  }, [isPlatformScope, inviteOpen, apiUrl, credentials, orgs.length]);
+
   function handleSearch() {
     setParams({ search: searchInput, page: 1 });
   }
@@ -475,6 +529,47 @@ export function UsersPage({ scope }: UsersPageProps) {
       // accept page route `/accept-invitation/[id]`).
       const inviteUrl = `${window.location.origin}/accept-invitation/${result.data.id}`;
       setInviteResult({ inviteUrl, email: values.email });
+      setInvitationsVersion((v) => v + 1);
+    } catch (err) {
+      setInviteError(err instanceof Error ? err.message : "Failed to send invitation.");
+    } finally {
+      setInviteSaving(false);
+    }
+  }
+
+  /**
+   * Cross-org invite from `/platform/users`. Routes through the new
+   * platform endpoint (#2876) instead of `authClient.organization.inviteMember`
+   * because the native flow's membership gate would 403 a platform admin
+   * who isn't a member of the target org.
+   */
+  async function handlePlatformInvite(values: z.infer<typeof platformInviteSchema>) {
+    setInviteError(null);
+    setInviteSaving(true);
+    try {
+      const res = await fetch(`${apiUrl}/api/v1/platform/invitations`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials,
+        body: JSON.stringify({
+          organizationId: values.organizationId,
+          email: values.email,
+          role: values.role,
+        }),
+      });
+      const data = (await res.json().catch(() => null)) as
+        | { id?: string; email?: string; message?: string }
+        | null;
+      if (!res.ok || !data?.id) {
+        setInviteError(data?.message ?? `Failed to send invitation (HTTP ${res.status}).`);
+        return;
+      }
+      const inviteUrl = `${window.location.origin}/accept-invitation/${data.id}`;
+      setInviteResult({ inviteUrl, email: values.email });
+      // The platform endpoint targets a different org than the caller's
+      // active one — the local invitations list won't reflect the new
+      // row (it's scoped to the caller's active org). Bump anyway in
+      // case the admin happened to invite into their own active org.
       setInvitationsVersion((v) => v + 1);
     } catch (err) {
       setInviteError(err instanceof Error ? err.message : "Failed to send invitation.");
@@ -708,8 +803,8 @@ export function UsersPage({ scope }: UsersPageProps) {
         </Dialog>
       )}
 
-      {/* Invite user dialog — form phase (FormDialog) */}
-      {!inviteResult && (
+      {/* Invite user dialog — workspace-scope form phase. */}
+      {!inviteResult && !isPlatformScope && (
         <FormDialog
           open={inviteOpen && !inviteResult}
           onOpenChange={(open) => { if (!open) setInviteOpen(false); }}
@@ -770,6 +865,23 @@ export function UsersPage({ scope }: UsersPageProps) {
             </>
           )}
         </FormDialog>
+      )}
+
+      {/* Invite user dialog — platform-scope form phase (#2876).
+          Adds an org selector and routes through the cross-org
+          `POST /api/v1/platform/invitations` endpoint so the platform
+          admin can invite into orgs they're not a member of. */}
+      {!inviteResult && isPlatformScope && (
+        <PlatformInviteDialogContent
+          open={inviteOpen}
+          onOpenChange={(open) => { if (!open) setInviteOpen(false); }}
+          orgs={orgs}
+          orgsLoading={orgsLoading}
+          orgsError={orgsError}
+          saving={inviteSaving}
+          serverError={inviteError}
+          onSubmit={handlePlatformInvite}
+        />
       )}
 
       {/* Ban / remove-from-workspace confirmation dialog */}
@@ -930,5 +1042,129 @@ export function UsersPage({ scope }: UsersPageProps) {
       </AlertDialog>
     </div>
     </TooltipProvider>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PlatformInviteDialogContent
+// ---------------------------------------------------------------------------
+
+interface PlatformInviteDialogContentProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  orgs: OrgListItem[];
+  orgsLoading: boolean;
+  orgsError: string | null;
+  saving: boolean;
+  serverError: string | null;
+  onSubmit: (values: z.infer<typeof platformInviteSchema>) => Promise<void>;
+}
+
+/**
+ * Platform-scope invite dialog. Extracted so the role dropdown can re-bind
+ * via `useOrgRoles(selectedOrgId)` when the org changes — putting that
+ * binding on the parent component would force a re-render of the whole
+ * users page on every selector change.
+ */
+function PlatformInviteDialogContent({
+  open,
+  onOpenChange,
+  orgs,
+  orgsLoading,
+  orgsError,
+  saving,
+  serverError,
+  onSubmit,
+}: PlatformInviteDialogContentProps) {
+  return (
+    <FormDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Invite user"
+      description="Pick a workspace, then invite the user. The platform_admin role is never assignable through invitations."
+      schema={platformInviteSchema}
+      defaultValues={{ email: "", role: "member", organizationId: "" }}
+      onSubmit={onSubmit}
+      submitLabel="Send invitation"
+      saving={saving}
+      serverError={serverError ?? orgsError}
+      className="sm:max-w-md"
+    >
+      {(form) => {
+        const selectedOrgId = form.watch("organizationId");
+        const roles = useOrgRoles(selectedOrgId || null);
+        return (
+          <>
+            <FormField
+              control={form.control}
+              name="organizationId"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Workspace</FormLabel>
+                  <Select
+                    value={field.value}
+                    onValueChange={field.onChange}
+                    disabled={orgsLoading || orgs.length === 0}
+                  >
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue placeholder={orgsLoading ? "Loading…" : "Select a workspace"} />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {orgs.map((o) => (
+                        <SelectItem key={o.id} value={o.id}>
+                          {o.name} <span className="text-muted-foreground">({o.slug})</span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="email"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Email address</FormLabel>
+                  <FormControl>
+                    <Input type="email" placeholder="user@example.com" {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="role"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Role</FormLabel>
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {roles.map((r) => (
+                        <SelectItem key={r} value={r} className="capitalize">
+                          {r}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </>
+        );
+      }}
+    </FormDialog>
   );
 }

@@ -498,6 +498,19 @@ try {
   );
 }
 
+// Platform cross-org invitations — platform_admin role. Lets a platform
+// admin invite a user into any org regardless of membership (#2876).
+try {
+  const { platformInvitations } = await import("./routes/platform-invitations");
+  app.route("/api/v1/platform/invitations", platformInvitations);
+  log.info("Platform cross-org invitation routes enabled");
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load platform cross-org invitation routes",
+  );
+}
+
 // Billing routes — lazy import, only loaded if STRIPE_SECRET_KEY is set (SaaS mode).
 if (process.env.STRIPE_SECRET_KEY) {
   try {

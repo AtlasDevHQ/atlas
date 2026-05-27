@@ -175,18 +175,43 @@ export interface SmokeDiff {
   /** Expected emails not present in Twenty. */
   readonly missingPersons: ReadonlyArray<string>;
   /**
-   * Emails present in Twenty but not in the fixture. Often noise (workspace
-   * had pre-existing rows when --wipe-twenty wasn't used) — surfaced so the
-   * operator can decide whether it matters, but does NOT mark the diff as
-   * "dirty" by itself (see `isClean`).
+   * Emails present in Twenty but not in the fixture. Default behaviour:
+   * informational (workspace had pre-existing rows when --wipe-twenty
+   * wasn't used). When `requireCleanWorkspace` is set (the smoke ran with
+   * `--wipe-twenty`), these flip to dirty — a wiped workspace shouldn't
+   * have leftover rows, and treating them as informational would mask
+   * partial / truncated wipes. See `isClean`.
    */
   readonly unexpectedPersons: ReadonlyArray<string>;
+  /**
+   * Emails seen MORE THAN ONCE on the observed side — Twenty workspace
+   * has duplicate Person records for the same email. Always dirty: a
+   * dedupe regression in `findPersonByEmail` (the #2865 family) is
+   * exactly what produces this shape.
+   */
+  readonly duplicateObservedEmails: ReadonlyArray<string>;
   /** Per-Person field mismatches. The load-bearing slice — these mean the dispatcher wrote the wrong value. */
   readonly mismatchedPersons: ReadonlyArray<PersonMismatch>;
-  /** Notes the fixture says should exist but weren't observed (matched by title + personEmail). */
+  /** Notes the fixture says should exist but weren't observed (matched by title + body + personEmail, multiplicity-aware). */
   readonly missingNotes: ReadonlyArray<ExpectedNote>;
   /** Per-Person Note count mismatches (e.g. expected 1 note, observed 2). */
   readonly noteCountMismatches: ReadonlyArray<NoteCountMismatch>;
+  /**
+   * Set when the caller asked for a strict workspace (post-wipe). Flips
+   * `unexpectedPersons` from informational to dirty. Stored on the diff
+   * so the renderer can format the appropriate severity label.
+   */
+  readonly strictWorkspace: boolean;
+}
+
+export interface ComputeDiffOptions {
+  /**
+   * When true (the CLI sets this whenever `--wipe-twenty` was passed),
+   * `unexpectedPersons` and `duplicateObservedEmails` both mark the diff
+   * dirty. The post-wipe workspace should be deterministic — residual
+   * rows mean the wipe was partial or truncated.
+   */
+  readonly requireCleanWorkspace?: boolean;
 }
 
 /**
@@ -203,10 +228,24 @@ export interface SmokeDiff {
 export function computeDiff(
   expected: ExpectedState,
   observed: ObservedState,
+  options: ComputeDiffOptions = {},
 ): SmokeDiff {
   const observedByEmail = new Map<string, ObservedPerson>();
+  const duplicateObservedEmails: string[] = [];
   for (const o of observed.persons) {
-    observedByEmail.set(o.email.toLowerCase().trim(), o);
+    const key = o.email.toLowerCase().trim();
+    if (observedByEmail.has(key)) {
+      // Duplicate observed Person — a dedupe regression in upsertPerson
+      // (`findPersonByEmail` returning null when it shouldn't) creates this
+      // shape. Record once per email, then keep the first row as the
+      // representative for the field-comparison loop below — the duplicate
+      // is already surfaced via `duplicateObservedEmails`.
+      if (!duplicateObservedEmails.includes(key)) {
+        duplicateObservedEmails.push(key);
+      }
+      continue;
+    }
+    observedByEmail.set(key, o);
   }
   const expectedEmails = new Set(expected.persons.map((p) => p.email));
 
@@ -272,9 +311,11 @@ export function computeDiff(
   return {
     missingPersons,
     unexpectedPersons,
+    duplicateObservedEmails,
     mismatchedPersons,
     missingNotes,
     noteCountMismatches,
+    strictWorkspace: options.requireCleanWorkspace === true,
   };
 }
 
@@ -306,45 +347,59 @@ function diffNotes(
   expected: ReadonlyArray<ExpectedNote>,
   observed: ReadonlyArray<ObservedNote>,
 ): NoteDiff {
-  // Group expected notes by personEmail, then by title.
-  const expectedCounts = new Map<string, Map<string, number>>();
+  // Key notes by `personEmail‖title‖body` so multiplicity AND body content
+  // both participate in the diff. Two same-titled-but-different-body notes
+  // on the same email are distinct keys; a body corruption regression (right
+  // title, wrong body) surfaces as both `missingNotes` (expected key absent)
+  // AND an inflated `noteCountMismatches` total for that email.
+  const expectedKeys = new Map<string, { count: number; sample: ExpectedNote }>();
   for (const e of expected) {
-    const byTitle = expectedCounts.get(e.personEmail) ?? new Map<string, number>();
-    byTitle.set(e.title, (byTitle.get(e.title) ?? 0) + 1);
-    expectedCounts.set(e.personEmail, byTitle);
+    const k = noteKey(e.personEmail, e.title, e.body);
+    const prior = expectedKeys.get(k);
+    expectedKeys.set(k, { count: (prior?.count ?? 0) + 1, sample: e });
   }
 
-  const observedCounts = new Map<string, Map<string, number>>();
+  const observedKeys = new Map<string, number>();
   for (const o of observed) {
     if (o.personEmail == null) continue;
-    const byTitle = observedCounts.get(o.personEmail) ?? new Map<string, number>();
-    byTitle.set(o.title, (byTitle.get(o.title) ?? 0) + 1);
-    observedCounts.set(o.personEmail, byTitle);
+    const k = noteKey(o.personEmail, o.title, o.body);
+    observedKeys.set(k, (observedKeys.get(k) ?? 0) + 1);
   }
 
+  // Multiplicity-aware missing check: if expected says "alice@x.com has 2
+  // notes with title T and body B", and observed has only 1, the missing
+  // count is 1. Codex P2-B/D.
   const missingNotes: ExpectedNote[] = [];
-  const noteCountMismatches: NoteCountMismatch[] = [];
-
-  for (const e of expected) {
-    const observedForEmail = observedCounts.get(e.personEmail);
-    const observedForTitle = observedForEmail?.get(e.title) ?? 0;
-    if (observedForTitle === 0) {
-      missingNotes.push(e);
+  for (const [k, { count: expectedCount, sample }] of expectedKeys) {
+    const observedCount = observedKeys.get(k) ?? 0;
+    for (let i = 0; i < expectedCount - observedCount; i++) {
+      missingNotes.push(sample);
     }
   }
 
-  // Total count check per email — surfaces the cases where the same email
-  // has the right titles but a different count (e.g. dispatcher created two
-  // notes when the fixture only declared one, or vice versa). Scoped to
-  // emails the fixture declared — Notes attached to unexpected workspace
-  // Persons are informational only, like `unexpectedPersons`. The
-  // `missingNotes` check above is the load-bearing assertion for the
-  // #2865-shaped misattribution case (a Note created against the wrong
-  // Person surfaces there as a missing-on-the-right-Person finding).
-  const allEmails = new Set(expectedCounts.keys());
-  for (const email of allEmails) {
-    const expectedTotal = sumCounts(expectedCounts.get(email));
-    const observedTotal = sumCounts(observedCounts.get(email));
+  // Per-email TOTAL count check — surfaces "right titles but wrong count"
+  // and (with the body keying above) "right title but wrong body, leaving
+  // the total clean". Scoped to fixture emails — Notes attached to
+  // unexpected workspace Persons are informational, like `unexpectedPersons`.
+  const noteCountMismatches: NoteCountMismatch[] = [];
+  const expectedTotalByEmail = new Map<string, number>();
+  for (const e of expected) {
+    expectedTotalByEmail.set(
+      e.personEmail,
+      (expectedTotalByEmail.get(e.personEmail) ?? 0) + 1,
+    );
+  }
+  const observedTotalByEmail = new Map<string, number>();
+  for (const o of observed) {
+    if (o.personEmail == null) continue;
+    observedTotalByEmail.set(
+      o.personEmail,
+      (observedTotalByEmail.get(o.personEmail) ?? 0) + 1,
+    );
+  }
+  for (const email of expectedTotalByEmail.keys()) {
+    const expectedTotal = expectedTotalByEmail.get(email) ?? 0;
+    const observedTotal = observedTotalByEmail.get(email) ?? 0;
     if (expectedTotal !== observedTotal) {
       noteCountMismatches.push({
         personEmail: email,
@@ -357,21 +412,40 @@ function diffNotes(
   return { missingNotes, noteCountMismatches };
 }
 
-function sumCounts(byTitle: Map<string, number> | undefined): number {
-  if (!byTitle) return 0;
-  let n = 0;
-  for (const c of byTitle.values()) n += c;
-  return n;
+/**
+ * Stable composite key for note identity. Newlines in title or body are
+ * escaped so the key is unambiguous (a body containing `‖` won't collide
+ * with the email/title separator); a literal U+2016 byte is unlikely in
+ * sales-form copy but cheap to guard against.
+ */
+function noteKey(email: string, title: string, body: string): string {
+  return [email, title, body].map((s) => s.replace(/‖/g, "‖‖")).join("‖");
 }
 
-/** True when no load-bearing mismatch was found (`unexpectedPersons` is ignored). */
+/**
+ * True when no load-bearing mismatch was found.
+ *
+ * `unexpectedPersons` is informational by default — workspaces have
+ * pre-existing data that the smoke shouldn't fail on. The exception is
+ * `strictWorkspace` mode (set by the CLI when `--wipe-twenty` was
+ * passed): after a wipe, residual rows mean the wipe was partial /
+ * truncated, so unexpected Persons flip to dirty.
+ *
+ * `duplicateObservedEmails` is always dirty — a dedupe regression in
+ * `findPersonByEmail` is exactly the #2865 failure shape.
+ */
 export function isClean(diff: SmokeDiff): boolean {
-  return (
-    diff.missingPersons.length === 0 &&
-    diff.mismatchedPersons.length === 0 &&
-    diff.missingNotes.length === 0 &&
-    diff.noteCountMismatches.length === 0
-  );
+  if (
+    diff.missingPersons.length > 0 ||
+    diff.mismatchedPersons.length > 0 ||
+    diff.missingNotes.length > 0 ||
+    diff.noteCountMismatches.length > 0 ||
+    diff.duplicateObservedEmails.length > 0
+  ) {
+    return false;
+  }
+  if (diff.strictWorkspace && diff.unexpectedPersons.length > 0) return false;
+  return true;
 }
 
 /** Human-readable diff report — output suitable for the CLI's stderr. */
@@ -391,10 +465,23 @@ export function formatDiff(diff: SmokeDiff, options?: { totals?: { expectedPerso
   }
 
   if (diff.unexpectedPersons.length > 0) {
-    lines.push(
-      `ℹ Unexpected Persons in workspace (${diff.unexpectedPersons.length}) — not in fixture, ignored:`,
-    );
+    if (diff.strictWorkspace) {
+      lines.push(
+        `✗ Unexpected Persons in workspace (${diff.unexpectedPersons.length}) — wipe did not fully drain:`,
+      );
+    } else {
+      lines.push(
+        `ℹ Unexpected Persons in workspace (${diff.unexpectedPersons.length}) — not in fixture, ignored:`,
+      );
+    }
     for (const email of diff.unexpectedPersons) lines.push(`  - ${email}`);
+  }
+
+  if (diff.duplicateObservedEmails.length > 0) {
+    lines.push(
+      `✗ Duplicate observed Persons (${diff.duplicateObservedEmails.length}) — same email appears more than once in Twenty:`,
+    );
+    for (const email of diff.duplicateObservedEmails) lines.push(`  - ${email}`);
   }
 
   if (diff.mismatchedPersons.length > 0) {

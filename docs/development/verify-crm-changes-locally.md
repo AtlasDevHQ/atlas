@@ -66,19 +66,21 @@ bun run atlas -- ops smoke-crm \
 
 Pinned so chained scripts can branch on the failure mode:
 
-| Code | Meaning                                                    |
-|------|------------------------------------------------------------|
-| 0    | Clean diff — every expected Person + Note matches Twenty.  |
-| 1    | Usage error — bad args, missing env, fixture parse failure |
-| 2    | `crm_outbox` did not drain within `--timeout-seconds`.     |
-| 3    | Diff dirty — what Twenty observed ≠ what the fixture said. |
-| 4    | Wipe phase failed (FK cascade, network, etc.).             |
+| Code | Meaning                                                      |
+|------|--------------------------------------------------------------|
+| 0    | Clean diff — every expected Person + Note matches Twenty.    |
+| 1    | Usage error — bad args, missing env, fixture parse failure.  |
+| 2    | `crm_outbox` did not drain within `--timeout-seconds`.       |
+| 3    | Diff dirty — what Twenty observed ≠ what the fixture said.   |
+| 4    | Wipe phase failed (FK cascade, network, etc.).               |
+| 5    | Infrastructure failure — tenant DB unreachable, enqueue failed, outbox poll errored. Distinct from `1` so chained scripts can tell "bad CLI invocation" from "Postgres is down". |
 
 A diff-dirty exit (3) prints a structured report identifying:
 
 - Missing Persons (expected emails that aren't in Twenty).
-- Field mismatches (`atlasFirstSource` / `atlasLastSource` / `name.*`).
-- Missing Notes (expected note titles not attached to the right Person).
+- Field mismatches (`atlasFirstSource` / `atlasLastSource` / `atlasIp` / `atlasStripeCustomerId` / `name.*`).
+- Missing Notes (expected `title` + `body` not attached to the right Person — matched with multiplicity).
+- Duplicate observed Persons (same primary email appears more than once in Twenty — a `findPersonByEmail` dedupe regression).
 - Note count mismatches per Person (the signature of the #2865 bug —
   all expected Persons collapse onto one observed Person, and every
   expected Note piles up on it).

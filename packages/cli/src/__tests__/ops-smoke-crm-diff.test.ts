@@ -357,6 +357,150 @@ describe("computeDiff — dirty diffs", () => {
     expect(isClean(diff)).toBe(false);
   });
 
+  test("duplicate observed Persons surface as duplicateObservedEmails (#2865 dedupe regression)", () => {
+    // Codex P2-E: a dedupe regression in upsertPerson can leave two Person
+    // rows with the same primary email. The first one wins the Map lookup
+    // and the second is silently dropped — masking the real bug. Surface
+    // as a dedicated category.
+    const events: AtlasLeadEvent[] = [
+      { source: "demo", email: "alice@example.com", ip: null, userAgent: null },
+    ];
+    const expected = buildExpectedState(events);
+    const observed: ObservedState = {
+      persons: [
+        {
+          id: "p_1",
+          email: "alice@example.com",
+          atlasFirstSource: "DEMO",
+          atlasLastSource: "DEMO",
+        },
+        {
+          id: "p_2",
+          email: "alice@example.com",
+          atlasFirstSource: "SIGNUP",
+          atlasLastSource: "SIGNUP",
+        },
+      ],
+      notes: [],
+    };
+    const diff = computeDiff(expected, observed);
+    expect(diff.duplicateObservedEmails).toEqual(["alice@example.com"]);
+    expect(isClean(diff)).toBe(false);
+  });
+
+  test("strict-workspace mode flips unexpectedPersons from informational to dirty", () => {
+    // Codex P2-A: after --wipe-twenty the workspace should be empty before
+    // the smoke runs. Residual rows = partial/truncated wipe = dirty.
+    const events: AtlasLeadEvent[] = [
+      { source: "demo", email: "alice@example.com", ip: null, userAgent: null },
+    ];
+    const expected = buildExpectedState(events);
+    const observed: ObservedState = {
+      persons: [
+        {
+          id: "p_1",
+          email: "alice@example.com",
+          atlasFirstSource: "DEMO",
+          atlasLastSource: "DEMO",
+        },
+        {
+          id: "p_2",
+          email: "leftover@example.com", // residual — wipe missed it
+        },
+      ],
+      notes: [],
+    };
+    const lenient = computeDiff(expected, observed);
+    expect(isClean(lenient)).toBe(true); // informational by default
+    const strict = computeDiff(expected, observed, { requireCleanWorkspace: true });
+    expect(strict.unexpectedPersons).toEqual(["leftover@example.com"]);
+    expect(strict.strictWorkspace).toBe(true);
+    expect(isClean(strict)).toBe(false);
+  });
+
+  test("note diff matches on body too — right title, wrong body is dirty (Codex P2-D)", () => {
+    // Catches the case where a Note's title is correct (so a title-only
+    // check would pass) but the body got swapped — exactly what would
+    // happen if a dispatcher dropped the message field on a sales-form.
+    const events: AtlasLeadEvent[] = [
+      {
+        source: "sales-form",
+        email: "alice@example.com",
+        name: "Alice A",
+        company: "Acme",
+        planInterest: "Pro",
+        message: "I want the right body",
+        ip: null,
+        userAgent: null,
+      },
+    ];
+    const expected = buildExpectedState(events);
+    const observed: ObservedState = {
+      persons: [
+        {
+          id: "p_1",
+          email: "alice@example.com",
+          atlasFirstSource: "SALES_FORM",
+          atlasLastSource: "SALES_FORM",
+          name: { firstName: "Alice", lastName: "A" },
+        },
+      ],
+      notes: [
+        {
+          id: "n_1",
+          title: "Talk to sales — Acme (Pro)", // right title
+          body: "WRONG BODY",
+          personEmail: "alice@example.com",
+        },
+      ],
+    };
+    const diff = computeDiff(expected, observed);
+    expect(diff.missingNotes).toHaveLength(1);
+    expect(diff.missingNotes[0].body).toBe("I want the right body");
+    expect(isClean(diff)).toBe(false);
+  });
+
+  test("note diff multiplicity — expected 2 same-titled notes, observed 1 is dirty (Codex P2-B)", () => {
+    // Same-titled sales-form events on the same email = 2 distinct notes
+    // (per #2729 idempotency contract within row, distinct rows produce
+    // distinct notes). A title-only contains-check would pass.
+    const events: AtlasLeadEvent[] = [
+      makeSalesForm("a@b.com", "Alice A", "Acme"),
+      makeSalesForm("a@b.com", "Alice A", "Acme"),
+    ];
+    const expected = buildExpectedState(events);
+    const observed: ObservedState = {
+      persons: [
+        {
+          id: "p_1",
+          email: "a@b.com",
+          atlasFirstSource: "SALES_FORM",
+          atlasLastSource: "SALES_FORM",
+          name: { firstName: "Alice", lastName: "A" },
+        },
+      ],
+      notes: [
+        {
+          id: "n_1",
+          title: "Talk to sales — Acme (Pro)",
+          body: "msg",
+          personEmail: "a@b.com",
+        },
+        // The second note is missing.
+      ],
+    };
+    const diff = computeDiff(expected, observed);
+    // missingNotes counts the multiplicity gap (expected 2, observed 1 = 1 missing).
+    expect(diff.missingNotes).toHaveLength(1);
+    // noteCountMismatches also fires on the per-email total.
+    expect(diff.noteCountMismatches).toContainEqual({
+      personEmail: "a@b.com",
+      expected: 2,
+      observed: 1,
+    });
+    expect(isClean(diff)).toBe(false);
+  });
+
   test("atlasIp absent from fixture → no atlasIp check is emitted (no false positive)", () => {
     // Many personas don't carry an IP. The diff must not fire a mismatch on
     // `expected="(unset)", observed="(unset)"` in that case.
@@ -421,9 +565,11 @@ describe("formatDiff", () => {
       {
         missingPersons: [],
         unexpectedPersons: [],
+        duplicateObservedEmails: [],
         mismatchedPersons: [],
         missingNotes: [],
         noteCountMismatches: [],
+        strictWorkspace: false,
       },
       {
         totals: {
@@ -442,11 +588,13 @@ describe("formatDiff", () => {
     const out = formatDiff({
       missingPersons: ["a@b.com"],
       unexpectedPersons: ["pre@x.com"],
+      duplicateObservedEmails: ["dup@x.com"],
       mismatchedPersons: [
         { email: "c@d.com", field: "atlasFirstSource", expected: "DEMO", observed: "SIGNUP" },
       ],
       missingNotes: [{ personEmail: "e@f.com", title: "T", body: "B" }],
       noteCountMismatches: [{ personEmail: "g@h.com", expected: 1, observed: 2 }],
+      strictWorkspace: false,
     });
     expect(out).toContain("Missing Persons (1)");
     expect(out).toContain("Unexpected Persons");
@@ -455,6 +603,8 @@ describe("formatDiff", () => {
     expect(out).toContain("Missing Notes (1)");
     expect(out).toContain("Note count mismatches (1)");
     expect(out).toContain("g@h.com: expected 1, observed 2");
+    expect(out).toContain("Duplicate observed Persons (1)");
+    expect(out).toContain("dup@x.com");
     expect(out).not.toContain("✓ Diff is clean");
   });
 
@@ -463,14 +613,32 @@ describe("formatDiff", () => {
     const out = formatDiff({
       missingPersons: [],
       unexpectedPersons: [],
+      duplicateObservedEmails: [],
       mismatchedPersons: [
         { email: "a@b.com", field: "atlasFirstSource", expected: "DEMO", observed: "(unset)" },
       ],
       missingNotes: [],
       noteCountMismatches: [],
+      strictWorkspace: false,
     });
     expect(out).toContain('observed="(unset)"');
     expect(out).not.toContain("undefined");
+  });
+
+  test("unexpectedPersons label flips to ✗ in strictWorkspace mode (post-wipe)", () => {
+    // Codex P2-A: after --wipe-twenty the workspace is supposed to be
+    // deterministic; residual rows mean partial / truncated wipe.
+    const out = formatDiff({
+      missingPersons: [],
+      unexpectedPersons: ["leftover@x.com"],
+      duplicateObservedEmails: [],
+      mismatchedPersons: [],
+      missingNotes: [],
+      noteCountMismatches: [],
+      strictWorkspace: true,
+    });
+    expect(out).toContain("✗ Unexpected Persons");
+    expect(out).toContain("wipe did not fully drain");
   });
 });
 

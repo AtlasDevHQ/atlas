@@ -299,11 +299,34 @@ export async function handleOpsSmokeCrm(args: string[]): Promise<void> {
   if (parsed.wipeTwenty) {
     try {
       const result = await admin.wipeWorkspace({ dryRun: false });
+      if (result.dryRun) {
+        // Defensive — we asked for dryRun=false. If the underlying client
+        // returns the dry-run shape anyway, the wipe didn't run.
+        console.error(
+          `[ops:smoke-crm] wipe returned dry-run result despite dryRun=false — refusing to proceed`,
+        );
+        process.exitCode = SMOKE_EXIT.WIPE_FAIL;
+        return;
+      }
+      const truncated =
+        result.truncated.notes || result.truncated.people || result.truncated.companies
+          ? ` (truncated: notes=${result.truncated.notes} people=${result.truncated.people} companies=${result.truncated.companies})`
+          : "";
       console.log(
         `[ops:smoke-crm] wiped Twenty workspace — notes=${result.notesDeleted} ` +
-          `people=${result.peopleDeleted} companies=${result.companiesDeleted}` +
-          (result.truncated ? " (truncated — maxRecords reached)" : ""),
+          `people=${result.peopleDeleted} companies=${result.companiesDeleted}${truncated}`,
       );
+      if (result.errors.length > 0) {
+        // Per-record delete failures surface to the operator but don't abort —
+        // the post-wipe strict-clean diff (see computeDiff call below) catches
+        // any residual rows that actually matter for the smoke result.
+        console.warn(
+          `[ops:smoke-crm] wipe completed with ${result.errors.length} per-record error(s)`,
+        );
+        for (const e of result.errors) {
+          console.warn(`  - ${e.objectType} ${e.id} (HTTP ${e.status}): ${e.message}`);
+        }
+      }
     } catch (err) {
       console.error(
         `[ops:smoke-crm] wipe failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -419,7 +442,12 @@ export async function handleOpsSmokeCrm(args: string[]): Promise<void> {
     }
 
     const expected = buildExpectedState(events);
-    const diff = computeDiff(expected, observed);
+    // Strict mode when --wipe-twenty is set: a wiped workspace should be
+    // deterministic afterwards, so residual rows / duplicates flip from
+    // informational to dirty. Closes Codex P2-A.
+    const diff = computeDiff(expected, observed, {
+      requireCleanWorkspace: parsed.wipeTwenty,
+    });
     const totals = {
       expectedPersons: expected.persons.length,
       observedPersons: observed.persons.length,

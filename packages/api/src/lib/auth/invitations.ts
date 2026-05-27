@@ -311,11 +311,11 @@ export async function recordInvitationCreated(args: {
     },
   );
 
-  // Fire the "invite team" onboarding nudge. Awaited so an async hook
-  // update can't escape as an unhandled rejection.
+  // Fire the "invite team" onboarding nudge. Wrapped in try/catch so a
+  // hook failure can't fail the invite path.
   try {
     const { onTeamMemberInvited } = await import("@atlas/api/lib/email/hooks");
-    await onTeamMemberInvited({
+    onTeamMemberInvited({
       userId: args.inviter.id,
       email: args.inviter.email ?? "",
       orgId: args.orgId,

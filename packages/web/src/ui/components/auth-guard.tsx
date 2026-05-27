@@ -5,11 +5,12 @@ import { usePathname, useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth/client";
 import { AtlasProvider } from "@/ui/context";
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
+import { PUBLIC_ROUTE_PREFIXES } from "@/lib/public-routes";
 
 const AUTH_MODE = process.env.NEXT_PUBLIC_ATLAS_AUTH_MODE ?? "";
 
 /** Routes that don't require authentication. */
-const publicPrefixes = ["/demo", "/shared", "/report", "/login", "/signup", "/wizard"];
+const publicPrefixes = [...PUBLIC_ROUTE_PREFIXES, "/login", "/signup", "/wizard"];
 
 function isPublicRoute(pathname: string): boolean {
   return publicPrefixes.some((prefix) => pathname.startsWith(prefix));

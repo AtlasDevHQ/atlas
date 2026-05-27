@@ -17,6 +17,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getSessionCookie } from "better-auth/cookies";
 import { ATLAS_MODES } from "@useatlas/types/auth";
+import { PUBLIC_ROUTE_PREFIXES } from "./lib/public-routes";
 
 const authMode = process.env.NEXT_PUBLIC_ATLAS_AUTH_MODE ?? "";
 const VALID_MODES = new Set<string>(ATLAS_MODES);
@@ -25,7 +26,7 @@ const VALID_MODES = new Set<string>(ATLAS_MODES);
 const authRoutes = ["/signup", "/login", "/forgot-password", "/reset-password"];
 
 /** Routes that are always accessible regardless of auth state. */
-const publicPrefixes = ["/demo", "/shared", "/report", "/api", "/_next", "/accept-invitation"];
+const publicPrefixes = [...PUBLIC_ROUTE_PREFIXES, "/api", "/_next"];
 
 function isPublicRoute(pathname: string): boolean {
   return publicPrefixes.some((prefix) => pathname.startsWith(prefix));

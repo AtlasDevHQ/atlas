@@ -177,6 +177,59 @@ personas:
     expect(() => parseFixtureYaml(yaml)).toThrow(/persona\[0\].*name/);
   });
 
+  // The remaining error-path tests below pin every required field for every
+  // variant. Closes pr-test-analyzer G4 — without these, a future refactor
+  // that drops a required field from one variant ships green.
+
+  test.each([
+    ["company", "personas:\n  - source: sales-form\n    email: x@y.com\n    name: A B\n    planInterest: Pro\n    message: hi\n"],
+    ["planInterest", "personas:\n  - source: sales-form\n    email: x@y.com\n    name: A B\n    company: Co\n    message: hi\n"],
+    ["message", "personas:\n  - source: sales-form\n    email: x@y.com\n    name: A B\n    company: Co\n    planInterest: Pro\n"],
+    ["email", "personas:\n  - source: sales-form\n    name: A B\n    company: Co\n    planInterest: Pro\n    message: hi\n"],
+  ])("sales-form requires %s", (field, yaml) => {
+    expect(() => parseFixtureYaml(yaml)).toThrow(new RegExp(`persona\\[0\\].*${field}`));
+  });
+
+  test("demo requires email", () => {
+    expect(() => parseFixtureYaml(`personas:\n  - source: demo\n`)).toThrow(
+      /persona\[0\].*email/,
+    );
+  });
+
+  test("signup requires email", () => {
+    expect(() => parseFixtureYaml(`personas:\n  - source: signup\n    name: Alice\n`)).toThrow(
+      /persona\[0\].*email/,
+    );
+  });
+
+  test("conversion requires stripeCustomerId", () => {
+    // The variant exists in the parser today even though the default fixture
+    // doesn't ship one yet (parked behind Stripe test-fixture wiring per
+    // #2866). When that ships, this guard catches a drop of stripeCustomerId.
+    expect(
+      () => parseFixtureYaml(`personas:\n  - source: conversion\n    email: x@y.com\n`),
+    ).toThrow(/persona\[0\].*stripeCustomerId/);
+  });
+
+  test("conversion requires email", () => {
+    expect(
+      () => parseFixtureYaml(`personas:\n  - source: conversion\n    stripeCustomerId: cus_x\n`),
+    ).toThrow(/persona\[0\].*email/);
+  });
+
+  test("optionalString rejects non-string values (e.g. YAML coerces unquoted numerics)", () => {
+    // YAML autoescapes `ip: 12345` into a JS number. Without the guard, the
+    // parser would silently coerce it to "12345" — masking the operator's
+    // likely typo (intended quoted IP literal).
+    const yaml = `
+personas:
+  - source: demo
+    email: x@y.com
+    ip: 12345
+`;
+    expect(() => parseFixtureYaml(yaml)).toThrow(/persona\[0\].*ip.*must be a string/);
+  });
+
   test("YAML syntax error surfaces with the file context", () => {
     expect(() => parseFixtureYaml(`personas: [\n  not closed`)).toThrow(FixtureParseError);
   });

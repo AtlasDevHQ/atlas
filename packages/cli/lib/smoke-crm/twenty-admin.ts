@@ -1,20 +1,16 @@
 /**
  * TwentyAdmin — narrow interface the smoke-crm CLI uses to read / wipe a
  * Twenty workspace. Delegates to `@useatlas/twenty/client` for everything
- * the client surface exposes; Note → Person attribution is the one piece
- * the client doesn't yet expose (see `listAllNotesWithPersonEmail` below)
- * and is implemented inline against Twenty's `/rest/noteTargets` endpoint.
+ * the client surface exposes; Note → Person attribution is implemented
+ * inline against Twenty's `/rest/noteTargets` endpoint (see the block
+ * comment above `listAllNoteTargetsRaw` below).
  *
  * Why this layer exists at all:
  *  - Lets the CLI handler hold a single `TwentyAdmin` value and remain
- *    unit-testable with a fake — the fake is a small object, no fetch
- *    mocking required.
+ *    unit-testable with a fake.
  *  - Adapts the client's pagination + Person-attribution semantics to the
  *    `ObservedPerson` / `ObservedNote` shapes the diff reporter consumes,
  *    so the diff code never sees raw Twenty types.
- *  - Centralises the inline `/rest/noteTargets` fetch behind a single
- *    function — when a future Twenty client extension exposes a
- *    `listNoteTargets` verb, the inline fetch becomes a one-line delegate.
  */
 import {
   deleteNote,
@@ -31,13 +27,17 @@ import {
 import type { ObservedNote, ObservedPerson } from "./diff";
 
 /**
- * Soft cap on records visited per object type during enumeration. Smoke
- * runs operate on workspaces with at most a few hundred records (the
- * default fixture is 10 personas); the cap exists so a runaway
- * pagination bug doesn't ddos Twenty.
+ * Soft cap on records VISITED per object type during enumeration. Bounds
+ * both `out.length` and the page iteration count (`pages * PAGE_LIMIT`)
+ * so that a workspace with many rows we filter out (e.g. emailless
+ * Persons skipped by `listAllPeoplePaged`) still hits the cap before
+ * ddosing Twenty. Smoke runs operate on workspaces with at most a few
+ * hundred records (the default fixture is 10 personas); the cap exists
+ * to bound the blast radius of a runaway pagination bug.
  */
 export const SMOKE_MAX_RECORDS_PER_TYPE = 1_000;
 const PAGE_LIMIT = 60;
+const MAX_PAGES = Math.ceil(SMOKE_MAX_RECORDS_PER_TYPE / PAGE_LIMIT) + 1;
 
 export interface TwentyAdmin {
   /**
@@ -94,7 +94,7 @@ export function createTwentyAdmin(config: TwentyClientConfig): TwentyAdmin {
 async function listAllPeoplePaged(config: TwentyClientConfig): Promise<ObservedPerson[]> {
   const out: ObservedPerson[] = [];
   let cursor: string | undefined;
-  while (out.length < SMOKE_MAX_RECORDS_PER_TYPE) {
+  for (let pages = 0; pages < MAX_PAGES && out.length < SMOKE_MAX_RECORDS_PER_TYPE; pages++) {
     const page: TwentyPerson[] = await listPeople(config, {
       limit: PAGE_LIMIT,
       startingAfter: cursor,
@@ -108,6 +108,8 @@ async function listAllPeoplePaged(config: TwentyClientConfig): Promise<ObservedP
         email,
         atlasFirstSource: p.atlasFirstSource,
         atlasLastSource: p.atlasLastSource,
+        atlasIp: p.atlasIp,
+        atlasStripeCustomerId: p.atlasStripeCustomerId,
         ...(p.name ? { name: p.name } : {}),
       });
     }
@@ -122,7 +124,7 @@ async function listAllPeoplePaged(config: TwentyClientConfig): Promise<ObservedP
 async function listAllNotesPaged(config: TwentyClientConfig): Promise<TwentyNoteFull[]> {
   const out: TwentyNoteFull[] = [];
   let cursor: string | undefined;
-  while (out.length < SMOKE_MAX_RECORDS_PER_TYPE) {
+  for (let pages = 0; pages < MAX_PAGES && out.length < SMOKE_MAX_RECORDS_PER_TYPE; pages++) {
     const page: TwentyNoteFull[] = await listNotes(config, {
       limit: PAGE_LIMIT,
       startingAfter: cursor,
@@ -159,7 +161,7 @@ async function listAllNoteTargetsRaw(
   const out: TwentyNoteTarget[] = [];
   let cursor: string | undefined;
   const baseUrl = config.baseUrl.replace(/\/+$/, "");
-  while (out.length < SMOKE_MAX_RECORDS_PER_TYPE) {
+  for (let pages = 0; pages < MAX_PAGES && out.length < SMOKE_MAX_RECORDS_PER_TYPE; pages++) {
     const qs = new URLSearchParams({ limit: String(PAGE_LIMIT) });
     if (cursor) qs.set("starting_after", cursor);
     const url = `${baseUrl}/rest/noteTargets?${qs.toString()}`;

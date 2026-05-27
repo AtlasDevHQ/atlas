@@ -271,6 +271,19 @@ describe("computeDiff — dirty diffs", () => {
     };
     const diff = computeDiff(expected, observed);
     expect(diff.missingPersons).toHaveLength(9);
+    // Source fields on p0 happen to match (both SALES_FORM) but name fields
+    // don't because the observed payload was constructed without a name —
+    // i.e. the dispatcher's PATCH-every-write merged inconsistent names
+    // across dispatches. Pin that the SOURCE fields specifically didn't
+    // mismatch: that's how the diagnostic visually separates "wrong Person
+    // entirely" (missingPersons) from "wrong attribution on the right
+    // Person" (mismatchedPersons on atlasFirstSource / atlasLastSource).
+    const sourceMismatches = diff.mismatchedPersons.filter(
+      (m) =>
+        m.email === "p0@example.com" &&
+        (m.field === "atlasFirstSource" || m.field === "atlasLastSource"),
+    );
+    expect(sourceMismatches).toHaveLength(0);
     // Note-count mismatch on the collapsed Person: expected 1 note for p0,
     // observed 10 notes (all the other personas' notes piled on).
     expect(diff.noteCountMismatches).toContainEqual({
@@ -279,6 +292,92 @@ describe("computeDiff — dirty diffs", () => {
       observed: 10,
     });
     expect(isClean(diff)).toBe(false);
+  });
+
+  test("atlasIp mismatch on an existing Person is surfaced", () => {
+    // The #2737-shape regression: dispatcher writes atlasIp on the wrong
+    // Person. The fixture supplied 1.2.3.4 but Twenty has 9.9.9.9.
+    const events: AtlasLeadEvent[] = [
+      { source: "demo", email: "alice@example.com", ip: "1.2.3.4", userAgent: null },
+    ];
+    const expected = buildExpectedState(events);
+    const observed: ObservedState = {
+      persons: [
+        {
+          id: "p_1",
+          email: "alice@example.com",
+          atlasFirstSource: "DEMO",
+          atlasLastSource: "DEMO",
+          atlasIp: "9.9.9.9",
+        },
+      ],
+      notes: [],
+    };
+    const diff = computeDiff(expected, observed);
+    expect(diff.mismatchedPersons).toContainEqual({
+      email: "alice@example.com",
+      field: "atlasIp",
+      expected: "1.2.3.4",
+      observed: "9.9.9.9",
+    });
+    expect(isClean(diff)).toBe(false);
+  });
+
+  test("atlasStripeCustomerId mismatch on an existing Person is surfaced", () => {
+    // The #2737-shape regression: Stripe conversion stamps the wrong cus_
+    // on the matching Twenty Person. Without this check the smoke would
+    // report clean on a real attribution bug.
+    const events: AtlasLeadEvent[] = [
+      {
+        source: "conversion",
+        email: "paying@example.com",
+        stripeCustomerId: "cus_expected",
+      },
+    ];
+    const expected = buildExpectedState(events);
+    const observed: ObservedState = {
+      persons: [
+        {
+          id: "p_1",
+          email: "paying@example.com",
+          atlasFirstSource: "CONVERSION",
+          atlasLastSource: "CONVERSION",
+          atlasStripeCustomerId: "cus_wrong",
+        },
+      ],
+      notes: [],
+    };
+    const diff = computeDiff(expected, observed);
+    expect(diff.mismatchedPersons).toContainEqual({
+      email: "paying@example.com",
+      field: "atlasStripeCustomerId",
+      expected: "cus_expected",
+      observed: "cus_wrong",
+    });
+    expect(isClean(diff)).toBe(false);
+  });
+
+  test("atlasIp absent from fixture → no atlasIp check is emitted (no false positive)", () => {
+    // Many personas don't carry an IP. The diff must not fire a mismatch on
+    // `expected="(unset)", observed="(unset)"` in that case.
+    const events: AtlasLeadEvent[] = [
+      { source: "demo", email: "alice@example.com", ip: null, userAgent: null },
+    ];
+    const expected = buildExpectedState(events);
+    const observed: ObservedState = {
+      persons: [
+        {
+          id: "p_1",
+          email: "alice@example.com",
+          atlasFirstSource: "DEMO",
+          atlasLastSource: "DEMO",
+        },
+      ],
+      notes: [],
+    };
+    const diff = computeDiff(expected, observed);
+    expect(diff.mismatchedPersons).toEqual([]);
+    expect(isClean(diff)).toBe(true);
   });
 
   test("note count mismatch (expected 1, observed 2) is dirty", () => {

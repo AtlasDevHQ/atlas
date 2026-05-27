@@ -241,6 +241,54 @@ describe("pollOutboxUntilDrained", () => {
       { id: "b", error: "permanent: bad payload" },
     ]);
   });
+
+  test("empty ids short-circuits — no DB call, returns immediately", async () => {
+    // Defensive guard for any future code path that polls with an empty list
+    // (e.g. `--dry-run` that skips enqueue). Without the early return the
+    // for-loop trivially completes `allDone=true` on the first iteration, but
+    // the DB query still fires — which would be a no-op against `WHERE id =
+    // ANY('{}')` but wastes a roundtrip. Pin the short-circuit.
+    let queried = false;
+    const db: SmokeCrmDB = {
+      async query() {
+        queried = true;
+        return [];
+      },
+    };
+    const result = await pollOutboxUntilDrained(db, [], 5, async () => {
+      throw new Error("sleep must not be called");
+    });
+    expect(queried).toBe(false);
+    expect(result.timedOut).toBe(false);
+    expect(result.statuses.size).toBe(0);
+    expect(result.missingFromDb).toEqual([]);
+  });
+
+  test("missingFromDb lists ids never seen in any poll response", async () => {
+    // Simulates a row deleted out-of-band during the poll (admin TRUNCATE,
+    // out-of-band cleanup, etc.). Without this, the timeout report would
+    // silently omit the missing ids and the operator wouldn't know which row
+    // to chase. Catches the silent-failure-hunter MEDIUM finding.
+    const db = makeFakeDb([
+      [
+        { id: "a", status: "done", last_error: null },
+        // "b" never appears in any response — was deleted before the poll.
+      ],
+    ]);
+    const result = await pollOutboxUntilDrained(
+      db,
+      ["a", "b"],
+      1,
+      async () => {},
+      (() => {
+        let n = 0;
+        return () => (n++ === 0 ? 0 : 999_999);
+      })(),
+    );
+    expect(result.timedOut).toBe(true);
+    expect(result.missingFromDb).toEqual(["b"]);
+    expect(result.statuses.get("a")).toBe("done");
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────

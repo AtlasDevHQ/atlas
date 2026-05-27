@@ -9,9 +9,9 @@
  * Scope (per issue #2866):
  *   - Below Turnstile only — no form-layer scripting (manual A5/A6).
  *   - Live-network only locally; this CLI never runs in CI.
- *   - Unit tests cover fixture parsing + diff reporting; live phases are
- *     guarded by the `TwentyAdmin` interface (stubbed today, wired after
- *     the parallel Twenty client extensions PR merges).
+ *   - Unit tests cover fixture parsing + diff reporting; the live Twenty
+ *     round-trip and the inline `/rest/noteTargets` join run only on a
+ *     local invocation against a real workspace.
  *
  * Flow:
  *   1. Parse args + fixture.
@@ -53,10 +53,13 @@ export interface SmokeCrmArgs {
 /**
  * Exit codes — pinned so chained scripts can branch on the failure mode:
  *   0  clean
- *   1  argument / fixture / unexpected error
+ *   1  argument / fixture / parse error (USAGE — operator fixable on the CLI line)
  *   2  outbox drain timed out
  *   3  diff dirty (dispatcher misbehaved or Twenty wasn't reachable)
  *   4  wipe phase failed (operator data corruption guard)
+ *   5  infrastructure failure — tenant DB unreachable, enqueue INSERT failed,
+ *      or poll query errored. Distinct from USAGE so chained scripts don't
+ *      treat "Postgres is down" the same as "bad argv".
  */
 export const SMOKE_EXIT = {
   OK: 0,
@@ -64,6 +67,7 @@ export const SMOKE_EXIT = {
   TIMEOUT: 2,
   DIFF: 3,
   WIPE_FAIL: 4,
+  INFRA: 5,
 } as const;
 
 // ─────────────────────────────────────────────────────────────────────
@@ -177,17 +181,25 @@ interface OutboxPollRow extends Record<string, unknown> {
 }
 
 /**
- * Poll `crm_outbox` for the given ids until every row reaches a terminal
- * state (`done` or `dead`) or the timeout is hit. Returns the final per-id
- * status map plus the number of `dead` rows so the caller can surface them
- * in the report even when the diff is otherwise clean.
+ * Result of `pollOutboxUntilDrained`. `statuses` carries the latest status
+ * for every id THE DB returned a row for; ids never seen in any poll
+ * response land in `missingFromDb` instead — silently dropping those
+ * would let an out-of-band TRUNCATE / DELETE corrupt the smoke report
+ * (the timeout would print only "the rows that survived" and the gap
+ * would not be visible to the operator).
  */
 export interface PollResult {
   readonly statuses: ReadonlyMap<string, "done" | "dead" | "pending" | "in_flight">;
+  readonly missingFromDb: ReadonlyArray<string>;
   readonly deadErrors: ReadonlyArray<{ id: string; error: string }>;
   readonly timedOut: boolean;
 }
 
+/**
+ * Poll `crm_outbox` for the given ids until every row reaches a terminal
+ * state (`done` or `dead`) or the timeout is hit. Empty `ids` returns
+ * immediately — the caller might be running a no-personas dry-run.
+ */
 export async function pollOutboxUntilDrained(
   db: SmokeCrmDB,
   ids: ReadonlyArray<string>,
@@ -195,6 +207,14 @@ export async function pollOutboxUntilDrained(
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
   now: () => number = () => Date.now(),
 ): Promise<PollResult> {
+  if (ids.length === 0) {
+    return {
+      statuses: new Map(),
+      missingFromDb: [],
+      deadErrors: [],
+      timedOut: false,
+    };
+  }
   const deadline = now() + timeoutSeconds * 1_000;
   while (true) {
     const rows = await db.query<OutboxPollRow>(
@@ -218,11 +238,12 @@ export async function pollOutboxUntilDrained(
         });
       }
     }
+    const missingFromDb = ids.filter((id) => !statuses.has(id));
     if (allDone) {
-      return { statuses, deadErrors, timedOut: false };
+      return { statuses, missingFromDb, deadErrors, timedOut: false };
     }
     if (now() >= deadline) {
-      return { statuses, deadErrors, timedOut: true };
+      return { statuses, missingFromDb, deadErrors, timedOut: true };
     }
     await sleep(POLL_INTERVAL_MS);
   }
@@ -236,17 +257,23 @@ export async function pollOutboxUntilDrained(
  * Top-level CLI entry point. Exit codes use `SMOKE_EXIT`. Catches every
  * known failure shape and prints an actionable message; an unhandled
  * defect bubbles out to bin/atlas.ts's top-level catch.
+ *
+ * Uses `process.exitCode = X; return;` rather than `process.exit(X)` so
+ * the `finally` block runs and the pg client is cleanly closed even on
+ * error paths.
  */
 export async function handleOpsSmokeCrm(args: string[]): Promise<void> {
   const parsed = parseSmokeCrmArgs(args, process.env);
   if ("error" in parsed) {
     console.error(`[ops:smoke-crm] ${parsed.error}`);
-    process.exit(SMOKE_EXIT.USAGE);
+    process.exitCode = SMOKE_EXIT.USAGE;
+    return;
   }
   const gateError = checkSmokeWipeGate(args, process.env);
   if (gateError) {
     console.error(`[ops:smoke-crm] ${gateError}`);
-    process.exit(SMOKE_EXIT.USAGE);
+    process.exitCode = SMOKE_EXIT.USAGE;
+    return;
   }
 
   let events: AtlasLeadEvent[];
@@ -255,7 +282,8 @@ export async function handleOpsSmokeCrm(args: string[]): Promise<void> {
   } catch (err) {
     if (err instanceof FixtureParseError) {
       console.error(`[ops:smoke-crm] fixture error: ${err.message}`);
-      process.exit(SMOKE_EXIT.USAGE);
+      process.exitCode = SMOKE_EXIT.USAGE;
+      return;
     }
     throw err;
   }
@@ -280,14 +308,25 @@ export async function handleOpsSmokeCrm(args: string[]): Promise<void> {
       console.error(
         `[ops:smoke-crm] wipe failed: ${err instanceof Error ? err.message : String(err)}`,
       );
-      process.exit(SMOKE_EXIT.WIPE_FAIL);
+      process.exitCode = SMOKE_EXIT.WIPE_FAIL;
+      return;
     }
   }
 
-  // Connect to the tenant DB for the enqueue + poll phases.
+  // Connect to the tenant DB for the enqueue + poll phases. The connect
+  // itself can fail (DB down, wrong URL) — surface that as INFRA, not as
+  // an unhandled rejection at the top of bin/atlas.ts.
   const { Client } = await import("pg");
   const client = new Client({ connectionString: parsed.databaseUrl });
-  await client.connect();
+  try {
+    await client.connect();
+  } catch (err) {
+    console.error(
+      `[ops:smoke-crm] tenant DB connect failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    process.exitCode = SMOKE_EXIT.INFRA;
+    return;
+  }
   try {
     const db: SmokeCrmDB = {
       async query<T extends Record<string, unknown>>(
@@ -300,31 +339,57 @@ export async function handleOpsSmokeCrm(args: string[]): Promise<void> {
     };
 
     const enqueuedIds: string[] = [];
-    for (const event of events) {
-      const id = await enqueue(db, {
-        eventType: event.source,
-        payload: event as unknown as Record<string, unknown>,
-      });
-      enqueuedIds.push(id);
+    try {
+      for (let i = 0; i < events.length; i++) {
+        const event = events[i];
+        const id = await enqueue(db, {
+          eventType: event.source,
+          payload: event as unknown as Record<string, unknown>,
+        });
+        enqueuedIds.push(id);
+      }
+    } catch (err) {
+      // Persona-N attribution matters here — `crm_outbox` schema breakage
+      // or pg pool failure is invisible without knowing how far we got.
+      console.error(
+        `[ops:smoke-crm] enqueue failed at persona ${enqueuedIds.length + 1}/${events.length}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      process.exitCode = SMOKE_EXIT.INFRA;
+      return;
     }
     console.log(
       `[ops:smoke-crm] enqueued ${enqueuedIds.length} outbox row(s) — waiting up to ${parsed.timeoutSeconds}s for the flusher to drain`,
     );
 
-    const drainResult = await pollOutboxUntilDrained(
-      db,
-      enqueuedIds,
-      parsed.timeoutSeconds,
-    );
-    if (drainResult.timedOut) {
-      console.error(
-        `[ops:smoke-crm] timed out waiting for crm_outbox to drain — final statuses: ${[
-          ...drainResult.statuses.entries(),
-        ]
-          .map(([id, s]) => `${id.slice(0, 8)}=${s}`)
-          .join(", ")}`,
+    let drainResult;
+    try {
+      drainResult = await pollOutboxUntilDrained(
+        db,
+        enqueuedIds,
+        parsed.timeoutSeconds,
       );
-      process.exit(SMOKE_EXIT.TIMEOUT);
+    } catch (err) {
+      console.error(
+        `[ops:smoke-crm] outbox poll failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      process.exitCode = SMOKE_EXIT.INFRA;
+      return;
+    }
+    if (drainResult.timedOut) {
+      const statusList = [...drainResult.statuses.entries()]
+        .map(([id, s]) => `${id.slice(0, 8)}=${s}`)
+        .join(", ");
+      const missingList =
+        drainResult.missingFromDb.length > 0
+          ? ` missing-from-db=[${drainResult.missingFromDb
+              .map((id) => id.slice(0, 8))
+              .join(", ")}]`
+          : "";
+      console.error(
+        `[ops:smoke-crm] timed out waiting for crm_outbox to drain — final statuses: ${statusList}${missingList}`,
+      );
+      process.exitCode = SMOKE_EXIT.TIMEOUT;
+      return;
     }
     if (drainResult.deadErrors.length > 0) {
       console.error(
@@ -349,7 +414,8 @@ export async function handleOpsSmokeCrm(args: string[]): Promise<void> {
       console.error(
         `[ops:smoke-crm] failed to list Twenty workspace: ${err instanceof Error ? err.message : String(err)}`,
       );
-      process.exit(SMOKE_EXIT.DIFF);
+      process.exitCode = SMOKE_EXIT.DIFF;
+      return;
     }
 
     const expected = buildExpectedState(events);
@@ -363,10 +429,12 @@ export async function handleOpsSmokeCrm(args: string[]): Promise<void> {
     const report = formatDiff(diff, { totals });
     if (isClean(diff)) {
       console.log(report);
-      process.exit(SMOKE_EXIT.OK);
+      process.exitCode = SMOKE_EXIT.OK;
+      return;
     }
     console.error(report);
-    process.exit(SMOKE_EXIT.DIFF);
+    process.exitCode = SMOKE_EXIT.DIFF;
+    return;
   } finally {
     await client.end().catch((closeErr) => {
       console.warn(

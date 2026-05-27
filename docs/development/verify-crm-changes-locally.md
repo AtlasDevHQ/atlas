@@ -94,9 +94,11 @@ enqueues → `N` distinct Persons.
 
 ## What this doesn't cover (manual still required)
 
-- **Form-layer concerns** — Cloudflare Turnstile, CSP, `<noscript>`
-  fallback, and the `/api/v1/contact` route's auth + rate-limit. These
-  remain manual steps A5 / A6 in `/tmp/atlas-1.6.0-test-plan.md`.
+- **Form-layer concerns** — Cloudflare Turnstile siteverify, CSP, the
+  `<noscript>` mailto fallback, and the `/api/v1/contact` route's auth +
+  rate-limit. The smoke command injects leads BELOW the form, so any
+  bug in the form layer itself needs a manual test (submit a form on
+  `/pricing` and confirm the resulting `crm_outbox` row).
 - **Read-side datasource verification** — the analytics-side `demo_leads`
   / `crm_outbox` query semantics live under a separate slice (#2728).
 - **Stripe → Twenty conversion stamping (D12)** — parked behind a flag

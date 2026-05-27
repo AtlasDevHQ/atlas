@@ -49,6 +49,8 @@ export interface ObservedPerson {
   readonly email: string;
   readonly atlasFirstSource?: string;
   readonly atlasLastSource?: string;
+  readonly atlasIp?: string;
+  readonly atlasStripeCustomerId?: string;
   readonly name?: { firstName?: string; lastName?: string };
 }
 
@@ -80,8 +82,9 @@ export interface ObservedState {
  *    that carries them; later events win (matches the dispatcher's PATCH-
  *    every-write behaviour).
  *  - Notes: one per `sales-form` event. Same email with two sales-form
- *    events produces two Notes (the dispatcher creates a fresh note per
- *    dispatch — see #2729's idempotency contract).
+ *    events produces two Notes — each event lands in its own `crm_outbox`
+ *    row and each row produces one note. (#2729's idempotency contract
+ *    prevents double-create on retry *within* a row, not across rows.)
  */
 export function buildExpectedState(events: ReadonlyArray<AtlasLeadEvent>): ExpectedState {
   const persons = new Map<string, ExpectedPerson>();
@@ -154,6 +157,8 @@ export interface PersonMismatch {
   readonly field:
     | "atlasFirstSource"
     | "atlasLastSource"
+    | "atlasIp"
+    | "atlasStripeCustomerId"
     | "name.firstName"
     | "name.lastName";
   readonly expected: string;
@@ -216,6 +221,24 @@ export function computeDiff(
     }
     pushFieldMismatch(mismatchedPersons, e.email, "atlasFirstSource", e.atlasFirstSource, o.atlasFirstSource);
     pushFieldMismatch(mismatchedPersons, e.email, "atlasLastSource", e.atlasLastSource, o.atlasLastSource);
+    // Compare atlasIp / atlasStripeCustomerId ONLY when the fixture set them.
+    // The dispatcher writes through whatever the lead event carries; expected-
+    // side absence means "we didn't dispatch one, so don't care what Twenty has".
+    // The presence-only check catches the load-bearing case (#2737 — Stripe
+    // stamp lands on the wrong Twenty Person) without false-positiving on
+    // sales-form personas that don't supply an IP.
+    if (e.atlasIp) {
+      pushFieldMismatch(mismatchedPersons, e.email, "atlasIp", e.atlasIp, o.atlasIp);
+    }
+    if (e.atlasStripeCustomerId) {
+      pushFieldMismatch(
+        mismatchedPersons,
+        e.email,
+        "atlasStripeCustomerId",
+        e.atlasStripeCustomerId,
+        o.atlasStripeCustomerId,
+      );
+    }
     if (e.name?.firstName) {
       pushFieldMismatch(
         mismatchedPersons,
@@ -312,11 +335,13 @@ function diffNotes(
 
   // Total count check per email — surfaces the cases where the same email
   // has the right titles but a different count (e.g. dispatcher created two
-  // notes when the fixture only declared one, or vice versa).
-  const allEmails = new Set<string>([
-    ...expectedCounts.keys(),
-    ...[...observedCounts.keys()].filter((e) => expectedCounts.has(e)),
-  ]);
+  // notes when the fixture only declared one, or vice versa). Scoped to
+  // emails the fixture declared — Notes attached to unexpected workspace
+  // Persons are informational only, like `unexpectedPersons`. The
+  // `missingNotes` check above is the load-bearing assertion for the
+  // #2865-shaped misattribution case (a Note created against the wrong
+  // Person surfaces there as a missing-on-the-right-Person finding).
+  const allEmails = new Set(expectedCounts.keys());
   for (const email of allEmails) {
     const expectedTotal = sumCounts(expectedCounts.get(email));
     const observedTotal = sumCounts(observedCounts.get(email));

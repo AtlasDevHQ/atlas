@@ -74,8 +74,7 @@ export const SMOKE_EXIT = {
 //  Arg parsing (unit-tested in isolation)
 // ─────────────────────────────────────────────────────────────────────
 
-function parsePositiveInt(raw: string | undefined, flag: string): number | { error: string } {
-  if (raw === undefined) return { error: `${flag} requires a value` };
+function parsePositiveInt(raw: string, flag: string): number | { error: string } {
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n) || n < 1) return { error: `${flag} must be a positive integer (got "${raw}")` };
   return n;

@@ -2493,15 +2493,22 @@ export type SaasCrmStampConversionInput = Omit<
 >;
 
 /**
- * Discriminated SaasCrm shape — the two correlated facts (anticipated
- * `available` flag for the future `POST /api/v1/contact` 404 branch and
- * the load-bearing `dispatcher` for the flusher) are encoded as a
- * single union so they can't drift out of sync. Five places in
- * `SaasCrmLive` used to set them by hand; the discriminator now
- * narrows automatically.
+ * Discriminated SaasCrm shape — `available` is the operator-pipeline
+ * health flag; `dispatcher` is the per-row outbox dispatcher and
+ * survives operator-probe failure (#2849 codex I2) because the
+ * dispatcher routes per-row: customer-workspace rows have their own
+ * credentials in `twenty_integrations` and have nothing to do with the
+ * operator's `TWENTY_API_KEY`.
  *
- * `available === false` ⇒ no dispatcher (flusher skips wiring).
- * `available === true`  ⇒ dispatcher is non-null (flusher uses it).
+ * `available === false` ⇒ operator pipeline unavailable (POST /contact
+ *   returns 404; upsertLead/stampConversion are no-ops). The
+ *   `dispatcher` may still be present when only the operator boot
+ *   probe failed — in that case operator-pipeline rows in `crm_outbox`
+ *   dead-letter with a permanent message, but per-tenant rows route
+ *   normally. `dispatcher` is `null` only when there is no way to
+ *   dispatch anything (self-hosted with no EE, or no internal DB).
+ * `available === true`  ⇒ both operator + tenant dispatch healthy;
+ *   `dispatcher` is non-null and the flusher mounts.
  *
  * `upsertLead` is shared across both — even an `available: false` layer
  * accepts the call as a no-op so callers don't need to branch.
@@ -2511,9 +2518,7 @@ export type SaasCrmShape =
       /**
        * `POST /api/v1/contact` reads this to return 404 `not_available`
        * on self-hosted (or when the SaaS layer failed boot verification)
-       * rather than the standard 403 envelope. The flusher wire-up in
-       * `lib/effect/layers.ts:makeSchedulerLive` also reads it to decide
-       * whether to mount the per-row dispatcher.
+       * rather than the standard 403 envelope.
        *
        * Flips to `false` on any of:
        *  - self-hosted (`@atlas/ee` not loaded → `NoopSaasCrmLayer`);
@@ -2525,6 +2530,13 @@ export type SaasCrmShape =
        *    `atlasStripeCustomerId` — #2737). Missing custom fields
        *    would dead-letter every dispatch on a 422 schema mismatch,
        *    so the boot-time guard disables the layer instead.
+       *  - `resolveOperatorWorkspaceId` boot SELECT throws a non-
+       *    "table missing" pg error (#2849 codex C2). Fail-loud rather
+       *    than silently masking already-stamped rows with the sentinel.
+       *
+       * NOTE: `available: false` no longer implies "no dispatcher".
+       * See `dispatcher` below — per-tenant rows can still flush when
+       * only the operator probe is broken.
        */
       readonly available: false;
       readonly upsertLead: (input: SaasCrmLeadInput) => Effect.Effect<void, Error>;
@@ -2536,6 +2548,25 @@ export type SaasCrmShape =
       readonly stampConversion: (
         input: SaasCrmStampConversionInput,
       ) => Effect.Effect<void, Error>;
+      /**
+       * Outbox dispatcher when only the operator probe failed (EE on +
+       * InternalDB present + operator creds/probe/workspace-resolve
+       * broken). Tenant rows route normally via per-row
+       * `twenty_integrations` lookup; operator-pipeline rows
+       * (workspace_id matches resolved operator id or sentinel)
+       * dead-letter with `{ kind: "permanent" }` and an actionable
+       * message pointing the operator at the failed boot log.
+       *
+       * `null` only when there is no way to dispatch anything at all:
+       * self-hosted (no EE) or no internal DB. The flusher uses
+       * `dispatcher !== null` as the mount gate (#2849 codex I2).
+       */
+      readonly dispatcher:
+        | ((
+            row: import("@atlas/api/lib/lead-outbox").ClaimedOutboxRow,
+            persist: import("@atlas/api/lib/lead-outbox").OutboxPersistHelpers,
+          ) => Promise<import("@atlas/api/lib/lead-outbox").DispatchOutcome>)
+        | null;
     }
   | {
       readonly available: true;
@@ -2604,6 +2635,9 @@ export const NoopSaasCrmLayer: Layer.Layer<SaasCrm> = Layer.succeed(SaasCrm, {
           "Check boot logs for the original 'saas_crm.openapi_*' event that flipped the layer to unavailable.",
       );
     }),
+  // No EE → no per-tenant dispatcher either. The flusher gate
+  // (`saasCrm.dispatcher !== null`) skips wiring entirely.
+  dispatcher: null,
 } satisfies SaasCrmShape);
 
 // ── Aggregate no-op default Layer ────────────────────────────────────

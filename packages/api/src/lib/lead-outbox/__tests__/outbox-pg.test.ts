@@ -23,6 +23,31 @@ import {
   type OutboxDispatcher,
 } from "../outbox";
 
+/**
+ * Default workspace_id stamped on test fixtures (#2849). The PG-side
+ * column has DEFAULT '<atlas-operator>', but the application
+ * `enqueue()` rejects an empty workspaceId, so callers must pass
+ * something. This constant is the test-only stand-in for the runtime
+ * SaaS operator id.
+ */
+const TEST_WORKSPACE_ID = "ws-test";
+
+/**
+ * Wrapper around `enqueue` that defaults `workspaceId`. Mirrors the
+ * helper in `outbox.test.ts` so the two test files stay structurally
+ * aligned.
+ */
+async function enq(
+  db: OutboxDB,
+  args: { eventType: string; payload: Record<string, unknown>; workspaceId?: string },
+): Promise<string> {
+  return enqueue(db, {
+    eventType: args.eventType,
+    payload: args.payload,
+    workspaceId: args.workspaceId ?? TEST_WORKSPACE_ID,
+  });
+}
+
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
 
@@ -72,7 +97,7 @@ describeIfPg("lead-outbox (real Postgres)", () => {
     async () => {
       await truncateOutbox();
       const db = dbFor();
-      const id = await enqueue(db, {
+      const id = await enq(db, {
         eventType: "demo",
         payload: { source: "demo", email: "ok@happy.test" },
       });
@@ -102,7 +127,7 @@ describeIfPg("lead-outbox (real Postgres)", () => {
     async () => {
       await truncateOutbox();
       const db = dbFor();
-      const id = await enqueue(db, {
+      const id = await enq(db, {
         eventType: "demo",
         payload: { source: "demo", email: "401@dead.test" },
       });
@@ -129,7 +154,7 @@ describeIfPg("lead-outbox (real Postgres)", () => {
     async () => {
       await truncateOutbox();
       const db = dbFor();
-      const id = await enqueue(db, {
+      const id = await enq(db, {
         eventType: "demo",
         payload: { source: "demo", email: "503@retry.test" },
       });
@@ -242,7 +267,7 @@ describeIfPg("lead-outbox (real Postgres)", () => {
     async () => {
       await truncateOutbox();
       const db = dbFor();
-      const id = await enqueue(db, {
+      const id = await enq(db, {
         eventType: "demo",
         payload: { source: "demo", email: "stranded@recover.test" },
       });
@@ -327,7 +352,7 @@ describeIfPg("lead-outbox (real Postgres)", () => {
     async () => {
       await truncateOutbox();
       const db = dbFor();
-      await enqueue(db, {
+      await enq(db, {
         eventType: "demo",
         payload: { source: "demo", email: "race@test" },
       });
@@ -400,7 +425,7 @@ describeIfPg("lead-outbox (real Postgres)", () => {
     async () => {
       await truncateOutbox();
       const db = dbFor();
-      await enqueue(db, {
+      await enq(db, {
         eventType: "demo",
         payload: { source: "demo", email: "retry-after@test" },
       });
@@ -515,11 +540,11 @@ describeIfPg("lead-outbox (real Postgres)", () => {
       await truncateOutbox();
       const db = dbFor();
 
-      const demoId = await enqueue(db, {
+      const demoId = await enq(db, {
         eventType: "demo",
         payload: { source: "demo", email: "gworth@globexcorp.com", ip: "203.0.113.30" },
       });
-      const signupId = await enqueue(db, {
+      const signupId = await enq(db, {
         eventType: "signup",
         payload: { source: "signup", email: "gworth@globexcorp.com", name: "Greta Worth" },
       });
@@ -573,16 +598,21 @@ describeIfPg("lead-outbox (real Postgres)", () => {
       const db = dbFor();
 
       // Seed an in_flight row directly (simulates a sibling pod mid-dispatch).
+      // workspace_id must match the enq()'d row's TEST_WORKSPACE_ID — codex
+      // C3 (#2849) scoped the NOT EXISTS gate by (workspace_id, email_key),
+      // so cross-workspace same-email no longer blocks. This test exercises
+      // the same-workspace gate; both rows therefore use TEST_WORKSPACE_ID.
       await pool.query(
-        `INSERT INTO crm_outbox (event_type, payload, email_key, status, attempts, claimed_at, created_at)
-         VALUES ('demo', $1::jsonb, $2, 'in_flight', 1, now(), now() - INTERVAL '3 hours')`,
+        `INSERT INTO crm_outbox (event_type, payload, email_key, workspace_id, status, attempts, claimed_at, created_at)
+         VALUES ('demo', $1::jsonb, $2, $3, 'in_flight', 1, now(), now() - INTERVAL '3 hours')`,
         [
           JSON.stringify({ source: "demo", email: "stuck@example.test" }),
           "stuck@example.test",
+          TEST_WORKSPACE_ID,
         ],
       );
       // Newer pending row for the same email.
-      await enqueue(db, {
+      await enq(db, {
         eventType: "signup",
         payload: { source: "signup", email: "stuck@example.test", name: "Stuck User" },
       });
@@ -607,10 +637,10 @@ describeIfPg("lead-outbox (real Postgres)", () => {
       const db = dbFor();
 
       // Four distinct emails — all should claim in one tick.
-      await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a1@example.test" } });
-      await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a2@example.test" } });
-      await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a3@example.test" } });
-      await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a4@example.test" } });
+      await enq(db, { eventType: "demo", payload: { source: "demo", email: "a1@example.test" } });
+      await enq(db, { eventType: "demo", payload: { source: "demo", email: "a2@example.test" } });
+      await enq(db, { eventType: "demo", payload: { source: "demo", email: "a3@example.test" } });
+      await enq(db, { eventType: "demo", payload: { source: "demo", email: "a4@example.test" } });
 
       const dispatcher: OutboxDispatcher = async () => ({ kind: "ok" });
       const result = await flushBatch(db, dispatcher, 50);
@@ -632,17 +662,27 @@ describeIfPg("lead-outbox (real Postgres)", () => {
     async () => {
       await truncateOutbox();
 
-      // Two pending rows, same email, different created_at so the
-      // claim ordering is deterministic.
+      // Two pending rows, same email, same workspace, different created_at
+      // so claim ordering is deterministic. Same workspace_id is required
+      // post-#2849 codex C3 — the advisory lock is keyed on
+      // (workspace_id, email_key), so cross-workspace rows would not race.
       await pool.query(
-        `INSERT INTO crm_outbox (event_type, payload, email_key, status, created_at)
-         VALUES ('demo', $1::jsonb, $2, 'pending', now() - INTERVAL '2 minutes')`,
-        [JSON.stringify({ source: "demo", email: "race@cross-pod.test" }), "race@cross-pod.test"],
+        `INSERT INTO crm_outbox (event_type, payload, email_key, workspace_id, status, created_at)
+         VALUES ('demo', $1::jsonb, $2, $3, 'pending', now() - INTERVAL '2 minutes')`,
+        [
+          JSON.stringify({ source: "demo", email: "race@cross-pod.test" }),
+          "race@cross-pod.test",
+          TEST_WORKSPACE_ID,
+        ],
       );
       await pool.query(
-        `INSERT INTO crm_outbox (event_type, payload, email_key, status, created_at)
-         VALUES ('signup', $1::jsonb, $2, 'pending', now() - INTERVAL '1 minute')`,
-        [JSON.stringify({ source: "signup", email: "race@cross-pod.test" }), "race@cross-pod.test"],
+        `INSERT INTO crm_outbox (event_type, payload, email_key, workspace_id, status, created_at)
+         VALUES ('signup', $1::jsonb, $2, $3, 'pending', now() - INTERVAL '1 minute')`,
+        [
+          JSON.stringify({ source: "signup", email: "race@cross-pod.test" }),
+          "race@cross-pod.test",
+          TEST_WORKSPACE_ID,
+        ],
       );
 
       // Each "pod" is its own pool with size 1 — guarantees a single
@@ -709,21 +749,24 @@ describeIfPg("lead-outbox (real Postgres)", () => {
 
       // R1: demo, older, in retry cooldown — pending with retry_after
       // 1 hour in the future. Falls out of `claimable` via the
-      // due-time filter, but is still non-terminal.
+      // due-time filter, but is still non-terminal. Same workspace as
+      // R2 (enq below) is required post-#2849 codex C3 — the NOT
+      // EXISTS leapfrog gate scopes by (workspace_id, email_key).
       await pool.query(
         `INSERT INTO crm_outbox
-           (event_type, payload, email_key, status, attempts, retry_after, created_at)
+           (event_type, payload, email_key, workspace_id, status, attempts, retry_after, created_at)
          VALUES
-           ('demo', $1::jsonb, $2, 'pending', 1, now() + INTERVAL '1 hour',
+           ('demo', $1::jsonb, $2, $3, 'pending', 1, now() + INTERVAL '1 hour',
             now() - INTERVAL '5 minutes')`,
         [
           JSON.stringify({ source: "demo", email: "cooldown@leapfrog.test", ip: "203.0.113.50" }),
           "cooldown@leapfrog.test",
+          TEST_WORKSPACE_ID,
         ],
       );
       // R2: signup, newer, fresh — would dispatch first under the
       // pre-fix gate that only excluded `in_flight` siblings.
-      const signupId = await enqueue(db, {
+      const signupId = await enq(db, {
         eventType: "signup",
         payload: { source: "signup", email: "cooldown@leapfrog.test", name: "Late Arrival" },
       });
@@ -794,6 +837,88 @@ describeIfPg("lead-outbox (real Postgres)", () => {
       for (const r of rows.rows) {
         expect(r.email_key).toBeNull();
       }
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  // ── Codex C3 (#2849): cross-tenant per-email serialization ────────
+  //
+  // Pre-fix CLAIM_SQL serialized on `email_key` ALONE — the NOT EXISTS
+  // gate, advisory lock, and DISTINCT ON dedupe all omitted
+  // workspace_id. Tenant A's `alice@example.com` would block tenant
+  // B's `alice@example.com` (they dispatch to different Twentys and
+  // have independent idempotency), creating silent head-of-line
+  // blocking across unrelated CRMs.
+  //
+  // Post-fix the serialization key is `(workspace_id, email_key)` so
+  // both tenants' rows for the same email claim in the same tick.
+  it(
+    "claim does NOT serialize same email across distinct workspaces (codex C3)",
+    async () => {
+      await truncateOutbox();
+      const db = dbFor();
+
+      // Enqueue same email under two distinct workspaces. Pre-fix the
+      // second insert's row would be blocked by NOT EXISTS / the
+      // shared advisory lock; post-fix both claim independently.
+      await enq(db, {
+        eventType: "demo",
+        payload: { source: "demo", email: "alice@example.com" },
+        workspaceId: "ws-tenant-A",
+      });
+      await enq(db, {
+        eventType: "demo",
+        payload: { source: "demo", email: "alice@example.com" },
+        workspaceId: "ws-tenant-B",
+      });
+
+      const claimedByDispatcher: string[] = [];
+      const dispatcher: OutboxDispatcher = async (row) => {
+        claimedByDispatcher.push(row.workspaceId);
+        return { kind: "ok" };
+      };
+
+      const result = await flushBatch(db, dispatcher, 10);
+
+      // Both tenants drain in a single tick — independent serialization
+      // namespaces. Pre-fix this would be 1 (one tenant's row blocked).
+      expect(result.claimed).toBe(2);
+      expect(result.ok).toBe(2);
+      expect(claimedByDispatcher.sort()).toEqual([
+        "ws-tenant-A",
+        "ws-tenant-B",
+      ]);
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  // Same-workspace same-email serialization is still in force — only
+  // the cross-workspace block is lifted. Sanity-check that the per-
+  // workspace gate keeps working as designed.
+  it(
+    "claim STILL serializes same email within the same workspace (codex C3 — invariant preserved)",
+    async () => {
+      await truncateOutbox();
+      const db = dbFor();
+
+      // Two rows, same email, same workspace, distinct created_at.
+      // The older row blocks the newer one via NOT EXISTS.
+      await pool.query(
+        `INSERT INTO crm_outbox (event_type, payload, email_key, workspace_id, status, created_at)
+         VALUES
+           ('demo', $1::jsonb, 'dup@same.test', 'ws-only-one', 'pending', now() - INTERVAL '10 seconds'),
+           ('demo', $2::jsonb, 'dup@same.test', 'ws-only-one', 'pending', now())`,
+        [
+          JSON.stringify({ source: "demo", email: "dup@same.test" }),
+          JSON.stringify({ source: "demo", email: "dup@same.test" }),
+        ],
+      );
+
+      const dispatcher: OutboxDispatcher = async () => ({ kind: "ok" });
+      const result = await flushBatch(db, dispatcher, 10);
+
+      // Older sibling drained, newer one held back — only 1 claimed.
+      expect(result.claimed).toBe(1);
     },
     PG_TIMEOUT_MS,
   );

@@ -111,6 +111,7 @@ function noopLayer(): Layer.Layer<SaasCrm> {
     available: false,
     upsertLead: () => Effect.void,
     stampConversion: () => Effect.void,
+    dispatcher: null,
   });
 }
 

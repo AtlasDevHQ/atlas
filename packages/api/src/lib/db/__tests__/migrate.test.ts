@@ -122,8 +122,9 @@ describe("runMigrations", () => {
     // + 0104 (crm_outbox.email_key for per-email serialization, #2870)
     // + 0105 (drop legacy invitations table after better-auth-invitations
     //   cutover — invitations now live in Better Auth's `invitation`
-    //   table; see lib/auth/server.ts:organizationHooks) = 106.
-    expect(count).toBe(106);
+    //   table; see lib/auth/server.ts:organizationHooks) = 106. Plus
+    //   #2849 (workspace_id on crm_outbox) = 107.
+    expect(count).toBe(107);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -258,6 +259,7 @@ describe("runMigrations", () => {
         "0103_converge_salesforce_pillar.sql",
         "0104_crm_outbox_email_key.sql",
         "0105_drop_legacy_invitations.sql",
+        "0106_crm_outbox_workspace_id.sql",
       ],
     });
 

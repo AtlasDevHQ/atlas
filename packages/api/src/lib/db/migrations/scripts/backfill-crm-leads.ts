@@ -40,6 +40,47 @@ export const DEFAULT_BATCH_SIZE = 500;
 /** How many normalized payloads dry-run prints as a sanity preview. */
 export const DRY_RUN_SAMPLE_SIZE = 3;
 
+/**
+ * Operator-pipeline workspace_id stamped on backfilled rows when no
+ * `organization.is_operator_workspace = true` row exists in the
+ * target DB. Same constant the runtime `ee/src/saas-crm/` Layer uses
+ * (`ATLAS_OPERATOR_WORKSPACE_SENTINEL`); duplicated here so the
+ * backfill script stays free of the ee dep — the closeout-time grep
+ * gate (`scripts/check-ee-imports.sh`) would reject an EE import in
+ * a core script.
+ */
+export const ATLAS_OPERATOR_WORKSPACE_SENTINEL = "<atlas-operator>";
+
+/**
+ * Resolve the workspace_id to stamp on backfilled rows. Reads
+ * `organization.is_operator_workspace = true` from the same DB the
+ * INSERTs land in; falls back to the sentinel when the table is
+ * absent (managed auth disabled) or no flagged row exists. Either
+ * way, the runtime dispatcher routes the row through env creds.
+ */
+export async function resolveOperatorWorkspaceIdForBackfill(
+  db: BackfillDB,
+): Promise<string> {
+  try {
+    const result = await db.query<{ id: string }>(
+      `SELECT id FROM organization WHERE is_operator_workspace = true LIMIT 1`,
+    );
+    const id = result.rows[0]?.id;
+    if (typeof id === "string" && id.length > 0) return id;
+  } catch (err) {
+    // Same fall-through as the runtime resolver in
+    // `ee/src/saas-crm/`: a missing `organization` table or
+    // transport blip should not block the backfill. Log so an
+    // operator running this script sees what happened.
+    console.warn(
+      `[backfill-crm-leads] operator workspace lookup failed (${
+        err instanceof Error ? err.message : String(err)
+      }) — falling back to sentinel "${ATLAS_OPERATOR_WORKSPACE_SENTINEL}"; dispatcher will still route through env creds`,
+    );
+  }
+  return ATLAS_OPERATOR_WORKSPACE_SENTINEL;
+}
+
 /** Lead source today is always `"demo"` — `--source` is parameterized
  *  so a future sales-form-leads table can use the same harness. The
  *  normalizer's exhaustive switch is the drift gate. Source of truth
@@ -56,6 +97,16 @@ export interface BackfillOptions {
   readonly batchSize: number;
   /** Source variant. Today only `"demo"`. */
   readonly source: BackfillSource;
+  /**
+   * Workspace id stamped on every enqueued row (#2849). The runtime
+   * dispatcher uses this to pick between env creds (operator pipeline)
+   * and per-tenant DB credentials. For the historic demo_leads
+   * back-catalog, every row belongs to Atlas's own operator pipeline,
+   * so the caller resolves the operator workspace id (or the sentinel)
+   * once and passes it in. Required because crm_outbox.workspace_id
+   * is NOT NULL post-0106 — there's no implicit fallback.
+   */
+  readonly workspaceId: string;
   /**
    * Progress sink. Default `console.log`. Tests pass a collector to
    * assert progress lines without polluting test output.
@@ -141,10 +192,12 @@ const COUNT_SQL = `SELECT COUNT(*)::bigint AS n FROM demo_leads`;
 function buildBulkEnqueueSql(rowCount: number): string {
   const placeholders: string[] = [];
   for (let i = 0; i < rowCount; i++) {
-    const base = i * 3;
-    placeholders.push(`($${base + 1}, $${base + 2}::jsonb, $${base + 3}, 'pending')`);
+    const base = i * 4;
+    placeholders.push(
+      `($${base + 1}, $${base + 2}::jsonb, $${base + 3}, $${base + 4}, 'pending')`,
+    );
   }
-  return `INSERT INTO crm_outbox (event_type, payload, email_key, status) VALUES ${placeholders.join(", ")} RETURNING id`;
+  return `INSERT INTO crm_outbox (event_type, payload, email_key, workspace_id, status) VALUES ${placeholders.join(", ")} RETURNING id`;
 }
 
 /** Map a `demo_leads` row to the corresponding `AtlasLeadEvent`.
@@ -182,6 +235,12 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillSta
   if (options.batchSize < 1) {
     throw new Error(`batchSize must be ≥ 1 (got ${options.batchSize})`);
   }
+  if (options.workspaceId.length === 0) {
+    throw new Error(
+      "workspaceId is required (crm_outbox.workspace_id is NOT NULL post-0106) — " +
+        "resolve operator workspace via SELECT id FROM organization WHERE is_operator_workspace = true",
+    );
+  }
   const log = options.log ?? ((msg: string) => console.log(msg));
 
   const totalResult = await options.db.query<{ n: string }>(COUNT_SQL);
@@ -215,11 +274,17 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillSta
           ]);
     if (page.rows.length === 0) break;
 
-    // Flat `[event_type_0, payload_0, email_key_0, event_type_1, …]`
-    // so the positional placeholders in `buildBulkEnqueueSql` line up
-    // with their VALUES tuples. `extractEmailKey` is shared with the
-    // runtime `enqueue` so the bulk path produces identical email_key
-    // values for identical payloads (#2870).
+    // Flat `[event_type_0, payload_0, email_key_0, workspace_id_0,
+    // event_type_1, …]` so the positional placeholders in
+    // `buildBulkEnqueueSql` line up with their VALUES tuples.
+    // `extractEmailKey` is shared with the runtime `enqueue` so the
+    // bulk path produces identical email_key values for identical
+    // payloads (#2870). `workspaceId` is the same value for every row
+    // in the batch — historic demo_leads all belong to the operator
+    // pipeline (#2849) — but we duplicate it positionally rather than
+    // factoring out a single placeholder so a future hetero-tenant
+    // backfill (per-workspace `WHERE workspace_id = ...`) drops in
+    // without reshaping the SQL builder.
     const params: unknown[] = [];
     for (const row of page.rows) {
       const event = toLeadEvent(row, options.source);
@@ -233,6 +298,7 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillSta
         event.source,
         JSON.stringify(event),
         extractEmailKey({ email: event.email }),
+        options.workspaceId,
       );
 
       if (options.dryRun && sample.length < DRY_RUN_SAMPLE_SIZE) {
@@ -317,11 +383,15 @@ async function main(): Promise<void> {
   const client = new Client({ connectionString: url });
   await client.connect();
   try {
+    const workspaceId = await resolveOperatorWorkspaceIdForBackfill(
+      client as unknown as BackfillDB,
+    );
     const stats = await runBackfill({
       db: client as unknown as BackfillDB,
       dryRun,
       batchSize,
       source,
+      workspaceId,
     });
     if (dryRun && stats.sample.length > 0) {
       console.log(`[backfill-crm-leads] first ${stats.sample.length} normalized payload(s):`);

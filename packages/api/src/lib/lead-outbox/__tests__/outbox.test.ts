@@ -53,6 +53,7 @@ type Row = {
   event_type: string;
   payload: unknown;
   email_key: string | null;
+  workspace_id: string;
   status: "pending" | "in_flight" | "done" | "dead";
   attempts: number;
   last_error: string | null;
@@ -63,6 +64,34 @@ type Row = {
   created_at: number;
   processed_at: number | null;
 };
+
+/**
+ * Default workspace_id stamped on test fixtures via the {@link enq}
+ * helper below (#2849). Most tests in this file exercise outbox
+ * lifecycle behaviour (claim ordering, retry, sub-step idempotency)
+ * and don't care which workspace owns the row — the helper threads
+ * this constant into `enqueue` so tests stay terse. Tests that
+ * specifically exercise per-tenant routing branch on a different
+ * `workspaceId`.
+ */
+const TEST_WORKSPACE_ID = "ws-test";
+
+/**
+ * Thin wrapper around `enqueue` that defaults `workspaceId` to
+ * `TEST_WORKSPACE_ID`. Use the unwrapped `enqueue` directly when the
+ * test needs to assert behaviour for an empty or per-tenant workspace
+ * id.
+ */
+async function enq(
+  db: OutboxDB,
+  args: { eventType: string; payload: Record<string, unknown>; workspaceId?: string },
+): Promise<string> {
+  return enqueue(db, {
+    eventType: args.eventType,
+    payload: args.payload,
+    workspaceId: args.workspaceId ?? TEST_WORKSPACE_ID,
+  });
+}
 
 class FakeOutboxDB implements OutboxDB {
   rows: Row[] = [];
@@ -96,11 +125,17 @@ class FakeOutboxDB implements OutboxDB {
       // callers that haven't been updated pass `undefined` and fall
       // through to NULL — matching the SQL column's nullability.
       const emailKey = typeof p[2] === "string" ? p[2] : null;
+      // 0106 added workspace_id as a 4th positional parameter. Required
+      // at the application layer (`enqueue` throws on empty) — the
+      // fake mirrors that by stamping whatever the caller passed; the
+      // helper above defaults to `TEST_WORKSPACE_ID`.
+      const workspaceId = typeof p[3] === "string" ? p[3] : "";
       this.rows.push({
         id,
         event_type: String(p[0]),
         payload: JSON.parse(String(p[1])),
         email_key: emailKey,
+        workspace_id: workspaceId,
         status: "pending",
         attempts: 0,
         last_error: null,
@@ -176,6 +211,7 @@ class FakeOutboxDB implements OutboxDB {
         event_type: r.event_type,
         payload: r.payload,
         attempts: r.attempts,
+        workspace_id: r.workspace_id,
         twenty_person_id: r.twenty_person_id,
         twenty_note_id: r.twenty_note_id,
       })) as unknown as T[];
@@ -278,7 +314,7 @@ beforeEach(() => {
 
 describe("enqueue", () => {
   test("inserts a pending row and returns its id", async () => {
-    const id = await enqueue(db, {
+    const id = await enq(db, {
       eventType: "demo",
       payload: { source: "demo", email: "a@b.test" },
     });
@@ -290,13 +326,84 @@ describe("enqueue", () => {
       attempts: 0,
       twenty_person_id: null,
       twenty_note_id: null,
+      workspace_id: TEST_WORKSPACE_ID,
     });
+  });
+
+  test("stamps workspace_id on every row (#2849)", async () => {
+    // AC: rows MUST carry a non-empty workspace_id at enqueue time so
+    // the dispatcher's per-row routing key is deterministic. The
+    // helper passes TEST_WORKSPACE_ID; an explicit override on
+    // `enq` (here for a hypothetical per-tenant install) lands a
+    // distinct value.
+    await enq(db, {
+      eventType: "demo",
+      payload: { source: "demo", email: "operator@demo.test" },
+    });
+    await enq(db, {
+      eventType: "demo",
+      payload: { source: "demo", email: "tenant@demo.test" },
+      workspaceId: "ws-tenant-A",
+    });
+    expect(db.rows[0].workspace_id).toBe(TEST_WORKSPACE_ID);
+    expect(db.rows[1].workspace_id).toBe("ws-tenant-A");
+  });
+
+  test("captures workspace_id for all four operator event sources (#2849 AC)", async () => {
+    // The AC calls out demo / signup / sales-form / conversion as the
+    // four event sources whose enqueue path must capture workspace_id.
+    // All four currently route to Atlas's operator pipeline, so they
+    // share TEST_WORKSPACE_ID — but the column being present is the
+    // load-bearing invariant (a future per-tenant variant lands here
+    // with a different value without a schema change).
+    await enq(db, {
+      eventType: "demo",
+      payload: { source: "demo", email: "demo@event.test" },
+    });
+    await enq(db, {
+      eventType: "signup",
+      payload: { source: "signup", email: "signup@event.test", name: "Sam" },
+    });
+    await enq(db, {
+      eventType: "sales-form",
+      payload: {
+        source: "sales-form",
+        email: "sales@event.test",
+        name: "Sales Form",
+        company: "Co",
+        planInterest: "team",
+        message: "msg",
+      },
+    });
+    await enq(db, {
+      eventType: "stamp-conversion",
+      payload: {
+        source: "conversion",
+        email: "convert@event.test",
+        stripeCustomerId: "cus_x",
+      },
+    });
+    expect(db.rows).toHaveLength(4);
+    for (const row of db.rows) {
+      expect(row.workspace_id).toBe(TEST_WORKSPACE_ID);
+    }
+  });
+
+  test("rejects an empty workspaceId at the seam (#2849)", async () => {
+    await expect(
+      enqueue(db, {
+        eventType: "demo",
+        payload: { source: "demo", email: "x@empty.test" },
+        workspaceId: "",
+      }),
+    ).rejects.toThrow(/workspaceId must be non-empty/);
+    expect(db.rows).toHaveLength(0);
   });
 });
 
 describe("flushBatch — claim & dispatch", () => {
   test("dispatches OK → row marked done with twenty_person_id persisted inside dispatcher", async () => {
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "x@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "x@y.test" } });
 
     const dispatcher: OutboxDispatcher = async (row, persist) => {
       expect(row.twentyPersonId).toBeNull();
@@ -311,7 +418,7 @@ describe("flushBatch — claim & dispatch", () => {
   });
 
   test("transient failure → row reverts to pending with last_error stamped", async () => {
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "fail@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "fail@y.test" } });
     const dispatcher: OutboxDispatcher = async () => ({
       kind: "transient",
       message: "upstream 503",
@@ -324,7 +431,7 @@ describe("flushBatch — claim & dispatch", () => {
   });
 
   test("permanent failure → row immediately dead with last_error", async () => {
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "dead@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "dead@y.test" } });
     const dispatcher: OutboxDispatcher = async () => ({
       kind: "permanent",
       message: "401 Unauthorized",
@@ -335,7 +442,7 @@ describe("flushBatch — claim & dispatch", () => {
   });
 
   test("dispatcher that throws is treated as transient, NOT dead", async () => {
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "throw@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "throw@y.test" } });
     const dispatcher: OutboxDispatcher = async () => {
       throw new Error("dispatcher bug");
     };
@@ -353,7 +460,7 @@ describe("sub-step idempotency", () => {
     // Simulate the partial-success crash recovery path: a previous
     // attempt called upsertPerson and persisted the ID before the
     // process died. The next flush MUST NOT call upsertPerson again.
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "replay@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "replay@y.test" } });
     db.rows[0].twenty_person_id = "person_already_done";
 
     let upsertCalls = 0;
@@ -372,7 +479,7 @@ describe("sub-step idempotency", () => {
   });
 
   test("upsertPerson called exactly once across retries when twenty_person_id is set", async () => {
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "once@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "once@y.test" } });
 
     let upsertCalls = 0;
     const dispatcher: OutboxDispatcher = async (row, persist) => {
@@ -408,7 +515,7 @@ describe("sub-step idempotency", () => {
 
 describe("retry budget exhaustion", () => {
   test("transient failure on the 6th attempt is dead-lettered", async () => {
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "budget@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "budget@y.test" } });
     // Simulate 5 prior failed attempts so the next claim bumps attempts → 6.
     db.rows[0].attempts = 5;
 
@@ -428,7 +535,7 @@ describe("retry budget exhaustion", () => {
   });
 
   test("rows already at the dead threshold are not claimed at all", async () => {
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "skip@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "skip@y.test" } });
     // attempts=6 means the WHERE filter excludes the row.
     db.rows[0].attempts = 6;
 
@@ -448,7 +555,7 @@ describe("retry budget exhaustion", () => {
 
 describe("concurrent flush behaviour", () => {
   test("blocked claim returns 0 rows and the dispatcher is never called", async () => {
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "blocked@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "blocked@y.test" } });
     db.claimBlocked = true;
 
     let calls = 0;
@@ -466,7 +573,7 @@ describe("concurrent flush behaviour", () => {
   });
 
   test("batchLimit=0 is a no-op without touching the DB", async () => {
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "x@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "x@y.test" } });
     let calls = 0;
     const dispatcher: OutboxDispatcher = async () => {
       calls++;
@@ -494,11 +601,11 @@ describe("per-email serialization (#2870)", () => {
     // rows for the same email, demo enqueued first, signup second.
     // Pre-fix both would be claimed in one batch; post-fix the signup
     // waits for demo to land.
-    const demoId = await enqueue(db, {
+    const demoId = await enq(db, {
       eventType: "demo",
       payload: { source: "demo", email: "gworth@globexcorp.com", ip: "203.0.113.30" },
     });
-    const signupId = await enqueue(db, {
+    const signupId = await enq(db, {
       eventType: "signup",
       payload: { source: "signup", email: "gworth@globexcorp.com", name: "Greta Worth" },
     });
@@ -531,11 +638,11 @@ describe("per-email serialization (#2870)", () => {
     // the smoke run, indicating the two PATCHes raced. Post-fix the
     // .41 PATCH runs in tick 2 with .40 already committed in Twenty —
     // strictly sequential, no race possible.
-    const first = await enqueue(db, {
+    const first = await enq(db, {
       eventType: "demo",
       payload: { source: "demo", email: "msdyson@cyberdynesys.com", ip: "203.0.113.40" },
     });
-    const second = await enqueue(db, {
+    const second = await enq(db, {
       eventType: "demo",
       payload: { source: "demo", email: "msdyson@cyberdynesys.com", ip: "203.0.113.41" },
     });
@@ -562,10 +669,10 @@ describe("per-email serialization (#2870)", () => {
     // Per-email serialization must NOT serialize across distinct
     // emails — a workspace with 1000 leads-per-minute should still
     // drain at the same rate as before the fix.
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a1@example.test" } });
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a2@example.test" } });
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a3@example.test" } });
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a4@example.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "a1@example.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "a2@example.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "a3@example.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "a4@example.test" } });
 
     const dispatcher: OutboxDispatcher = async () => ({ kind: "ok" });
     const result = await flushBatch(db, dispatcher, 50);
@@ -577,7 +684,7 @@ describe("per-email serialization (#2870)", () => {
     // The cross-tick / cross-pod safety case: a row already in_flight
     // (e.g. claimed by a sibling pod that hasn't finished dispatching)
     // must block any newer same-email row from being claimed.
-    await enqueue(db, {
+    await enq(db, {
       eventType: "demo",
       payload: { source: "demo", email: "stuck@example.test" },
     });
@@ -587,7 +694,7 @@ describe("per-email serialization (#2870)", () => {
     db.rows[0].claimed_at = Date.now();
 
     // Newer row for the same email lands while the sibling is mid-flight.
-    await enqueue(db, {
+    await enq(db, {
       eventType: "demo",
       payload: { source: "demo", email: "stuck@example.test" },
     });
@@ -609,8 +716,8 @@ describe("per-email serialization (#2870)", () => {
     // a missing email field) must NOT get grouped together by the
     // DISTINCT ON in CLAIM_SQL — each NULL row is its own dedup
     // group via `COALESCE(email_key, id::text)`.
-    await enqueue(db, { eventType: "system", payload: { source: "system", op: "ping" } });
-    await enqueue(db, { eventType: "system", payload: { source: "system", op: "pong" } });
+    await enq(db, { eventType: "system", payload: { source: "system", op: "ping" } });
+    await enq(db, { eventType: "system", payload: { source: "system", op: "pong" } });
     expect(db.rows[0].email_key).toBeNull();
     expect(db.rows[1].email_key).toBeNull();
 
@@ -626,11 +733,11 @@ describe("per-email serialization (#2870)", () => {
     // lead-normalizer's `.toLowerCase().trim()`). Without this a
     // payload-side typo (`gworth@globexcorp.com` vs `GWorth@globexcorp.com`)
     // would bypass per-email serialization.
-    await enqueue(db, {
+    await enq(db, {
       eventType: "demo",
       payload: { source: "demo", email: "  gworth@globexcorp.com  " },
     });
-    await enqueue(db, {
+    await enq(db, {
       eventType: "signup",
       payload: { source: "signup", email: "GWORTH@GlobexCorp.com" },
     });
@@ -653,7 +760,7 @@ describe("per-email serialization (#2870)", () => {
     // should still enqueue — but loud-log so operators can grep for
     // the silent-serialization-disabled signal before atlasFirstSource
     // flips weeks later.
-    await enqueue(db, {
+    await enq(db, {
       eventType: "demo",
       // Cast through unknown so the test exercises the runtime guard
       // rather than relying on a TS-narrowed payload type.
@@ -675,7 +782,7 @@ describe("per-email serialization (#2870)", () => {
     // gate must match the actual enqueued event_type so conversion
     // payloads with a missing email surface as silent-serialization-
     // disabled.
-    await enqueue(db, {
+    await enq(db, {
       eventType: "stamp-conversion",
       payload: { source: "conversion" } as Record<string, unknown>,
     });
@@ -690,7 +797,7 @@ describe("per-email serialization (#2870)", () => {
     // A future `system`/`telemetry` event_type whose payload is
     // intentionally not email-keyed must NOT trigger the warn-log,
     // otherwise the log becomes noise and operators learn to ignore it.
-    await enqueue(db, {
+    await enq(db, {
       eventType: "system",
       payload: { source: "system", op: "ping" },
     });
@@ -707,11 +814,11 @@ describe("per-email serialization (#2870)", () => {
     // sibling gate, tick 1 dedupes via DISTINCT ON but tick 2 sees a
     // same-`created_at` pending sibling as not-older and claims a
     // second row while the first is still in_flight.
-    await enqueue(db, {
+    await enq(db, {
       eventType: "demo",
       payload: { source: "demo", email: "tied@example.test" },
     });
-    await enqueue(db, {
+    await enq(db, {
       eventType: "demo",
       payload: { source: "demo", email: "tied@example.test" },
     });
@@ -748,11 +855,11 @@ describe("per-email serialization (#2870)", () => {
     // in retry cooldown) waited. A new pod with the fixed CLAIM_SQL
     // must not then claim R1 — both would dispatch concurrently with
     // R2's still-in-flight upsert, flipping atlasLastSource.
-    await enqueue(db, {
+    await enq(db, {
       eventType: "demo",
       payload: { source: "demo", email: "rolling@hotfix.test", ip: "203.0.113.60" },
     });
-    await enqueue(db, {
+    await enq(db, {
       eventType: "demo",
       payload: { source: "demo", email: "rolling@hotfix.test", ip: "203.0.113.61" },
     });
@@ -777,8 +884,8 @@ describe("per-email serialization (#2870)", () => {
 
 describe("recoverInFlight", () => {
   test("resets stale in_flight rows to pending and returns the per-bucket counts", async () => {
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a@y.test" } });
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "b@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "a@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "b@y.test" } });
     db.rows[0].status = "in_flight";
     db.rows[0].claimed_at = null; // null claimed_at counts as stale
     db.rows[1].status = "in_flight";
@@ -791,7 +898,7 @@ describe("recoverInFlight", () => {
   });
 
   test("recently-claimed in_flight row is NOT reset (multi-pod safety)", async () => {
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "fresh@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "fresh@y.test" } });
     db.rows[0].status = "in_flight";
     db.rows[0].claimed_at = Date.now() - 1_000; // claimed 1s ago — within threshold
 
@@ -801,7 +908,7 @@ describe("recoverInFlight", () => {
   });
 
   test("exhausted in_flight rows are dead-lettered (not reset to pending)", async () => {
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "exhausted@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "exhausted@y.test" } });
     db.rows[0].status = "in_flight";
     db.rows[0].attempts = 6;
     db.rows[0].claimed_at = Date.now() - 60_000;
@@ -813,9 +920,9 @@ describe("recoverInFlight", () => {
   });
 
   test("done / dead / pending rows are untouched", async () => {
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "p@y.test" } });
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "d@y.test" } });
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "x@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "p@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "d@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "x@y.test" } });
     db.rows[1].status = "done";
     db.rows[2].status = "dead";
 
@@ -831,8 +938,8 @@ describe("recoverInFlight", () => {
 
 describe("persist helper binding", () => {
   test("setTwentyPersonId / setTwentyNoteId write the correct row id", async () => {
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a@y.test" } });
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "b@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "a@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "b@y.test" } });
 
     let nthCall = 0;
     const dispatcher: OutboxDispatcher = async (
@@ -859,7 +966,7 @@ describe("persist helper binding", () => {
 
 describe("Retry-After plumbing", () => {
   test("transient outcome with retryAfterMs stamps absolute retry_after on the row", async () => {
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "rate@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "rate@y.test" } });
     const before = Date.now();
     const dispatcher: OutboxDispatcher = async () => ({
       kind: "transient",
@@ -877,7 +984,7 @@ describe("Retry-After plumbing", () => {
   });
 
   test("transient outcome without retryAfterMs clears any prior retry_after", async () => {
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "clr@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "clr@y.test" } });
     db.rows[0].retry_after = Date.now() + 30_000;
 
     const dispatcher: OutboxDispatcher = async () => ({
@@ -910,7 +1017,7 @@ describe("Retry-After plumbing", () => {
 
 describe("dead-letter logging (AC #3)", () => {
   test("permanent dead-letter emits a structured log with rowId + last_error", async () => {
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "dead-log@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "dead-log@y.test" } });
     const dispatcher: OutboxDispatcher = async () => ({
       kind: "permanent",
       message: "401 unauthorised",
@@ -927,7 +1034,7 @@ describe("dead-letter logging (AC #3)", () => {
   });
 
   test("retry-budget exhaustion emits a structured log labelled dead_letter_exhausted", async () => {
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "budget@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "budget@y.test" } });
     db.rows[0].attempts = 5;
     const dispatcher: OutboxDispatcher = async () => ({
       kind: "transient",
@@ -944,7 +1051,7 @@ describe("dead-letter logging (AC #3)", () => {
   });
 
   test("transient (within budget) emits warn with retryAfterMs surfaced", async () => {
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "tr@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "tr@y.test" } });
     const dispatcher: OutboxDispatcher = async () => ({
       kind: "transient",
       message: "503",
@@ -969,7 +1076,7 @@ describe("end-to-end restart (AC #7)", () => {
     // crashed before reaching MARK_DONE. recoverInFlight on the new
     // pod's boot must flip it to pending; the very next flushBatch
     // must then claim and complete it.
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "e2e@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "e2e@y.test" } });
     db.rows[0].status = "in_flight";
     db.rows[0].attempts = 1;
     db.rows[0].twenty_person_id = "person-from-previous-life";
@@ -1003,7 +1110,7 @@ describe("terminal-status UPDATE retry", () => {
   test("MARK_DONE_SQL retries once after a transient pg failure, then succeeds", async () => {
     // Wrap the FakeOutboxDB to fail the first MARK_DONE call and let
     // the second through.
-    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "ok@y.test" } });
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "ok@y.test" } });
     let firstMarkDoneSeen = false;
     const wrappedDb: OutboxDB = {
       query: async <T extends Record<string, unknown>>(

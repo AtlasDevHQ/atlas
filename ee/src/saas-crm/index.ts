@@ -25,15 +25,29 @@
  * allowlist so optional fields like `atlasIp` the operator chose not
  * to create are silently dropped instead of 400-ing the upsert.
  *
- * Credential source — env-only (#2850). `TWENTY_API_KEY` /
- * `TWENTY_BASE_URL` belong to Atlas-the-operator; this Layer never
- * reads `twenty_integrations`. That table is reserved for per-workspace
- * plugin installs (Admin → Integrations → Twenty), which use the
- * `resolveWorkspaceCredentials` seam — not this Layer. The split makes
- * the Direction-2 leak structurally impossible: a future change here
- * cannot accidentally route Atlas's leads through a customer's Twenty
- * because the workspace function is not importable from this file
- * (enforced by `scripts/check-twenty-resolver-imports.sh`).
+ * Credential source — per-row routing on `workspace_id` (#2849, built
+ * on the #2850 resolver split):
+ *
+ *   - workspace_id matches the resolved operator id (or the sentinel
+ *     `<atlas-operator>` on regions/deploys with no flagged operator
+ *     row) → boot env config (`TWENTY_API_KEY` / `TWENTY_BASE_URL`)
+ *     resolved once via `tryResolveOperatorCredentials`. This is the
+ *     SaaS lead-capture pipeline at `crm.useatlas.dev`.
+ *   - any other workspace_id → fresh per-row lookup against
+ *     `twenty_integrations` via `resolveWorkspaceCredentials` +
+ *     `lookupTwentyDbCredentials`. The Direction-2 leak (operator
+ *     credentials leaking into per-tenant dispatch) is prevented by
+ *     the workspace_id stamp being a deterministic enqueue-time fact
+ *     rather than a query-time guess; the Direction-1 leak (per-tenant
+ *     credentials leaking into the operator pipeline) is prevented by
+ *     the resolver split in #2850 — `resolveWorkspaceCredentials`
+ *     never falls back to env regardless of the workspace_id value.
+ *
+ * The grep gate at `scripts/check-twenty-resolver-imports.sh` keeps
+ * `resolveOperatorCredentials` confined to `ee/src/saas-crm/`; this
+ * file is the only consumer of both resolvers, which is correct —
+ * it's the single seam where per-tenant and operator-env credentials
+ * are picked.
  */
 
 import { Effect, Layer } from "effect";
@@ -52,14 +66,19 @@ import {
   type OutboxPersistHelpers,
   type DispatchOutcome,
 } from "@atlas/api/lib/lead-outbox";
+import { lookupTwentyDbCredentials } from "@atlas/api/lib/integrations/twenty/credentials";
 import { isEnterpriseEnabled } from "../index";
 import {
   tryResolveOperatorCredentials,
+  resolveWorkspaceCredentials,
   normalizeLead,
   upsertPerson,
   createNote,
   getPersonRestSchema,
   TwentyClientError,
+  TwentyCredentialError,
+  isTwentyDecryptError,
+  type DbCredentialLookup,
   type ResolvedTwentyCredentials,
   type TwentyClientConfig,
 } from "@useatlas/twenty";
@@ -107,20 +126,114 @@ const REQUIRED_STANDARD_PERSON_FIELDS = ["emails"] as const;
 const STAMP_CONVERSION_EVENT_TYPE = "stamp-conversion";
 
 /**
- * Atlas's known Twenty CRM hostname. Used as the fallback when
- * `TWENTY_BASE_URL` is unset in the SaaS deployment — self-hosters
- * never hit this code path (Noop layer is the default; if they were
- * to install `@useatlas/twenty`, they go through the plugin's
- * `atlas.config.ts` which requires `baseUrl` explicitly).
+ * Fallback workspace_id stamped on operator-pipeline outbox rows when no
+ * `organization.is_operator_workspace = true` row exists at boot (#2849).
+ * Matches the literal in `0106_crm_outbox_workspace_id.sql` so the
+ * migration's backfill produces the same value that the runtime
+ * enqueue path uses on the same deploy shape (EU/APAC SaaS regions
+ * with the flusher disabled; self-hosted enterprise with no flagged
+ * operator org).
+ *
+ * Sentinel rather than NULL because the column is NOT NULL — and a
+ * sentinel routes deterministically (`workspaceId === operatorId`
+ * → env creds) rather than triggering a per-tenant DB lookup that
+ * would inevitably miss.
+ *
+ * 16 chars in `<…>` form so it cannot collide with a Better Auth
+ * `organization.id` (32-char nanoid). The sentinel never appears in
+ * `organization` itself, so a per-tenant dispatch can never resolve
+ * a real install against it.
+ */
+export const ATLAS_OPERATOR_WORKSPACE_SENTINEL = "<atlas-operator>";
+
+/**
+ * Resolve the SaaS operator workspace id at boot for stamping on
+ * outbox rows enqueued via `upsertLead` / `stampConversion`. Reads the
+ * single `organization.is_operator_workspace = true` row (#2702
+ * convention; US SaaS region has it backfilled by migration 0090).
+ *
+ * Three deploy shapes, three outcomes:
+ *
+ *  1. Flagged row exists → returns its id. Operator-pipeline rows
+ *     stamp the real org id and route via env creds.
+ *  2. No flagged row (EU/APAC, self-hosted enterprise pre-#2702
+ *     backfill, dev without managed auth) → returns the sentinel
+ *     {@link ATLAS_OPERATOR_WORKSPACE_SENTINEL}. Sentinel-stamped
+ *     rows route via env creds — identical to flagged-row traffic
+ *     by design (matches migration 0106's DEFAULT for new rows).
+ *  3. SELECT throws — pg transport blip, broken managed-auth schema,
+ *     anything other than "table doesn't exist" → THROWS (#2849
+ *     codex C2). Fail-loud is correct: if migration 0106 already
+ *     stamped existing rows with the real operator id and the
+ *     resolver silently fell back to the sentinel, those existing
+ *     rows would route through the per-tenant branch
+ *     (workspaceId !== sentinel && workspaceId !== resolved-sentinel)
+ *     and dead-letter against a missing twenty_integrations lookup.
+ *     SaasCrmLive maps a throw here to `available: false` + a per-
+ *     tenant-only dispatcher; operator-pipeline rows wait in
+ *     `crm_outbox` for a healthy boot rather than burning the retry
+ *     budget.
+ *
+ * "Table doesn't exist" (SQLSTATE 42P01) is the only fully-expected
+ * error and degrades to outcome 2 — that's the self-hosted dev shape
+ * where Better Auth's `organization` table isn't installed.
+ *
+ * Exported so tests can assert each of the three branches.
+ */
+export async function resolveOperatorWorkspaceId(): Promise<string> {
+  let rows: { id: string }[];
+  try {
+    rows = await internalQuery<{ id: string }>(
+      `SELECT id FROM organization WHERE is_operator_workspace = true LIMIT 1`,
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const code = (err as { code?: string } | null)?.code;
+    const looksLikeMissingTable =
+      code === "42P01" ||
+      message.includes('relation "organization" does not exist');
+    if (looksLikeMissingTable) {
+      // Non-managed-auth deploy. Sentinel is the correct steady state.
+      log.info(
+        { event: "saas_crm.operator_workspace_no_managed_auth" },
+        "No `organization` table — non-managed-auth deploy; using sentinel for operator workspace_id (outbox rows route through env creds).",
+      );
+      return ATLAS_OPERATOR_WORKSPACE_SENTINEL;
+    }
+    log.error(
+      {
+        err: message,
+        code,
+        event: "saas_crm.operator_workspace_lookup_failed",
+      },
+      "Failed to resolve operator workspace_id at boot — refusing to fall back to sentinel. " +
+        "Silent-fallback would mask real-org-id rows stamped by migration 0106 (those would route through per-tenant lookup and dead-letter). " +
+        "SaasCrm.available will be false until the SELECT succeeds; per-tenant dispatch continues.",
+    );
+    throw err instanceof Error ? err : new Error(message);
+  }
+  const id = rows[0]?.id;
+  if (typeof id === "string" && id.length > 0) return id;
+  // No flagged row — EU/APAC region or self-hosted enterprise without
+  // is_operator_workspace=true backfill. Legitimate steady state.
+  return ATLAS_OPERATOR_WORKSPACE_SENTINEL;
+}
+
+/**
+ * Operator-pipeline default when `TWENTY_BASE_URL` is unset. Self-
+ * hosters never hit this — the Noop layer is the default, and a
+ * direct `@useatlas/twenty` install routes through the plugin's
+ * `atlas.config.ts` which requires `baseUrl` explicitly. This
+ * constant is the OPERATOR's host and must never be used as a
+ * fallback for a per-tenant dispatch (codex C1 — tenant rows with
+ * NULL baseUrl dead-letter instead of falling through here).
  */
 const ATLAS_SAAS_TWENTY_BASE_URL = "https://crm.useatlas.dev";
 
 /**
- * Per-request timeout for the SaaS CRM client. With the outbox in
- * place the demo response no longer waits on the dispatch, so we
- * could relax this — but a tight timeout still bounds how long a
- * single flush tick blocks on a stuck Twenty. 5s keeps the flusher
- * responsive without thrashing on transient slow responses.
+ * Per-request timeout for the SaaS CRM client. 5s bounds per-tick
+ * blocking on a stuck Twenty without thrashing on transient slow
+ * responses.
  */
 const SAAS_TIMEOUT_MS = 5_000;
 
@@ -435,6 +548,60 @@ function classifyTwentyError(err: unknown, op: string): DispatchOutcome {
   return { kind: "transient", message };
 }
 
+/**
+ * Build the `available: false` no-op shape returned when the SaaS CRM
+ * cannot enqueue anything. `dispatcher` is null because there is no
+ * outbox to drain (no EE, or no internal DB) — the flusher gate in
+ * `layers.ts` skips wiring.
+ */
+function noopShape(): SaasCrmShape {
+  return {
+    available: false,
+    upsertLead: () => Effect.void,
+    stampConversion: () => Effect.void,
+    dispatcher: null,
+  };
+}
+
+/**
+ * Build the `available: false` shape returned when the operator
+ * pipeline is broken (no creds / probe failed / workspace-id resolve
+ * threw) but the outbox is still reachable. Per-tenant rows can
+ * dispatch via their own `twenty_integrations` credentials; operator-
+ * pipeline rows dead-letter with a permanent message pointing at the
+ * boot log that flipped operator state. `upsertLead` /
+ * `stampConversion` stay no-ops because enqueuing an operator-pipeline
+ * row we know would dead-letter is wasted work.
+ *
+ * Codex I2 (#2849): pre-this-fix, the flusher mounted only when
+ * `available: true`, which starved every customer-workspace row when
+ * the operator side broke.
+ */
+function tenantOnlyShape(reason: string): SaasCrmShape {
+  const dispatcher: NonNullable<
+    (SaasCrmShape & { available: false })["dispatcher"]
+  > = async (row, persist) =>
+    dispatchWithResolvedConfig(
+      {
+        // Sentinel matches no row's workspace_id post-migration-0106
+        // (real op id is stamped). The dispatcher routes only
+        // sentinel-stamped rows through the "operator pipeline broken"
+        // permanent branch via `operatorClientConfig: null`.
+        operatorWorkspaceId: ATLAS_OPERATOR_WORKSPACE_SENTINEL,
+        operatorClientConfig: null,
+        operatorBrokenReason: reason,
+      },
+      row,
+      persist,
+    );
+  return {
+    available: false,
+    upsertLead: () => Effect.void,
+    stampConversion: () => Effect.void,
+    dispatcher,
+  };
+}
+
 // Boot-time verification runs once inside Layer.effect; available reflects that one check.
 export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
   SaasCrm,
@@ -442,11 +609,7 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
     const enterpriseOn = isEnterpriseEnabled();
     if (!enterpriseOn) {
       log.info("Enterprise disabled — SaasCrm.available=false");
-      return {
-        available: false,
-        upsertLead: () => Effect.void,
-        stampConversion: () => Effect.void,
-      } satisfies SaasCrmShape;
+      return noopShape();
     }
 
     if (!hasInternalDB()) {
@@ -454,44 +617,59 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
         { event: "saas_crm.no_internal_db" },
         "Internal DB unavailable — SaasCrm.available=false. The outbox cannot enqueue without a Postgres backing store.",
       );
-      return {
-        available: false,
-        upsertLead: () => Effect.void,
-        stampConversion: () => Effect.void,
-      } satisfies SaasCrmShape;
+      return noopShape();
     }
 
-    // Credential source: env-only (#2850). `twenty_integrations` is
-    // off-limits here — that table is for per-workspace plugin installs
-    // (Admin → Integrations → Twenty), and routing Atlas's lead-capture
-    // through it would create the Direction-2 leak documented in #2850.
-    // The grep gate in scripts/check-twenty-resolver-imports.sh enforces
-    // that this file cannot import resolveWorkspaceCredentials.
+    // Credential source: env-only for the operator pipeline (#2850).
+    // `twenty_integrations` is off-limits here — that table is for
+    // per-workspace plugin installs (Admin → Integrations → Twenty),
+    // and routing Atlas's lead-capture through it would create the
+    // Direction-2 leak documented in #2850. Per-row routing in the
+    // dispatcher below reads `twenty_integrations` for per-tenant
+    // rows via the separate `resolveWorkspaceCredentials` seam; the
+    // grep gate at `scripts/check-twenty-resolver-imports.sh` keeps
+    // the two seams from collapsing into one.
     const bootCreds = tryResolveOperatorCredentials();
     if (!bootCreds) {
       log.warn(
         { event: "saas_crm.credentials_absent" },
-        "No Twenty operator credentials configured — SaasCrm.available=false. Set TWENTY_API_KEY in the environment (this env var is reserved for Atlas's own lead-capture pipeline; per-workspace plugin installs use Admin → Integrations → Twenty).",
+        "No Twenty operator credentials configured — operator pipeline disabled. Set TWENTY_API_KEY in the environment (this env var is reserved for Atlas's own lead-capture pipeline; per-workspace plugin installs use Admin → Integrations → Twenty). Per-tenant dispatch continues; operator-pipeline rows in crm_outbox dead-letter until creds are configured.",
       );
-      return {
-        available: false,
-        upsertLead: () => Effect.void,
-        stampConversion: () => Effect.void,
-      } satisfies SaasCrmShape;
+      return tenantOnlyShape(
+        "TWENTY_API_KEY unset at boot — operator-pipeline rows cannot dispatch until env creds are configured",
+      );
     }
+
+    // Resolve the operator workspace id BEFORE verifyCustomFields so a
+    // pg blip fails the entire operator pipeline (codex C2). The catch
+    // arm degrades to the tenant-only shape rather than crashing the
+    // Layer (codex I4: Effect.tryPromise, not Effect.promise).
+    const operatorWorkspaceIdResult = yield* Effect.tryPromise({
+      try: () => resolveOperatorWorkspaceId(),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(
+      Effect.map((id) => ({ ok: true as const, id })),
+      Effect.catchAll((err) =>
+        Effect.succeed({ ok: false as const, err: err.message }),
+      ),
+    );
+    if (!operatorWorkspaceIdResult.ok) {
+      return tenantOnlyShape(
+        `resolveOperatorWorkspaceId threw at boot: ${operatorWorkspaceIdResult.err}. ` +
+          `Operator-pipeline rows cannot route until the SELECT against the organization table succeeds.`,
+      );
+    }
+    const operatorWorkspaceId = operatorWorkspaceIdResult.id;
 
     const verifyResult = yield* Effect.promise(() => verifyCustomFields(bootCreds));
     if (verifyResult.ok === false) {
       // Already logged inside verifyCustomFields (missing required field,
-      // deterministic misconfig, or unreachable probe). Fail closed so
-      // /api/v1/contact returns 404 and the marketing site's mailto
-      // fallback captures leads while the operator investigates — never
-      // accept submissions we know will dead-letter at dispatch.
-      return {
-        available: false,
-        upsertLead: () => Effect.void,
-        stampConversion: () => Effect.void,
-      } satisfies SaasCrmShape;
+      // deterministic misconfig, or unreachable probe). Operator pipeline
+      // fails closed so /api/v1/contact returns 404 and the marketing
+      // site's mailto fallback captures leads. Tenant rows keep flowing.
+      return tenantOnlyShape(
+        "verifyCustomFields failed at boot — operator Twenty schema missing required fields or probe unreachable; see saas_crm.openapi_* event in boot logs.",
+      );
     }
 
     const optionalFieldStatus = OPTIONAL_PERSON_FIELDS.map((f) => ({
@@ -502,6 +680,9 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
       {
         baseUrl: bootCreds.baseUrl ?? ATLAS_SAAS_TWENTY_BASE_URL,
         credentialSource: bootCreds.source,
+        operatorWorkspaceId,
+        operatorWorkspaceIsSentinel:
+          operatorWorkspaceId === ATLAS_OPERATOR_WORKSPACE_SENTINEL,
         optional: optionalFieldStatus,
         event: "saas_crm.ready",
       },
@@ -509,14 +690,15 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
         `Optional fields ${OPTIONAL_PERSON_FIELDS.join(", ")} dispatched only when present in the workspace schema.`,
     );
 
-    // Boot-resolved env client config. Reused across every dispatch:
-    // the env-only source means TWENTY_API_KEY / TWENTY_BASE_URL are
-    // baked in at process start, and runtime mutation is not supported
-    // (admin-UI credential edits flow through the per-workspace plugin
-    // install, NOT here — see #2850). `allowedPersonFields` carries the
+    // Boot-resolved env client config. Used for every operator-pipeline
+    // row (workspace_id matches the resolved operator id or the
+    // sentinel) — TWENTY_API_KEY / TWENTY_BASE_URL are baked in at
+    // process start, and runtime mutation is not supported (admin-UI
+    // credential edits flow through the per-workspace plugin install,
+    // NOT here — see #2850). `allowedPersonFields` carries the
     // boot-probed schema allowlist so the client strips optional fields
-    // (e.g. `atlasIp`) the workspace didn't create.
-    const clientConfig: TwentyClientConfig = buildSaasClientConfig(
+    // (e.g. `atlasIp`) the operator workspace didn't create.
+    const operatorClientConfig: TwentyClientConfig = buildSaasClientConfig(
       bootCreds,
       verifyResult.present,
     );
@@ -529,6 +711,7 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
             await enqueue(outboxDb, {
               eventType: input.source,
               payload: input as unknown as Record<string, unknown>,
+              workspaceId: operatorWorkspaceId,
             });
           },
           catch: (err) => (err instanceof Error ? err : new Error(String(err))),
@@ -567,6 +750,7 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
             await enqueue(outboxDb, {
               eventType: STAMP_CONVERSION_EVENT_TYPE,
               payload: payload as unknown as Record<string, unknown>,
+              workspaceId: operatorWorkspaceId,
             });
           },
           catch: (err) => (err instanceof Error ? err : new Error(String(err))),
@@ -587,17 +771,215 @@ export const SaasCrmLive: Layer.Layer<SaasCrm> = Layer.effect(
           ),
         );
       },
-      // Single-config dispatcher: env credentials are static for the
-      // process lifetime, so we reuse the boot-resolved config (no
-      // per-row credential re-read). `verifyCustomFields` already ran
-      // at boot — if it had failed, this Layer would have short-
-      // circuited to `available: false` above.
+      // Per-row dispatcher (#2849). Routes by `row.workspaceId`:
+      //   - operator pipeline (workspaceId === operator id or the
+      //     sentinel) → boot-resolved env config. No per-row DB
+      //     round-trip; the path that drains Atlas's own lead-capture
+      //     queue stays as fast as the pre-#2849 single-config form.
+      //   - per-tenant (any other workspaceId) → resolve fresh from
+      //     `twenty_integrations` via `lookupTwentyDbCredentials`.
+      //     A missing or decrypt-failed row dead-letters that row
+      //     (permanent — operator must configure the install or
+      //     rotate the encryption key before the row can dispatch).
+      //
+      // No per-tenant credential cache. Per-row resolution costs one
+      // SELECT + one AES decrypt; that's measured in microseconds and
+      // a stale cached key would silently dispatch to the wrong
+      // Twenty after credential rotation. Add an LRU only if the
+      // backlog scale ever justifies it (today's volume: < 1 row /
+      // second sustained, well under what an uncached resolver
+      // tolerates).
       dispatcher: async (row, persist) => {
-        return dispatchOutboxRow(clientConfig, row, persist);
+        return dispatchWithResolvedConfig(
+          {
+            operatorWorkspaceId,
+            operatorClientConfig,
+          },
+          row,
+          persist,
+        );
       },
     } satisfies SaasCrmShape;
   }),
 );
+
+/**
+ * Routing closure handed to the flusher. Extracted to its own function
+ * so tests can drive the routing branches without booting the full
+ * Layer. The closure captures the operator's resolved id + boot-probed
+ * env client config; rows whose `workspaceId` matches the operator
+ * (including the sentinel form) dispatch through the env config,
+ * everything else resolves per-row from `twenty_integrations`.
+ *
+ * Error classification:
+ *
+ *   - `TwentyDecryptError` → permanent (decrypt failure means
+ *     `ATLAS_ENCRYPTION_KEYS` is misconfigured; operator must rotate
+ *     or re-save the row).
+ *   - `TwentyCredentialError` WITH no `cause` → permanent (genuine
+ *     missing-row; operator must install Twenty in this workspace).
+ *   - `TwentyCredentialError` WITH a `cause` → transient (the
+ *     resolver swallowed a transport error and re-threw as
+ *     missing-credentials; codex I1 — without this branch a pg blip
+ *     during lookup would burn the retry budget in a single tick).
+ *   - Anything else thrown → transient (network blip on the SELECT,
+ *     malformed pg response).
+ *
+ * `operatorClientConfig: null` means the operator probe / env-creds /
+ * workspace-id resolve failed at boot (codex I2 — `tenantOnlyShape`
+ * above). Per-tenant rows route normally; operator-pipeline rows (the
+ * comparison below) dead-letter as permanent so the platform-crm-
+ * outbox UI surfaces them for triage rather than letting them retry
+ * forever against a broken pipeline.
+ *
+ * @internal Exported for direct unit testing in `saas-crm.test.ts`.
+ */
+export interface DispatchRoutingDeps {
+  readonly operatorWorkspaceId: string;
+  /**
+   * Boot-resolved env config for operator-pipeline rows. `null` only
+   * when the SaasCrm Layer booted into the tenant-only shape — no
+   * operator creds, broken probe, or workspace-id resolve threw.
+   * Operator-pipeline rows then dead-letter as permanent.
+   */
+  readonly operatorClientConfig: TwentyClientConfig | null;
+  /**
+   * Human-readable reason the operator pipeline is broken. Only read
+   * when `operatorClientConfig === null` to compose the permanent
+   * dead-letter message.
+   */
+  readonly operatorBrokenReason?: string;
+  /**
+   * Per-tenant credential lookup. Defaults to the production adapter
+   * (`lookupTwentyDbCredentials`); tests inject a stub. Named
+   * `DbCredentialLookup` rather than `typeof` so the signature is
+   * stable when the adapter gains parameters.
+   */
+  readonly lookup?: DbCredentialLookup;
+}
+
+export async function dispatchWithResolvedConfig(
+  deps: DispatchRoutingDeps,
+  row: ClaimedOutboxRow,
+  persist: OutboxPersistHelpers,
+): Promise<DispatchOutcome> {
+  const lookup = deps.lookup ?? lookupTwentyDbCredentials;
+
+  // Operator pipeline: stamp matches the resolved operator id OR the
+  // sentinel (an EU/APAC region / self-hosted enterprise with no
+  // `is_operator_workspace=true` row backfilled). Both route through
+  // the env config — migration 0106 backfilled existing rows to either
+  // form via DEFAULT '<atlas-operator>' + an optional UPDATE to the
+  // real org id when one exists; new enqueues stamp whatever
+  // `resolveOperatorWorkspaceId` returned at boot.
+  if (
+    row.workspaceId === deps.operatorWorkspaceId ||
+    row.workspaceId === ATLAS_OPERATOR_WORKSPACE_SENTINEL
+  ) {
+    if (deps.operatorClientConfig === null) {
+      return {
+        kind: "permanent",
+        message:
+          `Operator-pipeline row (workspace=${row.workspaceId}) cannot dispatch — ` +
+          `operator pipeline disabled at boot: ${deps.operatorBrokenReason ?? "(reason unset)"}. ` +
+          `Fix the boot failure (TWENTY_API_KEY env / Twenty probe / operator workspace SELECT) and the next dispatch attempt will succeed.`,
+      };
+    }
+    return dispatchOutboxRow(deps.operatorClientConfig, row, persist);
+  }
+
+  // Per-tenant pipeline. Resolve fresh — a rotated key on the workspace
+  // row mid-batch must not dispatch under the old key, and a deleted
+  // row must dead-letter rather than fall back to the operator's env
+  // (the Direction-1 leak in #2850).
+  let creds: ResolvedTwentyCredentials;
+  try {
+    creds = await resolveWorkspaceCredentials(row.workspaceId, {
+      deployMode: "saas",
+      lookup,
+    });
+  } catch (err) {
+    if (isTwentyDecryptError(err)) {
+      return {
+        kind: "permanent",
+        message:
+          `resolveWorkspaceCredentials decrypt-failed for workspace=${row.workspaceId}: ` +
+          `${err instanceof Error ? err.message : String(err)}. ` +
+          `Rotate ATLAS_ENCRYPTION_KEYS or re-save the integration row before this lead can dispatch.`,
+      };
+    }
+    if (err instanceof TwentyCredentialError) {
+      // The resolver wraps lookup transport errors in TwentyCredentialError
+      // with the original carried as `cause` (plugins/twenty/src/credential-
+      // resolver.ts:355-387). Distinguish: cause-present → transient
+      // (transport blip; next tick may succeed); cause-absent → permanent
+      // (genuinely missing twenty_integrations row).
+      //
+      // Codex I1 (#2849): pre-this-fix, both shapes landed in permanent.
+      // A single pg blip would dead-letter a per-tenant row on its first
+      // attempt instead of cycling through the retry budget.
+      const cause = (err as { cause?: unknown }).cause;
+      if (cause !== undefined) {
+        return {
+          kind: "transient",
+          message:
+            `resolveWorkspaceCredentials transport-blip for workspace=${row.workspaceId}: ` +
+            `${cause instanceof Error ? cause.message : String(cause)}. ` +
+            `Retrying on next tick.`,
+        };
+      }
+      return {
+        kind: "permanent",
+        message:
+          `resolveWorkspaceCredentials missing for workspace=${row.workspaceId}: ` +
+          `${err.message}`,
+      };
+    }
+    // Lookup threw something other than the typed errors above (malformed
+    // pg response, our own bug). Treat as transient — a flaky pool
+    // shouldn't burn the retry budget.
+    return {
+      kind: "transient",
+      message:
+        `resolveWorkspaceCredentials threw for workspace=${row.workspaceId}: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  // Per-tenant rows must NEVER fall back to the operator's host
+  // (codex C1 #2849). A NULL `base_url` in twenty_integrations
+  // means the install row is misconfigured — `creds.baseUrl ??
+  // ATLAS_SAAS_TWENTY_BASE_URL` would route the tenant's apiKey
+  // against crm.useatlas.dev (auth fails, but the attempt lands
+  // in Atlas's CRM access logs with a foreign key — Direction-2
+  // leak vector). Dead-letter with an actionable message so the
+  // operator re-saves the install.
+  if (!creds.baseUrl) {
+    return {
+      kind: "permanent",
+      message:
+        `Twenty integration for workspace=${row.workspaceId} has no baseUrl configured. ` +
+        `Re-save the install with a valid URL under Admin → Integrations → Twenty. ` +
+        `Per-tenant dispatch never falls back to the operator host (${ATLAS_SAAS_TWENTY_BASE_URL}) — ` +
+        `that would route customer leads to Atlas's CRM.`,
+    };
+  }
+
+  // Per-tenant `allowedPersonFields` is `undefined` — the boot probe
+  // only covered the operator workspace's Twenty schema. The client's
+  // own request-time error surfaces a 422/400 if a customer's Twenty
+  // is missing one of the Atlas custom fields (Person-level), which
+  // dead-letters that row via `classifyTwentyError`. Out of scope for
+  // this slice: a per-tenant boot probe + cached allowlist (would let
+  // optional fields like atlasIp be silently dropped instead of 400'd).
+  // Tracked in the architecture-wins doc for a future deepening.
+  const tenantClientConfig: TwentyClientConfig = {
+    apiKey: creds.apiKey,
+    baseUrl: creds.baseUrl,
+    timeoutMs: SAAS_TIMEOUT_MS,
+  };
+  return dispatchOutboxRow(tenantClientConfig, row, persist);
+}
 
 // Re-exported for direct testing of the verification / dispatch logic.
 export {
@@ -608,3 +990,7 @@ export {
   STAMP_CONVERSION_EVENT_TYPE,
   REQUIRED_PERSON_FIELDS,
 };
+
+// `ATLAS_OPERATOR_WORKSPACE_SENTINEL`, `resolveOperatorWorkspaceId`,
+// and `dispatchWithResolvedConfig` are exported inline at their
+// definitions above for the per-row routing tests in #2849.

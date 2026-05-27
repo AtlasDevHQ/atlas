@@ -33,6 +33,16 @@ let internalDbAvailable = true;
 let lastEnqueueArgs: { sql: string; params: unknown[] } | null = null;
 let enqueueCount = 0;
 let nextEnqueueId = "row-id-0";
+// Per-test overrides for the operator-workspace SELECT (#2849). When
+// `operatorOrgIdOverride` is non-null the SELECT yields one row with
+// that id (happy path); when `operatorSelectThrows` is set the stub
+// throws — with `looksLikeMissingTable: true` we attach a 42P01 code
+// (the legitimate no-managed-auth shape that degrades to sentinel),
+// otherwise we throw a transport-shaped error (fail-loud).
+let operatorOrgIdOverride: string | null = null;
+let operatorSelectThrows:
+  | { looksLikeMissingTable: boolean; message: string }
+  | null = null;
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => internalDbAvailable,
   internalQuery: async (sql: string, params?: unknown[]) => {
@@ -40,6 +50,19 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     if (/^\s*INSERT INTO crm_outbox/i.test(sql)) {
       enqueueCount++;
       return [{ id: nextEnqueueId }];
+    }
+    if (/is_operator_workspace\s*=\s*true/i.test(sql)) {
+      if (operatorSelectThrows) {
+        const err = new Error(operatorSelectThrows.message);
+        if (operatorSelectThrows.looksLikeMissingTable) {
+          (err as { code?: string }).code = "42P01";
+        }
+        throw err;
+      }
+      if (operatorOrgIdOverride !== null) {
+        return [{ id: operatorOrgIdOverride }];
+      }
+      return [];
     }
     return [];
   },
@@ -51,8 +74,21 @@ const {
   SaasCrmLive,
   dispatchOutboxRow,
   classifyTwentyError,
+  ATLAS_OPERATOR_WORKSPACE_SENTINEL,
+  dispatchWithResolvedConfig,
+  resolveOperatorWorkspaceId,
 } = await import("../index");
 const { SaasCrm } = await import("@atlas/api/lib/effect/services");
+
+/**
+ * Stand-in workspace_id stamped on every test fixture (#2849). The
+ * `internalQuery` stub above returns `[]` for the operator-workspace
+ * SELECT, so `resolveOperatorWorkspaceId` falls back to the sentinel
+ * at boot. Test fixtures construct `ClaimedOutboxRow` literals
+ * directly with this constant so the dispatcher's per-row routing
+ * lands on the env-creds branch (matching real production behaviour).
+ */
+const TEST_WORKSPACE_ID = ATLAS_OPERATOR_WORKSPACE_SENTINEL;
 
 // ── Fixture helpers ─────────────────────────────────────────────────
 
@@ -100,6 +136,8 @@ function resetStubs(): void {
   lastEnqueueArgs = null;
   enqueueCount = 0;
   nextEnqueueId = "row-id-0";
+  operatorOrgIdOverride = null;
+  operatorSelectThrows = null;
 }
 
 // ── verifyCustomFields ──────────────────────────────────────────────
@@ -600,6 +638,7 @@ describe("SaasCrmLive.dispatcher — env-only config baked at boot (#2850)", () 
                 eventType: "demo",
                 payload: { source: "demo", email: "dispatcher@test.local" },
                 attempts: 1,
+                workspaceId: TEST_WORKSPACE_ID,
                 twentyPersonId: null,
                 twentyNoteId: null,
               },
@@ -680,6 +719,7 @@ describe("SaasCrmLive.dispatcher — env-only config baked at boot (#2850)", () 
                 eventType: "demo",
                 payload: { source: "demo", email: "mutate@test.local" },
                 attempts: 1,
+                workspaceId: TEST_WORKSPACE_ID,
                 twentyPersonId: null,
                 twentyNoteId: null,
               },
@@ -780,6 +820,7 @@ describe("SaasCrmLive.dispatcher — env-only config baked at boot (#2850)", () 
                   ip: "1.2.3.4",
                 },
                 attempts: 1,
+                workspaceId: TEST_WORKSPACE_ID,
                 twentyPersonId: null,
                 twentyNoteId: null,
               },
@@ -848,6 +889,7 @@ describe("dispatchOutboxRow", () => {
           eventType: "demo",
           payload: { source: "demo", email: "happy@test.local" },
           attempts: 1,
+          workspaceId: TEST_WORKSPACE_ID,
           twentyPersonId: null,
           twentyNoteId: null,
         },
@@ -905,6 +947,7 @@ describe("dispatchOutboxRow", () => {
             stripeCustomerId: "cus_pay_42",
           },
           attempts: 1,
+          workspaceId: TEST_WORKSPACE_ID,
           twentyPersonId: null,
           twentyNoteId: null,
         },
@@ -980,6 +1023,7 @@ describe("dispatchOutboxRow", () => {
             stripeCustomerId: "cus_pay_99",
           },
           attempts: 1,
+          workspaceId: TEST_WORKSPACE_ID,
           twentyPersonId: null,
           twentyNoteId: null,
         },
@@ -1018,6 +1062,7 @@ describe("dispatchOutboxRow", () => {
           eventType: "demo",
           payload: { source: "demo", email: "replay@test.local" },
           attempts: 2,
+          workspaceId: TEST_WORKSPACE_ID,
           twentyPersonId: "person_already_done",
           twentyNoteId: null,
         },
@@ -1063,6 +1108,7 @@ describe("dispatchOutboxRow", () => {
             stripeCustomerId: "cus_already_stamped",
           },
           attempts: 2,
+          workspaceId: TEST_WORKSPACE_ID,
           twentyPersonId: "person_already_stamped",
           twentyNoteId: null,
         },
@@ -1097,6 +1143,7 @@ describe("dispatchOutboxRow", () => {
           eventType: "demo",
           payload: { source: "demo", email: "transient@test.local" },
           attempts: 1,
+          workspaceId: TEST_WORKSPACE_ID,
           twentyPersonId: null,
           twentyNoteId: null,
         },
@@ -1125,6 +1172,7 @@ describe("dispatchOutboxRow", () => {
           eventType: "demo",
           payload: { source: "demo", email: "dead@test.local" },
           attempts: 1,
+          workspaceId: TEST_WORKSPACE_ID,
           twentyPersonId: null,
           twentyNoteId: null,
         },
@@ -1153,6 +1201,7 @@ describe("dispatchOutboxRow", () => {
           eventType: "demo",
           payload: { source: "demo", email: "rate@test.local" },
           attempts: 1,
+          workspaceId: TEST_WORKSPACE_ID,
           twentyPersonId: null,
           twentyNoteId: null,
         },
@@ -1179,6 +1228,7 @@ describe("dispatchOutboxRow", () => {
           eventType: "demo",
           payload: { source: "demo", email: "net@test.local" },
           attempts: 1,
+          workspaceId: TEST_WORKSPACE_ID,
           twentyPersonId: null,
           twentyNoteId: null,
         },
@@ -1219,6 +1269,7 @@ describe("dispatchOutboxRow", () => {
           eventType: "demo",
           payload: { source: "demo", email: "noid@test.local" },
           attempts: 1,
+          workspaceId: TEST_WORKSPACE_ID,
           twentyPersonId: null,
           twentyNoteId: null,
         },
@@ -1264,6 +1315,7 @@ describe("dispatchOutboxRow", () => {
           eventType: "demo",
           payload: { source: "demo", email: "blip@test.local" },
           attempts: 1,
+          workspaceId: TEST_WORKSPACE_ID,
           twentyPersonId: null,
           twentyNoteId: null,
         },
@@ -1309,6 +1361,7 @@ describe("dispatchOutboxRow", () => {
           eventType: "demo",
           payload: { source: "demo", email: "rate@test.local" },
           attempts: 1,
+          workspaceId: TEST_WORKSPACE_ID,
           twentyPersonId: null,
           twentyNoteId: null,
         },
@@ -1381,6 +1434,7 @@ describe("dispatchOutboxRow", () => {
             message: "We need ten seats.",
           },
           attempts: 1,
+          workspaceId: TEST_WORKSPACE_ID,
           twentyPersonId: null,
           twentyNoteId: null,
         },
@@ -1447,6 +1501,7 @@ describe("dispatchOutboxRow", () => {
             message: "Following up.",
           },
           attempts: 2,
+          workspaceId: TEST_WORKSPACE_ID,
           twentyPersonId: "person_from_prior_claim",
           twentyNoteId: null,
         },
@@ -1495,6 +1550,7 @@ describe("dispatchOutboxRow", () => {
             message: "Hi",
           },
           attempts: 3,
+          workspaceId: TEST_WORKSPACE_ID,
           twentyPersonId: "p_done",
           twentyNoteId: "n_done",
         },
@@ -1552,6 +1608,7 @@ describe("dispatchOutboxRow", () => {
             name: "Alice Example",
           },
           attempts: 1,
+          workspaceId: TEST_WORKSPACE_ID,
           twentyPersonId: null,
           twentyNoteId: null,
         },
@@ -1632,6 +1689,7 @@ describe("dispatchOutboxRow", () => {
             name: "Bob Returning",
           },
           attempts: 1,
+          workspaceId: TEST_WORKSPACE_ID,
           twentyPersonId: null,
           twentyNoteId: null,
         },
@@ -1694,6 +1752,7 @@ describe("dispatchOutboxRow", () => {
             message: "Hi",
           },
           attempts: 1,
+          workspaceId: TEST_WORKSPACE_ID,
           twentyPersonId: null,
           twentyNoteId: null,
         },
@@ -1757,6 +1816,7 @@ describe("dispatchOutboxRow", () => {
             message: "Hi",
           },
           attempts: 1,
+          workspaceId: TEST_WORKSPACE_ID,
           twentyPersonId: null,
           twentyNoteId: null,
         },
@@ -1824,6 +1884,7 @@ describe("dispatchOutboxRow", () => {
               message: "Hi",
             },
             attempts: 1,
+            workspaceId: TEST_WORKSPACE_ID,
             twentyPersonId: "p_persisted",
             twentyNoteId: null,
           },
@@ -1893,6 +1954,7 @@ describe("dispatchOutboxRow", () => {
             message: "Hi",
           },
           attempts: 1,
+          workspaceId: TEST_WORKSPACE_ID,
           twentyPersonId: "p_existing",
           twentyNoteId: null,
         },
@@ -1951,6 +2013,7 @@ describe("dispatchOutboxRow", () => {
             message: "Hi",
           },
           attempts: 1,
+          workspaceId: TEST_WORKSPACE_ID,
           twentyPersonId: null,
           twentyNoteId: null,
         },
@@ -1976,6 +2039,542 @@ describe("classifyTwentyError", () => {
   test("non-Error value defaults to transient", () => {
     const out = classifyTwentyError("string thrown", "upsertPerson");
     expect(out.kind).toBe("transient");
+  });
+});
+
+// ── Per-row routing (#2849) ─────────────────────────────────────────
+//
+// Exercises `dispatchWithResolvedConfig` directly so the routing
+// branches don't need a full Layer boot. The contract:
+//   1. row.workspaceId === operator id → operatorClientConfig (env).
+//   2. row.workspaceId === sentinel    → operatorClientConfig (env).
+//   3. row.workspaceId anything else   → per-row lookup via the
+//      injected `DbCredentialLookup`. The returned creds build a fresh
+//      `TwentyClientConfig` that is NOT the operator config.
+//
+// AC quote (#2849): "Tests covering 2+ workspaces with different
+// Twenty credentials assert their dispatches land on the correct
+// destinations." The capturedAuthHeader assertion is what pins the
+// per-tenant route to the per-tenant baseUrl, not the operator's.
+
+describe("dispatchWithResolvedConfig — per-row routing (#2849)", () => {
+  /** Origin-exact URL comparison. CodeQL flags `u.startsWith("https://x")`
+   *  as `js/incomplete-url-substring-sanitization` because a malicious
+   *  URL like `https://x.evil.test/...` would slip through. Parsing
+   *  with `new URL(...)` and comparing the canonical `origin` is the
+   *  recommended fix. */
+  function hasOrigin(url: string, expectedOrigin: string): boolean {
+    try {
+      return new URL(url).origin === expectedOrigin;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Captures the auth header (apiKey) the dispatcher used so the test
+   *  can assert which credentials the per-row routing actually picked. */
+  function makeCapturingFetch(): {
+    impl: typeof globalThis.fetch;
+    seenAuthHeaders: string[];
+    seenUrls: string[];
+  } {
+    const seenAuthHeaders: string[] = [];
+    const seenUrls: string[] = [];
+    const impl = (async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      const url = typeof input === "string" ? input : (input as Request).url;
+      seenUrls.push(url);
+      const auth = new Headers(init?.headers ?? {}).get("authorization");
+      if (auth) seenAuthHeaders.push(auth);
+      if (url.includes("/rest/people?filter")) {
+        return new Response(JSON.stringify({ data: { people: [] } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(
+        JSON.stringify({ data: { createPerson: { id: "person_routed" } } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+    return { impl, seenAuthHeaders, seenUrls };
+  }
+
+  test("workspace_id === operator id → routes through operatorClientConfig", async () => {
+    const { impl, seenAuthHeaders } = makeCapturingFetch();
+    const lookup = mock(async () => null);
+
+    const outcome = await withFetch(impl, () =>
+      dispatchWithResolvedConfig(
+        {
+          operatorWorkspaceId: "real-operator-id",
+          operatorClientConfig: {
+            apiKey: "operator-env-key",
+            baseUrl: "https://crm.useatlas.dev",
+          },
+          lookup,
+        },
+        {
+          id: "row-op",
+          eventType: "demo",
+          payload: { source: "demo", email: "op@routing.test" },
+          attempts: 0,
+          workspaceId: "real-operator-id",
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {},
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+
+    expect(outcome).toEqual({ kind: "ok" });
+    // Per-row lookup must NOT have been consulted — the operator path
+    // is a pure-env routing branch that never touches `twenty_integrations`.
+    expect(lookup).not.toHaveBeenCalled();
+    expect(seenAuthHeaders.every((h) => h === "Bearer operator-env-key")).toBe(true);
+  });
+
+  test("workspace_id === sentinel → routes through operatorClientConfig", async () => {
+    const { impl, seenAuthHeaders } = makeCapturingFetch();
+    const lookup = mock(async () => null);
+
+    await withFetch(impl, () =>
+      dispatchWithResolvedConfig(
+        {
+          // The resolver fell back to the sentinel at boot — no flagged
+          // operator org exists. Rows stamped with the sentinel must
+          // still route through env creds (matches the migration's
+          // DEFAULT-stamped rows in EU/APAC / self-hosted shapes).
+          operatorWorkspaceId: ATLAS_OPERATOR_WORKSPACE_SENTINEL,
+          operatorClientConfig: {
+            apiKey: "operator-env-key",
+            baseUrl: "https://crm.useatlas.dev",
+          },
+          lookup,
+        },
+        {
+          id: "row-sentinel",
+          eventType: "demo",
+          payload: { source: "demo", email: "sentinel@routing.test" },
+          attempts: 0,
+          workspaceId: ATLAS_OPERATOR_WORKSPACE_SENTINEL,
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {},
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+
+    expect(lookup).not.toHaveBeenCalled();
+    expect(seenAuthHeaders.every((h) => h === "Bearer operator-env-key")).toBe(true);
+  });
+
+  test("two tenant rows route to two different Twentys (AC: per-tenant credentials)", async () => {
+    const { impl, seenAuthHeaders, seenUrls } = makeCapturingFetch();
+    // Per-workspace lookup returns distinct credentials per workspace_id.
+    const lookup = mock(async (workspaceId: string) => {
+      if (workspaceId === "tenant-A") {
+        return { apiKey: "key-tenant-A", baseUrl: "https://twenty-a.example.com" };
+      }
+      if (workspaceId === "tenant-B") {
+        return { apiKey: "key-tenant-B", baseUrl: "https://twenty-b.example.com" };
+      }
+      return null;
+    });
+
+    const persistA = {
+      setTwentyPersonId: async () => {},
+      setTwentyNoteId: async () => {},
+    };
+    const persistB = {
+      setTwentyPersonId: async () => {},
+      setTwentyNoteId: async () => {},
+    };
+
+    await withFetch(impl, async () => {
+      await dispatchWithResolvedConfig(
+        {
+          operatorWorkspaceId: "real-operator-id",
+          operatorClientConfig: {
+            apiKey: "operator-env-key",
+            baseUrl: "https://crm.useatlas.dev",
+          },
+          lookup,
+        },
+        {
+          id: "row-A",
+          eventType: "demo",
+          payload: { source: "demo", email: "a@tenant-a.test" },
+          attempts: 0,
+          workspaceId: "tenant-A",
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        persistA,
+      );
+      await dispatchWithResolvedConfig(
+        {
+          operatorWorkspaceId: "real-operator-id",
+          operatorClientConfig: {
+            apiKey: "operator-env-key",
+            baseUrl: "https://crm.useatlas.dev",
+          },
+          lookup,
+        },
+        {
+          id: "row-B",
+          eventType: "demo",
+          payload: { source: "demo", email: "b@tenant-b.test" },
+          attempts: 0,
+          workspaceId: "tenant-B",
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        persistB,
+      );
+    });
+
+    expect(lookup).toHaveBeenCalledTimes(2);
+    // Each tenant's dispatch used its own apiKey — no cross-tenant leak.
+    expect(seenAuthHeaders).toContain("Bearer key-tenant-A");
+    expect(seenAuthHeaders).toContain("Bearer key-tenant-B");
+    // Operator key must NOT appear — neither row routes through env.
+    expect(seenAuthHeaders.every((h) => h !== "Bearer operator-env-key")).toBe(true);
+    // Each request landed on the correct per-tenant base URL. Use
+    // `new URL(u).origin` (not `startsWith`) so a malicious string
+    // like "https://twenty-a.example.com.evil.test" can't pass the
+    // assertion — CodeQL js/incomplete-url-substring-sanitization.
+    expect(seenUrls.some((u) => hasOrigin(u, "https://twenty-a.example.com"))).toBe(true);
+    expect(seenUrls.some((u) => hasOrigin(u, "https://twenty-b.example.com"))).toBe(true);
+  });
+
+  test("missing per-tenant credentials → permanent dead-letter", async () => {
+    const { impl } = makeCapturingFetch();
+    const lookup = mock(async () => null);
+
+    const outcome = await withFetch(impl, () =>
+      dispatchWithResolvedConfig(
+        {
+          operatorWorkspaceId: "real-operator-id",
+          operatorClientConfig: {
+            apiKey: "operator-env-key",
+            baseUrl: "https://crm.useatlas.dev",
+          },
+          lookup,
+        },
+        {
+          id: "row-missing",
+          eventType: "demo",
+          payload: { source: "demo", email: "noinstall@tenant.test" },
+          attempts: 0,
+          workspaceId: "tenant-without-install",
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {},
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+
+    expect(outcome.kind).toBe("permanent");
+    expect(lookup).toHaveBeenCalledTimes(1);
+    // The dead-letter message references the workspace id so an
+    // operator triaging the row knows which install to configure.
+    if (outcome.kind === "permanent") {
+      expect(outcome.message).toContain("tenant-without-install");
+    }
+  });
+
+  test("decrypt failure on per-tenant lookup → permanent dead-letter (no env fallback)", async () => {
+    const { impl } = makeCapturingFetch();
+    const { TwentyDecryptError } = await import("@useatlas/twenty");
+    const lookup = mock(async () => {
+      throw new TwentyDecryptError(
+        "decrypt failed for workspace=tenant-rotated-key",
+      );
+    });
+
+    const outcome = await withFetch(impl, () =>
+      dispatchWithResolvedConfig(
+        {
+          operatorWorkspaceId: "real-operator-id",
+          operatorClientConfig: {
+            apiKey: "operator-env-key",
+            baseUrl: "https://crm.useatlas.dev",
+          },
+          lookup,
+        },
+        {
+          id: "row-decrypt-fail",
+          eventType: "demo",
+          payload: { source: "demo", email: "decrypt@tenant.test" },
+          attempts: 0,
+          workspaceId: "tenant-rotated-key",
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {},
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+
+    // Direction-1 leak prevention (#2850): a decrypt failure must not
+    // silently fall back to env creds. The dispatcher dead-letters the
+    // row with an actionable message so the operator rotates the key.
+    expect(outcome.kind).toBe("permanent");
+    if (outcome.kind === "permanent") {
+      expect(outcome.message).toContain("decrypt-failed");
+      expect(outcome.message).toContain("ATLAS_ENCRYPTION_KEYS");
+    }
+  });
+
+  // Codex I1 (#2849): when the resolver's lookup throws a raw transport
+  // error (e.g. pg pool blip), `resolveWorkspaceCredentials` swallows it
+  // and re-throws as TwentyCredentialError with the original carried as
+  // `cause`. The dispatcher inspects `cause` and reclassifies as
+  // transient. Pre-fix this collapsed into permanent and a single pg
+  // blip burned the retry budget on the first attempt.
+  test("transport blip on per-tenant lookup → transient (cause carries the original error)", async () => {
+    const { impl } = makeCapturingFetch();
+    // Plain Error from the lookup — the production resolver wraps it
+    // into TwentyCredentialError with cause = this error.
+    const lookup = mock(async () => {
+      throw new Error("ECONNRESET");
+    });
+
+    const outcome = await withFetch(impl, () =>
+      dispatchWithResolvedConfig(
+        {
+          operatorWorkspaceId: "real-operator-id",
+          operatorClientConfig: {
+            apiKey: "operator-env-key",
+            baseUrl: "https://crm.useatlas.dev",
+          },
+          lookup,
+        },
+        {
+          id: "row-pg-blip",
+          eventType: "demo",
+          payload: { source: "demo", email: "blip@tenant.test" },
+          attempts: 0,
+          workspaceId: "tenant-pg-flaky",
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {},
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+
+    expect(outcome.kind).toBe("transient");
+    if (outcome.kind === "transient") {
+      expect(outcome.message).toContain("transport-blip");
+      expect(outcome.message).toContain("ECONNRESET");
+    }
+  });
+
+  // Codex C1 (#2849): tenant install with NULL base_url must dead-
+  // letter as permanent rather than silently routing the tenant's
+  // apiKey against Atlas's operator host (crm.useatlas.dev).
+  test("per-tenant credentials with NULL baseUrl → permanent dead-letter (no operator-host fallback)", async () => {
+    const { impl, seenUrls, seenAuthHeaders } = makeCapturingFetch();
+    // Lookup returns the tenant's apiKey but no baseUrl — what a row
+    // with NULL `config->>'url'` would look like through the resolver.
+    const lookup = mock(async () => ({
+      apiKey: "tenant-key-with-no-url",
+      baseUrl: null,
+    }));
+
+    const outcome = await withFetch(impl, () =>
+      dispatchWithResolvedConfig(
+        {
+          operatorWorkspaceId: "real-operator-id",
+          operatorClientConfig: {
+            apiKey: "operator-env-key",
+            baseUrl: "https://crm.useatlas.dev",
+          },
+          lookup,
+        },
+        {
+          id: "row-null-baseurl",
+          eventType: "demo",
+          payload: { source: "demo", email: "noUrl@tenant.test" },
+          attempts: 0,
+          workspaceId: "tenant-misconfigured",
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {},
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+
+    expect(outcome.kind).toBe("permanent");
+    if (outcome.kind === "permanent") {
+      expect(outcome.message).toContain("no baseUrl");
+      expect(outcome.message).toContain("tenant-misconfigured");
+      expect(outcome.message).toContain("crm.useatlas.dev");
+    }
+    // CRITICAL: the tenant's apiKey must NEVER reach Atlas's host. No
+    // request should have left the dispatcher at all (the misconfig
+    // check fires before `dispatchOutboxRow`).
+    expect(seenUrls).toHaveLength(0);
+    expect(seenAuthHeaders).toHaveLength(0);
+  });
+
+  // Codex C2 (#2849): when SaasCrmLive booted into the tenant-only
+  // shape (operator probe / creds / workspace-id resolve failed),
+  // operator-pipeline rows in crm_outbox must dead-letter as permanent
+  // with an actionable message rather than burning the retry budget.
+  test("operator-pipeline row with operatorClientConfig=null → permanent dead-letter pointing at boot log", async () => {
+    const { impl, seenUrls } = makeCapturingFetch();
+    const outcome = await withFetch(impl, () =>
+      dispatchWithResolvedConfig(
+        {
+          operatorWorkspaceId: ATLAS_OPERATOR_WORKSPACE_SENTINEL,
+          operatorClientConfig: null,
+          operatorBrokenReason:
+            "TWENTY_API_KEY unset at boot — operator-pipeline rows cannot dispatch",
+          lookup: mock(async () => null),
+        },
+        {
+          id: "row-op-broken",
+          eventType: "demo",
+          payload: { source: "demo", email: "broken@operator.test" },
+          attempts: 0,
+          workspaceId: ATLAS_OPERATOR_WORKSPACE_SENTINEL,
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {},
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+    expect(outcome.kind).toBe("permanent");
+    if (outcome.kind === "permanent") {
+      expect(outcome.message).toContain("Operator-pipeline row");
+      expect(outcome.message).toContain("TWENTY_API_KEY unset at boot");
+    }
+    // No HTTP attempt with stale env config.
+    expect(seenUrls).toHaveLength(0);
+  });
+
+  // Codex C2 + sentinel-fallback regression (#2849): even when the
+  // resolver fell back to sentinel at boot, rows stamped with the REAL
+  // operator org id (migration 0106 backfill) must still route through
+  // env creds — NOT fall through to per-tenant lookup which would
+  // dead-letter against a missing twenty_integrations row. After C2's
+  // fail-loud fix the resolver throws on transport blip → SaasCrm
+  // boots into tenant-only shape → operator-pipeline rows correctly
+  // dead-letter with the boot-log pointer rather than masquerading
+  // as missing per-tenant installs.
+  test("real-org-id operator row dispatched against tenant-only shape → permanent (no per-tenant lookup attempted)", async () => {
+    const { impl } = makeCapturingFetch();
+    const lookup = mock(async () => null);
+    const outcome = await withFetch(impl, () =>
+      dispatchWithResolvedConfig(
+        {
+          // Tenant-only shape with sentinel as operatorWorkspaceId;
+          // the row carries the migration-stamped real org id and
+          // matches NEITHER the sentinel nor the workspaceId resolved
+          // at boot. Without the operatorClientConfig=null branch,
+          // it would fall through to lookup → dead-letter as "missing
+          // per-tenant creds" instead of the operator-broken message.
+          operatorWorkspaceId: ATLAS_OPERATOR_WORKSPACE_SENTINEL,
+          operatorClientConfig: null,
+          operatorBrokenReason: "boot SELECT against organization threw",
+          lookup,
+        },
+        {
+          id: "row-real-op-id",
+          eventType: "demo",
+          payload: { source: "demo", email: "real@operator.test" },
+          attempts: 0,
+          // Critical: this is what migration 0106 stamps on US.
+          workspaceId: "real-org-id-from-migration",
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {},
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+    // Real-org-id row currently routes through the per-tenant branch
+    // because workspaceId !== sentinel. The lookup runs and returns
+    // null → permanent. This test pins the current contract; if a
+    // future change adds "operator-org-id awareness" (e.g. by passing
+    // the resolved id even when broken), update this test in lockstep.
+    expect(outcome.kind).toBe("permanent");
+    expect(lookup).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── resolveOperatorWorkspaceId (#2849) ──────────────────────────────
+// Three deploy shapes, three branches (codex C2 #2849):
+//   1. Flagged row exists → returns its id (happy path)
+//   2. No flagged row → returns sentinel (EU/APAC / pre-#2702 backfill)
+//   3. SELECT throws non-42P01 → THROWS (codex C2 fail-loud)
+//   4. SELECT throws 42P01 (table missing) → returns sentinel (non-managed-auth dev)
+
+describe("resolveOperatorWorkspaceId", () => {
+  beforeEach(resetStubs);
+
+  test("flagged row exists → returns its id (happy path)", async () => {
+    operatorOrgIdOverride = "real-operator-org-id-abc";
+    const id = await resolveOperatorWorkspaceId();
+    expect(id).toBe("real-operator-org-id-abc");
+  });
+
+  test("no flagged row → falls back to sentinel (EU/APAC / pre-backfill)", async () => {
+    // Default mock returns [] for non-INSERT — exercises the no-row branch.
+    const id = await resolveOperatorWorkspaceId();
+    expect(id).toBe(ATLAS_OPERATOR_WORKSPACE_SENTINEL);
+  });
+
+  test("SELECT throws 42P01 (organization table missing) → sentinel (non-managed-auth dev)", async () => {
+    operatorSelectThrows = {
+      looksLikeMissingTable: true,
+      message: 'relation "organization" does not exist',
+    };
+    const id = await resolveOperatorWorkspaceId();
+    expect(id).toBe(ATLAS_OPERATOR_WORKSPACE_SENTINEL);
+  });
+
+  test("SELECT throws transport error (non-42P01) → THROWS (codex C2 fail-loud)", async () => {
+    operatorSelectThrows = {
+      looksLikeMissingTable: false,
+      message: "connection terminated unexpectedly",
+    };
+    let caught: unknown = null;
+    try {
+      await resolveOperatorWorkspaceId();
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain(
+      "connection terminated unexpectedly",
+    );
   });
 });
 

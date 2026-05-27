@@ -360,6 +360,27 @@ export async function handleOpsSmokeCrm(args: string[]): Promise<void> {
       },
     };
 
+    // Smoke-test rows route through the operator pipeline — every
+    // persona is part of Atlas's own lead-capture flow, just executed
+    // via CLI for end-to-end verification (#2849). Resolve the operator
+    // workspace_id from the same tenant DB the dispatcher will read at
+    // claim time so the dispatcher's per-row routing key matches what
+    // the production enqueue path would have stamped on a real demo
+    // /signup. Falls back to the sentinel when the lookup yields nothing
+    // (CI fixture / fresh region with no operator org backfilled).
+    const operatorWorkspaceIdResolver = await import(
+      "@atlas/api/lib/db/migrations/scripts/backfill-crm-leads"
+    );
+    const operatorWorkspaceId =
+      await operatorWorkspaceIdResolver.resolveOperatorWorkspaceIdForBackfill({
+        async query<T extends Record<string, unknown>>(
+          sql: string,
+          params?: unknown[],
+        ): Promise<{ rows: T[] }> {
+          const r = await client.query(sql, params);
+          return { rows: r.rows as T[] };
+        },
+      });
     const enqueuedIds: string[] = [];
     try {
       for (let i = 0; i < events.length; i++) {
@@ -367,6 +388,7 @@ export async function handleOpsSmokeCrm(args: string[]): Promise<void> {
         const id = await enqueue(db, {
           eventType: event.source,
           payload: event as unknown as Record<string, unknown>,
+          workspaceId: operatorWorkspaceId,
         });
         enqueuedIds.push(id);
       }

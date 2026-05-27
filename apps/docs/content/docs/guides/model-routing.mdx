@@ -71,7 +71,7 @@ GET /api/v1/admin/model-config/catalog?provider=openai
 GET /api/v1/admin/model-config/catalog?provider=bedrock
 ```
 
-Pass `?fresh=true` (admin-only) to bypass the cache and force a fresh upstream fetch — every refresh is recorded against the [admin audit log](/architecture/audit) as `model_config.catalog_refresh`.
+Pass `?fresh=true` (admin-only) to bypass the cache and force a fresh upstream fetch — every refresh is recorded against the [admin audit log](/guides/audit-retention) as `model_config.catalog_refresh`.
 
 #### Two-tier cache
 

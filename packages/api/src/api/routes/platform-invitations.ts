@@ -1,15 +1,17 @@
 /**
  * Platform-admin cross-org invitation routes.
  *
- * Mounted at /api/v1/platform/invitations. Lets a `platform_admin` invite
- * a user into any organization they don't belong to — Better Auth's native
- * `createInvitation` enforces an org-membership gate on the caller that a
- * platform admin can't satisfy.
+ * Mounted at /api/v1/platform/invitations:
+ *   - POST   /        create an invitation in any organization
+ *   - DELETE /{id}    cancel an invitation in any organization
  *
- * The route re-implements the create flow with the membership check
- * bypassed. The platform_admin gate IS the bypass: `createPlatformRouter`
- * enforces `role === "platform_admin"` before any handler runs. Seat-limit,
- * audit, and email all route through the shared helpers in
+ * Both endpoints exist because Better Auth's native `createInvitation` and
+ * `cancelInvitation` enforce a caller-org-membership gate that a platform
+ * admin acting cross-org can't satisfy. These routes re-implement the
+ * native flows with the membership check bypassed; the `platform_admin`
+ * role check on `createPlatformRouter` IS the bypass.
+ *
+ * Seat-limit, audit, and email all route through the shared helpers in
  * `lib/auth/invitations.ts` so the row shape and side effects match what
  * Better Auth's hook path produces.
  */
@@ -607,6 +609,7 @@ platformInvitations.openapi(cancelInvitationRoute, async (c) => {
           invitationId: row.id,
           invitedEmail: row.email,
           role: row.role,
+          previousStatus: row.status,
           orgId: row.organizationId,
           cancelledBy: { id: user.id, email: user.label },
         }),

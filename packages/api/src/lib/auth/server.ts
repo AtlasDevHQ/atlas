@@ -1266,6 +1266,9 @@ export function buildPlugins() {
             role: Array.isArray(invitation.role)
               ? invitation.role.join(",")
               : String(invitation.role ?? ""),
+            // Better Auth's native cancelInvitation gates on status = pending
+            // before this hook fires.
+            previousStatus: "pending",
             orgId: org.id,
             cancelledBy: { id: cancelledBy.user.id, email: cancelledBy.user.email },
           });

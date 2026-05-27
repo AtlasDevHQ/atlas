@@ -330,23 +330,29 @@ export async function recordInvitationCreated(args: {
 
 /**
  * Audit a successful invitation cancellation ("revoke" in the UI;
- * "cancel" in the Better Auth API + audit constant). Symmetric to
- * `recordInvitationCreated` — same `withRequestContext` synthesis so
- * `logAdminAction` resolves the real actor (Better Auth's hooks fire
- * outside Atlas's AsyncLocalStorage), same `activeOrganizationId: orgId`
- * stamp so the audit row attributes to the TARGET workspace, not the
- * caller's active org (matters for cross-org platform-admin cancels
- * where the two diverge).
+ * "cancel" in the Better Auth API + audit constant). Same actor
+ * synthesis pattern as `recordInvitationCreated` — `withRequestContext`
+ * binds the AsyncLocalStorage that Better Auth's hooks fire outside of,
+ * and `activeOrganizationId: orgId` attributes the audit row to the
+ * TARGET workspace (matters for cross-org platform-admin cancels where
+ * the caller's active org diverges from the cancelled row's org).
  *
- * Email may be empty for passkey-only accounts and certain social-
- * provider edge cases — fall back to a user-id label so `createAtlasUser`'s
- * non-empty-label check doesn't throw after the DELETE has already
- * happened.
+ * `previousStatus` is a parameter rather than a constant because the
+ * cross-org platform route can DELETE any-status row (Better Auth's
+ * native cancelInvitation gates on `status = 'pending'`; the platform
+ * bypass route doesn't). The hook call site can pass `"pending"`
+ * directly — Better Auth's native gate guarantees it.
+ *
+ * Email may be empty for passkey-only accounts — fall back to a user-id
+ * label so `createAtlasUser`'s non-empty-label check doesn't throw
+ * after the DELETE has already happened. (Only reachable from the hook
+ * path; the route call site passes the already-validated `user.label`.)
  */
 export async function recordInvitationCancelled(args: {
   invitationId: string;
   invitedEmail: string;
   role: string;
+  previousStatus: string;
   orgId: string;
   cancelledBy: { id: string; email: string | null | undefined };
 }): Promise<void> {
@@ -366,7 +372,7 @@ export async function recordInvitationCancelled(args: {
         metadata: {
           invitedEmail: args.invitedEmail,
           role: args.role,
-          previousStatus: "pending",
+          previousStatus: args.previousStatus,
           orgId: args.orgId,
         },
       });

@@ -635,6 +635,43 @@ describe("DELETE /api/v1/platform/invitations/:id", () => {
     expect(lastCall?.metadata?.previousStatus).toBe("pending");
   });
 
+  it("audits previousStatus from the SELECTed row (not a hardcoded value)", async () => {
+    // The platform bypass route can DELETE rows of any status (Better
+    // Auth's native cancelInvitation gates on `pending`; this route
+    // doesn't). The audit must record the row's ACTUAL prior status,
+    // not a hardcoded "pending" that lies for already-expired/cancelled
+    // rows the operator is sweeping.
+    mocks.mockInternalQuery.mockImplementation(
+      defaultCancelQueryHandler({
+        existing: [
+          {
+            id: "inv-cancel-1",
+            email: "pending@example.com",
+            role: "admin",
+            organizationId: "target-org",
+            inviterId: "owner-1",
+            status: "expired",
+            expiresAt: new Date(Date.now() - 1000 * 60 * 60).toISOString(),
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      }),
+    );
+
+    const res = await app.request(
+      platformRequest("DELETE", "/api/v1/platform/invitations/inv-cancel-1"),
+    );
+    expect(res.status).toBe(200);
+
+    const lastCall = mockLogAdminAction.mock.calls.at(-1)?.[0] as {
+      metadata?: { previousStatus?: string; role?: string };
+    } | undefined;
+    expect(lastCall?.metadata?.previousStatus).toBe("expired");
+    // Role flows through from the SELECTed row too — verifies the
+    // audit isn't lying about role either.
+    expect(lastCall?.metadata?.role).toBe("admin");
+  });
+
   it("returns 403 for non-platform_admin callers", async () => {
     mocks.setOrgAdmin("org-1");
 

@@ -20,6 +20,7 @@ import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
+import { getWebOrigin } from "@atlas/api/lib/web-origin";
 
 const log = createLogger("auth:invitations");
 
@@ -188,8 +189,15 @@ export async function dispatchInvitationEmail(args: {
   organization: { id: string; name: string };
   inviter: { user: { name?: string | null; email: string } };
 }): Promise<void> {
+  // The accept-invitation page lives in the web app, NOT the API. In SaaS,
+  // api.useatlas.dev and app.useatlas.dev are different hosts — using the
+  // API URL here puts the recipient on a 404 page. `getWebOrigin()` resolves
+  // the web-app origin from CORS/trusted-origin config; fall back to the
+  // API URL chain only for self-hosted single-origin deploys where both
+  // surfaces share a host.
   const baseUrl =
-    process.env.NEXT_PUBLIC_ATLAS_API_URL
+    getWebOrigin()
+    ?? process.env.NEXT_PUBLIC_ATLAS_API_URL
     ?? process.env.BETTER_AUTH_URL
     ?? "http://localhost:3000";
   const acceptUrl = `${baseUrl}/accept-invitation/${args.invitationId}`;
@@ -303,11 +311,11 @@ export async function recordInvitationCreated(args: {
     },
   );
 
-  // Fire the "invite team" onboarding nudge. Awaited so an async hook
-  // update can't escape as an unhandled rejection.
+  // Fire the "invite team" onboarding nudge. Wrapped in try/catch so a
+  // hook failure can't fail the invite path.
   try {
     const { onTeamMemberInvited } = await import("@atlas/api/lib/email/hooks");
-    await onTeamMemberInvited({
+    onTeamMemberInvited({
       userId: args.inviter.id,
       email: args.inviter.email ?? "",
       orgId: args.orgId,

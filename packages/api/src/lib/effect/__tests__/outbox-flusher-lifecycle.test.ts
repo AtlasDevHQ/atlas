@@ -182,6 +182,53 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
     }
   });
 
+  test("ATLAS_CRM_OUTBOX_FLUSHER_ENABLED=false skips the tick fork but keeps recovery sweeps", async () => {
+    // Region-gate path (#2890): EU/APAC API pods set this to `false`
+    // because the lead-capture pipeline only writes to US's internal
+    // Postgres. The flusher polling loop is skipped, but the boot +
+    // shutdown recovery sweeps must still run so a future flip-back-on
+    // inherits clean state.
+    process.env.ATLAS_CRM_OUTBOX_FLUSHER_ENABLED = "false";
+    // Short tick so a regression (gate not honored) would surface
+    // ticks quickly inside the wait window.
+    process.env.ATLAS_CRM_OUTBOX_TICK_SECONDS = "1";
+    try {
+      const config = {} as Parameters<typeof makeSchedulerLive>[0];
+      const baseLayer = makeSchedulerLive(config);
+      const deps = Layer.mergeAll(
+        NoopEnterpriseDefaultsLayer,
+        makeAvailableSaasCrmLayer(),
+      );
+      const layer = baseLayer.pipe(Layer.provide(deps));
+
+      const rt = ManagedRuntime.make(layer);
+      await Effect.runPromise(rt.runtimeEffect);
+      // Window > 2× tick interval — if the fork ran we'd see depth
+      // snapshot queries pile up here. With the gate honored we see zero.
+      await new Promise((r) => setTimeout(r, 2_500));
+      await rt.dispose();
+
+      // queryDepthSnapshot from the tick reads `FROM crm_outbox` WITHOUT
+      // the `WHERE status = 'in_flight'` filter; the recovery sweeps do
+      // the opposite. Splitting on that filter cleanly partitions the two.
+      const tickCalls = sqlLog.filter(
+        (q) =>
+          /FROM crm_outbox/i.test(q.sql) && !/WHERE status = 'in_flight'/i.test(q.sql),
+      );
+      expect(tickCalls.length).toBe(0);
+
+      // Recovery sweeps must still have fired: one boot + one shutdown
+      // = 2 × 2 statements (dead-letter + reset) = 4 in_flight queries.
+      const recoveryCalls = sqlLog.filter((q) =>
+        /WHERE status = 'in_flight'/i.test(q.sql),
+      );
+      expect(recoveryCalls.length).toBe(4);
+    } finally {
+      delete process.env.ATLAS_CRM_OUTBOX_FLUSHER_ENABLED;
+      delete process.env.ATLAS_CRM_OUTBOX_TICK_SECONDS;
+    }
+  });
+
   test("Layer skips flusher wiring when SaasCrm.available is false", async () => {
     const noopSaasCrm: Layer.Layer<SaasCrmTag> = Layer.succeed(SaasCrm, {
       available: false,

@@ -744,3 +744,39 @@ export function getTickIntervalMs(): number {
  * across many ticks rather than starving the upstream rate limit in one.
  */
 export const FLUSH_BATCH_LIMIT = 50;
+
+/**
+ * Flusher region gate. Default `true` — every API instance that has
+ * `SaasCrm.available === true` and an internal DB runs the flusher,
+ * which preserves the pre-#2890 behavior.
+ *
+ * Set `ATLAS_CRM_OUTBOX_FLUSHER_ENABLED=false` on regional API pods
+ * (api-eu / api-apac) whose internal DB has no source of `crm_outbox`
+ * rows: the SaaS lead-capture pipeline at `crm.useatlas.dev` only
+ * writes to US, so EU/APAC tick 12×/min against a permanently-empty
+ * table — ~17k wasted `UPDATE ... SELECT ... FOR UPDATE SKIP LOCKED`
+ * statements per region per day, plus log noise (`lead_outbox.heartbeat`
+ * every 60s).
+ *
+ * Disabling the flusher does NOT skip the recovery sweep finalizer:
+ * boot-time `recoverInFlight` still resets stranded `in_flight` rows
+ * from a previous deploy's crash. So flipping the env on a region that
+ * previously had the flusher running is safe.
+ *
+ * Future direction (eventize): replace the always-on poll loop with
+ * edge-triggered enqueue-kick + per-row retry_after timer + 5min
+ * backstop sweep. Until then this env is the cheapest dial.
+ */
+export function isFlusherEnabled(): boolean {
+  const raw = process.env.ATLAS_CRM_OUTBOX_FLUSHER_ENABLED;
+  if (raw === undefined) return true;
+  const normalized = raw.trim().toLowerCase();
+  // Accept the usual boolean affordances; default-true semantics mean
+  // anything we don't recognize as a "no" stays enabled.
+  return !(
+    normalized === "false" ||
+    normalized === "0" ||
+    normalized === "no" ||
+    normalized === "off"
+  );
+}

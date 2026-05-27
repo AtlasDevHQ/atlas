@@ -70991,6 +70991,122 @@
         "operationId": "postPlatformInvitations"
       }
     },
+    "/api/v1/platform/invitations/{id}": {
+      "delete": {
+        "tags": [
+          "Platform Admin"
+        ],
+        "summary": "Cancel a cross-org invitation",
+        "description": "Lets a platform_admin cancel ('revoke' in the UI) any pending invitation regardless of org membership. Better Auth's native cancelInvitation enforces the same caller-org-membership gate as createInvitation; this route is the symmetric bypass. Same audit row shape as the native afterCancelInvitation hook.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Invitation row id to cancel."
+            },
+            "required": true,
+            "description": "Invitation row id to cancel.",
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Invitation cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Cancelled invitation id. Mirrors Better Auth's native cancelInvitation response shape."
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Invitation not found or internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deletePlatformInvitationsById"
+      }
+    },
     "/api/v1/billing": {
       "get": {
         "tags": [

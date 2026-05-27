@@ -572,33 +572,27 @@ platformInvitations.openapi(cancelInvitationRoute, async (c) => {
 
     const { id } = c.req.valid("param");
 
-    // SELECT the row first so we can stamp the audit with the TARGET
-    // orgId (and the original email/role) BEFORE the DELETE. The audit
-    // row outlives the invitation; reading first means the metadata
-    // reflects the actual cancelled row even if a concurrent retry races
-    // through. A bare DELETE ... RETURNING would also work, but the
-    // explicit SELECT keeps the 404 branch readable.
-    const existing = yield* Effect.promise(() =>
+    // Atomic gated delete. Matches Better Auth's native cancelInvitation
+    // semantics: only `pending` rows can be cancelled. Anything else
+    // (already accepted, already cancelled, expired) refuses with 404
+    // — the operator's next step is the same either way (refresh and
+    // re-evaluate). `RETURNING` gives us the row for the audit without
+    // a separate SELECT, and the WHERE-status clause closes the TOCTOU
+    // window between a stale-UI Revoke click and a concurrent accept.
+    const deleted = yield* Effect.promise(() =>
       internalQuery<InvitationRow>(
-        `SELECT id, email, role, "organizationId", "inviterId", status, "expiresAt", "createdAt"
-         FROM invitation WHERE id = $1 LIMIT 1`,
+        `DELETE FROM invitation WHERE id = $1 AND status = 'pending'
+         RETURNING id, email, role, "organizationId", "inviterId", status, "expiresAt", "createdAt"`,
         [id],
       ),
     );
-    if (existing.length === 0) {
+    if (deleted.length === 0) {
       return c.json(
-        { error: "not_found", message: "Invitation not found.", requestId },
+        { error: "not_found", message: "Invitation not found or not pending.", requestId },
         404,
       );
     }
-    const row = existing[0];
-
-    yield* Effect.promise(() =>
-      internalQuery(
-        `DELETE FROM invitation WHERE id = $1`,
-        [id],
-      ),
-    );
+    const row = deleted[0];
 
     // Audit. `tryPromise` + `Effect.either` so an audit-write throw
     // doesn't void the 200 — the row is already gone. Mirrors the
@@ -609,7 +603,8 @@ platformInvitations.openapi(cancelInvitationRoute, async (c) => {
           invitationId: row.id,
           invitedEmail: row.email,
           role: row.role,
-          previousStatus: row.status,
+          // WHERE status='pending' clause guarantees this.
+          previousStatus: "pending",
           orgId: row.organizationId,
           cancelledBy: { id: user.id, email: user.label },
         }),

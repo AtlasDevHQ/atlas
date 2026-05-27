@@ -549,23 +549,23 @@ describe("POST /api/v1/platform/invitations", () => {
 // ---------------------------------------------------------------------------
 
 /**
- * Default query handler for the cancel-route success path. Returns:
- * - 1 invitation row for the SELECT-before-DELETE lookup
- * - empty result for the DELETE
- *
- * Overrides let individual tests simulate ghost rows (no SELECT match)
- * or capture the DELETE params for assertions.
+ * Default query handler for the cancel-route success path. The route
+ * uses an atomic `DELETE ... WHERE id=$1 AND status='pending' RETURNING`
+ * — the gate-by-status is in SQL, not in JS. Overrides:
+ *   - `deleted`: rows the RETURNING clause emits (empty = 404 not-pending/ghost)
+ *   - `onDelete`: capture the id parameter for assertions
  */
 function defaultCancelQueryHandler(
   overrides: Partial<{
-    existing: Array<Record<string, unknown>>;
+    deleted: Array<Record<string, unknown>>;
     onDelete?: (id: unknown) => void;
   }> = {},
 ): (sql: string, params?: unknown[]) => Promise<unknown[]> {
   return async (sql, params) => {
     const s = sql.replace(/\s+/g, " ").trim();
-    if (s.startsWith("SELECT id, email, role, \"organizationId\"") && s.includes("WHERE id =")) {
-      return overrides.existing ?? [
+    if (s.startsWith("DELETE FROM invitation")) {
+      overrides.onDelete?.(params?.[0]);
+      return overrides.deleted ?? [
         {
           id: "inv-cancel-1",
           email: "pending@example.com",
@@ -577,10 +577,6 @@ function defaultCancelQueryHandler(
           createdAt: new Date().toISOString(),
         },
       ];
-    }
-    if (s.startsWith("DELETE FROM invitation")) {
-      overrides.onDelete?.(params?.[0]);
-      return [];
     }
     return [];
   };
@@ -635,41 +631,23 @@ describe("DELETE /api/v1/platform/invitations/:id", () => {
     expect(lastCall?.metadata?.previousStatus).toBe("pending");
   });
 
-  it("audits previousStatus from the SELECTed row (not a hardcoded value)", async () => {
-    // The platform bypass route can DELETE rows of any status (Better
-    // Auth's native cancelInvitation gates on `pending`; this route
-    // doesn't). The audit must record the row's ACTUAL prior status,
-    // not a hardcoded "pending" that lies for already-expired/cancelled
-    // rows the operator is sweeping.
+  it("refuses to cancel a non-pending invitation (stale UI / race protection)", async () => {
+    // The DELETE is gated by `status = 'pending'` in SQL, so an accepted
+    // or expired row (stale Revoke click after the recipient accepted
+    // in another tab) returns 0 rows from RETURNING and the handler
+    // 404s. No audit row is written for the no-op DELETE.
     mocks.mockInternalQuery.mockImplementation(
-      defaultCancelQueryHandler({
-        existing: [
-          {
-            id: "inv-cancel-1",
-            email: "pending@example.com",
-            role: "admin",
-            organizationId: "target-org",
-            inviterId: "owner-1",
-            status: "expired",
-            expiresAt: new Date(Date.now() - 1000 * 60 * 60).toISOString(),
-            createdAt: new Date().toISOString(),
-          },
-        ],
-      }),
+      defaultCancelQueryHandler({ deleted: [] }),
     );
 
     const res = await app.request(
-      platformRequest("DELETE", "/api/v1/platform/invitations/inv-cancel-1"),
+      platformRequest("DELETE", "/api/v1/platform/invitations/inv-already-accepted"),
     );
-    expect(res.status).toBe(200);
-
-    const lastCall = mockLogAdminAction.mock.calls.at(-1)?.[0] as {
-      metadata?: { previousStatus?: string; role?: string };
-    } | undefined;
-    expect(lastCall?.metadata?.previousStatus).toBe("expired");
-    // Role flows through from the SELECTed row too — verifies the
-    // audit isn't lying about role either.
-    expect(lastCall?.metadata?.role).toBe("admin");
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("not_found");
+    expect(body.message).toMatch(/not pending/i);
+    expect(mockLogAdminAction).not.toHaveBeenCalled();
   });
 
   it("returns 403 for non-platform_admin callers", async () => {
@@ -683,7 +661,7 @@ describe("DELETE /api/v1/platform/invitations/:id", () => {
 
   it("returns 404 not_found when the invitation row does not exist", async () => {
     mocks.mockInternalQuery.mockImplementation(
-      defaultCancelQueryHandler({ existing: [] }),
+      defaultCancelQueryHandler({ deleted: [] }),
     );
 
     const res = await app.request(

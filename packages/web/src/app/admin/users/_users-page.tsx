@@ -602,6 +602,7 @@ export function UsersPage({ scope }: UsersPageProps) {
           credentials,
         });
         if (!res.ok) {
+          // intentionally ignored: non-JSON error bodies fall back to the HTTP status message below
           const data = (await res.json().catch(() => null)) as { message?: string } | null;
           setRevokeError(data?.message ?? `Failed to revoke invitation (HTTP ${res.status}).`);
           return false;

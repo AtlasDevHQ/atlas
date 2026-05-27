@@ -120,20 +120,30 @@ class FakeOutboxDB implements OutboxDB {
     if (/^\s*UPDATE crm_outbox\s+SET status = 'in_flight'/i.test(sql)) {
       if (this.claimBlocked) return [] as T[];
       const limit = Number(p[0] ?? 50);
-      // Mirror CLAIM_SQL (0104): exclude rows whose email_key already
-      // has an in_flight sibling, then dedupe by email_key (NULL falls
-      // back to id), preserving created_at order for the final LIMIT.
-      const inFlightEmailKeys = new Set(
-        this.rows
-          .filter((r) => r.status === "in_flight" && r.email_key != null)
-          .map((r) => r.email_key as string),
-      );
+      // Mirror CLAIM_SQL (0104 + #2872 follow-up): a row is claimable
+      // only if NO older non-terminal same-email sibling exists. This
+      // gates both the in_flight-sibling-blocks-newer case AND the
+      // retry-cooldown-leapfrog case (older sibling in `pending` with
+      // future retry_after still blocks the newer fresh row). NULL
+      // email_key rows skip the gate (`o2.email_key IS NOT NULL`
+      // short-circuits) — each NULL row is its own dedup group via
+      // COALESCE(email_key, id::text).
+      const hasOlderNonTerminalSibling = (r: Row): boolean => {
+        if (r.email_key == null) return false;
+        return this.rows.some(
+          (o) =>
+            o.id !== r.id &&
+            o.email_key === r.email_key &&
+            (o.status === "pending" || o.status === "in_flight") &&
+            o.created_at < r.created_at,
+        );
+      };
       const candidates = this.rows
         .filter(
           (r) =>
             r.status === "pending" &&
             r.attempts < 6 &&
-            (r.email_key == null || !inFlightEmailKeys.has(r.email_key)),
+            !hasOlderNonTerminalSibling(r),
         )
         .sort((a, b) => a.created_at - b.created_at);
       const seenDedupKeys = new Set<string>();
@@ -624,6 +634,42 @@ describe("per-email serialization (#2870)", () => {
     const tick1 = await flushBatch(db, dispatcher, 50);
     expect(tick1.claimed).toBe(1);
     expect(dispatched).toBe(1);
+  });
+
+  test("enqueue warn-logs when an email-keyed event type lands without an email", async () => {
+    // A `demo` event-type payload that's missing/malformed `email`
+    // (type-system bypass, schema drift, plugin payload corruption)
+    // should still enqueue — but loud-log so operators can grep for
+    // the silent-serialization-disabled signal before atlasFirstSource
+    // flips weeks later.
+    await enqueue(db, {
+      eventType: "demo",
+      // Cast through unknown so the test exercises the runtime guard
+      // rather than relying on a TS-narrowed payload type.
+      payload: { source: "demo" } as Record<string, unknown>,
+    });
+    expect(db.rows[0].email_key).toBeNull();
+    const warn = loggerCalls.warn.find(
+      (c) => c.data.event === "lead_outbox.email_key_missing",
+    );
+    expect(warn).toBeDefined();
+    expect(warn?.data.eventType).toBe("demo");
+    expect(warn?.data.rawType).toBe("undefined");
+  });
+
+  test("enqueue does NOT warn-log for non-email-keyed event types", async () => {
+    // A future `system`/`telemetry` event_type whose payload is
+    // intentionally not email-keyed must NOT trigger the warn-log,
+    // otherwise the log becomes noise and operators learn to ignore it.
+    await enqueue(db, {
+      eventType: "system",
+      payload: { source: "system", op: "ping" },
+    });
+    expect(db.rows[0].email_key).toBeNull();
+    const warn = loggerCalls.warn.find(
+      (c) => c.data.event === "lead_outbox.email_key_missing",
+    );
+    expect(warn).toBeUndefined();
   });
 });
 

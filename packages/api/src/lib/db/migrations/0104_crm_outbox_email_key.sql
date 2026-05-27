@@ -18,13 +18,15 @@
 --      check cheap as the table grows).
 --
 -- `email_key` is application-populated by `enqueue` rather than a
--- `GENERATED ALWAYS AS` column so legacy payloads with a missing /
--- malformed `email` field stay claimable (NULL email_key never matches
--- another NULL in the NOT EXISTS clause, so those rows are treated as
--- independent — matching today's behaviour for any future event types
--- that aren't email-keyed). Lowercased + trimmed to match
--- `normalizeLead`'s email normalization, so casing differences in the
--- payload don't accidentally bypass serialization.
+-- `GENERATED ALWAYS AS` column so legacy payloads with a missing or
+-- malformed `email` field stay claimable. NULL rows skip the
+-- NOT EXISTS gate (`o2.email_key IS NOT NULL` short-circuits) and are
+-- their own dedup group in CLAIM_SQL via `COALESCE(email_key, id::text)`,
+-- so they dispatch independently — matching today's behaviour for any
+-- future event types that aren't email-keyed. Lowercased + trimmed to
+-- match the runtime `extractEmailKey` helper (`.trim().toLowerCase()`)
+-- and the lead-normalizer's email handling, so casing/whitespace
+-- differences in the payload don't accidentally bypass serialization.
 
 ALTER TABLE crm_outbox ADD COLUMN IF NOT EXISTS email_key TEXT;
 
@@ -34,12 +36,20 @@ ALTER TABLE crm_outbox ADD COLUMN IF NOT EXISTS email_key TEXT;
 -- concurrently (same as the pre-fix behaviour, which is the bug). The
 -- backfill is idempotent (`WHERE email_key IS NULL`) so running this
 -- migration twice is a no-op.
+--
+-- `NULLIF(LOWER(TRIM(...)), '')` mirrors the runtime `extractEmailKey`
+-- helper exactly: a whitespace-only payload (`"   "`) passes a naive
+-- pre-TRIM `<> ''` check but collapses to `''` after TRIM. We MUST
+-- land NULL rather than `''` for those rows — a non-NULL empty-string
+-- email_key would collide with every other whitespace-only row in
+-- CLAIM_SQL's NOT EXISTS gate, causing all such rows to mutually
+-- block each other and drain at one-per-tick globally. `jsonb_typeof`
+-- guards against `"email": null` and non-string types up front.
 UPDATE crm_outbox
-SET email_key = LOWER(TRIM(payload->>'email'))
+SET email_key = NULLIF(LOWER(TRIM(payload->>'email')), '')
 WHERE email_key IS NULL
-  AND payload ? 'email'
-  AND payload->>'email' IS NOT NULL
-  AND payload->>'email' <> '';
+  AND jsonb_typeof(payload->'email') = 'string'
+  AND NULLIF(LOWER(TRIM(payload->>'email')), '') IS NOT NULL;
 
 -- Partial index supports both the DISTINCT-ON dedupe inside CLAIM_SQL
 -- and the NOT EXISTS gate. Filtering on the active statuses keeps the

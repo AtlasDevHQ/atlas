@@ -22,6 +22,7 @@
 
 import { Client } from "pg";
 import { normalizeLead, type AtlasLeadEvent, type NormalizedLead } from "@useatlas/twenty/lead-normalizer";
+import { extractEmailKey } from "../../../lead-outbox/outbox";
 
 /** Surface every code path the script touches — keeps the unit tests
  *  decoupled from `pg.Client`. The `pg` driver's `query` returns a
@@ -124,18 +125,26 @@ const COUNT_SQL = `SELECT COUNT(*)::bigint AS n FROM demo_leads`;
 /**
  * Build a multi-row VALUES INSERT for one batch — one round trip per
  * batch instead of one per row. Positional placeholders
- * (`($1, $2::jsonb), ($3, $4::jsonb), …`) avoid binding the payload
- * JSON through `text[]`: JSON contains `{`, `,`, `"` — characters
- * that collide with Postgres's array-literal syntax and cause silent
- * row-count inflation under driver-side array serialization.
+ * (`($1, $2::jsonb, $3), ($4, $5::jsonb, $6), …`) avoid binding the
+ * payload JSON through `text[]`: JSON contains `{`, `,`, `"` —
+ * characters that collide with Postgres's array-literal syntax and
+ * cause silent row-count inflation under driver-side array
+ * serialization.
+ *
+ * `email_key` is the third per-row column (since 0104, #2870) so the
+ * historic backfill participates in per-email serialization. Without
+ * it, demo_leads rows with duplicate emails would land with NULL
+ * email_key, fall into `COALESCE(email_key, id::text)`'s per-id dedup
+ * group, and dispatch concurrently — exactly the atlasFirstSource
+ * source-swap class of bug the hotfix is designed to prevent.
  */
 function buildBulkEnqueueSql(rowCount: number): string {
   const placeholders: string[] = [];
   for (let i = 0; i < rowCount; i++) {
-    const base = i * 2;
-    placeholders.push(`($${base + 1}, $${base + 2}::jsonb, 'pending')`);
+    const base = i * 3;
+    placeholders.push(`($${base + 1}, $${base + 2}::jsonb, $${base + 3}, 'pending')`);
   }
-  return `INSERT INTO crm_outbox (event_type, payload, status) VALUES ${placeholders.join(", ")} RETURNING id`;
+  return `INSERT INTO crm_outbox (event_type, payload, email_key, status) VALUES ${placeholders.join(", ")} RETURNING id`;
 }
 
 /** Map a `demo_leads` row to the corresponding `AtlasLeadEvent`.
@@ -206,9 +215,11 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillSta
           ]);
     if (page.rows.length === 0) break;
 
-    // Flat `[event_type_0, payload_0, event_type_1, payload_1, …]` so
-    // the positional placeholders in `buildBulkEnqueueSql` line up with
-    // their VALUES tuples.
+    // Flat `[event_type_0, payload_0, email_key_0, event_type_1, …]`
+    // so the positional placeholders in `buildBulkEnqueueSql` line up
+    // with their VALUES tuples. `extractEmailKey` is shared with the
+    // runtime `enqueue` so the bulk path produces identical email_key
+    // values for identical payloads (#2870).
     const params: unknown[] = [];
     for (const row of page.rows) {
       const event = toLeadEvent(row, options.source);
@@ -218,7 +229,11 @@ export async function runBackfill(options: BackfillOptions): Promise<BackfillSta
       // Mirroring the runtime path means a normalizer change post-deploy
       // doesn't strand backfilled rows in `payload` shapes the dispatcher
       // can't interpret.
-      params.push(event.source, JSON.stringify(event));
+      params.push(
+        event.source,
+        JSON.stringify(event),
+        extractEmailKey({ email: event.email }),
+      );
 
       if (options.dryRun && sample.length < DRY_RUN_SAMPLE_SIZE) {
         sample.push(normalized);

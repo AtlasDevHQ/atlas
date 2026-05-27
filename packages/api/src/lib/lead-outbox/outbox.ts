@@ -178,17 +178,47 @@ const ENQUEUE_SQL = `
  * keeps a long upstream-requested delay from being clobbered by an
  * eager tier value (e.g. 30s tier-1 vs `Retry-After: 3600`).
  *
- * Per-email serialization (#2870): two rows for the same email are
- * never claimed concurrently. The candidate set excludes any row whose
- * `email_key` already has an `in_flight` sibling (the NOT EXISTS
- * clause), and within each tick the inner `DISTINCT ON (dedup_key)`
- * picks only the earliest pending row per email. `dedup_key` is
- * `COALESCE(email_key, id::text)` so NULL-email_key rows (legacy or
- * non-email-keyed future event types) fall back to their own id and
- * are never grouped — each NULL row dispatches independently. The
- * outer LIMIT applies to the deduped set, not the raw candidate set,
- * so a workspace with a backlog of same-email events drains one event
- * per email per tick rather than starving other emails behind it.
+ * Per-email serialization (#2870): a row is claimable only if NO
+ * older non-terminal same-email sibling exists. Three layers cooperate:
+ *
+ *   1. **NOT EXISTS gate (older-sibling)** — excludes the row from
+ *      `claimable` if any older same-email row is still `pending` or
+ *      `in_flight`. The `o2.created_at < crm_outbox.created_at`
+ *      clause is essential — without it every row would block itself
+ *      and the queue would stall. This closes the retry-cooldown
+ *      leapfrog where R1 (older, in transient-fail backoff) is
+ *      filtered out of `claimable` by the due-time check, letting R2
+ *      (newer, fresh) be claimed first and flip atlasFirstSource.
+ *   2. **Advisory xact lock per email_key** — `pg_try_advisory_xact_lock`
+ *      gives us serialization across concurrent transactions that
+ *      MVCC alone can't provide. Without it, two flusher pods could
+ *      each see the other's pre-commit UPDATE as invisible, both
+ *      pass the NOT EXISTS gate at lookup time, and both end up with
+ *      different same-email rows in_flight (each pod skips the
+ *      other's locked row via SKIP LOCKED, then claims a different
+ *      sibling). The advisory lock is transaction-scoped: held until
+ *      commit, then released, so the next tick re-acquires cleanly.
+ *      NULL email_key rows skip the lock (no per-row serialization
+ *      needed — those are their own dedup groups).
+ *   3. **DISTINCT ON dedupe (intra-statement)** — belt-and-suspenders:
+ *      within a single tick the NOT EXISTS gate already keeps only
+ *      the earliest same-email row, but DISTINCT ON formalizes the
+ *      "one row per email_key per batch" contract for any future
+ *      WHERE-clause regression. `dedup_key` is
+ *      `COALESCE(email_key, id::text)` so NULL-email_key rows fall
+ *      back to their own id and dispatch independently. The
+ *      `id` tie-breaker on `ORDER BY` makes claim order deterministic
+ *      when two rows share `created_at` (e.g. bulk INSERT).
+ *
+ * The outer LIMIT applies to the deduped set, not the raw candidate
+ * set, so a workspace with a backlog of same-email events drains one
+ * event per email per tick rather than starving other emails behind
+ * it.
+ *
+ * Advisory-lock namespace: the first arg `2870` (the issue number)
+ * is the lock class; the second arg is `hashtext(email_key)`. The
+ * two-key variant avoids collisions with any other advisory locks
+ * the codebase may take elsewhere.
  */
 const CLAIM_SQL = `
   UPDATE crm_outbox
@@ -205,17 +235,23 @@ const CLAIM_SQL = `
           SELECT 1 FROM crm_outbox o2
           WHERE o2.email_key IS NOT NULL
             AND o2.email_key = crm_outbox.email_key
-            AND o2.status = 'in_flight'
+            AND o2.id <> crm_outbox.id
+            AND o2.status IN ('pending', 'in_flight')
+            AND o2.created_at < crm_outbox.created_at
         )
-      ORDER BY created_at
+        AND (
+          email_key IS NULL
+          OR pg_try_advisory_xact_lock(2870, hashtext(email_key))
+        )
+      ORDER BY created_at, id
       FOR UPDATE SKIP LOCKED
     ),
     deduped AS (
       SELECT DISTINCT ON (COALESCE(email_key, id::text)) id, created_at
       FROM claimable
-      ORDER BY COALESCE(email_key, id::text), created_at
+      ORDER BY COALESCE(email_key, id::text), created_at, id
     )
-    SELECT id FROM deduped ORDER BY created_at LIMIT $1
+    SELECT id FROM deduped ORDER BY created_at, id LIMIT $1
   )
   RETURNING id, event_type, payload, attempts, twenty_person_id, twenty_note_id
 `;
@@ -320,15 +356,47 @@ export const SHUTDOWN_RECOVERY_STALE_MS = 30_000;   // 30 s
 //  Public API
 // ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Event types whose payload is contractually email-keyed. A row of one
+ * of these types landing with a NULL email_key is almost always a bug
+ * — a type-system bypass, schema drift, or upstream payload corruption
+ * — and we lose per-email serialization for that row (it dispatches
+ * concurrently with siblings). Warn-log so operators can grep and
+ * investigate before atlasFirstSource flips weeks later.
+ *
+ * New email-keyed event types must be added here AND have an `email`
+ * field on their payload type — the runtime check is the only defense
+ * against a TypeScript cast or `unknown`-laundered payload silently
+ * disabling serialization.
+ */
+const EMAIL_KEYED_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "demo",
+  "signup",
+  "sales-form",
+  "conversion",
+]);
+
 /** Insert a row in `pending` status. Returns the new row id. */
 export async function enqueue(
   db: OutboxDB,
   input: EnqueueInput,
 ): Promise<string> {
+  const emailKey = extractEmailKey(input.payload);
+  if (emailKey === null && EMAIL_KEYED_EVENT_TYPES.has(input.eventType)) {
+    const raw = input.payload["email"];
+    log.warn(
+      {
+        eventType: input.eventType,
+        rawType: typeof raw,
+        event: "lead_outbox.email_key_missing",
+      },
+      "Email-keyed event enqueued with no extractable email — per-email serialization disabled for this row",
+    );
+  }
   const rows = await db.query<{ id: string }>(ENQUEUE_SQL, [
     input.eventType,
     JSON.stringify(input.payload),
-    extractEmailKey(input.payload),
+    emailKey,
   ]);
   const id = rows[0]?.id;
   if (!id) {
@@ -347,14 +415,18 @@ export async function enqueue(
  * (`COALESCE(email_key, id::text)` makes NULL rows their own dedup
  * group).
  *
- * Normalization matches `normalizeLead` in `@useatlas/twenty`'s
- * lead-normalizer (`.toLowerCase().trim()`) so casing/whitespace
- * differences across event payloads for the same prospect don't
- * accidentally bypass per-email serialization.
+ * Normalization is `.trim().toLowerCase()`. The SQL backfill in
+ * migration 0104 uses the equivalent `NULLIF(LOWER(TRIM(...)), '')`
+ * so both code paths produce identical email_key values for the
+ * same input. Note: the lead-normalizer in `@useatlas/twenty` uses
+ * the reverse order (`.toLowerCase().trim()`) — for ASCII emails
+ * both orders produce identical output, but if you ever extend
+ * either path to non-ASCII inputs the orders should be reconciled.
  *
- * Exported for the migration backfill script (kept in lockstep with
- * the SQL `LOWER(TRIM(payload->>'email'))` in 0104). Not part of the
- * public outbox surface; new callers should pass payloads through
+ * Exported so unit tests can assert lockstep with the 0104 backfill
+ * and so the bulk-enqueue path in `backfill-crm-leads.ts` populates
+ * email_key the same way `enqueue` does. Not part of the public
+ * outbox surface; new callers should pass payloads through
  * `enqueue`, not call this directly.
  */
 export function extractEmailKey(payload: Record<string, unknown>): string | null {

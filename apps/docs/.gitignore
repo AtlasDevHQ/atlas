@@ -2,3 +2,5 @@
 .source/
 node_modules/
 next-env.d.ts
+# next build output: 'export' artifacts
+out/

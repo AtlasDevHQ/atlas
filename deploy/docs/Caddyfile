@@ -1,0 +1,109 @@
+{
+	# Railway terminates TLS at its edge; the docs container speaks HTTP.
+	auto_https off
+	admin off
+}
+
+# {$PORT:3003} lets Railway pick the port; defaults to 3003 to match the
+# port the old Next.js docs runner used (kept for service-config continuity).
+:{$PORT:3003} {
+	root * /srv
+
+	encode zstd gzip
+
+	# Next.js content-hashes /_next/static URLs, so they're safe to pin immutably.
+	@nextStatic path /_next/static/*
+	header @nextStatic Cache-Control "public, max-age=31536000, immutable"
+
+	# OG images and the Orama search index regenerate only on rebuild — long-cache.
+	# /api/search is ~24MB; revalidating every 5min would torpedo the cost win.
+	@longCache path /docs-og/* /api/search
+	header @longCache Cache-Control "public, max-age=86400"
+
+	# HTML/JSON/markdown can change between deploys — short cache + revalidate.
+	@shortCache {
+		not path /_next/static/* /docs-og/* /api/search
+	}
+	header @shortCache Cache-Control "public, max-age=300, must-revalidate"
+
+	# RFC 8288 / 9727 link relations + Vary: Accept (markdown content-negotiation)
+	# apply only to HTML doc pages. Static assets, OG images, the search index,
+	# .well-known JSON, and the markdown surfaces have their own content types
+	# and would be cache-fragmented by Vary: Accept on a CDN.
+	@docPage {
+		not path /_next/* /docs-og/* /api/* /.well-known/* /llms.mdx /llms.mdx/* /llms.txt /llms-full.txt /favicon.ico /icon.svg /robots.txt /sitemap.xml
+	}
+	header @docPage Link `</.well-known/api-catalog>; rel="api-catalog"; type="application/linkset+json", <https://docs.useatlas.dev/api-reference/openapi.json>; rel="service-desc"; type="application/openapi+json", <https://api.useatlas.dev/api/health>; rel="status"; type="application/json", </llms.txt>; rel="alternate"; type="text/plain", </llms-full.txt>; rel="describedby"; type="text/plain", </.well-known/mcp/server-card.json>; rel="mcp-server-card"; type="application/json", </.well-known/oauth-protected-resource>; rel="oauth-protected-resource"; type="application/json", </.well-known/agent-skills/index.json>; rel="agent-skills"; type="application/json"`
+	header @docPage Vary "Accept"
+
+	# Extension-less .well-known + /api/search outputs need explicit content types.
+	@apiSearch path /api/search
+	header @apiSearch Content-Type "application/json; charset=utf-8"
+
+	@wellKnownLinkset path /.well-known/api-catalog
+	header @wellKnownLinkset Content-Type "application/linkset+json; charset=utf-8"
+
+	@wellKnownJson path /.well-known/agent-skills/index.json /.well-known/mcp/server-card.json /.well-known/oauth-protected-resource
+	header @wellKnownJson Content-Type "application/json; charset=utf-8"
+
+	# /guides/mcp-hosted/* was consolidated into /guides/mcp under the
+	# hosted/self-hosted tabs. The :rest* equivalent in Caddy is path_regexp +
+	# {re.NAME.N}; bare and trailing-slash variants each need their own rule.
+	@mcpHostedSub path_regexp mcpHostedSub ^/guides/mcp-hosted/(.+)$
+	redir @mcpHostedSub /guides/mcp/{re.mcpHostedSub.1} 308
+	redir /guides/mcp-hosted /guides/mcp 308
+	redir /guides/mcp-hosted/ /guides/mcp/ 308
+
+	# /<slug>.mdx -> /llms.mdx/<slug>/index.md (canonical markdown alias).
+	# `not path /llms.mdx*` keeps the regex from re-matching the bare
+	# /llms.mdx surface and the /llms.mdx/<slug> paths handled below.
+	@mdxAlias {
+		path_regexp mdxalias ^/(.+)\.mdx$
+		not path /llms.mdx
+		not path /llms.mdx/*
+	}
+	rewrite @mdxAlias /llms.mdx/{re.mdxalias.1}/index.md
+
+	# Bare /llms.mdx -> /llms.mdx/index.md.
+	@llmsMdxRoot path /llms.mdx
+	rewrite @llmsMdxRoot /llms.mdx/index.md
+
+	# The on-disk markdown emission always ends in /index.md, so every
+	# browser-facing /llms.mdx/<slug> URL needs the suffix appended.
+	@llmsMdxSub {
+		path /llms.mdx/*
+		not path */index.md
+	}
+	rewrite @llmsMdxSub {http.request.uri.path}/index.md
+
+	# Accept: text/markdown content negotiation — rewrite docs-page URLs onto
+	# their /llms.mdx/<slug>/index.md twin. Skip surfaces that already serve
+	# their own content type (static assets, search index, well-known JSON,
+	# the markdown surfaces themselves).
+	@markdown {
+		header_regexp Accept (?i)(^|,)\s*text/markdown
+		not path /_next/* /api/* /.well-known/* /llms.mdx* /llms.txt /llms-full.txt /docs-og/* /favicon.ico /icon.svg /robots.txt /sitemap.xml
+	}
+	rewrite @markdown /llms.mdx{http.request.uri.path}/index.md
+
+	# file_server serves <dir>/index.html for /<dir>/ and 301-redirects /<dir> -> /<dir>/,
+	# matching Next.js trailingSlash: true. precompressed reads the .gz/.zst
+	# sidecars produced by the Dockerfile so Caddy doesn't recompress per request.
+	file_server {
+		index index.html
+		precompressed zstd gzip
+	}
+
+	# All error statuses fall back to the branded 404 shell. Caddy preserves
+	# the original status code on the response, so a 502 keeps its 502 status
+	# while presenting the styled body instead of Caddy's plain-text default.
+	handle_errors {
+		rewrite * /404.html
+		file_server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

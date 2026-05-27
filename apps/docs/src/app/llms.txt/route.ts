@@ -3,7 +3,7 @@ import { llms } from "fumadocs-core/source";
 
 const BASE_URL = "https://docs.useatlas.dev";
 
-export const revalidate = false;
+export const dynamic = "force-static";
 
 export function GET() {
   const content = llms(source).index();

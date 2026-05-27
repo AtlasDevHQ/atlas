@@ -598,12 +598,17 @@ describeIfPg("lead-outbox (real Postgres)", () => {
       const db = dbFor();
 
       // Seed an in_flight row directly (simulates a sibling pod mid-dispatch).
+      // workspace_id must match the enq()'d row's TEST_WORKSPACE_ID — codex
+      // C3 (#2849) scoped the NOT EXISTS gate by (workspace_id, email_key),
+      // so cross-workspace same-email no longer blocks. This test exercises
+      // the same-workspace gate; both rows therefore use TEST_WORKSPACE_ID.
       await pool.query(
-        `INSERT INTO crm_outbox (event_type, payload, email_key, status, attempts, claimed_at, created_at)
-         VALUES ('demo', $1::jsonb, $2, 'in_flight', 1, now(), now() - INTERVAL '3 hours')`,
+        `INSERT INTO crm_outbox (event_type, payload, email_key, workspace_id, status, attempts, claimed_at, created_at)
+         VALUES ('demo', $1::jsonb, $2, $3, 'in_flight', 1, now(), now() - INTERVAL '3 hours')`,
         [
           JSON.stringify({ source: "demo", email: "stuck@example.test" }),
           "stuck@example.test",
+          TEST_WORKSPACE_ID,
         ],
       );
       // Newer pending row for the same email.
@@ -657,17 +662,27 @@ describeIfPg("lead-outbox (real Postgres)", () => {
     async () => {
       await truncateOutbox();
 
-      // Two pending rows, same email, different created_at so the
-      // claim ordering is deterministic.
+      // Two pending rows, same email, same workspace, different created_at
+      // so claim ordering is deterministic. Same workspace_id is required
+      // post-#2849 codex C3 — the advisory lock is keyed on
+      // (workspace_id, email_key), so cross-workspace rows would not race.
       await pool.query(
-        `INSERT INTO crm_outbox (event_type, payload, email_key, status, created_at)
-         VALUES ('demo', $1::jsonb, $2, 'pending', now() - INTERVAL '2 minutes')`,
-        [JSON.stringify({ source: "demo", email: "race@cross-pod.test" }), "race@cross-pod.test"],
+        `INSERT INTO crm_outbox (event_type, payload, email_key, workspace_id, status, created_at)
+         VALUES ('demo', $1::jsonb, $2, $3, 'pending', now() - INTERVAL '2 minutes')`,
+        [
+          JSON.stringify({ source: "demo", email: "race@cross-pod.test" }),
+          "race@cross-pod.test",
+          TEST_WORKSPACE_ID,
+        ],
       );
       await pool.query(
-        `INSERT INTO crm_outbox (event_type, payload, email_key, status, created_at)
-         VALUES ('signup', $1::jsonb, $2, 'pending', now() - INTERVAL '1 minute')`,
-        [JSON.stringify({ source: "signup", email: "race@cross-pod.test" }), "race@cross-pod.test"],
+        `INSERT INTO crm_outbox (event_type, payload, email_key, workspace_id, status, created_at)
+         VALUES ('signup', $1::jsonb, $2, $3, 'pending', now() - INTERVAL '1 minute')`,
+        [
+          JSON.stringify({ source: "signup", email: "race@cross-pod.test" }),
+          "race@cross-pod.test",
+          TEST_WORKSPACE_ID,
+        ],
       );
 
       // Each "pod" is its own pool with size 1 — guarantees a single
@@ -734,16 +749,19 @@ describeIfPg("lead-outbox (real Postgres)", () => {
 
       // R1: demo, older, in retry cooldown — pending with retry_after
       // 1 hour in the future. Falls out of `claimable` via the
-      // due-time filter, but is still non-terminal.
+      // due-time filter, but is still non-terminal. Same workspace as
+      // R2 (enq below) is required post-#2849 codex C3 — the NOT
+      // EXISTS leapfrog gate scopes by (workspace_id, email_key).
       await pool.query(
         `INSERT INTO crm_outbox
-           (event_type, payload, email_key, status, attempts, retry_after, created_at)
+           (event_type, payload, email_key, workspace_id, status, attempts, retry_after, created_at)
          VALUES
-           ('demo', $1::jsonb, $2, 'pending', 1, now() + INTERVAL '1 hour',
+           ('demo', $1::jsonb, $2, $3, 'pending', 1, now() + INTERVAL '1 hour',
             now() - INTERVAL '5 minutes')`,
         [
           JSON.stringify({ source: "demo", email: "cooldown@leapfrog.test", ip: "203.0.113.50" }),
           "cooldown@leapfrog.test",
+          TEST_WORKSPACE_ID,
         ],
       );
       // R2: signup, newer, fresh — would dispatch first under the

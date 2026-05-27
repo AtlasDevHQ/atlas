@@ -2053,6 +2053,19 @@ describe("classifyTwentyError", () => {
 // per-tenant route to the per-tenant baseUrl, not the operator's.
 
 describe("dispatchWithResolvedConfig — per-row routing (#2849)", () => {
+  /** Origin-exact URL comparison. CodeQL flags `u.startsWith("https://x")`
+   *  as `js/incomplete-url-substring-sanitization` because a malicious
+   *  URL like `https://x.evil.test/...` would slip through. Parsing
+   *  with `new URL(...)` and comparing the canonical `origin` is the
+   *  recommended fix. */
+  function hasOrigin(url: string, expectedOrigin: string): boolean {
+    try {
+      return new URL(url).origin === expectedOrigin;
+    } catch {
+      return false;
+    }
+  }
+
   /** Captures the auth header (apiKey) the dispatcher used so the test
    *  can assert which credentials the per-row routing actually picked. */
   function makeCapturingFetch(): {
@@ -2230,9 +2243,12 @@ describe("dispatchWithResolvedConfig — per-row routing (#2849)", () => {
     expect(seenAuthHeaders).toContain("Bearer key-tenant-B");
     // Operator key must NOT appear — neither row routes through env.
     expect(seenAuthHeaders.every((h) => h !== "Bearer operator-env-key")).toBe(true);
-    // Each request landed on the correct per-tenant base URL.
-    expect(seenUrls.some((u) => u.startsWith("https://twenty-a.example.com"))).toBe(true);
-    expect(seenUrls.some((u) => u.startsWith("https://twenty-b.example.com"))).toBe(true);
+    // Each request landed on the correct per-tenant base URL. Use
+    // `new URL(u).origin` (not `startsWith`) so a malicious string
+    // like "https://twenty-a.example.com.evil.test" can't pass the
+    // assertion — CodeQL js/incomplete-url-substring-sanitization.
+    expect(seenUrls.some((u) => hasOrigin(u, "https://twenty-a.example.com"))).toBe(true);
+    expect(seenUrls.some((u) => hasOrigin(u, "https://twenty-b.example.com"))).toBe(true);
   });
 
   test("missing per-tenant credentials → permanent dead-letter", async () => {

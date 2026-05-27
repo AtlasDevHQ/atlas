@@ -373,6 +373,139 @@ describe("upsertPerson — malformed 200 from findPersonByEmail", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
+//  Broken filter / email-mismatch fail-loud (regression-guard for #2865)
+//
+//  Reproduces the catastrophic-collapse signature at the client layer:
+//  if Twenty ever returns the unfiltered list (because our filter syntax
+//  regressed or Twenty's filter validator loosens), `findPersonByEmail`
+//  must refuse rather than merge to a different person's record. Pins
+//  the contract without depending on api.twenty.com's filter-tolerance.
+// ─────────────────────────────────────────────────────────────────────
+
+describe("upsertPerson — broken filter / email mismatch", () => {
+  test("throws TwentyClientError when returned Person's primaryEmail differs from queried email", async () => {
+    // Simulates Twenty silently ignoring the filter and returning the
+    // unfiltered list — `list[0]` belongs to someone else entirely.
+    const { fetch, calls } = makeScriptedFetch([
+      {
+        status: 200,
+        body: {
+          data: {
+            people: [
+              {
+                id: "person_someone_else",
+                emails: { primaryEmail: "someone-else@elsewhere.com" },
+                atlasFirstSource: "DEMO",
+              },
+            ],
+          },
+        },
+      },
+    ]);
+    const config = baseConfig({ fetchImpl: fetch });
+
+    try {
+      await upsertPerson(config, {
+        email: "queried@test.com",
+        eventSource: "DEMO",
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TwentyClientError);
+      const e = err as TwentyClientError;
+      expect(e.operation).toBe("findPersonByEmail");
+      expect(e.message).toContain("email mismatch");
+      expect(e.message).toContain("queried@test.com");
+      expect(e.message).toContain("someone-else@elsewhere.com");
+    }
+
+    // CRITICAL: no PATCH or POST may have followed the find. Only the
+    // GET filter call should have happened.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("GET");
+
+    // Belt-and-suspenders: pin the Atlas-side filter format to Twenty's
+    // documented `field[op]:value` form. If a future change reverts to
+    // the bracket-nested `filter[field][op]=value` form (the #2865
+    // regression shape), this assertion fails alongside the mismatch
+    // guard — making the new test sufficient on its own to catch the
+    // filter line regressing, independent of api.twenty.com's filter
+    // validator hardening.
+    expect(calls[0].url).toContain("filter=emails.primaryEmail[eq]:");
+    expect(calls[0].url).not.toContain("filter[emails.primaryEmail][eq]=");
+  });
+
+  test("throws TwentyClientError when returned Person has no emails field at all", async () => {
+    const { fetch, calls } = makeScriptedFetch([
+      {
+        status: 200,
+        body: {
+          data: {
+            people: [{ id: "person_no_email", atlasFirstSource: "DEMO" }],
+          },
+        },
+      },
+    ]);
+    const config = baseConfig({ fetchImpl: fetch });
+
+    try {
+      await upsertPerson(config, {
+        email: "queried@test.com",
+        eventSource: "DEMO",
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TwentyClientError);
+      const e = err as TwentyClientError;
+      expect(e.operation).toBe("findPersonByEmail");
+      expect(e.message).toContain("email mismatch");
+    }
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("GET");
+  });
+
+  test("case-insensitive match — queried Foo@Bar.com vs returned foo@bar.com proceeds to PATCH", async () => {
+    // Twenty stores emails as-entered but matches case-insensitively per
+    // its docs — guard that we don't reject a legitimately-matched Person
+    // just because the case differs.
+    const { fetch, calls } = makeScriptedFetch([
+      {
+        status: 200,
+        body: {
+          data: {
+            people: [
+              {
+                id: "person_case_match",
+                emails: { primaryEmail: "foo@bar.com" },
+                atlasFirstSource: "DEMO",
+              },
+            ],
+          },
+        },
+      },
+      {
+        status: 200,
+        body: { data: { updatePerson: { id: "person_case_match" } } },
+      },
+    ]);
+    const config = baseConfig({ fetchImpl: fetch });
+
+    const result = await upsertPerson(config, {
+      email: "Foo@Bar.com",
+      eventSource: "SIGNUP",
+    });
+
+    expect(result.id).toBe("person_case_match");
+    expect(calls).toHaveLength(2);
+    expect(calls[1].method).toBe("PATCH");
+    expect(calls[1].url).toBe(
+      "https://crm.test.local/rest/people/person_case_match",
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
 //  Bearer auth header
 // ─────────────────────────────────────────────────────────────────────
 
@@ -483,7 +616,13 @@ describe("upsertPerson — error mapping", () => {
         status: 200,
         body: {
           data: {
-            people: [{ id: "p1", atlasFirstSource: "DEMO" }],
+            people: [
+              {
+                id: "p1",
+                emails: { primaryEmail: "u@t.com" },
+                atlasFirstSource: "DEMO",
+              },
+            ],
           },
         },
       },

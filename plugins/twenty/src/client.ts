@@ -302,6 +302,15 @@ async function readErrorDetail(response: Response): Promise<{ message: string; c
  * shape doesn't match `{ data: { people: TwentyPerson[] } }` — silently
  * returning undefined would cause `upsertPerson` to POST a duplicate
  * Person and clobber any sticky `atlasFirstSource` on the existing one.
+ *
+ * Also throws when Twenty returns a non-empty array whose first Person's
+ * `emails.primaryEmail` does not equal the queried email (case-insensitive).
+ * That mismatch is the catastrophic-collapse signature from #2865 — if
+ * Twenty ever silently ignores our filter again (or our filter syntax
+ * regresses) the response is the unfiltered list, and returning `list[0]`
+ * would PATCH whichever Person sorts first, corrupting attribution across
+ * every lead source. This guard makes the regression fail loud at the
+ * client boundary instead of depending on Twenty's filter-validation.
  */
 async function findPersonByEmail(
   config: TwentyClientConfig,
@@ -340,7 +349,19 @@ async function findPersonByEmail(
 
   const list = body.data?.people;
   if (Array.isArray(list)) {
-    return list.length > 0 ? (list[0] as TwentyPerson) : undefined;
+    if (list.length === 0) return undefined;
+    const first = list[0] as TwentyPerson;
+    const observed = (first as { emails?: { primaryEmail?: unknown } }).emails
+      ?.primaryEmail;
+    const observedStr = typeof observed === "string" ? observed : "";
+    if (observedStr.toLowerCase() !== email.toLowerCase()) {
+      throw new TwentyClientError({
+        message: `findPersonByEmail: response email mismatch — queried "${email}" but Twenty returned a Person with primaryEmail="${observedStr}". Filter syntax may be broken; refusing to merge to avoid corrupting attribution.`,
+        status: response.status,
+        operation: "findPersonByEmail",
+      });
+    }
+    return first;
   }
   // Twenty returned 200 with neither an array nor a documented shape we
   // recognize. Fail loud rather than return undefined and risk a duplicate

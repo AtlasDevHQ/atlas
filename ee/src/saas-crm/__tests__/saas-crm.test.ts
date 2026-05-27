@@ -1597,7 +1597,12 @@ describe("dispatchOutboxRow", () => {
           JSON.stringify({
             data: {
               people: [
-                { id: "person_returning", atlasFirstSource: "DEMO", atlasLastSource: "DEMO" },
+                {
+                  id: "person_returning",
+                  emails: { primaryEmail: "returning@test.local" },
+                  atlasFirstSource: "DEMO",
+                  atlasLastSource: "DEMO",
+                },
               ],
             },
           }),

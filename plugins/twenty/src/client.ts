@@ -208,6 +208,16 @@ function buildAuthHeaders(apiKey: string): Record<string, string> {
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 /**
+ * Normalize an email for case-insensitive equality. Trims surrounding
+ * whitespace, applies Unicode NFC, and lowercases. The guard in
+ * `findPersonByEmail` compares both sides through this so a Person with a
+ * trailing-space store or NFD-encoded local part isn't false-rejected.
+ */
+function normalizeEmail(value: string): string {
+  return value.trim().normalize("NFC").toLowerCase();
+}
+
+/**
  * Parse the `Retry-After` header per RFC 9110 §10.2.3. Two valid forms:
  *  - `delta-seconds` (e.g. `120`) — non-negative integer.
  *  - `HTTP-date` (e.g. `Wed, 21 Oct 2015 07:28:00 GMT`) — `Date.parse`able.
@@ -286,31 +296,16 @@ async function readErrorDetail(response: Response): Promise<{ message: string; c
  * undefined when Twenty returns a 2xx with an empty result set.
  *
  * Twenty's REST filter syntax, per its OpenAPI spec
- * (`components.parameters.filter.description`):
- *   `field[COMPARATOR]:value`
- *   e.g. `?filter=emails.primaryEmail[eq]:<email>&limit=1`
+ * (`components.parameters.filter.description`): `field[COMPARATOR]:value`,
+ * e.g. `?filter=emails.primaryEmail[eq]:<email>&limit=1`. The bracket-nested
+ * `?filter[field][op]=…` form is silently ignored by Twenty and returns the
+ * unfiltered list (the #2865 collapse shape).
  *
- * Earlier versions of this client used a bracket-nested form
- * (`?filter[emails.primaryEmail][eq]=…`) borrowed from Strapi/Sails.
- * Twenty silently ignores that form and returns the unfiltered list,
- * which caused `upsertPerson` to merge every dispatch onto whichever
- * Person was first in the table — corrupting attribution across all
- * lead sources. The fix uses Twenty's documented `field[op]:value`
- * format so the filter actually narrows.
- *
- * Throws TwentyClientError when the response body is a 2xx but its
- * shape doesn't match `{ data: { people: TwentyPerson[] } }` — silently
- * returning undefined would cause `upsertPerson` to POST a duplicate
- * Person and clobber any sticky `atlasFirstSource` on the existing one.
- *
- * Also throws when Twenty returns a non-empty array whose first Person's
- * `emails.primaryEmail` does not equal the queried email (case-insensitive).
- * That mismatch is the catastrophic-collapse signature from #2865 — if
- * Twenty ever silently ignores our filter again (or our filter syntax
- * regresses) the response is the unfiltered list, and returning `list[0]`
- * would PATCH whichever Person sorts first, corrupting attribution across
- * every lead source. This guard makes the regression fail loud at the
- * client boundary instead of depending on Twenty's filter-validation.
+ * Throws TwentyClientError when:
+ *  - the 2xx body's shape doesn't match `{ data: { people: TwentyPerson[] } }`
+ *  - the first Person's `emails.primaryEmail` doesn't equal the queried
+ *    email after `normalizeEmail` (trim + NFC + lowercase) — the #2865
+ *    regression-guard; see `normalizeEmail` for the equality rule.
  */
 async function findPersonByEmail(
   config: TwentyClientConfig,
@@ -353,10 +348,14 @@ async function findPersonByEmail(
     const first = list[0] as TwentyPerson;
     const observed = (first as { emails?: { primaryEmail?: unknown } }).emails
       ?.primaryEmail;
-    const observedStr = typeof observed === "string" ? observed : "";
-    if (observedStr.toLowerCase() !== email.toLowerCase()) {
+    const observedStr = typeof observed === "string" ? observed : undefined;
+    if (observedStr === undefined || normalizeEmail(observedStr) !== normalizeEmail(email)) {
+      const observedDescription =
+        observedStr === undefined
+          ? "no emails.primaryEmail field"
+          : `primaryEmail="${observedStr}"`;
       throw new TwentyClientError({
-        message: `findPersonByEmail: response email mismatch — queried "${email}" but Twenty returned a Person with primaryEmail="${observedStr}". Filter syntax may be broken; refusing to merge to avoid corrupting attribution.`,
+        message: `findPersonByEmail: response email mismatch — queried "${email}" but Twenty returned a Person with ${observedDescription}. Filter syntax may be broken; refusing to merge to avoid corrupting attribution.`,
         status: response.status,
         operation: "findPersonByEmail",
       });
@@ -1021,6 +1020,11 @@ export interface SearchPeopleInput extends ListOptions {
  * form and returns the unfiltered list, which silently corrupts caller
  * logic. The unit tests assert the documented shape AND forbid the
  * bracket-nested form.
+ *
+ * Unlike `findPersonByEmail`, this method does NOT carry the #2865
+ * response-shape guard — it returns the raw upstream array and a filter
+ * regression here would silently surface unrelated rows to the caller.
+ * Treat results as advisory and verify identity before any mutating write.
  *
  * When multiple criteria are supplied they are AND'd via Twenty's
  * top-level `,` join — `?filter=A[eq]:x,B[like]:%y%`.

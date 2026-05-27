@@ -125,13 +125,13 @@ describe("upsertPerson — Person absent", () => {
     expect(calls).toHaveLength(2);
     expect(calls[0].method).toBe("GET");
     expect(calls[0].url).toContain("/rest/people?filter=");
-    // Twenty's documented filter syntax: `field[COMPARATOR]:value`
-    // (per its OpenAPI spec's `components.parameters.filter` description).
-    // The bracket-nested form `filter[field][op]=value` is silently
-    // ignored by Twenty and returns the unfiltered list — guard against
-    // a regression to that shape.
-    expect(calls[0].url).toContain("filter=emails.primaryEmail[eq]:");
-    expect(calls[0].url).not.toContain("filter[emails.primaryEmail][eq]=");
+    // Twenty's documented `field[op]:value` filter shape. Decoding keeps
+    // the assertion encoding-tolerant if a future refactor routes the
+    // query through URLSearchParams. See #2865 for the bracket-nested
+    // regression this guards against.
+    const decodedUrl = decodeURIComponent(calls[0].url);
+    expect(decodedUrl).toContain("filter=emails.primaryEmail[eq]:");
+    expect(decodedUrl).not.toContain("filter[emails.primaryEmail][eq]=");
     expect(calls[0].url).toContain(encodeURIComponent("user@test.com"));
 
     expect(calls[1].method).toBe("POST");
@@ -419,20 +419,17 @@ describe("upsertPerson — broken filter / email mismatch", () => {
       expect(e.message).toContain("someone-else@elsewhere.com");
     }
 
-    // CRITICAL: no PATCH or POST may have followed the find. Only the
-    // GET filter call should have happened.
     expect(calls).toHaveLength(1);
     expect(calls[0].method).toBe("GET");
 
-    // Belt-and-suspenders: pin the Atlas-side filter format to Twenty's
-    // documented `field[op]:value` form. If a future change reverts to
-    // the bracket-nested `filter[field][op]=value` form (the #2865
-    // regression shape), this assertion fails alongside the mismatch
-    // guard — making the new test sufficient on its own to catch the
-    // filter line regressing, independent of api.twenty.com's filter
-    // validator hardening.
-    expect(calls[0].url).toContain("filter=emails.primaryEmail[eq]:");
-    expect(calls[0].url).not.toContain("filter[emails.primaryEmail][eq]=");
+    // Pin Twenty's documented `field[op]:value` filter form; reject the
+    // bracket-nested `?filter[field][op]=…` shape that produced #2865.
+    // `decodeURIComponent` keeps the assertion correct if a future refactor
+    // routes the filter through URLSearchParams and percent-encodes the
+    // brackets — without it the toContain would silently never match.
+    const decodedUrl = decodeURIComponent(calls[0].url);
+    expect(decodedUrl).toContain("filter=emails.primaryEmail[eq]:");
+    expect(decodedUrl).not.toContain("filter[emails.primaryEmail][eq]=");
   });
 
   test("throws TwentyClientError when returned Person has no emails field at all", async () => {
@@ -502,6 +499,140 @@ describe("upsertPerson — broken filter / email mismatch", () => {
     expect(calls[1].url).toBe(
       "https://crm.test.local/rest/people/person_case_match",
     );
+  });
+
+  test("whitespace-tolerant match — queried ' foo@bar.com ' vs returned 'foo@bar.com' proceeds to PATCH", async () => {
+    // A CSV import or webhook payload may carry trailing whitespace.
+    // The guard normalises both sides so a legitimate Person isn't
+    // dead-lettered with a misleading "email mismatch" message.
+    const { fetch, calls } = makeScriptedFetch([
+      {
+        status: 200,
+        body: {
+          data: {
+            people: [
+              {
+                id: "person_ws_match",
+                emails: { primaryEmail: "foo@bar.com" },
+                atlasFirstSource: "DEMO",
+              },
+            ],
+          },
+        },
+      },
+      {
+        status: 200,
+        body: { data: { updatePerson: { id: "person_ws_match" } } },
+      },
+    ]);
+    const config = baseConfig({ fetchImpl: fetch });
+
+    const result = await upsertPerson(config, {
+      email: " foo@bar.com ",
+      eventSource: "SIGNUP",
+    });
+
+    expect(result.id).toBe("person_ws_match");
+    expect(calls).toHaveLength(2);
+    expect(calls[1].method).toBe("PATCH");
+  });
+
+  test("Unicode-normalisation match — queried NFD vs returned NFC composed form proceeds to PATCH", async () => {
+    // `café@bar.com` exists in two byte sequences: NFC (single é)
+    // and NFD (e + combining ́). A naive `===` after lowercase
+    // rejects the legitimate match; the guard's NFC normalisation
+    // accepts it. Locks in the rule so a future revert to bare
+    // toLowerCase() surfaces here.
+    const nfc = "café@bar.com"; // composed
+    const nfd = "café@bar.com"; // decomposed
+    expect(nfc).not.toBe(nfd);
+    expect(nfc.normalize("NFC")).toBe(nfd.normalize("NFC"));
+
+    const { fetch, calls } = makeScriptedFetch([
+      {
+        status: 200,
+        body: {
+          data: {
+            people: [
+              {
+                id: "person_nfd_match",
+                emails: { primaryEmail: nfc },
+                atlasFirstSource: "DEMO",
+              },
+            ],
+          },
+        },
+      },
+      {
+        status: 200,
+        body: { data: { updatePerson: { id: "person_nfd_match" } } },
+      },
+    ]);
+    const config = baseConfig({ fetchImpl: fetch });
+
+    const result = await upsertPerson(config, {
+      email: nfd,
+      eventSource: "SIGNUP",
+    });
+
+    expect(result.id).toBe("person_nfd_match");
+    expect(calls).toHaveLength(2);
+    expect(calls[1].method).toBe("PATCH");
+  });
+
+  test("error message distinguishes missing emails field from empty primaryEmail string", async () => {
+    // Operator-debug ergonomics: a `primaryEmail=""` log line should not
+    // be ambiguous with "Twenty omitted the field". Both cases still mean
+    // the regression-guard fired, but the operator sees which shape.
+    const { fetch: fetchMissing } = makeScriptedFetch([
+      {
+        status: 200,
+        body: {
+          data: {
+            people: [{ id: "person_a", atlasFirstSource: "DEMO" }],
+          },
+        },
+      },
+    ]);
+    try {
+      await upsertPerson(baseConfig({ fetchImpl: fetchMissing }), {
+        email: "queried@test.com",
+        eventSource: "DEMO",
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TwentyClientError);
+      expect((err as TwentyClientError).message).toContain(
+        "no emails.primaryEmail field",
+      );
+    }
+
+    const { fetch: fetchEmpty } = makeScriptedFetch([
+      {
+        status: 200,
+        body: {
+          data: {
+            people: [
+              {
+                id: "person_b",
+                emails: { primaryEmail: "" },
+                atlasFirstSource: "DEMO",
+              },
+            ],
+          },
+        },
+      },
+    ]);
+    try {
+      await upsertPerson(baseConfig({ fetchImpl: fetchEmpty }), {
+        email: "queried@test.com",
+        eventSource: "DEMO",
+      });
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TwentyClientError);
+      expect((err as TwentyClientError).message).toContain('primaryEmail=""');
+    }
   });
 });
 

@@ -503,4 +503,298 @@ describeIfPg("lead-outbox (real Postgres)", () => {
     },
     PG_TIMEOUT_MS,
   );
+
+  // ── Per-email serialization (#2870) — real-PG variant.
+  // Mirrors the unit test in `outbox.test.ts` but exercises the actual
+  // CLAIM_SQL CTE (DISTINCT ON + NOT EXISTS) against Postgres so a
+  // regression in the SQL shape (e.g. wrong column quoting, forgotten
+  // index reference) trips here instead of only in the in-memory fake.
+  it(
+    "claim dedupes same-email rows: gworth demo→signup pair drains across two ticks",
+    async () => {
+      await truncateOutbox();
+      const db = dbFor();
+
+      const demoId = await enqueue(db, {
+        eventType: "demo",
+        payload: { source: "demo", email: "gworth@globexcorp.com", ip: "203.0.113.30" },
+      });
+      const signupId = await enqueue(db, {
+        eventType: "signup",
+        payload: { source: "signup", email: "gworth@globexcorp.com", name: "Greta Worth" },
+      });
+
+      // Both rows should have email_key populated by enqueue.
+      const seeded = await pool.query<{ id: string; email_key: string | null }>(
+        "SELECT id, email_key FROM crm_outbox ORDER BY created_at",
+      );
+      expect(seeded.rows).toHaveLength(2);
+      expect(seeded.rows[0].email_key).toBe("gworth@globexcorp.com");
+      expect(seeded.rows[1].email_key).toBe("gworth@globexcorp.com");
+
+      const dispatcher: OutboxDispatcher = async () => ({ kind: "ok" });
+
+      // Tick 1: only demo is claimed. Both rows enter the `claimable`
+      // CTE scan (neither is in_flight yet — the outer UPDATE hasn't
+      // flipped statuses). The NOT EXISTS gate filters signup out
+      // because demo, its older same-email sibling, is still `pending`
+      // in the snapshot, and DISTINCT ON belt-and-suspenders collapses
+      // any same-email residual to the earliest by created_at. The
+      // NOT EXISTS gate is also what blocks cross-statement / cross-pod
+      // races — see the next two tests.
+      const tick1 = await flushBatch(db, dispatcher, 50);
+      expect(tick1.claimed).toBe(1);
+      expect(tick1.ok).toBe(1);
+
+      const afterTick1 = await pool.query<{ id: string; status: string }>(
+        "SELECT id, status FROM crm_outbox ORDER BY created_at",
+      );
+      expect(afterTick1.rows.find((r) => r.id === demoId)?.status).toBe("done");
+      expect(afterTick1.rows.find((r) => r.id === signupId)?.status).toBe("pending");
+
+      // Tick 2: demo is done, signup is now claimable.
+      const tick2 = await flushBatch(db, dispatcher, 50);
+      expect(tick2.claimed).toBe(1);
+      expect(tick2.ok).toBe(1);
+
+      const afterTick2 = await pool.query<{ status: string }>(
+        "SELECT status FROM crm_outbox WHERE id = $1",
+        [signupId],
+      );
+      expect(afterTick2.rows[0].status).toBe("done");
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  it(
+    "claim NOT EXISTS gate: in_flight row blocks newer same-email claims (cross-pod safety)",
+    async () => {
+      await truncateOutbox();
+      const db = dbFor();
+
+      // Seed an in_flight row directly (simulates a sibling pod mid-dispatch).
+      await pool.query(
+        `INSERT INTO crm_outbox (event_type, payload, email_key, status, attempts, claimed_at, created_at)
+         VALUES ('demo', $1::jsonb, $2, 'in_flight', 1, now(), now() - INTERVAL '3 hours')`,
+        [
+          JSON.stringify({ source: "demo", email: "stuck@example.test" }),
+          "stuck@example.test",
+        ],
+      );
+      // Newer pending row for the same email.
+      await enqueue(db, {
+        eventType: "signup",
+        payload: { source: "signup", email: "stuck@example.test", name: "Stuck User" },
+      });
+
+      const dispatcher: OutboxDispatcher = async () => ({ kind: "ok" });
+      const result = await flushBatch(db, dispatcher, 50);
+      // No row claimable — sibling is in_flight for this email_key.
+      expect(result.claimed).toBe(0);
+
+      const rows = await pool.query<{ event_type: string; status: string }>(
+        "SELECT event_type, status FROM crm_outbox ORDER BY created_at",
+      );
+      expect(rows.rows.find((r) => r.event_type === "signup")?.status).toBe("pending");
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  it(
+    "claim does not serialize across distinct emails (throughput preserved)",
+    async () => {
+      await truncateOutbox();
+      const db = dbFor();
+
+      // Four distinct emails — all should claim in one tick.
+      await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a1@example.test" } });
+      await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a2@example.test" } });
+      await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a3@example.test" } });
+      await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a4@example.test" } });
+
+      const dispatcher: OutboxDispatcher = async () => ({ kind: "ok" });
+      const result = await flushBatch(db, dispatcher, 50);
+      expect(result.claimed).toBe(4);
+      expect(result.ok).toBe(4);
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  // ── Cross-pod race (Codex P1 #1 follow-up). Two concurrent
+  //    transactions each open their own snapshot; without the
+  //    advisory lock on `(2870, hashtext(email_key))`, each pod's
+  //    NOT EXISTS would still see the peer's pre-commit row as
+  //    `pending` and claim a different same-email sibling. The
+  //    advisory lock is transaction-scoped — Pod B's
+  //    pg_try_advisory_xact_lock returns false while Pod A holds it.
+  it(
+    "claim is serialized across concurrent transactions for same email_key",
+    async () => {
+      await truncateOutbox();
+
+      // Two pending rows, same email, different created_at so the
+      // claim ordering is deterministic.
+      await pool.query(
+        `INSERT INTO crm_outbox (event_type, payload, email_key, status, created_at)
+         VALUES ('demo', $1::jsonb, $2, 'pending', now() - INTERVAL '2 minutes')`,
+        [JSON.stringify({ source: "demo", email: "race@cross-pod.test" }), "race@cross-pod.test"],
+      );
+      await pool.query(
+        `INSERT INTO crm_outbox (event_type, payload, email_key, status, created_at)
+         VALUES ('signup', $1::jsonb, $2, 'pending', now() - INTERVAL '1 minute')`,
+        [JSON.stringify({ source: "signup", email: "race@cross-pod.test" }), "race@cross-pod.test"],
+      );
+
+      // Each "pod" is its own pool with size 1 — guarantees a single
+      // long-lived connection so the holding-transaction stays open
+      // across the slow dispatcher's await.
+      const podA = new Pool({ connectionString: TEST_DB_URL, max: 1 });
+      const podB = new Pool({ connectionString: TEST_DB_URL, max: 1 });
+      podA.on("connect", (c) => void c.query(`SET search_path TO "${schemaName}"`));
+      podB.on("connect", (c) => void c.query(`SET search_path TO "${schemaName}"`));
+      const dbFromPool = (p: Pool): OutboxDB => ({
+        query: async <T extends Record<string, unknown>>(sql: string, params?: unknown[]) =>
+          (await p.query<T>(sql, params)).rows,
+      });
+
+      let inFlightSnapshotMax = 0;
+      const dispatcher: OutboxDispatcher = async () => {
+        // Sample the live in_flight count while the holding tx is
+        // still open. If both pods both claimed a row, this would see
+        // 2; with the advisory lock in place it stays at 1.
+        const live = await pool.query<{ n: string }>(
+          "SELECT COUNT(*)::bigint AS n FROM crm_outbox WHERE status = 'in_flight'",
+        );
+        inFlightSnapshotMax = Math.max(inFlightSnapshotMax, Number(live.rows[0].n));
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        return { kind: "ok" };
+      };
+
+      try {
+        const [a, b] = await Promise.all([
+          flushBatch(dbFromPool(podA), dispatcher, 50),
+          flushBatch(dbFromPool(podB), dispatcher, 50),
+        ]);
+
+        // Exactly one pod claimed; the other walked away empty
+        // because the advisory lock held.
+        expect(a.claimed + b.claimed).toBe(1);
+        expect(a.ok + b.ok).toBe(1);
+        expect(inFlightSnapshotMax).toBe(1);
+
+        // After both pods commit, one row is done, the other still pending.
+        const after = await pool.query<{ status: string }>(
+          "SELECT status FROM crm_outbox WHERE email_key = $1 ORDER BY created_at",
+          ["race@cross-pod.test"],
+        );
+        const statuses = after.rows.map((r) => r.status).toSorted();
+        expect(statuses).toEqual(["done", "pending"]);
+      } finally {
+        await podA.end();
+        await podB.end();
+      }
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  // ── Retry-cooldown leapfrog (Codex P1 #2 follow-up). An older
+  //    same-email row in transient-backoff cooldown must still block
+  //    a newer same-email row even though the older row is filtered
+  //    out of `claimable` by the due-time check.
+  it(
+    "older same-email row in retry cooldown blocks a newer fresh row",
+    async () => {
+      await truncateOutbox();
+      const db = dbFor();
+
+      // R1: demo, older, in retry cooldown — pending with retry_after
+      // 1 hour in the future. Falls out of `claimable` via the
+      // due-time filter, but is still non-terminal.
+      await pool.query(
+        `INSERT INTO crm_outbox
+           (event_type, payload, email_key, status, attempts, retry_after, created_at)
+         VALUES
+           ('demo', $1::jsonb, $2, 'pending', 1, now() + INTERVAL '1 hour',
+            now() - INTERVAL '5 minutes')`,
+        [
+          JSON.stringify({ source: "demo", email: "cooldown@leapfrog.test", ip: "203.0.113.50" }),
+          "cooldown@leapfrog.test",
+        ],
+      );
+      // R2: signup, newer, fresh — would dispatch first under the
+      // pre-fix gate that only excluded `in_flight` siblings.
+      const signupId = await enqueue(db, {
+        eventType: "signup",
+        payload: { source: "signup", email: "cooldown@leapfrog.test", name: "Late Arrival" },
+      });
+
+      let calls = 0;
+      const dispatcher: OutboxDispatcher = async () => {
+        calls++;
+        return { kind: "ok" };
+      };
+      const result = await flushBatch(db, dispatcher, 50);
+      // Neither row is claimable: R1 is in cooldown, R2 is gated by
+      // the broadened NOT EXISTS (older non-terminal sibling exists).
+      expect(result.claimed).toBe(0);
+      expect(calls).toBe(0);
+      const signupAfter = await pool.query<{ status: string }>(
+        "SELECT status FROM crm_outbox WHERE id = $1",
+        [signupId],
+      );
+      expect(signupAfter.rows[0].status).toBe("pending");
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  // ── Migration 0104 whitespace-only email backfill (silent-failure
+  //    finding). A `"   "` payload must land email_key=NULL, NOT
+  //    empty-string — non-NULL `''` would collide with every other
+  //    whitespace-only row in NOT EXISTS and serialize them globally.
+  it(
+    "migration 0104 backfills whitespace-only email as NULL, not empty string",
+    async () => {
+      await truncateOutbox();
+
+      // Insert with email_key NULL and a whitespace-only email — what
+      // the pre-0104 production state could look like for malformed
+      // payloads. The migration UPDATE will re-evaluate this row.
+      await pool.query(
+        `INSERT INTO crm_outbox (event_type, payload, email_key, status, created_at)
+         VALUES
+           ('demo', $1::jsonb, NULL, 'pending', now()),
+           ('demo', $2::jsonb, NULL, 'pending', now()),
+           ('demo', $3::jsonb, NULL, 'pending', now())`,
+        [
+          JSON.stringify({ source: "demo", email: "   " }),
+          JSON.stringify({ source: "demo", email: "\t\n" }),
+          JSON.stringify({ source: "demo", email: null }),
+        ],
+      );
+
+      // Re-run the migration UPDATE — idempotent by design. Mirrors
+      // 0104 exactly: regex-based trim for JS `String.trim()` parity
+      // (plain Postgres `TRIM()` only strips spaces, would leak the
+      // tab/newline row).
+      await pool.query(
+        `UPDATE crm_outbox
+            SET email_key = NULLIF(LOWER(REGEXP_REPLACE(payload->>'email', '^\\s+|\\s+$', '', 'g')), '')
+          WHERE email_key IS NULL
+            AND jsonb_typeof(payload->'email') = 'string'
+            AND NULLIF(LOWER(REGEXP_REPLACE(payload->>'email', '^\\s+|\\s+$', '', 'g')), '') IS NOT NULL`,
+      );
+
+      const rows = await pool.query<{ email_key: string | null }>(
+        "SELECT email_key FROM crm_outbox ORDER BY created_at",
+      );
+      // All three remain NULL — the whitespace-only emails were
+      // correctly rejected by the NULLIF guard, the JSON-null email
+      // was rejected by jsonb_typeof.
+      expect(rows.rows).toHaveLength(3);
+      for (const r of rows.rows) {
+        expect(r.email_key).toBeNull();
+      }
+    },
+    PG_TIMEOUT_MS,
+  );
 });

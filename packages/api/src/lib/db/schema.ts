@@ -2251,6 +2251,13 @@ export const crmOutbox = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     eventType: text("event_type").notNull(),
     payload: jsonb("payload").notNull(),
+    // Per-email serialization key (0104, #2870). Lowercased+trimmed
+    // primary email extracted from `payload` at enqueue. CLAIM_SQL
+    // dedupes by this column and gates each claim on a no-in_flight
+    // check so concurrent rows for the same email never dispatch
+    // simultaneously. Nullable for legacy / non-email-keyed event
+    // types — those rows fall back to per-id deduplication.
+    emailKey: text("email_key"),
     status: text("status").$type<OutboxStatus>().notNull().default("pending"),
     attempts: integer("attempts").notNull().default(0),
     lastError: text("last_error"),
@@ -2271,6 +2278,9 @@ export const crmOutbox = pgTable(
     ),
     index("idx_crm_outbox_pending_created")
       .on(t.status, t.createdAt)
+      .where(sql`status IN ('pending', 'in_flight')`),
+    index("idx_crm_outbox_email_key_active")
+      .on(t.emailKey, t.status, t.createdAt)
       .where(sql`status IN ('pending', 'in_flight')`),
   ],
 );

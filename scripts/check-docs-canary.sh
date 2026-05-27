@@ -1,23 +1,37 @@
 #!/usr/bin/env bash
-# check-docs-canary.sh — verifies Fumadocs' getGithubLastEdit succeeded during
-# `next build`. Without this canary, a missing/expired GITHUB_TOKEN degrades
-# silently: every page hits the unauthenticated GitHub API, gets rate-limited
-# after ~60 calls, the catch in getLastUpdate swallows the error, and timestamps
-# vanish from production with no operator signal (issue #2103).
+# check-docs-canary.sh — guards two silent-degradation modes in the docs build:
+#
+# 1. Fumadocs' getGithubLastEdit needs GITHUB_TOKEN. Without it every page hits
+#    the unauthenticated GitHub API, gets rate-limited after ~60 calls, the
+#    catch in getLastUpdate swallows the error, and 'Last updated on …'
+#    timestamps vanish in production with no operator signal (issue #2103).
+#
+# 2. The static Orama search index at out/api/search is serialized by fumadocs
+#    at build time. A regressed content loader can produce a valid but ~empty
+#    JSON, the build succeeds, the 24 MB client download succeeds, and search
+#    silently returns zero results — caught here by a minimum-size check.
 #
 # Runs as the last step of the docs Dockerfile builder stage (deploy/docs/Dockerfile).
 # Expects to be executed from the docs build root (where `out/` lives — the
 # static export produced by `next build` with output: 'export').
-#
-# Behavior:
-#   - GITHUB_TOKEN unset → skip canary, print notice. Self-hosted operators
-#     don't need the token; their unauthenticated builds will degrade silently
-#     for the last-updated timestamp, which is the documented trade-off.
-#   - GITHUB_TOKEN set → assert representative pages contain a <time> tag.
-#     If not, fail loudly so Railway marks the deploy failed instead of
-#     shipping a docs site without timestamps.
 
 set -euo pipefail
+
+# Search index size check — runs regardless of GITHUB_TOKEN. A real index is
+# multi-MB; pick a threshold well above an empty/initial DB shape (a few KB).
+SEARCH_INDEX="out/api/search"
+MIN_SEARCH_INDEX_BYTES=100000
+if [ ! -f "$SEARCH_INDEX" ]; then
+  echo "[docs-canary] FAIL: $SEARCH_INDEX missing — static Orama export did not run."
+  exit 1
+fi
+actual_size=$(wc -c < "$SEARCH_INDEX")
+if [ "$actual_size" -lt "$MIN_SEARCH_INDEX_BYTES" ]; then
+  echo "[docs-canary] FAIL: $SEARCH_INDEX is ${actual_size} bytes (< ${MIN_SEARCH_INDEX_BYTES})."
+  echo "[docs-canary] Likely cause: source loader returned an empty page set — search will return zero results."
+  exit 1
+fi
+echo "[docs-canary] PASS: search index is ${actual_size} bytes"
 
 if [ -z "${GITHUB_TOKEN:-}" ]; then
   echo "[docs-canary] GITHUB_TOKEN unset — skipping last-updated canary"

@@ -35,10 +35,11 @@ FROM caddy:2.10-alpine AS runner
 COPY deploy/docs/Caddyfile /etc/caddy/Caddyfile
 COPY --from=builder /app/out /srv
 
-# Pre-compress static assets so Caddy serves .gz/.zst sidecars without
-# re-compressing on every request. Trades container build time for
-# runtime CPU + bandwidth.
-RUN apk add --no-cache zstd findutils \
+# Pre-compress static assets so Caddy (file_server precompressed in
+# Caddyfile) serves the .gz/.zst sidecars without recompressing on every
+# request. curl is for HEALTHCHECK — BusyBox wget can't refuse redirects,
+# so a future redirect rule accidentally catching / would mask brokenness.
+RUN apk add --no-cache curl zstd findutils \
   && find /srv \( -name '*.html' -o -name '*.css' -o -name '*.js' \
                   -o -name '*.json' -o -name '*.svg' -o -name '*.xml' \
                   -o -name '*.txt' -o -name '*.md' \) \
@@ -50,6 +51,6 @@ EXPOSE 3003
 ENV PORT=3003
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -q --spider http://localhost:${PORT}/ || exit 1
+  CMD curl -fsS --max-redirs 0 -o /dev/null http://localhost:${PORT}/ || exit 1
 
 CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]

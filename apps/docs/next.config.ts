@@ -3,15 +3,13 @@ import type { NextConfig } from "next";
 
 const config: NextConfig = {
   reactStrictMode: true,
-  // Static export — served by Caddy in front (apps/docs/Caddyfile). The
-  // markdown-twin rewrite (/:path*.mdx -> /llms.mdx/:path*) and the
-  // /guides/mcp-hosted/* legacy redirect that used to live here now live
-  // in the Caddyfile, because Next.js rewrites/redirects don't run under
-  // output: 'export'.
+  // Static export disables rewrites() and redirects() — Caddy owns the
+  // markdown-twin rewrite and legacy /guides/mcp-hosted aliasing in front
+  // of /srv (see deploy/docs/Caddyfile).
   output: "export",
-  // The /llms.mdx/[[...slug]] route handler emits file paths without an
-  // extension (e.g. out/llms.mdx/guides/slack). Adding a trailing slash
-  // makes the Caddy /*.mdx -> /llms.mdx/* rewrite resolve cleanly.
+  // Directory-style canonical URLs (/<slug>/) work with Caddy's file_server
+  // index resolution and pair with the /llms.mdx/<slug>/index.md emission
+  // shape from src/app/llms.mdx/[[...slug]]/route.ts.
   trailingSlash: true,
   images: {
     // ImageResponse from generateOGImage works under output: 'export' but

@@ -119,10 +119,11 @@ describe("runMigrations", () => {
     //   gchat catalog row to 'available', #2754)
     // + 0102 (crm_outbox durable queue, #2729)
     // + 0103 (converge salesforce row to ADR-0006 canonical pillar)
-    // + 0104 (drop legacy invitations table after better-auth-invitations
+    // + 0104 (crm_outbox.email_key for per-email serialization, #2870)
+    // + 0105 (drop legacy invitations table after better-auth-invitations
     //   cutover — invitations now live in Better Auth's `invitation`
-    //   table; see lib/auth/server.ts:organizationHooks) = 105.
-    expect(count).toBe(105);
+    //   table; see lib/auth/server.ts:organizationHooks) = 106.
+    expect(count).toBe(106);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -255,7 +256,8 @@ describe("runMigrations", () => {
         "0101_approval_surface_gchat.sql",
         "0102_crm_outbox.sql",
         "0103_converge_salesforce_pillar.sql",
-        "0104_drop_legacy_invitations.sql",
+        "0104_crm_outbox_email_key.sql",
+        "0105_drop_legacy_invitations.sql",
       ],
     });
 

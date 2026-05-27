@@ -156,8 +156,8 @@ export interface FlushResult {
 // ─────────────────────────────────────────────────────────────────────
 
 const ENQUEUE_SQL = `
-  INSERT INTO crm_outbox (event_type, payload, status)
-  VALUES ($1, $2::jsonb, 'pending')
+  INSERT INTO crm_outbox (event_type, payload, email_key, status)
+  VALUES ($1, $2::jsonb, $3, 'pending')
   RETURNING id
 `;
 
@@ -177,6 +177,59 @@ const ENQUEUE_SQL = `
  * the tier-based delay measured from `created_at`. The COALESCE
  * keeps a long upstream-requested delay from being clobbered by an
  * eager tier value (e.g. 30s tier-1 vs `Retry-After: 3600`).
+ *
+ * Per-email serialization (#2870): a row is claimable only if NO
+ * blocking same-email sibling exists. Three layers cooperate:
+ *
+ *   1. **NOT EXISTS gate** — splits the predicate by sibling status:
+ *      * Any `in_flight` same-email row blocks unconditionally
+ *        (regardless of `created_at`). A rolling hotfix or manual
+ *        recovery can leave a newer `in_flight` row alongside an
+ *        older `pending` row — without the age-independent in_flight
+ *        check, the older `pending` row would dispatch concurrently
+ *        with the newer in_flight one.
+ *      * Any `pending` same-email row blocks only if it's strictly
+ *        older by `(created_at, id)`. The `id` tie-break is what
+ *        serializes bulk-INSERT rows that share `created_at` (e.g.
+ *        the historic-leads backfill path that produces many rows in
+ *        one statement with one `now()` timestamp); without it, the
+ *        next tick would see a same-`created_at` sibling as not-older
+ *        and claim a second row while the first is still in_flight.
+ *      The age check on `pending` is what closes the retry-cooldown
+ *      leapfrog: R1 (older, in transient-fail backoff) is filtered
+ *      out of `claimable` by the due-time check, but its presence as
+ *      an older pending sibling still blocks R2 (newer, fresh) from
+ *      flipping atlasFirstSource ahead of it.
+ *   2. **Advisory xact lock per email_key** — `pg_try_advisory_xact_lock`
+ *      gives us serialization across concurrent transactions that
+ *      MVCC alone can't provide. Without it, two flusher pods could
+ *      each see the other's pre-commit UPDATE as invisible, both
+ *      pass the NOT EXISTS gate at lookup time, and both end up with
+ *      different same-email rows in_flight (each pod skips the
+ *      other's locked row via SKIP LOCKED, then claims a different
+ *      sibling). The advisory lock is transaction-scoped: held until
+ *      commit, then released, so the next tick re-acquires cleanly.
+ *      NULL email_key rows skip the lock (no per-row serialization
+ *      needed — those are their own dedup groups).
+ *   3. **DISTINCT ON dedupe (intra-statement)** — belt-and-suspenders:
+ *      within a single tick the NOT EXISTS gate already keeps only
+ *      the earliest same-email row, but DISTINCT ON formalizes the
+ *      "one row per email_key per batch" contract for any future
+ *      WHERE-clause regression. `dedup_key` is
+ *      `COALESCE(email_key, id::text)` so NULL-email_key rows fall
+ *      back to their own id and dispatch independently. The
+ *      `id` tie-breaker on `ORDER BY` makes claim order deterministic
+ *      when two rows share `created_at` (e.g. bulk INSERT).
+ *
+ * The outer LIMIT applies to the deduped set, not the raw candidate
+ * set, so a workspace with a backlog of same-email events drains one
+ * event per email per tick rather than starving other emails behind
+ * it.
+ *
+ * Advisory-lock namespace: the first arg `2870` (the issue number)
+ * is the lock class; the second arg is `hashtext(email_key)`. The
+ * two-key variant avoids collisions with any other advisory locks
+ * the codebase may take elsewhere.
  */
 const CLAIM_SQL = `
   UPDATE crm_outbox
@@ -184,13 +237,37 @@ const CLAIM_SQL = `
       attempts = attempts + 1,
       claimed_at = now()
   WHERE id IN (
-    SELECT id FROM crm_outbox
-    WHERE status = 'pending'
-      AND attempts < ${DEAD_AFTER_ATTEMPTS}
-      AND COALESCE(retry_after, created_at + (${CLAIM_DELAY_SQL})) <= now()
-    ORDER BY created_at
-    LIMIT $1
-    FOR UPDATE SKIP LOCKED
+    WITH claimable AS (
+      SELECT id, email_key, created_at FROM crm_outbox
+      WHERE status = 'pending'
+        AND attempts < ${DEAD_AFTER_ATTEMPTS}
+        AND COALESCE(retry_after, created_at + (${CLAIM_DELAY_SQL})) <= now()
+        AND NOT EXISTS (
+          SELECT 1 FROM crm_outbox o2
+          WHERE o2.email_key IS NOT NULL
+            AND o2.email_key = crm_outbox.email_key
+            AND o2.id <> crm_outbox.id
+            AND (
+              o2.status = 'in_flight'
+              OR (
+                o2.status = 'pending'
+                AND (o2.created_at, o2.id) < (crm_outbox.created_at, crm_outbox.id)
+              )
+            )
+        )
+        AND (
+          email_key IS NULL
+          OR pg_try_advisory_xact_lock(2870, hashtext(email_key))
+        )
+      ORDER BY created_at, id
+      FOR UPDATE SKIP LOCKED
+    ),
+    deduped AS (
+      SELECT DISTINCT ON (COALESCE(email_key, id::text)) id, created_at
+      FROM claimable
+      ORDER BY COALESCE(email_key, id::text), created_at, id
+    )
+    SELECT id FROM deduped ORDER BY created_at, id LIMIT $1
   )
   RETURNING id, event_type, payload, attempts, twenty_person_id, twenty_note_id
 `;
@@ -295,14 +372,54 @@ export const SHUTDOWN_RECOVERY_STALE_MS = 30_000;   // 30 s
 //  Public API
 // ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Event types whose payload is contractually email-keyed. A row of one
+ * of these types landing with a NULL email_key is almost always a bug
+ * — a type-system bypass, schema drift, or upstream payload corruption
+ * — and we lose per-email serialization for that row (it dispatches
+ * concurrently with siblings). Warn-log so operators can grep and
+ * investigate before atlasFirstSource flips weeks later.
+ *
+ * The literals must match the `eventType` strings that actually land
+ * in `crm_outbox.event_type`, NOT the upstream `AtlasLeadEvent.source`
+ * variants — they coincide for `demo` / `signup` / `sales-form` (the
+ * dispatcher passes `input.source` through verbatim) but diverge for
+ * conversions, which enqueue as `"stamp-conversion"` (the
+ * `STAMP_CONVERSION_EVENT_TYPE` constant in `ee/src/saas-crm/index.ts`).
+ *
+ * New email-keyed event types must be added here AND have an `email`
+ * field on their payload type — the runtime check is the only defense
+ * against a TypeScript cast or `unknown`-laundered payload silently
+ * disabling serialization.
+ */
+const EMAIL_KEYED_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "demo",
+  "signup",
+  "sales-form",
+  "stamp-conversion",
+]);
+
 /** Insert a row in `pending` status. Returns the new row id. */
 export async function enqueue(
   db: OutboxDB,
   input: EnqueueInput,
 ): Promise<string> {
+  const emailKey = extractEmailKey(input.payload);
+  if (emailKey === null && EMAIL_KEYED_EVENT_TYPES.has(input.eventType)) {
+    const raw = input.payload["email"];
+    log.warn(
+      {
+        eventType: input.eventType,
+        rawType: typeof raw,
+        event: "lead_outbox.email_key_missing",
+      },
+      "Email-keyed event enqueued with no extractable email — per-email serialization disabled for this row",
+    );
+  }
   const rows = await db.query<{ id: string }>(ENQUEUE_SQL, [
     input.eventType,
     JSON.stringify(input.payload),
+    emailKey,
   ]);
   const id = rows[0]?.id;
   if (!id) {
@@ -311,6 +428,35 @@ export async function enqueue(
     throw new Error("crm_outbox enqueue returned no row");
   }
   return id;
+}
+
+/**
+ * Pull the lead's primary email out of a free-form payload and
+ * normalize it for `email_key` storage. Returns `null` when the
+ * payload has no recognizable email field — those rows fall back to
+ * "every row dispatches independently" semantics in CLAIM_SQL
+ * (`COALESCE(email_key, id::text)` makes NULL rows their own dedup
+ * group).
+ *
+ * Normalization is `.trim().toLowerCase()`. The SQL backfill in
+ * migration 0104 uses the equivalent `NULLIF(LOWER(TRIM(...)), '')`
+ * so both code paths produce identical email_key values for the
+ * same input. Note: the lead-normalizer in `@useatlas/twenty` uses
+ * the reverse order (`.toLowerCase().trim()`) — for ASCII emails
+ * both orders produce identical output, but if you ever extend
+ * either path to non-ASCII inputs the orders should be reconciled.
+ *
+ * Exported so unit tests can assert lockstep with the 0104 backfill
+ * and so the bulk-enqueue path in `backfill-crm-leads.ts` populates
+ * email_key the same way `enqueue` does. Not part of the public
+ * outbox surface; new callers should pass payloads through
+ * `enqueue`, not call this directly.
+ */
+export function extractEmailKey(payload: Record<string, unknown>): string | null {
+  const raw = payload["email"];
+  if (typeof raw !== "string") return null;
+  const normalized = raw.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : null;
 }
 
 /**
@@ -598,3 +744,39 @@ export function getTickIntervalMs(): number {
  * across many ticks rather than starving the upstream rate limit in one.
  */
 export const FLUSH_BATCH_LIMIT = 50;
+
+/**
+ * Flusher region gate. Default `true` — every API instance that has
+ * `SaasCrm.available === true` and an internal DB runs the flusher,
+ * which preserves the pre-#2890 behavior.
+ *
+ * Set `ATLAS_CRM_OUTBOX_FLUSHER_ENABLED=false` on regional API pods
+ * (api-eu / api-apac) whose internal DB has no source of `crm_outbox`
+ * rows: the SaaS lead-capture pipeline at `crm.useatlas.dev` only
+ * writes to US, so EU/APAC tick 12×/min against a permanently-empty
+ * table — ~17k wasted `UPDATE ... SELECT ... FOR UPDATE SKIP LOCKED`
+ * statements per region per day, plus log noise (`lead_outbox.heartbeat`
+ * every 60s).
+ *
+ * Disabling the flusher does NOT skip the recovery sweep finalizer:
+ * boot-time `recoverInFlight` still resets stranded `in_flight` rows
+ * from a previous deploy's crash. So flipping the env on a region that
+ * previously had the flusher running is safe.
+ *
+ * Future direction (eventize): replace the always-on poll loop with
+ * edge-triggered enqueue-kick + per-row retry_after timer + 5min
+ * backstop sweep. Until then this env is the cheapest dial.
+ */
+export function isFlusherEnabled(): boolean {
+  const raw = process.env.ATLAS_CRM_OUTBOX_FLUSHER_ENABLED;
+  if (raw === undefined) return true;
+  const normalized = raw.trim().toLowerCase();
+  // Accept the usual boolean affordances; default-true semantics mean
+  // anything we don't recognize as a "no" stays enabled.
+  return !(
+    normalized === "false" ||
+    normalized === "0" ||
+    normalized === "no" ||
+    normalized === "off"
+  );
+}

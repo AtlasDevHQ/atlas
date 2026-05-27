@@ -32,13 +32,12 @@ import { listUserWorkspaceIds } from "@atlas/api/lib/auth/oauth-workspace-grants
 import { recordOAuthTokenRefresh } from "@atlas/api/lib/auth/oauth-refresh-audit";
 import Stripe from "stripe";
 import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
-import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
-import { createAtlasUser } from "@atlas/api/lib/auth/types";
-import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { createLogger } from "@atlas/api/lib/logger";
 import {
   assertInvitationRoleAllowed,
   dispatchInvitationEmail,
   enforceInvitationSeatLimit,
+  recordInvitationCancelled,
   recordInvitationCreated,
 } from "@atlas/api/lib/auth/invitations";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
@@ -1261,29 +1260,18 @@ export function buildPlugins() {
           });
         },
         afterCancelInvitation: async ({ invitation, cancelledBy, organization: org }) => {
-          // AsyncLocalStorage not bound here — see afterCreateInvitation.
-          const actor = createAtlasUser(
-            cancelledBy.user.id,
-            "managed",
-            cancelledBy.user.email || `user:${cancelledBy.user.id}`,
-            { activeOrganizationId: org.id },
-          );
-          withRequestContext(
-            { requestId: `cancel-invite:${invitation.id}`, user: actor },
-            () => {
-              logAdminAction({
-                actionType: ADMIN_ACTIONS.user.revokeInvitation,
-                targetType: "user",
-                targetId: invitation.id,
-                metadata: {
-                  invitedEmail: invitation.email,
-                  role: invitation.role,
-                  previousStatus: "pending",
-                  orgId: org.id,
-                },
-              });
-            },
-          );
+          await recordInvitationCancelled({
+            invitationId: invitation.id,
+            invitedEmail: invitation.email,
+            role: Array.isArray(invitation.role)
+              ? invitation.role.join(",")
+              : String(invitation.role ?? ""),
+            // Better Auth's native cancelInvitation gates on status = pending
+            // before this hook fires.
+            previousStatus: "pending",
+            orgId: org.id,
+            cancelledBy: { id: cancelledBy.user.id, email: cancelledBy.user.email },
+          });
         },
       },
       async sendInvitationEmail(data) {

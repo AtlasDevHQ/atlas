@@ -591,6 +591,25 @@ export function UsersPage({ scope }: UsersPageProps) {
   async function handleRevokeInvitation(id: string): Promise<boolean> {
     setRevokeError(null);
     try {
+      if (isPlatformScope) {
+        // Better Auth's native cancelInvitation enforces the same
+        // caller-org-membership gate as createInvitation — platform
+        // admins viewing /platform/users see cross-org rows they can't
+        // satisfy. Route through the platform endpoint (symmetric to
+        // the create-side workaround at handlePlatformInvite above).
+        const res = await fetch(`${apiUrl}/api/v1/platform/invitations/${id}`, {
+          method: "DELETE",
+          credentials,
+        });
+        if (!res.ok) {
+          // intentionally ignored: non-JSON error bodies fall back to the HTTP status message below
+          const data = (await res.json().catch(() => null)) as { message?: string } | null;
+          setRevokeError(data?.message ?? `Failed to revoke invitation (HTTP ${res.status}).`);
+          return false;
+        }
+        setInvitationsVersion((v) => v + 1);
+        return true;
+      }
       const result = await authClient.organization.cancelInvitation({ invitationId: id });
       if (result.error) {
         setRevokeError(result.error.message ?? "Failed to revoke invitation.");

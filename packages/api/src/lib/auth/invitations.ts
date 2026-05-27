@@ -327,3 +327,55 @@ export async function recordInvitationCreated(args: {
     );
   }
 }
+
+/**
+ * Audit a successful invitation cancellation ("revoke" in the UI;
+ * "cancel" in the Better Auth API + audit constant). Same actor
+ * synthesis pattern as `recordInvitationCreated` — `withRequestContext`
+ * binds the AsyncLocalStorage that Better Auth's hooks fire outside of,
+ * and `activeOrganizationId: orgId` attributes the audit row to the
+ * TARGET workspace (matters for cross-org platform-admin cancels where
+ * the caller's active org diverges from the cancelled row's org).
+ *
+ * `previousStatus` is a parameter rather than a constant because the
+ * cross-org platform route can DELETE any-status row (Better Auth's
+ * native cancelInvitation gates on `status = 'pending'`; the platform
+ * bypass route doesn't). The hook call site can pass `"pending"`
+ * directly — Better Auth's native gate guarantees it.
+ *
+ * Email may be empty for passkey-only accounts — fall back to a user-id
+ * label so `createAtlasUser`'s non-empty-label check doesn't throw
+ * after the DELETE has already happened. (Only reachable from the hook
+ * path; the route call site passes the already-validated `user.label`.)
+ */
+export async function recordInvitationCancelled(args: {
+  invitationId: string;
+  invitedEmail: string;
+  role: string;
+  previousStatus: string;
+  orgId: string;
+  cancelledBy: { id: string; email: string | null | undefined };
+}): Promise<void> {
+  const actor = createAtlasUser(
+    args.cancelledBy.id,
+    "managed",
+    args.cancelledBy.email || `user:${args.cancelledBy.id}`,
+    { activeOrganizationId: args.orgId },
+  );
+  withRequestContext(
+    { requestId: `cancel-invite:${args.invitationId}`, user: actor },
+    () => {
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.user.revokeInvitation,
+        targetType: "user",
+        targetId: args.invitationId,
+        metadata: {
+          invitedEmail: args.invitedEmail,
+          role: args.role,
+          previousStatus: args.previousStatus,
+          orgId: args.orgId,
+        },
+      });
+    },
+  );
+}

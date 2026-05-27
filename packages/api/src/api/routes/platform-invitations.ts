@@ -1,15 +1,17 @@
 /**
  * Platform-admin cross-org invitation routes.
  *
- * Mounted at /api/v1/platform/invitations. Lets a `platform_admin` invite
- * a user into any organization they don't belong to — Better Auth's native
- * `createInvitation` enforces an org-membership gate on the caller that a
- * platform admin can't satisfy.
+ * Mounted at /api/v1/platform/invitations:
+ *   - POST   /        create an invitation in any organization
+ *   - DELETE /{id}    cancel an invitation in any organization
  *
- * The route re-implements the create flow with the membership check
- * bypassed. The platform_admin gate IS the bypass: `createPlatformRouter`
- * enforces `role === "platform_admin"` before any handler runs. Seat-limit,
- * audit, and email all route through the shared helpers in
+ * Both endpoints exist because Better Auth's native `createInvitation` and
+ * `cancelInvitation` enforce a caller-org-membership gate that a platform
+ * admin acting cross-org can't satisfy. These routes re-implement the
+ * native flows with the membership check bypassed; the `platform_admin`
+ * role check on `createPlatformRouter` IS the bypass.
+ *
+ * Seat-limit, audit, and email all route through the shared helpers in
  * `lib/auth/invitations.ts` so the row shape and side effects match what
  * Better Auth's hook path produces.
  */
@@ -26,6 +28,7 @@ import {
   assertPlatformInvitationRole,
   dispatchInvitationEmail,
   enforceInvitationSeatLimit,
+  recordInvitationCancelled,
   recordInvitationCreated,
 } from "@atlas/api/lib/auth/invitations";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
@@ -58,6 +61,14 @@ const InvitationSchema = z.object({
   createdAt: z.string(),
 });
 
+const CancelInvitationParamsSchema = z.object({
+  id: z.string().min(1).openapi({ description: "Invitation row id to cancel." }),
+});
+
+const CancelInvitationResponseSchema = z.object({
+  id: z.string().openapi({ description: "Cancelled invitation id. Mirrors Better Auth's native cancelInvitation response shape." }),
+});
+
 // ---------------------------------------------------------------------------
 // Route definition
 // ---------------------------------------------------------------------------
@@ -86,6 +97,28 @@ const createInvitationRoute = createRoute({
     404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
     409: { description: "User already a member or already invited", content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Seat limit reached", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const cancelInvitationRoute = createRoute({
+  method: "delete",
+  path: "/{id}",
+  tags: ["Platform Admin"],
+  summary: "Cancel a cross-org invitation",
+  description:
+    "Lets a platform_admin cancel ('revoke' in the UI) any pending invitation regardless of org membership. Better Auth's native cancelInvitation enforces the same caller-org-membership gate as createInvitation; this route is the symmetric bypass. Same audit row shape as the native afterCancelInvitation hook.",
+  request: {
+    params: CancelInvitationParamsSchema,
+  },
+  responses: {
+    200: {
+      description: "Invitation cancelled",
+      content: { "application/json": { schema: CancelInvitationResponseSchema } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Invitation not found or internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -514,4 +547,81 @@ platformInvitations.openapi(createInvitationRoute, async (c) => {
       200,
     );
   }), { label: "platform create invitation" });
+});
+
+platformInvitations.openapi(cancelInvitationRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
+
+    if (!hasInternalDB()) {
+      return c.json(
+        { error: "not_available", message: "No internal database configured.", requestId },
+        404,
+      );
+    }
+
+    if (!user) {
+      // Type-narrowing guard — `createPlatformRouter`'s auth middleware
+      // populates `user`. Realistically unreachable.
+      return c.json(
+        { error: "unauthenticated", message: "Authentication required.", requestId },
+        401,
+      );
+    }
+
+    const { id } = c.req.valid("param");
+
+    // Atomic gated delete. Matches Better Auth's native cancelInvitation
+    // semantics: only `pending` rows can be cancelled. Anything else
+    // (already accepted, already cancelled, expired) refuses with 404
+    // — the operator's next step is the same either way (refresh and
+    // re-evaluate). `RETURNING` gives us the row for the audit without
+    // a separate SELECT, and the WHERE-status clause closes the TOCTOU
+    // window between a stale-UI Revoke click and a concurrent accept.
+    const deleted = yield* Effect.promise(() =>
+      internalQuery<InvitationRow>(
+        `DELETE FROM invitation WHERE id = $1 AND status = 'pending'
+         RETURNING id, email, role, "organizationId", "inviterId", status, "expiresAt", "createdAt"`,
+        [id],
+      ),
+    );
+    if (deleted.length === 0) {
+      return c.json(
+        { error: "not_found", message: "Invitation not found or not pending.", requestId },
+        404,
+      );
+    }
+    const row = deleted[0];
+
+    // Audit. `tryPromise` + `Effect.either` so an audit-write throw
+    // doesn't void the 200 — the row is already gone. Mirrors the
+    // create-route's post-success audit pattern.
+    const auditResult = yield* Effect.tryPromise({
+      try: () =>
+        recordInvitationCancelled({
+          invitationId: row.id,
+          invitedEmail: row.email,
+          role: row.role,
+          // WHERE status='pending' clause guarantees this.
+          previousStatus: "pending",
+          orgId: row.organizationId,
+          cancelledBy: { id: user.id, email: user.label },
+        }),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
+    if (auditResult._tag === "Left") {
+      log.error(
+        {
+          err: errorMessage(auditResult.left),
+          invitationId: row.id,
+          organizationId: row.organizationId,
+          requestId,
+        },
+        "Audit failed — invitation cancellation succeeded, audit row may be missing",
+      );
+    }
+
+    return c.json({ id: row.id }, 200);
+  }), { label: "platform cancel invitation" });
 });

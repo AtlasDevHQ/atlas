@@ -822,4 +822,86 @@ describeIfPg("lead-outbox (real Postgres)", () => {
     },
     PG_TIMEOUT_MS,
   );
+
+  // ── Codex C3 (#2849): cross-tenant per-email serialization ────────
+  //
+  // Pre-fix CLAIM_SQL serialized on `email_key` ALONE — the NOT EXISTS
+  // gate, advisory lock, and DISTINCT ON dedupe all omitted
+  // workspace_id. Tenant A's `alice@example.com` would block tenant
+  // B's `alice@example.com` (they dispatch to different Twentys and
+  // have independent idempotency), creating silent head-of-line
+  // blocking across unrelated CRMs.
+  //
+  // Post-fix the serialization key is `(workspace_id, email_key)` so
+  // both tenants' rows for the same email claim in the same tick.
+  it(
+    "claim does NOT serialize same email across distinct workspaces (codex C3)",
+    async () => {
+      await truncateOutbox();
+      const db = dbFor();
+
+      // Enqueue same email under two distinct workspaces. Pre-fix the
+      // second insert's row would be blocked by NOT EXISTS / the
+      // shared advisory lock; post-fix both claim independently.
+      await enq(db, {
+        eventType: "demo",
+        payload: { source: "demo", email: "alice@example.com" },
+        workspaceId: "ws-tenant-A",
+      });
+      await enq(db, {
+        eventType: "demo",
+        payload: { source: "demo", email: "alice@example.com" },
+        workspaceId: "ws-tenant-B",
+      });
+
+      const claimedByDispatcher: string[] = [];
+      const dispatcher: OutboxDispatcher = async (row) => {
+        claimedByDispatcher.push(row.workspaceId);
+        return { kind: "ok" };
+      };
+
+      const result = await flushBatch(db, dispatcher, 10);
+
+      // Both tenants drain in a single tick — independent serialization
+      // namespaces. Pre-fix this would be 1 (one tenant's row blocked).
+      expect(result.claimed).toBe(2);
+      expect(result.ok).toBe(2);
+      expect(claimedByDispatcher.sort()).toEqual([
+        "ws-tenant-A",
+        "ws-tenant-B",
+      ]);
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  // Same-workspace same-email serialization is still in force — only
+  // the cross-workspace block is lifted. Sanity-check that the per-
+  // workspace gate keeps working as designed.
+  it(
+    "claim STILL serializes same email within the same workspace (codex C3 — invariant preserved)",
+    async () => {
+      await truncateOutbox();
+      const db = dbFor();
+
+      // Two rows, same email, same workspace, distinct created_at.
+      // The older row blocks the newer one via NOT EXISTS.
+      await pool.query(
+        `INSERT INTO crm_outbox (event_type, payload, email_key, workspace_id, status, created_at)
+         VALUES
+           ('demo', $1::jsonb, 'dup@same.test', 'ws-only-one', 'pending', now() - INTERVAL '10 seconds'),
+           ('demo', $2::jsonb, 'dup@same.test', 'ws-only-one', 'pending', now())`,
+        [
+          JSON.stringify({ source: "demo", email: "dup@same.test" }),
+          JSON.stringify({ source: "demo", email: "dup@same.test" }),
+        ],
+      );
+
+      const dispatcher: OutboxDispatcher = async () => ({ kind: "ok" });
+      const result = await flushBatch(db, dispatcher, 10);
+
+      // Older sibling drained, newer one held back — only 1 claimed.
+      expect(result.claimed).toBe(1);
+    },
+    PG_TIMEOUT_MS,
+  );
 });

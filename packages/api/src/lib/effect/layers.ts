@@ -1511,15 +1511,19 @@ export function makeSchedulerLive(
       );
 
       // ── Periodic fiber: SaaS CRM outbox flusher (#2729) ─────────────
-      // Slice 2 of 1.6.0. The flusher polls `crm_outbox` for pending /
-      // due rows, claims them via single-statement UPDATE … RETURNING,
-      // and hands each to the dispatcher Tag-bound by `SaasCrmLive`.
-      // Skipped when SaasCrm is unavailable (self-hosted, missing
-      // creds, no internal DB, or boot verification failure) — the
-      // discriminated union narrows `dispatcher` to non-null inside
-      // the `available === true` branch.
+      // The flusher polls `crm_outbox` for pending / due rows, claims
+      // them via single-statement UPDATE … RETURNING, and hands each
+      // to the dispatcher Tag-bound by `SaasCrmLive`.
+      //
+      // Gate is `saasCrm.dispatcher !== null` (not `available`):
+      // post-#2849, the dispatcher routes per-row, and customer-
+      // workspace rows have nothing to do with the operator's Twenty
+      // probe / env creds. We mount the flusher whenever ANY dispatch
+      // path is viable; per-row classification handles operator-
+      // pipeline rows when the operator side is broken (they
+      // dead-letter with an actionable permanent message).
       const saasCrm = yield* SaasCrm;
-      if (saasCrm.available && hasInternalDB()) {
+      if (saasCrm.dispatcher !== null && hasInternalDB()) {
         const outboxDispatcher = saasCrm.dispatcher;
         const outboxDb: OutboxDB = { query: internalQuery };
 
@@ -1805,9 +1809,10 @@ export function makeSchedulerLive(
         log.debug(
           {
             saasCrmAvailable: saasCrm.available,
+            dispatcherPresent: saasCrm.dispatcher !== null,
             hasInternalDB: hasInternalDB(),
           },
-          "CRM outbox flusher not started — SaasCrm unavailable or internal DB absent",
+          "CRM outbox flusher not started — no dispatcher (self-hosted / no EE / no internal DB)",
         );
       }
 

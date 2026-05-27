@@ -105,6 +105,9 @@ function noopLayer(): Layer.Layer<SaasCrm> {
     // `stampConversion` too. Noop is structurally identical to
     // `upsertLead` here.
     stampConversion: () => Effect.void,
+    // #2849 — available:false now also requires `dispatcher`. null
+    // = "no way to dispatch anything" (the legitimate noop default).
+    dispatcher: null,
   });
 }
 

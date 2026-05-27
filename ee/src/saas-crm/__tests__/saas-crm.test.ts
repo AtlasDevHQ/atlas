@@ -33,6 +33,16 @@ let internalDbAvailable = true;
 let lastEnqueueArgs: { sql: string; params: unknown[] } | null = null;
 let enqueueCount = 0;
 let nextEnqueueId = "row-id-0";
+// Per-test overrides for the operator-workspace SELECT (#2849). When
+// `operatorOrgIdOverride` is non-null the SELECT yields one row with
+// that id (happy path); when `operatorSelectThrows` is set the stub
+// throws — with `looksLikeMissingTable: true` we attach a 42P01 code
+// (the legitimate no-managed-auth shape that degrades to sentinel),
+// otherwise we throw a transport-shaped error (fail-loud).
+let operatorOrgIdOverride: string | null = null;
+let operatorSelectThrows:
+  | { looksLikeMissingTable: boolean; message: string }
+  | null = null;
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => internalDbAvailable,
   internalQuery: async (sql: string, params?: unknown[]) => {
@@ -40,6 +50,19 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     if (/^\s*INSERT INTO crm_outbox/i.test(sql)) {
       enqueueCount++;
       return [{ id: nextEnqueueId }];
+    }
+    if (/is_operator_workspace\s*=\s*true/i.test(sql)) {
+      if (operatorSelectThrows) {
+        const err = new Error(operatorSelectThrows.message);
+        if (operatorSelectThrows.looksLikeMissingTable) {
+          (err as { code?: string }).code = "42P01";
+        }
+        throw err;
+      }
+      if (operatorOrgIdOverride !== null) {
+        return [{ id: operatorOrgIdOverride }];
+      }
+      return [];
     }
     return [];
   },
@@ -113,6 +136,8 @@ function resetStubs(): void {
   lastEnqueueArgs = null;
   enqueueCount = 0;
   nextEnqueueId = "row-id-0";
+  operatorOrgIdOverride = null;
+  operatorSelectThrows = null;
 }
 
 // ── verifyCustomFields ──────────────────────────────────────────────
@@ -2294,8 +2319,16 @@ describe("dispatchWithResolvedConfig — per-row routing (#2849)", () => {
     }
   });
 
-  test("transport blip on per-tenant lookup → transient (next tick may succeed)", async () => {
+  // Codex I1 (#2849): when the resolver's lookup throws a raw transport
+  // error (e.g. pg pool blip), `resolveWorkspaceCredentials` swallows it
+  // and re-throws as TwentyCredentialError with the original carried as
+  // `cause`. The dispatcher inspects `cause` and reclassifies as
+  // transient. Pre-fix this collapsed into permanent and a single pg
+  // blip burned the retry budget on the first attempt.
+  test("transport blip on per-tenant lookup → transient (cause carries the original error)", async () => {
     const { impl } = makeCapturingFetch();
+    // Plain Error from the lookup — the production resolver wraps it
+    // into TwentyCredentialError with cause = this error.
     const lookup = mock(async () => {
       throw new Error("ECONNRESET");
     });
@@ -2326,41 +2359,201 @@ describe("dispatchWithResolvedConfig — per-row routing (#2849)", () => {
       ),
     );
 
-    // Lookup threw a non-typed Error (not TwentyCredentialError, not
-    // TwentyDecryptError). Surfaced as a transient credential resolution
-    // failure (wrapped as TwentyCredentialError with a `cause`) → the
-    // resolver dead-letters with a permanent missing-credentials message
-    // because the workspace has no usable row.
-    //
-    // ACTUALLY: the resolver in `plugins/twenty/src/credential-resolver.ts`
-    // swallows the transport error and throws a `TwentyCredentialError`
-    // with the original error as `cause`. Our dispatcher classifies
-    // `TwentyCredentialError` as permanent (missing credentials — no env
-    // fallback). So the row dead-letters even though the underlying
-    // cause was a pg blip.
-    //
-    // This is the intentional design: a transport blip looks identical
-    // to "no row exists" from the resolver's perspective, and we must
-    // not silently route to env on either. An operator investigating
-    // the dead-letter sees the `cause` chain in structured logs.
+    expect(outcome.kind).toBe("transient");
+    if (outcome.kind === "transient") {
+      expect(outcome.message).toContain("transport-blip");
+      expect(outcome.message).toContain("ECONNRESET");
+    }
+  });
+
+  // Codex C1 (#2849): tenant install with NULL base_url must dead-
+  // letter as permanent rather than silently routing the tenant's
+  // apiKey against Atlas's operator host (crm.useatlas.dev).
+  test("per-tenant credentials with NULL baseUrl → permanent dead-letter (no operator-host fallback)", async () => {
+    const { impl, seenUrls, seenAuthHeaders } = makeCapturingFetch();
+    // Lookup returns the tenant's apiKey but no baseUrl — what a row
+    // with NULL `config->>'url'` would look like through the resolver.
+    const lookup = mock(async () => ({
+      apiKey: "tenant-key-with-no-url",
+      baseUrl: null,
+    }));
+
+    const outcome = await withFetch(impl, () =>
+      dispatchWithResolvedConfig(
+        {
+          operatorWorkspaceId: "real-operator-id",
+          operatorClientConfig: {
+            apiKey: "operator-env-key",
+            baseUrl: "https://crm.useatlas.dev",
+          },
+          lookup,
+        },
+        {
+          id: "row-null-baseurl",
+          eventType: "demo",
+          payload: { source: "demo", email: "noUrl@tenant.test" },
+          attempts: 0,
+          workspaceId: "tenant-misconfigured",
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {},
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+
     expect(outcome.kind).toBe("permanent");
+    if (outcome.kind === "permanent") {
+      expect(outcome.message).toContain("no baseUrl");
+      expect(outcome.message).toContain("tenant-misconfigured");
+      expect(outcome.message).toContain("crm.useatlas.dev");
+    }
+    // CRITICAL: the tenant's apiKey must NEVER reach Atlas's host. No
+    // request should have left the dispatcher at all (the misconfig
+    // check fires before `dispatchOutboxRow`).
+    expect(seenUrls).toHaveLength(0);
+    expect(seenAuthHeaders).toHaveLength(0);
+  });
+
+  // Codex C2 (#2849): when SaasCrmLive booted into the tenant-only
+  // shape (operator probe / creds / workspace-id resolve failed),
+  // operator-pipeline rows in crm_outbox must dead-letter as permanent
+  // with an actionable message rather than burning the retry budget.
+  test("operator-pipeline row with operatorClientConfig=null → permanent dead-letter pointing at boot log", async () => {
+    const { impl, seenUrls } = makeCapturingFetch();
+    const outcome = await withFetch(impl, () =>
+      dispatchWithResolvedConfig(
+        {
+          operatorWorkspaceId: ATLAS_OPERATOR_WORKSPACE_SENTINEL,
+          operatorClientConfig: null,
+          operatorBrokenReason:
+            "TWENTY_API_KEY unset at boot — operator-pipeline rows cannot dispatch",
+          lookup: mock(async () => null),
+        },
+        {
+          id: "row-op-broken",
+          eventType: "demo",
+          payload: { source: "demo", email: "broken@operator.test" },
+          attempts: 0,
+          workspaceId: ATLAS_OPERATOR_WORKSPACE_SENTINEL,
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {},
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+    expect(outcome.kind).toBe("permanent");
+    if (outcome.kind === "permanent") {
+      expect(outcome.message).toContain("Operator-pipeline row");
+      expect(outcome.message).toContain("TWENTY_API_KEY unset at boot");
+    }
+    // No HTTP attempt with stale env config.
+    expect(seenUrls).toHaveLength(0);
+  });
+
+  // Codex C2 + sentinel-fallback regression (#2849): even when the
+  // resolver fell back to sentinel at boot, rows stamped with the REAL
+  // operator org id (migration 0106 backfill) must still route through
+  // env creds — NOT fall through to per-tenant lookup which would
+  // dead-letter against a missing twenty_integrations row. After C2's
+  // fail-loud fix the resolver throws on transport blip → SaasCrm
+  // boots into tenant-only shape → operator-pipeline rows correctly
+  // dead-letter with the boot-log pointer rather than masquerading
+  // as missing per-tenant installs.
+  test("real-org-id operator row dispatched against tenant-only shape → permanent (no per-tenant lookup attempted)", async () => {
+    const { impl } = makeCapturingFetch();
+    const lookup = mock(async () => null);
+    const outcome = await withFetch(impl, () =>
+      dispatchWithResolvedConfig(
+        {
+          // Tenant-only shape with sentinel as operatorWorkspaceId;
+          // the row carries the migration-stamped real org id and
+          // matches NEITHER the sentinel nor the workspaceId resolved
+          // at boot. Without the operatorClientConfig=null branch,
+          // it would fall through to lookup → dead-letter as "missing
+          // per-tenant creds" instead of the operator-broken message.
+          operatorWorkspaceId: ATLAS_OPERATOR_WORKSPACE_SENTINEL,
+          operatorClientConfig: null,
+          operatorBrokenReason: "boot SELECT against organization threw",
+          lookup,
+        },
+        {
+          id: "row-real-op-id",
+          eventType: "demo",
+          payload: { source: "demo", email: "real@operator.test" },
+          attempts: 0,
+          // Critical: this is what migration 0106 stamps on US.
+          workspaceId: "real-org-id-from-migration",
+          twentyPersonId: null,
+          twentyNoteId: null,
+        },
+        {
+          setTwentyPersonId: async () => {},
+          setTwentyNoteId: async () => {},
+        },
+      ),
+    );
+    // Real-org-id row currently routes through the per-tenant branch
+    // because workspaceId !== sentinel. The lookup runs and returns
+    // null → permanent. This test pins the current contract; if a
+    // future change adds "operator-org-id awareness" (e.g. by passing
+    // the resolved id even when broken), update this test in lockstep.
+    expect(outcome.kind).toBe("permanent");
+    expect(lookup).toHaveBeenCalledTimes(1);
   });
 });
 
 // ── resolveOperatorWorkspaceId (#2849) ──────────────────────────────
+// Three deploy shapes, three branches (codex C2 #2849):
+//   1. Flagged row exists → returns its id (happy path)
+//   2. No flagged row → returns sentinel (EU/APAC / pre-#2702 backfill)
+//   3. SELECT throws non-42P01 → THROWS (codex C2 fail-loud)
+//   4. SELECT throws 42P01 (table missing) → returns sentinel (non-managed-auth dev)
 
 describe("resolveOperatorWorkspaceId", () => {
   beforeEach(resetStubs);
 
-  test("returns the operator org id when the SELECT yields one", async () => {
-    // Override the internalQuery mock for this test so the operator
-    // SELECT returns a real id; everything else still returns []. The
-    // module-level `mock.module` above can't be redefined mid-suite,
-    // so we mutate the closure-captured state via a flag-based override.
+  test("flagged row exists → returns its id (happy path)", async () => {
+    operatorOrgIdOverride = "real-operator-org-id-abc";
     const id = await resolveOperatorWorkspaceId();
-    // Default behaviour with the suite mock returning [] for non-INSERT
-    // → falls back to sentinel.
+    expect(id).toBe("real-operator-org-id-abc");
+  });
+
+  test("no flagged row → falls back to sentinel (EU/APAC / pre-backfill)", async () => {
+    // Default mock returns [] for non-INSERT — exercises the no-row branch.
+    const id = await resolveOperatorWorkspaceId();
     expect(id).toBe(ATLAS_OPERATOR_WORKSPACE_SENTINEL);
+  });
+
+  test("SELECT throws 42P01 (organization table missing) → sentinel (non-managed-auth dev)", async () => {
+    operatorSelectThrows = {
+      looksLikeMissingTable: true,
+      message: 'relation "organization" does not exist',
+    };
+    const id = await resolveOperatorWorkspaceId();
+    expect(id).toBe(ATLAS_OPERATOR_WORKSPACE_SENTINEL);
+  });
+
+  test("SELECT throws transport error (non-42P01) → THROWS (codex C2 fail-loud)", async () => {
+    operatorSelectThrows = {
+      looksLikeMissingTable: false,
+      message: "connection terminated unexpectedly",
+    };
+    let caught: unknown = null;
+    try {
+      await resolveOperatorWorkspaceId();
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain(
+      "connection terminated unexpectedly",
+    );
   });
 });
 

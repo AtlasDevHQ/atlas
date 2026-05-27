@@ -229,11 +229,16 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
     }
   });
 
-  test("Layer skips flusher wiring when SaasCrm.available is false", async () => {
+  test("Layer skips flusher wiring when SaasCrm.dispatcher is null (no EE / no internal DB)", async () => {
     const noopSaasCrm: Layer.Layer<SaasCrmTag> = Layer.succeed(SaasCrm, {
       available: false,
       upsertLead: () => Effect.void,
       stampConversion: () => Effect.void,
+      // dispatcher: null is the gate post-#2849 — the flusher mounts on
+      // `dispatcher !== null`, NOT on `available`. The tenant-only
+      // shape (available: false + dispatcher present) is covered in a
+      // separate test (`mounts flusher when only operator probe failed`).
+      dispatcher: null,
     } satisfies SaasCrmShape);
 
     const config = {} as Parameters<typeof makeSchedulerLive>[0];
@@ -252,5 +257,38 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
       /WHERE status = 'in_flight'/i.test(q.sql),
     );
     expect(recoveryCalls.length).toBe(0);
+  });
+
+  // ── Codex I2 (#2849) ────────────────────────────────────────────────
+  // Pre-fix the flusher gated on `available`, which conflated "operator
+  // pipeline broken" with "no dispatcher possible". A transient operator
+  // Twenty outage left every customer-workspace row unclaimed.
+  test("Layer mounts flusher when only operator probe failed (tenant-only shape, dispatcher present)", async () => {
+    const tenantOnlySaasCrm: Layer.Layer<SaasCrmTag> = Layer.succeed(SaasCrm, {
+      available: false,
+      upsertLead: () => Effect.void,
+      stampConversion: () => Effect.void,
+      // Tenant-only shape: dispatcher is non-null even though the
+      // operator probe failed. The flusher MUST mount so per-tenant
+      // rows in crm_outbox keep flowing.
+      dispatcher: async () => ({ kind: "ok" as const }),
+    } satisfies SaasCrmShape);
+
+    const config = {} as Parameters<typeof makeSchedulerLive>[0];
+    const baseLayer = makeSchedulerLive(config);
+    const deps = Layer.mergeAll(NoopEnterpriseDefaultsLayer, tenantOnlySaasCrm);
+    const layer = baseLayer.pipe(Layer.provide(deps));
+
+    const rt = ManagedRuntime.make(layer);
+    await Effect.runPromise(rt.runtimeEffect);
+    await rt.dispose();
+
+    // Recovery sweep is the canary — it only runs when the flusher
+    // mounts. Presence of any in_flight reset/mark statement proves
+    // the dispatcher-gated mount took effect.
+    const recoveryCalls = sqlLog.filter((q) =>
+      /WHERE status = 'in_flight'/i.test(q.sql),
+    );
+    expect(recoveryCalls.length).toBeGreaterThan(0);
   });
 });

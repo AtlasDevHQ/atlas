@@ -115,6 +115,9 @@ mock.module("@atlas/api/lib/effect/hono", () => ({
             return Effect.void;
           },
           stampConversion: () => Effect.void,
+          // No-op shape: dispatcher null (no EE / no internal DB).
+          // Tests don't drive the flusher path through the contact route.
+          dispatcher: null,
         };
     const layer = Layer.mergeAll(
       services.createRequestContextTestLayer({ requestId: "test-req-id" }),

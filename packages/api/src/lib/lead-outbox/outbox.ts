@@ -1,6 +1,5 @@
 /**
- * Lead outbox — durable queue for SaaS CRM lead dispatches (#2729,
- * slice 2 of 1.6.0).
+ * Lead outbox — durable queue for SaaS CRM lead dispatches (#2729).
  *
  * This module is generic over the dispatcher: it owns the queue
  * mechanics (enqueue, claim, sub-step persistence, backoff, dead-letter,
@@ -80,7 +79,7 @@ export interface EnqueueInput {
    * workspace id consult `twenty_integrations` for that workspace's
    * per-tenant credentials. The required-not-empty shape (rejected at
    * enqueue) prevents the silent "NULL workspace_id → dispatch wherever
-   * the boot config points" trap that the old `findLatestTwentyDb`
+   * the boot config points" trap that the old `findLatestTwentyDbCredentials`
    * helper enabled before #2850.
    */
   readonly workspaceId: string;
@@ -115,10 +114,10 @@ export interface ClaimedOutboxRow {
  * Sub-step persistence helpers passed to the dispatcher. Each callback
  * does a single targeted UPDATE — the writes happen inline so the next
  * claim of this row (on a retry) sees the populated ID and can skip.
+ * See `ClaimedOutboxRow.twentyPersonId`'s `TODO(#2729-followup)` for
+ * the second-SaaS-CRM generalisation plan.
  */
 export interface OutboxPersistHelpers {
-  // TODO(#2729-followup): generalise to `setResourceId(key, id)` if a
-  // second SaaS CRM ever ships. See ClaimedOutboxRow for context.
   setTwentyPersonId(id: string): Promise<void>;
   setTwentyNoteId(id: string): Promise<void>;
 }
@@ -198,58 +197,71 @@ const ENQUEUE_SQL = `
  * keeps a long upstream-requested delay from being clobbered by an
  * eager tier value (e.g. 30s tier-1 vs `Retry-After: 3600`).
  *
- * Per-email serialization (#2870): a row is claimable only if NO
- * blocking same-email sibling exists. Three layers cooperate:
+ * Per-`(workspace_id, email_key)` serialization (#2870 + #2849):
+ * a row is claimable only if NO blocking same-(workspace,email)
+ * sibling exists. The workspace dimension is load-bearing post-
+ * #2849: tenant A's `alice@example.com` and tenant B's
+ * `alice@example.com` dispatch to DIFFERENT Twenty instances and
+ * have independent idempotency. Without the workspace scoping
+ * (codex C3), tenant A's row would block tenant B's row and
+ * head-of-line-stall an unrelated CRM. Three layers cooperate:
  *
- *   1. **NOT EXISTS gate** — splits the predicate by sibling status:
- *      * Any `in_flight` same-email row blocks unconditionally
- *        (regardless of `created_at`). A rolling hotfix or manual
- *        recovery can leave a newer `in_flight` row alongside an
- *        older `pending` row — without the age-independent in_flight
- *        check, the older `pending` row would dispatch concurrently
- *        with the newer in_flight one.
- *      * Any `pending` same-email row blocks only if it's strictly
- *        older by `(created_at, id)`. The `id` tie-break is what
- *        serializes bulk-INSERT rows that share `created_at` (e.g.
- *        the historic-leads backfill path that produces many rows in
- *        one statement with one `now()` timestamp); without it, the
- *        next tick would see a same-`created_at` sibling as not-older
- *        and claim a second row while the first is still in_flight.
+ *   1. **NOT EXISTS gate** — scoped to the same `workspace_id`,
+ *      splits the predicate by sibling status:
+ *      * Any `in_flight` same-(workspace,email) row blocks
+ *        unconditionally (regardless of `created_at`). A rolling
+ *        hotfix or manual recovery can leave a newer `in_flight`
+ *        row alongside an older `pending` row — without the
+ *        age-independent in_flight check, the older `pending` row
+ *        would dispatch concurrently with the newer in_flight one.
+ *      * Any `pending` same-(workspace,email) row blocks only if
+ *        it's strictly older by `(created_at, id)`. The `id`
+ *        tie-break is what serializes bulk-INSERT rows that share
+ *        `created_at` (e.g. the historic-leads backfill path that
+ *        produces many rows in one statement with one `now()`
+ *        timestamp); without it, the next tick would see a same-
+ *        `created_at` sibling as not-older and claim a second row
+ *        while the first is still in_flight.
  *      The age check on `pending` is what closes the retry-cooldown
  *      leapfrog: R1 (older, in transient-fail backoff) is filtered
  *      out of `claimable` by the due-time check, but its presence as
  *      an older pending sibling still blocks R2 (newer, fresh) from
  *      flipping atlasFirstSource ahead of it.
- *   2. **Advisory xact lock per email_key** — `pg_try_advisory_xact_lock`
- *      gives us serialization across concurrent transactions that
- *      MVCC alone can't provide. Without it, two flusher pods could
- *      each see the other's pre-commit UPDATE as invisible, both
- *      pass the NOT EXISTS gate at lookup time, and both end up with
- *      different same-email rows in_flight (each pod skips the
+ *   2. **Advisory xact lock per `(workspace_id, email_key)`** —
+ *      `pg_try_advisory_xact_lock` gives us serialization across
+ *      concurrent transactions that MVCC alone can't provide.
+ *      Without it, two flusher pods could each see the other's
+ *      pre-commit UPDATE as invisible, both pass the NOT EXISTS
+ *      gate at lookup time, and both end up with different
+ *      same-(workspace,email) rows in_flight (each pod skips the
  *      other's locked row via SKIP LOCKED, then claims a different
- *      sibling). The advisory lock is transaction-scoped: held until
- *      commit, then released, so the next tick re-acquires cleanly.
- *      NULL email_key rows skip the lock (no per-row serialization
- *      needed — those are their own dedup groups).
+ *      sibling). The advisory lock is transaction-scoped: held
+ *      until commit, then released, so the next tick re-acquires
+ *      cleanly. The lock key is
+ *      `hashtext(workspace_id || ':' || email_key)` so the lock
+ *      namespace is per-(workspace,email), not per-email — preserves
+ *      cross-tenant independence. NULL email_key rows skip the lock
+ *      (no per-row serialization needed — those are their own dedup
+ *      groups).
  *   3. **DISTINCT ON dedupe (intra-statement)** — belt-and-suspenders:
  *      within a single tick the NOT EXISTS gate already keeps only
- *      the earliest same-email row, but DISTINCT ON formalizes the
- *      "one row per email_key per batch" contract for any future
- *      WHERE-clause regression. `dedup_key` is
- *      `COALESCE(email_key, id::text)` so NULL-email_key rows fall
- *      back to their own id and dispatch independently. The
- *      `id` tie-breaker on `ORDER BY` makes claim order deterministic
- *      when two rows share `created_at` (e.g. bulk INSERT).
+ *      the earliest same-(workspace,email) row, but DISTINCT ON
+ *      formalizes the "one row per (workspace, email_key) per batch"
+ *      contract for any future WHERE-clause regression. The dedupe
+ *      key is `(workspace_id, COALESCE(email_key, id::text))` so
+ *      NULL-email_key rows fall back to their own id (each in its
+ *      own group, dispatched independently). The `id` tie-breaker
+ *      on `ORDER BY` makes claim order deterministic when two rows
+ *      share `created_at` (e.g. bulk INSERT).
  *
  * The outer LIMIT applies to the deduped set, not the raw candidate
  * set, so a workspace with a backlog of same-email events drains one
- * event per email per tick rather than starving other emails behind
- * it.
+ * event per (workspace, email) per tick rather than starving siblings.
  *
  * Advisory-lock namespace: the first arg `2870` (the issue number)
- * is the lock class; the second arg is `hashtext(email_key)`. The
- * two-key variant avoids collisions with any other advisory locks
- * the codebase may take elsewhere.
+ * is the lock class; the second arg is the per-(workspace,email)
+ * hash. The two-key variant avoids collisions with any other
+ * advisory locks the codebase may take elsewhere.
  */
 const CLAIM_SQL = `
   UPDATE crm_outbox
@@ -258,7 +270,7 @@ const CLAIM_SQL = `
       claimed_at = now()
   WHERE id IN (
     WITH claimable AS (
-      SELECT id, email_key, created_at FROM crm_outbox
+      SELECT id, workspace_id, email_key, created_at FROM crm_outbox
       WHERE status = 'pending'
         AND attempts < ${DEAD_AFTER_ATTEMPTS}
         AND COALESCE(retry_after, created_at + (${CLAIM_DELAY_SQL})) <= now()
@@ -266,6 +278,7 @@ const CLAIM_SQL = `
           SELECT 1 FROM crm_outbox o2
           WHERE o2.email_key IS NOT NULL
             AND o2.email_key = crm_outbox.email_key
+            AND o2.workspace_id = crm_outbox.workspace_id
             AND o2.id <> crm_outbox.id
             AND (
               o2.status = 'in_flight'
@@ -277,15 +290,19 @@ const CLAIM_SQL = `
         )
         AND (
           email_key IS NULL
-          OR pg_try_advisory_xact_lock(2870, hashtext(email_key))
+          OR pg_try_advisory_xact_lock(
+               2870,
+               hashtext(workspace_id || ':' || email_key)
+             )
         )
       ORDER BY created_at, id
       FOR UPDATE SKIP LOCKED
     ),
     deduped AS (
-      SELECT DISTINCT ON (COALESCE(email_key, id::text)) id, created_at
+      SELECT DISTINCT ON (workspace_id, COALESCE(email_key, id::text))
+             id, created_at
       FROM claimable
-      ORDER BY COALESCE(email_key, id::text), created_at, id
+      ORDER BY workspace_id, COALESCE(email_key, id::text), created_at, id
     )
     SELECT id FROM deduped ORDER BY created_at, id LIMIT $1
   )
@@ -783,8 +800,8 @@ export const FLUSH_BATCH_LIMIT = 50;
 
 /**
  * Flusher region gate. Default `true` — every API instance that has
- * `SaasCrm.available === true` and an internal DB runs the flusher,
- * which preserves the pre-#2890 behavior.
+ * `SaasCrm.dispatcher !== null` and an internal DB runs the flusher,
+ * which preserves the pre-#2873 behavior.
  *
  * Set `ATLAS_CRM_OUTBOX_FLUSHER_ENABLED=false` on regional API pods
  * (api-eu / api-apac) whose internal DB has no source of `crm_outbox`

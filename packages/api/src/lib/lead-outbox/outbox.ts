@@ -156,8 +156,8 @@ export interface FlushResult {
 // ─────────────────────────────────────────────────────────────────────
 
 const ENQUEUE_SQL = `
-  INSERT INTO crm_outbox (event_type, payload, status)
-  VALUES ($1, $2::jsonb, 'pending')
+  INSERT INTO crm_outbox (event_type, payload, email_key, status)
+  VALUES ($1, $2::jsonb, $3, 'pending')
   RETURNING id
 `;
 
@@ -177,6 +177,18 @@ const ENQUEUE_SQL = `
  * the tier-based delay measured from `created_at`. The COALESCE
  * keeps a long upstream-requested delay from being clobbered by an
  * eager tier value (e.g. 30s tier-1 vs `Retry-After: 3600`).
+ *
+ * Per-email serialization (#2870): two rows for the same email are
+ * never claimed concurrently. The candidate set excludes any row whose
+ * `email_key` already has an `in_flight` sibling (the NOT EXISTS
+ * clause), and within each tick the inner `DISTINCT ON (dedup_key)`
+ * picks only the earliest pending row per email. `dedup_key` is
+ * `COALESCE(email_key, id::text)` so NULL-email_key rows (legacy or
+ * non-email-keyed future event types) fall back to their own id and
+ * are never grouped — each NULL row dispatches independently. The
+ * outer LIMIT applies to the deduped set, not the raw candidate set,
+ * so a workspace with a backlog of same-email events drains one event
+ * per email per tick rather than starving other emails behind it.
  */
 const CLAIM_SQL = `
   UPDATE crm_outbox
@@ -184,13 +196,26 @@ const CLAIM_SQL = `
       attempts = attempts + 1,
       claimed_at = now()
   WHERE id IN (
-    SELECT id FROM crm_outbox
-    WHERE status = 'pending'
-      AND attempts < ${DEAD_AFTER_ATTEMPTS}
-      AND COALESCE(retry_after, created_at + (${CLAIM_DELAY_SQL})) <= now()
-    ORDER BY created_at
-    LIMIT $1
-    FOR UPDATE SKIP LOCKED
+    WITH claimable AS (
+      SELECT id, email_key, created_at FROM crm_outbox
+      WHERE status = 'pending'
+        AND attempts < ${DEAD_AFTER_ATTEMPTS}
+        AND COALESCE(retry_after, created_at + (${CLAIM_DELAY_SQL})) <= now()
+        AND NOT EXISTS (
+          SELECT 1 FROM crm_outbox o2
+          WHERE o2.email_key IS NOT NULL
+            AND o2.email_key = crm_outbox.email_key
+            AND o2.status = 'in_flight'
+        )
+      ORDER BY created_at
+      FOR UPDATE SKIP LOCKED
+    ),
+    deduped AS (
+      SELECT DISTINCT ON (COALESCE(email_key, id::text)) id, created_at
+      FROM claimable
+      ORDER BY COALESCE(email_key, id::text), created_at
+    )
+    SELECT id FROM deduped ORDER BY created_at LIMIT $1
   )
   RETURNING id, event_type, payload, attempts, twenty_person_id, twenty_note_id
 `;
@@ -303,6 +328,7 @@ export async function enqueue(
   const rows = await db.query<{ id: string }>(ENQUEUE_SQL, [
     input.eventType,
     JSON.stringify(input.payload),
+    extractEmailKey(input.payload),
   ]);
   const id = rows[0]?.id;
   if (!id) {
@@ -311,6 +337,31 @@ export async function enqueue(
     throw new Error("crm_outbox enqueue returned no row");
   }
   return id;
+}
+
+/**
+ * Pull the lead's primary email out of a free-form payload and
+ * normalize it for `email_key` storage. Returns `null` when the
+ * payload has no recognizable email field — those rows fall back to
+ * "every row dispatches independently" semantics in CLAIM_SQL
+ * (`COALESCE(email_key, id::text)` makes NULL rows their own dedup
+ * group).
+ *
+ * Normalization matches `normalizeLead` in `@useatlas/twenty`'s
+ * lead-normalizer (`.toLowerCase().trim()`) so casing/whitespace
+ * differences across event payloads for the same prospect don't
+ * accidentally bypass per-email serialization.
+ *
+ * Exported for the migration backfill script (kept in lockstep with
+ * the SQL `LOWER(TRIM(payload->>'email'))` in 0104). Not part of the
+ * public outbox surface; new callers should pass payloads through
+ * `enqueue`, not call this directly.
+ */
+export function extractEmailKey(payload: Record<string, unknown>): string | null {
+  const raw = payload["email"];
+  if (typeof raw !== "string") return null;
+  const normalized = raw.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : null;
 }
 
 /**

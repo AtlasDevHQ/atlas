@@ -503,4 +503,116 @@ describeIfPg("lead-outbox (real Postgres)", () => {
     },
     PG_TIMEOUT_MS,
   );
+
+  // ── Per-email serialization (#2870) — real-PG variant.
+  // Mirrors the unit test in `outbox.test.ts` but exercises the actual
+  // CLAIM_SQL CTE (DISTINCT ON + NOT EXISTS) against Postgres so a
+  // regression in the SQL shape (e.g. wrong column quoting, forgotten
+  // index reference) trips here instead of only in the in-memory fake.
+  it(
+    "claim dedupes same-email rows: gworth demo→signup pair drains across two ticks",
+    async () => {
+      await truncateOutbox();
+      const db = dbFor();
+
+      const demoId = await enqueue(db, {
+        eventType: "demo",
+        payload: { source: "demo", email: "gworth@globexcorp.com", ip: "203.0.113.30" },
+      });
+      const signupId = await enqueue(db, {
+        eventType: "signup",
+        payload: { source: "signup", email: "gworth@globexcorp.com", name: "Greta Worth" },
+      });
+
+      // Both rows should have email_key populated by enqueue.
+      const seeded = await pool.query<{ id: string; email_key: string | null }>(
+        "SELECT id, email_key FROM crm_outbox ORDER BY created_at",
+      );
+      expect(seeded.rows).toHaveLength(2);
+      expect(seeded.rows[0].email_key).toBe("gworth@globexcorp.com");
+      expect(seeded.rows[1].email_key).toBe("gworth@globexcorp.com");
+
+      const dispatcher: OutboxDispatcher = async () => ({ kind: "ok" });
+
+      // Tick 1: only demo claimed; signup blocked by demo's in_flight presence
+      // mid-statement (the CTE locks demo first, then NOT EXISTS sees it as
+      // about-to-be in_flight for signup's slot). DISTINCT ON also dedupes
+      // within the same batch.
+      const tick1 = await flushBatch(db, dispatcher, 50);
+      expect(tick1.claimed).toBe(1);
+      expect(tick1.ok).toBe(1);
+
+      const afterTick1 = await pool.query<{ id: string; status: string }>(
+        "SELECT id, status FROM crm_outbox ORDER BY created_at",
+      );
+      expect(afterTick1.rows.find((r) => r.id === demoId)?.status).toBe("done");
+      expect(afterTick1.rows.find((r) => r.id === signupId)?.status).toBe("pending");
+
+      // Tick 2: demo is done, signup is now claimable.
+      const tick2 = await flushBatch(db, dispatcher, 50);
+      expect(tick2.claimed).toBe(1);
+      expect(tick2.ok).toBe(1);
+
+      const afterTick2 = await pool.query<{ status: string }>(
+        "SELECT status FROM crm_outbox WHERE id = $1",
+        [signupId],
+      );
+      expect(afterTick2.rows[0].status).toBe("done");
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  it(
+    "claim NOT EXISTS gate: in_flight row blocks newer same-email claims (cross-pod safety)",
+    async () => {
+      await truncateOutbox();
+      const db = dbFor();
+
+      // Seed an in_flight row directly (simulates a sibling pod mid-dispatch).
+      await pool.query(
+        `INSERT INTO crm_outbox (event_type, payload, email_key, status, attempts, claimed_at, created_at)
+         VALUES ('demo', $1::jsonb, $2, 'in_flight', 1, now(), now() - INTERVAL '3 hours')`,
+        [
+          JSON.stringify({ source: "demo", email: "stuck@example.test" }),
+          "stuck@example.test",
+        ],
+      );
+      // Newer pending row for the same email.
+      await enqueue(db, {
+        eventType: "signup",
+        payload: { source: "signup", email: "stuck@example.test", name: "Stuck User" },
+      });
+
+      const dispatcher: OutboxDispatcher = async () => ({ kind: "ok" });
+      const result = await flushBatch(db, dispatcher, 50);
+      // No row claimable — sibling is in_flight for this email_key.
+      expect(result.claimed).toBe(0);
+
+      const rows = await pool.query<{ event_type: string; status: string }>(
+        "SELECT event_type, status FROM crm_outbox ORDER BY created_at",
+      );
+      expect(rows.rows.find((r) => r.event_type === "signup")?.status).toBe("pending");
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  it(
+    "claim does not serialize across distinct emails (throughput preserved)",
+    async () => {
+      await truncateOutbox();
+      const db = dbFor();
+
+      // Four distinct emails — all should claim in one tick.
+      await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a1@example.test" } });
+      await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a2@example.test" } });
+      await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a3@example.test" } });
+      await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a4@example.test" } });
+
+      const dispatcher: OutboxDispatcher = async () => ({ kind: "ok" });
+      const result = await flushBatch(db, dispatcher, 50);
+      expect(result.claimed).toBe(4);
+      expect(result.ok).toBe(4);
+    },
+    PG_TIMEOUT_MS,
+  );
 });

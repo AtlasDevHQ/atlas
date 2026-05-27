@@ -51,6 +51,7 @@ type Row = {
   id: string;
   event_type: string;
   payload: unknown;
+  email_key: string | null;
   status: "pending" | "in_flight" | "done" | "dead";
   attempts: number;
   last_error: string | null;
@@ -65,8 +66,23 @@ type Row = {
 class FakeOutboxDB implements OutboxDB {
   rows: Row[] = [];
   private nextId = 1;
+  /** Monotonic clock for `created_at` — see `clockTick`. */
+  private clock = 0;
   /** When true, every claim returns 0 rows (simulates contention). */
   claimBlocked = false;
+
+  /**
+   * Strictly-monotonic timestamp for `created_at`. The previous
+   * implementation used `Date.now()`, which ticks at ms resolution and
+   * tied for back-to-back enqueues — non-deterministic `ORDER BY
+   * created_at` then masked claim-ordering regressions in tests. The
+   * monotonic counter is the test-side analogue of Postgres' `now()`
+   * statement-start microsecond clock.
+   */
+  private clockTick(): number {
+    this.clock += 1;
+    return this.clock;
+  }
 
   async query<T extends Record<string, unknown>>(
     sql: string,
@@ -75,10 +91,15 @@ class FakeOutboxDB implements OutboxDB {
     const p = params ?? [];
     if (/^\s*INSERT INTO crm_outbox/i.test(sql)) {
       const id = `row-${this.nextId++}`;
+      // 0104 added email_key as a 3rd positional parameter; older
+      // callers that haven't been updated pass `undefined` and fall
+      // through to NULL — matching the SQL column's nullability.
+      const emailKey = typeof p[2] === "string" ? p[2] : null;
       this.rows.push({
         id,
         event_type: String(p[0]),
         payload: JSON.parse(String(p[1])),
+        email_key: emailKey,
         status: "pending",
         attempts: 0,
         last_error: null,
@@ -86,7 +107,12 @@ class FakeOutboxDB implements OutboxDB {
         twenty_note_id: null,
         retry_after: null,
         claimed_at: null,
-        created_at: Date.now(),
+        // `created_at` resolution: increment a monotonic counter so
+        // back-to-back enqueues in a single test step still get
+        // distinct, ordered timestamps. `Date.now()` ticks at ms
+        // resolution and the unit tests fire enqueues faster than
+        // that, which made `ORDER BY created_at` non-deterministic.
+        created_at: this.clockTick(),
         processed_at: null,
       });
       return [{ id }] as unknown as T[];
@@ -94,15 +120,37 @@ class FakeOutboxDB implements OutboxDB {
     if (/^\s*UPDATE crm_outbox\s+SET status = 'in_flight'/i.test(sql)) {
       if (this.claimBlocked) return [] as T[];
       const limit = Number(p[0] ?? 50);
+      // Mirror CLAIM_SQL (0104): exclude rows whose email_key already
+      // has an in_flight sibling, then dedupe by email_key (NULL falls
+      // back to id), preserving created_at order for the final LIMIT.
+      const inFlightEmailKeys = new Set(
+        this.rows
+          .filter((r) => r.status === "in_flight" && r.email_key != null)
+          .map((r) => r.email_key as string),
+      );
       const candidates = this.rows
-        .filter((r) => r.status === "pending" && r.attempts < 6)
-        .slice(0, limit);
+        .filter(
+          (r) =>
+            r.status === "pending" &&
+            r.attempts < 6 &&
+            (r.email_key == null || !inFlightEmailKeys.has(r.email_key)),
+        )
+        .sort((a, b) => a.created_at - b.created_at);
+      const seenDedupKeys = new Set<string>();
+      const deduped: Row[] = [];
       for (const row of candidates) {
+        const key = row.email_key ?? row.id;
+        if (seenDedupKeys.has(key)) continue;
+        seenDedupKeys.add(key);
+        deduped.push(row);
+      }
+      const claimed = deduped.slice(0, limit);
+      for (const row of claimed) {
         row.status = "in_flight";
         row.attempts += 1;
         row.claimed_at = Date.now();
       }
-      return candidates.map((r) => ({
+      return claimed.map((r) => ({
         id: r.id,
         event_type: r.event_type,
         payload: r.payload,
@@ -406,6 +454,176 @@ describe("concurrent flush behaviour", () => {
     const result = await flushBatch(db, dispatcher, 0);
     expect(result).toEqual({ claimed: 0, ok: 0, transient: 0, permanent: 0 });
     expect(calls).toBe(0);
+  });
+});
+
+// ── Per-email serialization (#2870) ───────────────────────────────────
+//
+// Two rows for the same email enqueued back-to-back must dispatch in
+// claim order, never concurrently. Before 0104 the flusher claimed
+// both same-email rows in a single batch and dispatched them sequentially
+// (still risky if any concurrency lands), AND a future multi-pod deploy
+// could grab them in parallel. The fix dedupes by `email_key` inside
+// CLAIM_SQL so only the earliest pending row per email is claimed per
+// tick — the rest wait for the claimed row to reach a terminal state.
+
+describe("per-email serialization (#2870)", () => {
+  test("gworth demo→signup pair: only the first row is claimed per tick", async () => {
+    // C10 fixture from scripts/test-fixtures/crm-personas.yml. Two
+    // rows for the same email, demo enqueued first, signup second.
+    // Pre-fix both would be claimed in one batch; post-fix the signup
+    // waits for demo to land.
+    const demoId = await enqueue(db, {
+      eventType: "demo",
+      payload: { source: "demo", email: "gworth@globexcorp.com", ip: "203.0.113.30" },
+    });
+    const signupId = await enqueue(db, {
+      eventType: "signup",
+      payload: { source: "signup", email: "gworth@globexcorp.com", name: "Greta Worth" },
+    });
+
+    const dispatchOrder: string[] = [];
+    const dispatcher: OutboxDispatcher = async (row) => {
+      dispatchOrder.push((row.payload as { source: string }).source);
+      return { kind: "ok" };
+    };
+
+    // Tick 1 — only the demo row is claimed; signup is still pending.
+    const tick1 = await flushBatch(db, dispatcher, 50);
+    expect(tick1.claimed).toBe(1);
+    expect(tick1.ok).toBe(1);
+    expect(dispatchOrder).toEqual(["demo"]);
+    expect(db.rows.find((r) => r.id === demoId)!.status as string).toBe("done");
+    expect(db.rows.find((r) => r.id === signupId)!.status as string).toBe("pending");
+
+    // Tick 2 — demo is done, signup is now claimable.
+    const tick2 = await flushBatch(db, dispatcher, 50);
+    expect(tick2.claimed).toBe(1);
+    expect(tick2.ok).toBe(1);
+    expect(dispatchOrder).toEqual(["demo", "signup"]);
+    expect(db.rows.find((r) => r.id === signupId)!.status as string).toBe("done");
+  });
+
+  test("msdyson demo→demo idempotency pair: same-source repeats serialize too", async () => {
+    // B8 fixture. Two demo events for the same email with different IPs.
+    // The reported bug surfaced as `atlasIp` showing the FIRST IP after
+    // the smoke run, indicating the two PATCHes raced. Post-fix the
+    // .41 PATCH runs in tick 2 with .40 already committed in Twenty —
+    // strictly sequential, no race possible.
+    const first = await enqueue(db, {
+      eventType: "demo",
+      payload: { source: "demo", email: "msdyson@cyberdynesys.com", ip: "203.0.113.40" },
+    });
+    const second = await enqueue(db, {
+      eventType: "demo",
+      payload: { source: "demo", email: "msdyson@cyberdynesys.com", ip: "203.0.113.41" },
+    });
+
+    const dispatchedIps: string[] = [];
+    const dispatcher: OutboxDispatcher = async (row) => {
+      dispatchedIps.push((row.payload as { ip: string }).ip);
+      return { kind: "ok" };
+    };
+
+    const tick1 = await flushBatch(db, dispatcher, 50);
+    expect(tick1.claimed).toBe(1);
+    expect(dispatchedIps).toEqual(["203.0.113.40"]);
+    expect(db.rows.find((r) => r.id === first)!.status as string).toBe("done");
+    expect(db.rows.find((r) => r.id === second)!.status as string).toBe("pending");
+
+    const tick2 = await flushBatch(db, dispatcher, 50);
+    expect(tick2.claimed).toBe(1);
+    expect(dispatchedIps).toEqual(["203.0.113.40", "203.0.113.41"]);
+    expect(db.rows.find((r) => r.id === second)!.status as string).toBe("done");
+  });
+
+  test("distinct emails dispatch in the same tick (no throughput regression)", async () => {
+    // Per-email serialization must NOT serialize across distinct
+    // emails — a workspace with 1000 leads-per-minute should still
+    // drain at the same rate as before the fix.
+    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a1@example.test" } });
+    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a2@example.test" } });
+    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a3@example.test" } });
+    await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a4@example.test" } });
+
+    const dispatcher: OutboxDispatcher = async () => ({ kind: "ok" });
+    const result = await flushBatch(db, dispatcher, 50);
+    expect(result.claimed).toBe(4);
+    expect(result.ok).toBe(4);
+  });
+
+  test("in_flight sibling blocks subsequent claims for the same email", async () => {
+    // The cross-tick / cross-pod safety case: a row already in_flight
+    // (e.g. claimed by a sibling pod that hasn't finished dispatching)
+    // must block any newer same-email row from being claimed.
+    await enqueue(db, {
+      eventType: "demo",
+      payload: { source: "demo", email: "stuck@example.test" },
+    });
+    // Force the first row into in_flight without going through dispatch
+    // — simulates a sibling pod mid-dispatch.
+    db.rows[0].status = "in_flight";
+    db.rows[0].claimed_at = Date.now();
+
+    // Newer row for the same email lands while the sibling is mid-flight.
+    await enqueue(db, {
+      eventType: "demo",
+      payload: { source: "demo", email: "stuck@example.test" },
+    });
+
+    let calls = 0;
+    const dispatcher: OutboxDispatcher = async () => {
+      calls++;
+      return { kind: "ok" };
+    };
+    const result = await flushBatch(db, dispatcher, 50);
+    // No row claimable — sibling already in_flight for this email.
+    expect(result.claimed).toBe(0);
+    expect(calls).toBe(0);
+    expect(db.rows[1].status as string).toBe("pending");
+  });
+
+  test("rows with NULL email_key dispatch independently (no spurious dedup)", async () => {
+    // Future event types that aren't email-keyed (or legacy rows with
+    // a missing email field) must NOT get grouped together by the
+    // DISTINCT ON in CLAIM_SQL — each NULL row is its own dedup
+    // group via `COALESCE(email_key, id::text)`.
+    await enqueue(db, { eventType: "system", payload: { source: "system", op: "ping" } });
+    await enqueue(db, { eventType: "system", payload: { source: "system", op: "pong" } });
+    expect(db.rows[0].email_key).toBeNull();
+    expect(db.rows[1].email_key).toBeNull();
+
+    const dispatcher: OutboxDispatcher = async () => ({ kind: "ok" });
+    const result = await flushBatch(db, dispatcher, 50);
+    expect(result.claimed).toBe(2);
+    expect(result.ok).toBe(2);
+  });
+
+  test("enqueue normalizes email_key — case and whitespace collapse together", async () => {
+    // Two payloads with cosmetically different email casing must
+    // collide on email_key so they serialize together (matches the
+    // lead-normalizer's `.toLowerCase().trim()`). Without this a
+    // payload-side typo (`gworth@globexcorp.com` vs `GWorth@globexcorp.com`)
+    // would bypass per-email serialization.
+    await enqueue(db, {
+      eventType: "demo",
+      payload: { source: "demo", email: "  gworth@globexcorp.com  " },
+    });
+    await enqueue(db, {
+      eventType: "signup",
+      payload: { source: "signup", email: "GWORTH@GlobexCorp.com" },
+    });
+    expect(db.rows[0].email_key).toBe("gworth@globexcorp.com");
+    expect(db.rows[1].email_key).toBe("gworth@globexcorp.com");
+
+    let dispatched = 0;
+    const dispatcher: OutboxDispatcher = async () => {
+      dispatched++;
+      return { kind: "ok" };
+    };
+    const tick1 = await flushBatch(db, dispatcher, 50);
+    expect(tick1.claimed).toBe(1);
+    expect(dispatched).toBe(1);
   });
 });
 

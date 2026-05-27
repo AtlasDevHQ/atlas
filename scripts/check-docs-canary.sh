@@ -6,7 +6,8 @@
 # vanish from production with no operator signal (issue #2103).
 #
 # Runs as the last step of the docs Dockerfile builder stage (deploy/docs/Dockerfile).
-# Expects to be executed from the docs build root (where `.next/server/app/` lives).
+# Expects to be executed from the docs build root (where `out/` lives — the
+# static export produced by `next build` with output: 'export').
 #
 # Behavior:
 #   - GITHUB_TOKEN unset → skip canary, print notice. Self-hosted operators
@@ -28,9 +29,9 @@ fi
 # output structure these probes will need updating; that's intentional — the
 # canary should fail visibly when its assumptions break.
 PROBES=(
-  ".next/server/app/index.html"
-  ".next/server/app/guides/mcp.html"
-  ".next/server/app/semantic-layer.html"
+  "out/index.html"
+  "out/guides/mcp/index.html"
+  "out/semantic-layer/index.html"
 )
 
 missing_files=()

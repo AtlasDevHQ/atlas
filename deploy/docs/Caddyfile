@@ -1,0 +1,91 @@
+{
+	# Railway terminates TLS at its edge; the docs container speaks HTTP.
+	auto_https off
+	admin off
+}
+
+# {$PORT:3003} lets Railway pick the port; defaults to 3003 to match the
+# port the old Next.js docs runner used (kept for service-config continuity).
+:{$PORT:3003} {
+	root * /srv
+
+	encode zstd gzip
+
+	# 1y cache on Next.js static chunks (content-hashed, safe to pin).
+	@nextStatic path /_next/static/*
+	header @nextStatic Cache-Control "public, max-age=31536000, immutable"
+
+	# Short cache on everything else (HTML, JSON, markdown). The negative
+	# matcher prevents the unconditional default from overriding the
+	# /_next/static rule above.
+	@nonNextStatic not path /_next/static/*
+	header @nonNextStatic Cache-Control "public, max-age=300, must-revalidate"
+
+	# RFC 8288 / 9727 link relations advertised by the old middleware.ts.
+	header Link `</.well-known/api-catalog>; rel="api-catalog"; type="application/linkset+json", <https://docs.useatlas.dev/api-reference/openapi.json>; rel="service-desc"; type="application/openapi+json", <https://api.useatlas.dev/api/health>; rel="status"; type="application/json", </llms.txt>; rel="alternate"; type="text/plain", </llms-full.txt>; rel="describedby"; type="text/plain", </.well-known/mcp/server-card.json>; rel="mcp-server-card"; type="application/json", </.well-known/oauth-protected-resource>; rel="oauth-protected-resource"; type="application/json", </.well-known/agent-skills/index.json>; rel="agent-skills"; type="application/json"`
+	header Vary "Accept"
+
+	# Extension-less .well-known + /api/search outputs need explicit content types.
+	@apiSearch path /api/search
+	header @apiSearch Content-Type "application/json; charset=utf-8"
+
+	@wellKnownLinkset path /.well-known/api-catalog
+	header @wellKnownLinkset Content-Type "application/linkset+json; charset=utf-8"
+
+	@wellKnownJson path /.well-known/agent-skills/index.json /.well-known/mcp/server-card.json /.well-known/oauth-protected-resource
+	header @wellKnownJson Content-Type "application/json; charset=utf-8"
+
+	# /guides/mcp-hosted/* legacy redirect (moved from next.config.ts).
+	redir /guides/mcp-hosted /guides/mcp 308
+	redir /guides/mcp-hosted/* /guides/mcp{http.request.uri.path.[19:]} 308
+
+	# /<slug>.mdx -> /llms.mdx/<slug>/index.md (canonical markdown alias).
+	# `not path /llms.mdx*` keeps the regex from re-matching the bare
+	# /llms.mdx surface and the /llms.mdx/<slug> paths handled below.
+	@mdxAlias {
+		path_regexp mdxalias ^/(.+)\.mdx$
+		not path /llms.mdx
+		not path /llms.mdx/*
+	}
+	rewrite @mdxAlias /llms.mdx/{re.mdxalias.1}/index.md
+
+	# Bare /llms.mdx -> /llms.mdx/index.md.
+	@llmsMdxRoot path /llms.mdx
+	rewrite @llmsMdxRoot /llms.mdx/index.md
+
+	# /llms.mdx/<slug> -> /llms.mdx/<slug>/index.md (canonical markdown
+	# twin URL). The on-disk emission path always ends in /index.md, so
+	# every browser-facing /llms.mdx/<slug> URL needs the suffix appended.
+	@llmsMdxSub {
+		path /llms.mdx/*
+		not path */index.md
+	}
+	rewrite @llmsMdxSub {http.request.uri.path}/index.md
+
+	# Accept: text/markdown content negotiation — rewrite docs-page URLs onto
+	# their /llms.mdx/<slug>/index.md twin. Skip surfaces that already serve
+	# their own content type (static assets, search index, well-known JSON,
+	# the markdown surfaces themselves).
+	@markdown {
+		header_regexp Accept (?i)(^|,)\s*text/markdown
+		not path /_next/* /api/* /.well-known/* /llms.mdx* /llms.txt /llms-full.txt /docs-og/* /favicon.ico /icon.svg /robots.txt /sitemap.xml
+	}
+	rewrite @markdown /llms.mdx{http.request.uri.path}/index.md
+
+	# Static file server. file_server resolves /<dir> -> /<dir>/index.html
+	# automatically, which gives us trailingSlash: true behavior for free.
+	file_server {
+		index index.html
+	}
+
+	handle_errors {
+		@notFound expression {http.error.status_code} == 404
+		rewrite @notFound /404.html
+		file_server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

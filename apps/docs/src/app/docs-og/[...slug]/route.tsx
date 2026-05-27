@@ -2,6 +2,8 @@ import { source } from "@/lib/source";
 import { generateOGImage } from "fumadocs-ui/og";
 import { notFound } from "next/navigation";
 
+export const dynamic = "force-static";
+
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ slug: string[] }> },

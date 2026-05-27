@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 FROM oven/bun:1.3.13@sha256:87416c977a612a204eb54ab9f3927023c2a3c971f4f345a01da08ea6262ae30e AS base
 
 # --- Build ---
@@ -24,23 +26,30 @@ RUN bun install
 RUN bun run build && /usr/local/bin/check-docs-canary.sh
 
 # --- Runtime ---
-FROM base AS runner
-WORKDIR /app
-ENV NODE_ENV=production
-ENV NEXT_TELEMETRY_DISABLED=1
+# Caddy serves the static out/ tree built above. The docs site has no
+# runtime data path (no DB, no API), so retiring the Node server drops
+# resident memory from ~900 MB (the Next.js MDX heap) to ~25 MB (Caddy
+# + page cache), which is what was costing $10/mo on Railway.
+FROM caddy:2.10-alpine AS runner
 
-RUN groupadd --system --gid 1001 atlas && \
-    useradd --system --uid 1001 --gid atlas atlas
+COPY deploy/docs/Caddyfile /etc/caddy/Caddyfile
+COPY --from=builder /app/out /srv
 
-COPY --from=builder --chown=atlas:atlas /app/.next/standalone ./
-COPY --from=builder --chown=atlas:atlas /app/.next/static ./.next/static
+# Pre-compress static assets so Caddy serves .gz/.zst sidecars without
+# re-compressing on every request. Trades container build time for
+# runtime CPU + bandwidth.
+RUN apk add --no-cache zstd findutils \
+  && find /srv \( -name '*.html' -o -name '*.css' -o -name '*.js' \
+                  -o -name '*.json' -o -name '*.svg' -o -name '*.xml' \
+                  -o -name '*.txt' -o -name '*.md' \) \
+       -size +1k \
+       -exec gzip -9 -k {} + \
+       -exec zstd -q -19 -k {} +
 
-USER atlas
 EXPOSE 3003
 ENV PORT=3003
-ENV HOSTNAME="0.0.0.0"
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD bun -e "fetch('http://localhost:3003/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+  CMD wget -q --spider http://localhost:${PORT}/ || exit 1
 
-CMD ["bun", "server.js"]
+CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]

@@ -3,27 +3,21 @@ import type { NextConfig } from "next";
 
 const config: NextConfig = {
   reactStrictMode: true,
-  output: "standalone",
-  async rewrites() {
-    return [
-      {
-        source: "/:path*.mdx",
-        destination: "/llms.mdx/:path*",
-      },
-    ];
-  },
-  async redirects() {
-    return [
-      // /guides/mcp-hosted was consolidated into /guides/mcp under the
-      // hosted/self-hosted tabs (#2113). The `:rest*` wildcard matches zero
-      // or more segments, so this single rule handles both the bare path
-      // and any deeper anchor links that survived the merge.
-      {
-        source: "/guides/mcp-hosted/:rest*",
-        destination: "/guides/mcp/:rest*",
-        permanent: true,
-      },
-    ];
+  // Static export — served by Caddy in front (apps/docs/Caddyfile). The
+  // markdown-twin rewrite (/:path*.mdx -> /llms.mdx/:path*) and the
+  // /guides/mcp-hosted/* legacy redirect that used to live here now live
+  // in the Caddyfile, because Next.js rewrites/redirects don't run under
+  // output: 'export'.
+  output: "export",
+  // The /llms.mdx/[[...slug]] route handler emits file paths without an
+  // extension (e.g. out/llms.mdx/guides/slack). Adding a trailing slash
+  // makes the Caddy /*.mdx -> /llms.mdx/* rewrite resolve cleanly.
+  trailingSlash: true,
+  images: {
+    // ImageResponse from generateOGImage works under output: 'export' but
+    // next/image's default optimizer doesn't. Force unoptimized so any
+    // <Image> in MDX still renders.
+    unoptimized: true,
   },
 };
 

@@ -78,7 +78,7 @@
     "eslint": "^10.1.0",
     "jose": "^6.2.2",
     "pg": "^8.20.0",
-    "react": "^19.2.4",
+    "react": "^19.2.6",
     "syncpack": "^14.2.1",
     "typescript": "^6.0.2",
     "typescript-eslint": "^8.57.2",

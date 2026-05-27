@@ -54,10 +54,12 @@ export default function Layout({ children }: { children: ReactNode }) {
         {
           text: "llms.txt",
           url: "/llms.txt",
+          external: true,
         },
         {
           text: "llms-full.txt",
           url: "/llms-full.txt",
+          external: true,
         },
         {
           type: "icon" as const,

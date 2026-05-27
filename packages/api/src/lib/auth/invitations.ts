@@ -327,3 +327,49 @@ export async function recordInvitationCreated(args: {
     );
   }
 }
+
+/**
+ * Audit a successful invitation cancellation ("revoke" in the UI;
+ * "cancel" in the Better Auth API + audit constant). Symmetric to
+ * `recordInvitationCreated` — same `withRequestContext` synthesis so
+ * `logAdminAction` resolves the real actor (Better Auth's hooks fire
+ * outside Atlas's AsyncLocalStorage), same `activeOrganizationId: orgId`
+ * stamp so the audit row attributes to the TARGET workspace, not the
+ * caller's active org (matters for cross-org platform-admin cancels
+ * where the two diverge).
+ *
+ * Email may be empty for passkey-only accounts and certain social-
+ * provider edge cases — fall back to a user-id label so `createAtlasUser`'s
+ * non-empty-label check doesn't throw after the DELETE has already
+ * happened.
+ */
+export async function recordInvitationCancelled(args: {
+  invitationId: string;
+  invitedEmail: string;
+  role: string;
+  orgId: string;
+  cancelledBy: { id: string; email: string | null | undefined };
+}): Promise<void> {
+  const actor = createAtlasUser(
+    args.cancelledBy.id,
+    "managed",
+    args.cancelledBy.email || `user:${args.cancelledBy.id}`,
+    { activeOrganizationId: args.orgId },
+  );
+  withRequestContext(
+    { requestId: `cancel-invite:${args.invitationId}`, user: actor },
+    () => {
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.user.revokeInvitation,
+        targetType: "user",
+        targetId: args.invitationId,
+        metadata: {
+          invitedEmail: args.invitedEmail,
+          role: args.role,
+          previousStatus: "pending",
+          orgId: args.orgId,
+        },
+      });
+    },
+  );
+}

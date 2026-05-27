@@ -543,3 +543,128 @@ describe("POST /api/v1/platform/invitations", () => {
     expect((deletedIds[0] as string).length).toBe(32);
   });
 });
+
+// ---------------------------------------------------------------------------
+// DELETE /api/v1/platform/invitations/:id (cancel / revoke)
+// ---------------------------------------------------------------------------
+
+/**
+ * Default query handler for the cancel-route success path. Returns:
+ * - 1 invitation row for the SELECT-before-DELETE lookup
+ * - empty result for the DELETE
+ *
+ * Overrides let individual tests simulate ghost rows (no SELECT match)
+ * or capture the DELETE params for assertions.
+ */
+function defaultCancelQueryHandler(
+  overrides: Partial<{
+    existing: Array<Record<string, unknown>>;
+    onDelete?: (id: unknown) => void;
+  }> = {},
+): (sql: string, params?: unknown[]) => Promise<unknown[]> {
+  return async (sql, params) => {
+    const s = sql.replace(/\s+/g, " ").trim();
+    if (s.startsWith("SELECT id, email, role, \"organizationId\"") && s.includes("WHERE id =")) {
+      return overrides.existing ?? [
+        {
+          id: "inv-cancel-1",
+          email: "pending@example.com",
+          role: "member",
+          organizationId: "target-org",
+          inviterId: "owner-1",
+          status: "pending",
+          expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24).toISOString(),
+          createdAt: new Date().toISOString(),
+        },
+      ];
+    }
+    if (s.startsWith("DELETE FROM invitation")) {
+      overrides.onDelete?.(params?.[0]);
+      return [];
+    }
+    return [];
+  };
+}
+
+describe("DELETE /api/v1/platform/invitations/:id", () => {
+  it("cancels a cross-org invitation when the caller is not a member of the target org", async () => {
+    // Caller's active org diverges from the invitation's TARGET org —
+    // the gate-bypass symmetric to the create-side workaround. Native
+    // Better Auth `cancelInvitation` would 403 here.
+    mocks.setPlatformAdmin("org-test");
+    const deletedIds: unknown[] = [];
+    mocks.mockInternalQuery.mockImplementation(
+      defaultCancelQueryHandler({
+        onDelete: (id) => deletedIds.push(id),
+      }),
+    );
+
+    const res = await app.request(
+      platformRequest("DELETE", "/api/v1/platform/invitations/inv-cancel-1"),
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { id: string };
+    expect(body.id).toBe("inv-cancel-1");
+    // DELETE was issued against the id from the path.
+    expect(deletedIds).toEqual(["inv-cancel-1"]);
+  });
+
+  it("audits with the TARGET orgId from the row, not the caller's active org", async () => {
+    // Caller's active org is "org-test"; invitation belongs to
+    // "target-org". Audit metadata.orgId must reflect the target.
+    mocks.setPlatformAdmin("org-test");
+    mocks.mockInternalQuery.mockImplementation(defaultCancelQueryHandler());
+
+    const res = await app.request(
+      platformRequest("DELETE", "/api/v1/platform/invitations/inv-cancel-1"),
+    );
+    expect(res.status).toBe(200);
+
+    expect(mockLogAdminAction).toHaveBeenCalled();
+    const lastCall = mockLogAdminAction.mock.calls.at(-1)?.[0] as {
+      actionType: string;
+      targetId?: string;
+      metadata?: { orgId?: string; invitedEmail?: string; role?: string; previousStatus?: string };
+    } | undefined;
+    expect(lastCall?.actionType).toBe("user.revoke_invitation");
+    expect(lastCall?.targetId).toBe("inv-cancel-1");
+    expect(lastCall?.metadata?.orgId).toBe("target-org");
+    expect(lastCall?.metadata?.invitedEmail).toBe("pending@example.com");
+    expect(lastCall?.metadata?.role).toBe("member");
+    expect(lastCall?.metadata?.previousStatus).toBe("pending");
+  });
+
+  it("returns 403 for non-platform_admin callers", async () => {
+    mocks.setOrgAdmin("org-1");
+
+    const res = await app.request(
+      platformRequest("DELETE", "/api/v1/platform/invitations/inv-cancel-1"),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("returns 404 not_found when the invitation row does not exist", async () => {
+    mocks.mockInternalQuery.mockImplementation(
+      defaultCancelQueryHandler({ existing: [] }),
+    );
+
+    const res = await app.request(
+      platformRequest("DELETE", "/api/v1/platform/invitations/ghost-id"),
+    );
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("not_found");
+  });
+
+  it("returns 404 not_available when internal DB is not configured", async () => {
+    mocks.hasInternalDB = false;
+
+    const res = await app.request(
+      platformRequest("DELETE", "/api/v1/platform/invitations/inv-cancel-1"),
+    );
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("not_available");
+  });
+});

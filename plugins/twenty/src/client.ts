@@ -40,10 +40,19 @@ export type TwentyOperation =
   | "findPersonByEmail"
   | "createPerson"
   | "updatePerson"
+  | "deletePerson"
+  | "getPerson"
+  | "listPeople"
+  | "searchPeople"
   | "getPersonMetadata"
   | "getPersonRestSchema"
   | "createNote"
-  | "createNoteTarget";
+  | "createNoteTarget"
+  | "deleteNote"
+  | "listNotes"
+  | "listCompanies"
+  | "searchCompanies"
+  | "deleteCompany";
 
 /** Structured error for typed routing inside SaasCrmLayer. */
 export class TwentyClientError extends Data.TaggedError("TwentyClientError")<{
@@ -252,13 +261,19 @@ async function readErrorDetail(response: Response): Promise<{ message: string; c
     upstreamCode = typeof body.code === "string" ? body.code : undefined;
   } catch (err) {
     // Body wasn't JSON. Try text but cap length so a huge HTML 502 page
-    // from a fronting proxy doesn't bloat the log.
+    // from a fronting proxy doesn't bloat the log. Mark truncation
+    // explicitly so the reader can tell a clipped fragment from the
+    // whole body — silent slicing once hid schema-drift detail past byte 200.
     try {
       const txt = await response.text();
-      upstreamMessage = txt.slice(0, 200);
+      upstreamMessage =
+        txt.length > 200
+          ? `${txt.slice(0, 200)}… (truncated, ${txt.length} bytes total)`
+          : txt;
     } catch (textErr) {
       upstreamMessage =
-        `[body unreadable: text=${textErr instanceof Error ? textErr.message : String(textErr)}; ` +
+        `HTTP ${response.status} [body unreadable: ` +
+        `text=${textErr instanceof Error ? textErr.message : String(textErr)}; ` +
         `json=${err instanceof Error ? err.message : String(err)}]`;
     }
   }
@@ -688,6 +703,10 @@ const METADATA_FIELDS_QUERY =
  * custom fields exist before dispatch. Errors propagate as
  * TwentyClientError so the layer can distinguish transient failures
  * from configuration errors.
+ *
+ * @deprecated Prefer {@link getPersonRestSchema}. Twenty's GraphQL
+ * metadata surface is unstable across releases — the REST OpenAPI probe
+ * is the documented replacement.
  */
 export async function getPersonMetadata(
   config: TwentyClientConfig,
@@ -822,4 +841,614 @@ export async function getPersonRestSchema(
   }
 
   return { fields: new Set(Object.keys(properties)) };
+}
+
+// Read-only helpers — return the full upstream record shape with no
+// field subsetting. Custom Atlas fields (`atlasFirstSource`, `atlasIp`,
+// etc.) flow through automatically; any future workspace column appears
+// without requiring a client change.
+
+export interface TwentyCompany {
+  readonly id?: string;
+  readonly name?: string;
+  readonly domainName?: { primaryLinkUrl?: string };
+  readonly employees?: number;
+  readonly annualRecurringRevenue?: { amountMicros?: string; currencyCode?: string };
+  readonly idealCustomerProfile?: boolean;
+  readonly createdAt?: string;
+  readonly updatedAt?: string;
+}
+
+export interface TwentyNoteFull {
+  readonly id?: string;
+  readonly title?: string;
+  readonly bodyV2?: { markdown?: string };
+  readonly createdAt?: string;
+  readonly updatedAt?: string;
+}
+
+export interface ListOptions {
+  /** Defaults to Twenty's server default (60 today, never assume it). Cap is workspace-configurable. */
+  readonly limit?: number;
+  /** Cursor for forward pagination — pass `endCursor` from a previous page. */
+  readonly startingAfter?: string;
+  /** Cursor for backward pagination. */
+  readonly endingBefore?: string;
+}
+
+function buildListQuery(opts: ListOptions | undefined, filter?: string): string {
+  const params: string[] = [];
+  if (filter) params.push(filter);
+  if (opts?.limit !== undefined) params.push(`limit=${encodeURIComponent(String(opts.limit))}`);
+  if (opts?.startingAfter) params.push(`starting_after=${encodeURIComponent(opts.startingAfter)}`);
+  if (opts?.endingBefore) params.push(`ending_before=${encodeURIComponent(opts.endingBefore)}`);
+  return params.length > 0 ? `?${params.join("&")}` : "";
+}
+
+/**
+ * List Twenty People — unfiltered. Use {@link searchPeople} for filtered
+ * lookups. Returns the array directly; pagination cursors live on the
+ * Twenty response envelope (`pageInfo`) and are NOT surfaced here — page
+ * by passing `startingAfter` / `endingBefore` from the caller side using
+ * the last/first record's id (Twenty's cursor convention).
+ */
+export async function listPeople(
+  config: TwentyClientConfig,
+  opts?: ListOptions,
+): Promise<TwentyPerson[]> {
+  const fetchImpl = config.fetchImpl ?? globalThis.fetch;
+  const url = buildRestUrl(config.baseUrl, `people${buildListQuery(opts)}`);
+  const response = await fetchImpl(url, {
+    method: "GET",
+    headers: buildAuthHeaders(config.apiKey),
+    signal: AbortSignal.timeout(config.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new TwentyClientError({
+      message: `listPeople failed: ${detail.message}`,
+      status: response.status,
+      upstreamCode: detail.code,
+      operation: "listPeople",
+      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+    });
+  }
+
+  let body: { data?: { people?: unknown } };
+  try {
+    body = (await response.json()) as typeof body;
+  } catch (err) {
+    throw new TwentyClientError({
+      message: `listPeople: unparseable response (${err instanceof Error ? err.message : String(err)})`,
+      status: response.status,
+      operation: "listPeople",
+    });
+  }
+
+  const list = body.data?.people;
+  if (Array.isArray(list)) return list as TwentyPerson[];
+  throw new TwentyClientError({
+    message: "listPeople: unexpected response shape (expected data.people to be an array)",
+    status: response.status,
+    operation: "listPeople",
+  });
+}
+
+/** Fetch a single Person by id. Returns undefined on 404. */
+export async function getPerson(
+  config: TwentyClientConfig,
+  id: string,
+): Promise<TwentyPerson | undefined> {
+  const fetchImpl = config.fetchImpl ?? globalThis.fetch;
+  const url = buildRestUrl(config.baseUrl, `people/${encodeURIComponent(id)}`);
+  const response = await fetchImpl(url, {
+    method: "GET",
+    headers: buildAuthHeaders(config.apiKey),
+    signal: AbortSignal.timeout(config.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+  });
+
+  if (response.status === 404) return undefined;
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new TwentyClientError({
+      message: `getPerson failed: ${detail.message}`,
+      status: response.status,
+      upstreamCode: detail.code,
+      operation: "getPerson",
+      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+    });
+  }
+
+  let body: { data?: { person?: unknown } };
+  try {
+    body = (await response.json()) as typeof body;
+  } catch (err) {
+    throw new TwentyClientError({
+      message: `getPerson: unparseable response (${err instanceof Error ? err.message : String(err)})`,
+      status: response.status,
+      operation: "getPerson",
+    });
+  }
+
+  const data = body.data;
+  if (data && "person" in data) {
+    return data.person as TwentyPerson | undefined;
+  }
+  // Twenty returned 2xx but the response shape doesn't include
+  // data.person at all — distinguish from a 404 so a drifted upstream
+  // schema doesn't look like "record absent".
+  throw new TwentyClientError({
+    message: "getPerson: unexpected response shape (expected data.person)",
+    status: response.status,
+    operation: "getPerson",
+  });
+}
+
+export interface SearchPeopleInput extends ListOptions {
+  /** Exact match on emails.primaryEmail. */
+  readonly email?: string;
+  /** Substring match on name.firstName OR name.lastName. */
+  readonly nameLike?: string;
+}
+
+/**
+ * Search People with Twenty's documented filter syntax (`field[op]:value`).
+ *
+ * IMPORTANT: never construct a bracket-nested filter like
+ * `?filter[emails.primaryEmail][eq]=…` — Twenty silently ignores that
+ * form and returns the unfiltered list, which silently corrupts caller
+ * logic. The unit tests assert the documented shape AND forbid the
+ * bracket-nested form.
+ *
+ * When multiple criteria are supplied they are AND'd via Twenty's
+ * top-level `,` join — `?filter=A[eq]:x,B[like]:%y%`.
+ */
+export async function searchPeople(
+  config: TwentyClientConfig,
+  input: SearchPeopleInput,
+): Promise<TwentyPerson[]> {
+  const fetchImpl = config.fetchImpl ?? globalThis.fetch;
+  const clauses: string[] = [];
+  if (input.email) {
+    clauses.push(`emails.primaryEmail[eq]:${encodeURIComponent(input.email)}`);
+  }
+  if (input.nameLike) {
+    // Twenty's `like` operator uses `%` as the SQL-style wildcard.
+    const pattern = `%${input.nameLike}%`;
+    clauses.push(
+      `or(name.firstName[like]:${encodeURIComponent(pattern)},name.lastName[like]:${encodeURIComponent(pattern)})`,
+    );
+  }
+  if (clauses.length === 0) {
+    throw new TwentyClientError({
+      message: "searchPeople: at least one of `email` or `nameLike` is required",
+      status: 0,
+      operation: "searchPeople",
+    });
+  }
+
+  const filter = `filter=${clauses.join(",")}`;
+  const url = buildRestUrl(
+    config.baseUrl,
+    `people${buildListQuery({ limit: input.limit, startingAfter: input.startingAfter, endingBefore: input.endingBefore }, filter)}`,
+  );
+  const response = await fetchImpl(url, {
+    method: "GET",
+    headers: buildAuthHeaders(config.apiKey),
+    signal: AbortSignal.timeout(config.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new TwentyClientError({
+      message: `searchPeople failed: ${detail.message}`,
+      status: response.status,
+      upstreamCode: detail.code,
+      operation: "searchPeople",
+      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+    });
+  }
+
+  let body: { data?: { people?: unknown } };
+  try {
+    body = (await response.json()) as typeof body;
+  } catch (err) {
+    throw new TwentyClientError({
+      message: `searchPeople: unparseable response (${err instanceof Error ? err.message : String(err)})`,
+      status: response.status,
+      operation: "searchPeople",
+    });
+  }
+
+  const list = body.data?.people;
+  if (Array.isArray(list)) return list as TwentyPerson[];
+  throw new TwentyClientError({
+    message: "searchPeople: unexpected response shape (expected data.people to be an array)",
+    status: response.status,
+    operation: "searchPeople",
+  });
+}
+
+/** List Notes — unfiltered. Returns the raw upstream array. */
+export async function listNotes(
+  config: TwentyClientConfig,
+  opts?: ListOptions,
+): Promise<TwentyNoteFull[]> {
+  const fetchImpl = config.fetchImpl ?? globalThis.fetch;
+  const url = buildRestUrl(config.baseUrl, `notes${buildListQuery(opts)}`);
+  const response = await fetchImpl(url, {
+    method: "GET",
+    headers: buildAuthHeaders(config.apiKey),
+    signal: AbortSignal.timeout(config.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new TwentyClientError({
+      message: `listNotes failed: ${detail.message}`,
+      status: response.status,
+      upstreamCode: detail.code,
+      operation: "listNotes",
+      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+    });
+  }
+
+  let body: { data?: { notes?: unknown } };
+  try {
+    body = (await response.json()) as typeof body;
+  } catch (err) {
+    throw new TwentyClientError({
+      message: `listNotes: unparseable response (${err instanceof Error ? err.message : String(err)})`,
+      status: response.status,
+      operation: "listNotes",
+    });
+  }
+
+  const list = body.data?.notes;
+  if (Array.isArray(list)) return list as TwentyNoteFull[];
+  // Fail loud on shape drift — silent `[]` would let wipeWorkspace report
+  // "nothing to delete" when the Twenty response shape actually changed.
+  throw new TwentyClientError({
+    message: "listNotes: unexpected response shape (expected data.notes to be an array)",
+    status: response.status,
+    operation: "listNotes",
+  });
+}
+
+/** List Companies — unfiltered. Returns the raw upstream array. */
+export async function listCompanies(
+  config: TwentyClientConfig,
+  opts?: ListOptions,
+): Promise<TwentyCompany[]> {
+  const fetchImpl = config.fetchImpl ?? globalThis.fetch;
+  const url = buildRestUrl(config.baseUrl, `companies${buildListQuery(opts)}`);
+  const response = await fetchImpl(url, {
+    method: "GET",
+    headers: buildAuthHeaders(config.apiKey),
+    signal: AbortSignal.timeout(config.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new TwentyClientError({
+      message: `listCompanies failed: ${detail.message}`,
+      status: response.status,
+      upstreamCode: detail.code,
+      operation: "listCompanies",
+      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+    });
+  }
+
+  let body: { data?: { companies?: unknown } };
+  try {
+    body = (await response.json()) as typeof body;
+  } catch (err) {
+    throw new TwentyClientError({
+      message: `listCompanies: unparseable response (${err instanceof Error ? err.message : String(err)})`,
+      status: response.status,
+      operation: "listCompanies",
+    });
+  }
+
+  const list = body.data?.companies;
+  if (Array.isArray(list)) return list as TwentyCompany[];
+  throw new TwentyClientError({
+    message: "listCompanies: unexpected response shape (expected data.companies to be an array)",
+    status: response.status,
+    operation: "listCompanies",
+  });
+}
+
+export interface SearchCompaniesInput extends ListOptions {
+  readonly nameLike?: string;
+  readonly domainLike?: string;
+}
+
+/** Search Companies. See {@link searchPeople} for filter-syntax discipline. */
+export async function searchCompanies(
+  config: TwentyClientConfig,
+  input: SearchCompaniesInput,
+): Promise<TwentyCompany[]> {
+  const fetchImpl = config.fetchImpl ?? globalThis.fetch;
+  const clauses: string[] = [];
+  if (input.nameLike) {
+    clauses.push(`name[like]:${encodeURIComponent(`%${input.nameLike}%`)}`);
+  }
+  if (input.domainLike) {
+    clauses.push(
+      `domainName.primaryLinkUrl[like]:${encodeURIComponent(`%${input.domainLike}%`)}`,
+    );
+  }
+  if (clauses.length === 0) {
+    throw new TwentyClientError({
+      message: "searchCompanies: at least one of `nameLike` or `domainLike` is required",
+      status: 0,
+      operation: "searchCompanies",
+    });
+  }
+
+  const filter = `filter=${clauses.join(",")}`;
+  const url = buildRestUrl(
+    config.baseUrl,
+    `companies${buildListQuery({ limit: input.limit, startingAfter: input.startingAfter, endingBefore: input.endingBefore }, filter)}`,
+  );
+  const response = await fetchImpl(url, {
+    method: "GET",
+    headers: buildAuthHeaders(config.apiKey),
+    signal: AbortSignal.timeout(config.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new TwentyClientError({
+      message: `searchCompanies failed: ${detail.message}`,
+      status: response.status,
+      upstreamCode: detail.code,
+      operation: "searchCompanies",
+      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+    });
+  }
+
+  let body: { data?: { companies?: unknown } };
+  try {
+    body = (await response.json()) as typeof body;
+  } catch (err) {
+    throw new TwentyClientError({
+      message: `searchCompanies: unparseable response (${err instanceof Error ? err.message : String(err)})`,
+      status: response.status,
+      operation: "searchCompanies",
+    });
+  }
+
+  const list = body.data?.companies;
+  if (Array.isArray(list)) return list as TwentyCompany[];
+  throw new TwentyClientError({
+    message: "searchCompanies: unexpected response shape (expected data.companies to be an array)",
+    status: response.status,
+    operation: "searchCompanies",
+  });
+}
+
+// `DELETE /rest/{object}/{id}?soft_delete=<bool>` — soft-deleted records
+// still trip Twenty's server-side duplicate detection on upsertPerson, so
+// "hard delete" is the right default for cleanup paths. The wire param
+// is sent explicitly so a future upstream default flip can't silently
+// change our semantics.
+
+export interface DeleteOptions {
+  /** Defaults to false (hard delete). Pass true to send `?soft_delete=true`. */
+  readonly softDelete?: boolean;
+}
+
+function buildDeleteUrl(baseUrl: string, path: string, opts: DeleteOptions | undefined): string {
+  const soft = opts?.softDelete === true ? "true" : "false";
+  return buildRestUrl(baseUrl, `${path}?soft_delete=${soft}`);
+}
+
+async function deleteRecord(
+  config: TwentyClientConfig,
+  path: string,
+  operation: TwentyOperation,
+  opts: DeleteOptions | undefined,
+): Promise<void> {
+  const fetchImpl = config.fetchImpl ?? globalThis.fetch;
+  const url = buildDeleteUrl(config.baseUrl, path, opts);
+  const response = await fetchImpl(url, {
+    method: "DELETE",
+    headers: buildAuthHeaders(config.apiKey),
+    signal: AbortSignal.timeout(config.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+  });
+
+  if (response.status === 404) return; // already gone — idempotent
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new TwentyClientError({
+      message: `${operation} failed: ${detail.message}`,
+      status: response.status,
+      upstreamCode: detail.code,
+      operation,
+      retryAfterMs: parseRetryAfterMs(response.headers.get("Retry-After")),
+    });
+  }
+}
+
+export async function deletePerson(
+  config: TwentyClientConfig,
+  id: string,
+  opts?: DeleteOptions,
+): Promise<void> {
+  await deleteRecord(config, `people/${encodeURIComponent(id)}`, "deletePerson", opts);
+}
+
+export async function deleteNote(
+  config: TwentyClientConfig,
+  id: string,
+  opts?: DeleteOptions,
+): Promise<void> {
+  await deleteRecord(config, `notes/${encodeURIComponent(id)}`, "deleteNote", opts);
+}
+
+export async function deleteCompany(
+  config: TwentyClientConfig,
+  id: string,
+  opts?: DeleteOptions,
+): Promise<void> {
+  await deleteRecord(config, `companies/${encodeURIComponent(id)}`, "deleteCompany", opts);
+}
+
+export interface WipeWorkspaceOptions {
+  /**
+   * When true (default), list one page per object type but issue no
+   * DELETEs — returns sample counts so the caller can preview the wipe.
+   * Defaults to true so the destructive path requires explicit opt-in.
+   */
+  readonly dryRun?: boolean;
+  /** Limit per page during enumeration; defaults to 60. */
+  readonly pageLimit?: number;
+  /**
+   * Safety cap on records visited per object type (not summed across
+   * types). Default 10_000. Hitting the cap sets `truncated` to true on
+   * the returned shape.
+   */
+  readonly maxRecords?: number;
+}
+
+/**
+ * Per-record delete failure surfaced from a live wipe. Accumulated
+ * inside the result so a transient 5xx mid-wipe can't be mistaken for
+ * a clean run — the caller sees both the progress made and the records
+ * left behind.
+ */
+export interface WipeWorkspaceError {
+  readonly objectType: "note" | "person" | "company";
+  readonly id: string;
+  readonly status: number;
+  readonly message: string;
+}
+
+interface WipeTruncation {
+  readonly notes: boolean;
+  readonly people: boolean;
+  readonly companies: boolean;
+}
+
+export type WipeWorkspaceResult =
+  | {
+      readonly dryRun: true;
+      readonly notesSampled: number;
+      readonly peopleSampled: number;
+      readonly companiesSampled: number;
+      readonly truncated: WipeTruncation;
+    }
+  | {
+      readonly dryRun: false;
+      readonly notesDeleted: number;
+      readonly peopleDeleted: number;
+      readonly companiesDeleted: number;
+      readonly truncated: WipeTruncation;
+      readonly errors: ReadonlyArray<WipeWorkspaceError>;
+    };
+
+/**
+ * Hard-delete every Note, Person, and Company in the workspace, or in
+ * dry-run mode sample one page per object type to preview the wipe.
+ *
+ * Iteration order is notes → people → companies. Notes go first so the
+ * NoteTarget rows referencing them are released before the People they
+ * point at disappear; Companies go last because Twenty's FK behavior on
+ * Person.companyId rejects (or, depending on workspace config, leaves
+ * orphans on) Company deletes while People still reference them.
+ *
+ * Pagination: lists `pageLimit` at a time, deletes the page, re-lists.
+ * Twenty's cursor pagination would also work but a "delete-then-relist"
+ * loop is sufficient because deletes shift the cursor.
+ *
+ * Safety: `dryRun` defaults to true. `maxRecords` is enforced per
+ * object type, not summed, so a large Notes table can't silently starve
+ * the People and Companies drains.
+ */
+export async function wipeWorkspace(
+  config: TwentyClientConfig,
+  opts?: WipeWorkspaceOptions,
+): Promise<WipeWorkspaceResult> {
+  const dryRun = opts?.dryRun !== false;
+  const pageLimit = opts?.pageLimit ?? 60;
+  const maxRecords = opts?.maxRecords ?? 10_000;
+
+  const errors: WipeWorkspaceError[] = [];
+
+  async function drain<T extends { id?: string }>(
+    objectType: WipeWorkspaceError["objectType"],
+    list: (config: TwentyClientConfig, listOpts: ListOptions) => Promise<T[]>,
+    del: (config: TwentyClientConfig, id: string) => Promise<void>,
+  ): Promise<{ count: number; truncated: boolean }> {
+    let count = 0;
+    let visited = 0;
+    while (visited < maxRecords) {
+      const page = await list(config, { limit: pageLimit });
+      if (page.length === 0) return { count, truncated: false };
+      for (const record of page) {
+        if (visited >= maxRecords) {
+          return { count, truncated: true };
+        }
+        visited++;
+        if (!record.id) continue;
+        if (dryRun) {
+          count++;
+          continue;
+        }
+        try {
+          await del(config, record.id);
+          count++;
+        } catch (err) {
+          if (err instanceof TwentyClientError) {
+            errors.push({
+              objectType,
+              id: record.id,
+              status: err.status,
+              message: err.message,
+            });
+          } else {
+            errors.push({
+              objectType,
+              id: record.id,
+              status: 0,
+              message: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+      }
+      if (dryRun) return { count, truncated: false };
+    }
+    return { count, truncated: true };
+  }
+
+  const notes = await drain("note", listNotes, (c, id) => deleteNote(c, id));
+  const people = await drain("person", listPeople, (c, id) => deletePerson(c, id));
+  const companies = await drain("company", listCompanies, (c, id) => deleteCompany(c, id));
+
+  const truncated: WipeTruncation = {
+    notes: notes.truncated,
+    people: people.truncated,
+    companies: companies.truncated,
+  };
+
+  if (dryRun) {
+    return {
+      dryRun: true,
+      notesSampled: notes.count,
+      peopleSampled: people.count,
+      companiesSampled: companies.count,
+      truncated,
+    };
+  }
+  return {
+    dryRun: false,
+    notesDeleted: notes.count,
+    peopleDeleted: people.count,
+    companiesDeleted: companies.count,
+    truncated,
+    errors,
+  };
 }

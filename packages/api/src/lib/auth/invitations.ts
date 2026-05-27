@@ -1,14 +1,15 @@
 /**
  * Invitation helpers shared between Better Auth's `organizationHooks` and
- * the platform-admin cross-org invite route (`POST /api/v1/platform/invitations`).
+ * the platform-admin cross-org invite route at
+ * `POST /api/v1/platform/invitations`.
  *
- * The native `auth.api.createInvitation` endpoint enforces an org-membership
- * gate on the caller — a `platform_admin` who isn't a member of the target
- * org can't satisfy it (see `crud-invites.mjs:80` in `better-auth`). The
- * platform route re-implements the create flow with the gate bypassed, so
- * the seat-limit, audit, and email logic lives here for both call sites
- * to share. Hooks stay in `server.ts` as thin wrappers — extracting them
- * here keeps the create-flow invariants colocated and unit-testable.
+ * The native `createInvitation` endpoint gates the caller on target-org
+ * membership — a `platform_admin` who isn't a member can't satisfy it.
+ * The platform route re-implements the create flow with the gate
+ * bypassed, so the seat-limit, audit, and email logic lives here for
+ * both call sites to share. Hooks stay in `server.ts` as thin wrappers
+ * — extracting them here keeps the create-flow invariants colocated and
+ * unit-testable.
  */
 
 import { APIError } from "better-auth/api";
@@ -74,6 +75,18 @@ export function isTransportError(err: unknown): boolean {
 }
 
 /**
+ * Roles a platform-admin invite may grant. Mirrors the `roles: { owner,
+ * admin, member }` map configured on the Better Auth `organization()`
+ * plugin in `server.ts`. Native `auth.api.createInvitation` validates
+ * against the same set; the cross-org route can't go through Better Auth
+ * (caller isn't a target-org member), so it has to enforce the allow-list
+ * itself before INSERT — otherwise a typo like `"owenr"` would land in
+ * `member.role` on accept.
+ */
+export const ALLOWED_INVITATION_ROLES = ["member", "admin", "owner"] as const;
+export type InvitationRole = (typeof ALLOWED_INVITATION_ROLES)[number];
+
+/**
  * Defense-in-depth role gate for invitations. Normalizes single-string AND
  * array role inputs and rejects any `platform_admin` value.
  *
@@ -87,6 +100,30 @@ export function assertInvitationRoleAllowed(role: unknown): void {
       message:
         "Invitations cannot grant platform_admin. Use the platform-admin grant flow.",
     });
+  }
+}
+
+/**
+ * Allow-list role gate for the cross-org platform route. Stricter than
+ * `assertInvitationRoleAllowed` (which only denies `platform_admin`):
+ * here we additionally require the role to be in
+ * `ALLOWED_INVITATION_ROLES`. The native Better Auth path uses its own
+ * configured-roles map for this — the cross-org route bypasses Better
+ * Auth's `createInvitation` and so must replicate the check explicitly.
+ *
+ * Throws `APIError("BAD_REQUEST")` on rejection.
+ */
+export function assertPlatformInvitationRole(role: unknown): void {
+  assertInvitationRoleAllowed(role);
+  const rawRoles = Array.isArray(role) ? role : [role];
+  const roles = rawRoles.map((r) => String(r ?? "").trim().toLowerCase());
+  const allowed = new Set<string>(ALLOWED_INVITATION_ROLES);
+  for (const r of roles) {
+    if (!allowed.has(r)) {
+      throw new APIError("BAD_REQUEST", {
+        message: `Invalid role "${r}". Must be one of: ${ALLOWED_INVITATION_ROLES.join(", ")}.`,
+      });
+    }
   }
 }
 

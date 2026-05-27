@@ -108,33 +108,53 @@ interface InvitationResponse {
  * - 1 org match for `FROM organization`
  * - 0 existing members for the member-dedup lookup
  * - 0 pending invitations for the invite-dedup lookup
+ * - pending count 0 for the pending-cap gate
  * - seat-count 1 for the seat-limit gate
+ * - 1 owner-member for the inviter-resolution lookup
  * - 1 inviter row for the inviter-name lookup
  * - 1 row for the final INSERT … RETURNING
+ * - empty array for the DELETE rollback path (success case: not invoked)
  */
 function defaultQueryHandler(
   overrides: Partial<{
     org: Array<Record<string, unknown>>;
     existingMembers: Array<Record<string, unknown>>;
     pending: Array<Record<string, unknown>>;
+    pendingCount: number;
     seatCount: number;
+    inviterMembers: Array<Record<string, unknown>>;
     inviter: Array<Record<string, unknown>>;
     inserted: Array<Record<string, unknown>>;
+    onDelete?: (id: unknown) => void;
   }> = {},
 ): (sql: string, params?: unknown[]) => Promise<unknown[]> {
   return async (sql, params) => {
     const s = sql.replace(/\s+/g, " ").trim();
-    if (s.startsWith("SELECT id, name FROM organization")) {
-      return overrides.org ?? [{ id: "target-org", name: "Target Co" }];
+    if (s.startsWith("SELECT id, name, workspace_status FROM organization")) {
+      return overrides.org ?? [{ id: "target-org", name: "Target Co", workspace_status: "active" }];
     }
     if (s.includes("FROM member m") && s.includes("JOIN \"user\" u")) {
       return overrides.existingMembers ?? [];
     }
-    if (s.includes("FROM invitation") && s.includes("status = 'pending'")) {
+    // Pending-cap query: standalone count. Must be matched BEFORE the
+    // seat-limit query (which also contains `COUNT(*)::int FROM invitation`
+    // inside a parenthesized subselect).
+    if (s.startsWith("SELECT COUNT(*)::int as count FROM invitation")) {
+      return [{ count: overrides.pendingCount ?? 0 }];
+    }
+    // Pending-dedup query: selects the full row for the specific email.
+    if (s.startsWith("SELECT id, email, role, \"organizationId\"") && s.includes("FROM invitation")) {
       return overrides.pending ?? [];
     }
     if (s.includes("SELECT (") && s.includes("FROM member") && s.includes("FROM invitation")) {
       return [{ count: overrides.seatCount ?? 1 }];
+    }
+    // Inviter-resolution query — picks a target-org member to use as
+    // `inviterId` so Better Auth's `getInvitation` accepts the row.
+    if (s.startsWith("SELECT id, \"userId\", role FROM member")) {
+      return overrides.inviterMembers ?? [
+        { id: "mbr-owner", userId: "owner-1", role: "owner" },
+      ];
     }
     if (s.startsWith("SELECT name, email FROM \"user\"")) {
       return overrides.inviter ?? [{ name: "Platform Admin", email: "platform@test.com" }];
@@ -151,12 +171,16 @@ function defaultQueryHandler(
           email: email ?? "newuser@example.com",
           role: role ?? "member",
           organizationId: organizationId ?? "target-org",
-          inviterId: inviterId ?? "platform-admin-1",
+          inviterId: inviterId ?? "owner-1",
           status: "pending",
           expiresAt: expiresAt instanceof Date ? expiresAt.toISOString() : String(expiresAt ?? ""),
           createdAt: createdAt instanceof Date ? createdAt.toISOString() : String(createdAt ?? ""),
         },
       ];
+    }
+    if (s.startsWith("DELETE FROM invitation")) {
+      overrides.onDelete?.(params?.[0]);
+      return [];
     }
     return [];
   };
@@ -189,7 +213,10 @@ describe("POST /api/v1/platform/invitations", () => {
     const body = (await res.json()) as InvitationResponse;
     expect(body.email).toBe("newuser@example.com");
     expect(body.organizationId).toBe("target-org");
-    expect(body.inviterId).toBe("platform-admin-1");
+    // inviterId is the RESOLVED target-org member (owner), not the
+    // platform admin caller — Better Auth's accept flow requires the
+    // inviter to be a current member of the target organization.
+    expect(body.inviterId).toBe("owner-1");
     expect(body.status).toBe("pending");
   });
 
@@ -275,6 +302,25 @@ describe("POST /api/v1/platform/invitations", () => {
       }),
     );
     expect(res.status).toBe(404);
+  });
+
+  it("returns 409 workspace_inactive when target org is suspended or deleted", async () => {
+    mocks.mockInternalQuery.mockImplementation(
+      defaultQueryHandler({
+        org: [{ id: "target-org", name: "Target Co", workspace_status: "suspended" }],
+      }),
+    );
+
+    const res = await app.request(
+      platformRequest("POST", "/api/v1/platform/invitations", {
+        organizationId: "target-org",
+        email: "newuser@example.com",
+        role: "member",
+      }),
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("workspace_inactive");
   });
 
   it("returns 409 when the user is already a member of the target org", async () => {
@@ -386,5 +432,114 @@ describe("POST /api/v1/platform/invitations", () => {
       }),
     );
     expect(res.status).toBe(404);
+  });
+
+  it("returns 400 when role is not in the allow-list (typo)", async () => {
+    mocks.mockInternalQuery.mockImplementation(defaultQueryHandler());
+
+    const res = await app.request(
+      platformRequest("POST", "/api/v1/platform/invitations", {
+        organizationId: "target-org",
+        email: "newuser@example.com",
+        role: "owenr",
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("bad_request");
+    expect(body.message).toMatch(/Invalid role.*owenr/);
+  });
+
+  it("returns 429 invitation_limit when pending invitations hit the cap", async () => {
+    mocks.mockInternalQuery.mockImplementation(
+      defaultQueryHandler({ pendingCount: 100 }),
+    );
+
+    const res = await app.request(
+      platformRequest("POST", "/api/v1/platform/invitations", {
+        organizationId: "target-org",
+        email: "newuser@example.com",
+        role: "member",
+      }),
+    );
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("invitation_limit");
+  });
+
+  it("resolves inviterId to a target-org member (not the platform admin)", async () => {
+    // The audit row still records the real platform admin
+    // (`user.id` = "platform-admin-1") in metadata.inviter, but the
+    // invitation.inviterId column must be a target-org member so
+    // Better Auth's accept-page lookup succeeds.
+    mocks.setPlatformAdmin("org-test");
+    mocks.mockInternalQuery.mockImplementation(
+      defaultQueryHandler({
+        inviterMembers: [{ id: "mbr-1", userId: "target-org-owner", role: "owner" }],
+      }),
+    );
+
+    const res = await app.request(
+      platformRequest("POST", "/api/v1/platform/invitations", {
+        organizationId: "target-org",
+        email: "newuser@example.com",
+        role: "member",
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as InvitationResponse;
+    expect(body.inviterId).toBe("target-org-owner");
+
+    // Audit still attributes to the real platform admin.
+    const auditCall = mockLogAdminAction.mock.calls.at(-1)?.[0] as
+      | { metadata?: { orgId?: string } }
+      | undefined;
+    expect(auditCall?.metadata?.orgId).toBe("target-org");
+  });
+
+  it("returns 409 no_members when target org has no members", async () => {
+    mocks.mockInternalQuery.mockImplementation(
+      defaultQueryHandler({ inviterMembers: [] }),
+    );
+
+    const res = await app.request(
+      platformRequest("POST", "/api/v1/platform/invitations", {
+        organizationId: "target-org",
+        email: "newuser@example.com",
+        role: "member",
+      }),
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("no_members");
+  });
+
+  it("rolls back the invitation row when email dispatch fails", async () => {
+    const deletedIds: unknown[] = [];
+    mocks.mockInternalQuery.mockImplementation(
+      defaultQueryHandler({
+        onDelete: (id) => deletedIds.push(id),
+      }),
+    );
+    mockSendEmail.mockImplementationOnce(async () => ({
+      success: false as const,
+      provider: "mock",
+      error: "smtp down",
+    }) as unknown as Awaited<ReturnType<typeof mockSendEmail>>);
+
+    const res = await app.request(
+      platformRequest("POST", "/api/v1/platform/invitations", {
+        organizationId: "target-org",
+        email: "newuser@example.com",
+        role: "member",
+      }),
+    );
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("email_failed");
+    // Rollback DELETE was issued exactly once, for the just-inserted id.
+    expect(deletedIds.length).toBe(1);
+    expect(typeof deletedIds[0]).toBe("string");
+    expect((deletedIds[0] as string).length).toBe(32);
   });
 });

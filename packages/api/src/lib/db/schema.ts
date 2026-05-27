@@ -382,9 +382,9 @@ export const tokenUsage = pgTable(
   ],
 );
 
-// Legacy `invitations` (plural) table dropped by 0104. Org invitations
-// flow through Better Auth's `invitation` (singular) table now — owned
-// by the org plugin in `lib/auth/server.ts`.
+// Legacy `invitations` (plural) table has been dropped. Org invitations
+// live in Better Auth's `invitation` (singular) table owned by the org
+// plugin in `lib/auth/server.ts`.
 
 // ---------------------------------------------------------------------------
 // Plugin & application settings

@@ -19,12 +19,7 @@ export interface User {
   createdAt: string;
 }
 
-/**
- * Pending org invitation as returned by Better Auth's `listInvitations`.
- * Camel-case fields mirror the org plugin's row shape — the legacy
- * snake_case `invitations` (plural) table was dropped in 0104, and the
- * web client no longer normalizes between shapes.
- */
+/** Pending org invitation row (mirrors Better Auth's `listInvitations` shape). */
 export interface Invitation {
   id: string;
   organizationId: string;

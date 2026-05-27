@@ -1192,9 +1192,27 @@ export function resolveRefreshTokenTtlSeconds(env: NodeJS.ProcessEnv): number {
  */
 /**
  * Best-effort workspace-branding lookup for the invitation email. Returns
+/**
+ * Distinguish "Postgres is unreachable" from "we made a coding mistake."
+ * The seat-limit gate fails open only on the former — a bad SQL or a
+ * malformed `checkResourceLimit` response must escalate to 500 so it
+ * surfaces in dashboards instead of silently leaking seats.
+ *
+ * @internal — exported for unit tests.
+ */
+export function isTransportError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as Error & { code?: string }).code;
+  if (code && /^(ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EPIPE|EHOSTUNREACH|57P01|57P02|57P03|08\d{3})$/i.test(code)) {
+    return true;
+  }
+  return /connection terminated|pool ended|client has already been released|connection.*closed|connect ETIMEDOUT/i.test(err.message);
+}
+
+/**
  * the `WorkspaceBrandingPublic` shape `renderInvitationEmail` expects, or
- * null if no row exists or the DB is unavailable. Throws are left to the
- * caller (only the email-send path uses this and it logs + falls back).
+ * null if no row exists or the DB is unavailable. Throws on DB errors —
+ * callers must catch and fall back.
  */
 async function loadInviteBranding(orgId: string): Promise<{
   logoUrl: string | null;
@@ -1224,6 +1242,24 @@ async function loadInviteBranding(orgId: string): Promise<{
     faviconUrl: r.favicon_url,
     hideAtlasBranding: r.hide_atlas_branding,
   };
+}
+
+/**
+ * Defense-in-depth role gate for invitations. Normalizes single-string AND
+ * array role inputs and rejects any `platform_admin` value. Exported so
+ * the role-gate is testable without instantiating Better Auth.
+ *
+ * Throws `APIError("BAD_REQUEST")` on rejection.
+ */
+export function assertInvitationRoleAllowed(role: unknown): void {
+  const rawRoles = Array.isArray(role) ? role : [role];
+  const roles = rawRoles.map((r) => String(r ?? "").trim().toLowerCase());
+  if (roles.includes("platform_admin")) {
+    throw new APIError("BAD_REQUEST", {
+      message:
+        "Invitations cannot grant platform_admin. Use the platform-admin grant flow.",
+    });
+  }
 }
 
 /** @internal — exported for wiring assertions in tests. */
@@ -1256,18 +1292,12 @@ export function buildPlugins() {
           await promoteOrgOwnerToAdmin(args);
           await assignSaasTrial(args);
         },
-        // F-10 (#1752): defense-in-depth role gate. Better Auth's schema
-        // already restricts `role` to the configured roles map above, but
-        // a malicious payload could still ship `platform_admin` — fail
-        // loud rather than silently downcast.
+        // Defense-in-depth role gate. Better Auth's schema already restricts
+        // `role` to the configured roles map above, but a malicious payload
+        // could still ship `platform_admin` (single string or inside an
+        // array role) — fail loud rather than silently downcast.
         beforeCreateInvitation: async ({ invitation, organization: org }) => {
-          const role = String(invitation.role ?? "").trim().toLowerCase();
-          if (role === "platform_admin") {
-            throw new APIError("BAD_REQUEST", {
-              message:
-                "Invitations cannot grant platform_admin. Use the platform-admin grant flow.",
-            });
-          }
+          assertInvitationRoleAllowed(invitation.role);
 
           // Seat-limit gate. Counts current members + previously-pending
           // invitations and compares against the plan cap before this row
@@ -1290,24 +1320,41 @@ export function buildPlugins() {
             }
           } catch (err) {
             if (err instanceof APIError) throw err;
-            // DB outage or pool init failure — fail-open so a billing-edge
-            // hiccup doesn't block a legitimate operator. The audit row
-            // emitted in `afterCreateInvitation` still records the action.
-            log.warn(
+            // Narrowly fail-open on transport-level outages so a Postgres
+            // restart doesn't block legitimate invites. Programmer errors
+            // (bad SQL, malformed checkResourceLimit response) escalate to
+            // 500 so they surface in dashboards instead of silently leaking
+            // seats.
+            if (isTransportError(err)) {
+              log.error(
+                { orgId: org.id, err: errorMessage(err) },
+                "Seat-limit check failed on transport error — allowing invitation",
+              );
+              return;
+            }
+            log.error(
               { orgId: org.id, err: errorMessage(err) },
-              "Seat-limit check failed — allowing invitation",
+              "Seat-limit check threw unexpectedly",
             );
+            throw new APIError("INTERNAL_SERVER_ERROR", {
+              message: "Could not verify seat limit. Please retry.",
+            });
           }
         },
         afterCreateInvitation: async ({ invitation, inviter, organization: org }) => {
           // Better Auth hooks fire inside the `/api/auth/*` HTTP handler,
           // where Atlas's logger AsyncLocalStorage is not bound. Synthesize
           // a transient context so `logAdminAction` resolves a real actor
-          // instead of "unknown".
+          // instead of "unknown". Email may be empty for passkey-only
+          // accounts and certain social-provider edge cases (Apple private
+          // relay, GitHub `noreply.github.com` redaction) — fall back to a
+          // user-id label so `createAtlasUser`'s non-empty-label check
+          // doesn't throw out of the hook after the invitation row is
+          // already persisted.
           const inviterUser = createAtlasUser(
             inviter.user.id,
             "managed",
-            inviter.user.email,
+            inviter.user.email || `user:${inviter.user.id}`,
             { activeOrganizationId: org.id },
           );
           withRequestContext(
@@ -1326,28 +1373,29 @@ export function buildPlugins() {
             },
           );
 
-          // Trigger onboarding milestone for the inviter (preserved from
-          // the pre-hook implementation — fires the "invite team" nudge
-          // off their to-do list).
+          // Fire the "invite team" nudge off the inviter's onboarding
+          // to-do list. Awaited so an async hook update can't escape as
+          // an unhandled rejection.
           try {
             const { onTeamMemberInvited } = await import("@atlas/api/lib/email/hooks");
-            onTeamMemberInvited({
+            await onTeamMemberInvited({
               userId: inviter.user.id,
               email: inviter.user.email,
               orgId: org.id,
             });
           } catch (err) {
-            log.debug(
-              { err: errorMessage(err) },
-              "Onboarding hook not available — non-blocking",
+            log.warn(
+              { err: errorMessage(err), inviterId: inviter.user.id, orgId: org.id },
+              "Onboarding milestone trigger failed — invite still created, nudge may persist",
             );
           }
         },
         afterCancelInvitation: async ({ invitation, cancelledBy, organization: org }) => {
+          // AsyncLocalStorage not bound here — see afterCreateInvitation.
           const actor = createAtlasUser(
             cancelledBy.user.id,
             "managed",
-            cancelledBy.user.email,
+            cancelledBy.user.email || `user:${cancelledBy.user.id}`,
             { activeOrganizationId: org.id },
           );
           withRequestContext(
@@ -1376,15 +1424,16 @@ export function buildPlugins() {
         const acceptUrl = `${baseUrl}/accept-invitation/${data.id}`;
 
         // Best-effort branding lookup so the invite email matches the
-        // workspace's white-label. Falls back to Atlas defaults on any
-        // DB hiccup.
+        // workspace's white-label. `log.warn` (not debug) because silent
+        // unbranded delivery defeats the white-label feature an enterprise
+        // customer is paying for — operators should see this in dashboards.
         let branding: Awaited<ReturnType<typeof loadInviteBranding>> = null;
         try {
           branding = await loadInviteBranding(data.organization.id);
         } catch (err) {
-          log.debug(
+          log.warn(
             { err: errorMessage(err), orgId: data.organization.id },
-            "Invite branding lookup failed — using defaults",
+            "Invite branding lookup failed — falling back to Atlas defaults",
           );
         }
 
@@ -1400,24 +1449,18 @@ export function buildPlugins() {
           branding,
         });
 
+        // Throw on send failure so Better Auth's invitation transaction
+        // rolls back the row. Persisting an invitation while telling the
+        // admin "An email is on its way" is a silent half-success — the
+        // recipient never gets the email, the admin assumes they're being
+        // slow, and a dead row lingers in the pending list.
+        let result: Awaited<ReturnType<typeof import("@atlas/api/lib/email/delivery").sendEmail>>;
         try {
           const { sendEmail } = await import("@atlas/api/lib/email/delivery");
-          const result = await sendEmail(
+          result = await sendEmail(
             { to: data.email, subject, html },
             data.organization.id,
           );
-          if (!result.success) {
-            log.error(
-              {
-                email: data.email,
-                orgName: data.organization.name,
-                invitationId: data.id,
-                provider: result.provider,
-                err: result.error,
-              },
-              "Invitation email failed to send",
-            );
-          }
         } catch (err) {
           log.error(
             {
@@ -1426,8 +1469,28 @@ export function buildPlugins() {
               invitationId: data.id,
               err: errorMessage(err),
             },
-            "Invitation email threw",
+            "Invitation email dispatch threw",
           );
+          throw new APIError("INTERNAL_SERVER_ERROR", {
+            message: "Could not send invitation email — check email-provider config and retry.",
+          });
+        }
+        if (!result.success) {
+          log.error(
+            {
+              email: data.email,
+              orgName: data.organization.name,
+              invitationId: data.id,
+              provider: result.provider,
+              err: result.error,
+            },
+            "Invitation email failed to send",
+          );
+          throw new APIError("INTERNAL_SERVER_ERROR", {
+            message: result.error
+              ? `Could not send invitation email: ${result.error}`
+              : "Could not send invitation email — check email-provider config and retry.",
+          });
         }
       },
     }),

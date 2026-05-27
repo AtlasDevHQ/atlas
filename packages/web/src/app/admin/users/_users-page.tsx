@@ -498,7 +498,7 @@ export function UsersPage({ scope }: UsersPageProps) {
     try {
       const result = await authClient.organization.cancelInvitation({ invitationId: id });
       if (result.error) {
-        setRevokeError(result.error.message);
+        setRevokeError(result.error.message ?? "Failed to revoke invitation.");
         return false;
       }
       setInvitationsVersion((v) => v + 1);

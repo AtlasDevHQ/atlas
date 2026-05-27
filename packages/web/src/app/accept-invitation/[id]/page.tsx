@@ -1,30 +1,14 @@
 "use client";
 
 /**
- * Accept-invitation landing page — the destination of the email link
- * Better Auth's `sendInvitationEmail` callback dispatches.
- *
- * Three states, switched by the session and the result of
- * `authClient.organization.getInvitation`:
- *
- *   1. Unauthenticated      → "Sign in or create an account to continue."
- *      The two CTAs preserve `?invitationId=…` so the post-auth handlers
- *      on /login and /signup route back here.
- *
- *   2. Authenticated as the right user → "Join {orgName} as {role}." The
- *      accept button calls `acceptInvitation`, sets the new org active,
- *      and routes to /.
- *
- *   3. Authenticated as someone else → "Signed in as the wrong account."
- *      Better Auth's `getInvitation` returns 403 `you are not the
- *      recipient`; the panel offers Sign out + retry.
- *
- * Email verification (`requireEmailVerificationOnInvitation: true` in the
- * org plugin config) is enforced on the server. If the session user
- * hasn't verified their email, `acceptInvitation` returns 403 with
- * `EMAIL_VERIFICATION_REQUIRED_BEFORE_ACCEPTING_OR_REJECTING_INVITATION`
- * — we surface that as a recovery prompt that points back to /signup
- * (the only place where OTP verification is wired today).
+ * Destination of the invitation email link. Renders one of: loading,
+ * unauthenticated, ready, wrong-account, email-unverified, error —
+ * driven by the session and the result of
+ * `authClient.organization.getInvitation`. The email-unverified branch
+ * is reached when `acceptInvitation` returns 403
+ * `EMAIL_VERIFICATION_REQUIRED_BEFORE_ACCEPTING_OR_REJECTING_INVITATION`,
+ * and recovers by routing back to /login where the verify-email OTP
+ * form is wired.
  */
 
 import { useEffect, useState, use } from "react";
@@ -72,12 +56,12 @@ export default function AcceptInvitationPage({ params }: PageProps) {
         const result = await authClient.organization.getInvitation({ query: { id: invitationId } });
         if (cancelled) return;
         if (result.error) {
-          // Better Auth returns 403 with code YOU_ARE_NOT_THE_RECIPIENT when
-          // the session email differs from the invitation email. Distinguish
-          // that from "invitation expired / not found" so the recovery UI
-          // can branch.
+          // Branch on Better Auth's structured error code so a future
+          // English-copy change can't silently downgrade the wrong-account
+          // recovery UI to a generic error.
+          const code = result.error.code ?? "";
           const msg = result.error.message ?? "";
-          if (msg.toLowerCase().includes("recipient")) {
+          if (code === "YOU_ARE_NOT_THE_RECIPIENT_OF_THE_INVITATION") {
             setState({
               kind: "wrong-account",
               signedInAs: session.data?.user.email ?? "your current account",
@@ -95,6 +79,10 @@ export default function AcceptInvitationPage({ params }: PageProps) {
         setState({ kind: "ready", invitation: result.data });
       } catch (err) {
         if (!cancelled) {
+          console.warn(
+            "[accept-invitation] getInvitation failed:",
+            err instanceof Error ? err.message : String(err),
+          );
           setState({
             kind: "error",
             message: err instanceof Error ? err.message : "Failed to load invitation.",
@@ -112,18 +100,26 @@ export default function AcceptInvitationPage({ params }: PageProps) {
     try {
       const result = await authClient.organization.acceptInvitation({ invitationId });
       if (result.error) {
-        const msg = result.error.message ?? "";
-        if (msg.toLowerCase().includes("email verification") || msg.toLowerCase().includes("verify")) {
+        const code = result.error.code ?? "";
+        if (code === "EMAIL_VERIFICATION_REQUIRED_BEFORE_ACCEPTING_OR_REJECTING_INVITATION") {
           setState({ kind: "email-unverified" });
           return;
         }
-        setAcceptError(msg || "Failed to accept invitation.");
+        setAcceptError(result.error.message || "Failed to accept invitation.");
         return;
       }
       if (result.data?.member?.organizationId) {
         // Pin the new workspace as active so the user lands inside it.
-        await authClient.organization.setActive({ organizationId: result.data.member.organizationId })
-          .catch(() => { /* non-fatal — server-side hook stamps activeOrganizationId on next session refresh */ });
+        await authClient.organization
+          .setActive({ organizationId: result.data.member.organizationId })
+          .catch((err: unknown) => {
+            // intentionally ignored at the routing level: server-side hook
+            // stamps activeOrganizationId on the next session refresh.
+            console.warn(
+              "[accept-invitation] setActive failed; relying on server-side fallback:",
+              err instanceof Error ? err.message : String(err),
+            );
+          });
       }
       router.push("/");
     } catch (err) {
@@ -136,10 +132,17 @@ export default function AcceptInvitationPage({ params }: PageProps) {
   async function handleSignOut() {
     try {
       await authClient.signOut();
+    } catch (err) {
+      // intentionally ignored: best-effort sign-out — even if the request
+      // fails, route to /login so the user can retry with the right account.
+      console.warn(
+        "[accept-invitation] signOut failed; cookies may still be set:",
+        err instanceof Error ? err.message : String(err),
+      );
     } finally {
       // Routing through window.location ensures the layout-level session
       // observer re-evaluates and the unauthenticated branch renders.
-      window.location.href = `/login?invitationId=${invitationId}`;
+      window.location.href = `/login?invitationId=${encodeURIComponent(invitationId)}`;
     }
   }
 
@@ -210,6 +213,9 @@ export default function AcceptInvitationPage({ params }: PageProps) {
   }
 
   if (state.kind === "email-unverified") {
+    // Route back through /login: signing in again triggers an OTP send
+    // via `sendOnSignIn: true`, which lands the user on the verify-email
+    // form (the only OTP UI currently wired in the web client).
     return (
       <Card>
         <CardHeader className="space-y-3 text-center">
@@ -218,12 +224,16 @@ export default function AcceptInvitationPage({ params }: PageProps) {
           </div>
           <CardTitle className="text-2xl tracking-tight">Verify your email first</CardTitle>
           <CardDescription>
-            You need to verify your email before you can join a workspace. Check your inbox for the verification code, or request a new one from your account settings.
+            You need to verify your email before you can join a workspace. Sign in again to request a verification code.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Button className="w-full" onClick={() => router.push("/settings/profile")}>
-            Go to account settings
+          <Button
+            className="w-full"
+            onClick={handleSignOut}
+          >
+            <LogOut className="mr-2 size-4" />
+            Sign out and verify
           </Button>
         </CardContent>
       </Card>

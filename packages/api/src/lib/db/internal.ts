@@ -2158,7 +2158,7 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     // live in `workspace_plugins` (pillar='datasource') and are wiped
     // alongside other installs in Phase 3 below.
     const tokenUsage = await del(`DELETE FROM token_usage WHERE org_id = $1`);
-    // `invitations` (plural, legacy) table dropped by 0104. Better Auth's
+    // Legacy `invitations` (plural) table has been dropped. Better Auth's
     // `invitation` (singular) table cascades via the foreign-key drop
     // when `DELETE FROM organization` fires below — no explicit DELETE needed.
     const pluginSettings = await del(`DELETE FROM plugin_settings WHERE org_id = $1`);

@@ -34,6 +34,15 @@ import {
   organizationClient,
   twoFactorClient,
 } from "better-auth/client/plugins";
+// Reuse the org plugin's own type exports rather than hand-rolling shapes
+// — keeps OrgInvitation in lockstep with Better Auth's row schema.
+import type { InvitationStatus } from "better-auth/plugins/organization";
+
+// Better Auth's org-plugin error code keys. The runtime const
+// `ORGANIZATION_ERROR_CODES` is not re-exported from the plugin's public
+// surface (lives under `dist/plugins/organization/error-codes.mjs`), so
+// mirror just the codes we branch on here. A typo in a consumer is caught
+// at compile time via the `OrgErrorCode` union below.
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { ac, owner, admin, member } from "./org-permissions";
 import { adminAccessControl, adminRole, platformAdminRole } from "./admin-permissions";
@@ -95,17 +104,37 @@ const _authClient = createAuthClient({
 // `TypeError` at click time. Wire shapes (`AuthApiResult`, `Passkey`,
 // `PasskeySignIn`) live in `./wire-types` so the helpers and this boundary
 // reference identical types.
-type OrgResult<T> = { data: T | null; error: { message: string } | null };
+//
+// `code` on `OrgResult.error` carries Better Auth's structured error code
+// so callers branch on a stable enum instead of substring-matching
+// localized English copy. `OrgErrorCode | string` keeps unknown codes
+// flowing through without a cast (future BA additions).
+export type OrgErrorCode =
+  | "YOU_ARE_NOT_THE_RECIPIENT_OF_THE_INVITATION"
+  | "EMAIL_VERIFICATION_REQUIRED_BEFORE_ACCEPTING_OR_REJECTING_INVITATION"
+  | "INVITATION_NOT_FOUND"
+  | "USER_IS_ALREADY_A_MEMBER_OF_THIS_ORGANIZATION"
+  | "INVITER_IS_NO_LONGER_A_MEMBER_OF_THE_ORGANIZATION";
+export type OrgResult<T> = {
+  data: T | null;
+  error: { message: string; code?: OrgErrorCode | string; status?: number } | null;
+};
 
-// Better Auth org plugin's invitation row shape (mirror of
-// `invitationTableFields` in the upstream docs). The plugin returns this
-// from `inviteMember`, `cancelInvitation`, and the list endpoints.
+// Re-export Better Auth's status union so consumers have one import site.
+// Adding a new state in BA becomes a TS error at every consumer that
+// switches on it.
+export type { InvitationStatus } from "better-auth/plugins/organization";
+
+// Better Auth's exported `Invitation` carries `Date` for timestamps; over
+// JSON those serialize as ISO strings. Keep the shape aligned with BA but
+// widen date fields to `string` to match what the client actually
+// receives.
 export interface OrgInvitation {
   id: string;
   organizationId: string;
   email: string;
   role: string;
-  status: "pending" | "accepted" | "rejected" | "canceled";
+  status: InvitationStatus;
   inviterId: string;
   expiresAt: string;
   createdAt: string;
@@ -155,12 +184,8 @@ type OrgClient = Omit<typeof _authClient, "useSession"> & {
     create: (opts: { name: string; slug: string; logo?: string }) => Promise<OrgResult<{ id: string }>>;
     list: () => Promise<OrgResult<{ id: string; name: string; slug: string; logo?: string | null }[]>>;
     setActive: (opts: { organizationId: string }) => Promise<OrgResult<Record<string, unknown>>>;
-    // Invitation surface — pre/post hooks live in `lib/auth/server.ts:organizationHooks`.
-    // The legacy `/api/v1/admin/users/invite*` routes were cut over to these in
-    // the better-auth-invitations refactor; both `admin:users` (workspace) and
-    // `platform:users` (platform) consume them. Better Auth enforces the
-    // `invitation:create` ACL inside the org plugin — `requirePermission` in
-    // our admin router no longer gates this path.
+    // Server hooks live in `lib/auth/server.ts:organizationHooks`. The org
+    // plugin enforces the `invitation:create` ACL.
     inviteMember: (opts: { email: string; role: string; organizationId?: string; resend?: boolean }) => Promise<OrgResult<OrgInvitation>>;
     cancelInvitation: (opts: { invitationId: string }) => Promise<OrgResult<{ id: string }>>;
     acceptInvitation: (opts: { invitationId: string }) => Promise<OrgResult<{ invitation: OrgInvitation; member: { id: string; userId: string; organizationId: string; role: string } }>>;

@@ -1,22 +1,6 @@
--- 0105_drop_legacy_invitations.sql
---
--- Cuts the org-invitation flow over to Better Auth's native
--- `/api/auth/organization/*` endpoints + the `invitation` (singular)
--- table its plugin owns. The legacy `invitations` (plural) table was
--- half-wired — `POST /api/v1/admin/users/invite` wrote rows here and
--- emailed `?invite=TOKEN` links, but no endpoint or page ever read the
--- token back. Every legacy row was unreachable; rows still in the
--- table at cutover time are by definition dead invites.
---
--- Per the cutover plan in the PR body, the legacy admin-invitations
--- route (`packages/api/src/api/routes/admin-invitations.ts`) is removed
--- in the same change set, so by the time this migration runs there are
--- no writers left and no readers ever existed. The DROP is unconditional.
---
--- CASCADE drops the four indexes attached to the table
--- (`idx_invitations_email`, `idx_invitations_token`,
--- `idx_invitations_status`, `idx_invitations_pending_email`,
--- `idx_invitations_org`). Nothing else references the table — no FKs,
--- no triggers — so CASCADE here is just future-proofing.
+-- Legacy `invitations` (plural) table — half-wired (writes only, no
+-- readers). Org invitations now live in Better Auth's `invitation`
+-- (singular) table. CASCADE drops the attached indexes; no FKs reference
+-- this table.
 
 DROP TABLE IF EXISTS invitations CASCADE;

@@ -164,7 +164,11 @@ export default function LoginPage() {
           return;
         }
         if (res.data) {
-          router.push("/");
+          router.push(
+            invitationId
+              ? `/accept-invitation/${encodeURIComponent(invitationId)}`
+              : "/",
+          );
           return;
         }
         // Better Auth's wire shape technically allows `{ data: null, error: null }`.
@@ -224,7 +228,11 @@ export default function LoginPage() {
         );
         return;
       }
-      router.push("/");
+      router.push(
+        invitationId
+          ? `/accept-invitation/${encodeURIComponent(invitationId)}`
+          : "/",
+      );
     } catch (err) {
       console.warn(
         "[passkey] sign-in threw:",
@@ -322,7 +330,11 @@ export default function LoginPage() {
           <CardContent className="space-y-4 pt-6">
             <VerifyEmailOTPForm
               email={error.attemptedEmail}
-              onVerified={() => router.push("/")}
+              onVerified={() => router.push(
+                invitationId
+                  ? `/accept-invitation/${encodeURIComponent(invitationId)}`
+                  : "/",
+              )}
             />
             <p className="text-center text-xs text-muted-foreground">
               <button

@@ -56,6 +56,7 @@ import {
   runOutboxTick,
   getTickIntervalMs as getOutboxTickIntervalMs,
   getWarnThreshold as getOutboxWarnThreshold,
+  isFlusherEnabled as isOutboxFlusherEnabled,
   OutboxWarnRateLimiter,
   FLUSH_BATCH_LIMIT as OUTBOX_FLUSH_BATCH_LIMIT,
   STARTUP_RECOVERY_STALE_MS as OUTBOX_STARTUP_STALE_MS,
@@ -1604,6 +1605,27 @@ export function makeSchedulerLive(
           }),
         );
 
+        // Region gate. EU/APAC API pods set `ATLAS_CRM_OUTBOX_FLUSHER_ENABLED=false`
+        // because the lead-capture pipeline at crm.useatlas.dev only
+        // writes to US's internal Postgres — EU/APAC `crm_outbox`
+        // tables stay permanently empty, and a 5s polling loop there
+        // burns ~17k idle UPDATE statements per region per day. The
+        // recovery sweeps above + the shutdown finalizer above stay
+        // wired regardless so a future flip-back-on inherits clean
+        // state (and a region that DOES get crm_outbox rows enqueued
+        // via some other path still mops up crash carcasses at boot).
+        // Nested-if (rather than early-return) because we're inside
+        // the outer Effect.gen that registers the scheduler finalizer
+        // below — bailing out here with `return` would skip that wiring.
+        const flusherEnabled = isOutboxFlusherEnabled();
+        if (!flusherEnabled) {
+          log.info(
+            { event: "lead_outbox.flusher_disabled_by_env" },
+            "CRM outbox flusher disabled by ATLAS_CRM_OUTBOX_FLUSHER_ENABLED=false — recovery sweeps still run on boot/shutdown",
+          );
+        }
+
+        if (flusherEnabled) {
         const outboxTickIntervalMs = getOutboxTickIntervalMs();
         // One rate limiter per Layer scope — `lastWarnAt` lives on the
         // instance, so a sustained 101+ pending depth fires exactly
@@ -1778,6 +1800,7 @@ export function makeSchedulerLive(
           },
           "CRM outbox flusher started — heartbeat=lead_outbox.heartbeat (every ~60s when idle); stall watchdog=lead_outbox.tick_stall (fires when no tick observed in > 2× interval)",
         );
+        } // close `if (flusherEnabled)`
       } else {
         log.debug(
           {

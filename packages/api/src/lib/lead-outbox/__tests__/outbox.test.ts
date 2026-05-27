@@ -39,6 +39,7 @@ const {
   computeRetryAfterTimestamp,
   enqueue,
   flushBatch,
+  isFlusherEnabled,
   recoverInFlight,
 } = await import("../outbox");
 type ClaimedOutboxRow = import("../outbox").ClaimedOutboxRow;
@@ -658,6 +659,57 @@ describe("terminal-status UPDATE retry", () => {
     const result = await flushBatch(wrappedDb, dispatcher, 10);
     expect(result.ok).toBe(1);
     expect(db.rows[0].status).toBe("done");
+  });
+});
+
+describe("isFlusherEnabled — region gate", () => {
+  const KEY = "ATLAS_CRM_OUTBOX_FLUSHER_ENABLED";
+
+  // Snapshot + restore the env around each case so the test order
+  // doesn't matter (the broader bun-test isolation also resets vars
+  // between files, but within-file we set/clear explicitly).
+  let original: string | undefined;
+  beforeEach(() => {
+    original = process.env[KEY];
+    delete process.env[KEY];
+  });
+  // Use a per-test cleanup rather than afterEach so a failure mid-test
+  // still restores the env for the rest of this describe.
+  const restore = () => {
+    if (original === undefined) delete process.env[KEY];
+    else process.env[KEY] = original;
+  };
+
+  test("default (env unset) is enabled — preserves pre-gate behavior", () => {
+    expect(isFlusherEnabled()).toBe(true);
+    restore();
+  });
+
+  test("recognized falsey strings disable", () => {
+    for (const v of ["false", "FALSE", "False", "0", "no", "NO", "off", " false "]) {
+      process.env[KEY] = v;
+      expect(isFlusherEnabled()).toBe(false);
+    }
+    restore();
+  });
+
+  test("recognized truthy strings keep enabled", () => {
+    for (const v of ["true", "TRUE", "True", "1", "yes", "on"]) {
+      process.env[KEY] = v;
+      expect(isFlusherEnabled()).toBe(true);
+    }
+    restore();
+  });
+
+  test("unrecognized values default-true (avoid silent disable on typos)", () => {
+    // An operator who types "disable" or "off-by-default" should NOT
+    // accidentally silence the flusher — the env semantic is opt-out,
+    // and only the explicit affordances above flip it off.
+    for (const v of ["disable", "0.0", "", "  ", "false-ish"]) {
+      process.env[KEY] = v;
+      expect(isFlusherEnabled()).toBe(true);
+    }
+    restore();
   });
 });
 

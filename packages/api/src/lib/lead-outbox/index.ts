@@ -9,6 +9,7 @@ export {
   recoverInFlight,
   flushBatch,
   getTickIntervalMs,
+  isFlusherEnabled,
   computeRetryAfterTimestamp,
   FLUSH_BATCH_LIMIT,
   STARTUP_RECOVERY_STALE_MS,

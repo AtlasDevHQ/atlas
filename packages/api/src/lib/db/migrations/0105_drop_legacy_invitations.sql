@@ -1,4 +1,4 @@
--- 0104_drop_legacy_invitations.sql
+-- 0105_drop_legacy_invitations.sql
 --
 -- Cuts the org-invitation flow over to Better Auth's native
 -- `/api/auth/organization/*` endpoints + the `invitation` (singular)

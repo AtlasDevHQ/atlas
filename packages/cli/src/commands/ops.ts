@@ -18,6 +18,7 @@
  */
 import {
   runBackfill,
+  resolveOperatorWorkspaceIdForBackfill,
   DEFAULT_BATCH_SIZE,
   BACKFILL_SOURCES,
   type BackfillSource,
@@ -221,11 +222,14 @@ async function handleBackfillCrmLeads(args: string[]): Promise<void> {
   const client = new Client({ connectionString: url });
   await client.connect();
   try {
+    const backfillDb = client as unknown as Parameters<typeof runBackfill>[0]["db"];
+    const workspaceId = await resolveOperatorWorkspaceIdForBackfill(backfillDb);
     const stats = await runBackfill({
-      db: client as unknown as Parameters<typeof runBackfill>[0]["db"],
+      db: backfillDb,
       dryRun,
       batchSize,
       source,
+      workspaceId,
     });
     if (dryRun && stats.sample.length > 0) {
       console.log(

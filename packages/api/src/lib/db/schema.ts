@@ -2234,6 +2234,14 @@ export const crmOutbox = pgTable(
     // simultaneously. Nullable for legacy / non-email-keyed event
     // types — those rows fall back to per-id deduplication.
     emailKey: text("email_key"),
+    // Tenant attribution for per-row dispatch routing (0106, #2849).
+    // SaaS lead-capture (Atlas's own pipeline) carries the resolved
+    // operator workspace id; a future per-tenant plugin enqueue path
+    // lands a customer workspace id. NOT NULL with DEFAULT to the
+    // operator sentinel so the migration backfills atomically and
+    // raw-INSERT fixtures don't have to thread workspace_id through.
+    // See migration 0106 for the fallback rationale.
+    workspaceId: text("workspace_id").notNull().default("<atlas-operator>"),
     status: text("status").$type<OutboxStatus>().notNull().default("pending"),
     attempts: integer("attempts").notNull().default(0),
     lastError: text("last_error"),
@@ -2257,6 +2265,9 @@ export const crmOutbox = pgTable(
       .where(sql`status IN ('pending', 'in_flight')`),
     index("idx_crm_outbox_email_key_active")
       .on(t.emailKey, t.status, t.createdAt)
+      .where(sql`status IN ('pending', 'in_flight')`),
+    index("idx_crm_outbox_workspace_status_created")
+      .on(t.workspaceId, t.status, t.createdAt)
       .where(sql`status IN ('pending', 'in_flight')`),
   ],
 );

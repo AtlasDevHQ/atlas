@@ -71,6 +71,15 @@ describeIfPg("backfill-crm-leads (real Postgres)", () => {
   const db = (): Parameters<typeof runBackfill>[0]["db"] =>
     pool as unknown as Parameters<typeof runBackfill>[0]["db"];
 
+  /** Default workspace_id stamped on every backfilled row (#2849).
+   *  The runtime resolver looks up `is_operator_workspace = true` from
+   *  `organization`; this suite runs against a non-managed-auth schema
+   *  (no `organization` table) so we pass the value explicitly. The
+   *  column DEFAULT in migration 0106 would catch raw-INSERT paths,
+   *  but `runBackfill`'s shape is non-optional, so the test threads
+   *  it through. */
+  const TEST_OPERATOR_WORKSPACE_ID = "ws-test-operator";
+
   describe("dry-run path", () => {
     it("reports total row count and a normalized sample without writing", async () => {
       // Seed three rows with distinct emails. Three is enough to exercise
@@ -90,6 +99,7 @@ describeIfPg("backfill-crm-leads (real Postgres)", () => {
         dryRun: true,
         batchSize: DEFAULT_BATCH_SIZE,
         source: "demo",
+        workspaceId: TEST_OPERATOR_WORKSPACE_ID,
         log: (m) => logs.push(m),
       });
 
@@ -131,6 +141,7 @@ describeIfPg("backfill-crm-leads (real Postgres)", () => {
         dryRun: true,
         batchSize: DEFAULT_BATCH_SIZE,
         source: "demo",
+        workspaceId: TEST_OPERATOR_WORKSPACE_ID,
         log: () => {},
       });
 
@@ -144,6 +155,7 @@ describeIfPg("backfill-crm-leads (real Postgres)", () => {
         dryRun: false,
         batchSize: DEFAULT_BATCH_SIZE,
         source: "demo",
+        workspaceId: TEST_OPERATOR_WORKSPACE_ID,
         log: () => {},
       });
       expect(stats).toEqual({ totalRows: 0, enqueued: 0, batches: 0, sample: [] });
@@ -171,6 +183,7 @@ describeIfPg("backfill-crm-leads (real Postgres)", () => {
         dryRun: false,
         batchSize: 500,
         source: "demo",
+        workspaceId: TEST_OPERATOR_WORKSPACE_ID,
         log: (m) => logs.push(m),
       });
 
@@ -224,6 +237,7 @@ describeIfPg("backfill-crm-leads (real Postgres)", () => {
         dryRun: false,
         batchSize: DEFAULT_BATCH_SIZE,
         source: "demo",
+        workspaceId: TEST_OPERATOR_WORKSPACE_ID,
         log: () => {},
       });
 
@@ -258,6 +272,7 @@ describeIfPg("backfill-crm-leads (real Postgres)", () => {
           dryRun: true,
           batchSize: 0,
           source: "demo",
+          workspaceId: TEST_OPERATOR_WORKSPACE_ID,
           log: () => {},
         }),
       ).rejects.toThrow(/batchSize/);
@@ -275,6 +290,7 @@ describeIfPg("backfill-crm-leads (real Postgres)", () => {
         dryRun: false,
         batchSize: 500,
         source: "demo",
+        workspaceId: TEST_OPERATOR_WORKSPACE_ID,
         log: () => {},
       });
       expect(stats).toMatchObject({ totalRows: 1, enqueued: 1, batches: 1 });
@@ -305,6 +321,7 @@ describeIfPg("backfill-crm-leads (real Postgres)", () => {
           dryRun: false,
           batchSize: 500,
           source: "demo",
+          workspaceId: TEST_OPERATOR_WORKSPACE_ID,
           log: () => {},
         }),
       ).rejects.toThrow(/ON CONFLICT/);

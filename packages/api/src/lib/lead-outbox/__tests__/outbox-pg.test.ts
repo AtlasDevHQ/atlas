@@ -23,6 +23,31 @@ import {
   type OutboxDispatcher,
 } from "../outbox";
 
+/**
+ * Default workspace_id stamped on test fixtures (#2849). The PG-side
+ * column has DEFAULT '<atlas-operator>', but the application
+ * `enqueue()` rejects an empty workspaceId, so callers must pass
+ * something. This constant is the test-only stand-in for the runtime
+ * SaaS operator id.
+ */
+const TEST_WORKSPACE_ID = "ws-test";
+
+/**
+ * Wrapper around `enqueue` that defaults `workspaceId`. Mirrors the
+ * helper in `outbox.test.ts` so the two test files stay structurally
+ * aligned.
+ */
+async function enq(
+  db: OutboxDB,
+  args: { eventType: string; payload: Record<string, unknown>; workspaceId?: string },
+): Promise<string> {
+  return enqueue(db, {
+    eventType: args.eventType,
+    payload: args.payload,
+    workspaceId: args.workspaceId ?? TEST_WORKSPACE_ID,
+  });
+}
+
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
 
@@ -72,7 +97,7 @@ describeIfPg("lead-outbox (real Postgres)", () => {
     async () => {
       await truncateOutbox();
       const db = dbFor();
-      const id = await enqueue(db, {
+      const id = await enq(db, {
         eventType: "demo",
         payload: { source: "demo", email: "ok@happy.test" },
       });
@@ -102,7 +127,7 @@ describeIfPg("lead-outbox (real Postgres)", () => {
     async () => {
       await truncateOutbox();
       const db = dbFor();
-      const id = await enqueue(db, {
+      const id = await enq(db, {
         eventType: "demo",
         payload: { source: "demo", email: "401@dead.test" },
       });
@@ -129,7 +154,7 @@ describeIfPg("lead-outbox (real Postgres)", () => {
     async () => {
       await truncateOutbox();
       const db = dbFor();
-      const id = await enqueue(db, {
+      const id = await enq(db, {
         eventType: "demo",
         payload: { source: "demo", email: "503@retry.test" },
       });
@@ -242,7 +267,7 @@ describeIfPg("lead-outbox (real Postgres)", () => {
     async () => {
       await truncateOutbox();
       const db = dbFor();
-      const id = await enqueue(db, {
+      const id = await enq(db, {
         eventType: "demo",
         payload: { source: "demo", email: "stranded@recover.test" },
       });
@@ -327,7 +352,7 @@ describeIfPg("lead-outbox (real Postgres)", () => {
     async () => {
       await truncateOutbox();
       const db = dbFor();
-      await enqueue(db, {
+      await enq(db, {
         eventType: "demo",
         payload: { source: "demo", email: "race@test" },
       });
@@ -400,7 +425,7 @@ describeIfPg("lead-outbox (real Postgres)", () => {
     async () => {
       await truncateOutbox();
       const db = dbFor();
-      await enqueue(db, {
+      await enq(db, {
         eventType: "demo",
         payload: { source: "demo", email: "retry-after@test" },
       });
@@ -515,11 +540,11 @@ describeIfPg("lead-outbox (real Postgres)", () => {
       await truncateOutbox();
       const db = dbFor();
 
-      const demoId = await enqueue(db, {
+      const demoId = await enq(db, {
         eventType: "demo",
         payload: { source: "demo", email: "gworth@globexcorp.com", ip: "203.0.113.30" },
       });
-      const signupId = await enqueue(db, {
+      const signupId = await enq(db, {
         eventType: "signup",
         payload: { source: "signup", email: "gworth@globexcorp.com", name: "Greta Worth" },
       });
@@ -582,7 +607,7 @@ describeIfPg("lead-outbox (real Postgres)", () => {
         ],
       );
       // Newer pending row for the same email.
-      await enqueue(db, {
+      await enq(db, {
         eventType: "signup",
         payload: { source: "signup", email: "stuck@example.test", name: "Stuck User" },
       });
@@ -607,10 +632,10 @@ describeIfPg("lead-outbox (real Postgres)", () => {
       const db = dbFor();
 
       // Four distinct emails — all should claim in one tick.
-      await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a1@example.test" } });
-      await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a2@example.test" } });
-      await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a3@example.test" } });
-      await enqueue(db, { eventType: "demo", payload: { source: "demo", email: "a4@example.test" } });
+      await enq(db, { eventType: "demo", payload: { source: "demo", email: "a1@example.test" } });
+      await enq(db, { eventType: "demo", payload: { source: "demo", email: "a2@example.test" } });
+      await enq(db, { eventType: "demo", payload: { source: "demo", email: "a3@example.test" } });
+      await enq(db, { eventType: "demo", payload: { source: "demo", email: "a4@example.test" } });
 
       const dispatcher: OutboxDispatcher = async () => ({ kind: "ok" });
       const result = await flushBatch(db, dispatcher, 50);
@@ -723,7 +748,7 @@ describeIfPg("lead-outbox (real Postgres)", () => {
       );
       // R2: signup, newer, fresh — would dispatch first under the
       // pre-fix gate that only excluded `in_flight` siblings.
-      const signupId = await enqueue(db, {
+      const signupId = await enq(db, {
         eventType: "signup",
         payload: { source: "signup", email: "cooldown@leapfrog.test", name: "Late Arrival" },
       });

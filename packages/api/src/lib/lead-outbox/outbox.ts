@@ -70,6 +70,20 @@ export interface EnqueueInput {
   readonly eventType: string;
   /** Opaque payload the dispatcher knows how to interpret. */
   readonly payload: Record<string, unknown>;
+  /**
+   * Tenant attribution for per-row dispatch routing (#2849).
+   *
+   * The dispatcher in `ee/src/saas-crm/` reads this to decide which
+   * Twenty instance receives the row: rows tagged with the resolved
+   * operator workspace id (the SaaS lead-capture pipeline path) use
+   * Atlas's `TWENTY_API_KEY` env creds; rows tagged with a customer
+   * workspace id consult `twenty_integrations` for that workspace's
+   * per-tenant credentials. The required-not-empty shape (rejected at
+   * enqueue) prevents the silent "NULL workspace_id → dispatch wherever
+   * the boot config points" trap that the old `findLatestTwentyDb`
+   * helper enabled before #2850.
+   */
+  readonly workspaceId: string;
 }
 
 /**
@@ -84,6 +98,12 @@ export interface ClaimedOutboxRow {
   readonly eventType: string;
   readonly payload: unknown;
   readonly attempts: number;
+  /**
+   * Tenant attribution for per-row dispatch routing (#2849). The
+   * dispatcher branches on this to pick env creds (operator workspace)
+   * vs `twenty_integrations` row (per-tenant workspace).
+   */
+  readonly workspaceId: string;
   // TODO(#2729-followup): rename to a generic `resourceIds` record if a
   // second SaaS CRM ever ships — the Twenty-specific naming leaks
   // vendor specifics into the otherwise-generic outbox surface.
@@ -156,8 +176,8 @@ export interface FlushResult {
 // ─────────────────────────────────────────────────────────────────────
 
 const ENQUEUE_SQL = `
-  INSERT INTO crm_outbox (event_type, payload, email_key, status)
-  VALUES ($1, $2::jsonb, $3, 'pending')
+  INSERT INTO crm_outbox (event_type, payload, email_key, workspace_id, status)
+  VALUES ($1, $2::jsonb, $3, $4, 'pending')
   RETURNING id
 `;
 
@@ -269,7 +289,7 @@ const CLAIM_SQL = `
     )
     SELECT id FROM deduped ORDER BY created_at, id LIMIT $1
   )
-  RETURNING id, event_type, payload, attempts, twenty_person_id, twenty_note_id
+  RETURNING id, event_type, payload, attempts, workspace_id, twenty_person_id, twenty_note_id
 `;
 
 const PERSIST_PERSON_ID_SQL = `
@@ -404,6 +424,19 @@ export async function enqueue(
   db: OutboxDB,
   input: EnqueueInput,
 ): Promise<string> {
+  // Fail loud on an empty workspace_id. The migration enforces NOT NULL
+  // at the column level (0106), but Postgres' empty-string-vs-NULL
+  // distinction would let `""` through — and the dispatcher's routing
+  // key compares string-equal, so `""` would mismatch the operator id
+  // AND mismatch every real workspace id, silently dead-lettering the
+  // row. Reject at the seam.
+  if (input.workspaceId.length === 0) {
+    throw new Error(
+      "crm_outbox enqueue: workspaceId must be non-empty " +
+        "(operator pipeline passes the resolved operator workspace id; " +
+        "per-tenant enqueue passes the customer's workspace id).",
+    );
+  }
   const emailKey = extractEmailKey(input.payload);
   if (emailKey === null && EMAIL_KEYED_EVENT_TYPES.has(input.eventType)) {
     const raw = input.payload["email"];
@@ -420,6 +453,7 @@ export async function enqueue(
     input.eventType,
     JSON.stringify(input.payload),
     emailKey,
+    input.workspaceId,
   ]);
   const id = rows[0]?.id;
   if (!id) {
@@ -515,6 +549,7 @@ export async function flushBatch(
     event_type: string;
     payload: unknown;
     attempts: number;
+    workspace_id: string;
     twenty_person_id: string | null;
     twenty_note_id: string | null;
   };
@@ -529,6 +564,7 @@ export async function flushBatch(
       eventType: raw.event_type,
       payload: raw.payload,
       attempts: raw.attempts,
+      workspaceId: raw.workspace_id,
       twentyPersonId: raw.twenty_person_id,
       twentyNoteId: raw.twenty_note_id,
     };

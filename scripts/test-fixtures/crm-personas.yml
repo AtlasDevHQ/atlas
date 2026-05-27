@@ -1,0 +1,98 @@
+# CRM smoke-test fixture — drives `atlas ops smoke-crm`.
+#
+# Each persona enqueues one `crm_outbox` row that the flusher dispatches to
+# Twenty. The smoke command asserts that after the flusher drains:
+#
+#   - Distinct emails → distinct Twenty Persons (this is what #2865 broke).
+#   - First persona's source for an email stamps `atlasFirstSource` and
+#     never gets overwritten by later events (stickiness).
+#   - Last persona's source for an email stamps `atlasLastSource`.
+#   - Each sales-form persona produces one Note attached to its Person.
+#
+# Coverage (per issue #2866):
+#   - 4× sales-form  (A1–A4) — the scaled #2865 repro
+#   - 1× demo        (B7)
+#   - 1× signup      (C9)
+#   - 1× demo→signup stickiness pair (C10) — same email, different sources
+#   - 1× demo→demo idempotency pair  (B8) — same email, same source
+#
+# The companies match PR #2865's comment thread so the manual + automated
+# runs converge on the same dataset and operators can spot-check Twenty
+# against the same lookup list.
+#
+# Conversion (D12) is intentionally not in this fixture — it's parked
+# behind Stripe test-fixture wiring per issue #2866.
+
+personas:
+  # ── A1–A4: four distinct sales-form personas ───────────────────────────
+  - source: sales-form
+    email: dlockhart@initech.com
+    name: David Lockhart
+    company: Initech
+    planInterest: Pro
+    message: |
+      We're evaluating Atlas for our internal data team — interested in the
+      Pro tier and want to understand the SLA story for scheduled queries.
+    ip: 203.0.113.10
+
+  - source: sales-form
+    email: wbell@massivedynamic.com
+    name: Walter Bell
+    company: Massive Dynamic
+    planInterest: Business
+    message: |
+      Looking at Business tier for ~30 seats. Need SSO + audit retention
+      questions answered before we move forward.
+    ip: 203.0.113.11
+
+  - source: sales-form
+    email: vmiller@veridiandynamics.com
+    name: Veronica Miller
+    company: Veridian Dynamics
+    planInterest: Pro
+    message: |
+      Migrating off a hand-rolled BI stack — what does Atlas's onboarding
+      look like for an existing Postgres + ClickHouse footprint?
+    ip: 203.0.113.12
+
+  - source: sales-form
+    email: kflynn@encom.com
+    name: Kevin Flynn
+    company: ENCOM
+    planInterest: Starter
+    message: |
+      Small team (4 people) trying Starter — can we upgrade mid-cycle if
+      we land Atlas as our primary analytics surface?
+    ip: 203.0.113.13
+
+  # ── B7: standalone demo persona ────────────────────────────────────────
+  - source: demo
+    email: jvalois@pendantpub.com
+    ip: 203.0.113.20
+
+  # ── C9: standalone signup persona ──────────────────────────────────────
+  - source: signup
+    email: lallworth@wayneent.com
+    name: Lucius Allworth
+
+  # ── C10: demo → signup stickiness pair (same email) ────────────────────
+  # Expectation: one Person with atlasFirstSource=DEMO, atlasLastSource=SIGNUP.
+  # This catches a regression where the dispatcher overwrites atlasFirstSource
+  # on subsequent dispatches.
+  - source: demo
+    email: gworth@globexcorp.com
+    ip: 203.0.113.30
+  - source: signup
+    email: gworth@globexcorp.com
+    name: Greta Worth
+
+  # ── B8: demo → demo idempotency pair (same email) ──────────────────────
+  # Expectation: one Person with atlasFirstSource=DEMO, atlasLastSource=DEMO,
+  # zero Notes (demo events don't produce Notes). Catches a regression where
+  # repeat dispatches create duplicate Persons.
+  - source: demo
+    email: msdyson@cyberdynesys.com
+    ip: 203.0.113.40
+  - source: demo
+    email: msdyson@cyberdynesys.com
+    ip: 203.0.113.41

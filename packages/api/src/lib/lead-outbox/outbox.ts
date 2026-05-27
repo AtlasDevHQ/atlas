@@ -179,16 +179,27 @@ const ENQUEUE_SQL = `
  * eager tier value (e.g. 30s tier-1 vs `Retry-After: 3600`).
  *
  * Per-email serialization (#2870): a row is claimable only if NO
- * older non-terminal same-email sibling exists. Three layers cooperate:
+ * blocking same-email sibling exists. Three layers cooperate:
  *
- *   1. **NOT EXISTS gate (older-sibling)** — excludes the row from
- *      `claimable` if any older same-email row is still `pending` or
- *      `in_flight`. The `o2.created_at < crm_outbox.created_at`
- *      clause is essential — without it every row would block itself
- *      and the queue would stall. This closes the retry-cooldown
- *      leapfrog where R1 (older, in transient-fail backoff) is
- *      filtered out of `claimable` by the due-time check, letting R2
- *      (newer, fresh) be claimed first and flip atlasFirstSource.
+ *   1. **NOT EXISTS gate** — splits the predicate by sibling status:
+ *      * Any `in_flight` same-email row blocks unconditionally
+ *        (regardless of `created_at`). A rolling hotfix or manual
+ *        recovery can leave a newer `in_flight` row alongside an
+ *        older `pending` row — without the age-independent in_flight
+ *        check, the older `pending` row would dispatch concurrently
+ *        with the newer in_flight one.
+ *      * Any `pending` same-email row blocks only if it's strictly
+ *        older by `(created_at, id)`. The `id` tie-break is what
+ *        serializes bulk-INSERT rows that share `created_at` (e.g.
+ *        the historic-leads backfill path that produces many rows in
+ *        one statement with one `now()` timestamp); without it, the
+ *        next tick would see a same-`created_at` sibling as not-older
+ *        and claim a second row while the first is still in_flight.
+ *      The age check on `pending` is what closes the retry-cooldown
+ *      leapfrog: R1 (older, in transient-fail backoff) is filtered
+ *      out of `claimable` by the due-time check, but its presence as
+ *      an older pending sibling still blocks R2 (newer, fresh) from
+ *      flipping atlasFirstSource ahead of it.
  *   2. **Advisory xact lock per email_key** — `pg_try_advisory_xact_lock`
  *      gives us serialization across concurrent transactions that
  *      MVCC alone can't provide. Without it, two flusher pods could
@@ -236,8 +247,13 @@ const CLAIM_SQL = `
           WHERE o2.email_key IS NOT NULL
             AND o2.email_key = crm_outbox.email_key
             AND o2.id <> crm_outbox.id
-            AND o2.status IN ('pending', 'in_flight')
-            AND o2.created_at < crm_outbox.created_at
+            AND (
+              o2.status = 'in_flight'
+              OR (
+                o2.status = 'pending'
+                AND (o2.created_at, o2.id) < (crm_outbox.created_at, crm_outbox.id)
+              )
+            )
         )
         AND (
           email_key IS NULL
@@ -364,6 +380,13 @@ export const SHUTDOWN_RECOVERY_STALE_MS = 30_000;   // 30 s
  * concurrently with siblings). Warn-log so operators can grep and
  * investigate before atlasFirstSource flips weeks later.
  *
+ * The literals must match the `eventType` strings that actually land
+ * in `crm_outbox.event_type`, NOT the upstream `AtlasLeadEvent.source`
+ * variants — they coincide for `demo` / `signup` / `sales-form` (the
+ * dispatcher passes `input.source` through verbatim) but diverge for
+ * conversions, which enqueue as `"stamp-conversion"` (the
+ * `STAMP_CONVERSION_EVENT_TYPE` constant in `ee/src/saas-crm/index.ts`).
+ *
  * New email-keyed event types must be added here AND have an `email`
  * field on their payload type — the runtime check is the only defense
  * against a TypeScript cast or `unknown`-laundered payload silently
@@ -373,7 +396,7 @@ const EMAIL_KEYED_EVENT_TYPES: ReadonlySet<string> = new Set([
   "demo",
   "signup",
   "sales-form",
-  "conversion",
+  "stamp-conversion",
 ]);
 
 /** Insert a row in `pending` status. Returns the new row id. */

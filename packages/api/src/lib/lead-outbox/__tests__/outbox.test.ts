@@ -120,30 +120,40 @@ class FakeOutboxDB implements OutboxDB {
     if (/^\s*UPDATE crm_outbox\s+SET status = 'in_flight'/i.test(sql)) {
       if (this.claimBlocked) return [] as T[];
       const limit = Number(p[0] ?? 50);
-      // Mirror CLAIM_SQL (0104 + #2872 follow-up): a row is claimable
-      // only if NO older non-terminal same-email sibling exists. This
-      // gates both the in_flight-sibling-blocks-newer case AND the
-      // retry-cooldown-leapfrog case (older sibling in `pending` with
-      // future retry_after still blocks the newer fresh row). NULL
-      // email_key rows skip the gate (`o2.email_key IS NOT NULL`
-      // short-circuits) — each NULL row is its own dedup group via
-      // COALESCE(email_key, id::text).
-      const hasOlderNonTerminalSibling = (r: Row): boolean => {
+      // Mirror CLAIM_SQL (0104 + #2872 follow-ups): a row is claimable
+      // only if NO blocking same-email sibling exists.
+      //   - Any in_flight sibling blocks regardless of age (rolling
+      //     hotfix / manual recovery state where a newer row is
+      //     already in_flight).
+      //   - Any pending sibling that is strictly older by
+      //     (created_at, id) blocks — closes both the retry-cooldown
+      //     leapfrog (older row in backoff still gates the newer one)
+      //     AND the same-`created_at` bulk-INSERT tie-break (two rows
+      //     sharing a timestamp must still serialize).
+      //   - NULL email_key rows skip the gate; each is its own dedup
+      //     group via COALESCE(email_key, id::text).
+      const hasBlockingSibling = (r: Row): boolean => {
         if (r.email_key == null) return false;
-        return this.rows.some(
-          (o) =>
-            o.id !== r.id &&
-            o.email_key === r.email_key &&
-            (o.status === "pending" || o.status === "in_flight") &&
-            o.created_at < r.created_at,
-        );
+        return this.rows.some((o) => {
+          if (o.id === r.id) return false;
+          if (o.email_key !== r.email_key) return false;
+          if (o.status === "in_flight") return true;
+          if (o.status === "pending") {
+            // (o.created_at, o.id) < (r.created_at, r.id) — row-wise.
+            return (
+              o.created_at < r.created_at ||
+              (o.created_at === r.created_at && o.id < r.id)
+            );
+          }
+          return false;
+        });
       };
       const candidates = this.rows
         .filter(
           (r) =>
             r.status === "pending" &&
             r.attempts < 6 &&
-            !hasOlderNonTerminalSibling(r),
+            !hasBlockingSibling(r),
         )
         .sort((a, b) => a.created_at - b.created_at);
       const seenDedupKeys = new Set<string>();
@@ -657,6 +667,24 @@ describe("per-email serialization (#2870)", () => {
     expect(warn?.data.rawType).toBe("undefined");
   });
 
+  test("enqueue warn-logs for stamp-conversion (Twenty-side event_type, not upstream source)", async () => {
+    // Conversion stamps land in crm_outbox with event_type
+    // `"stamp-conversion"` (the `STAMP_CONVERSION_EVENT_TYPE` constant
+    // in `ee/src/saas-crm/index.ts`), NOT `"conversion"`. The warn-log
+    // gate must match the actual enqueued event_type so conversion
+    // payloads with a missing email surface as silent-serialization-
+    // disabled.
+    await enqueue(db, {
+      eventType: "stamp-conversion",
+      payload: { source: "conversion" } as Record<string, unknown>,
+    });
+    const warn = loggerCalls.warn.find(
+      (c) => c.data.event === "lead_outbox.email_key_missing",
+    );
+    expect(warn).toBeDefined();
+    expect(warn?.data.eventType).toBe("stamp-conversion");
+  });
+
   test("enqueue does NOT warn-log for non-email-keyed event types", async () => {
     // A future `system`/`telemetry` event_type whose payload is
     // intentionally not email-keyed must NOT trigger the warn-log,
@@ -670,6 +698,77 @@ describe("per-email serialization (#2870)", () => {
       (c) => c.data.event === "lead_outbox.email_key_missing",
     );
     expect(warn).toBeUndefined();
+  });
+
+  test("same-created_at siblings serialize via the (created_at, id) tie-break", async () => {
+    // Bulk-INSERT scenario: backfill-crm-leads.ts produces many rows
+    // with one `now()` value. Without an id tie-break on the older-
+    // sibling gate, tick 1 dedupes via DISTINCT ON but tick 2 sees a
+    // same-`created_at` pending sibling as not-older and claims a
+    // second row while the first is still in_flight.
+    await enqueue(db, {
+      eventType: "demo",
+      payload: { source: "demo", email: "tied@example.test" },
+    });
+    await enqueue(db, {
+      eventType: "demo",
+      payload: { source: "demo", email: "tied@example.test" },
+    });
+    // Force identical timestamps to exercise the row-wise compare.
+    db.rows[0].created_at = 1000;
+    db.rows[1].created_at = 1000;
+    const lowerIdRowId = db.rows[0].id < db.rows[1].id ? db.rows[0].id : db.rows[1].id;
+    const higherIdRowId =
+      db.rows[0].id < db.rows[1].id ? db.rows[1].id : db.rows[0].id;
+
+    const slowDispatcher: OutboxDispatcher = async () => ({ kind: "ok" });
+    // Tick 1: only the lower-id row is claimable; the higher-id row
+    // is blocked because its same-`created_at` sibling with a smaller
+    // id is still pending.
+    const tick1 = await flushBatch(db, slowDispatcher, 50);
+    expect(tick1.claimed).toBe(1);
+    expect(db.rows.find((r) => r.id === lowerIdRowId)!.status as string).toBe("done");
+    expect(db.rows.find((r) => r.id === higherIdRowId)!.status as string).toBe(
+      "pending",
+    );
+
+    // Tick 2: the lower-id row is done; higher-id now has no blocking
+    // sibling and becomes claimable.
+    const tick2 = await flushBatch(db, slowDispatcher, 50);
+    expect(tick2.claimed).toBe(1);
+    expect(db.rows.find((r) => r.id === higherIdRowId)!.status as string).toBe(
+      "done",
+    );
+  });
+
+  test("newer in_flight sibling blocks an older pending row (rolling-hotfix safety)", async () => {
+    // Rolling-hotfix scenario: an old pod with the pre-fix CLAIM_SQL
+    // already leapfrogged R2 (newer) into in_flight while R1 (older,
+    // in retry cooldown) waited. A new pod with the fixed CLAIM_SQL
+    // must not then claim R1 — both would dispatch concurrently with
+    // R2's still-in-flight upsert, flipping atlasLastSource.
+    await enqueue(db, {
+      eventType: "demo",
+      payload: { source: "demo", email: "rolling@hotfix.test", ip: "203.0.113.60" },
+    });
+    await enqueue(db, {
+      eventType: "demo",
+      payload: { source: "demo", email: "rolling@hotfix.test", ip: "203.0.113.61" },
+    });
+    // R1 is older + pending; R2 is newer + in_flight (already claimed
+    // by the legacy pod). The gate must still block R1.
+    db.rows[1].status = "in_flight";
+    db.rows[1].claimed_at = Date.now();
+
+    let dispatched = 0;
+    const dispatcher: OutboxDispatcher = async () => {
+      dispatched++;
+      return { kind: "ok" };
+    };
+    const result = await flushBatch(db, dispatcher, 50);
+    expect(result.claimed).toBe(0);
+    expect(dispatched).toBe(0);
+    expect(db.rows[0].status as string).toBe("pending");
   });
 });
 

@@ -17,7 +17,7 @@ Atlas has been shipping continuously into production via merge-to-`main` since t
 Three problems fall out:
 
 - **Hotfix attribution is hard.** A regression discovered on prod is "the version that's running right now," not "version X.Y.Z." Operators can't say "we're on 0.6.2, please patch 0.6.x" — there is no 0.6.x.
-- **No staging gate before prod.** Every merge-to-`main` deploys directly to prod across 6 Railway services. The grilling-session decision (Q5) introduces a dual Railway trigger: `main` → staging, `v*.*.*` git tag → prod. That requires git tags to exist as a release-identifier namespace.
+- **No staging gate before prod.** Every merge-to-`main` deploys directly to prod across 6 Railway services. The grilling-session decision (Q5) introduces a dual Railway trigger: `main` → staging, annotated git tag → prod (via a dedicated `prod` branch advanced only by `/release` — see § Release branches for the wiring rationale). That requires git tags to exist as a release-identifier namespace.
 - **The `1.0.0 — SaaS Launch` milestone collides with the future git tag `v1.0.0`.** They mean different things. The internal milestone shipped the hosted-SaaS launch event (3 regions live). The future git tag `v1.0.0` will mean "REST + MCP + plugin contracts are frozen" — a much stronger commitment, not yet earned.
 
 The grilling-session decision: introduce git tags as the **third independent version train**, sized for "what gates a deploy to prod" — not for marketing milestones, not for npm package coordination.
@@ -66,6 +66,8 @@ No `v0.1.0-rc.1`, no `v0.1.0-beta`, no `v0.1.0-alpha`. The dual Railway trigger 
 
 No `release/v0.1.x` branches. `main` is the single integration branch. A hotfix on prod is: branch from `main`, fix, merge to `main`, tag immediately. If `main` has drifted ahead of the prod tag, the hotfix lands on `main` and the tag captures the cumulative diff — that's intentional (avoids the maintenance overhead of cherry-picking onto a release branch for a solo maintainer).
 
+**The `prod` branch is not a release branch.** It exists as a Railway-tracking artifact: a single-pointer ref that `/release` fast-forwards to each tag's SHA, so Railway's branch-driven autodeploy can fire the prod deploy. No PR ever targets `prod`. No work happens on `prod`. It does not version, fork, or accumulate state. Branch protection blocks PRs and direct pushes; only the `/release` skill (`git push origin <tag-sha>^{}:prod --force-with-lease`) advances it. This exists because Railway has no native tag-trigger and the Railway CLI cannot deploy an arbitrary SHA on a GitHub-linked service — `railway up` ships a local tarball, severing the GitHub Deployments link. The prod-branch tracker is the simplest composable primitive that preserves Railway autodeploy semantics.
+
 ### Patches don't get milestones
 
 GitHub milestones exist for **minor tags only** (`v0.1.0`, `v0.2.0`, …). Patches (`v0.1.1`, `v0.1.2`) just get tags + auto-generated release notes via `gh release create --generate-notes`. This keeps the milestone list short and meaningful.
@@ -91,7 +93,7 @@ Bump every train together — npm package versions match the git tag, milestone 
 ## Consequences
 
 **For deploys:**
-- The dual Railway trigger (Q5) hangs off this ADR. `main` → staging (push trigger), `v*.*.*` tag → prod (release trigger). See `docs/development/release-process.md`.
+- The dual Railway trigger (Q5) hangs off this ADR. `main` push → staging autodeploy (3 services: api/web/www). Annotated tag → `/release` fast-forwards `prod` branch to the tag SHA → prod autodeploy across 5 services (api/api-eu/api-apac/web/www). `docs` continues watching `main` directly. See `docs/development/release-process.md`.
 - The first prod deploy under tag-gating is `v0.1.0`, cut as soon as the bundle is ready. Until then, `main` continues to auto-deploy prod (status quo). The public launch announcement is a separate event, tracked independently.
 
 **For CHANGELOG.md:**
